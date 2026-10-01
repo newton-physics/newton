@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import warp as wp
 
 from ..core.joints import JointDoFType
@@ -14,10 +12,12 @@ from ..core.model import ModelKamino
 from ..core.state import StateKamino
 from ..kinematics.joints import (
     compute_joint_pose_and_relative_motion,
-    convert_angular_vel_to_universal_joint_intermediary_frame,
+    correct_joint_coords_in_place,
     get_joint_coords_mapping_function,
+    map_gimbal_angular_velocity_to_rates,
+    select_gimbal_coords,
+    universal_intermediary_axes,
 )
-from ..solvers.fk.kernels import _correct_joint_angle, _correct_joint_quaternion
 
 ###
 # Module interface
@@ -39,49 +39,12 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
 # Kernels
 ###
-
-
-def make_correct_joint_coords(dof_type: JointDoFType):
-    @wp.func
-    def _correct_joint_coords(
-        coords: Any,  # dof_type.coords_storage_type,
-        coords_ref: wp.array[wp.float32],
-    ) -> Any:  # dof_type.coords_storage_type
-        if wp.static(
-            dof_type == JointDoFType.CARTESIAN or dof_type == JointDoFType.FIXED or dof_type == JointDoFType.PRISMATIC
-        ):
-            pass  # No correction needed
-
-        elif wp.static(dof_type == JointDoFType.CYLINDRICAL):  # Correct angle up to +/- 2 pi
-            coords[1] = _correct_joint_angle(coords[1], coords_ref[1])
-
-        elif wp.static(dof_type == JointDoFType.FREE):  # Correct quaternion up to sign
-            quat = wp.vec4f(coords[3], coords[4], coords[5], coords[6])
-            quat_ref = wp.vec4f(coords_ref[3], coords_ref[4], coords_ref[5], coords_ref[6])
-            quat_corrected = _correct_joint_quaternion(quat, quat_ref)
-            for i in range(4):
-                coords[3 + i] = quat_corrected[i]
-
-        elif wp.static(dof_type == JointDoFType.REVOLUTE):  # Correct angle up to +/- 2 pi
-            coords[0] = _correct_joint_angle(coords[0], coords_ref[0])
-
-        elif wp.static(dof_type == JointDoFType.SPHERICAL):  # Correct quaternion up to sign
-            quat_ref = wp.vec4f(coords_ref[0], coords_ref[1], coords_ref[2], coords_ref[3])
-            coords = _correct_joint_quaternion(coords, quat_ref)
-
-        elif wp.static(dof_type == JointDoFType.UNIVERSAL):  # Correct angles up to +/- 2 pi
-            coords[0] = _correct_joint_angle(coords[0], coords_ref[0])
-            coords[1] = _correct_joint_angle(coords[1], coords_ref[1])
-
-        return coords
-
-    return _correct_joint_coords
 
 
 def make_compute_and_write_joint_coords(dof_type: JointDoFType):
@@ -91,6 +54,7 @@ def make_compute_and_write_joint_coords(dof_type: JointDoFType):
     """
     num_coords = dof_type.num_coords
     assert num_coords > 0
+    dof_type_int = int(dof_type)
 
     @wp.func
     def _compute_and_write_joint_coords(
@@ -100,16 +64,15 @@ def make_compute_and_write_joint_coords(dof_type: JointDoFType):
         joint_q_ref: wp.array[wp.float32],
         joint_q: wp.array[wp.float32],
     ):
-        # Compute joint coordinates
+        # Compute joint coordinates and write them into the flat storage array
         coords = wp.static(get_joint_coords_mapping_function(dof_type))(r_j, q_j)
-
-        # Apply correction up to +/- 2pi and quaternion sign
-        coords_ref = joint_q_ref[coords_offset : coords_offset + num_coords]
-        coords = wp.static(make_correct_joint_coords(dof_type))(coords, coords_ref)
-
-        # Write out joint coordinates
         for i in range(num_coords):
             joint_q[coords_offset + i] = coords[i]
+
+        # Apply correction up to +/- 2pi and quaternion sign against the reference, in place.
+        # Note: ``dof_type_int`` is a Python literal captured from the factory, so the runtime dispatch
+        # inside ``correct_joint_coords_in_place`` is compile-time-constant per specialization.
+        correct_joint_coords_in_place(dof_type_int, joint_q, joint_q_ref, coords_offset)
 
     return _compute_and_write_joint_coords
 
@@ -122,6 +85,7 @@ def make_compute_and_write_joint_vel(dof_type: JointDoFType):
     num_dofs = dof_type.num_dofs
     assert num_dofs > 0
     dof_axes = dof_type.dofs_axes
+    third_axis_sign = -1.0 if dof_type == JointDoFType.GIMBAL_LEFT_HANDED else 1.0
 
     @wp.func
     def _compute_and_write_joint_vel(
@@ -132,7 +96,19 @@ def make_compute_and_write_joint_vel(dof_type: JointDoFType):
     ):
         # Convert angular velocity to intermediary body frame for universal joint
         if wp.static(dof_type == JointDoFType.UNIVERSAL):
-            u_j = convert_angular_vel_to_universal_joint_intermediary_frame(q_j, u_j)
+            axes = universal_intermediary_axes(q_j)
+            omega_intermediary = wp.transpose(axes) @ wp.spatial_bottom(u_j)
+            u_j = wp.spatial_vectorf(*wp.spatial_top(u_j), *omega_intermediary)
+
+        if wp.static(dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED):
+            rates = map_gimbal_angular_velocity_to_rates(
+                wp.vec3f(joint_u[dofs_offset], joint_u[dofs_offset + 1], joint_u[dofs_offset + 2]),
+                wp.spatial_bottom(u_j),
+                third_axis_sign,
+            )
+            for i in range(3):
+                joint_u[dofs_offset + i] = rates[i]
+            return
 
         # Write out joint velocity (=components of relative velocity along unconstrained axes)
         for i in range(num_dofs):
@@ -172,6 +148,23 @@ def _compute_and_write_joint_coords_and_vel(
         wp.static(make_compute_and_write_joint_coords(JointDoFType.FREE))(r_j, q_j, coords_offset, joint_q_ref, joint_q)
         wp.static(make_compute_and_write_joint_vel(JointDoFType.FREE))(q_j, u_j, dofs_offset, joint_u)
 
+    elif dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        # Gimbal resets use select_gimbal_coords and reuse those coords for rate mapping in one step.
+        # Keep this inline so the shared make_compute_and_write_joint_* factories stay decoupled.
+        third_axis_sign = 1.0
+        if dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+            third_axis_sign = -1.0
+        coords = select_gimbal_coords(
+            q_j,
+            wp.vec3f(joint_q_ref[coords_offset], joint_q_ref[coords_offset + 1], joint_q_ref[coords_offset + 2]),
+            third_axis_sign,
+        )
+        for i in range(3):
+            joint_q[coords_offset + i] = coords[i]
+            joint_u[dofs_offset + i] = map_gimbal_angular_velocity_to_rates(
+                coords, wp.spatial_bottom(u_j), third_axis_sign
+            )[i]
+
     elif dof_type == JointDoFType.PRISMATIC:
         wp.static(make_compute_and_write_joint_coords(JointDoFType.PRISMATIC))(
             r_j, q_j, coords_offset, joint_q_ref, joint_q
@@ -205,7 +198,7 @@ def _get_base_q_from_joint_q_and_body_q(
     model_joint_coords_offset: wp.array[wp.int32],
     state_joint_q: wp.array[wp.float32],
     state_body_q: wp.array[wp.transformf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs:
     base_q: wp.array[wp.transformf],
 ):
@@ -213,7 +206,7 @@ def _get_base_q_from_joint_q_and_body_q(
     wid = wp.tid()
 
     # Early return based on mask
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Read base_q from joint_q if a base joint was set for this world
@@ -246,7 +239,7 @@ def _get_base_u_from_joint_u_and_body_u(
     model_joint_dofs_offset: wp.array[wp.int32],
     state_joint_u: wp.array[wp.float32],
     state_body_u: wp.array[wp.spatial_vectorf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs:
     base_u: wp.array[wp.spatial_vectorf],
 ):
@@ -254,7 +247,7 @@ def _get_base_u_from_joint_u_and_body_u(
     wid = wp.tid()
 
     # Early return based on mask
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Read base_u from joint_u if a base joint was set for this world
@@ -283,13 +276,13 @@ def _set_body_q(
     # Inputs:
     body_world_id: wp.array[wp.int32],
     body_q_in: wp.array[wp.transformf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs:
     body_q_out: wp.array[wp.transformf],
 ):
     body_id = wp.tid()
     wid = body_world_id[body_id]
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
     body_q_out[body_id] = body_q_in[body_id]
 
@@ -301,7 +294,10 @@ def _reset_joints_state_from_bodies_state(
     joint_dof_type: wp.array[wp.int32],
     joint_coords_offset: wp.array[wp.int32],
     joint_dofs_offset: wp.array[wp.int32],
-    joint_cts_offset: wp.array[wp.int32],
+    joint_dynamic_cts_offset: wp.array[wp.int32],
+    joint_kinematic_cts_offset: wp.array[wp.int32],
+    joint_friction_cts_offset: wp.array[wp.int32],
+    joint_effort_cts_offset: wp.array[wp.int32],
     joint_bid_B: wp.array[wp.int32],
     joint_bid_F: wp.array[wp.int32],
     joint_B_r_Bj: wp.array[wp.vec3f],
@@ -311,19 +307,22 @@ def _reset_joints_state_from_bodies_state(
     joint_q_0: wp.array[wp.float32],
     body_q: wp.array[wp.transformf],
     body_u: wp.array[wp.spatial_vectorf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs
     joint_q: wp.array[wp.float32],
     joint_q_prev: wp.array[wp.float32],
     joint_u: wp.array[wp.float32],
-    joint_lambda: wp.array[wp.float32],
+    joint_lambda_dyn: wp.array[wp.float32],
+    joint_lambda_kin: wp.array[wp.float32],
+    joint_lambda_f: wp.array[wp.float32],
+    joint_lambda_tau_j: wp.array[wp.float32],
 ):
     # Get thread id as joint id
     jid = wp.tid()
 
     # Early return based on mask
     wid = joint_world_id[jid]
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Retrieve the joint model data
@@ -331,8 +330,14 @@ def _reset_joints_state_from_bodies_state(
     coords_offset = joint_coords_offset[jid]
     num_coords = joint_coords_offset[jid + 1] - coords_offset
     dofs_offset = joint_dofs_offset[jid]
-    cts_offset = joint_cts_offset[jid]
-    num_cts = joint_cts_offset[jid + 1] - cts_offset
+    dynamic_cts_offset = joint_dynamic_cts_offset[jid]
+    num_dynamic_cts = joint_dynamic_cts_offset[jid + 1] - dynamic_cts_offset
+    kinematic_cts_offset = joint_kinematic_cts_offset[jid]
+    num_kinematic_cts = joint_kinematic_cts_offset[jid + 1] - kinematic_cts_offset
+    friction_cts_offset = joint_friction_cts_offset[jid]
+    num_friction_cts = joint_friction_cts_offset[jid + 1] - friction_cts_offset
+    effort_cts_offset = joint_effort_cts_offset[jid]
+    num_effort_cts = joint_effort_cts_offset[jid + 1] - effort_cts_offset
     bid_B = joint_bid_B[jid]
     bid_F = joint_bid_F[jid]
     r_B = joint_B_r_Bj[jid]
@@ -359,16 +364,22 @@ def _reset_joints_state_from_bodies_state(
     for i in range(num_coords):
         joint_q_prev[coords_offset + i] = joint_q[coords_offset + i]
 
-    # Set lambda to zero
-    for i in range(num_cts):
-        joint_lambda[cts_offset + i] = 0.0
+    # Set lambdas to zero
+    for i in range(num_dynamic_cts):
+        joint_lambda_dyn[dynamic_cts_offset + i] = 0.0
+    for i in range(num_kinematic_cts):
+        joint_lambda_kin[kinematic_cts_offset + i] = 0.0
+    for i in range(num_friction_cts):
+        joint_lambda_f[friction_cts_offset + i] = 0.0
+    for i in range(num_effort_cts):
+        joint_lambda_tau_j[effort_cts_offset + i] = 0.0
 
 
 @wp.kernel
 def _reset_body_velocities(
     # Inputs
     body_world_id: wp.array[wp.int32],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs
     body_u: wp.array[wp.spatial_vectorf],
 ):
@@ -377,7 +388,7 @@ def _reset_body_velocities(
 
     # Early return based on mask
     wid = body_world_id[body_id]
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Reset velocities to zero
@@ -388,7 +399,7 @@ def _reset_body_velocities(
 def _reset_body_wrenches(
     # Inputs
     body_world_id: wp.array[wp.int32],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs
     body_w: wp.array[wp.spatial_vectorf],
     body_w_e: wp.array[wp.spatial_vectorf],
@@ -398,7 +409,7 @@ def _reset_body_wrenches(
 
     # Early return based on mask
     wid = body_world_id[body_id]
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Reset wrenches to zero
@@ -409,7 +420,7 @@ def _reset_body_wrenches(
 @wp.kernel
 def _reset_time_of_select_worlds(
     # Inputs:
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs:
     data_time: wp.array[wp.float32],
     data_steps: wp.array[wp.int32],
@@ -418,7 +429,7 @@ def _reset_time_of_select_worlds(
     wid = wp.tid()
 
     # Skip resetting time if the world has not been marked for reset
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Reset both the physical time and step count to zero
@@ -439,7 +450,7 @@ def _eval_floating_base_relative_transform(
     base_u: wp.array[wp.spatial_vectorf],  # None also supported
     body_q: wp.array[wp.transformf],
     body_u: wp.array[wp.spatial_vectorf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     relative_base_u: wp.bool,
     # Outputs:
     rel_transform: wp.array[wp.transformf],
@@ -450,7 +461,7 @@ def _eval_floating_base_relative_transform(
     wid = wp.tid()
 
     # Early return based on mask
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Determine new pose of the base body (= follower of the base joint if there is a base joint)
@@ -528,7 +539,7 @@ def _apply_floating_base_transform(
     rel_transform: wp.array[wp.transformf],
     rel_velocity: wp.array[wp.spatial_vectorf],
     new_base_pos: wp.array[wp.vec3f],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs:
     body_q: wp.array[wp.transformf],
     body_u: wp.array[wp.spatial_vectorf],
@@ -538,7 +549,7 @@ def _apply_floating_base_transform(
 
     # Early return based on mask or absence of floating base
     wid = body_world_id[body_id]
-    if not world_mask[wid] or model_base_body_index[wid] < 0:
+    if (world_mask and not world_mask[wid]) or model_base_body_index[wid] < 0:
         return
 
     # Transform body pose
@@ -569,7 +580,7 @@ def reset_time(
     model: ModelKamino,
     time: wp.array[wp.float32],
     steps: wp.array[wp.int32],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     wp.launch(
         _reset_time_of_select_worlds,
@@ -590,7 +601,7 @@ def get_base_q_from_joint_q_and_body_q(
     joint_q: wp.array[wp.float32],
     body_q: wp.array[wp.transformf],
     base_q: wp.array[wp.transformf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Infer the floating base pose from joint coordinates, if a base joint was set, or from body poses,
@@ -601,7 +612,7 @@ def get_base_q_from_joint_q_and_body_q(
         joint_q: joint coordinates array.
         body_q: body poses array.
         base_q: array of per-world floating base pose, to set from joint_q/body_q as applicable.
-        world_mask: Per-world boolean mask, indicating in which worlds to perform the operation.
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
     """
     wp.launch(
         _get_base_q_from_joint_q_and_body_q,
@@ -624,7 +635,7 @@ def get_base_u_from_joint_u_and_body_u(
     joint_u: wp.array[wp.float32],
     body_u: wp.array[wp.spatial_vectorf],
     base_u: wp.array[wp.spatial_vectorf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Infer the floating base velocity from joint velocities, if a base joint was set, or from body velocities,
@@ -635,7 +646,7 @@ def get_base_u_from_joint_u_and_body_u(
         joint_u: joint velocities array.
         body_u: body velocities array.
         base_u: array of per-world floating base velocity, to set from joint_u/body_u as applicable.
-        world_mask: Per-world boolean mask, indicating in which worlds to perform the operation.
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
     """
     wp.launch(
         _get_base_u_from_joint_u_and_body_u,
@@ -657,7 +668,7 @@ def set_body_q(
     model: ModelKamino,
     body_q_in: wp.array[wp.transformf],
     body_q_out: wp.array[wp.transformf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Set the body poses of select worlds to prescribed values.
@@ -666,7 +677,7 @@ def set_body_q(
         model: Kamino model.
         body_q_in: prescribed body poses.
         body_q_out: body poses to overwrite with those in body_q_in, in active worlds.
-        world_mask: Per-world boolean mask, indicating in which worlds to perform the operation.
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
     """
     wp.launch(
         _set_body_q,
@@ -682,7 +693,7 @@ def set_floating_base(
     base_u: wp.array[wp.spatial_vectorf] | None,
     body_q: wp.array[wp.transformf],
     body_u: wp.array[wp.spatial_vectorf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
     relative_base_u: bool = False,
 ):
     """
@@ -697,7 +708,7 @@ def set_floating_base(
                 If None, no additional velocity is composed to match the base velocity.
         body_q: body poses to update.
         body_u: body velocities to update.
-        world_mask: Per-world boolean mask, indicating in which worlds to perform the operation.
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
         relative_base_u: Boolean indicating whether base_u should be interpreted as expressed relative
                          to the new pose (after transforming so as to match base_q).
     """
@@ -754,7 +765,7 @@ def set_floating_base(
 def reset_joints_state_from_bodies_state(
     model: ModelKamino,
     state: StateKamino,
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Reset joint-based components of the state given body poses and velocities, inferring consistent
@@ -763,7 +774,7 @@ def reset_joints_state_from_bodies_state(
     Args:
         model: Kamino model.
         state: Kamino state.
-        world_mask: Per-world boolean mask, indicating in which worlds to perform the operation.
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
     """
     wp.launch(
         _reset_joints_state_from_bodies_state,
@@ -773,7 +784,10 @@ def reset_joints_state_from_bodies_state(
             model.joints.dof_type,
             model.joints.coords_offset,
             model.joints.dofs_offset,
-            model.joints.cts_offset,
+            model.joints.dynamic_cts_offset,
+            model.joints.kinematic_cts_offset,
+            model.joints.friction_cts_offset,
+            model.joints.effort_cts_offset,
             model.joints.bid_B,
             model.joints.bid_F,
             model.joints.B_r_Bj,
@@ -787,7 +801,10 @@ def reset_joints_state_from_bodies_state(
             state.q_j,
             state.q_j_p,
             state.dq_j,
-            state.lambda_j,
+            state.lambda_dyn_j,
+            state.lambda_kin_j,
+            state.lambda_f_j,
+            state.lambda_tau_j,
         ],
         device=model.device,
     )
@@ -796,7 +813,7 @@ def reset_joints_state_from_bodies_state(
 def reset_body_velocities(
     model: ModelKamino,
     state: StateKamino,
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Reset body velocities in the state to zero.
@@ -817,7 +834,7 @@ def reset_body_velocities(
 def reset_body_wrenches(
     model: ModelKamino,
     state: StateKamino,
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Reset body wrenches in the state to zero.
@@ -825,7 +842,7 @@ def reset_body_wrenches(
     Args:
         model: Kamino model.
         state: Kamino state.
-        world_mask: Per-world boolean mask, indicating in which worlds to perform the operation.
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
     """
     wp.launch(
         _reset_body_wrenches,

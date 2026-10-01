@@ -17,9 +17,13 @@ from asv_runner.benchmarks.mark import skip_benchmark_if
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
+sys.path.append(os.path.join(parent_dir, "simulation"))
 
+from bench_sensor_tiled_camera import SCENES as TILED_CAMERA_SCENES
 from benchmark_mujoco import Example
 
+import newton
+from newton.sensors import SensorTiledCamera
 from newton.viewer import ViewerGL
 
 
@@ -104,6 +108,53 @@ class KpiInitializeViewerGL:
 
     def teardown(self, robot, world_count):
         del self._model
+
+
+class _InitializeModelTiledCamera:
+    """Build models and tiled cameras from scene presets with collision handling enabled."""
+
+    param_names = ["scene", "world_count"]
+    rounds = 1
+    repeat = 3
+    number = 1
+    min_run_count = 1
+
+    def setup(self, scene, world_count):
+        self.world = TILED_CAMERA_SCENES[scene].build()
+        warmup = self._replicate(1)
+        _model, _sensor = self._initialize_model_and_sensor(warmup)
+        self.replicated_builder = self._replicate(world_count)
+        wp.synchronize_device()
+
+    def _replicate(self, world_count):
+        builder = newton.ModelBuilder()
+        builder.replicate(self.world, world_count)
+        builder.add_ground_plane()
+        return builder
+
+    def _initialize_model_and_sensor(self, builder):
+        model = builder.finalize()
+        sensor = SensorTiledCamera(model)
+        return model, sensor
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_initialize_model(self, scene, world_count):
+        _model, _sensor = self._initialize_model_and_sensor(self._replicate(world_count))
+        wp.synchronize_device()
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_finalize_model(self, scene, world_count):
+        _model, _sensor = self._initialize_model_and_sensor(self.replicated_builder)
+        wp.synchronize_device()
+
+    def teardown(self, scene, world_count):
+        del self.replicated_builder
+        del self.world
+
+
+class KpiInitializeModelTiledCamera(_InitializeModelTiledCamera):
+    params = (["franka_cabinet", "quadruped"], [4096])
+    timeout = 3600
 
 
 class FastInitializeModel:
@@ -203,6 +254,10 @@ class FastInitializeViewerGL:
         del self._model
 
 
+class FastInitializeModelTiledCamera(_InitializeModelTiledCamera):
+    params = (["franka_cabinet", "quadruped"], [256])
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -215,6 +270,8 @@ if __name__ == "__main__":
         "FastInitializeSolver": FastInitializeSolver,
         "KpiInitializeViewerGL": KpiInitializeViewerGL,
         "FastInitializeViewerGL": FastInitializeViewerGL,
+        "KpiInitializeModelTiledCamera": KpiInitializeModelTiledCamera,
+        "FastInitializeModelTiledCamera": FastInitializeModelTiledCamera,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

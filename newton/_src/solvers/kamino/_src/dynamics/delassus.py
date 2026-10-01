@@ -26,10 +26,10 @@ Typical usage example:
 
     # Create a model from the builder and construct additional
     # containers to hold joint-limits, contacts, Jacobians
-    model = builder.finalize()
+    model = ModelKamino.from_newton(builder.finalize())
     data = model.data()
     limits = LimitsKamino(model)
-    contacts = ContactsKamino(builder)
+    contacts = ContactsKamino(model)
     jacobians = DenseSystemJacobians(model, limits, contacts)
 
     # Define a linear solver type to use as a back-end for the
@@ -96,7 +96,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -262,12 +262,11 @@ def _build_delassus_elementwise_sparse(
     # Retrieve the number of non-zero blocks
     num_nzb = jacobian_cts_num_nzb[wid]
 
-    # Compute Jacobian block indices from the tid
-    block_id_i = tid // num_nzb
-    block_id_j = tid % num_nzb
+    # Process each unordered block pair once; the result is mirrored below.
+    block_id_i, block_id_j = upper_triangular_indices_from_index(tid, num_nzb)
 
     # Skip if index exceeds problem size
-    if block_id_i >= num_nzb:
+    if block_id_i < 0 or block_id_i >= num_nzb or block_id_j >= num_nzb:
         return
 
     nzb_start = jacobian_cts_nzb_start[wid]
@@ -282,11 +281,8 @@ def _build_delassus_elementwise_sparse(
     if block_coords_i[1] != block_coords_j[1]:
         return
 
-    # The Delassus matrix is symmetric, so we only compute the upper triangle (ct_i <= ct_j).
     ct_i = block_coords_i[0]
     ct_j = block_coords_j[0]
-    if ct_i > ct_j:
-        return
 
     # Body index (bid) of body k w.r.t the model, from Jacobian block coords
     bid_k = bio + block_coords_i[1] // 6
@@ -352,6 +348,33 @@ def _add_joint_armature_diagonal_regularization_dense(
 
 
 @wp.kernel
+def _add_joint_effort_diagonal_regularization_dense(
+    # Inputs:
+    model_info_num_effort_cts: wp.array[wp.int32],
+    model_info_joint_effort_cts_offset: wp.array[wp.int32],
+    model_info_bounded_cts_group_offset: wp.array[wp.int32],
+    model_info_num_friction_cts: wp.array[wp.int32],
+    model_joint_inv_m_a: wp.array[wp.float32],
+    delassus_dim: wp.array[wp.int32],
+    delassus_mio: wp.array[wp.int32],
+    # Outputs:
+    delassus_D: wp.array[wp.float32],
+):
+    wid, tid = wp.tid()
+
+    num_effort_cts = model_info_num_effort_cts[wid]
+    if num_effort_cts == 0 or tid >= num_effort_cts:
+        return
+
+    ncts = delassus_dim[wid]
+    dmio = delassus_mio[wid]
+    world_effort_cts_offset = model_info_joint_effort_cts_offset[wid]
+    row = model_info_bounded_cts_group_offset[wid] + model_info_num_friction_cts[wid] + tid
+    inv_m_a = model_joint_inv_m_a[world_effort_cts_offset + tid]
+    delassus_D[dmio + ncts * row + row] += inv_m_a
+
+
+@wp.kernel
 def _regularize_delassus_diagonal_dense(
     # Inputs:
     delassus_dim: wp.array[wp.int32],
@@ -385,7 +408,8 @@ def _merge_inv_mass_matrix_kernel(
     num_nzb: wp.array[wp.int32],
     nzb_start: wp.array[wp.int32],
     nzb_coords: wp.array2d[wp.int32],
-    nzb_values: wp.array[vec6f],
+    jacobian_nzb_values: wp.array[vec6f],
+    mass_weighted_nzb_values: wp.array[vec6f],
 ):
     """
     Kernel to merge the inverse mass matrix into an existing sparse matrix, so that the resulting
@@ -399,7 +423,7 @@ def _merge_inv_mass_matrix_kernel(
 
     global_block_idx = nzb_start[mat_id] + block_idx
     block_coord = nzb_coords[global_block_idx]
-    block = nzb_values[global_block_idx]
+    block = jacobian_nzb_values[global_block_idx]
 
     body_id = block_coord[1] // 6
 
@@ -421,7 +445,7 @@ def _merge_inv_mass_matrix_kernel(
     block[3] = w[0]
     block[4] = w[1]
     block[5] = w[2]
-    nzb_values[global_block_idx] = block
+    mass_weighted_nzb_values[global_block_idx] = block
 
 
 @functools.cache
@@ -514,6 +538,31 @@ def _add_armature_regularization_sparse(
 
 
 @wp.kernel
+def _add_effort_regularization_sparse(
+    # Inputs:
+    model_info_num_effort_cts: wp.array[wp.int32],
+    model_info_joint_effort_cts_offset: wp.array[wp.int32],
+    model_info_bounded_cts_group_offset: wp.array[wp.int32],
+    model_info_num_friction_cts: wp.array[wp.int32],
+    row_start: wp.array[wp.int32],
+    model_joint_inv_m_a: wp.array[wp.float32],
+    # Outputs:
+    combined_regularization: wp.array[wp.float32],
+):
+    wid, tid = wp.tid()
+
+    num_effort_cts = model_info_num_effort_cts[wid]
+    if num_effort_cts == 0 or tid >= num_effort_cts:
+        return
+
+    world_effort_cts_offset = model_info_joint_effort_cts_offset[wid]
+    inv_m_a = model_joint_inv_m_a[world_effort_cts_offset + tid]
+    row = model_info_bounded_cts_group_offset[wid] + model_info_num_friction_cts[wid] + tid
+    vec_id = row_start[wid] + row
+    combined_regularization[vec_id] += inv_m_a
+
+
+@wp.kernel
 def _add_armature_regularization_preconditioned_sparse(
     # Inputs:
     model_info_num_joint_dynamic_cts: wp.array[wp.int32],
@@ -548,6 +597,33 @@ def _add_armature_regularization_preconditioned_sparse(
 
     # Add the armature regularization
     combined_regularization[vec_id] += p * p * inv_m_j
+
+
+@wp.kernel
+def _add_effort_regularization_preconditioned_sparse(
+    # Inputs:
+    model_info_num_effort_cts: wp.array[wp.int32],
+    model_info_joint_effort_cts_offset: wp.array[wp.int32],
+    model_info_bounded_cts_group_offset: wp.array[wp.int32],
+    model_info_num_friction_cts: wp.array[wp.int32],
+    model_joint_inv_m_a: wp.array[wp.float32],
+    row_start: wp.array[wp.int32],
+    preconditioner: wp.array[wp.float32],
+    # Outputs:
+    combined_regularization: wp.array[wp.float32],
+):
+    wid, tid = wp.tid()
+
+    num_effort_cts = model_info_num_effort_cts[wid]
+    if num_effort_cts == 0 or tid >= num_effort_cts:
+        return
+
+    world_effort_cts_offset = model_info_joint_effort_cts_offset[wid]
+    inv_m_a = model_joint_inv_m_a[world_effort_cts_offset + tid]
+    row = model_info_bounded_cts_group_offset[wid] + model_info_num_friction_cts[wid] + tid
+    vec_id = row_start[wid] + row
+    p = preconditioner[vec_id]
+    combined_regularization[vec_id] += p * p * inv_m_a
 
 
 @wp.kernel
@@ -988,8 +1064,10 @@ class DelassusOperator:
         if reset_to_zero:
             self.zero()
 
-        # Build the Delassus matrix parallelized over the upper triangle.
-        # Aligns to warp size (32) to avoid partially-filled warps.
+        # Build the Delassus matrix parallelized over the upper triangle. Warp's
+        # CUDA kernels use 32-thread warps, so pad the work count to keep the
+        # final warp full. The padding is harmless on other devices because the
+        # kernels reject indices outside the upper triangle.
         if isinstance(jacobians, DenseSystemJacobians):
             max_ncts = max(self._world_maxdims) if self._world_maxdims else 0
             upper_tri_size = max_ncts * (max_ncts + 1) // 2
@@ -1014,9 +1092,12 @@ class DelassusOperator:
             )
         else:
             jacobian_cts = jacobians._J_cts.bsm
+            upper_tri_size = jacobian_cts.max_of_num_nzb * (jacobian_cts.max_of_num_nzb + 1) // 2
+            warp_size = 32
+            upper_tri_size = ((upper_tri_size + warp_size - 1) // warp_size) * warp_size
             wp.launch(
                 kernel=_build_delassus_elementwise_sparse,
-                dim=(self._size.num_worlds, jacobian_cts.max_of_num_nzb * jacobian_cts.max_of_num_nzb),
+                dim=(self._size.num_worlds, upper_tri_size),
                 inputs=[
                     # Inputs:
                     model.info.bodies_offset,
@@ -1047,6 +1128,22 @@ class DelassusOperator:
                     self._operator.info.dim,
                     self._operator.info.mio,
                     # Outputs:
+                    self._operator.mat,
+                ],
+                device=self._device,
+            )
+        if model.size.sum_of_num_effort_joint_cts > 0:
+            wp.launch(
+                kernel=_add_joint_effort_diagonal_regularization_dense,
+                dim=(self._size.num_worlds, model.size.max_of_num_effort_joint_cts),
+                inputs=[
+                    model.info.num_joint_effort_cts,
+                    model.info.joint_effort_cts_offset,
+                    model.info.joint_bounded_cts_group_offset,
+                    model.info.num_joint_friction_cts,
+                    data.joints.inv_m_a,
+                    self._operator.info.dim,
+                    self._operator.info.mio,
                     self._operator.mat,
                 ],
                 device=self._device,
@@ -1166,10 +1263,10 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
 
         # Create a model from the builder and construct additional
         # containers to hold joint-limits, contacts, Jacobians
-        model = builder.finalize()
+        model = ModelKamino.from_newton(builder.finalize())
         data = model.data()
         limits = LimitsKamino(model)
-        contacts = ContactsKamino(builder)
+        contacts = ContactsKamino(model)
         jacobians = SparseSystemJacobians(model, limits, contacts)
 
         # Build the Jacobians for the model and active limits and contacts
@@ -1250,6 +1347,21 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
 
         # Flag to indicate that the operator needs an update to its data structure
         self._needs_update: bool = False
+
+        # Flag indicating whether the row-major (P·J·M⁻¹) and column-major (P·J)ᵀ Jacobian copies
+        # are required. Set automatically in ``finalize()`` based on solver choice.
+        self._assemble_preconditioned_jacobians: bool = True
+
+        # Dirty flags for raw-Jacobian solvers (e.g. the fused CR), cleared by the solver once it
+        # has acted on them. ``_raw_jacobian_needs_update`` means the Jacobian *structure* changed
+        # and the per-step index structures (row index + segmented transpose sort) must be rebuilt.
+        # ``_regularization_needs_update`` means only the diagonal regularization (eta) changed --
+        # the sparsity is unchanged, so the solver refreshes its combined-regularization copy but
+        # skips the index rebuild. Keeping these separate avoids re-sorting on eta-only updates
+        # (adaptive penalty, or the transient set_regularization(None)/restore around info
+        # collection).
+        self._raw_jacobian_needs_update: bool = True
+        self._regularization_needs_update: bool = True
 
         # Temporary vector to store results, sized to the number of body dofs in a model.
         self._vec_temp_body_space: wp.array[wp.float32] | None = None
@@ -1364,41 +1476,47 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         )
 
         # Initialize memory for combined regularization, if necessary
-        if self._model.size.max_of_num_dynamic_joint_cts > 0:
+        if self._model.size.max_of_num_dynamic_joint_cts > 0 or self._model.size.max_of_num_effort_joint_cts > 0:
             self._combined_regularization = wp.empty(
                 (self._model.size.sum_of_max_total_cts,), dtype=wp.float32, device=self._device
             )
 
-        # Check whether any of the maximum row dimensions of the Jacobians is smaller than six.
-        # If so, we avoid building the column-major Jacobian due to potential memory access issues.
-        min_of_max_rows = np.min(self._model.info.max_total_cts.numpy())
-
-        if min_of_max_rows >= 6:
-            self._col_major_jacobian = ColMajorSparseConstraintJacobians(
-                model=self._model,
-                limits=self._limits,
-                contacts=self._contacts,
-                jacobians=self._jacobians,
-            )
-            self._transpose_op_matrix = self._col_major_jacobian.bsm
-        else:
-            self._col_major_jacobian = None
-
         # Assign Jacobian
         self._jacobians = jacobians
 
-        # Create copy of constraint Jacobian with separate non-zero block values, so we can apply
-        # preconditioning directly to the Jacobian.
-        if self._col_major_jacobian is None and self._transpose_op_matrix is None:
-            self._transpose_op_matrix = copy.copy(jacobians._J_cts.bsm)
-            self._transpose_op_matrix.nzb_values = wp.empty_like(self.constraint_jacobian.nzb_values)
+        # Solvers that read the raw constraint Jacobian directly (e.g. the fused single-kernel CR)
+        # set ``uses_raw_jacobian = True``; for those we skip assembling the row-major P·J·M⁻¹ copy
+        # and the column-major transpose copy entirely, avoiding the matrix-value duplication.
+        self._assemble_preconditioned_jacobians = not bool(getattr(solver, "uses_raw_jacobian", False))
 
-        # Create a shallow copy of the constraint Jacobian, but with a separate array for non-zero block values.
-        # The resulting sparse matrix will reference the structure of the original Jacobian, but we can apply
-        # preconditioning and the inverse mass matrix to the non-zero blocks without affecting the original Jacobian.
-        if self.bsm is None:
-            self.bsm = copy.copy(jacobians._J_cts.bsm)
-            self.bsm.nzb_values = wp.empty_like(self.constraint_jacobian.nzb_values)
+        if self._assemble_preconditioned_jacobians:
+            # Check whether any of the maximum row dimensions of the Jacobians is smaller than six.
+            # If so, we avoid building the column-major Jacobian due to potential memory access issues.
+            min_of_max_rows = np.min(self._model.info.max_total_cts.numpy())
+
+            if min_of_max_rows >= 6:
+                self._col_major_jacobian = ColMajorSparseConstraintJacobians(
+                    model=self._model,
+                    limits=self._limits,
+                    contacts=self._contacts,
+                    jacobians=self._jacobians,
+                )
+                self._transpose_op_matrix = self._col_major_jacobian.bsm
+            else:
+                self._col_major_jacobian = None
+
+            # Create copy of constraint Jacobian with separate non-zero block values, so we can apply
+            # preconditioning directly to the Jacobian.
+            if self._col_major_jacobian is None and self._transpose_op_matrix is None:
+                self._transpose_op_matrix = copy.copy(jacobians._J_cts.bsm)
+                self._transpose_op_matrix.nzb_values = wp.empty_like(self.constraint_jacobian.nzb_values)
+
+            # Create a shallow copy of the constraint Jacobian, but with a separate array for non-zero block values.
+            # The resulting sparse matrix will reference the structure of the original Jacobian, but we can apply
+            # preconditioning and the inverse mass matrix to the non-zero blocks without affecting the original Jacobian.
+            if self.bsm is None:
+                self.bsm = copy.copy(jacobians._J_cts.bsm)
+                self.bsm.nzb_values = wp.empty_like(self.constraint_jacobian.nzb_values)
 
         # Optionally initialize the iterative linear system solver if one is specified
         if solver is not None:
@@ -1412,6 +1530,17 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         Flags the operator as needing to update its data structure.
         """
         self._needs_update = True
+        self._raw_jacobian_needs_update = True
+
+    def set_regularization_needs_update(self):
+        """Flag that the diagonal regularization (eta) changed, but not the Jacobian structure.
+
+        Used by the PADMM proximal/adaptive-penalty update: with sparsity unchanged, a raw-Jacobian
+        solver can avoid rebuilding its index structures + segmented sort.
+        """
+        # ``_needs_update`` is still set so the multi-launch assembled operator re-applies eta to its block diagonal.
+        self._needs_update = True
+        self._regularization_needs_update = True
 
     def update(self):
         """
@@ -1420,16 +1549,18 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         if self._jacobians is None:
             return
 
+        # When assembly is disabled (raw-Jacobian solver), there are no derived copies to refresh.
+        if not self._assemble_preconditioned_jacobians:
+            self._needs_update = False
+            return
+
         # Update column-major constraint Jacobian based on current system Jacobian
         if self._col_major_jacobian is None:
             wp.copy(self._transpose_op_matrix.nzb_values, self.constraint_jacobian.nzb_values)
         else:
             self._col_major_jacobian.update(self._model, self._jacobians, self._limits, self._contacts)
 
-        # Copy current Jacobian values to local constraint Jacobian
-        wp.copy(self.bsm.nzb_values, self.constraint_jacobian.nzb_values)
-
-        # Apply inverse mass matrix to (copy of) constraint Jacobian
+        # Apply inverse mass matrix while copying the current Jacobian values.
         wp.launch(
             kernel=_merge_inv_mass_matrix_kernel,
             dim=(self.bsm.num_matrices, self.bsm.max_of_num_nzb),
@@ -1441,6 +1572,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                 self.bsm.num_nzb,
                 self.bsm.nzb_start,
                 self.bsm.nzb_coords,
+                self.constraint_jacobian.nzb_values,
                 # Outputs:
                 self.bsm.nzb_values,
             ],
@@ -1497,39 +1629,72 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             if self._preconditioner is None:
                 # If there is no preconditioner, we add the armature regularization directly to the
                 # combined regularization term.
-                wp.launch(
-                    kernel=_add_armature_regularization_sparse,
-                    dim=(self.num_matrices, self._model.size.max_of_num_dynamic_joint_cts),
-                    inputs=[
-                        # Inputs:
-                        self._model.info.num_joint_dynamic_cts,
-                        self._model.info.joint_dynamic_cts_offset,
-                        self.bsm.row_start,
-                        self._data.joints.inv_m_j,
-                        # Outputs:
-                        self._combined_regularization,
-                    ],
-                    device=self._device,
-                )
+                if self._model.size.sum_of_num_dynamic_joint_cts > 0:
+                    wp.launch(
+                        kernel=_add_armature_regularization_sparse,
+                        dim=(self.num_matrices, self._model.size.max_of_num_dynamic_joint_cts),
+                        inputs=[
+                            # Inputs:
+                            self._model.info.num_joint_dynamic_cts,
+                            self._model.info.joint_dynamic_cts_offset,
+                            self.bsm.row_start,
+                            self._data.joints.inv_m_j,
+                            # Outputs:
+                            self._combined_regularization,
+                        ],
+                        device=self._device,
+                    )
+                if self._model.size.sum_of_num_effort_joint_cts > 0:
+                    wp.launch(
+                        kernel=_add_effort_regularization_sparse,
+                        dim=(self.num_matrices, self._model.size.max_of_num_effort_joint_cts),
+                        inputs=[
+                            self._model.info.num_joint_effort_cts,
+                            self._model.info.joint_effort_cts_offset,
+                            self._model.info.joint_bounded_cts_group_offset,
+                            self._model.info.num_joint_friction_cts,
+                            self.bsm.row_start,
+                            self._data.joints.inv_m_a,
+                            self._combined_regularization,
+                        ],
+                        device=self._device,
+                    )
             else:
                 # If there is a preconditioner, we need to scale the armature regularization with
                 # the preconditioner terms (the square of the preconditioner, to be exact) before
                 # adding it to the combined regularization term.
-                wp.launch(
-                    kernel=_add_armature_regularization_preconditioned_sparse,
-                    dim=(self.num_matrices, self._model.size.max_of_num_dynamic_joint_cts),
-                    inputs=[
-                        # Inputs:
-                        self._model.info.num_joint_dynamic_cts,
-                        self._model.info.joint_dynamic_cts_offset,
-                        self._data.joints.inv_m_j,
-                        self.bsm.row_start,
-                        self._preconditioner,
-                        # Outputs:
-                        self._combined_regularization,
-                    ],
-                    device=self._device,
-                )
+                if self._model.size.sum_of_num_dynamic_joint_cts > 0:
+                    wp.launch(
+                        kernel=_add_armature_regularization_preconditioned_sparse,
+                        dim=(self.num_matrices, self._model.size.max_of_num_dynamic_joint_cts),
+                        inputs=[
+                            # Inputs:
+                            self._model.info.num_joint_dynamic_cts,
+                            self._model.info.joint_dynamic_cts_offset,
+                            self._data.joints.inv_m_j,
+                            self.bsm.row_start,
+                            self._preconditioner,
+                            # Outputs:
+                            self._combined_regularization,
+                        ],
+                        device=self._device,
+                    )
+                if self._model.size.sum_of_num_effort_joint_cts > 0:
+                    wp.launch(
+                        kernel=_add_effort_regularization_preconditioned_sparse,
+                        dim=(self.num_matrices, self._model.size.max_of_num_effort_joint_cts),
+                        inputs=[
+                            self._model.info.num_joint_effort_cts,
+                            self._model.info.joint_effort_cts_offset,
+                            self._model.info.joint_bounded_cts_group_offset,
+                            self._model.info.num_joint_friction_cts,
+                            self._data.joints.inv_m_a,
+                            self.bsm.row_start,
+                            self._preconditioner,
+                            self._combined_regularization,
+                        ],
+                        device=self._device,
+                    )
 
         self._needs_update = False
 
@@ -1547,7 +1712,10 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                 Shape of ``(sum_of_max_total_cts,)``.
         """
         self._eta = eta
-        self.set_needs_update()
+        # Flag required update for solvers that use preconditioned Jacobians
+        self._needs_update = True
+        # Flag sparsity-preserving update for solvers that use raw Jacobians
+        self._regularization_needs_update = True
 
     def set_preconditioner(self, preconditioner: wp.array[wp.float32] | None):
         """
@@ -1569,8 +1737,9 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         """Stores the diagonal of the Delassus matrix in the given array.
 
         Note:
-            This uses the diagonal of the pure Delassus matrix, without any regularization or
-            preconditioning.
+            Returns the diagonal of the pure Delassus matrix. Armature and
+            effort-compliance diagonal terms are included; proximal
+            regularization (``eta``) and preconditioning are not.
 
         Args:
             diag: Output vector for the Delassus matrix diagonal entries.
@@ -1578,15 +1747,16 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         """
         if self._model is None or self._data is None:
             raise RuntimeError("ModelKamino and data must be assigned before computing diagonal.")
-        if self.bsm is None:
+        if self._jacobians is None:
             raise RuntimeError("Jacobian must be assigned before computing diagonal.")
 
         diag.zero_()
 
-        # Launch kernel over all non-zero blocks
+        # Launch kernel over all non-zero blocks (read from the raw constraint Jacobian, which is
+        # always present even when the assembled ``bsm`` copy is skipped).
         wp.launch(
             kernel=_compute_block_sparse_delassus_diagonal,
-            dim=(self._model.size.num_worlds, self.bsm.max_of_num_nzb),
+            dim=(self._model.size.num_worlds, self.constraint_jacobian.max_of_num_nzb),
             inputs=[
                 self._model.info.bodies_offset,
                 self._model.bodies.inv_m_i,
@@ -1601,21 +1771,37 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             device=self._device,
         )
 
-        # Add armature regularization
-        wp.launch(
-            kernel=_add_armature_regularization_sparse,
-            dim=(self.num_matrices, self._model.size.max_of_num_dynamic_joint_cts),
-            inputs=[
-                # Inputs:
-                self._model.info.num_joint_dynamic_cts,
-                self._model.info.joint_dynamic_cts_offset,
-                self.bsm.row_start,
-                self._data.joints.inv_m_j,
-                # Outputs:
-                diag,
-            ],
-            device=self._device,
-        )
+        # Add armature and effort regularization
+        if self._model.size.sum_of_num_dynamic_joint_cts > 0:
+            wp.launch(
+                kernel=_add_armature_regularization_sparse,
+                dim=(self.num_matrices, self._model.size.max_of_num_dynamic_joint_cts),
+                inputs=[
+                    # Inputs:
+                    self._model.info.num_joint_dynamic_cts,
+                    self._model.info.joint_dynamic_cts_offset,
+                    self.constraint_jacobian.row_start,
+                    self._data.joints.inv_m_j,
+                    # Outputs:
+                    diag,
+                ],
+                device=self._device,
+            )
+        if self._model.size.sum_of_num_effort_joint_cts > 0:
+            wp.launch(
+                kernel=_add_effort_regularization_sparse,
+                dim=(self.num_matrices, self._model.size.max_of_num_effort_joint_cts),
+                inputs=[
+                    self._model.info.num_joint_effort_cts,
+                    self._model.info.joint_effort_cts_offset,
+                    self._model.info.joint_bounded_cts_group_offset,
+                    self._model.info.num_joint_friction_cts,
+                    self.constraint_jacobian.row_start,
+                    self._data.joints.inv_m_a,
+                    diag,
+                ],
+                device=self._device,
+            )
 
     def compute(self, reset_to_zero: bool = True):
         """
@@ -1632,7 +1818,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             raise ValueError("Data structure is not allocated. Call finalize() first.")
 
         # Ensure the Jacobian is set
-        if self.bsm is None:
+        if self._jacobians is None:
             raise ValueError("Jacobian matrix is not set. Call assign() first.")
 
         # Ensure the solver is available if pre-computation is requested
@@ -1666,7 +1852,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             raise ValueError("Data structure is not allocated. Call finalize() first.")
 
         # Ensure the Jacobian is set
-        if self.bsm is None:
+        if self._jacobians is None:
             raise ValueError("Jacobian matrix is not set. Call assign() first.")
 
         # Ensure the solver is available
@@ -1696,7 +1882,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             raise ValueError("Data structure is not allocated. Call finalize() first.")
 
         # Ensure the Jacobian is set
-        if self.bsm is None:
+        if self._jacobians is None:
             raise ValueError("Jacobian matrix is not set. Call assign() first.")
 
         # Ensure the solver is available if pre-computation is requested
@@ -1755,15 +1941,47 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
     def constraint_jacobian(self) -> BlockSparseMatrices[wp.float32, wp.int32, vec6f]:
         return self._jacobians._J_cts.bsm
 
+    @property
+    def regularization(self) -> wp.array[wp.float32]:
+        """Active diagonal regularization used by sparse matrix-vector products."""
+        regularization = self._combined_regularization
+        if regularization is None:
+            regularization = self._eta
+        if regularization is None:
+            raise RuntimeError("Sparse Delassus regularization has not been configured.")
+        return regularization
+
     ###
     # Operations
     ###
+
+    def _require_assembled(self, op_name: str):
+        # Matrix-free (uses_raw_jacobian) operators skip assembly -> bsm/_transpose_op_matrix are None.
+        if not self._assemble_preconditioned_jacobians:
+            raise RuntimeError(
+                f"{op_name} is unavailable on a matrix-free Delassus operator (uses_raw_jacobian "
+                "solver such as CRF): no assembled matrices were allocated."
+            )
+
+    def apply_jacobian_transpose(
+        self,
+        x: wp.array[wp.float32],
+        y: wp.array[wp.float32],
+        world_mask: wp.array[wp.bool],
+    ) -> None:
+        """Apply the current transposed constraint Jacobian to a vector."""
+        if self.ATy_op is None or self._transpose_op_matrix is None:
+            raise RuntimeError("Sparse Delassus transpose operator has not been assigned.")
+        if self._needs_update:
+            self.update()
+        self.ATy_op(self._transpose_op_matrix, x, y, world_mask)
 
     def matvec(self, x: wp.array[wp.float32], y: wp.array[wp.float32], world_mask: wp.array[wp.bool]):
         """
         Performs the sparse matrix-vector product `y = D @ x`, applying regularization and
         preconditioning if configured.
         """
+        self._require_assembled("matvec")
         if self.Ax_op is None:
             raise RuntimeError("No `A@x` operator has been assigned.")
         if self.ATy_op is None:
@@ -1830,6 +2048,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         Performs a BLAS-like generalized sparse matrix-vector product `y = alpha * D @ x + beta * y`,
         applying regularization and preconditioning if configured.
         """
+        self._require_assembled("gemv")
         if self.gemv_op is None:
             raise RuntimeError("No BLAS-like `GEMV` operator has been assigned.")
         if self.ATy_op is None:

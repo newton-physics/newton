@@ -208,6 +208,52 @@ DODECAHEDRON_FACE_NORMALS = (
 
 
 @wp.func
+def get_face_normal(face_idx: int) -> wp.vec3:
+    """Return a face normal without materializing the full icosahedron matrix."""
+    if wp.static(NORMAL_BINNING_POLYHEDRON != "icosahedron"):
+        return FACE_NORMALS[face_idx]
+    if face_idx == 0:
+        return wp.vec3(0.49112338, 0.79465455, 0.35682216)
+    if face_idx == 1:
+        return wp.vec3(-0.18759243, 0.79465450, 0.57735026)
+    if face_idx == 2:
+        return wp.vec3(-0.60706190, 0.79465450, 0.0)
+    if face_idx == 3:
+        return wp.vec3(-0.18759237, 0.79465450, -0.57735026)
+    if face_idx == 4:
+        return wp.vec3(0.49112340, 0.79465455, -0.35682210)
+    if face_idx == 5:
+        return wp.vec3(0.98224690, -0.18759257, 0.0)
+    if face_idx == 6:
+        return wp.vec3(0.79465440, 0.18759239, -0.57735030)
+    if face_idx == 7:
+        return wp.vec3(0.30353096, -0.18759252, 0.93417233)
+    if face_idx == 8:
+        return wp.vec3(0.79465440, 0.18759243, 0.57735030)
+    if face_idx == 9:
+        return wp.vec3(-0.79465450, -0.18759249, 0.57735030)
+    if face_idx == 10:
+        return wp.vec3(-0.30353105, 0.18759243, 0.93417240)
+    if face_idx == 11:
+        return wp.vec3(-0.79465440, -0.18759240, -0.57735030)
+    if face_idx == 12:
+        return wp.vec3(-0.98224690, 0.18759254, 0.0)
+    if face_idx == 13:
+        return wp.vec3(0.30353096, -0.18759250, -0.93417233)
+    if face_idx == 14:
+        return wp.vec3(-0.30353084, 0.18759246, -0.93417240)
+    if face_idx == 15:
+        return wp.vec3(0.18759249, -0.79465440, 0.57735026)
+    if face_idx == 16:
+        return wp.vec3(-0.49112338, -0.79465450, 0.35682213)
+    if face_idx == 17:
+        return wp.vec3(-0.49112338, -0.79465455, -0.35682213)
+    if face_idx == 18:
+        return wp.vec3(0.18759243, -0.79465440, -0.57735026)
+    return wp.vec3(0.60706200, -0.79465440, 0.0)
+
+
+@wp.func
 def get_slot(normal: wp.vec3) -> int:
     """Return the normal-bin index whose face normal best matches *normal*.
 
@@ -280,30 +326,43 @@ def get_slot(normal: wp.vec3) -> int:
     elif wp.static(NORMAL_BINNING_POLYHEDRON == "icosahedron"):
         up_dot = normal[1]
 
-        # Face layout: 0-4 = top cap, 5-14 = equatorial belt, 15-19 = bottom cap.
+        # Keep each candidate range compile-time constant so Warp embeds only the selected normals.
         if up_dot > 0.65:
-            start_idx = 0
-            end_idx = 5
+            best_slot = 0
+            max_dot = wp.dot(normal, FACE_NORMALS[0])
+            for i in range(1, 5):
+                d = wp.dot(normal, FACE_NORMALS[i])
+                if d > max_dot:
+                    max_dot = d
+                    best_slot = i
+            return best_slot
         elif up_dot < -0.65:
-            start_idx = 15
-            end_idx = 20
+            best_slot = 15
+            max_dot = wp.dot(normal, FACE_NORMALS[15])
+            for i in range(16, 20):
+                d = wp.dot(normal, FACE_NORMALS[i])
+                if d > max_dot:
+                    max_dot = d
+                    best_slot = i
+            return best_slot
         elif up_dot >= 0.0:
-            start_idx = 0
-            end_idx = 15
+            best_slot = 0
+            max_dot = wp.dot(normal, FACE_NORMALS[0])
+            for i in range(1, 15):
+                d = wp.dot(normal, FACE_NORMALS[i])
+                if d > max_dot:
+                    max_dot = d
+                    best_slot = i
+            return best_slot
         else:
-            start_idx = 5
-            end_idx = 20
-
-        best_slot = start_idx
-        max_dot = wp.dot(normal, FACE_NORMALS[start_idx])
-
-        for i in range(start_idx + 1, end_idx):
-            d = wp.dot(normal, FACE_NORMALS[i])
-            if d > max_dot:
-                max_dot = d
-                best_slot = i
-
-        return best_slot
+            best_slot = 5
+            max_dot = wp.dot(normal, FACE_NORMALS[5])
+            for i in range(6, 20):
+                d = wp.dot(normal, FACE_NORMALS[i])
+                if d > max_dot:
+                    max_dot = d
+                    best_slot = i
+            return best_slot
 
     else:
         best_slot = 0
@@ -330,7 +389,7 @@ def project_point_to_plane(bin_normal_idx: wp.int32, point: wp.vec3) -> wp.vec2:
     Returns:
         2D coordinates of the point in the face's local coordinate system.
     """
-    face_normal = FACE_NORMALS[bin_normal_idx]
+    face_normal = get_face_normal(bin_normal_idx)
 
     if wp.abs(face_normal[1]) < 0.9:
         ref = wp.vec3(0.0, 1.0, 0.0)

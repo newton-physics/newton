@@ -97,11 +97,13 @@ class Example:
         self.model.set_gravity((0.0, 0.0, 0.0))
 
         if self.solver_type == "vbd":
-            self.solver = newton.solvers.SolverVBD(self.model, iterations=4)
-            self.contacts = self.model.contacts()
+            self.solver = newton.solvers.SolverVBD(self.model, iterations=4, rigid_compliant_alm=True)
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
         elif self.solver_type == "xpbd":
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
-            self.contacts = self.model.contacts()
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
         elif self.solver_type == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
@@ -110,6 +112,7 @@ class Example:
                 integrator="implicitfast",
                 iterations=10,
             )
+            self.collision_pipeline = None
             self.contacts = None
         else:
             raise ValueError(f"Unknown solver type: {self.solver_type}. Choose from 'vbd', 'xpbd', or 'mujoco'.")

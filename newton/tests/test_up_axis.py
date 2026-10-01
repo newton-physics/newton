@@ -49,6 +49,7 @@ solvers = {
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
+    "kamino": newton.solvers.SolverKamino,
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import functools
-import warnings
+import re
 from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any
@@ -23,7 +23,6 @@ from ..sim import (
     eval_jacobian,
     eval_mass_matrix,
 )
-from .deprecation import deprecate_nonkeyword_arguments
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -394,7 +393,10 @@ def get_name_from_label(label: str):
 
 
 def find_matching_ids(
-    pattern: str | list[str] | list[int], labels: list[str], world_ids, world_count: int
+    pattern: str | list[str] | re.Pattern[str] | list[int],
+    labels: list[str],
+    world_ids,
+    world_count: int,
 ) -> tuple[list[list[int]], list[int]]:
     matching_ids = match_labels(labels, pattern)
 
@@ -419,29 +421,35 @@ def find_matching_ids(
     return grouped_ids, global_ids
 
 
-def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> list[int]:
+def match_labels(labels: list[str], pattern: str | list[str] | re.Pattern[str] | list[int]) -> list[int]:
     """Find indices of elements in ``labels`` that match ``pattern``.
 
     See :ref:`label-matching` for the pattern syntax accepted across Newton APIs.
 
     Args:
         labels: List of label strings to match against.
-        pattern: A ``str`` is matched via :func:`fnmatch.fnmatch` against each label.
-            A ``list[str]`` matches any pattern.
-            A ``list[int]`` is returned as-is (indices used directly).
-            Mixing ``str`` and ``int`` in the same list is not allowed.
+        pattern: Glob string, list of glob strings, compiled string regular expression,
+            or list of integer indices. Regular expressions use full matching. Integer
+            indices are returned as-is.
 
     Returns:
         Unique list of matching indices, or ``pattern`` itself for ``list[int]``.
 
     Raises:
-        TypeError: If list elements are not all ``str`` or all ``int``.
+        TypeError: If the selector type is unsupported or list elements are not all
+            strings or all integers.
     """
     if isinstance(pattern, str):
         return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
 
+    if isinstance(pattern, re.Pattern):
+        return [idx for idx, label in enumerate(labels) if pattern.fullmatch(label) is not None]
+
     if not isinstance(pattern, list):
-        raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {type(pattern)}")
+        raise TypeError(
+            "Expected a glob string, list of glob strings, compiled string pattern, "
+            f"or list of int indices, got: {type(pattern)}"
+        )
 
     if len(pattern) == 0:
         return pattern
@@ -457,7 +465,7 @@ def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> lis
         if not validation_failure:
             return pattern
     elif all(isinstance(item, str) for item in pattern):
-        return [idx for idx, label in enumerate(labels) if any(fnmatch(label, p) for p in pattern)]
+        return [idx for idx, label in enumerate(labels) if any(fnmatch(label, item) for item in pattern)]
 
     types = {type(item).__name__ for item in pattern}
     raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {', '.join(sorted(types))}")
@@ -497,9 +505,21 @@ class ArticulationView:
     This is useful in RL and batched simulation workflows where a single policy or
     control routine operates on many parallel environments with consistent tensor shapes.
 
+    Custom frequencies that declare articulation ownership through
+    :class:`~newton.ModelBuilder.CustomFrequency` are exposed through the same
+    :meth:`get_attribute` and :meth:`set_attribute` interface as built-in frequencies.
+
+    Methods that select articulations with a mask support per-world Boolean masks
+    with shape ``(world_count,)`` and per-articulation Boolean masks with shape
+    ``(world_count, count_per_world)``. Per-world masks select all articulations
+    in each selected world. :meth:`set_actuator_parameter` accepts only the
+    per-world layout. Masks provided as Warp arrays must be on the view's device.
+
     Example:
 
     .. code-block:: python
+
+        import re
 
         import newton
 
@@ -509,36 +529,47 @@ class ArticulationView:
         q_np[..., 0] = 0.0
         view.set_dof_positions(state, q_np)
 
+        regex_view = newton.selection.ArticulationView(
+            model,
+            pattern=re.compile(r"/World/envs/env_[0-9]+/Robot_(A|B|C)"),
+            include_links=re.compile(r"(LF|RF)_FOOT"),
+        )
+
     The ``pattern``, ``include_joints``, ``exclude_joints``, ``include_links``,
     and ``exclude_links`` parameters accept label patterns or integer indices — see
-    :ref:`label-matching`.
+    :ref:`label-matching`. ``pattern`` is matched against full articulation labels.
+    Joint and link filters are matched against the final path component of each label.
 
     Args:
         model: The model containing the articulations.
-        pattern: Pattern or list of patterns to match articulation labels, or a list
-            of absolute articulation indices. Indices must be unique and in ascending order.
-        include_joints: List of joint names, patterns, or indices to include. Unsorted
-            integer indices are deprecated and will be rejected in a future release.
-        exclude_joints: List of joint names, patterns, or indices to exclude.
-        include_links: List of link names, patterns, or indices to include. Unsorted
-            integer indices are deprecated and will be rejected in a future release.
-        exclude_links: List of link names, patterns, or indices to exclude.
+        pattern: Glob pattern, list of glob patterns, compiled regular-expression pattern,
+            or list of absolute articulation indices. Regular expressions use full matching.
+            Indices must be unique and in ascending order.
+        include_joints: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of joint indices to include. Integer indices must be in
+            ascending order.
+        exclude_joints: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of joint indices to exclude.
+        include_links: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of link indices to include. Integer indices must be in
+            ascending order.
+        exclude_links: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of link indices to exclude.
         include_joint_types: List of joint types to include.
         exclude_joint_types: List of joint types to exclude.
         include_loop_closing_joints: If True, include converted loop-closing joints.
         verbose: If True, prints selection summary.
     """
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
-        pattern: str | list[str] | list[int],
+        pattern: str | list[str] | re.Pattern[str] | list[int],
         *,
-        include_joints: list[str] | list[int] | None = None,
-        exclude_joints: list[str] | list[int] | None = None,
-        include_links: list[str] | list[int] | None = None,
-        exclude_links: list[str] | list[int] | None = None,
+        include_joints: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        exclude_joints: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        include_links: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        exclude_links: str | list[str] | re.Pattern[str] | list[int] | None = None,
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
         include_loop_closing_joints: bool = False,
@@ -556,13 +587,7 @@ class ArticulationView:
                 and all(isinstance(index, int) for index in indices)
                 and any(indices[i] < indices[i - 1] for i in range(1, len(indices)))
             ):
-                warnings.warn(
-                    f"Passing unsorted integer indices to ArticulationView({parameter_name}=...) is deprecated and "
-                    "will raise a ValueError in a future release. Sort the indices in ascending order before passing "
-                    "them.",
-                    DeprecationWarning,
-                    stacklevel=3,
-                )
+                raise ValueError(f"ArticulationView({parameter_name}=...) indices must be in ascending order")
 
         # FIXME: avoid/reduce this readback?
         model_articulation_start = model.articulation_start.numpy()
@@ -724,8 +749,9 @@ class ArticulationView:
             raise ValueError("Articulations are not identical")
 
         self.root_joint_type = root_joint_types[0][0]
+        root_joint_dof_count = int(model_joint_qd_start[arti_joint_begin + 1] - model_joint_qd_start[arti_joint_begin])
         # fixed base means that all linear and angular degrees of freedom are locked at the root
-        self.is_fixed_base = self.root_joint_type == JointType.FIXED
+        self.is_fixed_base = root_joint_dof_count == 0
         # floating base means that all linear and angular degrees of freedom are unlocked at the root
         # (though there might be constraints like distance)
         self.is_floating_base = self.root_joint_type in (JointType.FREE, JointType.DISTANCE)
@@ -985,157 +1011,94 @@ class ArticulationView:
             ),
         }
 
-        # ========================================================================================
-        # Tendon discovery (for MuJoCo fixed tendons)
-        # Tendons are associated with articulations by checking which articulation owns all their joints
+        # Build layouts for every custom frequency that declares per-row
+        # articulation ownership on the model.
+        self.custom_frequency_counts: dict[str, int] = {}
+        self.custom_frequency_labels: dict[str, list[str]] = {}
+        for frequency, owner_array in model.custom_frequency_articulation.items():
+            owners = owner_array.numpy()
+            rows_by_articulation: dict[int, list[int]] = {}
+            for row, owner in enumerate(owners):
+                if owner >= 0:
+                    rows_by_articulation.setdefault(int(owner), []).append(row)
 
-        self.tendon_count = 0
-        self.tendon_names = []
+            articulation_rows = [
+                [rows_by_articulation.get(articulation_id, []) for articulation_id in world_articulations]
+                for world_articulations in articulation_ids
+            ]
+            row_counts = [[len(rows) for rows in world_rows] for world_rows in articulation_rows]
+            flat_row_counts = [count for world_counts in row_counts for count in world_counts]
+            if not all_equal(flat_row_counts):
+                raise ValueError(
+                    f"Articulations have different row counts for custom frequency '{frequency}': {row_counts}"
+                )
 
-        # Check if model has MuJoCo tendon attributes
-        if hasattr(model, "mujoco") and hasattr(model.mujoco, "tendon_joint"):
-            mujoco_attrs = model.mujoco
-            tendon_world_arr = mujoco_attrs.tendon_world.numpy()
-            tendon_joint_adr_arr = mujoco_attrs.tendon_joint_adr.numpy()
-            tendon_joint_num_arr = mujoco_attrs.tendon_joint_num.numpy()
-            tendon_joint_arr = mujoco_attrs.tendon_joint.numpy()
-            total_tendon_count = len(tendon_world_arr)
+            value_count = flat_row_counts[0]
+            self.custom_frequency_counts[frequency] = value_count
+            self.custom_frequency_labels[frequency] = []
+            if value_count == 0:
+                continue
 
-            if total_tendon_count > 0:
-                # Build a mapping from joint index to articulation index
-                # Loop-closing joints live after articulation_end and are deliberately excluded from tendon discovery.
-                joint_to_articulation = {}
-                for arti_idx in range(len(model_articulation_start) - 1):
-                    joint_begin = int(model_articulation_start[arti_idx])
-                    joint_end = int(model_articulation_end[arti_idx])
-                    for j in range(joint_begin, joint_end):
-                        joint_to_articulation[j] = arti_idx
+            template_rows = articulation_rows[0][0]
+            offset = template_rows[0]
+            selected_indices = [row - offset for row in template_rows]
+            # The addressable extent includes gaps between selected rows.
+            value_extent = template_rows[-1] - offset + 1
+            starts = [[rows[0] for rows in world_rows] for world_rows in articulation_rows]
 
-                # For each articulation, find its tendons
-                # A tendon belongs to an articulation if ALL its joints belong to that articulation
-                tendon_to_articulation = {}
-                for tendon_idx in range(total_tendon_count):
-                    joint_adr = int(tendon_joint_adr_arr[tendon_idx])
-                    joint_num = int(tendon_joint_num_arr[tendon_idx])
-
-                    if joint_num == 0:
-                        continue  # Skip empty tendons
-
-                    articulations_in_tendon = set()
-                    for j in range(joint_adr, joint_adr + joint_num):
-                        joint_id = int(tendon_joint_arr[j])
-                        if joint_id in joint_to_articulation:
-                            articulations_in_tendon.add(joint_to_articulation[joint_id])
-
-                    if len(articulations_in_tendon) > 1:
-                        raise ValueError(
-                            f"Tendon {tendon_idx} spans multiple articulations {articulations_in_tendon}, "
-                            f"which is not supported by ArticulationView"
-                        )
-
-                    if len(articulations_in_tendon) == 1:
-                        tendon_to_articulation[tendon_idx] = articulations_in_tendon.pop()
-
-                # Group tendons by (world, articulation) and filter for selected articulations
-                # Build a set of selected articulation IDs for fast lookup
-                selected_arti_set = set()
-                for world_artis in articulation_ids:
-                    for arti_id in world_artis:
-                        selected_arti_set.add(arti_id)
-
-                # Find tendons belonging to the template articulation (first selected articulation)
-                template_arti_id = articulation_ids[0][0]
-                arti_tendon_ids = []  # Tendon indices belonging to the template articulation
-                for tendon_idx, arti_id in tendon_to_articulation.items():
-                    if arti_id == template_arti_id:
-                        arti_tendon_ids.append(tendon_idx)
-
-                arti_tendon_ids = sorted(arti_tendon_ids)
-                arti_tendon_count = len(arti_tendon_ids)
-
-                if arti_tendon_count > 0:
-                    # Compute tendon layout similar to joints
-                    # Group tendons by world and articulation to compute strides
-                    tendon_starts = list_of_lists(world_count)
-                    tendon_counts = list_of_lists(world_count)
-
-                    for world_id in range(world_count):
-                        for arti_id in articulation_ids[world_id]:
-                            arti_tendons = [t for t, a in tendon_to_articulation.items() if a == arti_id]
-                            arti_tendons = sorted(arti_tendons)
-                            if len(arti_tendons) > 0:
-                                tendon_starts[world_id].append(min(arti_tendons))
-                            else:
-                                tendon_starts[world_id].append(-1)
-                            tendon_counts[world_id].append(len(arti_tendons))
-
-                    # Validate uniform tendon counts
-                    if not all_equal(tendon_counts):
-                        raise ValueError("Articulations have different tendon counts, which is not supported")
-
-                    tendon_offset = arti_tendon_ids[0] if arti_tendon_ids else 0
-
-                    # Compute outer stride (between worlds)
-                    if world_count > 1:
-                        outer_tendon_strides = []
-                        for world_id in range(1, world_count):
-                            if tendon_starts[world_id][0] >= 0 and tendon_starts[world_id - 1][0] >= 0:
-                                outer_tendon_strides.append(tendon_starts[world_id][0] - tendon_starts[world_id - 1][0])
-                        if outer_tendon_strides and not all_equal(outer_tendon_strides):
-                            raise ValueError("Non-uniform tendon strides between worlds are not supported")
-                        outer_tendon_stride = outer_tendon_strides[0] if outer_tendon_strides else arti_tendon_count
-                    else:
-                        outer_tendon_stride = arti_tendon_count
-
-                    # Compute inner stride (within worlds)
-                    if count_per_world > 1:
-                        inner_tendon_strides = list_of_lists(world_count)
-                        for world_id in range(world_count):
-                            for i in range(1, count_per_world):
-                                if tendon_starts[world_id][i] >= 0 and tendon_starts[world_id][i - 1] >= 0:
-                                    inner_tendon_strides[world_id].append(
-                                        tendon_starts[world_id][i] - tendon_starts[world_id][i - 1]
-                                    )
-                        # Flatten and check uniformity
-                        flat_inner = [s for lst in inner_tendon_strides for s in lst]
-                        if flat_inner and not all_equal(flat_inner):
-                            raise ValueError("Non-uniform tendon strides within worlds are not supported")
-                        inner_tendon_stride = flat_inner[0] if flat_inner else arti_tendon_count
-                    else:
-                        inner_tendon_stride = arti_tendon_count
-
-                    # Validate that tendon indices are contiguous
-                    # Non-contiguous tendons (e.g., interleaved with other articulations) are not supported
-                    expected_contiguous = list(range(tendon_offset, tendon_offset + arti_tendon_count))
-                    if arti_tendon_ids != expected_contiguous:
-                        raise ValueError(
-                            f"Tendons for articulation are not contiguous (indices {arti_tendon_ids}, "
-                            f"expected {expected_contiguous}). Non-contiguous tendons are not supported "
-                            f"by ArticulationView."
-                        )
-
-                    # Tendons are contiguous, use range-based indexing
-                    selected_tendon_indices = list(range(arti_tendon_count))
-
-                    # Store with the full namespaced frequency key (mujoco:tendon)
-                    self.frequency_layouts["mujoco:tendon"] = FrequencyLayout(
-                        tendon_offset,
-                        outer_tendon_stride,
-                        inner_tendon_stride,
-                        arti_tendon_count,
-                        selected_tendon_indices,
-                        self.device,
+            if count_per_world > 1:
+                inner_strides = [
+                    starts[world][articulation] - starts[world][articulation - 1]
+                    for world in range(world_count)
+                    for articulation in range(1, count_per_world)
+                ]
+                if not all_equal(inner_strides):
+                    raise ValueError(
+                        f"Non-uniform strides within worlds for custom frequency '{frequency}' are not supported"
                     )
+                inner_stride = inner_strides[0]
+            else:
+                inner_stride = value_extent
 
-                    self.tendon_count = arti_tendon_count
+            if world_count > 1:
+                outer_strides = [starts[world][0] - starts[world - 1][0] for world in range(1, world_count)]
+                if not all_equal(outer_strides):
+                    raise ValueError(
+                        f"Non-uniform strides between worlds for custom frequency '{frequency}' are not supported"
+                    )
+                outer_stride = outer_strides[0]
+            else:
+                outer_stride = inner_stride * count_per_world
 
-                    # Populate tendon_names from model.mujoco.tendon_label if available
-                    if hasattr(mujoco_attrs, "tendon_label"):
-                        for tendon_idx in arti_tendon_ids:
-                            if tendon_idx < len(mujoco_attrs.tendon_label):
-                                self.tendon_names.append(get_name_from_label(mujoco_attrs.tendon_label[tendon_idx]))
-                            else:
-                                self.tendon_names.append(f"tendon_{tendon_idx}")
+            for world in range(world_count):
+                for articulation in range(count_per_world):
+                    relative_rows = [
+                        row - starts[world][articulation] for row in articulation_rows[world][articulation]
+                    ]
+                    if relative_rows != selected_indices:
+                        raise ValueError(
+                            f"Custom frequency '{frequency}' has inconsistent row ordering between articulations"
+                        )
+
+            self.frequency_layouts[frequency] = FrequencyLayout(
+                offset,
+                outer_stride,
+                inner_stride,
+                value_extent,
+                selected_indices,
+                self.device,
+            )
+
+            label_key = model.custom_frequency_label_attributes.get(frequency)
+            if label_key is not None:
+                labels = model
+                for component in label_key.split(":"):
+                    labels = getattr(labels, component)
+                self.custom_frequency_labels[frequency] = [get_name_from_label(labels[row]) for row in template_rows]
+
+        # Compatibility aliases backed by the generic custom-frequency metadata.
+        self.tendon_count = self.custom_frequency_counts.get("mujoco:tendon", 0)
+        self.tendon_names = self.custom_frequency_labels.get("mujoco:tendon", [])
 
         self.joints_contiguous = self.frequency_layouts[AttributeFrequency.JOINT].is_contiguous
         self.joint_dofs_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_DOF].is_contiguous
@@ -1217,24 +1180,17 @@ class ArticulationView:
         # get frequency info
         frequency = self.model.get_attribute_frequency(frequency_name)
 
-        # Handle custom frequencies (string frequencies)
         if isinstance(frequency, str):
-            # Check if this is a supported custom frequency
-            # Tendon frequency can be "tendon" or "mujoco:tendon" (with namespace prefix)
-            if frequency == "tendon" or frequency.endswith(":tendon"):
-                # Normalize to the stored key format "mujoco:tendon"
-                normalized_frequency = "mujoco:tendon"
-                layout = self.frequency_layouts.get(normalized_frequency)
-                if layout is None:
+            layout = self.frequency_layouts.get(frequency)
+            if layout is None:
+                if frequency in self.model.custom_frequency_articulation:
                     raise AttributeError(
-                        f"Attribute '{name}' has frequency '{frequency}' but no tendons were found "
-                        f"in the selected articulations"
+                        f"Attribute '{name}' has frequency '{frequency}' but no rows were found "
+                        "in the selected articulations"
                     )
-            else:
                 raise AttributeError(
-                    f"Attribute '{name}' has custom frequency '{frequency}' which is not "
-                    f"supported by ArticulationView. Custom frequencies are for custom entity types "
-                    f"that are not part of articulations."
+                    f"Attribute '{name}' has custom frequency '{frequency}', which does not declare "
+                    "articulation ownership"
                 )
         else:
             layout = self.frequency_layouts.get(frequency)
@@ -1640,11 +1596,40 @@ class ArticulationView:
     # ========================================================================================
     # Utilities
 
+    def _resolve_world_mask(self, mask):
+        if mask is None:
+            return self.full_mask
+        if isinstance(mask, wp.array):
+            if mask.dtype is not wp.bool:
+                raise ValueError(f"Expected Boolean mask, got dtype {mask.dtype}")
+            if mask.shape != (self.world_count,):
+                raise ValueError(f"Expected mask shape ({self.world_count},), got {mask.shape}")
+            if mask.device != self.device:
+                raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
+            return mask
+
+        try:
+            return wp.array(mask, dtype=bool, shape=(self.world_count,), device=self.device, copy=False)
+        except Exception as error:
+            raise ValueError(f"Expected Boolean mask with shape ({self.world_count},)") from error
+
     def _resolve_mask(self, mask):
         # accept 1D and 2D Boolean masks
         if isinstance(mask, wp.array):
-            if mask.dtype is wp.bool and mask.ndim < 3:
-                return mask
+            expected_shapes = {
+                (self.world_count,),
+                (self.world_count, self.count_per_world),
+            }
+            if mask.dtype is not wp.bool:
+                raise ValueError(f"Expected Boolean mask, got dtype {mask.dtype}")
+            if mask.shape not in expected_shapes:
+                raise ValueError(
+                    f"Expected Boolean mask with shape "
+                    f"({self.world_count}, {self.count_per_world}) or ({self.world_count},), got {mask.shape}"
+                )
+            if mask.device != self.device:
+                raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
+            return mask
         else:
             # try interpreting as a 1D world mask
             try:
@@ -1939,8 +1924,8 @@ class ArticulationView:
             actuator: Actuator instance whose DOF indices determine which
                 view DOFs are considered actuated.
             component: The component that owns the parameter — a
-                :class:`~newton.actuators.Controller`,
-                :class:`~newton.actuators.Clamping`, or
+                :class:`~newton.actuators.DriveBase`,
+                :class:`~newton.actuators.ClampingBase`, or
                 :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
                 ``"delay_steps"``).
@@ -1985,8 +1970,8 @@ class ArticulationView:
             actuator: Actuator instance whose DOF indices determine which
                 view DOFs are considered actuated.
             component: The component that owns the parameter — a
-                :class:`~newton.actuators.Controller`,
-                :class:`~newton.actuators.Clamping`, or
+                :class:`~newton.actuators.DriveBase`,
+                :class:`~newton.actuators.ClampingBase`, or
                 :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
                 ``"delay_steps"``).
@@ -1994,6 +1979,7 @@ class ArticulationView:
                 where ``dofs_per_world`` is the total number of DOFs in the view.
             mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
         """
+        mask = self._resolve_world_mask(mask)
         mapping = self._get_actuator_dof_mapping(actuator)
         if len(mapping) == 0:
             return
@@ -2007,14 +1993,6 @@ class ArticulationView:
 
         if values.shape[:2] != expected_shape[:2]:
             raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
-
-        if mask is None:
-            mask = self.full_mask
-        else:
-            if not isinstance(mask, wp.array):
-                mask = wp.array(mask, dtype=bool, shape=(self.world_count,), device=self.device, copy=False)
-            if mask.shape != (self.world_count,):
-                raise ValueError(f"Expected mask shape ({self.world_count},), got {mask.shape}")
 
         wp.launch(
             _scatter_masked_2d_kernel,

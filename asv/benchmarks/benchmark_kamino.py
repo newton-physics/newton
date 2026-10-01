@@ -12,6 +12,11 @@ wp.config.log_level = wp.LOG_WARNING
 
 import newton
 
+if __package__:
+    from .benchmark_metrics import validate_simulation_state
+else:
+    from benchmark_metrics import validate_simulation_state
+
 _NUM_ACTIONS = 12
 _OBS_DIM = 94
 _MIN_STANDING_HEIGHT = 0.20
@@ -332,7 +337,7 @@ class DRLegsBenchmarkWorkload:
         self.solver = DRLegsBenchmarkWorkload.create_solver(self.model, self.sim_dt)
         self.solver.reset(state=self.state_0)
 
-        self._world_reset_mask = wp.zeros(world_count, dtype=wp.bool, device=self.model.device)
+        self._world_reset_mask = wp.zeros(world_count + 1, dtype=wp.bool, device=self.model.device)
         self._reset_config = newton.solvers.SolverKamino.ResetConfig.to_default()
 
         if self.viewer is not None:
@@ -435,37 +440,23 @@ class DRLegsBenchmarkWorkload:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        state_values = {}
-        for name in ("joint_q", "body_q", "body_qd"):
-            values = getattr(self.state_0, name).numpy()
-            if not np.isfinite(values).all():
-                raise RuntimeError(f"Simulation produced non-finite values in state.{name}")
-            state_values[name] = values
-
-        body_count = self.model.body_count // self.world_count
-        body_qd = state_values["body_qd"].reshape(self.world_count, body_count, 6)
-        max_linear_speed = np.linalg.norm(body_qd[:, :, :3], axis=-1).max()
-        max_angular_speed = np.linalg.norm(body_qd[:, :, 3:], axis=-1).max()
-        if max_linear_speed > _MAX_BODY_LINEAR_SPEED:
-            raise RuntimeError(
-                f"Maximum body linear speed is {max_linear_speed:.3f} m/s, exceeding {_MAX_BODY_LINEAR_SPEED:.1f} m/s"
-            )
-        if max_angular_speed > _MAX_BODY_ANGULAR_SPEED:
-            raise RuntimeError(
-                f"Maximum body angular speed is {max_angular_speed:.3f} rad/s, "
-                f"exceeding {_MAX_BODY_ANGULAR_SPEED:.1f} rad/s"
-            )
+        validate_simulation_state(
+            self.state_0,
+            max_linear_speed=_MAX_BODY_LINEAR_SPEED,
+            max_angular_speed=_MAX_BODY_ANGULAR_SPEED,
+        )
 
         if self.policy_controller is None:
             return
 
+        body_count = self.model.body_count // self.world_count
         body_labels = [label.rsplit("/", 1)[-1] for label in self.model.body_label[:body_count]]
         try:
             pelvis_index = body_labels.index("pelvis")
         except ValueError as e:
             raise RuntimeError("DR Legs model has no pelvis root body") from e
 
-        body_q = state_values["body_q"].reshape(self.world_count, body_count, 7)[:, pelvis_index]
+        body_q = self.state_0.body_q.numpy().reshape(self.world_count, body_count, 7)[:, pelvis_index]
         body_com = self.model.body_com.numpy().reshape(self.world_count, body_count, 3)[:, pelvis_index]
         quat_vector = body_q[:, 3:6]
         twice_cross = 2.0 * np.cross(quat_vector, body_com)
@@ -517,16 +508,28 @@ class DRLegsBenchmarkWorkload:
         return builder
 
     @staticmethod
-    def create_solver(model, sim_dt):
-        # Reuse the Kamino RL example's solver settings to mirror the deployed workload.
-        from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim  # noqa: PLC0415
-
-        settings = RigidBodySim.default_settings(sim_dt)
-        settings.solver.collision_detector = settings.collision_detector
-        # Pin the linear solver so a change to default_settings cannot
-        # silently switch what this benchmark measures.
-        settings.solver.dynamics.linear_solver_type = "LLTBRCM"
-        return newton.solvers.SolverKamino(model, config=settings.solver)
+    def create_solver(model, _sim_dt):
+        # Pin the deployed RL settings without importing its PyTorch-dependent module.
+        config = newton.solvers.SolverKamino.Config(
+            sparse_jacobian=True,
+            use_collision_detector=True,
+            integrator="moreau",
+        )
+        config.collision_detector.pipeline = "unified"
+        config.collision_detector.max_contacts_per_pair = 8
+        config.constraints.alpha = 0.1
+        config.padmm.primal_tolerance = 1e-4
+        config.padmm.dual_tolerance = 1e-4
+        config.padmm.compl_tolerance = 1e-4
+        config.padmm.max_iterations = 200
+        config.padmm.eta = 1e-5
+        config.padmm.rho_0 = 0.05
+        config.padmm.use_acceleration = True
+        config.padmm.warmstart_mode = "containers"
+        config.padmm.contact_warmstart_method = "geom_pair_net_force"
+        config.padmm.use_graph_conditionals = False
+        config.dynamics.linear_solver_type = "LLTBRCM"
+        return newton.solvers.SolverKamino(model, config=config)
 
 
 if __name__ == "__main__":

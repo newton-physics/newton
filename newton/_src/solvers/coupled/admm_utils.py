@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...core.reset import reset_world_selected
 from ...geometry import ParticleFlags
 from ...math.spatial import velocity_at_point
 from ...sim.contacts import contact_surface_point
@@ -67,6 +68,30 @@ def _contact_u_min_from_gap(gap: float, baumgarte: float, dt: float) -> float:
 def _point_angular_lump(arm: wp.vec3) -> float:
     # Isotropic lump of [r]x^T [r]x: trace(|r|^2 I - r r^T) / 3.
     return _POINT_ANGULAR_LUMP_SCALE * wp.dot(arm, arm)
+
+
+@wp.kernel(enable_backward=False)
+def reset_admm_history_kernel(
+    endpoint_a: wp.array[int],
+    endpoint_world_a: wp.array[int],
+    endpoint_b: wp.array[int],
+    endpoint_world_b: wp.array[int],
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    u: wp.array[wp.vec3],
+    lambda_: wp.array[wp.vec3],
+):
+    """Clear persistent ADMM history when either endpoint world is reset."""
+    row = wp.tid()
+    index_a = endpoint_a[row]
+    index_b = endpoint_b[row]
+    if index_a < 0 or index_b < 0:
+        return
+    if reset_world_selected(endpoint_world_a[index_a], world_mask, world_count) or reset_world_selected(
+        endpoint_world_b[index_b], world_mask, world_count
+    ):
+        u[row] = wp.vec3()
+        lambda_[row] = wp.vec3()
 
 
 @wp.kernel(enable_backward=False)

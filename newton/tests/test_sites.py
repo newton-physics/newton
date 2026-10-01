@@ -242,10 +242,11 @@ class TestSiteNonCollision(unittest.TestCase):
 
         model = builder.finalize()
         state = model.state()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
         # Run collision detection
-        model.collide(state, contacts)
+        collision_pipeline.collide(state, contacts)
 
         # Should have no contacts (site doesn't collide)
         count = contacts.rigid_contact_count.numpy()[0]

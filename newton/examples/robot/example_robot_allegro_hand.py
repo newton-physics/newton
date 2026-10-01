@@ -60,7 +60,6 @@ def move_hand(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 
@@ -92,6 +91,7 @@ class Example:
             enable_self_collisions=False,
             ignore_paths=[".*Dummy", ".*CollisionPlane"],
             hide_collision_shapes=True,
+            load_static_visual_shapes=False,
         )
 
         # set joint targets and joint drive gains (only on hand, not the floating-body cube)
@@ -137,7 +137,9 @@ class Example:
             njmax=200,
             nconmax=max_contacts_per_world,
             impratio=20.0,
-            cone="elliptic",
+            # Preserve the example's solref-inherited grasp friction; its
+            # purpose is articulation control rather than kf mapping.
+            cone="pyramidal",
             iterations=100,
             ls_iterations=50,
             use_mujoco_contacts=False,
@@ -146,7 +148,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -159,7 +162,7 @@ class Example:
         self.graph = capture.graph
 
     def simulate(self):
-        self.model.collide(self.state_0, self.contacts)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -203,6 +206,14 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        """Check compact viewer layout and stable hand and cube motion."""
+        # Scale the bound with the grid size so larger world counts remain valid.
+        offset_limit = np.ceil(np.sqrt(self.world_count))
+        max_world_offset = float(np.abs(self.viewer.world_offsets.numpy()).max())
+        assert max_world_offset < offset_limit, (
+            f"World offsets reach {max_world_offset:g} m, expected less than {offset_limit:g} m for a compact hand layout"
+        )
+
         num_bodies_per_world = self.model.body_count // self.world_count
         cubes_held = 0
 

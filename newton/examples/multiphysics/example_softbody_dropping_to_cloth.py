@@ -91,8 +91,8 @@ class Example:
         vbd_kwargs = {
             "iterations": args.vbd_iterations,
             "particle_enable_self_contact": True,
-            "particle_self_contact_radius": 0.01,
-            "particle_self_contact_margin": 0.02,
+            "particle_self_contact_margin": 0.01,
+            "particle_self_contact_gap": 0.01,
             "particle_enable_tile_solve": True,
         }
         if self.solver_type == "vbd":
@@ -142,7 +142,8 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         newton.examples.configure_coupled_view(self, args)
 
@@ -160,7 +161,7 @@ class Example:
             # apply forces to the model
             newton.examples.apply_coupled_viewer_forces(self, self.state_0)
 
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states

@@ -78,6 +78,7 @@ from .admm_utils import (
     mark_local_indices_from_global_mask_kernel,
     particle_gravity_compensation_lumped_kernel,
     particle_particle_contacts_hashgrid_kernel,
+    reset_admm_history_kernel,
     scatter_body_effective_mass_block_kernel,
     scatter_effective_mass_kernel,
     u_update_quadratic_kernel,
@@ -643,6 +644,22 @@ class SolverCoupledADMM(SolverCoupled):
         contact_matching_force_scale: float = 0.9
         contact_pairs: Sequence[SolverCoupledADMM.ContactPair] = ()
 
+        contact_max_triangle_pairs: int | None = field(default=None, kw_only=True)
+        """Triangle-pair capacity for internal ADMM collision detection.
+
+        Must be positive and less than ``2**20`` when rigid contact matching is
+        enabled. Larger capacities are allowed when matching is disabled.
+        ``None`` preserves the :class:`CollisionPipeline` default.
+        """
+
+        contact_reduction_hashtable_size_factor: float | None = field(default=None, kw_only=True)
+        """Multiplier controlling the internal contact-reduction hash table size.
+
+        Must be finite and positive. Increase this independently of the
+        triangle-pair capacity when contact reduction needs more storage.
+        ``None`` preserves the :class:`CollisionPipeline` default.
+        """
+
     def __init__(
         self,
         model: Model,
@@ -687,6 +704,7 @@ class SolverCoupledADMM(SolverCoupled):
 
     @classmethod
     def _validate_config(cls, coupling: SolverCoupledADMM.Config) -> None:
+        """Validate ADMM parameters and collision capacities before allocation."""
         cls._positive_integer(coupling.iterations, "ADMM iterations")
         cls._finite_scalar(coupling.rho, "ADMM rho", lower_bound=0.0, lower_inclusive=False)
         cls._finite_scalar(coupling.gamma, "ADMM gamma", lower_bound=0.0)
@@ -711,6 +729,19 @@ class SolverCoupledADMM(SolverCoupled):
             raise ValueError(
                 "ADMM rigid_contact_matching must be 'disabled', 'latest', or 'sticky', "
                 f"got {coupling.rigid_contact_matching!r}"
+            )
+        if coupling.contact_max_triangle_pairs is not None:
+            capacity = cls._positive_integer(coupling.contact_max_triangle_pairs, "ADMM contact_max_triangle_pairs")
+            if coupling.rigid_contact_matching != "disabled" and capacity >= 2**20:
+                raise ValueError(
+                    "ADMM contact_max_triangle_pairs must be less than 2**20 when rigid contact matching is enabled"
+                )
+        if coupling.contact_reduction_hashtable_size_factor is not None:
+            cls._finite_scalar(
+                coupling.contact_reduction_hashtable_size_factor,
+                "ADMM contact_reduction_hashtable_size_factor",
+                lower_bound=0.0,
+                lower_inclusive=False,
             )
         if coupling.contact_matching_pos_threshold is not None:
             cls._finite_scalar(
@@ -1020,6 +1051,7 @@ class SolverCoupledADMM(SolverCoupled):
             entry.view.disable_body_dynamics(entry.body_dynamics_disabled_local_indices)
 
     def _setup_admm(self, coupling: SolverCoupledADMM.Config) -> None:
+        """Initialize ADMM buffers, constraint groups, and internal collision detection."""
         for entry in self._entries.values():
             buf = _AdmmBuffers()
             buf.supports_dynamic_inertial_refresh = bool(entry.solver.coupling_supports_inertial_property_refresh())
@@ -1081,11 +1113,17 @@ class SolverCoupledADMM(SolverCoupled):
                 self._admm_dynamic_rr_contact_groups = self._build_collision_rigid_rigid_contact_groups()
             from ...sim import CollisionPipeline  # noqa: PLC0415
 
-            matching_kwargs = {}
+            collision_kwargs = {}
+            if coupling.contact_max_triangle_pairs is not None:
+                collision_kwargs["max_triangle_pairs"] = int(coupling.contact_max_triangle_pairs)
+            if coupling.contact_reduction_hashtable_size_factor is not None:
+                collision_kwargs["contact_reduction_hashtable_size_factor"] = float(
+                    coupling.contact_reduction_hashtable_size_factor
+                )
             if coupling.contact_matching_pos_threshold is not None:
-                matching_kwargs["contact_matching_pos_threshold"] = float(coupling.contact_matching_pos_threshold)
+                collision_kwargs["contact_matching_pos_threshold"] = float(coupling.contact_matching_pos_threshold)
             if coupling.contact_matching_normal_dot_threshold is not None:
-                matching_kwargs["contact_matching_normal_dot_threshold"] = float(
+                collision_kwargs["contact_matching_normal_dot_threshold"] = float(
                     coupling.contact_matching_normal_dot_threshold
                 )
 
@@ -1095,11 +1133,11 @@ class SolverCoupledADMM(SolverCoupled):
                 shape_pairs_filtered=admm_shape_pairs,
                 rigid_contact_max=rigid_contact_max,
                 soft_contact_max=None if self._admm_rigid_particle_contact_specs else 0,
-                soft_contact_margin=0.0,
+                soft_contact_gap=0.0,
                 contact_matching=(
                     coupling.rigid_contact_matching if self._admm_rigid_rigid_contact_specs else "disabled"
                 ),
-                **matching_kwargs,
+                **collision_kwargs,
             )
             if self._admm_rigid_particle_contact_specs:
                 self._admm_dynamic_rp_contact_groups = self._build_collision_rigid_particle_contact_groups()
@@ -1770,11 +1808,17 @@ class SolverCoupledADMM(SolverCoupled):
         self,
         state: State,
         *,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Clear ADMM warm-start and internal contact buffers after reset."""
         super()._reset_coupling_state(state, world_mask=world_mask, flags=flags)
+        if self._admm_collision_pipeline is not None:
+            self._reset_collision_provider_contact_matching(self._admm_collision_pipeline, world_mask)
+        if world_mask is not None:
+            self._reset_admm_history(world_mask)
+            return
+
         for name, entry in self._entries.items():
             buf = self._admm_buffers[name]
             if buf.body_q_n is not None:
@@ -1809,6 +1853,61 @@ class SolverCoupledADMM(SolverCoupled):
         if float(self._coupling.gamma) > 0.0:
             self._refresh_admm_proximal_masks()
             self._refresh_admm_proximal_view_overrides(refresh_supported_solvers=True)
+
+    def _reset_admm_history(self, world_mask: wp.array[wp.bool]) -> None:
+        """Clear selected persistent dual rows without touching solver scratch."""
+        rows = []
+        for group in (
+            *self._admm_rr_groups,
+            *self._admm_rr_angular_groups,
+            *self._admm_rr_revolute_angular_groups,
+            *self._admm_rr_angular_friction_groups,
+            *self._admm_dynamic_rr_contact_groups,
+        ):
+            entry_a = self._entries[group.body_entry_name_a]
+            entry_b = self._entries[group.body_entry_name_b]
+            rows.append((group, group.body_ids_a, entry_a.view.body_world, group.body_ids_b, entry_b.view.body_world))
+        for group in (*self._admm_rp_groups, *self._admm_dynamic_rp_contact_groups):
+            body_entry = self._entries[group.body_entry_name]
+            particle_entry = self._entries[group.particle_entry_name]
+            rows.append(
+                (
+                    group,
+                    group.body_ids,
+                    body_entry.view.body_world,
+                    group.particle_ids,
+                    particle_entry.view.particle_world,
+                )
+            )
+        for group in self._admm_dynamic_pp_contact_groups:
+            entry_a = self._entries[group.particle_entry_name_a]
+            entry_b = self._entries[group.particle_entry_name_b]
+            rows.append(
+                (
+                    group,
+                    group.particle_ids_a,
+                    entry_a.view.particle_world,
+                    group.particle_ids_b,
+                    entry_b.view.particle_world,
+                )
+            )
+
+        for group, endpoint_a, endpoint_world_a, endpoint_b, endpoint_world_b in rows:
+            wp.launch(
+                reset_admm_history_kernel,
+                dim=group.count,
+                inputs=[
+                    endpoint_a,
+                    endpoint_world_a,
+                    endpoint_b,
+                    endpoint_world_b,
+                    world_mask,
+                    self.model.world_count,
+                    group.u,
+                    group.lambda_,
+                ],
+                device=self.model.device,
+            )
 
     @staticmethod
     def _zero_array(array) -> None:

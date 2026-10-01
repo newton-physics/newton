@@ -16,11 +16,12 @@ import warp as wp
 
 from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
-from ..geometry import Mesh
+from ..geometry import Mesh, ShapeFlags
 from ..sim import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
 from .import_utils import (
+    clamp_imported_opacity,
     collapse_massless_fixed_root_joints,
     parse_custom_attributes,
     sanitize_xml_content,
@@ -31,6 +32,7 @@ from .texture import load_texture
 from .topology import topological_sort
 
 AttributeFrequency = Model.AttributeFrequency
+
 
 # Optional dependency for robust URI resolution
 try:
@@ -226,7 +228,8 @@ def parse_urdf(
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
     default_joint_limit_upper = builder.default_joint_cfg.limit_upper
     default_joint_limit_effort = builder.default_joint_cfg.effort_limit
-    default_joint_damping = builder.default_joint_cfg.target_kd
+    default_joint_target_kd = builder.default_joint_cfg.target_kd
+    default_joint_damping = builder.default_joint_cfg.damping
     default_joint_friction = builder.default_joint_cfg.friction
 
     # load shape defaults
@@ -326,18 +329,21 @@ def parse_urdf(
 
     def _parse_material_properties(material_element):
         if material_element is None:
-            return None, None
+            return None, None, None
 
         color = None
+        opacity = None
         texture = None
 
         color_el = material_element.find("color")
         if color_el is not None:
             rgba = color_el.get("rgba")
             if rgba:
-                parts = rgba.split()
-                if len(parts) >= 3:
-                    color = (float(parts[0]), float(parts[1]), float(parts[2]))
+                values = np.fromstring(rgba, sep=" ", dtype=np.float32)
+                if len(values) >= 3:
+                    color = (float(values[0]), float(values[1]), float(values[2]))
+                if len(values) >= 4:
+                    opacity = clamp_imported_opacity(values[3], "URDF material rgba")
 
         texture_el = material_element.find("texture")
         if texture_el is not None:
@@ -356,22 +362,23 @@ def parse_urdf(
                     if tmpfile is not None:
                         os.remove(tmpfile.name)
 
-        return color, texture
+        return color, opacity, texture
 
-    materials: dict[str, dict[str, np.ndarray | None]] = {}
+    materials: dict[str, dict[str, object | None]] = {}
     for material in urdf_root.findall("material"):
         mat_name = material.get("name")
         if not mat_name:
             continue
-        color, texture = _parse_material_properties(material)
+        color, opacity, texture = _parse_material_properties(material)
         materials[mat_name] = {
             "color": color,
+            "opacity": opacity,
             "texture": texture,
         }
 
     def resolve_material(material_element):
         if material_element is None:
-            return {"color": None, "texture": None}
+            return {"color": None, "opacity": None, "texture": None}
         mat_name = material_element.get("name")
 
         # Fast path: pure name reference to an already-parsed material. URDFs
@@ -381,19 +388,21 @@ def parse_urdf(
         if mat_name and mat_name in materials and len(material_element) == 0:
             return dict(materials[mat_name])
 
-        color, texture = _parse_material_properties(material_element)
+        color, opacity, texture = _parse_material_properties(material_element)
 
         if mat_name and mat_name in materials:
             resolved = dict(materials[mat_name])
         else:
-            resolved = {"color": None, "texture": None}
+            resolved = {"color": None, "opacity": None, "texture": None}
 
         if color is not None:
             resolved["color"] = color
+        if opacity is not None:
+            resolved["opacity"] = opacity
         if texture is not None:
             resolved["texture"] = texture
 
-        if mat_name and mat_name not in materials and any(value is not None for value in (color, texture)):
+        if mat_name and mat_name not in materials and any(value is not None for value in (color, opacity, texture)):
             materials[mat_name] = dict(resolved)
 
         return resolved
@@ -447,6 +456,13 @@ def parse_urdf(
                 tf = incoming_xform * tf
 
             material_info = resolve_material(geom_group.find("material"))
+            if just_visual:
+                if material_info["opacity"] is not None:
+                    shape_kwargs["opacity"] = material_info["opacity"]
+                else:
+                    shape_kwargs.pop("opacity", None)
+            else:
+                shape_kwargs.pop("opacity", None)
 
             for box in geo.findall("box"):
                 size = box.get("size") or "1 1 1"
@@ -577,6 +593,8 @@ def parse_urdf(
             joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
             joint_data["limit_upper"] = float(el_limit.get("upper", default_joint_limit_upper))
             joint_data["limit_effort"] = float(el_limit.get("effort", default_joint_limit_effort))
+            if (velocity := el_limit.get("velocity")) is not None:
+                joint_data["limit_velocity"] = float(velocity)
         el_mimic = joint.find("mimic")
         if el_mimic is not None:
             joint_data["mimic_joint"] = el_mimic.get("joint")
@@ -627,7 +645,6 @@ def parse_urdf(
 
     # maps from link name -> link index
     link_index: dict[str, int] = {}
-    visual_shapes: list[int] = []
     start_shape_count = len(builder.shape_type)
     model_has_visual_shapes = any(len(urdf_link.findall("visual")) > 0 for urdf_link in urdf_links)
 
@@ -649,8 +666,7 @@ def parse_urdf(
         if parse_visuals_as_colliders:
             colliders = visuals
         else:
-            s = parse_shapes(link, visuals, density=0.0, just_visual=True, visible=not hide_visuals)
-            visual_shapes.extend(s)
+            parse_shapes(link, visuals, density=0.0, just_visual=True, visible=not hide_visuals)
 
         show_colliders = should_show_collider(
             force_show_colliders,
@@ -769,6 +785,7 @@ def parse_urdf(
         lower = joint.get("limit_lower", None)
         upper = joint.get("limit_upper", None)
         effort_limit = joint.get("limit_effort", None)
+        velocity_limit = joint.get("limit_velocity")
         joint_damping = joint["damping"]
         joint_friction = joint["friction"]
 
@@ -792,23 +809,25 @@ def parse_urdf(
         if joint["type"] == "revolute" or joint["type"] == "continuous":
             created_joint_idx = builder.add_joint_revolute(
                 axis=joint["axis"],
-                target_kd=joint_damping,
+                damping=joint_damping,
                 friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower,
                 limit_upper=upper,
                 effort_limit=effort_limit,
+                velocity_limit=velocity_limit,
                 **joint_params,
             )
         elif joint["type"] == "prismatic":
             created_joint_idx = builder.add_joint_prismatic(
                 axis=joint["axis"],
-                target_kd=joint_damping,
+                damping=joint_damping,
                 friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower * scale,
                 limit_upper=upper * scale,
                 effort_limit=effort_limit,
+                velocity_limit=velocity_limit * scale if velocity_limit is not None else None,
                 **joint_params,
             )
         elif joint["type"] == "fixed":
@@ -835,7 +854,8 @@ def parse_urdf(
                         axis=u,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
-                        target_kd=joint_damping,
+                        target_kd=default_joint_target_kd,
+                        damping=joint_damping,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
@@ -843,7 +863,8 @@ def parse_urdf(
                         axis=v,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
-                        target_kd=joint_damping,
+                        target_kd=default_joint_target_kd,
+                        damping=joint_damping,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
@@ -856,7 +877,7 @@ def parse_urdf(
         joint_indices.append(created_joint_idx)
         joint_name_to_idx[joint["name"]] = created_joint_idx
 
-    # Create mimic constraints
+    # Configure mimic relationships
     for joint in sorted_joints:
         if "mimic_joint" in joint:
             mimic_target_name = joint["mimic_joint"]
@@ -877,12 +898,10 @@ def parse_urdf(
                 )
                 continue
 
-            builder.add_constraint_mimic(
-                joint0=follower_idx,
-                joint1=leader_idx,
-                coef0=joint.get("mimic_coef0", 0.0),
-                coef1=joint.get("mimic_coef1", 1.0),
-                label=make_label(f"mimic_{joint['name']}"),
+            builder.set_joint_mimic(
+                joint=follower_idx,
+                reference_joint=leader_idx,
+                coeffs=(joint.get("mimic_coef0", 0.0), joint.get("mimic_coef1", 1.0)),
             )
 
     # Create articulation from all collected joints
@@ -896,13 +915,13 @@ def parse_urdf(
         custom_attributes=articulation_custom_attrs,
     )
 
-    for i in range(start_shape_count, end_shape_count):
-        for j in visual_shapes:
-            builder.add_shape_collision_filter_pair(i, j)
-
     if not enable_self_collisions:
-        for i in range(start_shape_count, end_shape_count):
-            for j in range(i + 1, end_shape_count):
+        # The broad phase only ever tests colliding shapes, so visual-only shapes need no filter pairs.
+        colliding_shapes = [
+            i for i in range(start_shape_count, end_shape_count) if builder.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+        ]
+        for a, i in enumerate(colliding_shapes):
+            for j in colliding_shapes[a + 1 :]:
                 builder.add_shape_collision_filter_pair(i, j)
 
     if collapse_fixed_joints:

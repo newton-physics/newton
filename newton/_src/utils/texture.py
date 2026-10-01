@@ -14,6 +14,21 @@ import numpy as np
 _texture_url_cache: dict[str, bytes] = {}
 
 
+def _linear_to_srgb(linear: np.ndarray) -> np.ndarray:
+    return np.where(linear <= 0.0031308, linear * 12.92, 1.055 * np.power(linear, 1.0 / 2.4) - 0.055)
+
+
+def _make_linear_to_srgb_uint8_lut() -> np.ndarray:
+    linear = np.arange(256, dtype=np.float32) / 255.0
+    srgb = _linear_to_srgb(linear)
+    lut = np.clip(np.round(srgb * 255.0), 0.0, 255.0).astype(np.uint8)
+    lut.setflags(write=False)
+    return lut
+
+
+_LINEAR_TO_SRGB_UINT8_LUT = _make_linear_to_srgb_uint8_lut()
+
+
 def _is_http_url(path: str) -> bool:
     parsed = urlparse(path)
     return parsed.scheme in ("http", "https")
@@ -24,6 +39,40 @@ def _resolve_file_url(path: str) -> str:
     if parsed.scheme != "file":
         return path
     return unquote(parsed.path)
+
+
+def _is_usd_package_path(path: str) -> bool:
+    """Return whether *path* addresses an asset inside a USD package (e.g. ``scene.usdz[tex.png]``)."""
+    # Cheap bracket check first so the pxr import is only paid for real packages.
+    if "[" not in path:
+        return False
+    try:
+        from pxr import Ar
+    except ImportError:
+        return False
+    return Ar.IsPackageRelativePath(path)
+
+
+def _read_usd_package_asset_bytes(path: str) -> bytes | None:
+    """Read the raw bytes of an asset packaged inside a USD file (e.g. a texture in a ``.usdz``).
+
+    ``.usdz`` archives address their contents with package-relative paths of the
+    form ``archive.usdz[inner/path.png]``, which are not valid filesystem paths.
+    Resolve them through USD's asset resolver, which also handles nested packages.
+    """
+    try:
+        from pxr import Ar
+    except ImportError:
+        return None
+    try:
+        asset = Ar.GetResolver().OpenAsset(Ar.ResolvedPath(path))
+        if not asset:
+            warnings.warn(f"Failed to read packaged texture image: {path} (not found in package)", stacklevel=3)
+            return None
+        return bytes(asset.GetBuffer())
+    except Exception as exc:
+        warnings.warn(f"Failed to read packaged texture image: {path} ({exc})", stacklevel=3)
+        return None
 
 
 def _download_texture_from_file_bytes(url: str) -> bytes | None:
@@ -55,6 +104,14 @@ def load_texture_from_file(texture_path: str | None) -> np.ndarray | None:
 
         if _is_http_url(texture_path):
             data = _download_texture_from_file_bytes(texture_path)
+            if data is None:
+                return None
+            with Image.open(io.BytesIO(data)) as source_img:
+                img = source_img.convert("RGBA")
+                return np.array(img)
+
+        if _is_usd_package_path(texture_path):
+            data = _read_usd_package_asset_bytes(texture_path)
             if data is None:
                 return None
             with Image.open(io.BytesIO(data)) as source_img:
@@ -104,16 +161,22 @@ def linear_texture_to_srgb(texture_image: np.ndarray | None) -> np.ndarray | Non
         return np.ascontiguousarray(image)
 
     out = image.copy()
+    if out.dtype == np.uint8:
+        # One channel at a time: a 3-channel fancy index triples the gathered temporary.
+        for channel in range(3):
+            out[..., channel] = _LINEAR_TO_SRGB_UINT8_LUT[out[..., channel]]
+        return np.ascontiguousarray(out)
+
     if np.issubdtype(out.dtype, np.integer):
         scale = float(np.iinfo(out.dtype).max)
         rgb = np.clip(out[..., :3].astype(np.float32) / scale, 0.0, 1.0)
-        srgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
+        srgb = _linear_to_srgb(rgb)
         out[..., :3] = np.clip(np.round(srgb * scale), 0.0, scale).astype(out.dtype)
         return np.ascontiguousarray(out)
 
     out = out.astype(np.float32, copy=False)
     rgb = np.clip(out[..., :3], 0.0, 1.0)
-    out[..., :3] = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
+    out[..., :3] = _linear_to_srgb(rgb)
     return np.ascontiguousarray(out.astype(image.dtype, copy=False))
 
 

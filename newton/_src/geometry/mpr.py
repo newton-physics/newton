@@ -35,8 +35,10 @@ from typing import Any
 
 import warp as wp
 
-from .support_function import GeoTypeEx, closest_point_on_triangle, unpack_mesh_ptr
-from .types import GeoType
+from .support_function import (
+    create_shape_center_function,
+    create_shape_support_function,
+)
 
 
 @wp.struct
@@ -53,7 +55,7 @@ def vert_a(vert: Vert) -> wp.vec3:
     return vert.B + vert.BtoA
 
 
-def create_support_map_function(support_func: Any):
+def create_support_map_function(support_func: Any, use_precomputed_center: bool = False):
     """
     Factory function to create support mapping functions for MPR algorithm.
 
@@ -63,6 +65,7 @@ def create_support_map_function(support_func: Any):
     Args:
         support_func: Support mapping function for individual shapes that takes
                      (geometry, direction, data_provider) and returns a support point
+        use_precomputed_center: Whether the geometry data supplies a cached center.
 
     Returns:
         Tuple of three functions:
@@ -70,6 +73,9 @@ def create_support_map_function(support_func: Any):
         - minkowski_support: Support mapping for Minkowski difference A - B
         - geometric_center: Computes geometric center of Minkowski difference
     """
+
+    shape_support = create_shape_support_function(support_func)
+    geometric_center = create_shape_center_function(use_precomputed_center)
 
     # Support mapping functions (these replace the MinkowskiDiff struct methods)
     @wp.func
@@ -97,7 +103,7 @@ def create_support_map_function(support_func: Any):
         tmp = wp.quat_rotate_inv(orientation_b, direction)
 
         # Get support point in local space
-        result = support_func(geom_b, tmp, data_provider)
+        result = shape_support(geom_b, tmp, data_provider)
 
         # Transform result to world space
         result = wp.quat_rotate(orientation_b, result)
@@ -133,7 +139,7 @@ def create_support_map_function(support_func: Any):
         v = Vert()
 
         # Support point on A in positive direction
-        point_a = support_func(geom_a, direction, data_provider)
+        point_a = shape_support(geom_a, direction, data_provider)
 
         # Support point on B in negative direction
         tmp_direction = -direction
@@ -149,116 +155,6 @@ def create_support_map_function(support_func: Any):
         v.BtoA = point_a - v.B
 
         return v
-
-    @wp.func
-    def geometric_center(
-        geom_a: Any,
-        geom_b: Any,
-        orientation_b: wp.quat,
-        position_b: wp.vec3,
-        data_provider: Any,
-    ) -> Vert:
-        """
-        Compute geometric center of Minkowski difference.
-
-        Used by MPR and GJK as the initial interior point ``v0`` of the
-        Minkowski difference.  A poor ``v0`` — far outside one of the
-        shapes — is a known cause of MPR portal degeneracy when the
-        partner is a thin/flat primitive (e.g. a single mesh triangle),
-        because the chosen ray direction can produce supports that all
-        collapse onto a single vertex of the partner.
-
-        For most primitives the local origin is already a sensible
-        interior point, but for ``CONVEX_MESH`` (an arbitrary convex
-        hull) the authoring origin is not guaranteed to lie inside the
-        hull — many assets place hulls far from their body frame.  For
-        those shapes we compute the AABB of the (scaled) hull vertices
-        on the fly and use the AABB center, which is always inside the
-        hull's bounding box and typically very close to the hull
-        interior.
-
-        For triangles (and triangle prisms) on shape A the center on
-        shape A is replaced by the closest point on the triangle to
-        shape B's center (using the freshly computed B center), giving
-        MPR and GJK a much better starting point when the triangle is
-        large relative to the convex.
-
-        Args:
-            geom_a: Shape A geometry data
-            geom_b: Shape B geometry data
-            orientation_b: Orientation of shape B
-            position_b: Position of shape B
-            data_provider: Support mapping data provider
-
-        Returns:
-            Vert containing geometric centers of both shapes.  ``B`` is
-            in world space; ``BtoA = center_a - center.B`` mixes A-local
-            with world space, which is the convention used by the
-            ``solve_mpr_core`` / ``solve_gjk_core`` callers.
-        """
-        center = Vert()
-
-        center_a = wp.vec3(0.0, 0.0, 0.0)
-        center_b_local = wp.vec3(0.0, 0.0, 0.0)
-
-        if geom_a.shape_type == int(GeoType.CONVEX_MESH):
-            mesh_ptr_a = unpack_mesh_ptr(geom_a.auxiliary)
-            mesh_a = wp.mesh_get(mesh_ptr_a)
-            scale_a = geom_a.scale
-            num_verts_a = mesh_a.points.shape[0]
-            v0_a = wp.cw_mul(mesh_a.points[0], scale_a)
-            min_a = v0_a
-            max_a = v0_a
-            for i in range(1, num_verts_a):
-                v_a = wp.cw_mul(mesh_a.points[i], scale_a)
-                min_a = wp.min(min_a, v_a)
-                max_a = wp.max(max_a, v_a)
-            center_a = 0.5 * (min_a + max_a)
-
-        if geom_b.shape_type == int(GeoType.CONVEX_MESH):
-            mesh_ptr_b = unpack_mesh_ptr(geom_b.auxiliary)
-            mesh_b = wp.mesh_get(mesh_ptr_b)
-            scale_b = geom_b.scale
-            num_verts_b = mesh_b.points.shape[0]
-            v0_b = wp.cw_mul(mesh_b.points[0], scale_b)
-            min_b = v0_b
-            max_b = v0_b
-            for i in range(1, num_verts_b):
-                v_b = wp.cw_mul(mesh_b.points[i], scale_b)
-                min_b = wp.min(min_b, v_b)
-                max_b = wp.max(max_b, v_b)
-            center_b_local = 0.5 * (min_b + max_b)
-
-        center_b_world = position_b + wp.quat_rotate(orientation_b, center_b_local)
-
-        if geom_a.shape_type == int(GeoTypeEx.TRIANGLE) or geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
-            # Project shape B's center onto the triangle for a starting
-            # point near the contact region — this dramatically improves
-            # MPR convergence for large triangles.
-            #
-            # Blend 1% toward the centroid so the point is strictly in the
-            # face interior.  This does NOT prevent an MPR degeneracy (MPR
-            # works fine from an edge point); it improves *manifold quality*.
-            # When shape B projects onto a shared mesh edge, both adjacent
-            # triangles get the same v0, producing MPR witness points biased
-            # toward the edge.  The manifold builder (multicontact.py) uses
-            # these witness points as its center for perturbed support
-            # mapping, so edge-biased centers cause overlapping contact
-            # polygons across the two triangles instead of distinct ones —
-            # resulting in asymmetric force distribution and spurious torque.
-            # The 1% nudge gives each triangle a unique v0 pulled toward its
-            # own interior, yielding well-separated manifold centers.
-            tri_a = wp.vec3(0.0, 0.0, 0.0)
-            tri_b = geom_a.scale
-            tri_c = geom_a.auxiliary
-            proj = closest_point_on_triangle(center_b_world, tri_a, tri_b, tri_c)
-            centroid = (tri_a + tri_b + tri_c) / 3.0
-            center_a = proj + 0.01 * (centroid - proj)
-
-        center.B = center_b_world
-        center.BtoA = center_a - center_b_world
-
-        return center
 
     return support_map_b, minkowski_support, geometric_center
 
@@ -281,9 +177,12 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
     """
 
     if _support_funcs is not None:
-        _support_map_b, minkowski_support, geometric_center = _support_funcs
+        _support_map_b, _minkowski_support, geometric_center = _support_funcs
     else:
-        _support_map_b, minkowski_support, geometric_center = create_support_map_function(support_func)
+        _support_map_b, _minkowski_support, geometric_center = create_support_map_function(support_func)
+
+    shape_support = create_shape_support_function(support_func, center_ties=True)
+    _, mpr_support, _ = create_support_map_function(shape_support)
 
     @wp.func
     def solve_mpr_core(
@@ -335,25 +234,25 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
 
         normal = v0.BtoA
         if wp.length_sq(normal) < NUMERIC_EPSILON:
-            # Centers coincide — probe three orthogonal directions and
-            # pick the one with the largest Minkowski support, giving
-            # MPR the most room to find a valid portal.
-            best_dot = float(-1.0e30)
-            best_dir = wp.vec3(1.0, 0.0, 0.0)
-            for axis_idx in range(3):
-                probe = wp.vec3(0.0, 0.0, 0.0)
-                probe[axis_idx] = 1.0
-                sv = minkowski_support(geom_a, geom_b, probe, orientation_b, position_b, extend, data_provider)
-                d = wp.dot(sv.BtoA, probe)
-                if d > best_dot:
-                    best_dot = d
-                    best_dir = probe
-            v0.BtoA = best_dir * 1e-05
+            v0.BtoA = geometric_center.fallback(geom_a, v0.B)
+            if wp.length_sq(v0.BtoA) < NUMERIC_EPSILON:
+                # Probe three axes and use the direction with most support.
+                best_dot = float(-1.0e30)
+                best_dir = wp.vec3(1.0, 0.0, 0.0)
+                for axis_idx in range(3):
+                    probe = wp.vec3(0.0, 0.0, 0.0)
+                    probe[axis_idx] = 1.0
+                    sv = mpr_support(geom_a, geom_b, probe, orientation_b, position_b, extend, data_provider)
+                    d = wp.dot(sv.BtoA, probe)
+                    if d > best_dot:
+                        best_dot = d
+                        best_dir = probe
+                v0.BtoA = best_dir * 1e-05
 
         normal = -v0.BtoA
 
         # First support point
-        v1 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+        v1 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
         point_a = vert_a(v1)
         point_b = v1.B
@@ -373,7 +272,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
             return True, point_a, point_b, normal, penetration
 
         # Second support point
-        v2 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+        v2 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
         if wp.dot(v2.BtoA, normal) <= 0.0:
             return False, point_a, point_b, normal, penetration
@@ -408,7 +307,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
 
             phase1 += 1
 
-            v3 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+            v3 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
             if wp.dot(v3.BtoA, normal) <= 0.0:
                 return False, point_a, point_b, normal, penetration
@@ -455,7 +354,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                 # If the origin is inside the wedge, we have a hit
                 hit = d >= 0.0
 
-            v4 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+            v4 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
             temp3 = v4.BtoA - v3.BtoA
             delta = wp.dot(temp3, normal)

@@ -355,6 +355,7 @@ class ImageLogger:
         self._sidebar_width_px = sidebar_width_px
         self._dpi_scale: float = float(dpi_scale) if dpi_scale > 0 else 1.0
         self._images: dict[str, LoggedImage] = {}
+        self._fullscreen_images: dict[str, LoggedImage] = {}
         self._warned_device_mismatch: dict[str, wp.Device] = {}
         self._selected: str | None = None
 
@@ -373,19 +374,20 @@ class ImageLogger:
         """The CUDA device this logger was bound to."""
         return self._device
 
-    def log(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+    def log(self, name: str, image: wp.array[Any] | np.ndarray, *, fullscreen: bool = False) -> None:
         """Validate, convert, and upload an image under *name*.
 
         See :meth:`~newton.viewer.ViewerBase.log_image` for the public contract.
         """
         n, h, w, c = _validate(name, image)
-        entry = self._images.get(name)
+        images = self._fullscreen_images if fullscreen else self._images
+        entry = images.get(name)
         if entry is None:
             entry = LoggedImage(name=name)
-            self._images[name] = entry
+            images[name] = entry
             # Auto-select the first logged image so the user sees something
             # immediately. Don't switch selection for subsequent new names.
-            if self._selected is None:
+            if not fullscreen and self._selected is None:
                 self._selected = name
 
         needs_realloc = (entry.n, entry.h, entry.w, entry.c) != (n, h, w, c)
@@ -524,19 +526,38 @@ class ImageLogger:
         if changed:
             self._selected = None if new_idx == 0 else names[new_idx - 1]
 
+    def get_texture(self, name: str, *, fullscreen: bool = False) -> tuple[int, int, int] | None:
+        """Return live texture metadata for a logged image.
+
+        Args:
+            name: Image name previously passed to :meth:`log`.
+            fullscreen: Whether to return the fullscreen-main-view texture.
+
+        Returns:
+            ``(texture_id, texture_width, texture_height)``, or ``None`` when
+            the image has not been logged or has no live GL texture yet.
+        """
+        images = self._fullscreen_images if fullscreen else self._images
+        entry = images.get(name)
+        if entry is None or entry.tex_id == 0 or entry.tex_w <= 0 or entry.tex_h <= 0:
+            return None
+        return entry.tex_id, entry.tex_w, entry.tex_h
+
     def clear(self) -> None:
         """Destroy all GL resources. Idempotent."""
-        for entry in list(self._images.values()):
+        for entry in [*self._images.values(), *self._fullscreen_images.values()]:
             self._free_entry(entry)
         self._images.clear()
+        self._fullscreen_images.clear()
         self._selected = None
 
     def clear_matching(self, predicate: Callable[[str], bool]) -> None:
         """Destroy GL resources for images whose names match ``predicate``."""
-        for name, entry in list(self._images.items()):
-            if predicate(name):
-                self._free_entry(entry)
-                self._images.pop(name, None)
+        for images in (self._images, self._fullscreen_images):
+            for name, entry in list(images.items()):
+                if predicate(name):
+                    self._free_entry(entry)
+                    images.pop(name, None)
         if self._selected not in self._images:
             self._selected = None
 

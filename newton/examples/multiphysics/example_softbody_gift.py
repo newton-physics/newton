@@ -220,8 +220,8 @@ class Example:
             model=self.model,
             iterations=self.iterations,
             particle_enable_self_contact=True,
-            particle_self_contact_radius=0.04,
-            particle_self_contact_margin=0.06,
+            particle_self_contact_margin=0.04,
+            particle_self_contact_gap=0.02,
             particle_topological_contact_filter_threshold=1,
             particle_enable_tile_solve=False,
         )
@@ -230,7 +230,8 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -253,7 +254,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states

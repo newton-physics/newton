@@ -370,6 +370,10 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "mocap_",
     "nmocap",
     "body_mocapid",
+    "body_weldid",
+    # Keyframes: Newton does not import keyframes
+    "nkey",
+    "key_",
     # Inertia representation: Newton re-diagonalizes, giving same physics but different
     # principal axis ordering and orientation. Compare via compare_inertia_tensors() instead.
     "body_inertia",
@@ -454,8 +458,8 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "nmeshnormal",
     "nmeshpoly",
     "nmeshface",
-    "nmaxmeshdeg",
-    "nmaxpolygon",
+    "nmeshdegmax",
+    "npolygonmax",
     "mesh_",
 }
 
@@ -644,8 +648,6 @@ def compare_mass_matrix_layouts(
     np.testing.assert_array_equal(newton_model.M_fullm_i.numpy(), native_model.M_fullm_i.numpy())
     np.testing.assert_array_equal(newton_model.M_fullm_j.numpy(), native_model.M_fullm_j.numpy())
 
-    newton_simple = newton_model.qLD_dof_simple.numpy().astype(bool)
-    native_simple = native_model.qLD_dof_simple.numpy().astype(bool)
     newton_mass = newton_data.M.numpy()
     native_mass = native_data.M.numpy()
 
@@ -655,11 +657,9 @@ def compare_mass_matrix_layouts(
         if newton_entries.keys() == native_entries.keys():
             continue
 
-        assert newton_simple[row] != native_simple[row], (
-            f"DOF {row}: different mass-matrix layouts are not explained by simple-body classification"
-        )
-
-        if newton_simple[row]:
+        # A simple (diagonal-only) row on one side may be stored expanded on the
+        # other; any other layout difference is a real mismatch.
+        if newton_entries.keys() == {row}:
             simple_entries = newton_entries
             general_entries = native_entries
             general_mass = native_mass
@@ -668,7 +668,7 @@ def compare_mass_matrix_layouts(
             general_entries = newton_entries
             general_mass = newton_mass
 
-        assert set(simple_entries) == {row}, f"DOF {row}: simple mass-matrix row is not diagonal"
+        assert set(simple_entries) == {row}, f"DOF {row}: different mass-matrix layouts and neither row is diagonal"
         assert set(simple_entries) < set(general_entries), f"DOF {row}: general row does not expand simple row"
 
         extra_addresses = [general_entries[column] for column in sorted(general_entries.keys() - simple_entries.keys())]
@@ -1118,6 +1118,7 @@ MJWARP_OPT_BATCHED_FIELDS: list[str] = [
     "tolerance",
     "ls_tolerance",
     "ccd_tolerance",
+    "sleep_tolerance",
     "density",
     "viscosity",
     "gravity",
@@ -1708,8 +1709,23 @@ class TestMenagerieBase(unittest.TestCase):
         # Create mujoco_warp model/data with multiple worlds
         # Note: put_model creates arrays with nworld=1, expansion happens in _ensure_models
         mjw_model = _mujoco_warp.put_model(mj_model)
+
+        # work around buffer under-sizing until the fix is released (mjwarp #1630)
+        from mujoco_warp._src.io import _default_nconmax, _default_njmax, _default_njmax_nnz
+
+        resolved_nconmax = self.nconmax if self.nconmax is not None else _default_nconmax(mj_model, mj_data)
+        resolved_njmax = self.njmax if self.njmax is not None else _default_njmax(mj_model, mj_data)
+        njmax_nnz = max(
+            int(self._newton_solver.mjw_data.njmax_nnz),
+            _default_njmax_nnz(mj_model, resolved_nconmax, resolved_njmax),
+        )
         mjw_data = _mujoco_warp.put_data(
-            mj_model, mj_data, nworld=self.num_worlds, njmax=self.njmax, nconmax=self.nconmax
+            mj_model,
+            mj_data,
+            nworld=self.num_worlds,
+            njmax=self.njmax,
+            nconmax=self.nconmax,
+            njmax_nnz=njmax_nnz,
         )
 
         return mj_model, mj_data, mjw_model, mjw_data
@@ -2495,7 +2511,9 @@ class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
 
     robot_folder = "anybotics_anymal_c"
     num_steps = 20
-    dynamics_tolerance = 1e-4
+    # MJWarp 3.10.0.3's compact/full small-block factorization paths produce
+    # deterministic CPU qvel differences up to 1.09e-4 for this model.
+    dynamics_tolerance = 2e-4
     fk_enabled = True
     backfill_model = True
 

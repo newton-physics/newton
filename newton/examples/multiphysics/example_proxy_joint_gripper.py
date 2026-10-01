@@ -59,12 +59,11 @@ class Example:
             float(args.close_time) if args.close_time is not None else (0.3 if self.scenario == "harsh" else 0.8)
         )
 
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(0.32, -0.42, 0.34), pitch=-24.0, yaw=136.0)
+        self.viewer.set_camera(pos=wp.vec3(0.32, -0.42, 0.34), pitch=-24.0, yaw=136.0)
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverMuJoCo.register_custom_attributes(builder)
-        SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+        SolverVBD.register_custom_attributes(builder)
         builder.default_particle_radius = 0.01
 
         self.soft_particle_start = builder.particle_count
@@ -85,7 +84,8 @@ class Example:
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
         self.control = self.model.control()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_1)
@@ -98,9 +98,9 @@ class Example:
 
         vbd_kwargs = {
             "iterations": int(args.vbd_iterations),
+            "rigid_compliant_alm": True,
             "particle_enable_self_contact": False,
             "particle_enable_tile_solve": False,
-            "rigid_contact_hard": False,
             "rigid_body_particle_contact_buffer_size": 1024 if self.scenario == "harsh" else 512,
             "rigid_joint_linear_ke": 5.0e5 if self.scenario == "harsh" else 2.0e7,
             "rigid_joint_angular_ke": 5.0e5 if self.scenario == "harsh" else 2.0e6,
@@ -154,14 +154,14 @@ class Example:
 
     def capture(self) -> None:
         self.graph = None
-        if not self.use_graph or not self.model.device.is_cuda:
+        if not self.use_graph:
             return
 
         with wp.ScopedDevice(self.model.device), wp.ScopedCapture() as capture:
             self.simulate()
         self.graph = capture.graph
         if self.graph is None:
-            raise RuntimeError(f"CUDA graph capture failed on device {self.model.device}")
+            raise RuntimeError(f"Graph capture failed on device {self.model.device}")
 
     def _emit_soft_object(self, builder: newton.ModelBuilder) -> None:
         size = 0.1 if self.scenario == "harsh" else 0.09
@@ -299,7 +299,7 @@ class Example:
         return np.min(particle_q, axis=0), np.max(particle_q, axis=0)
 
     def simulate(self) -> None:
-        self.model.collide(self.state_0, self.contacts)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
@@ -399,7 +399,7 @@ class Example:
             action="store_false",
             dest="graph_capture",
             default=True,
-            help="Disable CUDA graph capture.",
+            help="Disable graph capture.",
         )
         return parser
 

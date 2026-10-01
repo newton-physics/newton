@@ -96,7 +96,7 @@ def test_body_state(
     if indices is None:
         indices = np.arange(model.body_count, dtype=np.int32).tolist()
 
-    @wp.kernel
+    @wp.kernel(module="unique", enable_backward=False)
     def test_fn_kernel(
         body_q: wp.array[wp.transform],
         body_qd: wp.array[wp.spatial_vector],
@@ -168,7 +168,7 @@ def test_particle_state(
     if indices is None:
         indices = np.arange(state.particle_count, dtype=np.int32).tolist()
 
-    @wp.kernel
+    @wp.kernel(module="unique", enable_backward=False)
     def test_fn_kernel(
         particle_q: wp.array[wp.vec3],
         particle_qd: wp.array[wp.vec3],
@@ -910,7 +910,7 @@ def init(parser=None):
     # Create viewer based on type
     visible_gl = args.viewer == "gl" and not args.headless
     if args.viewer == "gl":
-        viewer = newton.viewer.ViewerGL(headless=args.headless, paused=args.paused)
+        viewer = newton.viewer.ViewerGL(headless=args.headless, paused=args.paused, num_frames=args.num_frames)
     elif args.viewer == "usd":
         if args.output_path is None:
             raise ValueError("--output-path is required when using usd viewer")

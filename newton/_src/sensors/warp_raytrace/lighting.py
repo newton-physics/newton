@@ -40,6 +40,7 @@ def create_compute_lighting_function(config: RenderContext.Config, state: Render
         particles_radius: wp.array[wp.float32],
         topology_particle_mask: wp.array[wp.bool],
         triangle_mesh_id: wp.uint64,
+        triangle_mesh_group_roots: wp.array[wp.int32],
         normal: wp.vec3f,
         hit_point: wp.vec3f,
     ) -> wp.float32:
@@ -102,6 +103,7 @@ def create_compute_lighting_function(config: RenderContext.Config, state: Render
                 particles_radius,
                 topology_particle_mask,
                 triangle_mesh_id,
+                triangle_mesh_group_roots,
                 shadow_origin,
                 L,
                 max_t,

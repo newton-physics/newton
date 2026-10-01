@@ -1,14 +1,23 @@
 ---
 name: release-audit
-description: "Use when auditing a Newton release for keep/defer decisions before a cut, reviewing an RC for readiness, or calibrating the skill against an already-shipped release."
+description: "Use when auditing Newton's pending Towncrier fragments for keep/defer decisions, reviewing an RC for readiness, or calibrating against an already-shipped release."
 disable-model-invocation: true
 argument-hint: "[target-version]"
-allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git diff *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(rm /tmp/newton-*-prerelease-report.md) Bash(rm /tmp/newton-*-rc-report.md) Bash(rm /tmp/newton-*-retrospective-report.md) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist view *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
+allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git diff *) Bash(git ls-tree *) Bash(uvx --from towncrier==25.8.0 towncrier build --draft *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/list_commits.py *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist view *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
 ---
 
 # Release Audit
 
 Generates a markdown audit of a Newton release for keep/defer decisions (or, in retrospective mode, for skill calibration). Three modes, auto-detected in Phase 1:
+
+Read `CODING_GUIDELINES.rst` and `REVIEW_GUIDELINES.rst` from the
+repository root before auditing. They define the canonical coding, API, and
+review policies. This skill performs the final cross-release reconciliation;
+it does not replace pull-request review, and a prior review pass does not make
+any audit phase optional. In retrospective mode, using the current guides is
+intentional: calibrate the current audit policy against evidence pinned to the
+target tag. Do not claim historical noncompliance unless the requirement also
+existed at that tag.
 
 - **Pre-release**: spot-check while work is still landing on main. No release branch cut. Version string is `X.Y.Z.devN`.
 - **Release-candidate**: readiness review after the release branch is cut. Version string is `X.Y.ZrcN` or head is `release-X.Y`.
@@ -126,7 +135,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 
 1. Run the commit-list tool:
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py \
+   uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/list_commits.py \
      --base <base-ref> \
      --head <head-ref> \
      --report-date "$(date +%F)" \
@@ -136,7 +145,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 
 2. Run the dependency and license audit helper:
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py \
+   uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/license_audit.py \
      --base <base-ref> \
      --head <head-ref>
    ```
@@ -163,13 +172,40 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
    - If the helper reports "not evaluated (--skip-pypi)", say that package-index metadata was deferred and should be checked before final release sign-off. Do not turn that into a per-package review list.
    - If a new package is proprietary, copyleft, commercial, unknown, not declared, or not checked due to lookup failure, mention that in the release highlights only when users can install it through a published extra or documented workflow.
 
-3. Read `CHANGELOG.md` using the Read tool. Choose the section by mode:
-   - **Pre-release / RC**: read `CHANGELOG.md` at HEAD. Locate the `## [Unreleased]` header. Collect all content from that header up to (but not including) the next `## [X.Y.Z]` header.
-   - **Retrospective**: read `CHANGELOG.md` at HEAD (the current working tree — CHANGELOG is append-only, so the section for a prior release is still present). Locate the `## [<target-version>]` header (e.g., `## [1.1.0] - 2026-04-13`; match the prefix `## [<target-version>]` and tolerate optional date text after it). Collect content from that header up to (but not including) the next `## [X.Y.Z]` header (the previous release's section). If the header cannot be found at HEAD, fall back to `git show v<target>:CHANGELOG.md` and parse that file the same way (in case the section was renamed or removed in a later refactor).
+3. Load the pending or released changelog source by mode:
+   - **Pre-release / RC**: user-facing release scope is the rolling
+     `## [<target-version>]` section in `CHANGELOG.md`, when already assembled,
+     plus any later `.md` fragments on the resolved head. Before the first
+     Towncrier build, use the fragments plus legacy `[Unreleased]` entries.
+     Enumerate `changelog/*.md` with
+     `git ls-tree -r --name-only <head> -- changelog`, exclude `README.md`,
+     and read each file with `git show <head>:<path>`. Inventory `.skip` files
+     separately. Read `CHANGELOG.md` with `git show <head>:CHANGELOG.md`. If the
+     target's dated section exists, collect it through the next dated heading
+     and treat it as the assembled baseline. Otherwise, legacy entries are
+     between `<!-- towncrier release notes start -->` and the next dated `##`
+     heading.
+     If the audited head is the checked-out clean working tree, also run:
+     ```bash
+     uvx --from towncrier==25.8.0 towncrier build --draft \
+       --version X.Y.Z --date YYYY-MM-DD
+     ```
+     Use the draft output as the canonical preview for fragments not yet folded
+     into the rolling section; it does not modify `CHANGELOG.md` or delete
+     fragments. Audit the assembled baseline and draft additions together.
+   - **Retrospective**: read the target tag's changelog with
+     `git show v<target>:CHANGELOG.md`. Locate the `## [<target-version>]`
+     header and collect content up to the next dated `##` heading.
 
-4. Parse subsections. Each starts with `### Added`, `### Removed`, `### Deprecated`, `### Changed`, `### Fixed`, or `### Documentation`. For every bullet under each subsection, extract:
+4. Parse entries. Infer a fragment's section from its filename type (`added`,
+   `changed`, `deprecated`, `removed`, or `fixed`); the file content is one
+   entry without a leading bullet. Parse legacy or dated Markdown under the
+   corresponding five `###` headings. For every entry, extract:
    - **Raw text (FULL — never truncate)**: the full bullet content (may span multiple lines).
-   - **Section**: one of the six names above.
+   - **Section**: one of the five names above.
+   - **Source path**: the fragment path or `CHANGELOG.md`.
+   - **Fragment identifier**: the numeric issue or leading-`+` orphan prefix
+     from the filename. Same-category counters do not change the identifier.
    - **GH refs**: regex `GH-(\d+)` over the bullet text. Dedup. (Newton commits and CHANGELOG entries sometimes also reference `#NNNN` as a bare PR number; capture these too.)
    - **Migration hint**: does the prose contain a migration phrase (`use <new>`, `in favor of`, `renamed to`, `replaced by`, `switch to`, `migrate to`)? Record a boolean.
 
@@ -179,11 +215,23 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 
 1. **Build the commit ↔ CHANGELOG join** on GH-ref overlap:
    - For each CHANGELOG entry with at least one GH ref, find commits (from `commit_list_json`) whose `gh_refs` intersect.
-   - For each CHANGELOG entry with ZERO matching commits on GH ref, attempt a secondary lookup — find the commit(s) on HEAD that introduced or modified this exact entry text in `CHANGELOG.md`:
+   - For each pending fragment, find the commit that added its exact path:
      ```bash
-     git log --reverse -S'<distinctive substring from the entry>' --format='%H|%s|%cs' -- CHANGELOG.md
+     git log --reverse --diff-filter=A --format='%H|%s|%cs' \
+       <base-ref>..<head-ref> -- changelog/<fragment-filename>
      ```
-     The first commit whose subject isn't a CHANGELOG-only edit (e.g., not "Clean up changelog", not a version bump) usually IS the code change associated with the entry. Record that as the backing commit.
+     Numeric identifiers link to issues, not necessarily to the implementing
+     pull request, so the fragment-addition commit is the authoritative join.
+   - For legacy entries and any fragment still lacking a backing commit, put
+     the distinctive substring in `entry_text` without interpolating it into
+     shell source, then search exact text across both storage forms:
+     ```bash
+     git log --reverse -S"$entry_text" \
+       --format='%H|%s|%cs' <base-ref>..<head-ref> -- CHANGELOG.md changelog
+     ```
+     The first commit that is not a Towncrier build, synchronization, or another
+     changelog-only edit usually is the code change associated with the entry.
+     Record that as the backing commit.
    - After these two passes, any CHANGELOG entry still with no matching commit is a genuine orphan case (deferred/dropped). Keep full entry text; do not truncate in the report.
 
 2. **Do NOT build an audit trace of unmatched commits.** The old "commits without CHANGELOG entries" appendix adds noise without value. Commits that don't map to a CHANGELOG entry are not surfaced in the report.
@@ -205,7 +253,25 @@ Classification:
 
 **If an entry mentions multiple symbols where some are new and some pre-existed** (e.g., "Add `newton.geometry.compute_offset_mesh()` and a viewer toggle"), split: the genuinely new symbols each get a New API entry; the extensions to existing symbols each get a Changes entry.
 
-**Public-API exposure check.** For every symbol that passes the "genuinely new" test, also verify at HEAD that it is reachable via one of the public re-export modules listed above. If the symbol only exists under `newton._src.*` and is not re-exported through a public module, flag it in the report (Section "CHANGELOG Review Notes" → 🕵️ Private-only) — AGENTS.md requires user-facing symbols to be re-exported and forbids examples/docs from importing `newton._src`. Do not treat this as a hard block on the entry; surface it so the release manager can confirm the symbol was intended to be public.
+**Public-API declaration and exposure check.** At HEAD, inspect every public
+module discovered by `api_modules()` and `solver_submodule_pages()`. Each module
+must define `__all__` as a list or tuple containing only strings; a missing or
+invalid declaration is a policy finding in "CHANGELOG Review Notes". For every
+symbol that passes the "genuinely new" test, collect its memberships across
+those declarations:
+
+- No memberships: report 🕵️ Private-only. The symbol exists only under
+  `newton._src.*` and was not re-exported through a public module.
+- One membership: the symbol has a canonical public import path.
+- More than one membership: report a duplicate-public-export policy finding
+  and list every public module that exports it.
+
+`CODING_GUIDELINES.rst` requires each public symbol to appear in exactly one
+public module's `__all__` and forbids examples/docs from importing
+`newton._src`. Do not treat the private-only finding as a hard block on the
+entry; surface it so the release manager can confirm the symbol was intended
+to be public. Treat missing or invalid declarations and duplicate exports as
+policy findings that require an explicit release decision.
 
 ### 4b — Resolve New API signatures + docstrings
 
@@ -234,11 +300,11 @@ For each CHANGELOG entry in Changed / Removed / Deprecated (plus any "capability
 - For semantic-only changes (no signature shift) where the prose describes a rename / reorder / behavioral flip: skip the diff block; include the backing commit's URL and the full CHANGELOG text.
 - For Removed entries: show the old signature on a `-` line; omit `+`.
 
-**Deprecation-window lookup for Removed entries.** Newton's policy (per AGENTS.md) is: *breaking changes require a deprecation first*. Every Removed entry needs evidence of a deprecation in a prior release. Start with the released CHANGELOG, then fall back to code-level runtime-warning evidence at the base ref. For every Removed entry (and every Changed entry whose prose describes a removal), search CHANGELOG.md for the matching prior Deprecated entry:
+**Deprecation-window lookup for Removed entries.** Newton's policy (per `CODING_GUIDELINES.rst`) is: *breaking changes require a deprecation first*. Every Removed entry needs evidence of a deprecation in a prior release. Start with the released CHANGELOG, then fall back to code-level runtime-warning evidence at the base ref. For every Removed entry (and every Changed entry whose prose describes a removal), search CHANGELOG.md for the matching prior Deprecated entry:
 
 1. Extract distinctive tokens from the Removed entry: the named symbol(s) in backticks and, if the entry carries a GH ref, that ref number.
 2. Scan the appropriate released-version sections of CHANGELOG.md for a `### Deprecated` bullet that names the same symbol(s) OR the same GH ref. The search scope depends on mode:
-   - **Pre-release / RC** (current target is `Unreleased`): scan everything below `## [Unreleased]` (i.e., all historical released sections), top-down.
+   - **Pre-release / RC**: scan all dated sections, top-down. Pending fragments and legacy current-cycle entries do not prove a prior shipped deprecation.
    - **Retrospective** (current target is `X.Y.Z`): scan ONLY the sections strictly below `## [X.Y.Z]` in CHANGELOG.md — the prior-release sections. Do NOT consider `## [Unreleased]` or later-version sections; they were written after `X.Y.Z` shipped and cannot have preceded it. Top-down within the allowed range.
    The FIRST such entry (highest version, since CHANGELOG is reverse-chronological) is the deprecation introduction.
 3. If a matching CHANGELOG entry is found, record: (a) the release version heading that contains the Deprecated entry (e.g., `1.0.0`), (b) the full Deprecated entry text.
@@ -303,7 +369,7 @@ For each entry in Breaking Changes, Changes to Existing API, and Removed (as col
 
 1. Collect candidate symbols / feature-area phrases from the entry: backticked identifiers, class names, and (for topic-style entries) the most distinctive descriptive noun phrase.
 2. Search CHANGELOG.md in released-version sections for bullets that name one of the candidates AND contain the literal substring `experimental` (case-insensitive). Also match via GH ref if the current entry and a prior experimental entry share a GH number. Scope:
-   - **Pre-release / RC**: everything below `## [Unreleased]`.
+   - **Pre-release / RC**: all dated sections.
    - **Retrospective** (current target is `X.Y.Z`): everything below `## [X.Y.Z]`. The stability-promotion check (step 3 below) likewise only considers versions strictly before `X.Y.Z`.
 3. If a match exists AND there is no subsequent CHANGELOG bullet in a later released version explicitly promoting the symbol to stable (e.g., "Promote X out of experimental", "Stabilize Y"), the symbol is still experimental. Record: (a) the release version that introduced the symbol as experimental, (b) the full text of that introduction bullet.
 4. Also check the module source at HEAD for an in-code `.. experimental` / `Experimental:` / `experimental_api` / `@experimental` annotation on the symbol's declaration. If present, treat as experimental regardless of CHANGELOG signal.
@@ -328,8 +394,8 @@ Read `references/language-review-examples.md`. For EACH CHANGELOG entry, apply L
 - **🗣️ Internal language**: internal module paths (`newton._src.*`), private identifiers with a leading underscore, Warp-internal types (`wp.types.*` that are not documented user types), implementation-detail verbs ("refactor", "reorganize", "rewrite") without a user-visible outcome.
 - **📝 Too terse**: under ~10 words with no context, or missing migration guidance in a Deprecated / Changed entry that names a rename or removal.
 - **🕵️ Private-only symbol**: the CHANGELOG `### Added` entry names a symbol that exists only in `newton._src.*` at HEAD and is not re-exported through a public module. See Phase 4a.
-- **📐 Missing migration guidance** (Newton-specific): entries in `### Deprecated`, `### Removed`, or `### Changed` (where the prose indicates rename / reorder / removal) MUST include migration guidance per AGENTS.md ("Use `Y` instead", "in favor of `Y`", "switch to `Y`"). Flag entries that rename or remove symbols without pointing to the replacement.
-- **🏷️ Naming-convention drift** (Newton-specific): new public symbols in `### Added` whose names violate Newton's prefix-first convention (e.g., `PDActuator` should be `ActuatorPD`; `add_sphere_shape()` should be `add_shape_sphere()`). See AGENTS.md.
+- **⬆️ Missing migration guidance** (Newton-specific): entries in `### Deprecated`, `### Removed`, or `### Changed` (where the prose indicates rename / reorder / removal) MUST include migration guidance per `changelog/README.md` ("Use `Y` instead", "in favor of `Y`", "switch to `Y`"). Flag entries that rename or remove symbols without pointing to the replacement.
+- **🏷️ Naming-convention drift** (Newton-specific): new public symbols in `### Added` whose names violate Newton's prefix-first convention (e.g., `PDActuator` should be `ActuatorPD`; `add_sphere_shape()` should be `add_shape_sphere()`). See `CODING_GUIDELINES.rst`.
 
 Record flagged entries. Keep the FULL entry text in the audit table — do not truncate.
 
@@ -361,12 +427,12 @@ Take the sorted list, drop everything up to and including `vX.Y.Z`, keep the res
 - `vX.Y.1`, `vX.Y.2`, ... (patch releases on the same minor)
 - `vX.Y+1.0`, `vX.Y+1.1`, ... (the next minor and its patches)
 
-For each post-target tag, read its CHANGELOG section (the `## [<version>]` block in `CHANGELOG.md` at HEAD, or via `git show <tag>:CHANGELOG.md` if the section has since been edited). Parse the six subsections (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Documentation`) the same way Phase 2 does.
+For each post-target tag, read its CHANGELOG section (the `## [<version>]` block in `CHANGELOG.md` at HEAD, or via `git show <tag>:CHANGELOG.md` if the section has since been edited). Parse the five subsections (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`) the same way Phase 2 does.
 
 Also collect the commits in each post-target range (`<prior-tag>..<tag>`) — one full `list_commits.py` invocation per range, with the same required args as Phase 2. `--main-ref` reuses the main ref resolved in Phase 1 (don't rely on the script's `upstream/main` default; Phase 1 may have fallen back to a different remote):
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py \
+uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/list_commits.py \
   --base <prior-tag> \
   --head <tag> \
   --report-date "$(date +%F)" \
@@ -395,7 +461,7 @@ The calibration section groups results by flag class and, within each, by outcom
 - Invalidated if: the symbol stays reachable only via `_src` in every post-target release AND no issues reference it — it was probably intentional internal-only despite its position in the Added section. Note this as "intended internal; CHANGELOG language could have been clearer".
 - Unresolved if: the symbol was removed / renamed before re-export resolution.
 
-**📐 Missing-migration-guidance:**
+**⬆️ Missing-migration-guidance:**
 - Validated if: a later release's CHANGELOG bullet (in `### Changed` or `### Fixed`) retroactively points to the replacement, OR a subsequent issue references users stuck on the migration. The second signal is only available if `gh issue list` returns matches for the symbol name; probe with `gh issue list --search "<symbol>" --state all --json number,title`.
 - Invalidated if: the migration was handled by a runtime `DeprecationWarning` with a clear message (grep the code at `v<target>` for the warning text).
 - Unresolved: default.
@@ -523,7 +589,10 @@ Newton <version-string> <Pre-Release|Release Candidate|Retrospective> Report
    gh gist create --desc "<stable-desc>" /tmp/<gist-filename>
    ```
    Capture the gist URL from stdout.
-3. Delete `/tmp/<gist-filename>` so no local artifact remains.
+3. Delete the validated temporary report with:
+   ```bash
+   uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py /tmp/<gist-filename>
+   ```
 4. Print a one-line chat summary:
    - Gist URL.
    - Headline counts.
@@ -535,7 +604,10 @@ Newton <version-string> <Pre-Release|Release Candidate|Retrospective> Report
    gh gist edit <id> /tmp/<gist-filename>
    ```
    `gh` matches the basename to the existing file in the gist and replaces its contents; the prior version is preserved in the gist's git history. Do NOT pass `--desc` — keeping the description stable is what lets the next run match this gist again.
-3. Delete `/tmp/<gist-filename>`.
+3. Delete the validated temporary report with:
+   ```bash
+   uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py /tmp/<gist-filename>
+   ```
 4. Print a one-line chat summary:
    - Gist URL (`https://gist.github.com/<id>`).
    - Note: "revised in place; prior versions kept in gist git history".
@@ -547,10 +619,11 @@ Never pass `--public`. Never file a destination the user did not choose.
 
 - GH ref: `\bGH-(\d+)` — word boundary prevents matching inside other identifiers.
 - Bare PR ref: `(?<![\w/])#(\d+)\b` — Newton entries occasionally reference PR numbers as `#NNNN`. Treat as a GH ref candidate.
-- CHANGELOG Unreleased section header: `## [Unreleased]` — may have trailing date text; match prefix only.
-- CHANGELOG subsection headers: `### Added`, `### Removed`, `### Deprecated`, `### Changed`, `### Fixed`, `### Documentation`.
+- Pending fragment filename: `changelog/(ISSUE|+SLUG-RANDOM).TYPE[.COUNTER].md`.
+- Towncrier insertion marker: `<!-- towncrier release notes start -->`.
+- CHANGELOG subsection headers: `### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed`.
 - Symbol extraction from entry text: backtick-quoted `newton.X`, `newton.X.Y`, `ClassName.method`, bare `ClassName` (capitalized identifier), bare `snake_case_name()`. The FIRST backtick-quoted symbol in the bullet is usually the primary subject.
-- Migration-guidance regex (Phase 5a 📐): case-insensitive search for `use\s+\x60`, `in favor of`, `renamed? to`, `replaced? by`, `switch to`, `migrate to`, `prefer\s+\x60` (where `\x60` matches a backtick).
+- Migration-guidance regex (Phase 5a ⬆️): case-insensitive search for `use\s+\x60[^\x60]+\x60`, `in favor of\s+\x60[^\x60]+\x60`, `rename(?:d)?(?:\s+\x60[^\x60]+\x60)?\s+to\s+\x60[^\x60]+\x60`, `replace(?:d)?(?:\s+\x60[^\x60]+\x60)?\s+by\s+\x60[^\x60]+\x60`, `switch to\s+\x60[^\x60]+\x60`, `migrate to\s+\x60[^\x60]+\x60`, `prefer\s+\x60[^\x60]+\x60` (where `\x60` matches a backtick).
 
 ## Failure modes
 
@@ -558,6 +631,6 @@ Never pass `--public`. Never file a destination the user did not choose.
 - **`Added` entry names a symbol not resolvable at HEAD**: render with a ⚠️ note; do NOT emit synthetic `newton.*` stub names.
 - **`upstream/` remote missing**: substitute `origin/`. Note the substitution in the report header.
 - **Release branch exists but contains no new commits past main**: treat as head==main effectively; skip cherry-pick detection.
-- **CHANGELOG `[Unreleased]` missing or empty**: header warns: "No `[Unreleased]` entries found in CHANGELOG.md."
+- **No rolling target section, pending `.md` fragments, or legacy `[Unreleased]` entries in pre-release / RC mode**: header warns: "No user-facing pending changelog entries found on the audited ref." Report the `.skip` count separately so an intentionally quiet release is distinguishable from missing data.
 - **`gh` installed but not authenticated**: treat as `gh` unavailable; skip gist matching and gist prompt; add one-line chat note.
 - **`pyproject.toml` version is non-standard** (not matching `X.Y.ZdevN`, `X.Y.ZrcN`, or `X.Y.Z`): treat as pre-release mode, record the raw string in the header, and continue.

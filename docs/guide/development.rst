@@ -4,9 +4,16 @@
 Development
 ===========
 
-This document is a guide for developers who want to contribute to the project or understand its internal workings in more detail.
+This document covers environment setup and operational workflows for developers
+who want to contribute to Newton or understand its internal workings.
 
-Please refer to `CONTRIBUTING.md <https://github.com/newton-physics/governance/blob/main/CONTRIBUTING.md>`_ for how to best contribute to Newton and relevant legal information (CLA).
+See the repository's
+`CONTRIBUTING.md <https://github.com/newton-physics/newton/blob/main/CONTRIBUTING.md>`_
+for contribution and pull-request workflows. The
+`governance contribution guidelines <https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md>`_
+cover legal requirements, project roles, and approval authority. Code and
+public API changes must follow the :doc:`source_code_guidelines`. Reviewers may
+use the suggested :doc:`review_guidelines`.
 
 Installation
 ------------
@@ -492,9 +499,14 @@ docs with Sphinx, and deploy to the corresponding directory on ``gh-pages``. Upd
 API documentation
 -----------------
 
-Newton's API reference is auto-generated from the ``__all__`` lists of its public modules.
-The script ``docs/generate_api.py`` produces reStructuredText files under ``docs/api/``
-that Sphinx processes via ``autosummary`` to create individual pages for every public symbol.
+The :ref:`source-code-guidelines` define the canonical-export and ``__all__``
+requirements. The following procedure publishes that API in Newton's reference
+documentation.
+
+The API reference is auto-generated from the ``__all__`` lists of Newton's
+public modules. The script ``docs/generate_api.py`` produces reStructuredText
+files under ``docs/api/`` that Sphinx processes via ``autosummary`` to create
+individual pages for every public symbol.
 
 Whenever you add, remove, or rename a public symbol in one of the public modules
 (``newton``, ``newton.geometry``, ``newton.solvers``, ``newton.sensors``, etc.),
@@ -522,19 +534,20 @@ After running the script, rebuild the documentation to verify the result (see
 
 .. note::
 
-    Only symbols listed in a module's ``__all__`` (or, as a fallback, its public
-    attributes) are included. If a new class or function in ``newton/_src/`` should
-    be visible to users, re-export it through the appropriate public module first.
+    Only symbols listed in a Newton public module's ``__all__`` are supported
+    public API. ``docs/generate_api.py`` rejects modules that do not define
+    ``__all__`` as a list or tuple so undeclared attributes cannot be published
+    accidentally. Export a user-facing symbol from ``newton/_src/`` through
+    its canonical public module before generating the API pages.
 
 .. _experimental-features:
 
 Experimental features
 ^^^^^^^^^^^^^^^^^^^^^
 
-Mark user-facing experimental API with the ``.. experimental::`` directive in
-the public docstring or concept page where users encounter it. The directive is
-the user-facing compatibility marker; do not add a separate policy page or
-inline prose block for the same status.
+The :ref:`source-code-guidelines` define the experimental public API contract.
+Use the ``.. experimental::`` directive in the public docstring or concept page
+selected by that policy.
 
 With no body, the directive renders Newton's standard notice:
 
@@ -559,20 +572,11 @@ names the exact scope:
 
                 The ``"sticky"`` mode may change without prior notice.
 
-When adding or changing experimental public API:
+When documenting experimental public API:
 
-- keep the marker in the public docs or docstring, not just in comments;
 - keep status tables and summaries concise; use plain text such as
   ``experimental`` instead of linking every status label to the marker;
-- describe any relevant limitations in the concept docs;
 - run ``uv run python docs/generate_api.py`` when public API symbols change.
-
-Use a domain-local experimental namespace only for a cohesive new subsystem
-that can reasonably live behind an opt-in import path, for example
-``newton.solvers.experimental.<feature>``. Do not move existing public classes
-such as solver backends into an experimental namespace just to communicate
-implementation maturity. Mark the specific class, behavior, option, or concept
-instead.
 
 Testing documentation code snippets
 -----------------------------------
@@ -604,10 +608,18 @@ documentation.
 Changelog
 ---------
 
-Newton maintains a ``CHANGELOG.md`` at the repository root.
+Pull requests with user-facing changes add fragments under ``changelog/``
+instead of editing ``CHANGELOG.md``. Use a GitHub issue number as the identifier
+when one exists, or a readable identifier beginning with ``+`` for work without
+an issue. For example:
 
-When a pull request modifies user-facing behavior, add an entry under the
-``[Unreleased]`` section in the appropriate category:
+.. code-block:: text
+
+   3607.added.md
+   3607.fixed.md
+   +camera-rays-a1b2c3d4.added.md
+
+The supported categories are:
 
 - **Added** — new features
 - **Changed** — changes to existing functionality (include migration guidance)
@@ -616,18 +628,13 @@ When a pull request modifies user-facing behavior, add an entry under the
 - **Removed** — removed features (include migration guidance)
 - **Fixed** — bug fixes
 
-Use imperative present tense ("Add X", not "Added X") and keep entries concise.
-Internal implementation details (refactors, CI tweaks) that do not affect users
-should **not** be listed.
-
-Style Guide
------------
-
-- Follow PEP 8 for Python code.
-- Use Google-style docstrings (compatible with Napoleon extension).
-- Write clear, concise commit messages.
-- Keep pull requests focused on a single feature or bug fix.
-- Use kebab-case instead of snake_case for command line arguments, e.g. ``--use-cuda-graph`` instead of ``--use_cuda_graph``.
+Each file contains one entry without a leading bullet. Use imperative present
+tense ("Add X", not "Added X"), end with a period, and keep entries concise.
+An optional one-line ``.skip`` fragment can record why work has no user-facing
+impact. Multiline entries, multiple categories, same-category counters,
+creation commands, and Towncrier's non-mutating ``--draft`` preview are
+documented in the `changelog fragment guide
+<https://github.com/newton-physics/newton/blob/main/changelog/README.md>`__.
 
 Writing examples
 ----------------
@@ -652,17 +659,17 @@ class with the following interface:
             ...
 
         def test_final(self):
-            """Validate the final simulation state. Required for CI."""
+            """Optionally validate the simulation state after the example completes."""
             ...
 
         def test_post_step(self):
             """Optional per-step validation, called after every step() in test mode."""
             ...
 
-Every example **must** implement ``test_final()`` (or ``test_post_step()``, or both).
-The test harness runs examples with ``--viewer null --test`` and calls these methods to
-verify simulation correctness. An example that implements neither will raise
-``NotImplementedError`` in CI.
+Every example must implement ``test_final()`` or ``test_post_step()``; it may
+implement both. In test mode, ``test_post_step()`` runs after each simulation
+step and ``test_final()`` runs after the example completes. An example that
+implements neither raises ``NotImplementedError`` in CI.
 
 Discovery and registration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -798,6 +805,43 @@ The benchmarks discovered by airspeed velocity are in the ``asv/benchmarks`` dir
 benchmark code from the ``asv/benchmarks`` directory against the code state of the ``main`` branch. Note that
 the benchmark definitions themselves are not checked out from different branches—only the code being
 benchmarked is.
+
+Simulation benchmark metrics
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The nightly robot and policy simulation benchmarks publish several metrics from one cached benchmark run. This
+includes the batched MuJoCo and Kamino KPI workloads, the non-policy DR Legs workload, the pretrained Anymal
+workload, and the XPBD quadruped workload. Companion ``FastMetrics*`` classes reuse the exact factories, scenes,
+solvers, and frame counts of existing aggregate benchmarks. Rendering, IK, inverse dynamics, CPU-backend
+regression, material/contact microbenchmarks, and startup benchmarks are not experience-collection workloads and
+are outside this metric set.
+
+Let ``F`` be the number of measured frames across all samples, ``S`` the number of physics substeps per frame,
+``W`` the world count, ``dt`` the physics timestep in seconds, ``T`` the synchronized complete-step wall time in
+seconds, and ``T_physics`` the workload's synchronized internal physics time. The reported metrics are:
+
+* mean world-step time: ``1000 * T_physics / (F * S * W)`` in ``ms/world-step`` for workloads with an internal
+  timer and ``1000 * T / (F * S * W)`` otherwise;
+* simulation throughput: ``F * S * W / T`` in ``world-steps/s``;
+* real-time factor: ``F * S * W * dt / T``;
+* p95 step time: the 95th percentile of synchronized complete-step times in ``ms/frame``; and
+* steady-state GPU memory in ``MiB``; and
+* mean and maximum MuJoCo solver iteration counts across worlds at the final frame of each measured sample.
+
+The existing KPI mean world-step series keeps its ``track_simulate`` name and definition, and existing
+``time_simulate`` aggregate series remain unchanged. ``world_count`` remains an ASV parameter where applicable,
+while ``sim_dt`` and ``sim_substeps`` are also recorded as tracked values so dashboard results retain the
+configuration needed to interpret throughput and real-time factor. The existing KPI mean series continues to use
+each workload's internal physics timer. Throughput, real-time factor, and p95 metrics time and synchronize the
+complete ``step()`` operation, including any policy or control work it performs.
+
+GPU memory is the decrease in ``Device.free_memory`` between a baseline immediately before the first finalized
+workload is created and a measurement after initialization, CUDA graph capture, and the first complete measured
+sample, while that sample's workload is still live. This device-level delta includes allocations from Warp,
+PyTorch, solver support, and CUDA graphs. Because the measurement is device-wide, runners must provide exclusive
+GPU access during the measurement interval. The remaining samples do not affect this measurement. A benchmark
+fails instead of publishing metrics if its final simulation state is invalid, has non-normalized body rotations,
+or exceeds the workload's body-speed bounds.
 
 Benchmarks can also be run against a range of commits using the ``commit1..commit2`` syntax.
 This is useful for comparing performance across several recent changes:

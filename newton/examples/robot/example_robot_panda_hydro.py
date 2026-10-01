@@ -12,6 +12,7 @@
 #
 ###########################################################################
 
+import argparse
 import copy
 from dataclasses import replace
 from enum import Enum
@@ -31,6 +32,10 @@ from newton.geometry import HydroelasticSDF
 class SceneType(Enum):
     PEN = "pen"
     CUBE = "cube"
+
+
+GRIPPER_PAD_OPACITY = 0.6
+CUP_OPACITY = 0.5
 
 
 def quat_to_vec4(q: wp.quat) -> wp.vec4:
@@ -53,9 +58,10 @@ def broadcast_ik_solution_kernel(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.scene = SceneType(args.scene)
         self.test_mode = args.test
+        self.deterministic = args.deterministic
+        self.deterministic_solver = args.deterministic_solver
         self.show_isosurface = False  # Disabled by default for performance
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -142,10 +148,13 @@ class Example:
         builder.joint_q[:9] = [*init_q, 0.05, 0.05]
         builder.joint_target_q[:9] = [*init_q, 1.0, 1.0]
 
-        builder.joint_target_ke[:9] = [650.0] * 9
-        builder.joint_target_kd[:9] = [100.0] * 9
+        # Compliant finger drives avoid releasing stored squeeze energy into lightweight objects.
+        builder.joint_target_ke[:7] = [650.0] * 7
+        builder.joint_target_ke[7:9] = [100.0] * 2
+        builder.joint_target_kd[:7] = [100.0] * 7
+        builder.joint_target_kd[7:9] = [20.0] * 2
         builder.joint_effort_limit[:7] = [80.0] * 7
-        builder.joint_effort_limit[7:9] = [20.0] * 2
+        builder.joint_effort_limit[7:9] = [5.0] * 2
         builder.joint_armature[:7] = [0.1] * 7
         builder.joint_armature[7:9] = [0.5] * 2
 
@@ -173,8 +182,20 @@ class Example:
             wp.vec3(0.0, 0.005, 0.045),
             wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -np.pi),
         )
-        builder.add_shape_mesh(body=left_finger_idx, mesh=pad_mesh, xform=pad_xform, cfg=shape_cfg_meshes)
-        builder.add_shape_mesh(body=right_finger_idx, mesh=pad_mesh, xform=pad_xform, cfg=shape_cfg_meshes)
+        builder.add_shape_mesh(
+            body=left_finger_idx,
+            mesh=pad_mesh,
+            xform=pad_xform,
+            cfg=shape_cfg_meshes,
+            opacity=GRIPPER_PAD_OPACITY,
+        )
+        builder.add_shape_mesh(
+            body=right_finger_idx,
+            mesh=pad_mesh,
+            xform=pad_xform,
+            cfg=shape_cfg_meshes,
+            opacity=GRIPPER_PAD_OPACITY,
+        )
 
         # Table
         box_size = 0.05
@@ -202,6 +223,7 @@ class Example:
 
         # Object to manipulate
         self.put_in_cup = True
+        self.cup_body_local = None
 
         if self.scene == SceneType.PEN:
             radius = 0.005
@@ -249,8 +271,8 @@ class Example:
                 wp.vec3(self.cup_pos),
                 wp.quat_identity(),
             )
-            cup_body = builder.add_body(label="cup", xform=cup_xform)
-            builder.add_shape_mesh(body=cup_body, mesh=cup_mesh, cfg=shape_cfg_meshes)
+            self.cup_body_local = builder.add_body(label="cup", xform=cup_xform)
+            builder.add_shape_mesh(body=self.cup_body_local, mesh=cup_mesh, cfg=shape_cfg_meshes, opacity=CUP_OPACITY)
 
         # build model for IK
         self.model_single = copy.deepcopy(builder).finalize()
@@ -281,6 +303,7 @@ class Example:
             reduce_contacts=True,
             broad_phase="explicit",
             sdf_hydroelastic_config=sdf_hydroelastic_config,
+            deterministic=self.deterministic,
         )
         self.contacts = self.collision_pipeline.contacts()
 
@@ -288,6 +311,7 @@ class Example:
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco_contacts=False,
+            disable_sensors=True,
             solver="newton",
             integrator="implicitfast",
             cone="elliptic",
@@ -296,6 +320,9 @@ class Example:
             iterations=15,
             ls_iterations=100,
             impratio=1000.0,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN
+            if self.deterministic_solver
+            else wp.DeterministicMode.NOT_GUARANTEED,
         )
 
         self.viewer.set_model(self.model)
@@ -417,6 +444,7 @@ class Example:
             self.viewer.show_hydro_contact_surface = self.show_isosurface
 
     def test_final(self):
+        """Verify that the object is lifted and placed in the upright cup."""
         # Verify that the object was picked up by checking the maximum height reached
         initial_z = self.object_pos[2]
         min_lift_height = 0.15  # Object should be lifted at least 15cm above initial position
@@ -431,26 +459,32 @@ class Example:
                 f"max lift={max_lift:.3f} (expected > {min_lift_height})"
             )
 
-        # In-cup placement check disabled — see newton-physics/newton#1337.
-        # Hydroelastic contact ordering on GPU still occasionally lets the pen
-        # slip out of the gripper during transport, producing both small drifts
-        # and complete misses. Lift-height check above remains as a coarse
-        # pickup verification.
-        # # Verify that the object ended up in the cup
-        # if self.put_in_cup:
-        #     body_q = self.state_0.body_q.numpy()
-        #     cup_x, cup_y, cup_z = self.cup_pos
-        #     tolerance_xy = 0.05
-        #     min_z = cup_z - 0.05
-        #
-        #     for world_idx in range(self.world_count):
-        #         object_body_idx = world_idx * self.bodies_per_world + self.object_body_local
-        #         x, y, z = body_q[object_body_idx][:3]
-        #         assert abs(x - cup_x) < tolerance_xy and abs(y - cup_y) < tolerance_xy and z > min_z, (
-        #             f"World {world_idx}: Object is not in the cup. "
-        #             f"Object pos=({x:.3f}, {y:.3f}, {z:.3f}), "
-        #             f"cup pos=({cup_x:.3f}, {cup_y:.3f}, {cup_z:.3f})"
-        #         )
+        if self.cup_body_local is None:
+            return
+
+        body_q = self.state_0.body_q.numpy()
+        tolerance_xy = 0.02
+        min_cup_up_z = 0.95
+
+        for world_idx in range(self.world_count):
+            body_offset = world_idx * self.bodies_per_world
+            object_position = body_q[body_offset + self.object_body_local][:3]
+            cup_pose = body_q[body_offset + self.cup_body_local]
+            cup_position = cup_pose[:3]
+            cup_rotation = cup_pose[3:]
+            cup_up_z = 1.0 - 2.0 * (cup_rotation[0] ** 2 + cup_rotation[1] ** 2)
+            horizontal_offset = float(np.linalg.norm(object_position[:2] - cup_position[:2]))
+
+            assert cup_up_z > min_cup_up_z, (
+                f"World {world_idx}: Cup fell over. "
+                f"Cup pose={cup_pose.tolist()}, up_z={cup_up_z:.3f} "
+                f"(expected > {min_cup_up_z})"
+            )
+            assert horizontal_offset < tolerance_xy and object_position[2] > cup_position[2] - 0.05, (
+                f"World {world_idx}: Object is not in the cup. "
+                f"Object pos={object_position.tolist()}, cup pos={cup_position.tolist()}, "
+                f"horizontal offset={horizontal_offset:.3f} (expected < {tolerance_xy})"
+            )
 
     def setup_ik(self):
         self.ee_index = 10
@@ -525,6 +559,25 @@ class Example:
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(num_frames=720)
         parser.set_defaults(world_count=1)
+        parser.add_argument(
+            "--deterministic",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help=(
+                "Make contact generation and ordering reproducible across runs on the same GPU. "
+                "Enabled by default to keep the pick-and-place sequence stable; costs a few percent of step time."
+            ),
+        )
+        parser.add_argument(
+            "--deterministic-solver",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help=(
+                "Additionally make the solver bit-exact. Separate from --deterministic because "
+                "it instruments every atomic scatter in the solver and costs ~7x step time, "
+                "while contact ordering is what varies between runs."
+            ),
+        )
         parser.add_argument(
             "--scene",
             type=str,

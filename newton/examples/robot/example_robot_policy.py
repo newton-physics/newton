@@ -328,7 +328,8 @@ class Example:
         if self.device.is_cpu or self.device.is_mempool_enabled:
             print("[INFO] Using graph capture")
             self.use_graph = True
-            self.control.joint_target_q = wp.zeros(self.config["num_dofs"] + 6, dtype=wp.float32, device=self.device)
+            # Coord layout: 7 slots for the free base (3 position + 4 quaternion).
+            self.control.joint_target_q = wp.zeros(self.config["num_dofs"] + 7, dtype=wp.float32, device=self.device)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -362,15 +363,14 @@ class Example:
             self._prev_act_wp.zero_()
 
     def step(self):
-        if hasattr(self.viewer, "is_key_down"):
-            fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
-            lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
-            rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
-            self._command = wp.vec3(float(fwd), float(lat), float(rot))
-            reset_down = bool(self.viewer.is_key_down("p"))
-            if reset_down and not self._reset_key_prev:
-                self.reset()
-            self._reset_key_prev = reset_down
+        fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
+        lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
+        rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
+        self._command = wp.vec3(float(fwd), float(lat), float(rot))
+        reset_down = bool(self.viewer.is_key_down("p"))
+        if reset_down and not self._reset_key_prev:
+            self.reset()
+        self._reset_key_prev = reset_down
 
         wp.launch(
             _compute_obs_kernel,
@@ -393,13 +393,13 @@ class Example:
 
         wp.launch(
             _build_joint_target_q_kernel,
-            dim=6 + self._num_dofs,
+            dim=7 + self._num_dofs,
             inputs=[
                 act_wp,
                 self._joint_pos_initial_wp,
                 self._mjc_to_physx_wp,
                 float(self.config["action_scale"]),
-                6,
+                7,
                 self.control.joint_target_q,
             ],
             device=self.device,

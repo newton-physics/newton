@@ -195,6 +195,42 @@ def repack_shape_colors(
 
 
 @wp.kernel
+def repack_shape_opacities(
+    shape_opacities: wp.array[wp.float32],
+    slot_to_shape: wp.array[wp.int32],
+    packed_shape_opacities: wp.array[wp.float32],
+):
+    """Repack model-order shape opacities into viewer batch order."""
+    tid = wp.tid()
+    packed_shape_opacities[tid] = wp.clamp(shape_opacities[slot_to_shape[tid]], 0.0, 1.0)
+
+
+@wp.kernel
+def flag_changed_floats(
+    current: wp.array[wp.float32],
+    cached: wp.array[wp.float32],
+    changed: wp.array[wp.int32],
+):
+    """Set changed[0] when any element differs between the two arrays."""
+    tid = wp.tid()
+    if current[tid] != cached[tid]:
+        changed[0] = 1
+
+
+@wp.kernel
+def flag_changed_vec3s(
+    current: wp.array[wp.vec3],
+    cached: wp.array[wp.vec3],
+    changed: wp.array[wp.int32],
+):
+    """Set changed[0] when any vector differs between the two arrays."""
+    tid = wp.tid()
+    delta = current[tid] - cached[tid]
+    if wp.dot(delta, delta) != 0.0:
+        changed[0] = 1
+
+
+@wp.kernel
 def estimate_world_extents(
     shape_transform: wp.array[wp.transform],
     shape_body: wp.array[int],
@@ -257,6 +293,7 @@ def compute_contact_lines(
     body_q: wp.array[wp.transform],
     shape_body: wp.array[int],
     shape_world: wp.array[int],
+    shape_collision_radius: wp.array[float],
     world_offsets: wp.array[wp.vec3],
     layer_xform: wp.transform,
     visible_worlds_mask: wp.array[int],
@@ -316,12 +353,232 @@ def compute_contact_lines(
     contact_center = wp.transform_point(layer_xform, contact_center)
     normal = wp.quat_rotate(wp.transform_get_rotation(layer_xform), contact_normal[tid])
 
-    # Create line along normal direction
+    # Create line along the normal, relative to the smaller shape in the pair.
     # Normal points from shape0 to shape1, draw from center in normal direction
-    line_vector = normal * line_scale
+    pair_radius = wp.min(shape_collision_radius[shape_a], shape_collision_radius[shape_b])
+    line_vector = normal * (line_scale * pair_radius)
 
     line_start[tid] = contact_center
     line_end[tid] = contact_center + line_vector
+
+
+@wp.func
+def _quat_from_normal_z(normal: wp.vec3) -> wp.quat:
+    """Build a rotation quaternion whose local +Z axis aligns with ``normal``.
+
+    The tangent axes are arbitrary. Implemented with :func:`orthonormal_basis`
+    for numerical stability near the poles.
+    """
+    n = wp.normalize(normal)
+    t1, t2 = orthonormal_basis(n)
+    R = wp.matrix_from_cols(t1, t2, n)
+    return wp.quat_from_matrix(R)
+
+
+@wp.kernel
+def compute_contact_disk_transforms(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    shape_body: wp.array[int],
+    shape_world: wp.array[int],
+    shape_collision_radius: wp.array[float],
+    world_offsets: wp.array[wp.vec3],
+    visible_worlds_mask: wp.array[int],
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_force: wp.array[wp.spatial_vector],
+    disk_radius_scale: float,
+    disk_thickness_scale: float,
+    eps_force: float,
+    eps_velocity: float,
+    color_open: wp.vec3,
+    color_stick: wp.vec3,
+    color_slip: wp.vec3,
+    # outputs
+    transforms: wp.array[wp.transform],
+    scales: wp.array[wp.vec3],
+    colors: wp.array[wp.vec3],
+):
+    """Compute per-contact disk transforms, scales, and mode-coloured colors.
+
+    A thin oriented disk (rendered via a unit cylinder mesh whose local +Z
+    axis is the cylinder axis) is placed at each active contact, oriented so
+    that its axis matches ``contact_normal``. Its dimensions are scaled from
+    the smaller shape's collision radius.
+
+    When ``contact_force`` is provided (non-null), the disk is colored by an
+    inferred contact mode computed from the linear contact force magnitude and
+    the tangential relative velocity at the contact point:
+
+    * ``|F| < eps_force``                                  -> ``color_open``
+    * ``|F| >= eps_force and |v_tan| < eps_velocity``      -> ``color_stick``
+    * ``|F| >= eps_force and |v_tan| >= eps_velocity``     -> ``color_slip``
+
+    When ``contact_force`` is null, every active contact uses ``color_open``.
+
+    Inactive slots (beyond ``contact_count[0]`` or hidden by the visible-worlds
+    mask) receive a degenerate zero-scale transform and a black color.
+    """
+    tid = wp.tid()
+
+    zero_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    zero_vec = wp.vec3(0.0, 0.0, 0.0)
+
+    count = contact_count[0]
+    if tid >= count:
+        transforms[tid] = zero_xform
+        scales[tid] = zero_vec
+        colors[tid] = zero_vec
+        return
+
+    shape_a = contact_shape0[tid]
+    shape_b = contact_shape1[tid]
+    if shape_a == shape_b:
+        transforms[tid] = zero_xform
+        scales[tid] = zero_vec
+        colors[tid] = zero_vec
+        return
+
+    world_a = shape_world[shape_a]
+    world_b = shape_world[shape_b]
+    if visible_worlds_mask:
+        w = world_a if world_a >= 0 else world_b
+        if w >= 0:
+            if visible_worlds_mask[w] == 0:
+                transforms[tid] = zero_xform
+                scales[tid] = zero_vec
+                colors[tid] = zero_vec
+                return
+
+    body_a = shape_body[shape_a]
+    body_b = shape_body[shape_b]
+
+    X_wb_a = wp.transform_identity()
+    if body_a >= 0:
+        X_wb_a = body_q[body_a]
+
+    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid] + contact_offset0[tid])
+
+    contact_center = world_pos0
+    if world_a >= 0 or world_b >= 0:
+        contact_center += world_offsets[world_a if world_a >= 0 else world_b]
+
+    n = contact_normal[tid]
+    q = _quat_from_normal_z(n)
+
+    # Mode coloring (default to "color_open" when force is unavailable).
+    color = color_open
+    thickness_scaling = 1.0  # Apply slightly different thickness based on color to avoid visible z-fighting
+    if contact_force:
+        f_lin = wp.spatial_top(contact_force[tid])
+        f_mag = wp.length(f_lin)
+        if f_mag < eps_force:
+            color = color_open
+        else:
+            # Relative tangential velocity at the contact point.
+            v_a = wp.vec3(0.0, 0.0, 0.0)
+            if body_a >= 0:
+                world_com_a = wp.transform_point(body_q[body_a], body_com[body_a])
+                r_a = world_pos0 - world_com_a
+                v_a = velocity_at_point(body_qd[body_a], r_a)
+            v_b = wp.vec3(0.0, 0.0, 0.0)
+            if body_b >= 0:
+                X_wb_b = body_q[body_b]
+                world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid])
+                world_com_b = wp.transform_point(X_wb_b, body_com[body_b])
+                r_b = world_pos1 - world_com_b
+                v_b = velocity_at_point(body_qd[body_b], r_b)
+            v_rel = v_a - v_b
+            v_t = v_rel - wp.dot(v_rel, n) * n
+            if wp.length(v_t) < eps_velocity:
+                color = color_stick
+                thickness_scaling = 1.02
+            else:
+                color = color_slip
+                thickness_scaling = 1.01
+
+    pair_radius = wp.min(shape_collision_radius[shape_a], shape_collision_radius[shape_b])
+    disk_radius = disk_radius_scale * pair_radius
+    disk_thickness = disk_thickness_scale * pair_radius
+
+    transforms[tid] = wp.transform(contact_center, q)
+    scales[tid] = wp.vec3(disk_radius, disk_radius, disk_thickness * thickness_scaling)
+    colors[tid] = color
+
+
+@wp.kernel
+def compute_contact_force_arrows(
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_world: wp.array[int],
+    shape_collision_radius: wp.array[float],
+    world_offsets: wp.array[wp.vec3],
+    visible_worlds_mask: wp.array[int],
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_force: wp.array[wp.spatial_vector],
+    force_scale: float,
+    # outputs
+    line_start: wp.array[wp.vec3],
+    line_end: wp.array[wp.vec3],
+):
+    """Create world-space line segments visualizing the linear part of contact wrenches.
+
+    The arrow starts at the world contact point on shape 0 and points along
+    ``F = wp.spatial_top(contact_force[i])`` (the world-frame linear force on
+    body 0). Its length is relative to the smaller shape's collision radius.
+    Inactive slots produce degenerate (NaN) line segments that the renderer
+    culls.
+    """
+    tid = wp.tid()
+    nan_line = wp.vec3(wp.nan, wp.nan, wp.nan)
+
+    count = contact_count[0]
+    if tid >= count:
+        line_start[tid] = nan_line
+        line_end[tid] = nan_line
+        return
+
+    shape_a = contact_shape0[tid]
+    shape_b = contact_shape1[tid]
+    if shape_a == shape_b:
+        line_start[tid] = nan_line
+        line_end[tid] = nan_line
+        return
+
+    world_a = shape_world[shape_a]
+    world_b = shape_world[shape_b]
+    if visible_worlds_mask:
+        w = world_a if world_a >= 0 else world_b
+        if w >= 0:
+            if visible_worlds_mask[w] == 0:
+                line_start[tid] = nan_line
+                line_end[tid] = nan_line
+                return
+
+    body_a = shape_body[shape_a]
+    X_wb_a = wp.transform_identity()
+    if body_a >= 0:
+        X_wb_a = body_q[body_a]
+
+    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid] + contact_offset0[tid])
+    contact_center = world_pos0
+    if world_a >= 0 or world_b >= 0:
+        contact_center += world_offsets[world_a if world_a >= 0 else world_b]
+
+    f_lin = -wp.spatial_top(contact_force[tid])  # Flip sign so positive force is along normal
+    line_start[tid] = contact_center
+    pair_radius = wp.min(shape_collision_radius[shape_a], shape_collision_radius[shape_b])
+    line_end[tid] = contact_center + (force_scale * pair_radius) * f_lin
 
 
 @wp.kernel
@@ -367,7 +624,7 @@ def compute_joint_basis_lines(
         joint_t != int(newton.JointType.PRISMATIC)
         and joint_t != int(newton.JointType.REVOLUTE)
         and joint_t != int(newton.JointType.D6)
-        and joint_t != int(newton.JointType.CABLE)
+        and joint_t != int(newton.JointType.ROD)
         and joint_t != int(newton.JointType.BALL)
     ):
         # Set NaN for unsupported joints to hide them

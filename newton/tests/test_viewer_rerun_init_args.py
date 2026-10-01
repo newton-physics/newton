@@ -17,8 +17,10 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         self.mock_rr.init = Mock()
         self.mock_rr.spawn = Mock()
         self.mock_rr.connect_grpc = Mock()
+        self.mock_rr.serve_grpc = Mock(return_value="rerun+http://127.0.0.1:9876/proxy")
         self.mock_rr.set_time = Mock()
         self.mock_rr.save = Mock()
+        self.mock_print = self.enterContext(patch("builtins.print"))
 
         # Mock blueprint module and components
         self.mock_rrb = Mock()
@@ -50,6 +52,11 @@ class TestViewerRerunInitArgs(unittest.TestCase):
                     self.mock_rr.serve_grpc.assert_called_once()
                     # Verify rr.serve_web_viewer() was called
                     self.mock_rr.serve_web_viewer.assert_called_once()
+                    self.mock_print.assert_called_once_with(
+                        "Rerun web viewer running at: "
+                        "http://127.0.0.1:9090/?url=rerun%2Bhttp%3A%2F%2F127.0.0.1%3A9876%2Fproxy",
+                        flush=True,
+                    )
 
                     # Verify rr.connect_grpc() was NOT called
                     self.mock_rr.connect_grpc.assert_not_called()

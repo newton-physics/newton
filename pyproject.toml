@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "newton"
-version = "1.5.0.dev0"
+version = "1.7.0.dev0"
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
@@ -28,7 +28,7 @@ description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "warp-lang>=1.15.0.dev20260626",
+    "warp-lang>=1.17.0",
 ]
 
 [project.optional-dependencies]
@@ -36,13 +36,14 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp~=3.10.0,>=3.10.0.2",  # MuJoCo, warp-accelerated
-    "mujoco~=3.10.0",       # MuJoCo physics engine
+    "mujoco-warp~=3.12.0",  # MuJoCo, warp-accelerated
+    "mujoco~=3.12.0",       # MuJoCo physics engine
 ]
 
 # Optional ONNX policy inference for neural actuators and RL policy examples.
 onnx = [
-    "warp-nn[onnx]==0.3.0",
+    # Pin operator support from NVIDIA/warp-nn#8 until it is released.
+    "warp-nn[onnx] @ git+https://github.com/NVIDIA/warp-nn.git@d9334ff1b00cb429e8336bb373bdfa1a948f8d49",
 ]
 
 # Asset import and mesh processing dependencies
@@ -62,11 +63,11 @@ importers = [
     "open3d>=0.19.0; python_version < '3.13' and (sys_platform != 'linux' or platform_machine != 'aarch64')",
 
     # USD core libraries
-    "usd-core>=25.5,<26.5 ; platform_machine != 'aarch64' and python_version < '3.14'",
-    "usd-exchange>=2.2.0 ; platform_machine == 'aarch64' and python_version < '3.13'",
+    "usd-core>=25.5,<26.9 ; platform_machine != 'aarch64' and python_version < '3.14'",
+    "usd-exchange>=2.3.0,<4 ; platform_machine == 'aarch64' and python_version < '3.14'",
 
     # Newton USD Schemas
-    "newton-usd-schemas>=0.4.0",
+    "newton-usd-schemas>=0.5.0",
 ]
 
 # Remeshing dependencies (for SurfaceReconstructor)
@@ -81,7 +82,7 @@ examples = [
     "newton[importers]",    # include import dependencies
     "newton[onnx]",         # for RL policy examples
     "pyglet>=2.1.6,<3",     # for OpenGL viewer
-    "GitPython>=3.1.47",    # for downloading assets via newton.utils.download_asset()
+    "GitPython>=3.1.58",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
@@ -127,7 +128,7 @@ docs = [
     "ipykernel>=6.0.0,<7.0.0",      # required by nbsphinx to execute notebooks (pinned <7 for rerun-sdk compatibility)
     "pypandoc>=1.11",               # required by nbsphinx for notebook conversion
     "pypandoc_binary>=1.11",        # bundled pandoc binary
-    "GitPython>=3.1.47",            # for downloading tutorial assets via newton.utils.download_asset() (>=3.1.47 for GHSA-x2qx-6953-8485)
+    "GitPython>=3.1.58",            # for downloading tutorial assets via newton.utils.download_asset()
     # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
     "viser==1.0.26",
 ]
@@ -295,6 +296,41 @@ reportUnknownMemberType = false
 reportUnknownParameterType = false
 reportOptionalOperand = false
 reportUnusedCallResult = false
+
+[tool.towncrier]
+directory = "changelog"
+filename = "CHANGELOG.md"
+start_string = "<!-- towncrier release notes start -->\n"
+title_format = "## [{version}] - {project_date}"
+issue_format = "[#{issue}](https://github.com/newton-physics/newton/issues/{issue})"
+issue_pattern = "\\d+"
+ignore = ["*.skip"]
+wrap = false
+
+[[tool.towncrier.type]]
+directory = "added"
+name = "Added"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "changed"
+name = "Changed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "deprecated"
+name = "Deprecated"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "removed"
+name = "Removed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "fixed"
+name = "Fixed"
+showcontent = true
 
 [tool.typos]
 files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf", "*.js"]

@@ -33,6 +33,7 @@ class Example:
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 1e-6
         robot_builder.default_shape_cfg.gap = 0.01
+        robot_builder.request_contact_attributes("force")  # For contact visualization
 
         # Load the DR TestMech USD and add it to the builder
         asset_path = newton.utils.download_asset("disneyresearch")
@@ -76,10 +77,6 @@ class Example:
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
 
-        # Warm-start the simulation
-        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-        self.solver.reset(self.state_0)
-
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
         self.capture()
@@ -94,7 +91,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda:
+        if self.device.is_cuda and not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph

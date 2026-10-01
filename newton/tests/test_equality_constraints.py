@@ -3,7 +3,6 @@
 
 import os
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
@@ -28,6 +27,7 @@ def _eq_value(builder, name, idx):
 
 class TestEqualityConstraints(unittest.TestCase):
     def test_raw_equality_rows_infer_world_ownership(self):
+        """Infer omitted equality world owners from the active world."""
         builder = newton.ModelBuilder()
 
         for expected_world in range(2):
@@ -42,20 +42,6 @@ class TestEqualityConstraints(unittest.TestCase):
 
         model = builder.finalize()
         np.testing.assert_array_equal(model.mujoco.equality_constraint_world.numpy(), [0, 1])
-
-    def test_eq_type_deprecation(self):
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            legacy_type = newton.EqType.CONNECT
-            scoped_type = newton.solvers.SolverMuJoCo.EqType.CONNECT
-
-        self.assertEqual(legacy_type, scoped_type)
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertIn(
-            "newton.EqType is deprecated in Newton 1.4; use newton.solvers.SolverMuJoCo.EqType instead",
-            str(caught[0].message),
-        )
 
     def test_equality_constraint_references_use_namespaced_frequency(self):
         def make_builder(references):
@@ -166,10 +152,12 @@ class TestEqualityConstraints(unittest.TestCase):
         # Pure equality rows default to MjcEqualityTargetKind.NONE / target -1 and carry the
         # objtype implied by their EqType (BODY for connect/weld, JOINT for joint).
         builder = newton.ModelBuilder()
-        b0 = builder.add_body()
-        builder.add_joint_free(b0)
-        b1 = builder.add_body()
-        builder.add_joint_free(b1)
+        b0 = builder.add_link()
+        j0 = builder.add_joint_free(b0)
+        b1 = builder.add_link()
+        j1 = builder.add_joint_free(b1)
+        builder.add_articulation([j0])
+        builder.add_articulation([j1])
 
         _add_equality_constraint(
             builder, constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT, body1=b0, body2=b1
@@ -178,8 +166,8 @@ class TestEqualityConstraints(unittest.TestCase):
         _add_equality_constraint(
             builder,
             constraint_type=newton.solvers.SolverMuJoCo.EqType.JOINT,
-            joint1=0,
-            joint2=1,
+            joint1=j0,
+            joint2=j1,
             polycoef=[0.0, 1.0, 0.0, 0.0, 0.0],
         )
 

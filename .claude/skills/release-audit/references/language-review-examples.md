@@ -56,7 +56,7 @@ For entry "Add support for Gaussian splats (GH-NNNN)", fetch commits tagged `GH-
 
 Don't flag if:
 - Commits touch `newton/_src/geometry/**` or `newton/_src/sim/builder.py` for a geometry-addition entry → topic matches.
-- Commits touch `docs/**` and the entry is in the Documentation section → topic matches.
+- Commits touch `docs/**` and the `Added` or `Changed` entry describes that documentation → topic matches.
 - Commits touch `newton/_src/solvers/**` for a solver-capability entry → topic matches.
 
 **Tier-2 heuristic (only if `gh` CLI is installed + authenticated):**
@@ -74,13 +74,13 @@ Example flag:
 > Add `newton.geometry.compute_offset_mesh()` for extracting offset surface meshes.
 > *Check:* grep `newton/geometry.py` at HEAD. If `compute_offset_mesh` is not re-exported, raise 🕵️. If it is (the expected case), no flag.
 
-Rationale: AGENTS.md forbids examples and docs from importing `newton._src`. A user-facing symbol that lives only in `_src` cannot be used by Newton's own examples and is a maintenance liability.
+Rationale: `CODING_GUIDELINES.rst` forbids examples and docs from importing `newton._src`. A user-facing symbol that lives only in `_src` cannot be used by Newton's own examples and is a maintenance liability.
 
-### 📐 Missing migration guidance (Newton-specific)
+### ⬆️ Missing migration guidance (Newton-specific)
 
-AGENTS.md: "For `Deprecated`, `Changed`, and `Removed` entries, include migration guidance: 'Deprecate `Model.geo_meshes` in favor of `Model.shapes`'."
+`changelog/README.md`: for `Deprecated`, `Changed`, and `Removed` entries, include migration guidance such as "Deprecate `Model.geo_meshes` in favor of `Model.shapes`."
 
-Flag `### Deprecated`, `### Removed`, and `### Changed` entries that name a rename / removal / reorder but do NOT express migration direction. Direction can be expressed with one of these phrases (case-insensitive): `use`, `in favor of`, `renamed to`, `replaced by`, `switch to`, `migrate to`, `prefer`. Direction can also be expressed structurally — an imperative `Rename X to Y`, an arrow `X → Y`, or a parameter-rename table — which counts as migration guidance even when none of the listed phrases appear verbatim (see the `ModelBuilder.add_shape_ellipsoid` example below).
+Flag `### Deprecated`, `### Removed`, and `### Changed` entries that name a rename / removal / reorder but do NOT express migration direction. Direction can be expressed with one of these phrases (case-insensitive): `use`, `in favor of`, `renamed to`, `replaced by`, `switch to`, `migrate to`, `prefer`. The phrase must identify a non-empty replacement target, normally as a backtick-delimited symbol. Direction can also be expressed structurally — an imperative `Rename X to Y`, an arrow `X → Y`, or a parameter-rename table — which counts as migration guidance even when none of the listed phrases appear verbatim (see the `ModelBuilder.add_shape_ellipsoid` example below).
 
 Flag:
 
@@ -89,6 +89,9 @@ Flag:
 >
 > Deprecate `Model.geo_meshes`.
 > *Reason:* no replacement named. Should read "Deprecate `Model.geo_meshes` in favor of `Model.shapes`."
+>
+> Remove `Model.foo`; switch to improve performance.
+> *Reason:* "switch to" does not name a replacement target.
 
 Don't flag:
 
@@ -100,7 +103,7 @@ Don't flag:
 
 ### 🏷️ Naming-convention drift (Newton-specific)
 
-AGENTS.md: "Prefix-first naming for autocomplete: `ActuatorPD` (not `PDActuator`), `add_shape_sphere()` (not `add_sphere_shape()`)."
+`CODING_GUIDELINES.rst`: "Prefix-first naming for autocomplete: `ActuatorPD` (not `PDActuator`), `add_shape_sphere()` (not `add_sphere_shape()`)."
 
 Flag `### Added` entries whose newly-named public symbol puts the discriminator before the prefix. Examples of names to flag:
 
@@ -108,13 +111,16 @@ Flag `### Added` entries whose newly-named public symbol puts the discriminator 
 - `SphereShape`, `CapsuleShape` → should be `ShapeSphere`, `ShapeCapsule`
 - `add_sphere_shape()`, `add_mesh_shape()` → should be `add_shape_sphere()`, `add_shape_mesh()`
 
-Before flagging, cross-check against existing sibling symbols in the same module. If the rest of the module uses `Foo<Kind>` rather than `<Kind>Foo`, the new symbol should match the established pattern whichever direction it goes. Prefer-consistency beats prefer-the-rule-in-AGENTS.md when the module has an entrenched local convention.
+Before flagging, cross-check against existing sibling symbols in the same module. If the rest of the module uses `Foo<Kind>` rather than `<Kind>Foo`, the new symbol should match the established pattern whichever direction it goes. Prefer consistency over a mechanical reading of the rule when the module has an entrenched local convention; call out the exception to `CODING_GUIDELINES.rst` explicitly.
 
 ## Judgment philosophy
 
 **Err on "mention, don't block"**: flagging should raise a question for human review, not gate the report. The audit appendix shows flagged entries and a one-line reason; a human decides.
 
-**Don't auto-rewrite**: Claude flags the entry, never modifies it. The release manager updates CHANGELOG.md manually.
+**Don't auto-rewrite**: Claude flags the entry, never modifies it. Before the
+Towncrier build, the release manager updates pending fragments during changelog
+maintenance; after release, corrections to dated history require explicit
+maintainer approval.
 
 **Prefer false positives over false negatives**: a flag that turns out to be fine costs a 5-second eyeball. A missed wrong-ref or jargon-leak ships to users.
 
@@ -127,7 +133,7 @@ Before flagging, cross-check against existing sibling symbols in the same module
 | "Inline a `wp.vec3`-specialized ..." | 🗣️ Internal language | References `warp.fem.geometry.closest_point` in user-facing prose |
 | "Fix crash" | 📝 Too terse | 2 words, no context link |
 | "Add `newton.foo.bar` (GH-NNNN)" | 🔗 Wrong ref? | Commits tagged GH-NNNN touch only CI files |
-| "Deprecate `Model.foo`" | 📐 Missing migration guidance | No "in favor of" replacement named |
+| "Deprecate `Model.foo`" | ⬆️ Missing migration guidance | No "in favor of" replacement named |
 | "Add `PDActuator`" | 🏷️ Naming-convention drift | Should be `ActuatorPD` per prefix-first rule |
 | "Add `newton.utils._x`" | 🕵️ Private-only | Named symbol lives only in `newton._src`, not re-exported |
 | "Remove deprecated `Model.foo`" | 🧾 Deprecation omitted from CHANGELOG | Runtime warning exists at the base ref, but no released Deprecated entry records it |
