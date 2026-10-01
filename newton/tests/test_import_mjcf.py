@@ -1199,6 +1199,92 @@ class TestImportMjcfBasic(unittest.TestCase):
 class TestMjcfSlideCoordinateScale(unittest.TestCase):
     """Tests for scale applied to MJCF slide coordinates."""
 
+    def test_slide_limit_margin_scales_with_coordinate(self):
+        """Scale a slide margin without changing an angular margin."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint name="slide" type="slide" margin="0.01"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body>
+                        <joint name="hinge" type="hinge" margin="0.02"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, scale=2.0)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.mujoco.limit_margin.numpy()[:2], [0.02, 0.02])
+
+    def test_explicit_slide_position_ctrlrange_scales(self):
+        """Scale explicit position targets, leaving force controls alone."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint name="slide" type="slide" range="-0.3 0.3"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body>
+                        <joint name="hinge" type="hinge" range="-60 60"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <position name="explicit" joint="slide" ctrlrange="-0.2 0.2"/>
+                <position name="inherited" joint="slide" inheritrange="1"/>
+                <position name="angular" joint="hinge" ctrlrange="-0.2 0.2"/>
+                <motor name="motor" joint="slide" ctrlrange="-0.2 0.2"/>
+                <general name="general" joint="slide" ctrlrange="-0.2 0.2"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, scale=2.0)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(
+            model.mujoco.actuator_ctrlrange.numpy(),
+            [[-0.4, 0.4], [-0.6, 0.6], [-0.2, 0.2], [-0.2, 0.2], [-0.2, 0.2]],
+        )
+
+    def test_slide_intvelocity_actrange_scales(self):
+        """Preserve integrated velocity activation limits in slide units."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint name="slide" type="slide"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body>
+                        <joint name="hinge" type="hinge"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <intvelocity name="linear" joint="slide" kp="20" actrange="-0.2 0.2"/>
+                <intvelocity name="angular" joint="hinge" kp="20" actrange="-0.2 0.2"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, scale=2.0)
+        self.assertEqual(len(builder.custom_attributes["mujoco:actuator_actrange"].values), 2)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.mujoco.actuator_actrange.numpy(), [[-0.4, 0.4], [-0.2, 0.2]])
+        np.testing.assert_array_equal(model.mujoco.actuator_dyntype.numpy(), [1, 1])
+        np.testing.assert_allclose(model.mujoco.actuator_gainprm.numpy()[:, 0], [20, 20])
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.actuator_actrange, [[-0.4, 0.4], [-0.2, 0.2]])
+        np.testing.assert_array_equal(solver.mj_model.actuator_dyntype, [1, 1])
+
     def test_slide_range_and_ref_scale_together(self):
         """Scale slide range and reference while retaining angular ranges."""
         mjcf = """
