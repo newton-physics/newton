@@ -1567,6 +1567,8 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
                 shape_gap,
                 triangle_pairs,
                 triangle_pairs_count,
+                # A plane's cached local AABB does not bound its surface.
+                type_b != GeoType.PLANE,
             )
             continue
 
