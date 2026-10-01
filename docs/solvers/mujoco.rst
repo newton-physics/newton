@@ -105,6 +105,18 @@ Changing ``mujoco.dof_ref`` at runtime (via
 ``qpos0``, ``jnt_range``, and position controls with the new reference.
 Native MuJoCo attributes remain absolute and are not shifted.
 
+Equal joint limits
+------------------
+
+Revolute, prismatic, and D6 axes support equal finite lower and upper limits.
+These constrain the coordinate to the specified value using MuJoCo's soft
+joint-limit constraints; their compliance still depends on the limit stiffness
+and damping. MuJoCo's compiler requires a non-empty range, so Newton warns and
+temporarily widens each side by ``1e-6 * max(1, abs(limit))`` [m or rad]. The
+runtime model uses the exact authored limits. Files written with
+``save_to_mjcf`` retain the widened range. Reversed limits raise a
+``ValueError`` identifying the Newton joint, axis, and limit values.
+
 
 Geometry types
 --------------
@@ -379,6 +391,14 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
 
 :attr:`~newton.Model.joint_effort_limit` is forwarded as ``actfrcrange`` on the joint
 (prismatic, revolute, and D6) or as ``forcerange`` on the actuator (ball).
+
+For prismatic, revolute, and D6 axes, a zero effort limit clamps the total
+actuator force to zero. Actuators are retained so that changing the effort
+limit and calling :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed`
+with :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` can enable them again.
+Negative effort limits raise a ``ValueError`` naming the joint and value.
+MJCF cannot represent a zero joint actuator-force range, so ``save_to_mjcf``
+raises an actionable error for these axes; omit that option to simulate them.
 
 The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
 and parameters, explicit transmission targets, ctrl/force/act ranges) is

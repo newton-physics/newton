@@ -6847,6 +6847,48 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 kwargs["forcerange"] = info["forcerange"]
             return kwargs
 
+        def scalar_joint_limits(j: int, dof: int) -> tuple[float, float, float]:
+            """Provide non-empty compile-time ranges, restored by the initial model update."""
+            lower, upper = float(joint_limit_lower[dof]), float(joint_limit_upper[dof])
+            effort = float(joint_effort_limit[dof])
+            label = model.joint_label[j]
+            axis = dof - int(joint_qd_start[j])
+            if lower > upper:
+                raise ValueError(
+                    f"Joint '{label}' axis {axis} has joint_limit_lower={lower} greater than "
+                    f"joint_limit_upper={upper}. Set the lower limit at or below the upper limit."
+                )
+            if effort < 0.0:
+                raise ValueError(
+                    f"Joint '{label}' axis {axis} has joint_effort_limit={effort}. "
+                    "Set the effort limit (USD drive maxForce) to a non-negative value."
+                )
+            if lower == upper:
+                if not math.isfinite(lower):
+                    raise ValueError(f"Joint '{label}' axis {axis} has non-finite equal joint limits: {lower}.")
+                # MuJoCo rejects equal ranges only during compilation. Its runtime
+                # limit constraints support them, as do Newton's model updates.
+                padding = 1.0e-6 * max(1.0, abs(lower))
+                warnings.warn(
+                    f"Joint '{label}' axis {axis} has equal joint limits ({lower}). "
+                    f"Widening the MJCF range by {padding} on each side for compilation; "
+                    "simulation retains the authored limits with MuJoCo's soft limit constraints.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                lower -= padding
+                upper += padding
+            if effort == 0.0:
+                if target_filename:
+                    raise ValueError(
+                        f"Joint '{label}' axis {axis} has joint_effort_limit=0, which MJCF cannot represent. "
+                        "Omit save_to_mjcf to simulate this joint with zero actuator force."
+                    )
+                # Keep actuators and force limiting enabled so runtime effort-limit
+                # updates work. notify_model_changed(ALL) restores the exact zero clamp.
+                effort = 1.0
+            return lower, upper, effort
+
         # need to keep track of current dof and joint counts to make the indexing above correct
         num_dofs = 0
         num_qpos = 0
@@ -7102,7 +7144,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         joint_params["damping"] = float(joint_damping[ai])
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = bool(joint_actgravcomp[ai])
-                    lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
+                    lower, upper, effort_limit = scalar_joint_limits(int(j), int(ai))
                     if lower <= -MAXVAL and upper >= MAXVAL:
                         joint_params["limited"] = False
                     else:
@@ -7134,7 +7176,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     if joint_dof_solimp is not None:
                         joint_params["solimp_friction"] = joint_dof_solimp[ai]
                     # Use actfrcrange to clamp total actuator force (P+D sum) on this joint
-                    effort_limit = joint_effort_limit[ai]
                     joint_params["actfrclimited"] = True
                     joint_params["actfrcrange"] = (-effort_limit, effort_limit)
 
@@ -7224,7 +7265,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         joint_params["damping"] = float(joint_damping[ai])
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = bool(joint_actgravcomp[ai])
-                    lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
+                    lower, upper, effort_limit = scalar_joint_limits(int(j), int(ai))
                     if lower <= -MAXVAL and upper >= MAXVAL:
                         joint_params["limited"] = False
                     else:
@@ -7250,7 +7291,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     if joint_dof_solimp is not None:
                         joint_params["solimp_friction"] = joint_dof_solimp[ai]
                     # Use actfrcrange to clamp total actuator force (P+D sum) on this joint
-                    effort_limit = joint_effort_limit[ai]
                     joint_params["actfrclimited"] = True
                     joint_params["actfrcrange"] = (-effort_limit, effort_limit)
 
