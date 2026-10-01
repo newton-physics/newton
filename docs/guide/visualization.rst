@@ -647,6 +647,13 @@ capture. Picking uses device state, so picks made later in the browser take
 effect on graph replay. ``clear_all_layers()`` restores the default Viser camera
 when switching examples; clearing one layer preserves the current view.
 
+Textured meshes preserve texture alpha and display opacity using glTF blend
+materials. A textured instance batch can share one opacity value; Viser does
+not expose varying per-instance opacity for textured batches. Such requests
+warn and retain the mesh material's opacity. Applications using
+:meth:`~newton.viewer.ViewerViser.log_instances` can use separate batches for
+different opacities. Untextured batches support per-instance opacity directly.
+
 **Recording and playback**
 
 ViewerViser can record simulations to ``.viser`` files for later playback:

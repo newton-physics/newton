@@ -411,7 +411,14 @@ class ViewerViser(ViewerBase):
         return cls._viser_module
 
     @staticmethod
-    def _build_trimesh_mesh(points: np.ndarray, indices: np.ndarray, uvs: np.ndarray, texture: np.ndarray):
+    def _build_trimesh_mesh(
+        points: np.ndarray,
+        indices: np.ndarray,
+        uvs: np.ndarray,
+        texture: np.ndarray,
+        *,
+        opacity: float | None = None,
+    ):
         """Create a trimesh object with texture visuals (if trimesh is available)."""
         try:
             import trimesh
@@ -435,8 +442,34 @@ class ViewerViser(ViewerBase):
             roughnessFactor=1.0,
         )
         mesh.visual = TextureVisuals(uv=uvs, material=material)
-
+        ViewerViser._set_trimesh_opacity(mesh, 1.0 if opacity is None else opacity)
         return mesh
+
+    @staticmethod
+    def _set_trimesh_opacity(mesh: Any, opacity: float) -> None:
+        """Encode display opacity and texture alpha in an owned glTF material."""
+        material = mesh.visual.material
+        factor = material.baseColorFactor.copy()
+        factor[3] = round(float(np.clip(opacity, 0.0, 1.0)) * 255)
+        material.baseColorFactor = factor
+        texture = np.asarray(material.baseColorTexture)
+        has_alpha = texture.ndim == 3 and texture.shape[2] == 4 and np.any(texture[..., 3] < 255)
+        material.alphaMode = "BLEND" if opacity < 1.0 or has_alpha else "OPAQUE"
+
+    @staticmethod
+    def _export_textured_batch(mesh: Any, opacities: np.ndarray | None) -> bytes:
+        """Export a material variant without changing the shared mesh asset."""
+        if opacities is not None and len(opacities):
+            if np.all(opacities == opacities[0]):
+                mesh = mesh.copy()
+                ViewerViser._set_trimesh_opacity(mesh, float(opacities[0]))
+            else:
+                warnings.warn(
+                    "Viser textured mesh batches do not support varying per-instance opacity; "
+                    "the mesh material opacity is used. Use separate batches for different opacities.",
+                    stacklevel=3,
+                )
+        return mesh.export(file_type="glb")
 
     def __init__(
         self,
@@ -2022,7 +2055,7 @@ class ViewerViser(ViewerBase):
 
         trimesh_mesh = None
         if texture_image is not None and uvs_np is not None:
-            trimesh_mesh = self._build_trimesh_mesh(points_np, indices_np, uvs_np, texture_image)
+            trimesh_mesh = self._build_trimesh_mesh(points_np, indices_np, uvs_np, texture_image, opacity=opacity)
             if trimesh_mesh is None:
                 warnings.warn(
                     "Viser textured meshes require trimesh; falling back to untextured rendering.",
@@ -2081,9 +2114,7 @@ class ViewerViser(ViewerBase):
                 "name": name,
                 "mesh": trimesh_mesh,
             }
-            if opacity is not None:
-                mesh_kwargs["opacity"] = float(np.clip(opacity, 0.0, 1.0))
-            handle = self._call_scene_method(self._server.scene.add_mesh_trimesh, **mesh_kwargs)
+            handle = self._server.scene.add_mesh_trimesh(**mesh_kwargs)
         else:
             mesh_kwargs = {
                 "name": name,
@@ -2377,7 +2408,10 @@ class ViewerViser(ViewerBase):
                             handle.batched_colors = batched_colors
                             instance["colors"] = batched_colors.copy()
                     if opacities_np is not None and not np.array_equal(instance.get("opacities"), opacities_np):
-                        if hasattr(handle, "batched_opacities"):
+                        if use_trimesh:
+                            handle.glb_data = self._export_textured_batch(trimesh_mesh, opacities_np)
+                            instance["opacities"] = opacities_np.copy()
+                        elif hasattr(handle, "batched_opacities"):
                             handle.batched_opacities = opacities_np
                             instance["opacities"] = opacities_np.copy()
                         else:
@@ -2404,14 +2438,12 @@ class ViewerViser(ViewerBase):
         # LOD is disabled because viser's automatic mesh simplification creates
         # holes in complex geometry (e.g. terrain), causing popping artifacts.
         if use_trimesh:
-            handle = self._call_scene_method(
-                self._server.scene.add_batched_meshes_trimesh,
+            handle = self._server.scene.add_batched_glb(
                 name=name,
-                mesh=trimesh_mesh,
+                glb_data=self._export_textured_batch(trimesh_mesh, opacities_np),
                 batched_positions=positions,
                 batched_wxyzs=quats_wxyz,
                 batched_scales=batched_scales,
-                batched_opacities=opacities_np,
                 lod="off",
             )
         else:

@@ -1,0 +1,1 @@
+Encode Viser textured-mesh transparency in glTF materials, update uniform batch opacity without replacing scene handles, and avoid warnings for opaque textured models. Warn only when a textured batch requests unsupported varying per-instance opacity.

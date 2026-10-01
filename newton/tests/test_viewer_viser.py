@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import tempfile
 import threading
 import time
@@ -302,6 +303,68 @@ class TestViewerViserInteraction(unittest.TestCase):
             self.assertEqual(handle.thickness, 2.0)
             self.assertEqual(handle.thickness_units, "screen")
             np.testing.assert_array_equal(handle.points, np.stack((starts, ends * 2.0), axis=1))
+
+    @staticmethod
+    def read_glb_material(handle):
+        """Read the material actually serialized into Viser's GLB payload."""
+        data = handle.glb_data
+        size = int.from_bytes(data[12:16], "little")
+        return json.loads(data[20 : 20 + size])["materials"][0]
+
+    def test_textured_mesh_alpha_and_opacity(self):
+        """Serialize texture alpha and display opacity into a real glTF blend material."""
+        points = wp.array(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)), dtype=wp.vec3, device="cpu")
+        indices = wp.array((0, 1, 2), dtype=wp.int32, device="cpu")
+        uvs = wp.array(((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)), dtype=wp.vec2, device="cpu")
+        texture = np.full((2, 2, 4), 255, dtype=np.uint8)
+        texture[..., 3] = 128
+        for opacity in (1.0, 0.4):
+            with self.subTest(opacity=opacity), warnings.catch_warnings():
+                warnings.simplefilter("error")
+                self.viewer.log_mesh("textured", points, indices, uvs=uvs, texture=texture, opacity=opacity)
+                material = self.read_glb_material(self.viewer._scene_handles["textured"])
+                self.assertEqual(material["alphaMode"], "BLEND")
+                self.assertAlmostEqual(material["pbrMetallicRoughness"]["baseColorFactor"][3], opacity)
+
+    def test_textured_batches_update_uniform_opacity(self):
+        """Keep opaque textured models quiet and update their real GLB material on opacity changes."""
+        builder = newton.ModelBuilder()
+        mesh = newton.Mesh(
+            vertices=((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+            indices=(0, 1, 2),
+            uvs=((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
+            texture=np.full((2, 2, 3), 255, dtype=np.uint8),
+        )
+        for x in (0.0, 2.0):
+            body = builder.add_body(xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()))
+            builder.add_shape_mesh(body, mesh=mesh)
+        model = builder.finalize(device="cpu")
+        self.viewer.set_model(model)
+        state = model.state()
+        handle = None
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            for opacity in (1.0, 0.4, 0.8, 1.0):
+                model.shape_opacity.fill_(opacity)
+                self.viewer.log_state(state)
+                handles = [h for h in self.viewer._scene_handles.values() if hasattr(h, "glb_data")]
+                self.assertEqual(len(handles), 1)
+                if handle is not None:
+                    self.assertIs(handles[0], handle)
+                handle = handles[0]
+                material = self.read_glb_material(handle)
+                self.assertAlmostEqual(material["pbrMetallicRoughness"]["baseColorFactor"][3], opacity, places=6)
+                self.assertEqual(material["alphaMode"], "OPAQUE" if opacity == 1.0 else "BLEND")
+                payload = handle.glb_data
+                self.viewer.log_state(state)
+                self.assertIs(handle.glb_data, payload)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model.shape_opacity.assign((0.4, 0.8))
+            for _ in range(3):
+                self.viewer.log_state(state)
+            self.assertEqual(len(caught), 1)
+            self.assertIn("varying per-instance opacity", str(caught[0].message))
 
     def test_scalar_plot_real_protocol(self):
         """Send only committed finite samples to Viser's real plot serializer."""
