@@ -8687,7 +8687,7 @@ class ModelBuilder:
                                 stacklevel=2,
                             )
                             vertex_limit = (
-                                coacd_settings.get("max_ch_vertex", 0) if coacd_settings.get("decimate") else 0
+                                coacd_settings.get("max_ch_vertex", 256) if coacd_settings.get("decimate") else 0
                             )
                             decomposition = _merge_nearest_hulls(decomposition, hull_budget, vertex_limit)
                         decompositions[hash_m] = decomposition
