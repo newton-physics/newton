@@ -2172,6 +2172,63 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         self.assertEqual(_compute_per_world_mask_pair_max(model, same_mask), 7)
         self.assertEqual(_compute_per_world_mask_pair_max(model, first_mask, second_mask), 9)
 
+    def test_pair_bound_counting_work_is_bounded(self):
+        """Avoid rescanning all shapes for every world when counting candidates."""
+        model = self._make_model(num_worlds=64, shapes_per_world=4, num_global=2)
+        mask = np.ones(model.shape_count, dtype=bool)
+        for bound, args in (
+            (_compute_per_world_shape_pairs_max, (model,)),
+            (_compute_per_world_mask_pair_max, (model, mask)),
+        ):
+            with self.subTest(bound=bound.__name__):
+                with mock.patch("numpy.count_nonzero", wraps=np.count_nonzero) as count:
+                    self.assertEqual(bound(*args), 64 * 15 + 1)
+                scanned = sum(np.size(call.args[0]) for call in count.call_args_list)
+                self.assertLessEqual(scanned, 12 * model.shape_count)
+
+    def test_pair_bounds_match_segment_enumeration(self):
+        """Preserve sparse worlds, disabled shapes, globals and overlapping masks."""
+        worlds = np.array([-1, 7, 0, 7, 1000000, 0, -1, 9], dtype=np.int32)
+        colliding = np.array([True, True, True, False, True, False, True, False])
+        model = newton.Model()
+        model.shape_count = len(worlds)
+        model.shape_world = wp.array(worlds, dtype=wp.int32, device="cpu")
+        model.shape_flags = wp.array(
+            colliding.astype(np.int32) * int(ShapeFlags.COLLIDE_SHAPES), dtype=wp.int32, device="cpu"
+        )
+        segments = [np.flatnonzero(worlds == -1)]
+        for world in sorted(set(worlds[colliding]) - {-1}):
+            segments.append(np.flatnonzero((worlds == -1) | (worlds == world)))
+        expected = sum(
+            sum(colliding[i] and colliding[j] for k, i in enumerate(segment) for j in segment[k + 1 :])
+            for segment in segments
+        )
+        self.assertEqual(_compute_per_world_shape_pairs_max(model), expected)
+        masks = (colliding, np.arange(len(worlds)) % 2 == 0, np.ones(len(worlds), dtype=bool))
+        for first in masks:
+            for second in masks:
+                # Count directed category matches, removing self pairs and
+                # counting overlapping-category pairs only once.
+                pairs = set()
+                for segment_id, segment in enumerate(segments):
+                    for i in segment:
+                        for j in segment:
+                            if i != j and first[i] and second[j]:
+                                pairs.add((segment_id, min(i, j), max(i, j)))
+                self.assertEqual(_compute_per_world_mask_pair_max(model, first, second), len(pairs))
+
+    def test_pair_bounds_empty_global_and_large_segments(self):
+        """Handle empty and global-only scenes and counts larger than int32."""
+        for worlds in ([], [-1], [-1, -1, -1], [0] * 70000):
+            with self.subTest(shape_count=len(worlds)):
+                model = newton.Model()
+                model.shape_count = len(worlds)
+                model.shape_world = wp.array(worlds, dtype=wp.int32, device="cpu")
+                mask = np.ones(len(worlds), dtype=bool)
+                expected = len(worlds) * (len(worlds) - 1) // 2
+                self.assertEqual(_compute_per_world_shape_pairs_max(model), expected)
+                self.assertEqual(_compute_per_world_mask_pair_max(model, mask), expected)
+
     def test_generic_convex_work_estimate_counts_only_routed_pairs(self):
         """Count only world-compatible pairs routed to generic convex collision."""
         model = self._make_model(num_worlds=2, shapes_per_world=4)
