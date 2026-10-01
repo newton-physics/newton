@@ -17,6 +17,7 @@ from warp._src import types as warp_types
 from ..core.types import override
 from ..geometry import Mesh
 from ..sim import Model, State
+from ..sim.shape_contact_pairs import _ShapeContactPairs
 from .viewer import ViewerBase
 
 # Optional CBOR2 support
@@ -662,6 +663,11 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
             target_obj._set_shape_collision_filter_pairs(source_value)  # pyright: ignore[reportPrivateUsage]
             continue
 
+        if isinstance(target_obj, Model) and attr_name == "shape_contact_pairs":
+            # Replacing a finalized target must not first materialize its cache.
+            target_obj.shape_contact_pairs = source_value
+            continue
+
         if attr_name.startswith("_"):
             continue
 
@@ -709,6 +715,19 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
             setattr(target_obj, attr_name, source_value)
         except (AttributeError, TypeError):
             pass
+
+    if isinstance(target_obj, Model) and isinstance(source_dict.get("_shape_contact_pair_data"), Mapping):
+        # Restore after the public attributes: assigning shape_contact_pairs
+        # clears pending construction, and its device must already be restored.
+        data = source_dict["_shape_contact_pair_data"]
+        target_obj._shape_contact_pair_data = _ShapeContactPairs(  # pyright: ignore[reportPrivateUsage]
+            data["shape_body"],
+            data["shape_world"],
+            data["shape_group"],
+            data["shape_flags"],
+            data["filter_pairs"],
+            data["world_count"],
+        )
 
     if post_load_init_callback is not None:
         post_load_init_callback(target_obj, _path)
