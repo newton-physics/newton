@@ -1,0 +1,1 @@
+Fix convex contacts at the contact-threshold boundary being dropped when the GJK separation cutoff stopped on a float32 rounding difference; the cutoff now stops only once the separation bound clears the threshold by an empirical rounding margin.
