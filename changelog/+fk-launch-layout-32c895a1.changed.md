@@ -1,0 +1,1 @@
+Select CUDA block sizes for serial forward kinematics from the articulation workload and GPU multiprocessor count, improving the gradient-enabled fallback without changing joint computations or requiring configuration changes.
