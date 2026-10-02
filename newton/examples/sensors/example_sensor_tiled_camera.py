@@ -22,7 +22,10 @@ import newton
 import newton.examples
 import newton.usd
 from newton.sensors import SensorTiledCamera
-from newton.viewer import ViewerGL
+from newton.viewer import ViewerGL, ViewerRTX
+
+# Viewers with an interactive camera that can also display logged images.
+_INTERACTIVE_VIEWERS = (ViewerGL, ViewerRTX)
 
 SEMANTIC_COLOR_CYLINDER = (255, 0, 0)
 SEMANTIC_COLOR_SPHERE = (255, 255, 0)
@@ -206,7 +209,7 @@ class Example:
         self.tiled_camera_sensor.utils.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
 
         fov = 45.0
-        if isinstance(self.viewer, ViewerGL):
+        if isinstance(self.viewer, _INTERACTIVE_VIEWERS):
             fov = self.viewer.camera.fov
 
         self.camera_rays = self.tiled_camera_sensor.utils.compute_camera_rays_pinhole(
@@ -304,7 +307,7 @@ class Example:
             self.tiled_camera_sensor_shape_index_image, colors=self.semantic_palette, out_buffer=self.semantic_rgba
         )
 
-        sensor_image_is_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, ViewerGL)
+        sensor_image_is_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, _INTERACTIVE_VIEWERS)
         self.viewer.log_image("color", color_rgba)
         if sensor_image_is_main_view:
             color_main_rgba = utils.flatten_color_image_to_rgba(
@@ -322,7 +325,7 @@ class Example:
         return sensor_image_is_main_view
 
     def get_camera_transforms(self) -> wp.array[wp.transformf]:
-        if isinstance(self.viewer, ViewerGL):
+        if isinstance(self.viewer, _INTERACTIVE_VIEWERS):
             return wp.array(
                 [
                     [
@@ -343,10 +346,10 @@ class Example:
     def test_final(self):
         """Verify tiled camera outputs and main-view fallback behavior."""
         sensor_image_is_main_view = self.render_sensors()
-        expected_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, ViewerGL)
+        expected_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, _INTERACTIVE_VIEWERS)
         assert sensor_image_is_main_view is expected_main_view
 
-        if not isinstance(self.viewer, ViewerGL):
+        if not isinstance(self.viewer, _INTERACTIVE_VIEWERS):
             self.sensor_color_as_main_view = True
             assert self.render_sensors() is False
 
@@ -392,7 +395,7 @@ class Example:
     def gui(self, ui):
         show_compile_kernel_info = False
 
-        if isinstance(self.viewer, ViewerGL):
+        if isinstance(self.viewer, _INTERACTIVE_VIEWERS):
             _changed, self.sensor_color_as_main_view = ui.checkbox(
                 "Sensor Color as Main View", self.sensor_color_as_main_view
             )
