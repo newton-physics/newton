@@ -161,7 +161,7 @@ class ViewerViser(ViewerBase):
 
         def _queue_updates(self, handle: Any, key: tuple[int, int], cast: Callable[[Any], Any]) -> None:
             @handle.on_update
-            def _on_update(event):
+            async def _on_update(event):
                 if event.client_id is not None:
                     self._viewer._interaction_events.put(("example_gui", key, handle, cast(event.target.value)))
 
@@ -828,7 +828,8 @@ class ViewerViser(ViewerBase):
             reset = self._server.gui.add_button("Reset", disabled=True)
 
         @pause.on_update
-        def _on_pause(event):
+        async def _on_pause(event):
+            # Capture on Viser's event loop instead of deferring to a worker.
             if event.client_id is not None:
                 self._interaction_events.put(("viewer_option", "_paused", bool(event.target.value)))
 
@@ -869,7 +870,7 @@ class ViewerViser(ViewerBase):
                 handle = self._server.gui.add_checkbox(label, initial_value=value, hint=hint)
 
                 @handle.on_update
-                def _on_option(event, option=attribute):
+                async def _on_option(event, option=attribute):
                     if event.client_id is not None:
                         self._interaction_events.put(("viewer_option", option, bool(event.target.value)))
 
@@ -1023,7 +1024,7 @@ class ViewerViser(ViewerBase):
                     handle = self._server.gui.add_checkbox(f"Show '{name}'", initial_value=layer.visible)
 
                     @handle.on_update
-                    def _on_layer(event, owner=layer):
+                    async def _on_layer(event, owner=layer):
                         if event.client_id is not None:
                             self._interaction_events.put(("layer_visibility", owner, bool(event.target.value)))
 

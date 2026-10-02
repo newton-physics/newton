@@ -209,6 +209,34 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.wait_for(lambda: bool(selected))
         self.assertEqual(selected, ["module.b"])
 
+    def test_pause_update_survives_busy_callback_workers(self):
+        """Preserve a real browser pause update while Viser's callback workers are busy."""
+        executor = self.server._thread_executor
+        started = threading.Barrier(executor._max_workers + 1)
+        release = threading.Event()
+
+        def occupy_worker():
+            started.wait(timeout=5.0)
+            release.wait(timeout=10.0)
+
+        jobs = [executor.submit(occupy_worker) for _ in range(executor._max_workers)]
+        try:
+            started.wait(timeout=5.0)
+            pause = self.viewer._simulation_gui_handles["pause"]
+            self.update_gui(pause, True)
+            deadline = time.monotonic() + 5.0
+            while not pause.value and time.monotonic() < deadline:
+                time.sleep(0.001)
+            self.assertTrue(pause.value)
+            # Run a frame before a deferred worker callback could capture the value.
+            self.viewer.should_step()
+        finally:
+            release.set()
+            for job in jobs:
+                job.result(timeout=5.0)
+        self.wait_for(self.viewer.is_paused)
+        self.assertFalse(self.viewer.should_step())
+
     def test_example_switch_and_reset_restore_picking(self):
         """Restore picking and real mesh click handlers when entering a new example."""
         browser = _ExampleBrowser(self.viewer)
