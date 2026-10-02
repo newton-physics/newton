@@ -85,10 +85,12 @@ def test_pipeline_flags_dropped_reduction_candidates(test, device):
     test.assertEqual(int(reducer.contact_count.numpy()[0]), capacity)
     test.assertEqual(int(reducer.ht_insert_failures.numpy()[0]), 0)
     test.assertEqual(int(reducer.buffer_overflows.numpy()[0]), 2)
-    test.assertLess(
-        int(contacts.rigid_contact_count.numpy()[0]), int(reference_contacts.rigid_contact_count.numpy()[0])
-    )
     test.assertEqual(int(contacts._reduction_overflow.numpy()[0]), 1)
+    # Which candidates are dropped depends on the order of the device's atomic allocations,
+    # and the reduced set may or may not change, so the count is only bounded.
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0)
+    test.assertLessEqual(count, int(reference_contacts.rigid_contact_count.numpy()[0]))
 
     # The flag belongs to the pass that filled the buffer: a pass without losses clears it.
     separated = model.state()
