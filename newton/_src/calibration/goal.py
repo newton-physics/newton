@@ -72,12 +72,7 @@ class CableGoal:
     """``(width, height)`` [px] to render at when :attr:`camera_intrinsics` is ``None``."""
 
     fov_deg: float | None = None
-    """Horizontal field of view [deg], required when :attr:`camera_intrinsics` is ``None``.
-
-    There is no default. A field of view that no calibration produced is a guess
-    about a particular camera, so it belongs to whoever knows which camera this
-    is, not to this package.
-    """
+    """Horizontal field of view [deg], required when :attr:`camera_intrinsics` is ``None``."""
 
     start_ns: int | None = None
     """Absolute timestamp [ns] :attr:`frame_times` is relative to.
