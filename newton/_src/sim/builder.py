@@ -617,13 +617,6 @@ class ModelBuilder:
         _SHAPE_COLOR_PALETTE[0][1] / 255.0,
         _SHAPE_COLOR_PALETTE[0][2] / 255.0,
     )
-    _ROD_BODY_FRAME_ORIGIN_DEPRECATION_MESSAGE = (
-        "Omitting body_frame_origin when creating rods is deprecated because the implicit default "
-        "will change from 'start' to 'com' in a future release. Pass body_frame_origin='start' to "
-        "preserve the existing start-node body frame, or body_frame_origin='com' to opt into "
-        "COM-centered capsule body frames."
-    )
-
     _BUILDER_ATTRIBUTE_SPECS: ClassVar[dict[str, Model.AttributeSpec]] = {
         "body_lock_inertia": Model.AttributeSpec(Model.AttributeFrequency.BODY),
         "joint_collision_filter_parent": Model.AttributeSpec(Model.AttributeFrequency.JOINT),
@@ -711,19 +704,11 @@ class ModelBuilder:
         finally:
             del frame
 
-    @classmethod
+    @staticmethod
     def _resolve_rod_body_frame_origin(
-        cls,
         method_name: str,
-        body_frame_origin: Literal["start", "com"] | None,
+        body_frame_origin: Literal["start", "com"],
     ) -> Literal["start", "com"]:
-        if body_frame_origin is None:
-            warnings.warn(
-                cls._ROD_BODY_FRAME_ORIGIN_DEPRECATION_MESSAGE,
-                DeprecationWarning,
-                stacklevel=cls._external_warning_stacklevel(),
-            )
-            return "start"
         if body_frame_origin not in ("start", "com"):
             raise ValueError(f"{method_name}: body_frame_origin must be 'start' or 'com', got {body_frame_origin!r}")
         return body_frame_origin
@@ -8859,7 +8844,7 @@ class ModelBuilder:
         wrap_in_articulation: bool,
         junction_collision_filter: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"] | None,
+        body_frame_origin: Literal["start", "com"],
     ) -> tuple[list[int], list[int]]:
         """Add a Rod object through the established chain or graph path."""
         radius = rod._resolve_radius()
@@ -8983,7 +8968,7 @@ class ModelBuilder:
         label: str | None,
         wrap_in_articulation: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"] | None,
+        body_frame_origin: Literal["start", "com"],
     ) -> tuple[list[int], list[int]]:
         """Add an ordered point chain through the established graph path."""
         self._validate_rod_stiffness_inputs(
@@ -9130,7 +9115,7 @@ class ModelBuilder:
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] | None = None,
+        body_frame_origin: Literal["start", "com"] = "com",
         rod: Rod | None = None,
         junction_collision_filter: bool = True,
     ) -> tuple[list[int], list[int]]:
@@ -9205,9 +9190,8 @@ class ModelBuilder:
                 the legacy convention where the body origin is at the segment start position
                 (``positions[i]`` for segment ``i``), and the COM/shape are offset by half the
                 segment length. ``"com"`` places the body origin at the segment midpoint so the
-                body origin and COM coincide. If None, preserves ``"start"`` for now with a
-                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
-                pass ``"start"`` or ``"com"`` explicitly.
+                body origin and COM coincide. Defaults to ``"com"``; pass ``"start"`` to keep
+                the legacy start-node body frame.
             rod: Geometry, frame, topology, and constitutive-data source for
                 the prepared-object form. Mutually exclusive with ``positions``.
             junction_collision_filter: Whether to suppress self-collisions
@@ -9350,7 +9334,7 @@ class ModelBuilder:
         quaternions: list[Quat] | None = None,
         junction_collision_filter: bool = True,
         color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] | None = None,
+        body_frame_origin: Literal["start", "com"] = "com",
     ) -> tuple[list[int], list[int]]:
         """Adds a rod *graph* (supports junctions) from nodes + edges.
 
@@ -9418,9 +9402,8 @@ class ModelBuilder:
                 the legacy convention where the body origin is at the edge start node
                 (``node_positions[u]`` for edge ``(u, v)``), and the COM/shape are offset by half
                 the edge length. ``"com"`` places the body origin at the edge midpoint so the body
-                origin and COM coincide. If None, preserves ``"start"`` for now with a
-                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
-                pass ``"start"`` or ``"com"`` explicitly.
+                origin and COM coincide. Defaults to ``"com"``; pass ``"start"`` to keep
+                the legacy start-node body frame.
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
@@ -9480,7 +9463,7 @@ class ModelBuilder:
         quaternions: list[Quat] | None,
         junction_collision_filter: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"] | None,
+        body_frame_origin: Literal["start", "com"],
         articulation_root_node: int | None = None,
         articulation_root_joint_factory: Callable[[int, Transform], int] | None = None,
     ) -> tuple[list[int], list[int]]:
@@ -9581,7 +9564,7 @@ class ModelBuilder:
             half_height = 0.5 * seg_length
 
             if use_com_origin:
-                # Opt-in convention: place body origin at the segment center so origin and COM coincide.
+                # Place the body origin at the segment center so origin and COM coincide.
                 center = p0 + seg_vec * 0.5
                 body_q = wp.transform(center, q)
                 com_offset = wp.vec3(0.0)

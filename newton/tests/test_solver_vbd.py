@@ -1641,16 +1641,20 @@ def _rigid_contact_stick_eps_are_deprecated(test, device):
     test.assertFalse(hasattr(solver, "rigid_contact_stick_freeze_angular_eps"))
 
 
-def _rigid_compliant_alm_omission_warns_at_caller(test, device):
-    """Verify the migration warning identifies the SolverVBD call site."""
+def _rigid_compliant_alm_defaults_to_compliant(test, device):
+    """Use compliant ALM by default, preserve explicit False, and reject None."""
     builder = newton.ModelBuilder()
     builder.add_body()
     builder.color()
     model = builder.finalize(device=device)
 
-    with test.assertWarnsRegex(DeprecationWarning, "Omitting rigid_compliant_alm") as warning:
-        newton.solvers.SolverVBD(model)
-    test.assertEqual(warning.filename, __file__)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        solver = newton.solvers.SolverVBD(model)
+    test.assertTrue(solver.rigid_compliant_alm)
+    test.assertFalse(newton.solvers.SolverVBD(model, rigid_compliant_alm=False).rigid_compliant_alm)
+    with test.assertRaisesRegex(TypeError, "rigid_compliant_alm"):
+        newton.solvers.SolverVBD(model, rigid_compliant_alm=None)
 
 
 def _rigid_contact_dual_update_computes_lambda(test, device):
@@ -3136,7 +3140,7 @@ def _rigid_compliant_alm_validates_drive_limit_damping(test, device):
 
 
 def _rigid_compliant_alm_validates_contact_materials(test, device):
-    """Verify compliant contact rejects invalid physical stiffness, damping, and friction."""
+    """Reject invalid contact stiffness, damping, and friction only for VBD-owned rigid bodies."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -3152,6 +3156,7 @@ def _rigid_compliant_alm_validates_contact_materials(test, device):
             array.assign(values)
             with test.assertRaisesRegex(ValueError, f"model.{attribute}"):
                 newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+            newton.solvers.SolverVBD(model, integrate_with_external_rigid_solver=True)
         array.assign(original)
 
 
@@ -4978,8 +4983,8 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_rigid_compliant_alm_omission_warns_at_caller",
-    _rigid_compliant_alm_omission_warns_at_caller,
+    "test_rigid_compliant_alm_defaults_to_compliant",
+    _rigid_compliant_alm_defaults_to_compliant,
     devices=devices,
 )
 add_function_test(

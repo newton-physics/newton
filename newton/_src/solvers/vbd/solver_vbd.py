@@ -172,9 +172,8 @@ class SolverVBD(SolverBase, CouplingInterface):
       ``k_start`` seeds, where non-rod joint slots default to hard mode (augmented
       Lagrangian with persistent lambda and C0 stabilization) and rod stretch,
       shear, bend, and twist default to soft (penalty-based). Deprecated as of
-      Newton 1.6 and will be removed in a future release; omitting
-      ``rigid_compliant_alm`` is deprecated because the default will change to
-      ``True``.
+      Newton 1.6 and will be removed in a future release; select it explicitly
+      with ``rigid_compliant_alm=False``.
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, ROD.
@@ -328,7 +327,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_external_vertex_contact_filtering_map: dict | None = None,
         particle_external_edge_contact_filtering_map: dict | None = None,
         # Rigid body - constraint formulation and stabilization
-        rigid_compliant_alm: bool | None = None,  # None retains legacy and emits the scoped migration warning
+        rigid_compliant_alm: bool = True,
         rigid_avbd_alpha: float | None = None,  # Shared alpha override; None uses mode defaults
         rigid_avbd_joint_alpha: float | None = None,  # Joint alpha override
         rigid_avbd_contact_alpha: float | None = None,  # Body-body contact alpha override
@@ -433,12 +432,9 @@ class SolverVBD(SolverBase, CouplingInterface):
 
             rigid_compliant_alm: Unified compliant-ALM mode for body-body contacts,
                 structural joints, drives, and limits. This is the recommended path.
-                Defaults to ``None``, which currently selects the legacy path. When
-                ``SolverVBD`` integrates rigid bodies, omitting this argument emits a
-                ``DeprecationWarning`` because the default will change to ``True``
-                (deprecated as of Newton 1.6; the legacy path will be removed in a
-                future release). Pass ``True`` to adopt compliant ALM now, or ``False``
-                to keep the legacy path during the migration window. Finite authored
+                Defaults to ``True``. Pass ``False`` to keep the deprecated legacy
+                penalty/AVBD path during its migration window (deprecated as of
+                Newton 1.6; it will be removed in a future release). Finite authored
                 coefficients define the material response, while ``SolverVBD`` selects
                 ``rho`` internally for numerical conditioning. Values used with legacy
                 hard constraints may require retuning for the desired deformation.
@@ -636,20 +632,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         """
         integrates_rigid_bodies = model.body_count > 0 and not integrate_with_external_rigid_solver
 
-        # TODO: Complete the Newton 1.6 deprecation by defaulting omitted
-        # rigid_compliant_alm to True and removing this warning after the migration window.
         if rigid_compliant_alm is None:
-            if integrates_rigid_bodies:
-                warnings.warn(
-                    "Omitting rigid_compliant_alm is deprecated as of Newton 1.6 because the default will "
-                    "change from the legacy penalty/AVBD path (False) to unified compliant ALM (True), which "
-                    "is becoming the standard for rigid VBD. The legacy path is deprecated and will be removed "
-                    "in a future release. Pass rigid_compliant_alm=True to adopt compliant ALM now, or "
-                    "rigid_compliant_alm=False to keep the legacy path during the migration window.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-            rigid_compliant_alm = False
+            raise TypeError("rigid_compliant_alm must be True or False; omit it to use the default.")
 
         if rigid_avbd_beta < 0:
             raise ValueError(f"rigid_avbd_beta must be >= 0, got {rigid_avbd_beta}")
@@ -1635,8 +1619,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_body_contact_C0 = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
 
     def _validate_compliant_contact_materials(self) -> None:
-        """Validate physical contact coefficients consumed by compliant ALM."""
-        if self.model.shape_count == 0:
+        """Validate physical contact coefficients consumed by compliant ALM.
+
+        Skip when an external rigid solver owns the bodies or there are none:
+        VBD then evaluates no body-body contact rows.
+        """
+        if not self._integrates_rigid_bodies or self.model.shape_count == 0:
             return
         for attribute in ("shape_material_ke", "shape_material_kd", "shape_material_mu"):
             values = self._to_numpy(getattr(self.model, attribute), dtype=float)

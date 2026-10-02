@@ -3794,53 +3794,35 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
     test.assertGreater(dot, 0.999, msg=f"Default quaternion does not align +Z with edge direction (dot={dot:.6f})")
 
 
-def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device):
-    """Omitting body_frame_origin should warn while preserving the legacy start-node frame."""
-    builder = newton.ModelBuilder()
-
+def _cable_rod_default_origin_matches_com_impl(test: unittest.TestCase, device):
+    """Build COM-centered body frames without a warning when body_frame_origin is omitted."""
     num_elements = 2
     segment_length = 0.2
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
-    with test.assertWarnsRegex(DeprecationWarning, "body_frame_origin"):
-        rod_bodies, rod_joints = _add_prepared_rod(
-            builder,
-            points,
-            quaternions=edge_q,
-            radius=0.01,
-            bend_stiffness=1.0,
-            label="ut_cable_start_origin",
-        )
+    models = []
+    for frame_kwargs in ({}, {"body_frame_origin": "com"}):
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            _add_prepared_rod(
+                builder,
+                points,
+                quaternions=edge_q,
+                radius=0.01,
+                bend_stiffness=1.0,
+                label="ut_cable_default_origin",
+                **frame_kwargs,
+            )
+        builder.color()
+        models.append(builder.finalize(device=device))
 
-    builder.color()
-    model = builder.finalize(device=device)
-
-    body_q = model.body_q.numpy()
-    body_com = model.body_com.numpy()
-    shape_body = model.shape_body.numpy()
-    shape_transform = model.shape_transform.numpy()
-    joint_X_p = model.joint_X_p.numpy()
-    joint_X_c = model.joint_X_c.numpy()
-
-    for i, body_id in enumerate(rod_bodies):
-        p0 = np.array([points[i][0], points[i][1], points[i][2]], dtype=float)
-
-        np.testing.assert_allclose(body_q[body_id, :3], p0, atol=1.0e-6)
-        np.testing.assert_allclose(body_com[body_id], np.array([0.0, 0.0, 0.5 * segment_length]), atol=1.0e-6)
-
-        shape_ids = np.where(shape_body == body_id)[0]
-        test.assertEqual(len(shape_ids), 1)
-        shape_tf = shape_transform[shape_ids[0]]
-        np.testing.assert_allclose(shape_tf[:3], np.array([0.0, 0.0, 0.5 * segment_length]), atol=1.0e-6)
-        np.testing.assert_allclose(shape_tf[3:], np.array([0.0, 0.0, 0.0, 1.0]), atol=1.0e-6)
-
-    test.assertEqual(len(rod_joints), 1)
-    np.testing.assert_allclose(joint_X_p[rod_joints[0], :3], np.array([0.0, 0.0, segment_length]), atol=1.0e-6)
-    np.testing.assert_allclose(joint_X_c[rod_joints[0], :3], np.zeros(3), atol=1.0e-6)
+    for name in ("body_q", "body_com", "shape_transform", "joint_X_p", "joint_X_c"):
+        np.testing.assert_array_equal(getattr(models[0], name).numpy(), getattr(models[1], name).numpy())
 
 
 def _cable_rod_origin_matches_com_impl(test: unittest.TestCase, device):
-    """Verify rods support opt-in COM-centered body frames."""
+    """Verify explicitly selected COM-centered body frames."""
     builder = newton.ModelBuilder()
 
     num_elements = 2
@@ -5824,8 +5806,9 @@ def _rod_builder_deprecates_raw_geometry_forms(test, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", DeprecationWarning)
-        bodies, joints = builder.add_rod_graph(points, edges, body_frame_origin="com")
+        bodies, joints = builder.add_rod_graph(points, edges)
     test.assertEqual((len(bodies), len(joints)), (2, 1))
+    np.testing.assert_array_equal([builder.body_com[body] for body in bodies], np.zeros((2, 3)))
     test.assertEqual(len(caught), 1)
     test.assertIn("add_rod_graph()", str(caught[0].message))
     test.assertIn("add_rod(rod=...)", str(caught[0].message))
@@ -7205,8 +7188,8 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_rod_default_origin_matches_start",
-    _cable_rod_default_origin_matches_start_impl,
+    "test_cable_rod_default_origin_matches_com",
+    _cable_rod_default_origin_matches_com_impl,
     devices=devices,
 )
 add_function_test(
