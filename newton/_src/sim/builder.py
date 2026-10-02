@@ -858,13 +858,11 @@ class ModelBuilder:
         sdf_narrow_band_range: tuple[float, float] | list[float] = (-0.1, 0.1)
         """The narrow band distance range (inner, outer) for primitive SDF computation."""
         sdf_target_voxel_size: float | None = None
-        """Target voxel size for sparse SDF grid.
-        If provided, enables primitive SDF generation and takes precedence over
-        sdf_max_resolution. Requires GPU since wp.Volume only supports CUDA."""
+        """Target voxel size [m] for primitive texture SDF generation.
+        See :meth:`configure_sdf` for supported shapes and CUDA requirements."""
         sdf_max_resolution: int | None = None
         """Maximum dimension for sparse SDF grid (must be divisible by 8).
-        If provided (and sdf_target_voxel_size is None), enables primitive SDF
-        generation. Requires GPU since wp.Volume only supports CUDA."""
+        See :meth:`configure_sdf` for supported shapes and CUDA requirements."""
         force_sdf: bool = False
         """If True, :meth:`ModelBuilder.finalize` builds a volume SDF for this mesh/convex shape even
         when neither ``sdf_max_resolution`` nor ``sdf_target_voxel_size`` is set (built at the default
@@ -914,17 +912,22 @@ class ModelBuilder:
             texture_format: str | None = None,
             force_sdf: bool = False,
         ) -> None:
-            """Enable SDF-based collision for this shape.
+            """Configure texture SDF generation and hydroelastic contact.
 
-            Sets SDF and hydroelastic options in one place. Call this when the shape
-            should use SDF mesh-mesh collision and optionally hydroelastic contacts.
+            Primitive texture SDFs require CUDA and are generated for hydroelastic
+            shape contacts on spheres, boxes, capsules, cylinders, cones, and ellipsoids.
+            Outside hydroelastic mode, only boxes honor explicit resolution requests,
+            with either shape or particle collisions enabled.
+
+            Particle and full-surface contacts with these primitives use analytic
+            distances and do not need textures. Leave :attr:`sdf_max_resolution` and
+            :attr:`sdf_target_voxel_size` unset for CPU particle-only models.
 
             Args:
                 max_resolution: Maximum dimension for sparse SDF grid (must be divisible by 8).
-                    If provided, enables SDF-based mesh-mesh collision and clears any
-                    previous target_voxel_size setting.
-                target_voxel_size: Target voxel size for sparse SDF grid. If provided, enables
-                    SDF generation and clears any previous max_resolution setting.
+                    If provided, clears any previous target_voxel_size setting.
+                target_voxel_size: Target voxel size [m] for sparse SDF grid.
+                    If provided, clears any previous max_resolution setting.
                 is_hydroelastic: Whether to use SDF-based hydroelastic contacts. Both shapes
                     in a pair must have this enabled.
                 kh: Hydroelastic contact stiffness coefficient.
@@ -13409,7 +13412,7 @@ class ModelBuilder:
             has_mesh_sdf = any(
                 stype in (GeoType.MESH, GeoType.CONVEX_MESH)
                 and ssrc is not None
-                and sflags & ShapeFlags.COLLIDE_SHAPES
+                and sflags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
                 and getattr(ssrc, "sdf", None) is not None
                 for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, shape_flags_list, strict=True)
             )
@@ -13417,8 +13420,8 @@ class ModelBuilder:
             # the CPU-runs-into-build_sdf path also raises here, not deeper down.
             has_deferred_mesh_sdf = any(
                 stype in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.BOX)
-                and ssrc is not None
-                and sflags & ShapeFlags.COLLIDE_SHAPES
+                and (stype == GeoType.BOX or ssrc is not None)
+                and sflags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
                 and (stype == GeoType.BOX or getattr(ssrc, "sdf", None) is None)
                 and (smax is not None or svox is not None)
                 for stype, ssrc, sflags, smax, svox in zip(
@@ -13486,12 +13489,12 @@ class ModelBuilder:
                 )
                 required_sdf_padding = shape_gap + shape_margin_list[i] if is_hydroelastic else shape_gap
                 sdf_gen_margin = sdf_padding if sdf_padding is not None else required_sdf_padding
-                has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
+                has_sdf_collision = bool(shape_flags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
 
                 cache_key = None
                 mesh_sdf = None
 
-                if shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and has_shape_collision and shape_src is not None:
+                if shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and has_sdf_collision and shape_src is not None:
                     mesh_sdf = getattr(shape_src, "sdf", None)
                     # Build on a Mesh clone so shapes sharing one Mesh at different
                     # scale/margin/resolution end up with distinct SDFs.
@@ -13539,7 +13542,7 @@ class ModelBuilder:
                                 f"{sdf_texture_paired_samples})."
                             )
                         cache_key = ("mesh_sdf", id(mesh_sdf))
-                elif has_shape_collision and (
+                elif has_sdf_collision and (
                     is_hydroelastic
                     or (
                         shape_type == GeoType.BOX
@@ -13616,18 +13619,11 @@ class ModelBuilder:
                                 tex_data.subgrid_start_slots if c_tex is not None else None
                             )
 
-            # Build volume SDFs for participating MESH/CONVEX_MESH shapes that still lack one, when a
-            # per-shape SDF is requested -- ShapeConfig.configure_sdf(force_sdf=True), or an sdf
-            # resolution/voxel-size set on the shape. Built in unscaled mesh space (scale_baked=False)
-            # and cached per source mesh; eval_shape_sdf applies the shape scale at query time. Texture
-            # SDFs are CUDA-only, so on CPU (or on any build failure) the SDF is left unprovisioned; a
-            # full-surface CollisionPipeline then raises for that shape rather than silently degrading.
-            if any(
-                self.shape_force_sdf[i]
-                or self.shape_sdf_max_resolution[i] is not None
-                or self.shape_sdf_target_voxel_size[i] is not None
-                for i in range(len(self.shape_type))
-            ):
+            # Handle force_sdf mesh/convex requests not provisioned by the explicit-SDF pass above.
+            # Build in unscaled mesh space (scale_baked=False); eval_shape_sdf applies shape scale
+            # at query time. Construction failures leave the SDF unprovisioned, which a full-surface
+            # CollisionPipeline rejects rather than silently degrading.
+            if any(self.shape_force_sdf):
                 wt_sdf_cache = {}
                 for i in range(len(self.shape_type)):
                     if (
@@ -13635,11 +13631,7 @@ class ModelBuilder:
                         or self.shape_type[i] not in (GeoType.MESH, GeoType.CONVEX_MESH)
                         or not (shape_flags_list[i] & ShapeFlags.COLLIDE_PARTICLES)
                         or self.shape_source[i] is None
-                        or not (
-                            self.shape_force_sdf[i]
-                            or self.shape_sdf_max_resolution[i] is not None
-                            or self.shape_sdf_target_voxel_size[i] is not None
-                        )
+                        or not self.shape_force_sdf[i]
                     ):
                         continue
                     src = self.shape_source[i]

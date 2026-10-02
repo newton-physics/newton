@@ -4744,6 +4744,114 @@ def test_force_sdf_provisions_collision_meshes(test, device):
         newton.ModelBuilder.ShapeConfig().configure_sdf(max_resolution=64, target_voxel_size=0.01)
 
 
+def test_particle_only_mesh_sdf_emits_full_surface_contacts(test, device):
+    """Preserve prebuilt SDFs and emit accurate edge/face contacts for particle-only meshes."""
+    for provisioning in ("prebuilt", "deferred", "force_sdf"):
+        with test.subTest(provisioning=provisioning):
+            mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+            if provisioning == "prebuilt":
+                mesh.build_sdf(max_resolution=32, device=device)
+            builder = newton.ModelBuilder()
+            cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+            cfg.configure_sdf(force_sdf=provisioning != "deferred")
+            shape = builder.add_shape_mesh(body=-1, mesh=mesh, scale=(1.0, 1.0, 2.0), cfg=cfg)
+            if provisioning == "deferred":
+                # Exercise retained internal provisioning; ShapeConfig rejects mesh resolution settings.
+                builder.shape_sdf_max_resolution[shape] = 32
+            builder.add_cloth_grid(
+                pos=wp.vec3(-0.2, -0.2, 1.03),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0),
+                dim_x=2,
+                dim_y=2,
+                cell_x=0.2,
+                cell_y=0.2,
+                mass=0.1,
+            )
+            model = builder.finalize(device=device)
+            sdf_idx = int(model._shape_sdf_index.numpy()[shape])
+            test.assertGreaterEqual(sdf_idx, 0)
+            test.assertIsNotNone(model._texture_sdf_coarse_textures[sdf_idx])
+            if provisioning == "prebuilt":
+                test.assertIs(model._texture_sdf_coarse_textures[sdf_idx], mesh.sdf._coarse_texture)
+            else:
+                test.assertIsNone(mesh.sdf)
+
+            pipeline = newton.CollisionPipeline(
+                model, broad_phase="nxn", soft_contact_gap=0.06, enable_rigid_soft_full_surface_contact=True
+            )
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            total = int(contacts.soft_contact_count.numpy()[0])
+            indices = contacts.soft_contact_indices.numpy()[:total]
+            edge_contacts = (indices[:, 1] >= 0) & (indices[:, 2] < 0)
+            face_contacts = indices[:, 2] >= 0
+            test.assertTrue(np.any(edge_contacts))
+            test.assertTrue(np.any(face_contacts))
+            surface_z = contacts.soft_contact_body_pos.numpy()[:total, 2][edge_contacts | face_contacts]
+            np.testing.assert_allclose(surface_z, 1.0, atol=5.0e-3)
+
+
+def test_particle_only_convex_sdf_preserves_voxel_size(test, device):
+    """Preserve deferred SDF resolution and distances for a scaled particle-only convex mesh."""
+    mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=True, compute_inertia=False)
+    scale = np.array([1.0, 1.0, 2.0], dtype=np.float32)
+    target_voxel_size = 0.05
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+    shape = builder.add_shape_convex_hull(body=-1, mesh=mesh, scale=tuple(scale), cfg=cfg)
+    # Exercise retained internal provisioning; ShapeConfig rejects mesh resolution settings.
+    builder.shape_sdf_target_voxel_size[shape] = target_voxel_size
+    model = builder.finalize(device=device)
+
+    convex_mesh = model._mesh_keep_alive[0]
+    test.assertEqual(convex_mesh.points.shape[0], 8)
+    test.assertLess(int(convex_mesh.indices.numpy().max()), 8)
+    test.assertIsNone(mesh.sdf)
+    sdf_idx = int(model._shape_sdf_index.numpy()[shape])
+    test.assertGreaterEqual(sdf_idx, 0)
+    sdf = model._texture_sdf_data.numpy()[sdf_idx]
+    # The requested voxel size is in meters, including the shape's nonuniform scale.
+    physical_voxel_size = sdf["voxel_size"] * (1.0 if sdf["scale_baked"] else scale)
+    test.assertLessEqual(float(np.max(physical_voxel_size)), target_voxel_size + 1.0e-6)
+
+    out_phi = wp.zeros(1, dtype=float, device=device)
+    out_grad = wp.zeros(1, dtype=wp.vec3, device=device)
+    for distance in (-0.03, 0.03):
+        with test.subTest(distance=distance):
+            wp.launch(
+                _eval_shape_sdf_kernel,
+                dim=1,
+                inputs=[
+                    int(GeoType.CONVEX_MESH),
+                    wp.vec3(*scale),
+                    wp.vec3(0.0, 0.0, 1.0 + distance),
+                    sdf_idx,
+                    model._texture_sdf_data,
+                ],
+                outputs=[out_phi, out_grad],
+                device=device,
+            )
+            test.assertAlmostEqual(float(out_phi.numpy()[0]), distance, delta=5.0e-3)
+            np.testing.assert_allclose(out_grad.numpy()[0], [0.0, 0.0, 1.0], atol=5.0e-3)
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_particle_only_mesh_sdf_emits_full_surface_contacts",
+    test_particle_only_mesh_sdf_emits_full_surface_contacts,
+    devices=get_cuda_test_devices(),
+)
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_particle_only_convex_sdf_preserves_voxel_size",
+    test_particle_only_convex_sdf_preserves_voxel_size,
+    devices=get_cuda_test_devices(),
+)
+
+
 add_function_test(
     TestFullSurfaceSoftContact,
     "test_force_sdf_provisions_collision_meshes",
