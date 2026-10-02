@@ -431,7 +431,14 @@ class Contacts:
             """Contact forces (spatial) [N, N·m], shape (rigid_contact_max + soft_contact_max,), dtype :class:`spatial_vector`.
             Force and torque exerted on body0 by body1, referenced to the center of mass (COM) of body0, and in world frame, where body0 and body1 are the bodies of shape0 and shape1.
             First three entries: linear force [N]; last three entries: torque (moment) [N·m].
-            When both rigid and soft contacts are present, soft contact forces follow rigid contact forces.
+            Rigid contact ``i`` occupies row ``i``; soft contact ``i`` occupies row ``rigid_contact_max + i``.
+
+            For a soft contact the contacted shape (:attr:`soft_contact_shape`) takes the role of shape0 and the
+            soft feature -- particle, edge, or face -- the role of shape1: the row holds the force exerted on the
+            shape's body by the soft feature, applied at the shape-side contact point (:attr:`soft_contact_body_pos`
+            in world space), and its torque about that body's COM, or about the world origin when the shape is
+            static. Negating the force gives the force on the soft contact point. Which rows a solver populates
+            is documented by its ``update_contacts`` method; unpopulated rows are left unwritten.
 
             This is an extended contact attribute; see :ref:`extended_contact_attributes` for more information.
             """
