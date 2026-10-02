@@ -94,6 +94,112 @@ def test_friction_slides_at_the_coulomb_bound(test, device):
     test.assertAlmostEqual(velocity, expected, delta=0.03 * expected)
 
 
+ARMATURE = (9.0, 4.0, 2.0, 0.5, 1.5, 3.0)
+
+
+def _sphere_on_ground(device, armature, dense, com=(0.0, 0.0, 0.0), mu=0.0):
+    """A 1 kg sphere on a free joint, optionally with a massless fixed child that routes it to dense rows."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    body = builder.add_link(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.0999), wp.quat_identity()),
+        mass=1.0,
+        com=wp.vec3(com),
+        inertia=wp.mat33(np.eye(3) * 0.01),
+    )
+    joints = [builder.add_joint_free(body)]
+    if dense:
+        child = builder.add_link(mass=0.0, inertia=wp.mat33(0.0))
+        joints.append(builder.add_joint_fixed(body, child))
+    builder.add_articulation(joints)
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=mu)
+    builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=mu))
+    model = builder.finalize(device=device)
+    joint_armature = model.joint_armature.numpy()
+    joint_armature[:6] = armature
+    model.joint_armature.assign(joint_armature)
+    return model
+
+
+def _impact(model, solver, joint_qd):
+    """Step once from the given free-joint velocity; return the new velocity and summed contact force."""
+    state_in, state_out = model.state(), model.state()
+    qd = state_in.joint_qd.numpy()
+    qd[:6] = joint_qd
+    state_in.joint_qd.assign(qd)
+    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_in, contacts)
+    solver.step(state_in, state_out, model.control(), contacts, 0.01)
+    solver.update_contacts(contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    return state_out.joint_qd.numpy()[:6], contacts.rigid_contact_force.numpy()[:count].sum(axis=0)
+
+
+def test_free_body_contact_response_includes_armature(test, device):
+    """Free-body rows respond with the same armature-augmented inertia as articulated rows."""
+    stop = (0.0, 0.0, -1.0, 0.0, 0.0, 0.0)
+    for armature, expected in ((0.0, 100.0), (9.0, 1000.0)):
+        with test.subTest(armature=armature):
+            model = _sphere_on_ground(device, armature, dense=False)
+            qd, force = _impact(model, SolverFeatherPGS(model, pgs_cfm=0.0), stop)
+            # The sphere starts 0.1 mm deep, so the depenetration bias adds 0.2 %.
+            test.assertAlmostEqual(abs(float(force[2])), expected, delta=5.0e-3 * expected)
+            test.assertAlmostEqual(float(qd[2]), 0.0, delta=5.0e-3)
+
+    # An oblique frictional impact of an offset-COM body with per-axis armature.
+    oblique = (0.3, -0.2, -1.0, 0.4, 0.5, -0.3)
+    results = {}
+    for dense in (False, True):
+        model = _sphere_on_ground(device, ARMATURE, dense=dense, com=(0.03, -0.02, 0.01), mu=0.5)
+        results[dense] = _impact(model, SolverFeatherPGS(model, pgs_cfm=0.0, pgs_iterations=64), oblique)
+    np.testing.assert_allclose(results[False][0], results[True][0], rtol=0.0, atol=1.0e-4)
+    np.testing.assert_allclose(results[False][1], results[True][1], rtol=1.0e-3, atol=1.0e-2)
+
+    # A notified armature change reaches the free-body response.
+    model = _sphere_on_ground(device, 0.0, dense=False)
+    solver = SolverFeatherPGS(model, pgs_cfm=0.0)
+    _impact(model, solver, stop)
+    joint_armature = model.joint_armature.numpy()
+    joint_armature[:6] = 9.0
+    model.joint_armature.assign(joint_armature)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+    _, force = _impact(model, solver, stop)
+    test.assertAlmostEqual(abs(float(force[2])), 1000.0, delta=5.0)
+
+
+def test_free_body_impact_shares_armature_momentum(test, device):
+    """A frictionless plastic impact between free bodies conserves the armature-augmented momentum."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.0)
+    for x in (0.0, 0.1999):
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(x, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01)
+        )
+        builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+    model = builder.finalize(device=device)
+    joint_armature = model.joint_armature.numpy()
+    joint_armature[:6] = 9.0
+    model.joint_armature.assign(joint_armature)
+    solver = SolverFeatherPGS(model, pgs_cfm=0.0, pgs_iterations=64)
+    state_in, state_out = model.state(), model.state()
+    joint_qd = state_in.joint_qd.numpy()
+    joint_qd[0] = 1.0
+    state_in.joint_qd.assign(joint_qd)
+    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_in, contacts)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+    solver.step(state_in, state_out, model.control(), contacts, 0.01)
+    qd = state_out.joint_qd.numpy()
+    # Effective masses 10 and 1: both move at 10 / 11 m/s (plus a small depenetration bias).
+    test.assertAlmostEqual(float(qd[0]), 10.0 / 11.0, delta=2.0e-3)
+    test.assertAlmostEqual(float(qd[6]), 10.0 / 11.0, delta=1.5e-2)
+    test.assertAlmostEqual(float(10.0 * qd[0] + qd[6]), 10.0, delta=1.0e-3)
+
+
 class TestFeatherPGSContactForce(unittest.TestCase):
     pass
 
@@ -103,6 +209,8 @@ for _name in (
     "test_resting_box_reports_weight_as_linear_force",
     "test_friction_holds_inside_the_cone",
     "test_friction_slides_at_the_coulomb_bound",
+    "test_free_body_contact_response_includes_armature",
+    "test_free_body_impact_shares_armature_momentum",
 ):
     add_function_test(TestFeatherPGSContactForce, _name, globals()[_name], devices=devices)
 

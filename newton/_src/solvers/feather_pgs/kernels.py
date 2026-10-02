@@ -3471,13 +3471,16 @@ def compute_mf_body_Hinv(
     is_free_rigid: wp.array[int],
     body_to_articulation: wp.array[int],
     body_flags: wp.array[wp.int32],
+    articulation_dof_start: wp.array[int],
+    joint_armature: wp.array[float],
     # outputs
     mf_body_Hinv: wp.array[wp.spatial_matrix],
 ):
-    """Compute H^-1 = inverse(body_I_s) for free rigid bodies.
+    """Compute H^-1 = inverse(body_I_s + diag(armature)) for free rigid bodies.
 
-    For root free joints, H = body_I_s in articulation-local coordinates.
-    This remains a full 6x6 matrix for bodies with non-zero CoM offsets.
+    For root free joints, H = body_I_s in articulation-local coordinates, plus the free
+    joint's armature on the diagonal as in the articulated mass matrix. This remains a
+    full 6x6 matrix for bodies with non-zero CoM offsets.
     """
     b = free_rigid_body_indices[wp.tid()]
     art = body_to_articulation[b]
@@ -3489,7 +3492,11 @@ def compute_mf_body_Hinv(
         mf_body_Hinv[b] = wp.spatial_matrix(0.0)
         return
 
-    mf_body_Hinv[b] = spatial_matrix_block_inverse(body_I_s[b])
+    H = body_I_s[b]
+    dof_start = articulation_dof_start[art]
+    for k in range(6):
+        H[k, k] = H[k, k] + joint_armature[dof_start + k]
+    mf_body_Hinv[b] = spatial_matrix_block_inverse(H)
 
 
 @wp.kernel
