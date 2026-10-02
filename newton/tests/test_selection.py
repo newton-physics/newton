@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import gc
 import re
 import unittest
@@ -1976,42 +1977,98 @@ def test_actuator_mapping_built_once_and_cached(test, device):
             assert_np_equal(warm, cold)
 
 
-def test_actuator_parameters_capture_after_warmup(test, device):
-    """After a pre-capture warm-up, actuator gather/scatter captures and replays without host readback.
+def _world_major_actuator(model, device):
+    """One actuator row per model DOF, in global DOF order (world-major), with distinct gains."""
+    dof_count = model.joint_dof_count
+    kp = np.arange(dof_count, dtype=np.float32) * 10.0 + 1.0
+    actuator = Actuator(
+        indices=wp.array(np.arange(dof_count), dtype=wp.uint32, device=device),
+        drive=DrivePD(kp=wp.array(kp, device=device), kd=wp.zeros(dof_count, device=device)),
+    )
+    return actuator, kp, np.arange(dof_count, dtype=np.int64)
 
-    The first access builds the mapping with a host readback, which cannot run inside capture; that
-    cold access raises a clear error instead.
+
+@contextlib.contextmanager
+def _no_host_transfers():
+    """Fail on device-to-host readbacks and on arrays created from host data."""
+    array_init = wp.array.__init__
+
+    def init_without_host_data(self, data=None, *args, **kwargs):
+        if data is not None:
+            raise AssertionError("array created from host data during capture")
+        array_init(self, None, *args, **kwargs)
+
+    with (
+        mock.patch.object(wp.array, "numpy", side_effect=AssertionError("host readback during capture")),
+        mock.patch.object(wp.array, "__init__", init_without_host_data),
+    ):
+        yield
+
+
+def test_actuator_parameters_capture_cold(test, device):
+    """A first actuator access captures and replays: the mapping build runs on the device only.
+
+    Kernels are compiled with a separate view first, so the captured views start with an empty
+    mapping cache. Replays use the values present at launch time, and a second capture reuses
+    the cached mapping.
     """
     if not wp.is_mempool_enabled(device):
         test.skipTest("CUDA graph capture of allocations requires the mempool")
-    for layout in ("regular", "irregular", "dense"):
-        with test.subTest(layout=layout):
+    cases = (
+        ("dense", _world_major_actuator),
+        ("dense", _reversed_row_actuator),
+        ("regular", _reversed_row_actuator),
+        ("irregular", _reversed_row_actuator),
+    )
+    for layout, make_actuator in cases:
+        with test.subTest(layout=layout, actuator=make_actuator.__name__):
             model = _make_sparse_robot_model(layout, device)
+            warm_view = ArticulationView(model, "robot_a", verbose=False)
+            warm_actuator = make_actuator(model, device)[0]
+            warm_view.set_actuator_parameter(warm_actuator, warm_actuator.drive, "kp", np.zeros((3, 7), np.float32))
+
             view = ArticulationView(model, "robot_a", verbose=False)
-            actuator, kp, row_of_dof = _reversed_row_actuator(model, device)
+            actuator, kp, row_of_dof = make_actuator(model, device)
             selected_dofs = _articulation_dofs(model, view.articulation_ids.numpy().reshape(-1))
+            test.assertEqual(len(view._actuator_dof_mapping_cache), 0)
 
-            with test.assertRaisesRegex(RuntimeError, "before capturing"):
-                with wp.ScopedCapture(device):
-                    view.get_actuator_parameter(actuator, actuator.drive, "kp")
-
-            view.get_actuator_parameter(actuator, actuator.drive, "kp")  # pre-capture warm-up
             gathered = wp.zeros((3, 7), dtype=float, device=device)
             values = wp.zeros((3, 7), dtype=float, device=device)
             mask = wp.array([False, True, False], dtype=bool, device=device)
-            with mock.patch.object(wp.array, "numpy", side_effect=AssertionError("host readback during capture")):
-                with wp.ScopedCapture(device) as capture:
-                    view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=mask)
-                    wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
+            for _ in range(2):  # cold capture, then a capture that reuses the cached mapping
+                with _no_host_transfers():
+                    with wp.ScopedCapture(device) as capture:
+                        view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=mask)
+                        wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
+                test.assertEqual(len(view._actuator_dof_mapping_cache), 1)
+                for replay in range(2):
+                    actuator.drive.kp.assign(kp)
+                    new_values = -(np.arange(21, dtype=np.float32).reshape(3, 7) + 1.0 + 100.0 * replay)
+                    values.assign(new_values)
+                    wp.capture_launch(capture.graph)
+                    expected_kp = kp.copy()
+                    expected_kp[row_of_dof[selected_dofs[1]]] = new_values[1]
+                    assert_np_equal(actuator.drive.kp.numpy(), expected_kp)
+                    assert_np_equal(gathered.numpy(), expected_kp[row_of_dof[selected_dofs]])
 
-            # Replays use the values present at launch time, not at capture time.
-            new_values = -(np.arange(21, dtype=np.float32).reshape(3, 7) + 1.0)
-            values.assign(new_values)
-            wp.capture_launch(capture.graph)
-            expected_kp = kp.copy()
-            expected_kp[row_of_dof[selected_dofs[1]]] = new_values[1]
-            assert_np_equal(actuator.drive.kp.numpy(), expected_kp)
-            assert_np_equal(gathered.numpy(), expected_kp[row_of_dof[selected_dofs]])
+
+def test_actuator_capture_without_mempool_raises(test, device):
+    """Without the memory pool, a cold access inside capture raises a clear error and caches nothing."""
+    model = _make_sparse_robot_model("dense", device)
+    view = ArticulationView(model, "robot_a", verbose=False)
+    actuator, kp, _row_of_dof = _world_major_actuator(model, device)
+    view.get_actuator_parameter(actuator, actuator.drive, "kd")  # compile kernels on another mapping
+    view._actuator_dof_mapping_cache.clear()
+    was_enabled = wp.is_mempool_enabled(device)
+    wp.set_mempool_enabled(device, False)
+    try:
+        with test.assertRaisesRegex(RuntimeError, "memory pool"):
+            with wp.ScopedCapture(device):
+                view.get_actuator_parameter(actuator, actuator.drive, "kp")
+    finally:
+        wp.set_mempool_enabled(device, was_enabled)
+    test.assertEqual(len(view._actuator_dof_mapping_cache), 0)
+    assert_np_equal(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), kp.reshape(3, 7))
 
 
 class _BorrowedActuatorView:
@@ -2049,7 +2106,7 @@ class _BorrowedActuatorView:
 def test_borrowed_view_with_device_alias(test, device):
     """Borrowed actuator-parameter methods accept a view whose ``device`` is an alias string.
 
-    Covers eager get/set and, on CUDA, the cold-capture rejection plus warm-up, capture and replay.
+    Covers eager get/set and, on CUDA, cold and warmed capture with replay.
     """
     alias = wp.get_device(device).alias
     test.assertIsInstance(alias, str)
@@ -2063,9 +2120,16 @@ def test_borrowed_view_with_device_alias(test, device):
     if wp.get_device(alias).is_cuda:
         if not wp.is_mempool_enabled(alias):
             test.skipTest("CUDA graph capture of allocations requires the mempool")
-        with test.assertRaisesRegex(RuntimeError, "before capturing"):
-            with wp.ScopedCapture(alias):
-                view.get_actuator_parameter(actuator, actuator.drive, "kp")
+        # Compile kernels on another view, then capture the target view's first access.
+        _BorrowedActuatorView(world_count=2, dof_count=3, device=alias).get_actuator_parameter(
+            actuator, actuator.drive, "kd"
+        )
+        cold = wp.zeros((2, 3), dtype=float, device=alias)
+        with _no_host_transfers():
+            with wp.ScopedCapture(alias) as capture:
+                wp.copy(cold, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
+        wp.capture_launch(capture.graph)
+        assert_np_equal(cold.numpy(), kp.reshape(2, 3))
 
     assert_np_equal(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), kp.reshape(2, 3))
     view.set_actuator_parameter(
@@ -2080,11 +2144,11 @@ def test_borrowed_view_with_device_alias(test, device):
 
     if not wp.get_device(alias).is_cuda:
         return
-    # The eager calls above warmed the mapping, so the same accesses capture and replay.
+    # The calls above cached the mapping, so the same accesses capture and replay.
     gathered = wp.zeros((2, 3), dtype=float, device=alias)
     values = wp.zeros((2, 3), dtype=float, device=alias)
     mask = wp.array([True, False], dtype=bool, device=alias)
-    with mock.patch.object(wp.array, "numpy", side_effect=AssertionError("host readback during capture")):
+    with _no_host_transfers():
         with wp.ScopedCapture(alias) as capture:
             view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=mask)
             wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
@@ -2112,7 +2176,8 @@ for _name, _func, _func_devices in (
     ("test_sparse_world_root_transforms_and_velocities", test_sparse_world_root_transforms_and_velocities, _devices),
     ("test_actuator_mapping_built_once_and_cached", test_actuator_mapping_built_once_and_cached, _devices),
     ("test_borrowed_view_with_device_alias", test_borrowed_view_with_device_alias, _devices),
-    ("test_actuator_parameters_capture_after_warmup", test_actuator_parameters_capture_after_warmup, _cuda_devices),
+    ("test_actuator_parameters_capture_cold", test_actuator_parameters_capture_cold, _cuda_devices),
+    ("test_actuator_capture_without_mempool_raises", test_actuator_capture_without_mempool_raises, _cuda_devices),
 ):
     add_function_test(TestSelectionActuatorMapping, _name, _func, devices=_func_devices)
 
