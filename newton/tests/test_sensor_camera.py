@@ -378,6 +378,42 @@ class TestSensorCamera(unittest.TestCase):
         camera.update(state, camera_transforms, rays, depth_image=depth)
         self.assertEqual(float(depth.numpy()[center]), 0.0)
 
+    def test_convex_hull_renders_like_its_mesh(self) -> None:
+        """Verify convex-hull shapes render, matching the same geometry added as a triangle mesh.
+
+        The box mesh has per-face vertices with normals and UVs, which the hull's collision mesh
+        deduplicates, so the hull must not shade with the source mesh's per-vertex normals.
+        """
+        width, height = 16, 16
+        depths, normals = [], []
+        for convex in (True, False):
+            builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            mesh = newton.Mesh.create_box(0.2, 0.2, 0.1, compute_inertia=False)
+            if convex:
+                builder.add_shape_convex_hull(-1, mesh=mesh)
+            else:
+                builder.add_shape_mesh(-1, mesh=mesh)
+            model = builder.finalize(device="cpu")
+            camera = SensorCamera(model)
+            # Camera 2 m above the origin looking down -Z at the box's top face (z = 0.1 m).
+            above = np.array([[0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+            depth = camera.create_depth_image_output(1, width, height)
+            normal = camera.create_normal_image_output(1, width, height)
+            camera.update(
+                model.state(),
+                wp.array(above, dtype=wp.transformf, device="cpu"),
+                self._rays(width, height, math.radians(30.0)),
+                depth_image=depth,
+                normal_image=normal,
+            )
+            depths.append(depth.numpy()[0])
+            normals.append(normal.numpy()[0])
+
+        np.testing.assert_allclose(depths[0][height // 2, width // 2], 1.9, atol=1e-3)
+        np.testing.assert_allclose(depths[0], depths[1], atol=1e-3)
+        np.testing.assert_allclose(normals[0][height // 2, width // 2], (0.0, 0.0, 1.0), atol=1e-3)
+        np.testing.assert_allclose(normals[0], normals[1], atol=1e-3)
+
     def test_update_respects_disable_clear_flag(self) -> None:
         """Verify SensorCamera clears output images for DISABLE_CLEAR worlds."""
         width, height = 16, 12
