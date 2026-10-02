@@ -278,6 +278,7 @@ class _SensorCameraSceneRig:
         self.sensor.default_render_config.tile_height = RENDER_TILE_HEIGHT
         self.sensor.default_render_config.enable_shadows = True
         self.sensor.default_render_config.enable_textures = True
+        self.sensor.default_render_config.block_dim = KERNEL_BLOCK_DIM
 
         # The caller owns the rays and the per-view transforms passed to update().
         self.rays = SensorCamera.compute_camera_rays_pinhole(
@@ -306,7 +307,6 @@ class _SensorCameraSceneRig:
             color_image=self.color_image if color else None,
             depth_image=self.depth_image if depth else None,
             sync_deformables=False,
-            kernel_block_dim=KERNEL_BLOCK_DIM,
         )
 
 

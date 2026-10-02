@@ -241,7 +241,6 @@ class RenderContext:
         albedo_image: wp.array3d[wp.uint32] | None = None,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
         config: RenderConfig | None = DEFAULT_RENDER_CONFIG,
-        kernel_block_dim: int = 64,
     ):
         """Raytrace the scene into the provided output images.
 
@@ -283,8 +282,6 @@ class RenderContext:
             hdr_color_image: Output linear HDR color buffer.
             config: Render settings for this render call. If ``None``, uses
                 default :class:`RenderConfig` settings.
-            kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
-                for the render megakernel.
         """
         model = self.model
         if config is None:
@@ -382,12 +379,16 @@ class RenderContext:
 
             # Key the cache on the value tuple itself (dict hashes AND compares by
             # equality), so two configs that merely share a hash cannot collide onto
-            # one kernel. Store snapshots on insert since config/state/clear_data are
-            # mutable (``unsafe_hash``); a later mutation must not alter a stored key.
-            render_kernel = self._kernel_cache.get((config, self._render_state, clear_data))
+            # one kernel. ``block_dim`` is a launch-only parameter that does not
+            # affect codegen, so normalize it out of the key: configs differing only
+            # in block_dim must reuse the same compiled kernel. ``replace`` also
+            # snapshots the mutable config so a later mutation cannot alter a stored
+            # key (state/clear_data are snapshotted the same way on insert).
+            key_config = replace(config, block_dim=0)
+            render_kernel = self._kernel_cache.get((key_config, self._render_state, clear_data))
             if render_kernel is None:
                 render_kernel = create_kernel(config, self._render_state, clear_data)
-                self._kernel_cache[(replace(config), replace(self._render_state), replace(clear_data))] = render_kernel
+                self._kernel_cache[(key_config, replace(self._render_state), replace(clear_data))] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
 
@@ -457,7 +458,7 @@ class RenderContext:
                     hdr_color_image,
                 ],
                 device=self.device,
-                block_dim=kernel_block_dim,
+                block_dim=config.block_dim,
             )
 
     @property

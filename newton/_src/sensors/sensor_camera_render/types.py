@@ -119,6 +119,14 @@ class RenderConfig:
     tile_height: int = 8
     """Tile height [px] for ``RenderOrder.TILED`` traversal."""
 
+    block_dim: int = 64
+    """Thread block dimension forwarded to ``wp.launch`` for the render megakernel.
+
+    Launch-time tuning only: it does not affect kernel codegen, so the renderer
+    excludes it from the kernel cache key and changing it never triggers a
+    recompilation.
+    """
+
     max_distance: float = 1000.0
     """Maximum ray distance [m]."""
 

@@ -763,8 +763,8 @@ Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gi
 
 **Logging images:**
 
-Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including batched/tiled
-outputs from :class:`~newton.sensors.SensorTiledCamera`) in
+Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including per-view
+outputs from :class:`~newton.sensors.SensorCamera`) in
 :class:`~newton.viewer.ViewerGL`. By default, non-headless :class:`~newton.viewer.ViewerGL`
 shows logged images as dockable windows. Pass ``fullscreen=True`` to draw the image
 as the main viewer surface for the current frame instead of the 3D scene. Accepted

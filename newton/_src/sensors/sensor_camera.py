@@ -840,7 +840,6 @@ class SensorCamera:
         clear_data: ClearData | None = None,
         render_config: RenderConfig | None = None,
         sync_deformables: bool = True,
-        kernel_block_dim: int = 64,
     ) -> None:
         """Render this camera sensor.
 
@@ -889,7 +888,6 @@ class SensorCamera:
             sync_deformables: Sync deformable triangle-mesh points from *state*
                 before rendering (a no-op for rigid-only scenes). Set ``False``
                 if you already called :meth:`sync_deformable_meshes` this frame.
-            kernel_block_dim: Thread block dimension forwarded to ``wp.launch``.
         """
         render_context = self._render_context
         model = render_context.model
@@ -930,5 +928,4 @@ class SensorCamera:
                 albedo_image=albedo_image,
                 clear_data=clear_data if clear_data is not None else self.default_clear_data,
                 config=render_config if render_config is not None else self.default_render_config,
-                kernel_block_dim=kernel_block_dim,
             )

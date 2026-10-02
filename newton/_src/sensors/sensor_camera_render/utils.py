@@ -440,7 +440,7 @@ class Utils:
             depth_range: Optional ``(near, far)`` [m] for normalization.
                 Accepts a 2-element ``wp.array[wp.float32]`` or a Python
                 ``(near, far)`` tuple. If ``None``, the per-frame range is
-                computed on device by :func:`find_depth_range` (matches
+                computed on device from the image's positive depth values (matches
                 :meth:`flatten_depth_image_to_rgba`).
             out_buffer: Optional pre-allocated output of shape
                 ``(view_count, H, W, 4)``, dtype ``uint8``.
