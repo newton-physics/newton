@@ -2195,6 +2195,7 @@ class SolverFeatherPGS(SolverBase):
         self._model_plan: _FeatherPGSModelPlan | None = None
         self._kinematic_joint_mask = wp.zeros(model.joint_count, dtype=wp.int32, device=model.device)
         self._kinematic_dof_mask = wp.zeros(model.joint_dof_count, dtype=wp.int32, device=model.device)
+        self._joint_armature_device = wp.zeros(max(model.joint_dof_count, 1), dtype=wp.float32, device=model.device)
         self._body_prescribed = wp.zeros(max(model.body_count, 1), dtype=wp.int32, device=model.device)
         self._update_kinematic_state()
         # Prescribed-response elision removes fully-kinematic free bases from
@@ -2945,6 +2946,8 @@ class SolverFeatherPGS(SolverBase):
                     )
 
         self._joint_armature_effective = armature
+        if armature.size:
+            self._joint_armature_device.assign(armature.astype(np.float32))
         self._kinematic_dof_mask_host = dof_mask.copy()
         self._kinematic_joint_mask.assign(joint_mask)
         self._kinematic_dof_mask.assign(dof_mask)
@@ -13347,7 +13350,7 @@ class SolverFeatherPGS(SolverBase):
         """MF PGS setup: compute Hinv, compute effective mass and RHS."""
         model = self.model
 
-        # Compute H^-1 = inverse(body_I_s) for free rigid bodies
+        # Compute H^-1 = inverse(body_I_s + diag(armature)) for free rigid bodies
         wp.launch(
             compute_mf_body_Hinv,
             dim=self._free_rigid_body_count,
@@ -13357,6 +13360,8 @@ class SolverFeatherPGS(SolverBase):
                 self.is_free_rigid,
                 self.body_to_articulation,
                 model.body_flags,
+                self.articulation_dof_start,
+                self._joint_armature_device,
             ],
             outputs=[self.mf_body_Hinv],
             device=model.device,
