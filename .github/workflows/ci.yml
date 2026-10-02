@@ -127,9 +127,12 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version-file: ".python-version"
+      # Post-submit (push) runs start cold to catch stale-cache issues without
+      # slowing the merge queue, and publish the fresh cache.
       - name: Restore Warp kernel cache
-        if: github.event_name != 'merge_group'
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        id: restore-warp-cache
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: |
             ~/.cache/warp
@@ -159,6 +162,16 @@ jobs:
           --no-cache-clear
           --start-directory asv/tests
           --junit-report-xml asv-rspec.xml
+      # Merge queue caches are scoped to throwaway gh-readonly-queue refs.
+      - name: Save Warp kernel cache
+        if: github.event_name != 'merge_group' && steps.restore-warp-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: |
+            ~/.cache/warp
+            ~/Library/Caches/warp
+            ~\AppData\Local\NVIDIA\warp\Cache
+          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
       - name: Test Summary
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
