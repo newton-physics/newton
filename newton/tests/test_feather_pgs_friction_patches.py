@@ -689,11 +689,18 @@ class TestFrictionPatchHistory(unittest.TestCase):
         self.assertEqual(float(patches.view.weight.numpy().max()), 0.0)
 
 
-def _run_rolling(geometry, device, *, friction_anchor_beta=None, segments=64, hz=240, direction=1, deterministic=False):
-    """Roll a generated wheel for one second and average speed over its final quarter."""
+def _run_rolling(
+    geometry, device, *, friction_anchor_beta=None, segments=64, hz=240, direction=1, deterministic=False, phase=0.0
+):
+    """Roll a generated wheel for one second and average speed over its final quarter.
+
+    ``phase`` turns the wheel about its axle [rad] before launch, which selects the
+    facet it first lands on.
+    """
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
-    body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.05), wp.quat_identity()))
+    rotation = wp.quat_from_axis_angle(wp.vec3(0, 1, 0), float(phase))
+    body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.05), rotation))
     if geometry == "sphere":
         builder.add_shape_sphere(body, radius=0.05)
     elif geometry in ("mesh", "convex_hull"):
@@ -763,22 +770,34 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
     def test_faceted_rolling_across_tessellation_direction_and_timestep(self):
         """Bound patch approximation error across coarse and fine faceted wheels."""
         device = _DEVICE
+        # A coarse-timestep wheel bounces from facet to facet, so one trajectory is
+        # chaotic: the starting facet, or a round-off change in contact order, moves
+        # its one-second travel by centimetres, for point friction as much as for
+        # patches. Fix the contact order and compare the means over evenly spaced
+        # starting facet phases, so each case checks the approximation rather than
+        # one draw of that spread.
+        phase_count = 4
         for geometry in ("mesh", "convex_hull"):
             for segments in (32, 64, 128):
                 for hz in (120, 240):
                     for direction in (-1, 1):
-                        case = {"segments": segments, "hz": hz, "direction": direction}
-                        reference = _run_rolling(geometry, device, friction_anchor_beta=0.0, **case)
-                        actual = _run_rolling(geometry, device, **case)
-                        with self.subTest(geometry=geometry, **case):
-                            self.assertTrue(all(np.isfinite(value).all() for value in actual))
+                        case = {"segments": segments, "hz": hz, "direction": direction, "deterministic": True}
+                        references, actuals = [], []
+                        for k in range(phase_count):
+                            phase = 2.0 * np.pi / segments * k / phase_count
+                            references.append(
+                                _run_rolling(geometry, device, friction_anchor_beta=0.0, phase=phase, **case)
+                            )
+                            actuals.append(_run_rolling(geometry, device, phase=phase, **case))
+                        reference = [np.mean([r[i] for r in references], axis=0) for i in range(3)]
+                        actual = [np.mean([a[i] for a in actuals], axis=0) for i in range(3)]
+                        with self.subTest(geometry=geometry, segments=segments, hz=hz, direction=direction):
+                            for result in actuals:
+                                self.assertTrue(all(np.isfinite(value).all() for value in result))
                             # A two-location friction wrench approximates the
                             # per-contact reference. Bound its one-second travel
                             # error to 3% and mean speed error to 6% of launch speed;
                             # include lateral motion so steering errors cannot hide.
-                            # The 128-segment convex hull at 120 Hz lands within a
-                            # few percent of these bounds and differs slightly across
-                            # GPU architectures (5.1% speed error on an RTX 5080).
                             self.assertLess(np.max(np.abs(actual[0][:2] - reference[0][:2])), 0.03)
                             self.assertLess(abs(float(actual[2][0] - reference[2][0])), 0.06)
                             # Facet rocking can change the phase of lateral
