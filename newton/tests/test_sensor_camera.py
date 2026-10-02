@@ -545,6 +545,43 @@ class TestSensorCamera(unittest.TestCase):
         center = (height // 2, width // 2)
         self.assertTrue(all(float(depth.numpy()[v][center]) > 0.0 for v in range(2)))
 
+    def test_cloth_renders_triangle_colors_from_both_sides(self) -> None:
+        """Verify a cloth sheet shows its ``Model.tri_color`` from above and below, facing the camera."""
+        width, height = 8, 8
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_cloth_grid(
+            pos=wp.vec3(-0.5, -0.5, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=4,
+            dim_y=4,
+            cell_x=0.25,
+            cell_y=0.25,
+            mass=0.1,
+        )
+        model = builder.finalize(device="cpu")
+        model.tri_color.assign(np.tile([[1.0, 0.0, 0.0]], (model.tri_count, 1)).astype(np.float32))
+        camera = SensorCamera(model)
+        rays = self._rays(width, height, math.radians(20.0))
+        flip = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi)
+        # Cameras look down their -Z axis: one 2 m above the sheet, one 2 m below it looking up.
+        for z, q, facing in ((3.0, wp.quat_identity(), 1.0), (-1.0, flip, -1.0)):
+            with self.subTest(camera_z=z):
+                pose = np.array([[0.0, 0.0, z, q[0], q[1], q[2], q[3]]], dtype=np.float32)
+                albedo = camera.create_albedo_image_output(1, width, height)
+                normal = camera.create_normal_image_output(1, width, height)
+                camera.update(
+                    model.state(),
+                    wp.array(pose, dtype=wp.transformf, device="cpu"),
+                    rays,
+                    albedo_image=albedo,
+                    normal_image=normal,
+                )
+                packed = int(albedo.numpy()[0, height // 2, width // 2])
+                rgb = np.array([packed & 0xFF, (packed >> 8) & 0xFF, (packed >> 16) & 0xFF])
+                np.testing.assert_allclose(rgb, (255, 0, 0), atol=2)
+                np.testing.assert_allclose(normal.numpy()[0, height // 2, width // 2], (0.0, 0.0, facing), atol=1e-4)
+
     def test_texture_projection_modes_texture_uvless_shapes(self) -> None:
         """Verify cubic and triplanar projection texture UV-less shapes and differ.
 
