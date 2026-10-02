@@ -249,7 +249,7 @@ class TestMuJoCoSolverPropertiesSetup(_MuJoCoSolverPropertiesFixture, unittest.T
             self.state_in, self.state_out = self.state_out, self.state_in  # Output becomes input for next substep
 
     def test_setup_completes(self):
-        """Verify the shared scene builds two worlds, each with a free body and a three-link tree."""
+        """Verify the shared scene builds two worlds with four bodies each."""
         self.assertEqual(self.model.world_count, 2)
         np.testing.assert_array_equal(np.bincount(self.model.body_world.numpy()), [4, 4])
 
@@ -291,10 +291,7 @@ class TestMuJoCoSolverPropertiesSetup(_MuJoCoSolverPropertiesFixture, unittest.T
         sim_dt = frame_dt / sim_substeps
         sim_time = 0.0
 
-        # Override self.solver for _run_substeps_for_frame if it was defined in setUp
-        # However, since we moved initialization here, we pass it directly or use the local var.
-        # For simplicity, let _run_substeps_for_frame use self.solver, so we assign the local one to it.
-        self.solver = solver  # Make solver accessible to _run_substeps_for_frame via self
+        self.solver = solver  # _run_substeps_for_frame reads self.solver
 
         if use_cuda_graph:
             print(
@@ -3432,7 +3429,7 @@ class TestMuJoCoSolverGeomProperties(_MuJoCoSolverPropertiesFixture, unittest.Te
                 )
 
 
-class TestMuJoCoSolverEqualityConstraintProperties(_MuJoCoSolverPropertiesFixture, unittest.TestCase):
+class TestMuJoCoSolverEqualityConstraintProperties(unittest.TestCase):
     def test_connect_reference_anchors_use_free_joint_coordinates(self):
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
@@ -4208,7 +4205,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(_MuJoCoSolverPropertiesFixtur
             )
 
 
-class TestMuJoCoSolverFixedTendonProperties(_MuJoCoSolverPropertiesFixture, unittest.TestCase):
+class TestMuJoCoSolverFixedTendonProperties(unittest.TestCase):
     """Test fixed tendon property replication and runtime updates across multiple worlds."""
 
     def test_tendon_properties_conversion_and_update(self):
