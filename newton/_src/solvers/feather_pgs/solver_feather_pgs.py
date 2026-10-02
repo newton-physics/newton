@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
+import warnings
 from dataclasses import dataclass
 from functools import cache
 from typing import ClassVar
@@ -11,6 +12,7 @@ import warp as wp
 
 from ...core.reset import reset_world_selected
 from ...core.types import override
+from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk
 from ..solver import SolverBase
@@ -587,9 +589,15 @@ class SolverFeatherPGS(SolverBase):
     :meth:`check_constraint_capacity` outside graph capture.
 
     Global articulations are solved together with world 0. A kinematic global free body
-    (for example a moving platform) contacts the bodies of every world. A contact between
-    a body of another world and a dynamic global body, or a kinematic global articulation
-    with joints, cannot be solved: it is dropped and flagged in :attr:`constraint_overflow`.
+    (for example a moving platform) contacts the bodies of every world.
+
+    Known limitation: a contact between an articulated body of another world and a dynamic
+    global body, or a kinematic global articulation with joints, cannot be solved, because
+    it would couple two worlds' solves. Such a contact is dropped, counted, reported once by
+    a device-side warning (unless ``warn_constraint_overflow`` is off) and flagged in
+    :attr:`constraint_overflow`. The constructor warns once if the model's shape flags and
+    collision groups allow such contacts. Use world geometry or a kinematic free body for
+    scenery shared by all worlds, or add the body to every world.
 
     Extended state attributes:
         :attr:`~newton.State.body_parent_f` is populated when requested via
@@ -842,6 +850,7 @@ class SolverFeatherPGS(SolverBase):
         )
         self._has_prescribed_response = bool(np.any(self._model_plan.prescribed_articulation != 0))
         self._compute_articulation_metadata(model)
+        self._warn_unsolvable_global_contacts(model)
         self._setup_passive_joint_forces(model)
         self._compute_world_response_dof_mapping(model)
         self.dense_max_constraints = self._requested_dense_max_constraints
@@ -885,10 +894,11 @@ class SolverFeatherPGS(SolverBase):
             wp.zeros(3, dtype=wp.int32, device=model.device) if self.warn_constraint_overflow else None
         )
         self.constraint_overflow = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
-        """Capacity failure flags, shape ``[world_count + 1]``, dtype ``bool``.
+        """Capacity failure flags, shape ``[model.world_count + 1]``, dtype ``bool``.
 
-        One entry per world plus a final entry for global (world ``-1``) articulations,
-        the layout of the :meth:`reset` mask. An entry is set when a step drops constraint
+        One entry per world plus a final entry for global (world ``-1``) articulations:
+        the layout of the :meth:`reset` mask, so entry ``i`` is cleared exactly when mask
+        entry ``i`` is selected. An entry is set when a step drops constraint
         rows of that world (``dense_max_constraints`` or ``mf_max_constraints`` exceeded)
         or drops a contact that couples a dynamic global body with another world. Global
         articulations share world 0's row storage, so a row loss in world 0 also sets the
@@ -1051,6 +1061,72 @@ class SolverFeatherPGS(SolverBase):
             and max(self.size_groups) <= _CONTACT_JACOBIAN_MAX_DOF
         )
         self._setup_world_size_grouping(model)
+
+    def _unsolvable_global_articulations(self, model) -> np.ndarray:
+        """Return global articulations whose contacts with other worlds cannot be solved.
+
+        A global (world ``-1``) articulation that keeps response DOFs (a dynamic one, or a
+        kinematic one with joints; a kinematic free body is prescribed instead) is solved in
+        world 0. Its contacts with an articulation that has response DOFs in another world
+        would couple two worlds. The check is conservative: it only asks whether the shapes'
+        flags and collision groups allow such a contact, not whether the bodies ever meet.
+        """
+        plan = self._model_plan
+        none = np.zeros(0, dtype=np.int32)
+        if plan is None or not model.articulation_count or not model.shape_count or model.world_count < 2:
+            return none
+        response = np.asarray(plan.response_dof_count)
+        model_world = model.articulation_world.numpy()
+        coupled = (model_world < 0) & (response > 0)
+        other_world = (np.asarray(plan.articulation_world) != 0) & (model_world >= 0) & (response > 0)
+        if not coupled.any() or not other_world.any():
+            return none
+
+        body_articulation = np.full(model.body_count, -1, dtype=np.int64)
+        joint_child = model.joint_child.numpy()
+        articulation_start = model.articulation_start.numpy()
+        for articulation in range(model.articulation_count):
+            children = joint_child[articulation_start[articulation] : articulation_start[articulation + 1]]
+            body_articulation[children[children >= 0]] = articulation
+
+        shape_body = model.shape_body.numpy()
+        shape_articulation = np.where(shape_body >= 0, body_articulation[np.maximum(shape_body, 0)], -1)
+        colliding = (model.shape_flags.numpy() & int(ShapeFlags.COLLIDE_SHAPES)) != 0
+        has_articulation = shape_articulation >= 0
+        global_shapes = colliding & has_articulation & coupled[np.maximum(shape_articulation, 0)]
+        world_shapes = colliding & has_articulation & other_world[np.maximum(shape_articulation, 0)]
+        if not global_shapes.any() or not world_shapes.any():
+            return none
+
+        groups = model.shape_collision_group.numpy()
+        world_groups = np.unique(groups[world_shapes])
+
+        def groups_collide(a: int, b: int) -> bool:
+            if a == 0 or b == 0:
+                return False
+            if a > 0:
+                return a == b or b < 0
+            return a != b
+
+        flagged = set()
+        for group in np.unique(groups[global_shapes]):
+            if any(groups_collide(int(group), int(other)) for other in world_groups):
+                flagged.update(int(a) for a in np.unique(shape_articulation[global_shapes & (groups == group)]))
+        return np.array(sorted(flagged), dtype=np.int32)
+
+    def _warn_unsolvable_global_contacts(self, model) -> None:
+        """Warn once at construction if the model allows contacts that cannot be solved per world."""
+        articulations = self._unsolvable_global_articulations(model)
+        if articulations.size:
+            warnings.warn(
+                f"SolverFeatherPGS: global (world -1) articulations {articulations[:16].tolist()} are dynamic "
+                "or kinematic with joints, and their shapes can collide with articulated bodies of worlds "
+                "other than 0. Global articulations are solved in world 0, so such contacts cannot be solved: "
+                "they are dropped, counted and flagged in constraint_overflow. Use world geometry or a "
+                "kinematic free body for shared scenery, or add the body to every world.",
+                UserWarning,
+                stacklevel=3,
+            )
 
     def _setup_passive_joint_forces(self, model) -> None:
         """Select the passive joint damping applied in the inverse-dynamics pass."""

@@ -4,6 +4,7 @@
 """Global (world ``-1``) bodies in multi-world SolverFeatherPGS models: contacts and status."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -133,8 +134,8 @@ def test_global_kinematic_floor_capture_replay(test, device):
     np.testing.assert_allclose(eager_q[0, 2], eager_q[1, 2], atol=1.0e-5)
 
 
-def test_jointed_global_kinematic_flags_other_world_contacts(test, device):
-    """A kinematic global articulation with joints is solved in world 0; its other-world contacts are flagged."""
+def _jointed_kinematic_floor_model(device):
+    """Two worlds with one box each on a global kinematic floor driven by a prismatic joint."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     for x in (-2.0, 2.0):
         world = newton.ModelBuilder(gravity=wp.vec3(0.0))
@@ -144,9 +145,25 @@ def test_jointed_global_kinematic_flags_other_world_contacts(test, device):
     floor = builder.add_link(mass=1.0, is_kinematic=True)
     builder.add_articulation([builder.add_joint_prismatic(-1, floor, axis=newton.Axis.Z)])
     builder.add_shape_box(floor, hx=5.0, hy=5.0, hz=0.5)
-    model = builder.finalize(device=device)
+    return builder.finalize(device=device)
 
-    solver = SolverFeatherPGS(model, warn_constraint_overflow=False)
+
+def _construct(test, model, expect_warning, **kwargs):
+    """Construct the solver and check whether it warns about unsolvable global contacts."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        solver = SolverFeatherPGS(model, **kwargs)
+    messages = [str(w.message) for w in caught if "cannot be solved" in str(w.message)]
+    test.assertEqual(len(messages), 1 if expect_warning else 0, msg=messages)
+    if expect_warning:
+        test.assertIn("global (world -1) articulations", messages[0])
+    return solver
+
+
+def test_jointed_global_kinematic_flags_other_world_contacts(test, device):
+    """A kinematic global articulation with joints is solved in world 0; its other-world contacts are flagged."""
+    model = _jointed_kinematic_floor_model(device)
+    solver = _construct(test, model, True, warn_constraint_overflow=False)
     state, output = model.state(), model.state()
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     pipeline = newton.CollisionPipeline(model)
@@ -169,6 +186,36 @@ def test_jointed_global_kinematic_flags_other_world_contacts(test, device):
         solver.check_constraint_capacity()
 
 
+def test_construction_warns_about_unsolvable_global_contacts(test, device):
+    """The constructor warns once when shapes allow contacts that couple a global articulation with another world."""
+    # Dynamic global bodies and jointed kinematic global articulations warn.
+    _construct(test, _floor_model(device, "dynamic"), True)
+    _construct(test, _jointed_kinematic_floor_model(device), True)
+
+    # World geometry and global kinematic free bodies are solvable in every world.
+    _construct(test, _floor_model(device, "static"), False)
+    _construct(test, _floor_model(device, "kinematic"), False)
+    _construct(test, _floor_model(device, "kinematic", kinematic_world0=True), False)
+
+    # A dynamic global body with a single world, or whose shapes cannot collide with the
+    # worlds' bodies, cannot produce such contacts.
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    body = builder.add_body(mass=1.0)
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_ground_plane()
+    _construct(test, builder.finalize(device=device), False)
+    model = _floor_model(device, "dynamic")
+    flags = model.shape_flags.numpy()
+    flags[model.shape_body.numpy() == 2] &= ~int(newton.ShapeFlags.COLLIDE_SHAPES)
+    model.shape_flags.assign(flags)
+    _construct(test, model, False)
+    model = _floor_model(device, "dynamic")
+    groups = model.shape_collision_group.numpy()
+    groups[model.shape_body.numpy() == 2] = 7
+    model.shape_collision_group.assign(groups)
+    _construct(test, model, False)
+
+
 def _lift_box(model, world):
     """Move one world's box 3 m up, out of contact."""
     joint_q = model.joint_q.numpy()
@@ -181,7 +228,7 @@ def test_dynamic_global_body_flags_other_world_contacts(test, device):
     # Only world 1's box touches the global dynamic floor.
     model = _floor_model(device, "dynamic")
     _lift_box(model, 0)
-    solver = SolverFeatherPGS(model, warn_constraint_overflow=False)
+    solver = _construct(test, model, True, warn_constraint_overflow=False)
     v, contacts = _step_once(model, solver)
     count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertGreater(count, 0)
@@ -389,6 +436,10 @@ for _name, _func in (
     (
         "test_jointed_global_kinematic_flags_other_world_contacts",
         test_jointed_global_kinematic_flags_other_world_contacts,
+    ),
+    (
+        "test_construction_warns_about_unsolvable_global_contacts",
+        test_construction_warns_about_unsolvable_global_contacts,
     ),
     ("test_global_overflow_has_its_own_reset_slot", test_global_overflow_has_its_own_reset_slot),
     ("test_global_slot_reset_with_few_articulations", test_global_slot_reset_with_few_articulations),

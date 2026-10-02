@@ -237,7 +237,10 @@ repository examples spend tuning effort, not a shared solver API.
        are dropped and flagged in ``constraint_overflow`` (one entry per world
        and a final entry for global articulations); call
        ``check_constraint_capacity()`` at an observation boundary, and raise the
-       capacity and reset the world when it reports a world. Per-body angular
+       capacity and reset the world when it reports a world. Contacts of a
+       dynamic global body, or a kinematic global articulation with joints,
+       with another world's bodies cannot be solved and are flagged the same
+       way; the constructor warns when a model allows them. Per-body angular
        damping and free-body velocity bounds are model attributes registered by
        ``register_custom_attributes()``.
    * - :class:`~newton.solvers.SolverSemiImplicit`
