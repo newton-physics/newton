@@ -5,9 +5,10 @@
 
 Normal contacts are never reduced here. Each compatible region selects up to two
 friction locations, with an equal share of the region's total normal impulse.
-Locations average the support edges along the footprint's principal extent,
-avoiding a diagonal friction couple on symmetric narrow footprints. Isotropic
-footprints retain a canonical farthest pair because they have no unique axis.
+Locations lie on the footprint's principal axis through its centroid, at the
+members' axial extremes, avoiding a diagonal friction couple on symmetric narrow
+footprints. Isotropic footprints retain a canonical farthest pair because they
+have no unique axis.
 Regions require matching friction materials, nearly aligned normals, nearby
 contact planes, and connected shape bounding spheres on each body. The latter
 is a conservative test across convex seams, not an exact surface-connectivity
@@ -707,9 +708,10 @@ def _build(
         location0 = frame.center[first]
         location1 = frame.center[second]
         if anchors == 2 and carry_only == 0:
-            # Use the footprint's principal extent, averaging its support edges.
-            # Picking opposite corners of a narrow rectangle introduces an
-            # artificial diagonal friction couple even when the footprint is symmetric.
+            # Use the footprint's principal extent on its principal line through
+            # the centroid. Picking opposite corners of a narrow rectangle
+            # introduces an artificial diagonal friction couple even when the
+            # footprint is symmetric.
             origin = location0
             t0, t1 = contact_tangent_basis(frame.normal[seed])
             # Accumulate moments in double precision: contact-order roundoff
@@ -720,6 +722,7 @@ def _build(
             sum_xx = wp.float64(0.0)
             sum_xy = wp.float64(0.0)
             sum_yy = wp.float64(0.0)
+            sum_center = wp.vec3d(0.0)
             members = int(0)
             for j in range(member_start, member_stop):
                 c = frame.members[j]
@@ -732,6 +735,8 @@ def _build(
                     sum_xx += x * x
                     sum_xy += x * y
                     sum_yy += y * y
+                    point = frame.center[c]
+                    sum_center += wp.vec3d(wp.float64(point[0]), wp.float64(point[1]), wp.float64(point[2]))
                     members += 1
             member_count = wp.float64(members)
             xx = float(sum_xx - sum_x * sum_x / member_count)
@@ -759,30 +764,17 @@ def _build(
                         if projection > high:
                             high = projection
                             second = c
-                sum0 = wp.vec3d(0.0)
-                sum1 = wp.vec3d(0.0)
-                count0 = int(0)
-                count1 = int(0)
-                edge_tolerance = 1.0e-5 * frame.radius[seed]
-                for j in range(member_start, member_stop):
-                    c = frame.members[j]
-                    if frame.eligible[c] != 0:
-                        point = frame.center[c]
-                        offset = point - origin
-                        projection = wp.dot(offset, axis)
-                        precise_point = wp.vec3d(wp.float64(point[0]), wp.float64(point[1]), wp.float64(point[2]))
-                        if projection <= low + edge_tolerance:
-                            sum0 += precise_point
-                            count0 += 1
-                        if projection >= high - edge_tolerance:
-                            sum1 += precise_point
-                            count1 += 1
-                # Preserve constant coordinates and single-point edges exactly;
-                # avoid subtracting and adding the origin around their average.
-                mean0 = sum0 / wp.float64(count0)
-                mean1 = sum1 / wp.float64(count1)
-                location0 = wp.vec3(float(mean0[0]), float(mean0[1]), float(mean0[2]))
-                location1 = wp.vec3(float(mean1[0]), float(mean1[1]), float(mean1[2]))
+                # Project the axial extremes onto the principal line through the
+                # centroid instead of averaging the members near each end. Any
+                # grouping tolerance fails for some misalignment: a slight shear
+                # spreads an edge's projections, keeps one corner per edge and
+                # restores the diagonal couple. The projection selects no members,
+                # so anchors move continuously with the contacts and stay on a
+                # symmetric footprint's axis of symmetry.
+                mean = sum_center / member_count
+                centroid = wp.vec3(float(mean[0]), float(mean[1]), float(mean[2]))
+                location0 = centroid + wp.dot(frame.center[first] - centroid, axis) * axis
+                location1 = centroid + wp.dot(frame.center[second] - centroid, axis) * axis
         for aidx in range(anchors):
             c = first
             if aidx == 1:
