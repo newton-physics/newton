@@ -146,6 +146,27 @@ class BlockDType(Generic[BlockScalarType]):
             raise RuntimeError(f"Cannot convert to Warp type: Block shape is invalid: {self._shape}.")
 
 
+def _alias_ptr(
+    owner: wp.array,
+    ptr: int,
+    dtype,
+    shape: tuple[int, ...],
+    strides: tuple[int, ...] | None = None,
+) -> wp.array:
+    """Zero-copy view of ``owner``. Device and lifetime follow that allocation, not the ambient ``ScopedDevice``."""
+    view = wp.array(
+        dtype=dtype,
+        shape=shape,
+        ptr=ptr,
+        strides=strides,
+        device=owner.device,
+        copy=False,
+    )
+    # Keep the allocation alive for as long as the alias exists. ``deleter`` stays unset so this does not free it.
+    view._ref = owner
+    return view
+
+
 @dataclass
 class BlockSparseMatrices(Generic[BlockScalarType, IndexType, BlockType]):
     """
@@ -276,76 +297,72 @@ class BlockSparseMatrices(Generic[BlockScalarType, IndexType, BlockType]):
     def max_rows(self) -> wp.array[IndexType]:
         assert self.max_dims is not None and self.max_dims.ptr is not None
         index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
+        return _alias_ptr(
+            self.max_dims,
+            ptr=self.max_dims.ptr,
             dtype=self.index_dtype,
             shape=(self.num_matrices,),
-            ptr=self.max_dims.ptr,
             strides=(2 * index_dtype_size_bytes,),
-            copy=False,
         )
 
     @property
     def max_cols(self) -> wp.array[IndexType]:
         assert self.max_dims is not None and self.max_dims.ptr is not None
         index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
+        return _alias_ptr(
+            self.max_dims,
+            ptr=self.max_dims.ptr + index_dtype_size_bytes,
             dtype=self.index_dtype,
             shape=(self.num_matrices,),
-            ptr=self.max_dims.ptr + index_dtype_size_bytes,
             strides=(2 * index_dtype_size_bytes,),
-            copy=False,
         )
 
     @property
     def num_rows(self) -> wp.array[IndexType]:
         assert self.dims is not None and self.dims.ptr is not None
         index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
+        return _alias_ptr(
+            self.dims,
+            ptr=self.dims.ptr,
             dtype=self.index_dtype,
             shape=(self.num_matrices,),
-            ptr=self.dims.ptr,
             strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-            device=self.device,
         )
 
     @property
     def num_cols(self) -> wp.array[IndexType]:
         assert self.dims is not None and self.dims.ptr is not None
         index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
+        return _alias_ptr(
+            self.dims,
+            ptr=self.dims.ptr + index_dtype_size_bytes,
             dtype=self.index_dtype,
             shape=(self.num_matrices,),
-            ptr=self.dims.ptr + index_dtype_size_bytes,
             strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-            device=self.device,
         )
 
     @property
     def nzb_row(self) -> wp.array[IndexType]:
         assert self.nzb_coords is not None and self.nzb_coords.ptr is not None
         index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
+        return _alias_ptr(
+            self.nzb_coords,
+            ptr=self.nzb_coords.ptr,
             dtype=self.index_dtype,
             shape=(self.sum_of_num_nzb,),
-            ptr=self.nzb_coords.ptr,
             strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-            device=self.device,
         )
 
     @property
     def nzb_col(self) -> wp.array[IndexType]:
         assert self.nzb_coords is not None and self.nzb_coords.ptr is not None
         index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
+        return _alias_ptr(
+            self.nzb_coords,
+            ptr=self.nzb_coords.ptr + index_dtype_size_bytes,
             dtype=self.index_dtype,
             shape=(self.sum_of_num_nzb,),
-            ptr=self.nzb_coords.ptr + index_dtype_size_bytes,
             strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-            device=self.device,
         )
 
     ###
