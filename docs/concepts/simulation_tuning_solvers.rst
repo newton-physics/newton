@@ -244,7 +244,9 @@ repository examples spend tuning effort, not a shared solver API.
        with another world's bodies cannot be solved and are flagged the same
        way; the constructor warns when a model allows them. Per-body angular
        damping and free-body velocity bounds are model attributes registered by
-       ``register_custom_attributes()``.
+       ``register_custom_attributes()``, which also registers the MuJoCo joint
+       spring attributes (``stiffness``, ``springref`` and ``ref``) that FeatherPGS
+       applies to PRISMATIC and REVOLUTE joints.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.
