@@ -1126,6 +1126,7 @@ class SolverFeatherPGS(SolverBase):
                 dof_mask[dof_start:dof_end] = 1
                 armature[dof_start:dof_end] = 1.0e10
 
+        self._validate_connect_parent_membership()
         if self._model_plan is not None:
             selected = np.nonzero(self._model_plan.prescribed_articulation != 0)[0]
             for articulation in selected:
@@ -1533,6 +1534,7 @@ class SolverFeatherPGS(SolverBase):
         articulation_world = self._model_plan.articulation_world
 
         art_l, body_p, body_c, anchors_p, anchors_c, enabled, prescribed_l = [], [], [], [], [], [], []
+        joint_l, foreign_l = [], []
         for j in loop_joints.tolist():
             art = int(loop_joint_articulation[j])
             if int(joint_type[j]) != int(JointType.BALL):
@@ -1542,9 +1544,11 @@ class SolverFeatherPGS(SolverBase):
                 )
             parent = int(joint_parent[j])
             prescribed = 0
+            foreign = 0
             if parent < 0:
                 prescribed = 1
             elif int(body_articulation[parent]) != art:
+                foreign = 1
                 if not kinematic_bodies[parent]:
                     raise NotImplementedError(
                         f"SolverFeatherPGS: loop-closing joint {j} connects articulations "
@@ -1562,6 +1566,8 @@ class SolverFeatherPGS(SolverBase):
             anchors_c.append(joint_X_c[j][:3])
             enabled.append(1 if joint_enabled is None or joint_enabled[j] else 0)
             prescribed_l.append(prescribed)
+            joint_l.append(j)
+            foreign_l.append(foreign)
 
         n = len(art_l)
         if n == 0:
@@ -1570,6 +1576,11 @@ class SolverFeatherPGS(SolverBase):
         art_np = np.asarray(art_l, dtype=np.int32)
         self._connect_art_np = art_np
         self._connect_parent_prescribed_np = np.asarray(prescribed_l, dtype=np.int32)
+        # Closures whose parent is a kinematic body of another articulation; body-flag
+        # notifications re-check that the parent stays kinematic.
+        self._connect_parent_foreign_np = np.asarray(foreign_l, dtype=np.int32)
+        self._connect_body_p_np = np.asarray(body_p, dtype=np.int32)
+        self._connect_joint_np = np.asarray(joint_l, dtype=np.int32)
         self._connect_enabled_np = np.asarray(enabled, dtype=np.int32)
         self._connect_anchor_p_np = np.asarray(anchors_p, dtype=np.float32).reshape(n, 3)
         self._connect_anchor_c_np = np.asarray(anchors_c, dtype=np.float32).reshape(n, 3)
@@ -1584,6 +1595,28 @@ class SolverFeatherPGS(SolverBase):
         self._connect_sizes = frozenset(int(response_dof_count[a]) for a in np.unique(art_np))
         self.connect_slot = wp.full((n,), -1, dtype=wp.int32, device=device)
         self._connect_count = n
+
+    def _validate_connect_parent_membership(self) -> None:
+        """Reject a body-flag change that would invalidate the prescribed-parent closures.
+
+        A closure whose parent is a kinematic body of another articulation enforces only
+        the child side, with the parent's anchor velocity as the row target. If that
+        parent became dynamic, the closure would couple two dynamic articulations, which
+        :meth:`_build_connect_plan` rejects at construction; raise the same way instead of
+        keeping the one-way rows.
+        """
+        if not getattr(self, "_connect_count", 0):
+            return
+        kinematic = (self.model.body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0
+        for index in np.flatnonzero(self._connect_parent_foreign_np).tolist():
+            parent = int(self._connect_body_p_np[index])
+            if not kinematic[parent]:
+                raise NotImplementedError(
+                    f"SolverFeatherPGS: the parent body {parent} of loop-closing joint "
+                    f"{int(self._connect_joint_np[index])} belongs to another articulation and is no longer "
+                    "kinematic. A closure between two dynamic articulations is not supported; keep the parent "
+                    "kinematic, or remove the loop joint from the model and reconstruct the solver."
+                )
 
     def _connect_index(self, joint: int) -> int:
         index = self._connect_joint_to_index.get(int(joint))

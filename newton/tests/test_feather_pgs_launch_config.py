@@ -232,7 +232,7 @@ def test_unconverted_equality_constraints_raise(test, device):
             SolverFeatherPGS(_build_box_with_equality(device, enabled=True, target_kind=target_kind, target=7))
 
     # Imported equalities are converted to Newton loop joints by default; those rows are
-    # judged through the loop joint, which this solver rejects separately.
+    # enforced through the loop joint (see test_feather_pgs_connect). Unconverted, they raise.
     mjcf = """
     <mujoco>
       <worldbody>
@@ -244,13 +244,12 @@ def test_unconverted_equality_constraints_raise(test, device):
       <equality><connect body1="link" anchor="0.1 0 0"/></equality>
     </mujoco>
     """
-    for convert, message in ((True, "loop-closing"), (False, "equality")):
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf, convert_mjc_equality_constraints=convert)
-        imported = builder.finalize(device=device)
-        test.assertEqual(imported.mujoco.equality_constraint_count, 1)
-        with test.assertRaisesRegex(NotImplementedError, message):
-            SolverFeatherPGS(imported)
+    builder = newton.ModelBuilder()
+    builder.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
+    imported = builder.finalize(device=device)
+    test.assertEqual(imported.mujoco.equality_constraint_count, 1)
+    with test.assertRaisesRegex(NotImplementedError, "equality"):
+        SolverFeatherPGS(imported)
 
     # A disabled row constructs and has no effect.
     model = _build_box_with_equality(device, enabled=False)

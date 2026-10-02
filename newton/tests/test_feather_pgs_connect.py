@@ -270,10 +270,12 @@ def check_standalone_world_root_is_not_loop_joint(test, device, **solver_kwargs)
 
 
 def test_standalone_world_root_is_not_loop_joint(test, device):
+    """Do not treat an unowned world-root joint as a closure on the default path."""
     check_standalone_world_root_is_not_loop_joint(test, device)
 
 
 def test_propagation_standalone_world_root_is_not_loop_joint(test, device):
+    """Do not treat an unowned world-root joint as a closure with propagation responses."""
     check_standalone_world_root_is_not_loop_joint(test, device, articulated_contact_response="propagation")
 
 
@@ -448,6 +450,7 @@ def test_kinematic_parent_closure_carries_load(test, device):
 
 
 def test_world_parent_closure_holds_hanging_load(test, device):
+    """Hold a load hanging from world anchors through three point closures."""
     b, _, load, joints = _build_carried_load(world_parent=True)
     model = b.finalize(device=device)
     solver = SolverFeatherPGS(model, pgs_iterations=16, pgs_beta=0.2)
@@ -528,10 +531,81 @@ def test_disabled_loop_joint_starts_released(test, device):
 
 
 def test_unknown_joint_is_rejected(test, device):
+    """Reject runtime closure edits for a joint that is not an enforced loop joint."""
     b, _, _, joints = _build_carried_load()
     solver = SolverFeatherPGS(b.finalize(device=device))
     with test.assertRaises(ValueError):
         solver.set_loop_joint_enabled(joints[0] + 100, False)
+
+
+def test_kinematic_parent_turning_dynamic_is_rejected(test, device):
+    """Reject a body-flag change that would turn a prescribed-parent closure into a dynamic one.
+
+    The carrier is a kinematic body of a partially dynamic articulation and the closure
+    connects it to another articulation's free body. Clearing the carrier's kinematic flag
+    would leave a one-way closure between two dynamic articulations, which construction
+    rejects, so the notification raises too.
+    """
+    b = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    root = b.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    carrier = b.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), is_kinematic=True)
+    b.add_articulation([b.add_joint_revolute(-1, root), b.add_joint_prismatic(-1, carrier, axis=newton.Axis.X)])
+    load = b.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    loop_joint = b.add_joint_ball(carrier, load)
+    model = b.finalize(device=device)
+    solver = SolverFeatherPGS(model, joint_limit_activation_gap=0.0)
+    test.assertEqual(solver._connect_parent_prescribed.numpy().tolist(), [1])
+    state_0, state_1 = model.state(), model.state()
+    solver.step(state_0, state_1, model.control(), None, 0.01)
+
+    # Unrelated flag changes and an unchanged carrier are accepted.
+    flags = model.body_flags.numpy()
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+    flags[root] = int(newton.BodyFlags.KINEMATIC)
+    model.body_flags.assign(flags)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+    flags[root] = int(newton.BodyFlags.DYNAMIC)
+    model.body_flags.assign(flags)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+    flags[carrier] = int(newton.BodyFlags.DYNAMIC)
+    model.body_flags.assign(flags)
+    with test.assertRaisesRegex(NotImplementedError, f"loop-closing joint {loop_joint} .* no longer kinematic"):
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+    with test.assertRaisesRegex(NotImplementedError, "connects articulations 0 and 1"):
+        SolverFeatherPGS(model, joint_limit_activation_gap=0.0)
+
+
+def test_imported_connect_equality_is_enforced(test, device):
+    """Enforce an imported MuJoCo CONNECT through its converted loop joint; reject it unconverted."""
+    mjcf = """
+    <mujoco>
+      <worldbody>
+        <body name="link" pos="0 0 1">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="box" pos="0.3 0 0" size="0.3 0.05 0.05"/>
+        </body>
+      </worldbody>
+      <equality><connect body1="link" anchor="0.6 0 0"/></equality>
+    </mujoco>
+    """
+    for convert in (True, False):
+        b = newton.ModelBuilder()
+        b.add_mjcf(mjcf, convert_mjc_equality_constraints=convert)
+        model = b.finalize(device=device)
+        test.assertEqual(model.mujoco.equality_constraint_count, 1)
+        if not convert:
+            with test.assertRaisesRegex(NotImplementedError, "equality"):
+                SolverFeatherPGS(model)
+            continue
+        solver = SolverFeatherPGS(model, pgs_iterations=16)
+        test.assertEqual(solver._connect_count, 1)
+        state_0, state_1 = model.state(), model.state()
+        for _ in range(120):
+            solver.step(state_0, state_1, model.control(), None, 1.0 / 240.0)
+            state_0, state_1 = state_1, state_0
+        # The closure at the free end holds the hinge against gravity.
+        test.assertLess(abs(float(state_0.joint_q.numpy()[0])), 1.0e-2)
 
 
 class TestFeatherPGSConnect(unittest.TestCase):
@@ -560,6 +634,7 @@ for _name in (
     "test_connect_survives_foreign_joint_between_tree_and_loop",
     "test_unsupported_loop_joints_are_rejected",
     "test_closure_row_overflow_is_reported",
+    "test_imported_connect_equality_is_enforced",
 ):
     add_function_test(TestFeatherPGSConnect, _name, globals()[_name], devices=cuda_devices)
 for _name in (
@@ -568,6 +643,7 @@ for _name in (
     "test_runtime_enable_and_anchor_update",
     "test_disabled_loop_joint_starts_released",
     "test_unknown_joint_is_rejected",
+    "test_kinematic_parent_turning_dynamic_is_rejected",
 ):
     add_function_test(TestFeatherPGSPrescribedParentConnect, _name, globals()[_name], devices=cuda_devices)
 add_function_test(
