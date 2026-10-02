@@ -232,6 +232,8 @@ def test_reduction_overflow_cannot_authorize_sleep(test, device):
 
     np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [1])
     np.testing.assert_array_equal(solver.sleeping.quiet_age.numpy(), [0.0])
+    # The loss wakes the island before the step, so its dynamics and rows run.
+    np.testing.assert_array_equal(solver._dynamics_art_active.numpy(), [1])
 
 
 def test_notifications_reset_quiet_age_and_preserve_state(test, device):

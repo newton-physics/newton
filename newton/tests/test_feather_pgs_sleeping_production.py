@@ -118,7 +118,7 @@ def test_frozen_patch_carry_matches_rebuild_for_flooded_pairs(test, device):
 
 
 def _check_carry(test, device, tiles):
-    trajectories, flood_pairs = [], []
+    trajectories, flood_pairs, histories = [], [], []
     for carry in (False, True):
         model, pipeline, solver, states, control = _articulations(device, tiles=tiles)
         solver.sleeping.carry_frozen_patches = carry
@@ -137,11 +137,27 @@ def _check_carry(test, device, tiles):
             frozen += int(solver.sleeping.frozen_bodies.numpy().sum())
             if step == 399:
                 flood_pairs.append(int(solver._friction_patches._flood_pair_count.numpy()[0]))
+                # The anchor history a sleeping pair hands to its next awake step.
+                current = solver._friction_patches.current
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                valid = current.valid.numpy()[:count] != 0
+                histories.append(
+                    (
+                        valid,
+                        current.displacement.numpy()[:count][valid],
+                        current.tangent_impulse.numpy()[:count][valid],
+                    )
+                )
             trajectory.append(np.concatenate((states[0].body_q.numpy().ravel(), states[0].body_qd.numpy().ravel())))
         test.assertGreater(frozen, 0)
         np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [0, 0])
         trajectories.append(np.array(trajectory))
     if not tiles:
+        np.testing.assert_array_equal(histories[1][0], histories[0][0])
+        test.assertGreater(int(histories[0][0].sum()), 0)
+        test.assertGreater(float(np.abs(histories[0][1]).max()), 0.0)
+        for carried, rebuilt in zip(histories[1][1:], histories[0][1:], strict=True):
+            np.testing.assert_allclose(carried, rebuilt, rtol=1.0e-5, atol=1.0e-9)
         np.testing.assert_array_equal(trajectories[1][:400], trajectories[0][:400])
         # Rebuilding re-derives the carried history each sleeping step, which only differs by roundoff.
         np.testing.assert_allclose(trajectories[1], trajectories[0], rtol=0.0, atol=1.0e-6)
@@ -151,6 +167,26 @@ def _check_carry(test, device, tiles):
     test.assertEqual(flood_pairs[1], 0)
     positions = [t[-1][: 7 * 4].reshape(4, 7)[:, :3] for t in trajectories]
     np.testing.assert_allclose(positions[1], positions[0], rtol=0.0, atol=2.0e-3)
+
+
+def test_frozen_patch_carry_copies_the_previous_history(test, device):
+    """A sleeping pair's anchor history comes from the previous step, not from the current frame's storage."""
+    _model, pipeline, solver, states, control = _articulations(device)
+    contacts = pipeline.contacts()
+    _advance(pipeline, solver, states, control, 400, contacts=contacts)
+    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    test.assertTrue(np.all(solver.sleeping.frozen_bodies.numpy() == 1))
+    current = solver._friction_patches.current
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    names = ("valid", "displacement", "tangent_impulse", "anchor_a", "anchor_b", "owner")
+    before = {name: getattr(current, name).numpy()[:count].copy() for name in names}
+    test.assertGreater(int(before["valid"].sum()), 0)
+    # Overwrite the current frame; the carry must restore every field from the stored history.
+    for name in names:
+        getattr(current, name).fill_(7)
+    _advance(pipeline, solver, states, control, 1, contacts=contacts)
+    for name in names:
+        np.testing.assert_array_equal(getattr(current, name).numpy()[:count], before[name], err_msg=name)
 
 
 def test_successive_notifications_keep_every_wake(test, device):
@@ -348,6 +384,7 @@ for _name in (
     "test_property_notification_wakes_only_changed_islands",
     "test_frozen_patch_carry_matches_rebuild",
     "test_frozen_patch_carry_matches_rebuild_for_flooded_pairs",
+    "test_frozen_patch_carry_copies_the_previous_history",
     "test_successive_notifications_keep_every_wake",
     "test_replaced_property_array_wakes_its_island",
     "test_resized_property_array_is_rejected",
