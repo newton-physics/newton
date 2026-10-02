@@ -96,6 +96,17 @@ def _run_press(
     return impulse_sums, speeds, state_0
 
 
+def _matched_history(device):
+    """Gather arguments for generation 1 of stream 1, matched against the solved generation 0."""
+    return (
+        wp.zeros(1, dtype=wp.int32, device=device),  # match generation
+        wp.ones(1, dtype=wp.int32, device=device),  # contact generation
+        1,  # contact stream
+        wp.zeros(1, dtype=wp.int32, device=device),  # solved generation
+        wp.ones(1, dtype=wp.int32, device=device),  # solved stream
+    )
+
+
 def _gather_dense_rows(
     *,
     prev_impulses,
@@ -123,6 +134,7 @@ def _gather_dense_rows(
             wp.array(current_slots, dtype=wp.int32, device="cpu"),
             wp.array([0] * n, dtype=wp.int32, device="cpu"),
             wp.array(match_indices, dtype=wp.int32, device="cpu"),
+            *_matched_history("cpu"),
             wp.array(prev_slots, dtype=wp.int32, device="cpu"),
             wp.array([prev_impulses], dtype=wp.float32, device="cpu"),
             wp.array([prev_types], dtype=wp.int32, device="cpu"),
@@ -237,6 +249,7 @@ class TestFeatherPGSIdentityWarmstartKernel(unittest.TestCase):
                 contact_slots,
                 contact_world,
                 match_indices,
+                *_matched_history("cpu"),
                 prev_slots,
                 prev_impulses,
                 prev_types,
@@ -266,6 +279,7 @@ class TestFeatherPGSIdentityWarmstartKernel(unittest.TestCase):
                 contact_slots,
                 contact_world,
                 match_indices,
+                *_matched_history("cpu"),
                 prev_slots,
                 prev_impulses,
                 prev_types,
@@ -498,6 +512,200 @@ class TestFeatherPGSIdentityWarmstart(unittest.TestCase):
                     float(state_cold.joint_q.numpy()[0]),
                     delta=1.0e-3,
                 )
+
+
+def _insertion_after_solved_single_contact(articulated: bool):
+    """Solve sphere B alone on the ground, then lower sphere A so its contact sorts before B's.
+
+    ``articulated`` mounts each sphere on a vertical prismatic joint, so the contacts are
+    dense rows; otherwise the spheres are free bodies on the matrix-free rows.
+    """
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    shapes = []
+    for x, z in ((-0.5, 1.0), (0.5, 0.099)):
+        xform = wp.transform(wp.vec3(x, 0.0, z), wp.quat_identity())
+        if articulated:
+            body = builder.add_link(xform=xform)
+            joint = builder.add_joint_prismatic(-1, body, axis=wp.vec3(0.0, 0.0, 1.0), parent_xform=xform)
+            builder.add_articulation([joint])
+        else:
+            body = builder.add_body(xform=xform)
+        shapes.append(builder.add_shape_sphere(body, radius=0.1))
+    builder.add_ground_plane()
+    model = builder.finalize()
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="sticky")
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverFeatherPGS(model, pgs_iterations=8, pgs_warmstart=True)
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    pipeline.collide(state_0, contacts)
+    solver.step(state_0, state_1, model.control(), contacts, 1.0 / 240.0)
+    if articulated:
+        prev_slot, prev_impulses = solver._ws_prev_dense_slot_sorted, solver._ws_prev_dense_impulses
+    else:
+        prev_slot, prev_impulses = solver._ws_prev_slot_sorted, solver._ws_prev_mf_impulses
+    carried = float(prev_impulses.numpy()[0, int(prev_slot.numpy()[0])])
+    if articulated:
+        # Sphere A's joint coordinate is its height offset from the 1 m start.
+        q = state_1.joint_q.numpy()
+        q[0] = 0.099 - 1.0
+        state_1.joint_q.assign(q)
+        newton.eval_fk(model, state_1.joint_q, state_1.joint_qd, state_1)
+    else:
+        # Keep A's body pose and free-joint coordinates consistent.
+        q = state_1.body_q.numpy()
+        q[0][2] = 0.099
+        state_1.body_q.assign(q)
+        q = state_1.joint_q.numpy()
+        q[2] = 0.099
+        state_1.joint_q.assign(q)
+    return model, pipeline, contacts, solver, state_1, state_0, tuple(shapes), carried
+
+
+def _seeded_sphere_impulses(solver, contacts, shapes, model, articulated, state_in=None, state_out=None):
+    """Return the seeded normal impulses of A's and B's contacts.
+
+    With states, first step without a sweep, so the solved impulses are the seeds;
+    otherwise the caller has already stepped (for example by a graph replay).
+    """
+    if state_in is not None:
+        solver.pgs_iterations = 0
+        solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    slots = solver.contact_slot.numpy()[:count]
+    impulses = (solver.impulses if articulated else solver.mf_impulses).numpy()[0]
+    seeds = []
+    for shape in shapes:
+        index = np.flatnonzero((shape0 == shape) | (shape1 == shape))
+        seeds.append(float(impulses[int(slots[int(index[0])])]))
+    return seeds
+
+
+@unittest.skipUnless(wp.get_device().is_cuda, "SolverFeatherPGS matrix-free mode requires CUDA")
+class TestFeatherPGSWarmstartProvenance(unittest.TestCase):
+    """Warm start reads match indices only when they refer to the contact set it solved."""
+
+    def test_one_collision_pass_carries_the_persistent_contact(self):
+        """The reference sequence: B keeps its impulse at its new slot and new A starts cold."""
+        for articulated in (False, True):
+            with self.subTest(articulated=articulated):
+                model, pipeline, contacts, solver, state_in, state_out, shapes, carried = (
+                    _insertion_after_solved_single_contact(articulated)
+                )
+                self.assertGreater(carried, 0.0)
+                pipeline.collide(state_in, contacts)
+                seed_a, seed_b = _seeded_sphere_impulses(
+                    solver, contacts, shapes, model, articulated, state_in, state_out
+                )
+                self.assertEqual(seed_a, 0.0)
+                self.assertAlmostEqual(seed_b, carried, delta=1.0e-6)
+
+    def test_interleaved_contact_buffers_start_cold(self):
+        """A pass into the solved buffer after a pass into another buffer starts cold.
+
+        The pipeline matches against its last pass, whichever buffer it wrote, so the
+        second pass's match indices refer to the other buffer's contacts. Read as indices
+        into the solved set, they would seed the new contact A with B's impulse.
+        """
+        for articulated in (False, True):
+            with self.subTest(articulated=articulated):
+                model, pipeline, contacts, solver, state_in, state_out, shapes, carried = (
+                    _insertion_after_solved_single_contact(articulated)
+                )
+                self.assertGreater(carried, 0.0)
+                pipeline.collide(state_in, pipeline.contacts())
+                pipeline.collide(state_in, contacts)
+                seed_a, seed_b = _seeded_sphere_impulses(
+                    solver, contacts, shapes, model, articulated, state_in, state_out
+                )
+                self.assertEqual(seed_a, 0.0)
+                self.assertEqual(seed_b, 0.0)
+
+    def test_interleaved_contact_buffers_start_cold_under_graph_replay(self):
+        """Alternating captured collision passes keep the interleaved-buffer cold start."""
+        device = wp.get_device()
+        for articulated in (False, True):
+            with self.subTest(articulated=articulated):
+                model, pipeline, contacts, solver, state_in, state_out, shapes, carried = (
+                    _insertion_after_solved_single_contact(articulated)
+                )
+                other = pipeline.contacts()
+                solver.pgs_iterations = 0
+                graphs = {}
+                with wp.ScopedCapture(device) as capture:
+                    pipeline.collide(state_in, contacts)
+                graphs["collide"] = capture.graph
+                with wp.ScopedCapture(device) as capture:
+                    pipeline.collide(state_in, other)
+                graphs["collide_other"] = capture.graph
+                with wp.ScopedCapture(device) as capture:
+                    solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+                graphs["step"] = capture.graph
+
+                # One pass straight into the solved buffer carries B's impulse.
+                wp.capture_launch(graphs["collide"])
+                wp.capture_launch(graphs["step"])
+                seed_a, seed_b = _seeded_sphere_impulses(solver, contacts, shapes, model, articulated)
+                self.assertEqual(seed_a, 0.0)
+                self.assertAlmostEqual(seed_b, carried, delta=1.0e-6)
+
+                wp.capture_launch(graphs["collide_other"])
+                wp.capture_launch(graphs["collide"])
+                wp.capture_launch(graphs["step"])
+                seed_a, seed_b = _seeded_sphere_impulses(solver, contacts, shapes, model, articulated)
+                self.assertEqual(seed_a, 0.0)
+                self.assertEqual(seed_b, 0.0)
+
+    def test_skipped_collision_pass_starts_cold(self):
+        """Two collision passes between solves match against an unsolved contact set."""
+        for articulated in (False, True):
+            with self.subTest(articulated=articulated):
+                model, pipeline, contacts, solver, state_in, state_out, shapes, _carried = (
+                    _insertion_after_solved_single_contact(articulated)
+                )
+                pipeline.collide(state_in, contacts)
+                pipeline.collide(state_in, contacts)
+                seed_a, seed_b = _seeded_sphere_impulses(
+                    solver, contacts, shapes, model, articulated, state_in, state_out
+                )
+                self.assertEqual(seed_a, 0.0)
+                self.assertEqual(seed_b, 0.0)
+
+    def test_replaced_contact_buffer_starts_cold(self):
+        """A fresh buffer has no solved history of its own, even at the same generation."""
+        for articulated in (False, True):
+            with self.subTest(articulated=articulated):
+                model, pipeline, _contacts, solver, state_in, state_out, shapes, _carried = (
+                    _insertion_after_solved_single_contact(articulated)
+                )
+                replacement = pipeline.contacts()
+                pipeline.collide(state_in, replacement)
+                seed_a, seed_b = _seeded_sphere_impulses(
+                    solver, replacement, shapes, model, articulated, state_in, state_out
+                )
+                self.assertEqual(seed_a, 0.0)
+                self.assertEqual(seed_b, 0.0)
+
+    def test_substep_on_the_same_contacts_reuses_their_own_impulses(self):
+        """A second step on an unchanged contact set seeds each contact from itself.
+
+        Its match indices refer to the set before the last collision pass, where B had
+        another index; reading them would seed B from A's slot.
+        """
+        for articulated in (False, True):
+            with self.subTest(articulated=articulated):
+                model, pipeline, contacts, solver, state_in, state_out, shapes, _carried = (
+                    _insertion_after_solved_single_contact(articulated)
+                )
+                pipeline.collide(state_in, contacts)
+                solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+                solved = _seeded_sphere_impulses(solver, contacts, shapes, model, articulated)
+                self.assertGreater(solved[1], 0.0)
+                seeded = _seeded_sphere_impulses(solver, contacts, shapes, model, articulated, state_in, state_out)
+                for got, want in zip(seeded, solved, strict=True):
+                    self.assertAlmostEqual(got, want, delta=1.0e-6 * max(1.0, abs(want)))
 
 
 if __name__ == "__main__":
