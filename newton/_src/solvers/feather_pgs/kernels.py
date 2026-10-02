@@ -10,9 +10,10 @@ from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
 )
+from ...sim.contacts import GENERATION_SENTINEL
 from .contact_filters import contact_friction_eligible, contact_normal_gap_limit
 from .friction import contact_tangent_basis
-from .friction_patches import FrictionPatches
+from .friction_patches import FrictionPatches, warmstart_dt_scale
 
 PGS_CONSTRAINT_TYPE_CONTACT = 0
 # PGS joint-drive row; the velocity-only iterations can freeze these rows.
@@ -26,6 +27,9 @@ PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT = 4
 # Positive gaps below this slop [m] count as touching: it absorbs float32 residuals of
 # rows that land exactly at contact.
 _FPGS_CONTACT_END_GAP_SLOP = wp.constant(1.0e-6)
+
+# Warm-start history generation of a step without a contact set; no contact set has it.
+CONTACT_GENERATION_NONE = wp.constant(GENERATION_SENTINEL)
 
 # Keep launch-geometry-specific dynamics kernels out of the large general
 # kernel module. Warp compiles one whole module variant per block dimension.
@@ -3297,6 +3301,23 @@ def _transport_warmstart_contact(
 
 
 @wp.kernel
+def snapshot_step_warmstart(
+    dt: float,
+    contact_generation: wp.array[wp.int32],
+    has_contacts: int,
+    # outputs
+    history: wp.array[float],
+    history_generation: wp.array[wp.int32],
+):
+    """Record the step and the contact set it solved on the device, so graph replays stay current."""
+    history[0] = dt
+    if has_contacts != 0:
+        history_generation[0] = contact_generation[0]
+    else:
+        history_generation[0] = CONTACT_GENERATION_NONE
+
+
+@wp.kernel
 def gather_contact_warmstart(
     contact_count: wp.array[int],
     route: int,
@@ -3315,21 +3336,27 @@ def gather_contact_warmstart(
     previous_normal: wp.array[wp.vec3],
     row_mu: wp.array2d[float],
     decay: float,
-    dt_scale: float,
+    dt: float,
+    history: wp.array[float],
+    contact_generation: wp.array[wp.int32],
+    history_generation: wp.array[wp.int32],
     max_constraints: int,
     # in/out
     impulses: wp.array2d[float],
 ):
     """Seed the impulses of one row family (dense or free-body) from the previous step by contact identity.
 
-    ``match_index[c]`` is the previous step's sorted index of contact ``c`` and
-    ``prev_slot_sorted`` maps it to the contact's previous first row, so contacts keep
-    their impulses when their rows move. A friction row is seeded only when both steps
-    allocated it for the contact (contacts may change between one and three rows).
-    Unmatched contacts stay cold. Seeded impulses are scaled by ``decay`` and by
-    ``dt_scale = dt / dt_previous`` (impulses are proportional to the step for steady
-    loads), then the tangent impulse is transported to the current tangent frame and
-    clamped to the current friction cone.
+    ``prev_slot_sorted`` maps a contact's index in the contact set the previous step
+    solved to its first row then, so contacts keep their impulses when their rows move.
+    After a collision pass ``match_index[c]`` is contact ``c``'s index in the previous
+    contact set; when the solver steps again on the same contact set
+    (``contact_generation`` equals ``history_generation``) the index is ``c`` itself.
+    A friction row is seeded only when both steps allocated it for the contact
+    (contacts may change between one and three rows). Unmatched contacts stay cold.
+    Seeded impulses are scaled by ``decay`` and by ``dt / history[0]``, the ratio of the
+    step to the previous one (impulses are proportional to the step for steady loads),
+    then the tangent impulse is transported to the current tangent frame and clamped to
+    the current friction cone.
     """
     c = wp.tid()
     if c >= contact_count[0] or contact_path[c] != route:
@@ -3343,8 +3370,11 @@ def gather_contact_warmstart(
         return
 
     mi = match_index[c]
+    if contact_generation[0] == history_generation[0]:
+        mi = c
     if mi < 0:
         return
+    dt_scale = warmstart_dt_scale(dt, history)
     prev_slot = prev_slot_sorted[mi]
     if prev_slot < 0 or prev_slot >= max_constraints:
         return

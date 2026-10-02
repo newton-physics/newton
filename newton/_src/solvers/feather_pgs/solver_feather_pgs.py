@@ -19,6 +19,7 @@ from ..solver import SolverBase
 from .friction import FRICTION_PAIR_CUDA
 from .friction_patches import _FrictionPatchState, finish_patch_impulses, link_patch_rows, seed_patch_impulses
 from .kernels import (
+    CONTACT_GENERATION_NONE,
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
@@ -78,6 +79,7 @@ from .kernels import (
     scatter_qdd_from_groups,
     snapshot_contact_warmstart,
     snapshot_row_warmstart,
+    snapshot_step_warmstart,
     trisolve_loop,
     update_body_qd_from_featherstone,
     update_qdd_from_velocity,
@@ -954,8 +956,11 @@ class SolverFeatherPGS(SolverBase):
             pgs_warmstart: Start each step from the previous step's contact impulses, matched
                 by contact identity through :attr:`~newton.Contacts.rigid_contact_match_index`,
                 so the :class:`~newton.CollisionPipeline` must be created with contact matching
-                enabled. Carried tangent impulses are rotated into the current tangent frame
-                and clamped to the current friction cone; other rows start cold.
+                enabled. Substeps that reuse a contact set without a collision pass seed each
+                contact from its own previous substep. Carried impulses are scaled by the
+                ratio of the step to the previous one, including under graph replay; tangent
+                impulses are rotated into the current tangent frame and clamped to the
+                current friction cone; other rows start cold.
             pgs_warmstart_decay: Non-negative scale applied to the carried impulses.
             restitution_velocity_threshold: Minimum incident normal speed [m/s] for a
                 rebound. Contacts bounce with the arithmetic mean of the two shapes'
@@ -1978,7 +1983,10 @@ class SolverFeatherPGS(SolverBase):
             self._ws_prev_dense_slot = wp.full((max_contacts,), -1, dtype=wp.int32, device=device)
             self._ws_prev_mf_slot = wp.full((max_contacts,), -1, dtype=wp.int32, device=device)
             self._ws_prev_contact_normal = wp.zeros((max_contacts,), dtype=wp.vec3, device=device)
-        self._ws_prev_dt = 0.0
+        # Previous solver step and the contact generation it solved, on the device so a
+        # captured graph replays them instead of baking the first capture's ratio.
+        self._ws_history_dt = wp.zeros(1, dtype=float, device=device)
+        self._ws_history_generation = wp.full(1, CONTACT_GENERATION_NONE, dtype=wp.int32, device=device)
         self.slot_counter = wp.zeros((self.world_count,), dtype=wp.int32, device=device)
         self._dense_first_rejected_slot = wp.full(
             (self.world_count,), _ROW_SLOT_UNBOUNDED, dtype=wp.int32, device=device
@@ -2398,7 +2406,9 @@ class SolverFeatherPGS(SolverBase):
                         parents,
                         mu,
                         impulses,
-                        self.pgs_warmstart_decay * self._warmstart_dt_scale(dt),
+                        self.pgs_warmstart_decay,
+                        dt,
+                        self._ws_history_dt,
                     ],
                     device=model.device,
                 )
@@ -2711,7 +2721,17 @@ class SolverFeatherPGS(SolverBase):
                 outputs=[self._ws_prev_dense_slot, self._ws_prev_mf_slot, self._ws_prev_contact_normal],
                 device=model.device,
             )
-        self._ws_prev_dt = float(dt)
+        wp.launch(
+            snapshot_step_warmstart,
+            dim=1,
+            inputs=[
+                float(dt),
+                contacts.contact_generation if contacts is not None else self._ws_history_generation,
+                has_contacts,
+            ],
+            outputs=[self._ws_history_dt, self._ws_history_generation],
+            device=model.device,
+        )
 
     def check_constraint_capacity(self) -> None:
         """Raise if any world, or the global entry, lost contacts or constraint rows since its last reset.
@@ -3269,16 +3289,15 @@ class SolverFeatherPGS(SolverBase):
                 self._ws_prev_contact_normal,
                 row_mu,
                 self.pgs_warmstart_decay,
-                self._warmstart_dt_scale(dt),
+                dt,
+                self._ws_history_dt,
+                contacts.contact_generation,
+                self._ws_history_generation,
                 capacity,
             ],
             outputs=[impulses],
             device=self.model.device,
         )
-
-    def _warmstart_dt_scale(self, dt: float) -> float:
-        """Ratio of the step to the previous step; carried impulses are proportional to it."""
-        return dt / self._ws_prev_dt if self._ws_prev_dt > 0.0 else 1.0
 
     def _stage4_build_rows(self, state_in: State, state_aug: State, contacts: Contacts | None, dt: float):
         """Allocate and fill the joint-limit, velocity-limit, contact and friction rows of every world.

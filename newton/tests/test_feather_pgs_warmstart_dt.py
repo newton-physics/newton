@@ -87,7 +87,10 @@ def test_warm_carry_kernel_scales_rows_exactly(test: unittest.TestCase, device):
                 wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3),
                 wp.full((1, max_c), 100.0, dtype=wp.float32),
                 0.75,
-                4.0,
+                4.0,  # dt; the previous step below is 1, so the step ratio is 4
+                wp.ones(1, dtype=float),
+                wp.zeros(1, dtype=wp.int32),  # contact generation
+                wp.full(1, -1, dtype=wp.int32),  # history of another contact set
                 max_c,
             ],
             outputs=[impulses],

@@ -118,6 +118,10 @@ def _gather_rows(
             wp.full((1, max_c), 100.0, dtype=wp.float32, device=device),
             decay,
             dt_scale,
+            # The previous step is 1, so the step ratio is dt_scale; a fresh contact set.
+            wp.ones(1, dtype=float, device=device),
+            wp.zeros(1, dtype=wp.int32, device=device),
+            wp.full(1, -1, dtype=wp.int32, device=device),
             max_c,
         ],
         outputs=[impulses],
@@ -310,6 +314,124 @@ def test_real_contact_insertion_moves_slots_without_cross_seeding(test, device):
     test.assertEqual(float(impulses[a_slot]), 0.0)
 
 
+def test_substeps_reuse_contacts_with_their_own_history(test, device):
+    """Solver substeps on one contact set seed each contact from its own last solve.
+
+    Match indices refer to the contact set before the last collision pass, while the
+    history is saved every solver step. Inserting and deleting a contact moves the
+    persistent contact's index, so reading the match index on a substep would seed it
+    from another contact or from nothing.
+    """
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0.0, 1.0), wp.quat_identity()))
+    shape_a = builder.add_shape_sphere(body_a, radius=0.1)
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.5, 0.0, 0.1), wp.quat_identity()))
+    shape_b = builder.add_shape_sphere(body_b, radius=0.1)
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="sticky")
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverFeatherPGS(model, pgs_iterations=8, pgs_warmstart=True)
+    states = [model.state(), model.state()]
+    control = model.control()
+    dt = 1.0 / 240.0
+
+    def step(iterations):
+        solver.pgs_iterations = iterations
+        solver.step(states[0], states[1], control, contacts, dt)
+        states.reverse()
+
+    def contact_impulses():
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+        shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+        slots = solver.contact_slot.numpy()[:count]
+        impulses = solver.mf_impulses.numpy()[0]
+        result = {}
+        for name, shape in (("a", shape_a), ("b", shape_b)):
+            index = np.flatnonzero((shape0 == shape) | (shape1 == shape))
+            if len(index):
+                result[name] = float(impulses[int(slots[int(index[0])])])
+        return result
+
+    def check_substeps(phase):
+        # Solve a substep, then seed the next one without a sweep: its impulses are the seeds.
+        for substep in range(2):
+            step(8)
+            solved = contact_impulses()
+            step(0)
+            seeded = contact_impulses()
+            with test.subTest(phase=phase, substep=substep):
+                test.assertEqual(seeded.keys(), solved.keys())
+                test.assertGreater(solved["b"], 0.0)
+                for name, value in solved.items():
+                    test.assertAlmostEqual(seeded[name], value, delta=1.0e-6 * max(1.0, abs(value)))
+
+    pipeline.collide(states[0], contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+    check_substeps("B alone")
+
+    # Insert the lower shape-id sphere: sorting puts its contact before B's.
+    q = states[0].body_q.numpy()
+    q[body_a][2] = 0.1
+    states[0].body_q.assign(q)
+    qd = states[0].body_qd.numpy()
+    qd[body_a] = 0.0
+    states[0].body_qd.assign(qd)
+    pipeline.collide(states[0], contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 2)
+    test.assertGreaterEqual(int(contacts.rigid_contact_match_index.numpy()[1]), 0)
+    check_substeps("insertion")
+
+    # Delete A's contact again: B moves back to index 0.
+    q = states[0].body_q.numpy()
+    q[body_a][2] = 1.0
+    states[0].body_q.assign(q)
+    pipeline.collide(states[0], contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+    test.assertEqual(int(contacts.rigid_contact_match_index.numpy()[0]), 1)
+    check_substeps("deletion")
+
+
+def test_graph_replay_rescales_history_once_after_a_timestep_change(test, device):
+    """Captured steps rescale carried impulses by the step ratio once, like eager steps.
+
+    The previous step lives on the device. A ratio fixed at capture would rescale the
+    history again on every replay: after settling at 1/120 s, replays at 1/240 s would
+    seed 0.5, 0.25 and 0.125 of the settled load instead of 0.5 each time.
+    """
+    for articulated in (True, False):
+        ratios = {}
+        for captured in (False, True):
+            _model, pipeline, contacts, solver, state_0, state_1, control = _resting_box_rows(device, articulated)
+            impulses, row_type = (
+                (solver.impulses, solver.row_type) if articulated else (solver.mf_impulses, solver.mf_row_type)
+            )
+
+            def normal_load(impulses=impulses, row_type=row_type):
+                return float(impulses.numpy()[row_type.numpy() == PGS_CONSTRAINT_TYPE_CONTACT].sum())
+
+            settled = normal_load()
+            test.assertGreater(settled, 0.0)
+            # Without a sweep the solved impulses are the seeds.
+            solver.pgs_iterations = 0
+            pipeline.collide(state_0, contacts)
+            if captured:
+                with wp.ScopedCapture(device) as capture:
+                    solver.step(state_0, state_1, control, contacts, 0.5 / 120.0)
+            values = []
+            for _ in range(3):
+                if captured:
+                    wp.capture_launch(capture.graph)
+                else:
+                    solver.step(state_0, state_1, control, contacts, 0.5 / 120.0)
+                values.append(normal_load() / settled)
+            ratios[captured] = values
+        with test.subTest(articulated=articulated):
+            np.testing.assert_allclose(ratios[False], [0.5, 0.5, 0.5], rtol=1.0e-5)
+            np.testing.assert_allclose(ratios[True], ratios[False], rtol=1.0e-5)
+
+
 def test_identity_warmstart_holds_static_press(test, device):
     """Identity warm start keeps a stalled press at the cold equilibrium.
 
@@ -441,6 +563,8 @@ for _fn in (
     test_identity_warmstart_requires_contact_matching,
     test_single_flag_enables_dense_and_mf_carry,
     test_both_row_families_seed_impulses_scaled_by_the_step_ratio,
+    test_substeps_reuse_contacts_with_their_own_history,
+    test_graph_replay_rescales_history_once_after_a_timestep_change,
 ):
     add_function_test(TestFeatherPGSIdentityWarmstart, _fn.__name__, _fn, devices=devices)
 

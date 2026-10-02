@@ -554,6 +554,8 @@ class TestFrictionPatchHistory(unittest.TestCase):
                 mu,
                 impulses,
                 1.0,
+                1.0,
+                wp.zeros(1, dtype=float, device=_DEVICE),
             ],
             device=_DEVICE,
         )
@@ -588,6 +590,8 @@ class TestFrictionPatchHistory(unittest.TestCase):
                 mu,
                 impulses,
                 1.0,
+                1.0,
+                wp.zeros(1, dtype=float, device=_DEVICE),
             ],
             device=_DEVICE,
         )

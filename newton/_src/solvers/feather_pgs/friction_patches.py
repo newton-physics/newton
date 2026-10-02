@@ -1320,6 +1320,15 @@ def link_patch_rows(
             mu[world[c], slot[c] + t] /= float(anchors)
 
 
+@wp.func
+def warmstart_dt_scale(dt: float, history: wp.array[float]):
+    """Ratio of the step to the previous solver step stored in ``history[0]``; 1 without history."""
+    previous = history[0]
+    if previous > 0.0:
+        return dt / previous
+    return 1.0
+
+
 @wp.kernel(enable_backward=False)
 def seed_patch_impulses(
     count: wp.array[int],
@@ -1334,12 +1343,15 @@ def seed_patch_impulses(
     parents: wp.array2d[int],
     mu: wp.array2d[float],
     impulses: wp.array2d[float],
-    scale: float,
+    decay: float,
+    dt: float,
+    history: wp.array[float],
 ):
     """Transport cached patch impulses after all contact normals have been seeded.
 
     Anchors without patch history keep whatever the contact-matched warm start
-    seeded; only carried anchors overwrite their friction rows.
+    seeded; only carried anchors overwrite their friction rows. Carried impulses are
+    scaled by ``decay`` and by the step ratio :func:`warmstart_dt_scale`.
     """
     c = wp.tid()
     if c >= count[0] or path[c] != route or slot[c] < 0 or slots_needed[c] != 3:
@@ -1347,7 +1359,7 @@ def seed_patch_impulses(
     source = frame.source[c]
     if source < 0:
         return
-    tangent = prev.tangent_impulse[source] * scale
+    tangent = prev.tangent_impulse[source] * (decay * warmstart_dt_scale(dt, history))
     if frame.body_a[c] >= 0:
         tangent = wp.transform_vector(q[frame.body_a[c]], tangent)
     n = frame.normal[c]
