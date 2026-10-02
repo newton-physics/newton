@@ -570,7 +570,10 @@ class RenderContext:
 
                         data = MeshData()
                         if shape.uvs is not None:
-                            data.uvs = wp.array(shape.uvs, dtype=wp.vec2f, device=self.device)
+                            # Apply the mesh's authored tiling, offset, and rotation, as the viewers do.
+                            transform = np.asarray(shape.texture_transform, dtype=np.float32)
+                            uvs = np.asarray(shape.uvs, dtype=np.float32) @ transform[:, :2].T + transform[:, 2]
+                            data.uvs = wp.array(uvs, dtype=wp.vec2f, device=self.device)
                         if shape.normals is not None:
                             data.normals = wp.array(shape.normals, dtype=wp.vec3f, device=self.device)
                         self._mesh_data_source.append(data)
