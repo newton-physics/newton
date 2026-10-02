@@ -141,6 +141,29 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertTrue(forced_collision_flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(forced_collision_flags & ShapeFlags.VISIBLE)
 
+    def test_mujoco_binary_msh_mesh(self):
+        """Load MuJoCo's binary .msh mesh format (counts, then vertices, normals, uvs, faces)."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        faces = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]], dtype=np.int32)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "tetra.msh")
+            with open(path, "wb") as file:
+                file.write(np.array([4, 0, 0, 4], dtype=np.int32).tobytes())
+                file.write(vertices.tobytes())
+                file.write(faces.tobytes())
+            mjcf = f"""
+<mujoco model="msh">
+    <asset><mesh name="tetra" file="{path}"/></asset>
+    <worldbody><body name="b"><geom name="g" type="mesh" mesh="tetra"/></body></worldbody>
+</mujoco>
+"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+        mesh = builder.shape_source[builder.shape_label.index("msh/worldbody/b/g")]
+        self.assertEqual(len(mesh.vertices), 4)
+        self.assertEqual(len(mesh.indices), 12)
+        np.testing.assert_allclose(np.sort(mesh.vertices, axis=0), np.sort(vertices, axis=0))
+
     def test_collision_only_import_keeps_colliders_visible(self):
         """Collision-only MJCF assets must remain visible by default."""
         mjcf = """
