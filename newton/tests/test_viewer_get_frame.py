@@ -122,6 +122,32 @@ class _FakeGL:
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
+    def test_recreated_viewer_renders_frame(self):
+        """Render frames after closing and recreating a real GL viewer."""
+        _reset_pyglet_event_loop_exit(self)
+
+        with wp.ScopedDevice("cpu"):
+            for cycle in range(2):
+                with self.subTest(cycle=cycle):
+                    # Do not use the helper that resets the exit flag between viewers.
+                    try:
+                        viewer = newton.viewer.ViewerGL(width=64, height=48, headless=True)
+                    except Exception as exc:
+                        if _is_viewer_gl_unavailable_error(self, exc):
+                            self.skipTest(f"ViewerGL display/backend not available: {exc}")
+                        raise
+
+                    try:
+                        self.assertTrue(viewer.is_running())
+                        width, height = viewer.renderer.window.get_framebuffer_size()
+                        image = np.full((height, width, 3), (31, 127, 223), dtype=np.uint8)
+                        viewer.begin_frame(0.0)
+                        viewer.log_image("recreated", image, fullscreen=True)
+                        viewer.end_frame()
+                        np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
+                    finally:
+                        viewer.close()
+
     def test_backend_error_types_do_not_force_window_import(self):
         """Verify backend error discovery does not import pyglet.window."""
         try:
