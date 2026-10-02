@@ -257,6 +257,7 @@ class Example:
         policy=None,
         headless: bool = False,
         max_steps: int = 10000,
+        dynamics_solver: str = "padmm",
     ):
         self.cfg = config
         self.sim_dt = config["sim_dt"]
@@ -269,6 +270,11 @@ class Example:
 
         asset_path = newton.utils.download_asset("disneyresearch", ref=_DRLEGS_ASSET_REF)
         usd_model_path = str(asset_path / config["usd_model"])
+        settings = RigidBodySim.default_settings(self.sim_dt)
+        settings.solver.dynamics_solver = dynamics_solver
+        if dynamics_solver == "lox":
+            settings.solver.integrator = "euler"
+
         self.sim_wrapper = RigidBodySim(
             usd_model_path=usd_model_path,
             num_worlds=1,
@@ -276,6 +282,7 @@ class Example:
             device=self.device,
             headless=headless,
             body_pose_offset=(0.0, 0.0, config["body_pose_offset_z"], 0.0, 0.0, 0.0, 1.0),
+            settings=settings,
             use_cuda_graph=True,
             render_config=ViewerConfig(diffuse_scale=1.0, specular_scale=0.3, shadow_radius=10.0),
             use_torch=False,
@@ -513,6 +520,12 @@ if __name__ == "__main__":
     parser.add_argument("--policy", type=str, default=None, help="ONNX policy path (overrides the asset default)")
     parser.add_argument("--mode", choices=["sync", "async"], default="sync", help="Simulation loop mode")
     parser.add_argument("--render-fps", type=float, default=30.0, help="Target render rate in async mode")
+    parser.add_argument(
+        "--dynamics-solver",
+        choices=("padmm", "lox"),
+        default="padmm",
+        help="Kamino rigid-body dynamics backend.",
+    )
     args = parser.parse_args()
 
     msg.set_log_level(msg.LogLevel.INFO)
@@ -542,7 +555,14 @@ if __name__ == "__main__":
         else:
             msg.info(f"No policy at {policy_path} -- using random actions")
 
-    example = Example(config=config, device=device, policy=policy, headless=args.headless, max_steps=args.num_steps)
+    example = Example(
+        config=config,
+        device=device,
+        policy=policy,
+        headless=args.headless,
+        max_steps=args.num_steps,
+        dynamics_solver=args.dynamics_solver,
+    )
     try:
         if args.headless:
             msg.notif("Running in headless mode...")

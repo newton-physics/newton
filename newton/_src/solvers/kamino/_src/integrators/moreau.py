@@ -47,6 +47,7 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 @wp.func
 def moreau_jean_semi_implicit_with_logmap(
     alpha: wp.float32,
+    integrate_singular_bodies: bool,
     dt: wp.float32,
     g: wp.vec3f,
     inv_m_i: wp.float32,
@@ -65,6 +66,7 @@ def moreau_jean_semi_implicit_with_logmap(
         inv_I_i=inv_I_i,
         u_i=u_i,
         w_i=w_i,
+        integrate_singular_bodies=integrate_singular_bodies,
     )
 
     # Apply damping to angular velocity
@@ -90,6 +92,7 @@ def moreau_jean_semi_implicit_with_logmap(
 @wp.kernel
 def _integrate_moreau_jean_first_inplace(
     # Inputs:
+    integrate_singular_bodies: bool,
     model_dt: wp.array[wp.float32],
     model_bodies_wid: wp.array[wp.int32],
     model_bodies_inv_m: wp.array[wp.float32],
@@ -100,7 +103,7 @@ def _integrate_moreau_jean_first_inplace(
     # Retrieve the thread index
     tid = wp.tid()
 
-    if model_bodies_inv_m[tid] <= 0.0:
+    if model_bodies_inv_m[tid] <= 0.0 and not integrate_singular_bodies:
         return
 
     # Retrieve the world index
@@ -129,6 +132,7 @@ def _integrate_moreau_jean_first_inplace(
 def _integrate_moreau_jean_second_inplace(
     # Inputs:
     alpha: float,
+    integrate_singular_bodies: bool,
     model_dt: wp.array[wp.float32],
     model_gravity: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
@@ -153,7 +157,7 @@ def _integrate_moreau_jean_second_inplace(
 
     # Retrieve the model data
     inv_m_i = model_bodies_inv_m[tid]
-    if inv_m_i <= 0.0:
+    if inv_m_i <= 0.0 and not integrate_singular_bodies:
         return
     I_i = model_bodies_I[tid]
     inv_I_i = model_bodies_inv_I[tid]
@@ -166,6 +170,7 @@ def _integrate_moreau_jean_second_inplace(
     # Compute the next pose and twist
     q_i_n, u_i_n = moreau_jean_semi_implicit_with_logmap(
         alpha,
+        integrate_singular_bodies,
         dt,
         g,
         inv_m_i,
@@ -226,13 +231,20 @@ class IntegratorMoreauJean(IntegratorBase):
     at the mid-point from the forward dynamics sub-problem.
     """
 
-    def __init__(self, model: ModelKamino, alpha: float | None = None):
+    def __init__(
+        self,
+        model: ModelKamino,
+        alpha: float | None = None,
+        *,
+        integrate_singular_bodies: bool = False,
+    ):
         """
         Initializes the semi-implicit Moreau-Jean integrator with the given :class:`ModelKamino` instance.
 
         Args:
             model: The model container holding the time-invariant parameters of the system being simulated.
             alpha: The angular damping coefficient. Defaults to 0.0 if `None` is provided.
+            integrate_singular_bodies: Whether singular bodies carry a velocity supplied by the dynamics solver.
         """
         super().__init__(model)
 
@@ -241,6 +253,7 @@ class IntegratorMoreauJean(IntegratorBase):
         Damping coefficient for angular velocity used to improve numerical stability of the integrator.
         Defaults to `0.0`, corresponding to no damping being applied.
         """
+        self._integrate_singular_bodies = integrate_singular_bodies
 
     ###
     # Operations
@@ -320,6 +333,7 @@ class IntegratorMoreauJean(IntegratorBase):
             dim=model.size.sum_of_num_bodies,
             inputs=[
                 # Inputs:
+                self._integrate_singular_bodies,
                 model.time.dt,
                 model.bodies.wid,
                 model.bodies.inv_m_i,
@@ -347,6 +361,7 @@ class IntegratorMoreauJean(IntegratorBase):
             inputs=[
                 # Inputs:
                 self._alpha,
+                self._integrate_singular_bodies,
                 model.time.dt,
                 model.gravity.vector,
                 model.bodies.wid,
