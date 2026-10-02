@@ -25,6 +25,7 @@ __all__ = [
     "ConfigBase",
     "ConstrainedDynamicsConfig",
     "ConstraintStabilizationConfig",
+    "DVIAPGDConfig",
     "DVISolverConfig",
     "ForwardKinematicsSolverConfig",
     "PADMMSolverConfig",
@@ -793,11 +794,76 @@ class PADMMSolverConfig:
         self.validate()
 
 
+@dataclass(kw_only=True)
+class DVIAPGDConfig:
+    """Controls for the APGD unilateral subsolver.
+
+    These runtime solver controls are Python-only; they do not author a
+    material model or add USD schema attributes.
+    CUDA execution requires a Warp build and CUDA driver supporting CUDA
+    12.4+ conditional graphs. Capture the solve for GPU-only loop control;
+    uncaptured CUDA execution reads conditions back to the host.
+    """
+
+    max_iterations: int = 64
+    """Maximum accelerated iterations per frozen-correction quadratic solve."""
+
+    max_backtracks: int = 24
+    """Maximum trial steps per iteration, including the initial trial."""
+
+    max_nonlinear_corrections: int = 1
+    """Maximum De Saxce fixed-point iterations per unilateral phase.
+
+    Each iteration freezes the correction for one inner APGD solve. The
+    default of one performs a single frozen-correction approximation.
+    Increase this budget for tighter nonlinear contact accuracy; increasing
+    ``max_iterations`` alone cannot resolve a stale correction. The nonlinear
+    residual remains available when the budget is exhausted.
+    """
+
+    tolerance: float = 1.0e-5
+    """Shared absolute infinity-norm tolerance on inner and nonlinear natural maps.
+
+    The inner map uses the frozen correction; the nonlinear map recomputes
+    it at the accepted impulse. Backtracking uses a curvature test instead.
+    Full-system status checks use :attr:`DVISolverConfig.tolerance`.
+    """
+
+    relaxation: float = 1.0
+    """Damping of each De Saxce impulse update, in ``(0, 1]``."""
+
+    def validate(self) -> None:
+        """Reject non-finite tolerances and invalid nonlinear or inner budgets."""
+        for name in ("max_iterations", "max_backtracks", "max_nonlinear_corrections"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"`{name}` must be a positive integer.")
+        if isinstance(self.tolerance, bool) or not math.isfinite(self.tolerance) or self.tolerance < 0.0:
+            raise ValueError("`tolerance` must be finite and non-negative.")
+        if isinstance(self.relaxation, bool) or not math.isfinite(self.relaxation) or not 0.0 < self.relaxation <= 1.0:
+            raise ValueError("`relaxation` must be finite and in (0, 1].")
+
+    def __post_init__(self) -> None:
+        """Validate constructor arguments."""
+        self.validate()
+
+
 @dataclass
 class DVISolverConfig:
     """
     A container to hold configurations for the DVI forward dynamics solver.
     """
+
+    unilateral_solver: Literal["pgs", "apgd"] = field(default="pgs", kw_only=True)
+    """Backend for bounded rows, limits, and contacts. Defaults to ``pgs``.
+
+    The ``apgd`` backend uses frozen De Saxce corrections around accelerated
+    cone-QP solves. It retains the existing bilateral coupling controls.
+    Nonlinear convergence depends on the contact problem and iteration budget.
+    """
+
+    apgd: DVIAPGDConfig = field(default_factory=DVIAPGDConfig, kw_only=True)
+    """APGD iteration controls; unused by the default PGS backend."""
 
     tolerance: float = 1e-5
     """
@@ -807,7 +873,8 @@ class DVISolverConfig:
 
     regularization: float = 1e-6
     """
-    Diagonal regularization added to each projected update denominator.
+    Diagonal regularization added to each PGS projected update denominator.
+    Unused by APGD, which uses backtracking on the existing dual operator.
     Must be positive. Defaults to `1e-6`.
     """
 
@@ -822,14 +889,16 @@ class DVISolverConfig:
     Maximum number of outer DVI iterations alternating direct bilateral
     solves with projected inequality solves. Must be greater than zero.
     This schedule is also used when no bilateral constraints are present;
-    in that case, the bilateral solve is skipped. Defaults to `24`.
+    in that case, the bilateral solve is skipped. APGD uses its own iteration
+    budgets when no bilateral rows are present or Schur elimination is enabled.
+    Defaults to `24`.
     """
 
     inequality_sweeps_per_iteration: int = 2
     """
     Number of projected Gauss-Seidel sweeps used for unilateral inequalities
     during each alternating DVI iteration. Contacts use graph-colored sweeps
-    on CUDA. Must be greater than zero. Defaults to `2`.
+    on CUDA. Unused by APGD. Must be greater than zero. Defaults to `2`.
     """
 
     use_schur_complement: bool = False
@@ -839,7 +908,8 @@ class DVISolverConfig:
     .. experimental::
 
         The ``True`` mode may change without prior notice. It requires the same
-        setting in every world and adds response-matrix setup and storage.
+        setting in every world. PGS adds response-matrix setup and storage;
+        APGD applies the response using the factored bilateral operator.
 
     Defaults to ``False``.
     """
@@ -925,6 +995,11 @@ class DVISolverConfig:
         from ._src.solvers.common import WarmStartMode  # noqa: PLC0415
         from ._src.solvers.warmstart import WarmstarterContacts  # noqa: PLC0415
 
+        if self.unilateral_solver not in {"pgs", "apgd"}:
+            raise ValueError("`unilateral_solver` must be 'pgs' or 'apgd'.")
+        if not isinstance(self.apgd, DVIAPGDConfig):
+            raise TypeError("`apgd` must be a DVIAPGDConfig.")
+        self.apgd.validate()
         if self.tolerance < 0.0:
             raise ValueError(f"Invalid tolerance: {self.tolerance}. Must be non-negative.")
         if self.regularization <= 0.0:

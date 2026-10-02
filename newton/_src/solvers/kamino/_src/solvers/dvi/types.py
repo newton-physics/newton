@@ -54,7 +54,15 @@ class DVIStatus:
     converged: int32
     """Whether all terminal feasibility, equality, and complementarity residuals satisfy tolerance."""
     iterations: int32
-    """Projected sweeps; direct-bilateral solves report block/contact sweeps."""
+    """Projected PGS sweeps or accepted APGD iterations across unilateral phases."""
+    apgd_corrections: int32
+    """Completed De Saxce fixed-point iterations; zero for PGS."""
+    apgd_backtracks: int32
+    """Rejected APGD trial steps; zero for PGS."""
+    apgd_residual: float32
+    """Last unilateral APGD phase's nonlinear natural-map residual; zero for PGS."""
+    apgd_line_search_failed: int32
+    """Whether an APGD line search exhausted its budget or encountered non-finite data."""
     r_p: float32
     """Maximum primal box- and cone-feasibility residual."""
     r_d: float32

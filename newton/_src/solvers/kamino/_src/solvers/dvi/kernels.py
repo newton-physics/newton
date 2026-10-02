@@ -269,6 +269,7 @@ def _compute_dvi_status_residuals(
     # Outputs:
     solver_status: wp.array[DVIStatus],
     workers_per_world: int32,
+    minimum_iterations: int32,
 ):
     """Compute terminal maxima with one thread or one 32-thread warp per world."""
     tid = wp.tid()
@@ -289,8 +290,7 @@ def _compute_dvi_status_residuals(
     cfg = solver_config[wid]
 
     status = solver_status[wid]
-    if status.iterations == 0:
-        status.iterations = int32(1)
+    status.iterations = wp.max(status.iterations, minimum_iterations)
 
     # These terminal diagnostics are distinct from the dense fallback's
     # iterate-change stopping test. Each value is a maximum over the world.
