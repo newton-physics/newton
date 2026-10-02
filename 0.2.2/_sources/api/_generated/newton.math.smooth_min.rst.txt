@@ -1,0 +1,6 @@
+﻿newton.math.smooth\_min
+=======================
+
+.. currentmodule:: newton.math
+
+.. autowarpfunc:: smooth_min

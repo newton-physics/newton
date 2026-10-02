@@ -1,0 +1,6 @@
+﻿newton.utils.validate\_tet\_mesh
+================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: validate_tet_mesh

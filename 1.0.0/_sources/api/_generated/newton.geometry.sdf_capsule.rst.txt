@@ -1,0 +1,6 @@
+﻿newton.geometry.sdf\_capsule
+============================
+
+.. currentmodule:: newton.geometry
+
+.. autowarpfunc:: sdf_capsule
