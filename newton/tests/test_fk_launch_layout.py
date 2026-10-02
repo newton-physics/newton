@@ -19,8 +19,13 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 BLOCKS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 
 
-def _mixed_model(device, *, requires_grad=False):
-    """Mix branched and serial articulations in a batch that leaves partial blocks."""
+def _mixed_model(device, *, requires_grad=True):
+    """Mix branched and serial articulations in a batch that leaves partial blocks.
+
+    Gradient-enabled models take the serial per-articulation FK launch on every
+    device; ordinary CUDA tree models take the tiled route instead, which has a
+    fixed block size and is covered by ``test_fk_layout_preserves_tiled_dispatch``.
+    """
     builder = newton.ModelBuilder()
     for art in range(35):
         bodies, joints = [], []
@@ -56,12 +61,21 @@ def _fk(model, state, block, **selection):
             raise AssertionError("Unexpected kernel in public FK")
         return launch(*args, **dict(kwargs, block_dim=block))
 
-    with patch.object(wp, "launch", side_effect=configured):
+    with (
+        patch.object(wp, "launch_tiled", side_effect=AssertionError("Unexpected tiled FK dispatch")),
+        patch.object(wp, "launch", side_effect=configured) as launched,
+    ):
         newton.eval_fk(model, model.joint_q, model.joint_qd, state, **selection)
+    # An empty selection launches nothing; otherwise the override must apply.
+    expected_calls = 0 if "indices" in selection and len(selection["indices"]) == 0 else 1
+    if launched.call_count != expected_calls:
+        raise AssertionError(f"Expected {expected_calls} serial FK launch(es), got {launched.call_count}")
 
 
 def _sentinel_state(model):
     state = model.state()
+    # Route models built without gradients through the serial launch as well.
+    state.body_q.requires_grad = True
     state.body_q.fill_(wp.transform(wp.vec3(7.0, -3.0, 2.0), wp.quat_identity()))
     state.body_qd.fill_(wp.spatial_vector(2.0, 3.0, 4.0, 5.0, 6.0, 7.0))
     return state
@@ -173,6 +187,23 @@ def test_fk_layout_graph_replay(test, device):
             np.testing.assert_array_equal(state.body_qd.numpy(), reference.body_qd.numpy())
 
 
+def test_fk_layout_preserves_tiled_dispatch(test, device):
+    """Keep ordinary CUDA tree models on the tiled FK route."""
+    if not device.is_cuda:
+        test.skipTest("Tiled FK dispatch requires CUDA")
+    with wp.ScopedDevice(device):
+        model = _mixed_model(device, requires_grad=False)
+        state = model.state()
+        with (
+            patch.object(articulation, "_fk_block_dim", side_effect=AssertionError("Unexpected serial dispatch")),
+            patch.object(wp, "launch_tiled", wraps=wp.launch_tiled) as launch,
+        ):
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        launch.assert_called_once()
+        test.assertTrue(np.isfinite(state.body_q.numpy()).all())
+        test.assertTrue(np.isfinite(state.body_qd.numpy()).all())
+
+
 class TestFKLaunchLayout(unittest.TestCase):
     def test_launch_policy_power_of_two_boundaries(self):
         """Round down at batch-size thresholds and retain CPU, singleton and cap behavior."""
@@ -216,7 +247,12 @@ class TestFKLaunchLayout(unittest.TestCase):
             selected_model.articulation_count = 4096
             selected_model.device = SimpleNamespace(is_cuda=True, sm_count=sm_count)
             # Synthetic launch metadata only: no kernel accesses these CPU arrays.
-            with patch.object(wp, "launch") as launch:
+            # The gradient-enabled model selects the serial launch, which owns
+            # the per-articulation layout; a tiled dispatch would bypass it.
+            with (
+                patch.object(wp, "launch_tiled", side_effect=AssertionError("Unexpected tiled FK dispatch")),
+                patch.object(wp, "launch") as launch,
+            ):
                 newton.eval_fk(selected_model, model.joint_q, model.joint_qd, state)
             launch.assert_called_once()
             self.assertEqual(launch.call_args.kwargs["dim"], 4096)
@@ -251,6 +287,7 @@ class TestFKLaunchLayout(unittest.TestCase):
                         patch.object(
                             wp, "synchronize_device", side_effect=AssertionError("Unexpected synchronization")
                         ),
+                        patch.object(wp, "launch_tiled", side_effect=AssertionError("Unexpected tiled FK dispatch")),
                         patch.object(wp, "launch") as launch,
                     ):
                         for _ in range(2):
@@ -260,11 +297,22 @@ class TestFKLaunchLayout(unittest.TestCase):
                         same_count_model = SimpleNamespace(**vars(selected_model))
                         same_count_model.articulation_count = count
                         newton.eval_fk(same_count_model, model.joint_q, model.joint_qd, state)
+                    if count == 0:
+                        # An empty index array selects no articulations, so
+                        # eval_fk returns before any launch: a zero-dim launch
+                        # would do no work and only add host overhead.
+                        launch.assert_not_called()
+                        continue
                     self.assertEqual(launch.call_count, 3)
                     for call in launch.call_args_list:
                         self.assertEqual(call.kwargs["dim"], count)
                         block = call.kwargs.get("block_dim", 256)
                         self.assertIn(block, BLOCKS)
+                        if sm_count > 0 and count > 1:
+                            # Independent of the policy helper: cap the serial
+                            # block and expose at least two blocks per SM.
+                            self.assertLessEqual(block, 16)
+                            self.assertGreaterEqual((count + block - 1) // block, min(count, 2 * sm_count))
                         self.assertEqual(
                             block, articulation._fk_block_dim(count, sm_count, model.max_joints_per_articulation)
                         )
@@ -278,6 +326,7 @@ for function in (
     test_fk_layout_body_flags,
     test_fk_layout_gradients,
     test_fk_layout_graph_replay,
+    test_fk_layout_preserves_tiled_dispatch,
 ):
     add_function_test(TestFKLaunchLayout, function.__name__, function, devices=get_test_devices())
 
