@@ -1391,6 +1391,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
     def test_compacted_joint_targets_use_local_layout(self):
         """Joint targets and their derived starts should use compact layout."""
         builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         free_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         free_joint = builder.add_joint_free(child=free_body)
         builder.add_articulation([free_joint])
@@ -1435,6 +1436,36 @@ class TestSolverCoupledBasic(unittest.TestCase):
         coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
         np.testing.assert_array_equal(view.joint_target_q.numpy(), [17.0, 18.0])
         np.testing.assert_array_equal(view.joint_target_ke.numpy(), [106.0, 107.0])
+
+        model.joint_armature.fill_(3.0)
+        model.mujoco.dof_ref.fill_(0.2)
+        model.mujoco.dof_springref.fill_(0.3)
+        model.joint_damping.fill_(0.8)
+        model.joint_target_ke.fill_(25.0)
+        model.joint_friction.fill_(0.4)
+        solref = model.mujoco.solreffriction.numpy()
+        solref[:, 0] = -100.0
+        solref[:, 1] = -10.0
+        model.mujoco.solreffriction.assign(solref)
+        solimp = model.mujoco.solimpfriction.numpy()
+        solimp[:, 0] = 0.8
+        model.mujoco.solimpfriction.assign(solimp)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+        np.testing.assert_allclose(view.joint_friction.numpy(), 0.4)
+        np.testing.assert_allclose(view.mujoco.solreffriction.numpy(), solref[-2:])
+        np.testing.assert_allclose(view.mujoco.solimpfriction.numpy(), solimp[-2:])
+        np.testing.assert_allclose(view.joint_damping.numpy(), 0.8)
+        np.testing.assert_allclose(view.joint_target_ke.numpy(), 25.0)
+        np.testing.assert_allclose(view.joint_armature.numpy(), 0.0)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+        np.testing.assert_allclose(view.joint_armature.numpy(), 3.0)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.2)
+        np.testing.assert_allclose(view.mujoco.dof_springref.numpy(), 0.3)
 
     def test_custom_control_arrays_are_mapped_to_entries(self):
         """Custom CONTROL attributes should follow their compact frequency map."""
