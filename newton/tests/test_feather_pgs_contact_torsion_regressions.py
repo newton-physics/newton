@@ -1,0 +1,138 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+"""Exercise contact-torsion lifecycle and row-storage safety across steps."""
+
+import unittest
+
+import numpy as np
+import warp as wp
+
+from newton import GeoType
+from newton._src.solvers.feather_pgs.contact_torsion import _contact_groups
+from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_TORSION
+from newton.solvers import SolverFeatherPGS
+from newton.tests.test_feather_pgs_contact_torsion import fixture
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+
+
+def test_radius_is_construction_only(test, device):
+    """Reject radius mutation for both compiled feature variants."""
+    for radius in (0.0, 0.01):
+        _, solver, *_ = fixture(radius, device=device, center_only=True)
+        for replacement in (0.0, 0.02, -1.0, float("nan")):
+            with test.subTest(radius=radius, replacement=replacement), test.assertRaises(AttributeError):
+                solver.contact_torsion_radius = replacement
+
+
+def test_previous_friction_rows_are_not_current_rows(test, device):
+    """Reject stale tangent metadata when a later step admits only a normal."""
+    _, solver, model, initial, contacts = fixture(0.01, device=device, center_only=True)
+    test.assertEqual(solver._torsion_stats["rows"], 1)
+    solver.contact_friction_gap_threshold = -1.0
+    solver.step(initial, model.state(), model.control(), contacts, 0.0025)
+    test.assertEqual(solver._torsion_stats["rows"], 0)
+
+
+def test_both_tangent_rows_must_belong_to_current_normal(test, device):
+    """Reject a missing or mismatched second tangent, not just the first."""
+    for invalid in ("count", "type", "parent"):
+        with test.subTest(invalid=invalid):
+            _, solver, _model, initial, contacts = fixture(0.01, device=device, center_only=True)
+            row = solver._torsion_stats["groups"][0]["normal_rows"][0]
+            if invalid == "count":
+                counts = solver.constraint_count.numpy()
+                counts[0] = row + 2
+                solver.constraint_count.assign(counts)
+            else:
+                array = solver.row_type if invalid == "type" else solver.row_parent
+                values = array.numpy()
+                values[0, row + 2] = -1
+                array.assign(values)
+            test.assertEqual(_contact_groups(solver, initial, contacts), [])
+
+
+def test_selectors_are_construction_only(test, device):
+    """Reject selector mutation rather than leaving a stale resolved selection."""
+    _, solver, *_ = fixture(0.01, device=device, center_only=True)
+    for name in ("contact_torsion_shape_indices", "contact_torsion_shape_patterns"):
+        with test.subTest(name=name), test.assertRaises(AttributeError):
+            setattr(solver, name, ())
+
+
+def test_normal_parent_metadata_is_preserved(test, device):
+    """Keep CONTACT parents available for pooled friction-patch load rings."""
+    result, _solver, *_ = fixture(0.01, device=device, center_only=True)
+    normal = result["row_type"][0, : result["count"][0]] == 0
+    test.assertGreater(np.count_nonzero(normal), 0)
+    np.testing.assert_array_equal(result["row_parent"][0, : result["count"][0]][normal], -1)
+
+
+def test_torsion_uses_cfm_floor(test, device):
+    """Apply the same configured diagonal floor as other dense rows."""
+    # The spin row's J Y is 2 / I_zz = 25000; use a floor that float32 can resolve next to it.
+    cfm = 8.0
+    result, solver, *_ = fixture(0.01, device=device, center_only=True, pgs_cfm=cfm)
+    count = int(result["count"][0])
+    types = result["row_type"][0, :count]
+    test.assertEqual(np.count_nonzero(types == PGS_CONSTRAINT_TYPE_TORSION), 1)
+    unregularized = np.einsum("rd,rd->r", result["J_world"][0, :count], result["Y_world"][0, :count])
+    floor = solver.diag.numpy()[0, :count] - unregularized
+    np.testing.assert_allclose(floor[types == PGS_CONSTRAINT_TYPE_TORSION], cfm, atol=1e-2)
+    np.testing.assert_allclose(floor[types == 0], cfm, atol=1e-2)
+
+
+def test_torsion_respects_relaxation(test, device):
+    """Apply half the unconstrained spin correction at omega one half."""
+    result, solver, *_ = fixture(100.0, device=device, center_only=True, pgs_iterations=1, pgs_omega=0.5)
+    test.assertEqual(solver._torsion_stats["rows"], 1)
+    spin = np.abs(result["v_out"].reshape(2, 6)[:, 5])
+    np.testing.assert_allclose(spin, 0.5, atol=1e-4)
+
+
+def test_contact_row_loss_fails_without_diagnostics(test, device):
+    """Detect rolled-back dropped contacts even with the overflow warning off."""
+    baseline, *_ = fixture(0.0, device=device, center_only=True)
+    limit = int(baseline["count"][0]) - 1
+    with test.assertRaisesRegex(RuntimeError, "[Oo]verflow|[Dd]ropped|capacity"):
+        fixture(0.01, device=device, center_only=True, row_limit=limit, warn_constraint_overflow=False)
+
+
+def test_selected_unsupported_shape_fails_at_construction(test, device):
+    """Reject explicitly selected unsupported geometry instead of ignoring it."""
+    _, _solver, model, *_ = fixture(0.0, device=device, center_only=True)
+    types = model.shape_type.numpy()
+    types[0] = int(GeoType.MESH)
+    model.shape_type.assign(types)
+    with test.assertRaisesRegex(ValueError, "[Uu]nsupported.*shape|shape.*[Uu]nsupported"):
+        SolverFeatherPGS(model, contact_torsion_radius=0.01, contact_torsion_shape_indices=(0,))
+
+
+def test_hydro_contact_input_is_rejected(test, device):
+    """Reject actual positive hydro contact stiffness, not a synthetic solver flag."""
+    _, solver, model, initial, contacts = fixture(0.01, device=device, center_only=True)
+    contacts.rigid_contact_stiffness = wp.ones(contacts.rigid_contact_max, device=model.device)
+    with test.assertRaisesRegex(ValueError, "hydroelastic"):
+        solver.step(initial, model.state(), model.control(), contacts, 0.0025)
+
+
+class TestContactTorsionRegressions(unittest.TestCase):
+    """Reject invalid storage/lifecycle paths rather than silently welding spin."""
+
+
+for _fn in (
+    test_radius_is_construction_only,
+    test_previous_friction_rows_are_not_current_rows,
+    test_both_tangent_rows_must_belong_to_current_normal,
+    test_selectors_are_construction_only,
+    test_normal_parent_metadata_is_preserved,
+    test_torsion_uses_cfm_floor,
+    test_torsion_respects_relaxation,
+    test_contact_row_loss_fails_without_diagnostics,
+    test_selected_unsupported_shape_fails_at_construction,
+    test_hydro_contact_input_is_rejected,
+):
+    add_function_test(TestContactTorsionRegressions, _fn.__name__, _fn, devices=get_cuda_test_devices())
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
