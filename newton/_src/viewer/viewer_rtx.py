@@ -103,6 +103,21 @@ def update_and_write_shape_transforms(
     m_out[mat44_offset + tid] = wp.transpose(wp.transform_compose(p64, q64, s64))
 
 
+def _ldr_color_var(frame):
+    """The LdrColor render variable of an OVRTX frame.
+
+    ovrtx 0.5 keys render variables by prim path (``/Render/Vars/LdrColor``); earlier
+    releases use the variable name.
+    """
+    render_vars = frame.render_vars
+    if "LdrColor" in render_vars:
+        return render_vars["LdrColor"]
+    for name in render_vars:
+        if name.rsplit("/", 1)[-1] == "LdrColor":
+            return render_vars[name]
+    return None
+
+
 class ViewerRTX(ViewerUSD):
     """Real-time ray-traced viewer using NVIDIA OVRTX.
 
@@ -1804,10 +1819,15 @@ void main() {
 
     @staticmethod
     def _make_laned_array_dltensor(values_np: np.ndarray, lanes: int):
-        """Create a 1D DLTensor with a fixed lane count per element."""
+        """Create a 1D DLTensor with a fixed lane count per element.
+
+        ovrtx 0.5 and later take ``(N, lanes)`` arrays directly and no longer accept raw DLTensors.
+        """
         from ovrtx._src.dlpack import DLTensor
 
         flat = np.ascontiguousarray(values_np).reshape(-1)
+        if not hasattr(DLTensor, "from_dlpack"):
+            return flat.reshape(-1, lanes) if lanes > 1 else flat
         dl = DLTensor.from_dlpack(flat)
         n = len(flat) // lanes
         dl.dtype.lanes = lanes
@@ -1971,9 +1991,10 @@ void main() {
             if self._render_products is not None and self._window is not None and self._window.context is not None:
                 for _pname, product in self._render_products.items():
                     for frame in product.frames:
-                        if "LdrColor" in frame.render_vars:
+                        ldr_color = _ldr_color_var(frame)
+                        if ldr_color is not None:
                             with wp.ScopedTimer("ViewerRTX::fb_map", active=PROFILE_ENABLED, use_nvtx=True):
-                                with frame.render_vars["LdrColor"].map(device=Device.CUDA) as mapping:
+                                with ldr_color.map(device=Device.CUDA) as mapping:
                                     pixels = wp.from_dlpack(mapping, dtype=wp.vec4ub)
                                     with wp.ScopedTimer(
                                         "ViewerRTX::blit_to_window", active=PROFILE_ENABLED, use_nvtx=True
@@ -2054,8 +2075,9 @@ void main() {
 
         for _pname, product in products.items():
             for frame in product.frames:
-                if "LdrColor" in frame.render_vars:
-                    with frame.render_vars["LdrColor"].map(device=Device.CPU) as mapping:
+                ldr_color = _ldr_color_var(frame)
+                if ldr_color is not None:
+                    with ldr_color.map(device=Device.CPU) as mapping:
                         pixels = np.array(np.from_dlpack(mapping), copy=True)
                     return pixels
 

@@ -3,6 +3,8 @@
 
 """Test RTX runtime mesh updates without starting OVRTX."""
 
+import sys
+import types
 import unittest
 from unittest import mock
 
@@ -96,6 +98,25 @@ class TestViewerRTX(unittest.TestCase):
                 self.assertIn("normals", attributes)
                 np.testing.assert_allclose(attributes["normals"], [normal] * 3, atol=1e-6)
                 self.assertNotIn("faceVertexIndices", attributes)
+
+    def test_ovrtx_05_render_var_paths_and_laned_arrays(self):
+        """Support ovrtx 0.5, which keys render variables by prim path and takes (N, lanes) arrays."""
+        pixels = np.arange(2 * 3 * 4, dtype=np.uint8).reshape(2, 3, 4)
+        ldr_color = mock.MagicMock()
+        ldr_color.map.return_value.__enter__.return_value = pixels
+        frame = types.SimpleNamespace(render_vars={"/Render/Vars/LdrColor": ldr_color})
+        viewer = ViewerRTX.__new__(ViewerRTX)
+        viewer._render_products = {"/Render/Camera": types.SimpleNamespace(frames=[frame])}
+
+        ovrtx = types.ModuleType("ovrtx")
+        ovrtx.Device = types.SimpleNamespace(CPU="cpu", CUDA="cuda")
+        dlpack = types.ModuleType("ovrtx._src.dlpack")
+        dlpack.DLTensor = type("DLTensor", (), {})  # ovrtx 0.5 removed DLTensor.from_dlpack
+        modules = {"ovrtx": ovrtx, "ovrtx._src": types.ModuleType("ovrtx._src"), "ovrtx._src.dlpack": dlpack}
+        with mock.patch.dict(sys.modules, modules):
+            np.testing.assert_array_equal(viewer._capture_screenshot_pixels(), pixels)
+            points = np.arange(12, dtype=np.float32).reshape(4, 3)
+            np.testing.assert_array_equal(ViewerRTX._make_point3f_dltensor(points), points)
 
 
 if __name__ == "__main__":
