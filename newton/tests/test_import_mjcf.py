@@ -141,6 +141,27 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertTrue(forced_collision_flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(forced_collision_flags & ShapeFlags.VISIBLE)
 
+    def test_collider_planes_stay_visible_next_to_visual_meshes(self):
+        """A world floor plane has no visual twin, so it stays visible when other colliders are hidden."""
+        mjcf = """
+<mujoco model="floor_visibility">
+    <worldbody>
+        <geom name="floor" type="plane" size="0 0 0.05"/>
+        <body name="link">
+            <geom name="link_visual" type="box" size="0.1 0.1 0.1" contype="0" conaffinity="0" group="1"/>
+            <geom name="link_collision" type="box" size="0.1 0.1 0.1" group="3"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        flags = dict(zip(builder.shape_label, builder.shape_flags, strict=True))
+        self.assertTrue(flags["floor_visibility/worldbody/floor"] & ShapeFlags.VISIBLE)
+        self.assertTrue(flags["floor_visibility/worldbody/floor"] & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags["floor_visibility/worldbody/link/link_visual"] & ShapeFlags.VISIBLE)
+        self.assertFalse(flags["floor_visibility/worldbody/link/link_collision"] & ShapeFlags.VISIBLE)
+
     def test_collision_only_import_keeps_colliders_visible(self):
         """Collision-only MJCF assets must remain visible by default."""
         mjcf = """

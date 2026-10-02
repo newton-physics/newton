@@ -1012,7 +1012,9 @@ def parse_mjcf(
                 geom_mass_explicit = None
 
             shape_cfg = builder.default_shape_cfg.copy()
-            shape_cfg.is_visible = visible
+            # Planes have no visual counterpart (MJCF floors are colliders drawn by MuJoCo),
+            # so hiding colliders must not hide the ground.
+            shape_cfg.is_visible = visible or geom_type == "plane"
             shape_cfg.has_shape_collision = not just_visual
             shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = geom_density
