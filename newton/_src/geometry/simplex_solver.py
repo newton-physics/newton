@@ -355,11 +355,11 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             COLLIDE_EPSILON: Relative duality-gap tolerance, also used as an absolute distance
                 threshold [m] for overlap and duplicate vertices (default: 1e-4).
             max_dist: Separation cutoff [m]. When positive, iteration stops once a
-                support plane proves that the shapes are farther apart than
-                ``max_dist`` plus a float32 rounding margin
-                (``GJK_CUTOFF_TOLERANCE`` times the support-point coordinate scale), so
-                the exact query (``max_dist=0.0``) would also return a distance above
-                ``max_dist``. The returned distance is then an upper bound on the true
+                support-plane lower bound exceeds ``max_dist`` plus a float32 rounding
+                margin (``GJK_CUTOFF_TOLERANCE`` times the support-point coordinate scale).
+                The bound is exact in real arithmetic; the margin is an empirical allowance
+                chosen so the exact query (``max_dist=0.0``) also returns a distance above
+                ``max_dist`` in tested cases, not a proven float32 error bound. The returned distance is then an upper bound on the true
                 distance that still exceeds ``max_dist``, and the witness points are the
                 current simplex estimate rather than the closest points. Queries the
                 cutoff does not stop return the exact query's results. ``0.0``
@@ -444,8 +444,8 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             # dot(v, w_v) / |v|. The exact query's float32 distance can fall a few
             # rounding errors below that bound, so exit only once the bound clears
             # max_dist by a margin relative to the coordinates involved. The exit below
-            # then returns |v| >= bound > max_dist, and the exact query would also have
-            # returned a distance above max_dist.
+            # then returns |v| >= bound > max_dist; the margin is empirical, chosen so the
+            # exact query also returns a distance above max_dist in tested cases.
             if max_dist > 0.0:
                 cutoff_scale = wp.max(cutoff_scale, coordinate_scale(w.B) + coordinate_scale(w_v))
                 cutoff = max_dist + GJK_CUTOFF_TOLERANCE * (cutoff_scale + max_dist)
