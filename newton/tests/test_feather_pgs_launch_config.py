@@ -199,6 +199,81 @@ def test_tiled_and_loop_kernels_step_identically(test, device):
     np.testing.assert_allclose(trajectories[0], trajectories[1], rtol=0.0, atol=1.0e-4)
 
 
+def _build_box_with_equality(device, *, enabled: bool, target_kind: int = 0, target: int = -1):
+    """Build a free box held to the world by a MuJoCo CONNECT equality row."""
+    builder = newton.ModelBuilder()
+    body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_custom_values(
+        **{
+            "mujoco:equality_constraint_type": 0,
+            "mujoco:equality_constraint_objtype": 1,
+            "mujoco:equality_constraint_body1": body,
+            "mujoco:equality_constraint_body2": -1,
+            "mujoco:equality_constraint_anchor": wp.vec3(0.0, 0.0, 1.0),
+            "mujoco:equality_constraint_enabled": enabled,
+            "mujoco:equality_constraint_target_kind": target_kind,
+            "mujoco:equality_constraint_target": target,
+        }
+    )
+    return builder.finalize(device=device)
+
+
+def test_unconverted_equality_constraints_raise(test, device):
+    """Reject an enabled MuJoCo equality row instead of letting the body fall through it."""
+    with test.assertRaisesRegex(NotImplementedError, r"equality_constraint rows \[0\]"):
+        SolverFeatherPGS(_build_box_with_equality(device, enabled=True))
+    # A link to a projected entity that does not exist does not make the row enforced.
+    for target_kind in (1, 2):
+        with test.assertRaisesRegex(NotImplementedError, "equality"):
+            SolverFeatherPGS(_build_box_with_equality(device, enabled=True, target_kind=target_kind, target=7))
+
+    # Imported equalities are converted to Newton loop joints by default; those rows are
+    # judged through the loop joint, which this solver rejects separately.
+    mjcf = """
+    <mujoco>
+      <worldbody>
+        <body name="link" pos="0 0 1">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+      </worldbody>
+      <equality><connect body1="link" anchor="0.1 0 0"/></equality>
+    </mujoco>
+    """
+    for convert, message in ((True, "loop-closing"), (False, "equality")):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, convert_mjc_equality_constraints=convert)
+        imported = builder.finalize(device=device)
+        test.assertEqual(imported.mujoco.equality_constraint_count, 1)
+        with test.assertRaisesRegex(NotImplementedError, message):
+            SolverFeatherPGS(imported)
+
+    # A disabled row constructs and has no effect.
+    model = _build_box_with_equality(device, enabled=False)
+    solver = SolverFeatherPGS(model)
+    state_0, state_1 = model.state(), model.state()
+    for _ in range(10):
+        solver.step(state_0, state_1, model.control(), None, 0.01)
+        state_0, state_1 = state_1, state_0
+    test.assertLess(float(state_0.body_q.numpy()[0, 2]), 0.95)
+
+
+def test_enabling_equality_constraint_at_runtime_raises(test, device):
+    """Re-check the MuJoCo equality rows when constraint properties change."""
+    model = _build_box_with_equality(device, enabled=False)
+    solver = SolverFeatherPGS(model)
+    # Other notifications do not re-read the constraint rows.
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+    model.mujoco.equality_constraint_enabled.assign(np.array([True]))
+    with test.assertRaisesRegex(NotImplementedError, "equality"):
+        solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
+    with test.assertRaisesRegex(NotImplementedError, "equality"):
+        solver.notify_model_changed(newton.ModelFlags.ALL)
+    model.mujoco.equality_constraint_enabled.assign(np.array([False]))
+    solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
+
+
 class TestFeatherPGSLaunchConfig(unittest.TestCase):
     def test_cpu_construction_raises(self):
         """Reject construction on a CPU device with a clear error."""
@@ -309,6 +384,8 @@ for _name, _func in (
         test_diagonal_fusion_requires_nonaliased_world_response,
     ),
     ("test_tiled_and_loop_kernels_step_identically", test_tiled_and_loop_kernels_step_identically),
+    ("test_unconverted_equality_constraints_raise", test_unconverted_equality_constraints_raise),
+    ("test_enabling_equality_constraint_at_runtime_raises", test_enabling_equality_constraint_at_runtime_raises),
 ):
     add_function_test(TestFeatherPGSLaunchConfig, _name, _func, devices=devices)
 

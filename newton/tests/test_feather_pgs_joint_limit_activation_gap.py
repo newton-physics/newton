@@ -4,6 +4,7 @@
 """Joint-limit row activation and the per-world row-family layout of SolverFeatherPGS."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -196,6 +197,49 @@ def test_limit_holds_a_driven_joint(test, device):
     test.assertAlmostEqual(float(state_0.joint_q.numpy()[0]), 0.3, delta=2.0e-3)
 
 
+def _build_default_limit_chain(device, count: int):
+    """Build ``count`` independent revolute links with the builder's default (+/-1e10) limits."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    joints = []
+    for _ in range(count):
+        link = builder.add_link()
+        builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+        joints.append(builder.add_joint_revolute(-1, link, axis=newton.Axis.Z))
+    builder.add_articulation(joints)
+    return builder.finalize(device=device)
+
+
+def test_default_finite_limits_keep_rows_and_warn_at_capacity(test, device):
+    """Keep the rows of the builder's large finite default limits and warn when they exceed the capacity."""
+    for count, expect_warning in ((16, False), (17, True)):
+        with test.subTest(dofs=count):
+            model = _build_default_limit_chain(device, count)
+            test.assertEqual(float(model.joint_limit_upper.numpy()[0]), MAXVAL)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                solver = SolverFeatherPGS(model, warn_constraint_overflow=False)
+            messages = [str(w.message) for w in caught if "joint position limits" in str(w.message)]
+            test.assertEqual(len(messages), int(expect_warning), messages)
+            if expect_warning:
+                test.assertIn("at least 34 dense rows", messages[0])
+                test.assertIn("dense_max_constraints=32", messages[0])
+            solver.step(model.state(), model.state(), model.control(), None, 0.01)
+            # Large finite bounds are not reclassified as unlimited: two rows per DOF, up to
+            # the capacity.
+            test.assertEqual(int(solver.constraint_count.numpy()[0]), min(2 * count, 32))
+            test.assertEqual(bool(solver.constraint_overflow.numpy()[0]), expect_warning)
+
+    model = _build_default_limit_chain(device, 17)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        SolverFeatherPGS(model, dense_max_constraints=34)
+        gap_solver = SolverFeatherPGS(model, joint_limit_activation_gap=0.5)
+    test.assertFalse([w for w in caught if "joint position limits" in str(w.message)])
+    gap_solver.step(model.state(), model.state(), model.control(), None, 0.01)
+    test.assertEqual(int(gap_solver.constraint_count.numpy()[0]), 0)
+    test.assertFalse(bool(gap_solver.constraint_overflow.numpy()[0]))
+
+
 class TestFeatherPGSJointLimitActivationGap(unittest.TestCase):
     pass
 
@@ -214,6 +258,10 @@ for _name, _func in (
     ),
     ("test_infinite_gap_allocates_every_finite_limit", test_infinite_gap_allocates_every_finite_limit),
     ("test_limit_holds_a_driven_joint", test_limit_holds_a_driven_joint),
+    (
+        "test_default_finite_limits_keep_rows_and_warn_at_capacity",
+        test_default_finite_limits_keep_rows_and_warn_at_capacity,
+    ),
 ):
     add_function_test(TestFeatherPGSJointLimitActivationGap, _name, _func, devices=devices)
 

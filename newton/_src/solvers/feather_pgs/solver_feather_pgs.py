@@ -122,6 +122,48 @@ def _validate_supported_model(model: Model) -> None:
                 raise NotImplementedError("SolverFeatherPGS does not support loop-closing joints yet.")
     if int(getattr(model, "constraint_mimic_count", 0)):
         raise NotImplementedError("SolverFeatherPGS does not support mimic constraints yet.")
+    _validate_equality_constraints(model)
+
+
+def _unprojected_equality_constraints(model: Model) -> np.ndarray:
+    """Return the enabled MuJoCo equality rows that no Newton loop joint or mimic enforces.
+
+    The MJCF and USD importers convert MuJoCo equalities to Newton loop joints or mimic
+    constraints by default and keep the original row in ``model.mujoco.equality_constraint_*``
+    with a ``target_kind`` / ``target`` link to the projected entity. Such a row is enforced
+    (or rejected) through that entity. A row without a valid link is MuJoCo-only physics.
+    """
+    from ..mujoco.equality import MjcEqualityTargetKind  # noqa: PLC0415
+
+    mujoco = getattr(model, "mujoco", None)
+    count = int(getattr(mujoco, "equality_constraint_count", 0) or 0) if mujoco is not None else 0
+    enabled = getattr(mujoco, "equality_constraint_enabled", None) if count else None
+    if enabled is None:
+        return np.zeros(0, dtype=np.int32)
+    enabled = enabled.numpy().astype(bool)
+    target_kind = getattr(mujoco, "equality_constraint_target_kind", None)
+    target = getattr(mujoco, "equality_constraint_target", None)
+    projected = np.zeros(count, dtype=bool)
+    if target_kind is not None and target is not None:
+        target_kind = target_kind.numpy()
+        target = target.numpy()
+        joint_target = (target_kind == int(MjcEqualityTargetKind.JOINT)) & (target >= 0) & (target < model.joint_count)
+        mimic_count = int(getattr(model, "constraint_mimic_count", 0))
+        mimic_target = (target_kind == int(MjcEqualityTargetKind.MIMIC)) & (target >= 0) & (target < mimic_count)
+        projected = joint_target | mimic_target
+    return np.flatnonzero(enabled & ~projected).astype(np.int32)
+
+
+def _validate_equality_constraints(model: Model) -> None:
+    """Reject enabled MuJoCo equality constraints that this solver would silently ignore."""
+    rows = _unprojected_equality_constraints(model)
+    if rows.size:
+        raise NotImplementedError(
+            f"SolverFeatherPGS does not enforce MuJoCo equality constraints: model.mujoco.equality_constraint "
+            f"rows {rows[:16].tolist()} are enabled and not converted to a Newton loop joint or mimic "
+            "constraint. Import with convert_mjc_equality_constraints=True, model the constraint with Newton "
+            "joints, or disable the rows (equality_constraint_enabled)."
+        )
 
 
 @wp.kernel
@@ -575,8 +617,12 @@ class SolverFeatherPGS(SolverBase):
     Limitations:
 
     - CUDA only; constructing the solver on a CPU device raises :class:`NotImplementedError`.
-    - Mimic joints, equality constraints and loop-closing joints raise
-      :class:`NotImplementedError`. Particles are not simulated.
+    - Mimic joints and constraints, loop-closing joints and disabled joints raise
+      :class:`NotImplementedError`. So do enabled MuJoCo equality constraints
+      (``model.mujoco.equality_constraint_*``) that the importer did not convert to a
+      Newton loop joint or mimic constraint; enabling such a row later raises from
+      :meth:`notify_model_changed` with :attr:`~newton.ModelFlags.CONSTRAINT_PROPERTIES`.
+      Particles are not simulated.
     - Gradients are not supported.
 
     Constraint rows are stored per world with fixed capacities (``dense_max_constraints``
@@ -747,7 +793,11 @@ class SolverFeatherPGS(SolverBase):
             joint_limit_activation_gap: Distance from a finite position limit [m or rad] at
                 which its row is created. ``inf`` creates the rows of every finite limit each
                 step; a smaller gap creates a row only when ``q <= lower + gap`` or
-                ``q >= upper - gap``.
+                ``q >= upper - gap``. Every finite bound is enforced, however large: the
+                builder's default limits (``+/-1e10``) are finite, so with ``inf`` each such
+                DOF uses two rows of ``dense_max_constraints`` in every step. Use a finite gap
+                or unbounded (``+/-inf``) limits to avoid these rows; the constructor warns
+                when the finite limits alone exceed the capacity.
             enable_joint_velocity_limits: Enforce :attr:`~newton.Model.joint_velocity_limit`
                 of PRISMATIC, REVOLUTE and D6 DOFs with one row pair per limited DOF, after
                 scaling articulation velocities that already exceed a limit. The free-body
@@ -851,6 +901,7 @@ class SolverFeatherPGS(SolverBase):
         self._has_prescribed_response = bool(np.any(self._model_plan.prescribed_articulation != 0))
         self._compute_articulation_metadata(model)
         self._warn_unsolvable_global_contacts(model)
+        self._warn_persistent_row_capacity(model)
         self._setup_passive_joint_forces(model)
         self._compute_world_response_dof_mapping(model)
         self.dense_max_constraints = self._requested_dense_max_constraints
@@ -972,12 +1023,16 @@ class SolverFeatherPGS(SolverBase):
         membership) and joint DOF properties (armature) are re-read. Other model data,
         such as gravity, limits and shape properties, is read every step. A kinematic free
         body that was removed from the response at construction cannot become dynamic
-        again; reconstruct the solver in that case. Capacity status in
+        again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
+        equality rows: enabling one that is not converted to a Newton loop joint or mimic
+        constraint raises :class:`NotImplementedError`. Capacity status in
         :attr:`constraint_overflow` is not cleared, see :meth:`reset`.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
         """
+        if flags & ModelFlags.CONSTRAINT_PROPERTIES:
+            _validate_equality_constraints(self.model)
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
             self._update_kinematic_state()
             self._scatter_armature_to_groups()
@@ -1124,6 +1179,47 @@ class SolverFeatherPGS(SolverBase):
                 "other than 0. Global articulations are solved in world 0, so such contacts cannot be solved: "
                 "they are dropped, counted and flagged in constraint_overflow. Use world geometry or a "
                 "kinematic free body for shared scenery, or add the body to every world.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    def _persistent_dense_rows_per_world(self, model) -> np.ndarray:
+        """Count the dense rows every step allocates regardless of the state, per world.
+
+        With ``joint_limit_activation_gap=inf`` each finite position limit of a responding
+        PRISMATIC, REVOLUTE or D6 DOF is a row in every step, mirroring the joint-limit row
+        builder. Large finite bounds, such as the builder's default ``+/-1e10``, count like
+        any other finite bound. Finite gaps make the count state dependent, so it is zero
+        then.
+        """
+        rows = np.zeros(max(self.world_count, 1), dtype=np.int64)
+        if not np.isinf(self.joint_limit_activation_gap) or not self._joint_limit_sizes:
+            return rows
+        limit_q_index = self._joint_limit_q_index.numpy()
+        lower = model.joint_limit_lower.numpy()
+        upper = model.joint_limit_upper.numpy()
+        finite_sides = np.where(limit_q_index >= 0, np.isfinite(lower).astype(np.int64) + np.isfinite(upper), 0)
+        dof_start = self.articulation_dof_start.numpy()
+        art_to_world = self.art_to_world.numpy()
+        for size in self._joint_limit_sizes:
+            for art in self.group_to_art[size].numpy():
+                start = int(dof_start[art])
+                rows[int(art_to_world[art])] += int(np.sum(finite_sides[start : start + size]))
+        return rows
+
+    def _warn_persistent_row_capacity(self, model) -> None:
+        """Warn once at construction if every step is certain to exceed ``dense_max_constraints``."""
+        rows = self._persistent_dense_rows_per_world(model)
+        capacity = self._requested_dense_max_constraints
+        worlds = np.flatnonzero(rows > capacity)
+        if worlds.size:
+            warnings.warn(
+                f"SolverFeatherPGS: worlds {worlds[:16].tolist()} need at least {int(rows.max())} dense rows in "
+                f"every step for the finite joint position limits alone (two per DOF limited on both sides; "
+                f"the builder's default +/-1e10 limits are finite), more than dense_max_constraints="
+                f"{capacity}. Rows beyond the capacity are dropped and flagged in constraint_overflow. Raise "
+                "dense_max_constraints, set a finite joint_limit_activation_gap so that only limits near the "
+                "joint position create rows, or set unbounded limits to +/-inf.",
                 UserWarning,
                 stacklevel=3,
             )
