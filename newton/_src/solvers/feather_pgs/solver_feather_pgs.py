@@ -1213,12 +1213,15 @@ class SolverFeatherPGS(SolverBase):
                 child keep the serial traversal. Broad trees can benefit; narrow trees can be
                 slower, so measure the full step before enabling it.
             enable_sleeping: Experimental passive-island sleeping. Articulations in contact
-                are joined into islands every step; static geometry and fixed-base
-                articulations support an island without joining it. A supported island whose
-                bodies stay below ``sleep_linear_threshold`` and ``sleep_angular_threshold``
-                for ``sleep_quiet_time`` falls asleep, and its published state
-                (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd`` and, when requested,
-                ``body_parent_f``) is frozen until a wake event: a nonzero or nonfinite
+                are joined into islands every step. Static geometry and articulations with no
+                responding degrees of freedom (such as a body welded to the world) support an
+                island without joining it. A fixed-base articulation with responding joints,
+                such as a robot arm, joins the island of everything it touches, so it can
+                connect them into one island; its fixed root supports that island. A
+                supported island whose bodies stay below ``sleep_linear_threshold`` and
+                ``sleep_angular_threshold`` for ``sleep_quiet_time`` falls asleep, and its
+                published state (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd`` and, when
+                requested, ``body_parent_f``) is frozen until a wake event: a nonzero or nonfinite
                 external force (:attr:`~newton.State.body_f`, :attr:`~newton.Control.joint_f`),
                 a changed state or gravity, a contact with an awake or moving body, lost
                 support or row capacity, a :meth:`reset` of its world, or
