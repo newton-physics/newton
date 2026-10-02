@@ -60,7 +60,7 @@ def _built_rows(device, q: float, *, gap: float, lower: float = -1.0, upper: flo
     return J_group.numpy()[0, :count, 0].tolist(), world_phi.numpy()[0, :count].tolist()
 
 
-def _make_layout_run(device, *, enable_joint_velocity_limits=True):
+def _make_layout_scene(device, *, enable_joint_velocity_limits=True, response="immediate", pgs_iterations=0):
     """Build a scene that produces every row family: limits, velocity limits and contacts."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverFeatherPGS.register_custom_attributes(builder)
@@ -103,7 +103,8 @@ def _make_layout_run(device, *, enable_joint_velocity_limits=True):
         velocity_limit_activation_fraction=0.5,
         dense_max_constraints=64,
         mf_max_constraints=64,
-        pgs_iterations=0,
+        pgs_iterations=pgs_iterations,
+        articulated_contact_response=response,
     )
     state_0, state_1 = model.state(), model.state()
     joint_qd = state_0.joint_qd.numpy()
@@ -114,6 +115,14 @@ def _make_layout_run(device, *, enable_joint_velocity_limits=True):
     state_0.joint_qd.assign(joint_qd)
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
     pipeline = newton.CollisionPipeline(model)
+    return model, solver, state_0, state_1, pipeline
+
+
+def _make_layout_run(device, *, enable_joint_velocity_limits=True):
+    """Build the layout scene and its rows for one step."""
+    model, solver, state_0, state_1, pipeline = _make_layout_scene(
+        device, enable_joint_velocity_limits=enable_joint_velocity_limits
+    )
     contacts = pipeline.contacts()
     pipeline.collide(state_0, contacts)
     solver.step(state_0, state_1, model.control(), contacts, 1.0 / 60.0)
@@ -280,6 +289,77 @@ def test_disabled_joint_limits_build_no_rows(test, device):
     test.assertAlmostEqual(float(state_1.joint_q.numpy()[0]), 0.2, places=6)
 
 
+def _run_layout_trajectory(device, response, pgs_iterations):
+    """Step the layout scene four times; record each step's row families, impulses and joint state."""
+    model, solver, state_0, state_1, pipeline = _make_layout_scene(
+        device, response=response, pgs_iterations=pgs_iterations
+    )
+    contacts = pipeline.contacts()
+    control = model.control()
+    samples = []
+    for _ in range(4):
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        dense_count = int(solver.constraint_count.numpy()[0])
+        mf_count = int(solver.mf_constraint_count.numpy()[0])
+        samples.append(
+            {
+                "dense_count": dense_count,
+                "row_type": solver.row_type.numpy()[0, :dense_count].copy(),
+                "impulses": solver.impulses.numpy()[0, :dense_count].copy(),
+                "mf_row_type": solver.mf_row_type.numpy()[0, :mf_count].copy(),
+                "propagation_count": int(solver.propagation_constraint_count.numpy()[0]),
+                "joint_q": state_1.joint_q.numpy().copy(),
+                "joint_qd": state_1.joint_qd.numpy().copy(),
+            }
+        )
+        state_0, state_1 = state_1, state_0
+    return samples
+
+
+def test_fused_propagation_matches_phased_trajectory(test, device):
+    """Solve every row family in the propagation schedule; the fused kernel matches the phased launches.
+
+    Each propagation iteration solves the dense joint-limit rows, the contact rows, the
+    propagation rows and their tree propagation, then the velocity-limit rows. The scene's
+    articulated link (on its limit, against the ground) and free body (with velocity limits)
+    do not interact, so the separately launched phases and the fused kernel, which keeps the
+    free body's contacts on free-body rows, must give the same trajectory. A single iteration
+    pins the order of the row families within an iteration.
+    """
+    for pgs_iterations in (1, 8):
+        with test.subTest(pgs_iterations=pgs_iterations):
+            _check_fused_matches_phased(test, device, pgs_iterations)
+
+
+def _check_fused_matches_phased(test, device, pgs_iterations):
+    phased = _run_layout_trajectory(device, "propagation", pgs_iterations)
+    fused = _run_layout_trajectory(device, "propagation-fused", pgs_iterations)
+    for step, (expected, observed) in enumerate(zip(phased, fused, strict=True)):
+        for label, sample in (("propagation", expected), ("propagation-fused", observed)):
+            with test.subTest(step=step, response=label):
+                types = sample["row_type"]
+                # Dense rows hold only the joint rows; every contact touching the link is a propagation row.
+                test.assertGreater(int(np.sum(types == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)), 0)
+                test.assertTrue(
+                    np.all(
+                        (types == PGS_CONSTRAINT_TYPE_JOINT_LIMIT) | (types == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)
+                    )
+                )
+                test.assertGreater(sample["propagation_count"], 0)
+                test.assertGreater(int(np.sum(sample["mf_row_type"] == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)), 0)
+        np.testing.assert_array_equal(observed["row_type"], expected["row_type"], err_msg=f"step {step}")
+        # The free body's contacts are propagation rows in the phased response and free-body rows when fused.
+        test.assertEqual(int(np.sum(expected["mf_row_type"] == PGS_CONSTRAINT_TYPE_CONTACT)), 0)
+        test.assertGreater(int(np.sum(observed["mf_row_type"] == PGS_CONSTRAINT_TYPE_CONTACT)), 0)
+        for label in ("impulses", "joint_q", "joint_qd"):
+            np.testing.assert_allclose(
+                observed[label], expected[label], rtol=1.0e-5, atol=2.0e-6, err_msg=f"{label} differed at step {step}"
+            )
+    limit_rows = np.flatnonzero(phased[0]["row_type"] == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
+    test.assertGreater(float(np.max(np.abs(phased[0]["impulses"][limit_rows]))), 0.0)
+
+
 class TestFeatherPGSJointLimitActivationGap(unittest.TestCase):
     pass
 
@@ -304,6 +384,7 @@ for _name, _func in (
         "test_default_finite_limits_keep_rows_and_warn_at_capacity",
         test_default_finite_limits_keep_rows_and_warn_at_capacity,
     ),
+    ("test_fused_propagation_matches_phased_trajectory", test_fused_propagation_matches_phased_trajectory),
 ):
     add_function_test(TestFeatherPGSJointLimitActivationGap, _name, _func, devices=devices)
 

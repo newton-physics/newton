@@ -377,6 +377,71 @@ def test_enabling_equality_constraint_at_runtime_raises(test, device):
     solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
 
 
+def test_articulated_contact_response_validation(test, device):
+    """Accept the propagation responses, size their rows, and reject unsupported combinations."""
+    model = _build_chain_model(device, num_links=2, num_worlds=1)
+    solver = SolverFeatherPGS(model)
+    test.assertEqual(solver.articulated_contact_response, "immediate")
+    test.assertFalse(solver.propagation_same_articulation_rows)
+    solver = SolverFeatherPGS(model, articulated_contact_response="propagation", dense_max_constraints=16)
+    test.assertEqual(solver.articulated_contact_response, "propagation")
+    # Every contact row, free-body rows included, uses the propagation family.
+    test.assertEqual(solver.propagation_max_constraints, 512 + 16)
+    solver = SolverFeatherPGS(model, articulated_contact_response="propagation-fused", dense_max_constraints=16)
+    test.assertEqual(solver.articulated_contact_response, "propagation-fused")
+    test.assertEqual(solver.propagation_max_constraints, 16)
+
+    with test.assertRaisesRegex(ValueError, "articulated_contact_response"):
+        SolverFeatherPGS(model, articulated_contact_response="bad")
+    for response in ("immediate", "propagation-fused"):
+        with test.subTest(response=response):
+            with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
+                SolverFeatherPGS(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
+
+    # The fused kernel runs the tree passes of a single articulation size.
+    mixed = newton.ModelBuilder()
+    for num_links in (2, 3):
+        chain = newton.ModelBuilder()
+        joints = []
+        parent = -1
+        for _ in range(num_links):
+            link = chain.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joints.append(chain.add_joint_revolute(parent, link, axis=newton.Axis.Y))
+            parent = link
+        chain.add_articulation(joints)
+        mixed.add_world(chain)
+    mixed_model = mixed.finalize(device=device)
+    with test.assertRaisesRegex(NotImplementedError, "propagation-fused"):
+        SolverFeatherPGS(mixed_model, articulated_contact_response="propagation-fused")
+    test.assertEqual(
+        SolverFeatherPGS(mixed_model, articulated_contact_response="propagation").articulated_contact_response,
+        "propagation",
+    )
+
+
+def test_propagation_matrix_free_compiles_and_steps_with_velocity_limit_rows(test, device):
+    """Step both propagation responses with dense joint velocity-limit rows."""
+    model = _build_chain_model(device, num_links=3, num_worlds=1)
+    model.joint_velocity_limit.assign(np.full(model.joint_dof_count, 0.1, dtype=np.float32))
+    for response in ("propagation", "propagation-fused"):
+        with test.subTest(response=response):
+            solver = SolverFeatherPGS(
+                model,
+                articulated_contact_response=response,
+                enable_joint_velocity_limits=True,
+                pgs_iterations=2,
+                dense_max_constraints=16,
+                mf_max_constraints=16,
+            )
+            state_0, state_1 = model.state(), model.state()
+            state_0.joint_qd.assign(np.full(model.joint_dof_count, 1.0, dtype=np.float32))
+            newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+            solver.step(state_0, state_1, model.control(), None, 1.0 / 600.0)
+            test.assertGreater(int(solver.constraint_count.numpy()[0]), 0)
+            test.assertTrue(np.isfinite(state_1.joint_q.numpy()).all())
+            test.assertTrue(np.isfinite(state_1.joint_qd.numpy()).all())
+
+
 class TestFeatherPGSLaunchConfig(unittest.TestCase):
     def test_cpu_construction_raises(self):
         """Reject construction on a CPU device with a clear error."""
@@ -493,6 +558,11 @@ for _name, _func in (
         test_equality_link_must_name_the_projected_constraint,
     ),
     ("test_enabling_equality_constraint_at_runtime_raises", test_enabling_equality_constraint_at_runtime_raises),
+    ("test_articulated_contact_response_validation", test_articulated_contact_response_validation),
+    (
+        "test_propagation_matrix_free_compiles_and_steps_with_velocity_limit_rows",
+        test_propagation_matrix_free_compiles_and_steps_with_velocity_limit_rows,
+    ),
 ):
     add_function_test(TestFeatherPGSLaunchConfig, _name, _func, devices=devices)
 

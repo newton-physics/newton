@@ -32,10 +32,10 @@ def _box_on_ground(device, gravity=None, mu=None):
     return builder.finalize(device=device)
 
 
-def test_resting_box_reports_weight_as_linear_force(test, device):
+def test_resting_box_reports_weight_as_linear_force(test, device, response="immediate"):
     """Report the resting box's weight through the linear contact force and leave the torque zero."""
     model = _box_on_ground(device)
-    solver = SolverFeatherPGS(model, pgs_iterations=32)
+    solver = SolverFeatherPGS(model, pgs_iterations=32, articulated_contact_response=response)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     test.assertIsNotNone(contacts.force)
@@ -62,12 +62,12 @@ def test_resting_box_reports_weight_as_linear_force(test, device):
     np.testing.assert_array_equal(wrench[:, 3:], np.zeros((count, 3)))
 
 
-def _tilted_gravity_box_velocity(device, slope_angle, mu, steps):
+def _tilted_gravity_box_velocity(device, slope_angle, mu, steps, response):
     """Box on the ground under gravity tilted by ``slope_angle``, as on an incline; return its x velocity."""
     g = 9.81
     gravity = (g * np.sin(slope_angle), 0.0, -g * np.cos(slope_angle))
     model = _box_on_ground(device, gravity=gravity, mu=mu)
-    solver = SolverFeatherPGS(model, pgs_iterations=32)
+    solver = SolverFeatherPGS(model, pgs_iterations=32, articulated_contact_response=response)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
@@ -79,17 +79,17 @@ def _tilted_gravity_box_velocity(device, slope_angle, mu, steps):
     return float(state_0.body_qd.numpy()[0, 0])
 
 
-def test_friction_holds_inside_the_cone(test, device):
+def test_friction_holds_inside_the_cone(test, device, response="immediate"):
     """Hold the box at rest when the tangential load is inside the friction cone."""
     # tan(0.3) = 0.31 < mu = 0.5.
-    velocity = _tilted_gravity_box_velocity(device, slope_angle=0.3, mu=0.5, steps=120)
+    velocity = _tilted_gravity_box_velocity(device, slope_angle=0.3, mu=0.5, steps=120, response=response)
     test.assertLess(abs(velocity), 1.0e-3)
 
 
-def test_friction_slides_at_the_coulomb_bound(test, device):
+def test_friction_slides_at_the_coulomb_bound(test, device, response="immediate"):
     """Accelerate the box at ``g (sin a - mu cos a)`` when the load exceeds the friction cone."""
     slope_angle, mu, steps = 0.6, 0.3, 120
-    velocity = _tilted_gravity_box_velocity(device, slope_angle=slope_angle, mu=mu, steps=steps)
+    velocity = _tilted_gravity_box_velocity(device, slope_angle=slope_angle, mu=mu, steps=steps, response=response)
     expected = 9.81 * (np.sin(slope_angle) - mu * np.cos(slope_angle)) * steps * DT
     test.assertAlmostEqual(velocity, expected, delta=0.03 * expected)
 
@@ -137,13 +137,15 @@ def _impact(model, solver, joint_qd):
     return state_out.joint_qd.numpy()[:6], contacts.rigid_contact_force.numpy()[:count].sum(axis=0)
 
 
-def test_free_body_contact_response_includes_armature(test, device):
+def test_free_body_contact_response_includes_armature(test, device, response="immediate"):
     """Free-body rows respond with the same armature-augmented inertia as articulated rows."""
     stop = (0.0, 0.0, -1.0, 0.0, 0.0, 0.0)
     for armature, expected in ((0.0, 100.0), (9.0, 1000.0)):
         with test.subTest(armature=armature):
             model = _sphere_on_ground(device, armature, dense=False)
-            qd, force = _impact(model, SolverFeatherPGS(model, pgs_cfm=0.0), stop)
+            qd, force = _impact(
+                model, SolverFeatherPGS(model, pgs_cfm=0.0, articulated_contact_response=response), stop
+            )
             # The sphere starts 0.1 mm deep, so the depenetration bias adds 0.2 %.
             test.assertAlmostEqual(abs(float(force[2])), expected, delta=5.0e-3 * expected)
             test.assertAlmostEqual(float(qd[2]), 0.0, delta=5.0e-3)
@@ -153,13 +155,14 @@ def test_free_body_contact_response_includes_armature(test, device):
     results = {}
     for dense in (False, True):
         model = _sphere_on_ground(device, ARMATURE, dense=dense, com=(0.03, -0.02, 0.01), mu=0.5)
-        results[dense] = _impact(model, SolverFeatherPGS(model, pgs_cfm=0.0, pgs_iterations=64), oblique)
+        solver = SolverFeatherPGS(model, pgs_cfm=0.0, pgs_iterations=64, articulated_contact_response=response)
+        results[dense] = _impact(model, solver, oblique)
     np.testing.assert_allclose(results[False][0], results[True][0], rtol=0.0, atol=1.0e-4)
     np.testing.assert_allclose(results[False][1], results[True][1], rtol=1.0e-3, atol=1.0e-2)
 
     # A notified armature change reaches the free-body response.
     model = _sphere_on_ground(device, 0.0, dense=False)
-    solver = SolverFeatherPGS(model, pgs_cfm=0.0)
+    solver = SolverFeatherPGS(model, pgs_cfm=0.0, articulated_contact_response=response)
     _impact(model, solver, stop)
     joint_armature = model.joint_armature.numpy()
     joint_armature[:6] = 9.0
@@ -169,7 +172,7 @@ def test_free_body_contact_response_includes_armature(test, device):
     test.assertAlmostEqual(abs(float(force[2])), 1000.0, delta=5.0)
 
 
-def test_free_body_impact_shares_armature_momentum(test, device):
+def test_free_body_impact_shares_armature_momentum(test, device, response="immediate"):
     """A frictionless plastic impact between free bodies conserves the armature-augmented momentum."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.0)
@@ -182,7 +185,7 @@ def test_free_body_impact_shares_armature_momentum(test, device):
     joint_armature = model.joint_armature.numpy()
     joint_armature[:6] = 9.0
     model.joint_armature.assign(joint_armature)
-    solver = SolverFeatherPGS(model, pgs_cfm=0.0, pgs_iterations=64)
+    solver = SolverFeatherPGS(model, pgs_cfm=0.0, pgs_iterations=64, articulated_contact_response=response)
     state_in, state_out = model.state(), model.state()
     joint_qd = state_in.joint_qd.numpy()
     joint_qd[0] = 1.0
@@ -213,6 +216,18 @@ for _name in (
     "test_free_body_impact_shares_armature_momentum",
 ):
     add_function_test(TestFeatherPGSContactForce, _name, globals()[_name], devices=devices)
+    # The propagation response solves these contacts as body-space rows.
+    add_function_test(
+        TestFeatherPGSContactForce, f"{_name}_propagation", globals()[_name], devices=devices, response="propagation"
+    )
+# The fused response only differs from the immediate one with an articulated (dense-path) body.
+add_function_test(
+    TestFeatherPGSContactForce,
+    "test_free_body_contact_response_includes_armature_propagation_fused",
+    test_free_body_contact_response_includes_armature,
+    devices=devices,
+    response="propagation-fused",
+)
 
 
 if __name__ == "__main__":
