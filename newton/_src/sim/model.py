@@ -975,7 +975,12 @@ class Model:
         self.joint_child: wp.array[wp.int32] | None = None
         """Joint child body indices, shape [joint_count], int."""
         self.joint_ancestor: wp.array[wp.int32] | None = None
-        """Maps from joint index to the index of the joint that has the current joint parent body as child (-1 if no such joint ancestor exists), shape [joint_count], int."""
+        """Incoming joint of each joint's parent body (-1 if none exists), shape [joint_count], int.
+
+        Articulated joints resolve ancestors only within their own articulation,
+        terminating at external roots. For unarticulated joints, articulation
+        tree joints take precedence over loop-closing joints.
+        """
         self.joint_X_p: wp.array[wp.transform] | None = None
         """Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float."""
         self.joint_X_c: wp.array[wp.transform] | None = None
@@ -1445,7 +1450,6 @@ class Model:
             "joint_coord": Model.AttributeFrequency.JOINT_COORD,
             "joint_constraint": Model.AttributeFrequency.JOINT_CONSTRAINT,
             "articulation": Model.AttributeFrequency.ARTICULATION,
-            "equality_constraint": "mujoco:equality_constraint",
             "constraint_mimic": Model.AttributeFrequency.CONSTRAINT_MIMIC,
             "particle": Model.AttributeFrequency.PARTICLE,
             "edge": Model.AttributeFrequency.EDGE,

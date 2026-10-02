@@ -2514,11 +2514,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                 Shape ``(world_count + 1,)``, with the final entry selecting
                 entities in global world ``-1``. ``None`` selects all local and
                 global entities.
-
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
             flags: :class:`~newton.StateFlags` (or ``int``) selecting which body
                 and particle fields to copy from the model defaults. VBD honors
                 :attr:`~newton.StateFlags.BODY_Q`,

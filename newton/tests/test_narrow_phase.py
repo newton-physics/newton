@@ -17,6 +17,7 @@ These validations ensure the NarrowPhase follows the same contact conventions as
 primitive collision functions.
 """
 
+import sys
 import typing
 import unittest
 from unittest import mock
@@ -32,6 +33,7 @@ from newton._src.geometry.narrow_phase import (
     NarrowPhase,
     _append_pair_compacted,
     _append_work_index_compacted,
+    verify_narrow_phase_buffers,
 )
 from newton._src.geometry.types import GeoType
 
@@ -85,6 +87,42 @@ class TestCompactedAppend(unittest.TestCase):
                 pairs = pairs[np.argsort(pairs[:, 0])]
                 np.testing.assert_array_equal(pairs[:, 0], expected)
                 np.testing.assert_array_equal(pairs[:, 1], -expected)
+
+
+class TestNarrowPhaseBufferWarnings(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "Warp CPU printf capture is unreliable on Windows")
+    def test_reduction_hashtable_load_warning(self):
+        """Report the load threshold correctly when either percentage product exceeds int32."""
+        # Capture CPU printf to avoid CUDA printf buffering differences across drivers.
+        device = "cpu"
+        zero = wp.zeros(1, dtype=int, device=device)
+        cases = [
+            (4_887_460, 33_554_432, False),  # Capacity * 80 exceeds int32.
+            (22_000_000, 24_000_000, True),  # Active count * 100 exceeds int32.
+            (26_843_545, 33_554_432, False),  # Just below 80%; both products exceed int32.
+            (26_843_546, 33_554_432, True),  # Just above 80%.
+            (79, 100, False),
+            (80, 100, True),  # Preserve the inclusive threshold.
+            (0, 0, False),  # Disabled reduction table.
+        ]
+        for active, capacity, expected_warning in cases:
+            with self.subTest(active=active, capacity=capacity):
+                counter = wp.array([active], dtype=int, device=device)
+                # The verifier only reads active_slots[capacity]. A broadcast view
+                # exercises realistic capacities without allocating a large table.
+                active_slots = wp.array(ptr=counter.ptr, dtype=int, shape=(capacity + 1,), strides=(0,), device=device)
+                capture = StdOutCapture()
+                capture.begin()
+                try:
+                    wp.launch(
+                        verify_narrow_phase_buffers,
+                        dim=1,
+                        inputs=[zero, 0] * 11 + [active_slots, capacity, zero, 80],
+                        device=device,
+                    )
+                finally:
+                    output = capture.end()
+                self.assertEqual("Contact reduction hashtable fill ratio" in output, expected_warning, output)
 
 
 def check_normal_direction(pos_a, pos_b, normal, tolerance=1e-5):

@@ -1104,13 +1104,17 @@ class ViewerGui:
             return
 
         view = state["selected_articulation_view"]
+
+        def text(value):
+            return "varies" if value is None else str(value)
+
         imgui.separator()
         imgui.text(f"  Count: {view.count}")
-        imgui.text(f"  Joints: {view.joint_count}")
-        imgui.text(f"  Links: {view.link_count}")
-        imgui.text(f"  DOFs: {view.joint_dof_count}")
-        imgui.text(f"  Fixed base: {view.is_fixed_base}")
-        imgui.text(f"  Floating base: {view.is_floating_base}")
+        imgui.text(f"  Joints: {text(view.joint_count)}")
+        imgui.text(f"  Links: {text(view.link_count)}")
+        imgui.text(f"  DOFs: {text(view.joint_dof_count)}")
+        imgui.text(f"  Fixed base: {text(view.is_fixed_base)}")
+        imgui.text(f"  Floating base: {text(view.is_floating_base)}")
 
         imgui.spacing()
         imgui.text("Select Attribute:")
@@ -1145,6 +1149,7 @@ class ViewerGui:
                 exclude_joints=exclude_joints,
                 include_links=include_links,
                 exclude_links=exclude_links,
+                allow_partial_layouts=True,
                 verbose=False,
             )
         except Exception as e:
