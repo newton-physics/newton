@@ -703,10 +703,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
                 # compare averaged speed rather than individual impact phases.
                 self.assertAlmostEqual(float(actual[2][0]), float(reference[2][0]), delta=0.02)
                 self.assertAlmostEqual(float(actual[2][4]), float(reference[2][4]), delta=0.4)
-                # Facet impacts of a faceted wheel steer it slightly; their phase depends on
-                # float32 contact ordering, so faceted wheels get a 2% lateral-speed bound.
-                lateral_bound = 0.02 if geometry in ("mesh", "convex_hull") else 0.01
-                self.assertLess(abs(float(actual[2][1])), lateral_bound)
+                self.assertLess(abs(float(actual[2][1])), 0.01)
                 if geometry not in ("mesh", "convex_hull"):
                     self.assertAlmostEqual(float(actual[1][0]), float(reference[1][0]), delta=0.01)
                     self.assertAlmostEqual(float(actual[1][4]), float(reference[1][4]), delta=0.2)
