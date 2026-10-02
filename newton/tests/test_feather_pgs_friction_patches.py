@@ -102,7 +102,7 @@ def _patch_fixture(
 @unittest.skipUnless(wp.is_cuda_available(), "SolverFeatherPGS requires CUDA")
 class TestFrictionPatchHistory(unittest.TestCase):
     def test_support_edge_centers_ignore_contact_order(self):
-        """Keep identical edge centers when contact ordering changes at rest."""
+        """Keep the same edge centers when contact ordering changes at rest."""
         device = _DEVICE
         points = np.array(
             [[x, y, 0.0] for x in np.linspace(-0.001, 0.001, 128) for y in (-0.05, 0.05)], dtype=np.float32
@@ -114,7 +114,8 @@ class TestFrictionPatchHistory(unittest.TestCase):
                 _, _, _, patches = _patch_fixture(points[order], device=device)
                 locations = patches.view.point_a.numpy()[patches.view.weight.numpy() > 0.0]
                 locations = locations[np.argsort(locations[:, 1])]
-                np.testing.assert_array_equal(locations, expected)
+                # Summation order perturbs the principal axis only by roundoff.
+                np.testing.assert_allclose(locations, expected, rtol=0.0, atol=1.0e-12)
 
     def test_narrow_patch_preserves_footprint_reflection_symmetry(self):
         """Avoid a diagonal friction couple on a symmetric narrow contact footprint."""
@@ -131,18 +132,19 @@ class TestFrictionPatchHistory(unittest.TestCase):
                 np.testing.assert_allclose(locations @ across, 0.0, atol=1.0e-7)
                 np.testing.assert_allclose(np.sort(locations @ axis), [-0.025, 0.025], atol=1.0e-7)
 
-    def test_sheared_narrow_patch_averages_whole_support_edges(self):
-        """Average each whole support edge when a slight shear tilts the principal axis."""
+    def test_sheared_narrow_patch_keeps_anchors_at_its_support_edges(self):
+        """Keep both anchors near the support-edge centers when a slight shear tilts the principal axis."""
         device = _DEVICE
         # A faceted wheel's line contact: three points across each cap edge, one cap
         # offset slightly along the edges. The principal axis then deviates from the
         # caps' normal, and keeping only each edge's extreme point anchors opposite
-        # corners, a diagonal couple that steers a symmetric wheel.
+        # corners, a diagonal couple that steers a symmetric wheel. Anchors on the
+        # principal line through the centroid move only in proportion to the shear.
         across_offsets = (-0.0145, 0.0, 0.0145)
         for angle in (0.0, 0.37):
             axis = np.array([np.sin(angle), np.cos(angle), 0.0])
             across = np.array([np.cos(angle), -np.sin(angle), 0.0])
-            for shear in (1.0e-5, -1.0e-4):
+            for shear in (1.0e-6, 1.0e-5, -1.0e-4, 1.0e-3):
                 points = [x * across - 0.025 * axis for x in across_offsets]
                 points += [(x + shear) * across + 0.025 * axis for x in across_offsets]
                 with self.subTest(angle=angle, shear=shear):
@@ -151,8 +153,28 @@ class TestFrictionPatchHistory(unittest.TestCase):
                     locations = patches.view.point_a.numpy()[active]
                     self.assertEqual(len(locations), 2)
                     locations = locations[np.argsort(locations @ axis)]
-                    np.testing.assert_allclose(locations @ axis, [-0.025, 0.025], atol=1.0e-6)
-                    np.testing.assert_allclose(locations @ across, [0.0, shear], atol=1.0e-6)
+                    tolerance = abs(shear) + 1.0e-7
+                    np.testing.assert_allclose(locations @ axis, [-0.025, 0.025], rtol=0.0, atol=tolerance)
+                    np.testing.assert_allclose(locations @ across, [0.0, shear], rtol=0.0, atol=tolerance)
+
+    def test_aligned_narrow_patch_anchors_span_the_full_footprint(self):
+        """Anchor aligned narrow footprints at their axial extremes, including near-extreme samples."""
+        device = _DEVICE
+        theta = np.linspace(0.0, 2.0 * np.pi, 32, endpoint=False)
+        footprints = {
+            # Edge samples just inside each end must not pull the anchors inward.
+            "intermediate_edge_samples": [[x, y, 0.0] for x in (-0.001, 0.001) for y in (-0.025, -0.023, 0.023, 0.025)],
+            "sampled_ellipse": np.stack([0.019 * np.cos(theta), 0.025 * np.sin(theta), np.zeros_like(theta)], axis=1),
+        }
+        for name, points in footprints.items():
+            with self.subTest(footprint=name):
+                _, _, _, patches = _patch_fixture(np.asarray(points, dtype=np.float32), device=device)
+                active = patches.view.weight.numpy() > 0.0
+                locations = patches.view.point_a.numpy()[active]
+                self.assertEqual(len(locations), 2)
+                locations = locations[np.argsort(locations[:, 1])]
+                np.testing.assert_allclose(locations[:, 0], 0.0, atol=1.0e-7)
+                np.testing.assert_allclose(locations[:, 1], [-0.025, 0.025], rtol=0.0, atol=1.0e-6)
 
     def test_pose_increment_preserves_fixed_pivots_and_no_slip_rolling(self):
         """Distinguish rigid rotation from slip without querying the collision shape."""
