@@ -2067,6 +2067,37 @@ def test_proxy_particle_gravity_is_not_coupling_feedback(test, device):
         state_0, state_1 = state_1, state_0
 
 
+def test_pic_strain_basis_constructs_with_empty_grid_cells(test, device):
+    """Verify pic strain bases construct when the grid contains cells without particles.
+
+    Cells without particles arise from grid padding or a capacity-bounded grid.
+    They are not strain nodes, but cell-based coloring still colors them, so the
+    coloring buffer must be sized for all colored cells. When it was sized for
+    strain nodes only, construction crashed in radix_sort_pairs ("Keys and
+    values array storage must be large enough to contain 2*count elements").
+    """
+    cases = [
+        ("fixed", 4, 8192),
+        ("dense", 4, 8192),
+        # Control: no padding and no capacity means every cell holds a particle.
+        ("fixed", 0, -1),
+    ]
+    for grid_type, grid_padding, max_active_cell_count in cases:
+        with test.subTest(grid_type=grid_type, grid_padding=grid_padding, max_active_cell_count=max_active_cell_count):
+            builder = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0))
+            model = builder.finalize(device=device)
+
+            config = SolverImplicitMPM.Config()
+            config.voxel_size = 0.1
+            config.strain_basis = "pic8"
+            config.grid_type = grid_type
+            config.grid_padding = grid_padding
+            config.max_active_cell_count = max_active_cell_count
+
+            _solver, state = _step_mpm(model, config, step_count=1)
+            test.assertTrue(np.isfinite(state.particle_q.numpy()).all())
+
+
 devices = get_test_devices()
 basic_devices = get_test_devices(mode="basic")
 basic_cuda_devices = get_cuda_test_devices(mode="basic")
@@ -2075,6 +2106,13 @@ basic_cuda_devices = get_cuda_test_devices(mode="basic")
 class TestImplicitMPM(unittest.TestCase):
     pass
 
+
+add_function_test(
+    TestImplicitMPM,
+    "test_pic_strain_basis_constructs_with_empty_grid_cells",
+    test_pic_strain_basis_constructs_with_empty_grid_cells,
+    devices=basic_devices,
+)
 
 add_function_test(TestImplicitMPM, "test_stress_virtual_work", test_stress_virtual_work, devices=devices)
 add_function_test(TestImplicitMPM, "test_delassus_majorizer", test_delassus_majorizer, devices=devices)

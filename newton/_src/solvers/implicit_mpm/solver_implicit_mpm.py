@@ -278,6 +278,7 @@ class ImplicitMPMScratchpad:
 
         self.color_offsets = None
         self.color_indices = None
+        self._strain_basis_is_pic = False
 
         self.inv_mass_matrix = None
 
@@ -320,6 +321,7 @@ class ImplicitMPMScratchpad:
 
         use_pic_collider_basis = collider_basis_str[:3] == "pic"
         use_pic_strain_basis = strain_basis_str[:3] == "pic"
+        self._strain_basis_is_pic = use_pic_strain_basis
 
         # The rebuildable sparse grid (like the fixed grid) reuses the same geometry object
         # across steps, so refresh retained topologies before rebuilding their partitions.
@@ -646,7 +648,18 @@ class ImplicitMPMScratchpad:
             self.collider_total_volumes = fem.borrow_temporary(temporary_store, shape=collider_count, dtype=float)
 
         if max_colors > 0:
-            self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, strain_node_count), dtype=int)
+            color_element_count = strain_node_count
+            if self._strain_basis_is_pic:
+                # Cell-based coloring colors every cell of the geometry partition
+                # (see _compute_coloring), but only cells holding particles become
+                # strain nodes: with grid padding or a capacity-bounded grid the
+                # cell count exceeds the node count, so the sort buffer must be
+                # sized for all colored cells.
+                color_element_count = max(
+                    color_element_count,
+                    self._strain_space_restriction.space_partition.geo_partition.cell_count(),
+                )
+            self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, color_element_count), dtype=int)
             self.color_offsets = fem.borrow_temporary(temporary_store, shape=max_colors + 1, dtype=int)
 
     def release_temporaries(self):
