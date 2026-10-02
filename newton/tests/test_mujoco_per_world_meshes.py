@@ -8,6 +8,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.core.types import vec5
 from newton._src.solvers.mujoco.geometry import (
     build_shape_layout,
     compile_layout_collision_masks,
@@ -16,7 +17,7 @@ from newton._src.solvers.mujoco.geometry import (
 from newton.solvers import SolverMuJoCo
 
 
-def build_world(count, *, offset=0.0):
+def build_world(count, *, offset=0.0, half_height=0.1):
     builder = newton.ModelBuilder()
     body = builder.add_link(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.3), wp.quat_identity()),
@@ -25,7 +26,7 @@ def build_world(count, *, offset=0.0):
     )
     joint = builder.add_joint_free(child=body)
     builder.add_articulation([joint])
-    mesh = newton.Mesh.create_box(0.25 / count, 0.1, 0.1, compute_inertia=False)
+    mesh = newton.Mesh.create_box(0.25 / count, 0.1, half_height, compute_inertia=False)
     # Exercise MuJoCo's mesh recentering rather than only centered assets.
     mesh = newton.Mesh(mesh.vertices + np.array([offset, 0.0, 0.0]), mesh.indices, compute_inertia=False)
     cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
@@ -212,6 +213,69 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
             touched = np.unique(geoms[worlds == w])
             self.assertEqual(len(touched), count + 1)
             self.assertTrue(np.all(mapping[w, touched] >= 0))
+
+    def test_mesh_selection_drives_contacts(self):
+        """Rest each world on its own mesh asset, including scale-only differences."""
+        for native in (False, True):
+            for by_scale in (False, True):
+                with self.subTest(native=native, by_scale=by_scale):
+                    builder = newton.ModelBuilder()
+                    builder.add_ground_plane()
+                    builder.add_world(build_world(1))
+                    builder.add_world(build_world(1, half_height=0.1 if by_scale else 0.2))
+                    model = builder.finalize()
+                    if by_scale:
+                        scales = model.shape_scale.numpy()
+                        scales[np.flatnonzero(model.shape_world.numpy() == 1)[0]] = (1.0, 1.0, 2.0)
+                        model.shape_scale.assign(scales)
+                    solver = SolverMuJoCo(model, use_mujoco_contacts=native, nconmax=32, njmax=64)
+                    self.assertEqual(solver.mjw_model.nmesh, 2)
+                    state, state_next = model.state(), model.state()
+                    control = model.control()
+                    pipeline = newton.CollisionPipeline(model)
+                    contacts = pipeline.contacts()
+                    for _ in range(300):
+                        if not native:
+                            pipeline.collide(state, contacts)
+                        solver.step(state, state_next, control, contacts, 0.002)
+                        state, state_next = state_next, state
+                    np.testing.assert_allclose(state.body_q.numpy()[:, 2], [0.1, 0.2], atol=0.005)
+
+    def test_planar_pair_mesh_in_other_world(self):
+        """Apply explicit template pairs to the planar check for every world's mesh."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        flat = newton.Mesh(
+            np.array([[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [-1.0, 1.0, 0.0], [1.0, 1.0, 0.0]], dtype=np.float32),
+            np.array([0, 1, 2, 1, 3, 2], dtype=np.int32),
+            compute_inertia=False,
+        )
+        # Group 0 leaves the explicit pair as the floor's only native contact source.
+        cfg = newton.ModelBuilder.ShapeConfig(collision_group=0)
+        for mesh in (newton.Mesh.create_box(1.0, 1.0, 0.1, compute_inertia=False), flat):
+            world = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(world)
+            body = world.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
+            sphere = world.add_shape_sphere(body, radius=0.1)
+            floor = world.add_shape_mesh(-1, mesh=mesh, cfg=cfg)
+            world.add_custom_values(
+                **{
+                    "mujoco:pair_world": 0,
+                    "mujoco:pair_geom1": floor,
+                    "mujoco:pair_geom2": sphere,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_solref": wp.vec2(0.02, 1.0),
+                    "mujoco:pair_solreffriction": wp.vec2(0.02, 1.0),
+                    "mujoco:pair_solimp": vec5(0.9, 0.95, 0.001, 0.5, 2.0),
+                    "mujoco:pair_margin": 0.0,
+                    "mujoco:pair_gap": 0.0,
+                    "mujoco:pair_friction": vec5(1.0, 1.0, 0.005, 0.0001, 0.0001),
+                }
+            )
+            builder.add_world(world)
+        model = builder.finalize()
+        with self.assertRaisesRegex(ValueError, "planar mesh collider"):
+            SolverMuJoCo(model)
 
     def test_native_mesh_contacts_with_catalog(self):
         """Use catalog collision data for native mesh-mesh contacts."""

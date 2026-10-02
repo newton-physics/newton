@@ -6467,6 +6467,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 raise ValueError("Differing mesh counts with explicit MuJoCo contact pairs are not supported.")
             selected_shapes_set = set(selected_shapes)
             shape_world_mapping = dict(zip(selected_shapes, shape_layout.world_shapes.T, strict=True))
+            # Template pairs also bind the corresponding shapes in every other world.
+            mujoco_pair_contact_shapes = {
+                int(world_shape)
+                for shape in mujoco_pair_contact_shapes
+                for world_shape in shape_world_mapping.get(shape, (shape,))
+                if world_shape >= 0
+            }
             export_body_shapes = {}
             for shape, body in zip(selected_shapes, shape_layout.body_indices, strict=True):
                 export_body_shapes.setdefault(int(body), []).append(int(shape))
