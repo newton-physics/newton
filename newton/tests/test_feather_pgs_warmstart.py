@@ -359,6 +359,62 @@ def test_single_flag_enables_dense_and_mf_carry(test, device):
     test.assertEqual(solver._ws_prev_mf_impulses.shape, solver.mf_impulses.shape)
 
 
+def _resting_box_rows(device, articulated: bool):
+    """Settle a box on the ground with warm start; return the model, pipeline, contacts, solver and states.
+
+    ``articulated`` mounts the box on a vertical prismatic joint, so its contacts are dense
+    rows; otherwise it is a free body on the free-body rows.
+    """
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.7))
+    cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, mu=0.7)
+    xform = wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity())
+    if articulated:
+        body = builder.add_link(xform=xform)
+        joint = builder.add_joint_prismatic(-1, body, axis=wp.vec3(0.0, 0.0, 1.0), parent_xform=xform)
+        builder.add_articulation([joint])
+    else:
+        body = builder.add_body(xform=xform)
+    builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, contact_matching="latest", deterministic=True)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverFeatherPGS(model, pgs_warmstart=True, pgs_iterations=12)
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    control = model.control()
+    for _ in range(60):
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 120.0)
+        state_0, state_1 = state_1, state_0
+    return model, pipeline, contacts, solver, state_0, state_1, control
+
+
+def test_both_row_families_seed_impulses_scaled_by_the_step_ratio(test, device):
+    """Seed the carried normal impulses of dense and free-body rows, scaled by ``dt / dt_previous``.
+
+    With no sweep (``pgs_iterations = 0``) the solved impulses are exactly the seeds.
+    """
+    for articulated in (True, False):
+        with test.subTest(articulated=articulated):
+            _model, pipeline, contacts, solver, state_0, state_1, control = _resting_box_rows(device, articulated)
+            if articulated:
+                impulses, row_type, count = solver.impulses, solver.row_type, solver.constraint_count
+            else:
+                impulses, row_type, count = solver.mf_impulses, solver.mf_row_type, solver.mf_constraint_count
+            n = int(count.numpy()[0])
+            normal = row_type.numpy()[0, :n] == PGS_CONSTRAINT_TYPE_CONTACT
+            previous = impulses.numpy()[0, :n][normal]
+            test.assertGreater(float(previous.sum()), 0.0)
+
+            solver.pgs_iterations = 0
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, 0.5 / 120.0)
+            test.assertEqual(int(count.numpy()[0]), n)
+            seeded = impulses.numpy()[0, :n][row_type.numpy()[0, :n] == PGS_CONSTRAINT_TYPE_CONTACT]
+            np.testing.assert_allclose(seeded, 0.5 * previous, rtol=1.0e-6, atol=1.0e-9)
+
+
 class TestFeatherPGSIdentityWarmstartKernel(unittest.TestCase):
     pass
 
@@ -384,6 +440,7 @@ for _fn in (
     test_identity_warmstart_matches_cold_equilibrium,
     test_identity_warmstart_requires_contact_matching,
     test_single_flag_enables_dense_and_mf_carry,
+    test_both_row_families_seed_impulses_scaled_by_the_step_ratio,
 ):
     add_function_test(TestFeatherPGSIdentityWarmstart, _fn.__name__, _fn, devices=devices)
 

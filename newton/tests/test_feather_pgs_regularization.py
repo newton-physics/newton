@@ -74,12 +74,19 @@ def _run(model, pipeline, solver, frames, dt=DT):
     return s0.body_q.numpy(), zs
 
 
-def _resting_box(device, g, rate, frames, **solver_kwargs):
+def _resting_box(device, g, rate, frames, articulated=False, **solver_kwargs):
+    """Rest a box on the ground; ``articulated`` mounts it on a vertical prismatic joint (dense rows)."""
     builder = newton.ModelBuilder()
     builder.rigid_gap = 0.01
     cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, mu=0.7)
     builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.7))
-    b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()))
+    xform = wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity())
+    if articulated:
+        b = builder.add_link(xform=xform)
+        joint = builder.add_joint_prismatic(-1, b, axis=wp.vec3(0.0, 0.0, 1.0), parent_xform=xform)
+        builder.add_articulation([joint])
+    else:
+        b = builder.add_body(xform=xform)
     builder.add_shape_box(b, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(
@@ -128,6 +135,21 @@ def test_regularization_documented_sag(test: unittest.TestCase, device):
         sag = _resting_box(device, 0.5, rate, 3 * rate, pgs_warmstart=True)
         expected = _sag_formula(0.5, rate)
         test.assertAlmostEqual(sag, expected, delta=0.15 * expected, msg=f"{rate} Hz: sag {sag * 1000:.2f} mm")
+
+
+def test_regularization_documented_sag_on_dense_rows(test: unittest.TestCase, device):
+    """Dense (articulated) contact rows follow the same law.
+
+    At rest each row satisfies ``beta * phi / dt = -g * d * lambda``. A box on a vertical
+    prismatic joint has ``d = 1 / m`` per contact and its four contacts share the weight,
+    ``lambda = m * a * dt / 4``, so it sags by ``g * a * dt^2 / (4 * beta)``.
+    """
+    for rate in (60, 240):
+        sag = _resting_box(device, 0.5, rate, 3 * rate, articulated=True, pgs_warmstart=True)
+        expected = 0.25 * _sag_formula(0.5, rate)
+        test.assertAlmostEqual(sag, expected, delta=0.15 * expected, msg=f"{rate} Hz: sag {sag * 1000:.2f} mm")
+        rigid = _resting_box(device, 0.0, rate, 3 * rate, articulated=True, pgs_warmstart=True)
+        test.assertLess(abs(rigid), 0.1 * expected, msg=f"{rate} Hz: rigid sag {rigid * 1000:.3f} mm")
 
 
 def test_regularization_velocity_pass_exempt(test: unittest.TestCase, device):
@@ -343,6 +365,7 @@ class TestFeatherPGSRegularization(unittest.TestCase):
 devices = get_cuda_test_devices()
 for _fn in (
     test_regularization_documented_sag,
+    test_regularization_documented_sag_on_dense_rows,
     test_regularization_velocity_pass_exempt,
     test_dense_contact_rows_carry_the_regularization_weight,
     test_velocity_pass_is_rigid_on_dense_rows,
