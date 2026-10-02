@@ -477,6 +477,12 @@ class FrequencyLayout:
         cache_key = self._model_index_key(value_slice)
         if cache_key in self._model_index_cache:
             return self._model_index_cache[cache_key]
+        device = wp.get_device(self._device)
+        if device.is_cuda and wp.get_stream(device).is_capturing:
+            raise RuntimeError(
+                "Explicit model indices for this attribute slice are copied to the device on first access, "
+                "which cannot run during CUDA graph capture. Access the attribute once before capturing."
+            )
 
         if value_slice is None:
             local_indices = self._selected_indices
@@ -528,10 +534,6 @@ class FrequencyLayout:
         world_offsets = np.arange(world_count, dtype=np.int64) * self.stride_between_worlds
         arti_offsets = np.arange(count_per_world, dtype=np.int64) * self.stride_within_worlds
         return self.offset + world_offsets[:, None, None] + arti_offsets[None, :, None] + selected[None, None, :]
-
-    def has_model_indices(self, value_slice: Slice | int | None = None) -> bool:
-        """Whether :meth:`get_model_indices` has already prepared ``value_slice`` on the device."""
-        return self._model_index_key(value_slice) in self._model_index_cache
 
     def max_model_index(self, world_count: int, count_per_world: int) -> int:
         """Return the largest absolute model index the layout selects, or -1 if it selects none.
@@ -1419,10 +1421,19 @@ class ArticulationView:
             layout.uses_explicit_model_indices
             for layout in (*self.frequency_layouts.values(), *(r for r in self._root_layouts if r is not None))
         )
-        dof_layout = self.frequency_layouts.get(AttributeFrequency.JOINT_DOF)
-        if dof_layout is not None and dof_layout.uses_explicit_model_indices:
-            # Upload the absolute DOF rows now, so actuator DOF mappings can be built inside capture.
-            dof_layout.get_model_indices()
+        # copy the explicit indices used by the getters, setters and actuator mappings to the device now,
+        # outside any graph capture
+        for layout in self.frequency_layouts.values():
+            if layout.uses_explicit_model_indices:
+                layout.get_model_indices()
+        if self._root_unavailable_reason is None:
+            if self.is_floating_base:
+                root_slices = ((self._root_layouts[0], Slice(0, 7)), (self._root_layouts[-1], Slice(0, 6)))
+            else:
+                root_slices = ((self._root_layouts[0], 0), (self._root_layouts[0], Slice(0, 1)))
+            for layout, root_slice in root_slices:
+                if layout is not None and layout.uses_explicit_model_indices:
+                    layout.get_model_indices(root_slice)
 
         # default mask includes all articulations in all worlds
         self.full_mask = wp.full(world_count, True, dtype=bool, device=self.device)
@@ -2334,21 +2345,13 @@ class ArticulationView:
         if self.world_count * self.count_per_world * dofs_per_arti == 0:
             return wp.empty(0, dtype=int, device=device)
 
-        if device.is_cuda and wp.get_stream(device).is_capturing:
-            if not wp.is_mempool_enabled(device):
-                raise RuntimeError(
-                    "Building the view's DOF mapping for this actuator allocates device memory, "
-                    "which requires the CUDA memory pool during graph capture. Enable the memory pool "
-                    "or call get_actuator_parameter() or set_actuator_parameter() for this actuator "
-                    "once before capturing."
-                )
-            if dof_layout.uses_explicit_model_indices and not dof_layout.has_model_indices():
-                raise RuntimeError(
-                    "The view's absolute DOF rows are not prepared on the device, so the actuator "
-                    "DOF mapping cannot be built inside CUDA graph capture. Call "
-                    "get_actuator_parameter() or set_actuator_parameter() for this actuator once "
-                    "before capturing."
-                )
+        if device.is_cuda and wp.get_stream(device).is_capturing and not wp.is_mempool_enabled(device):
+            raise RuntimeError(
+                "Building the view's DOF mapping for this actuator allocates device memory, "
+                "which requires the CUDA memory pool during graph capture. Enable the memory pool "
+                "or call get_actuator_parameter() or set_actuator_parameter() for this actuator "
+                "once before capturing."
+            )
 
         lookup = wp.full(
             dof_layout.max_model_index(self.world_count, self.count_per_world) + 1, -1, dtype=int, device=device
@@ -2365,6 +2368,7 @@ class ArticulationView:
 
         mapping = wp.empty(mapping_shape, dtype=int, device=device)
         if dof_layout.uses_explicit_model_indices:
+            # prepared at view construction; raises a clear error if a borrowing view did not prepare it
             wp.launch(
                 _map_explicit_dofs_to_actuator_kernel,
                 dim=mapping_shape,

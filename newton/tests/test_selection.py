@@ -2637,16 +2637,39 @@ def test_interleaved_shape_rows_require_matching_owners(test, device):
         view.get_attribute("shape_margin", model)
 
 
+def test_interleaved_shape_rows_capture_cold(test, device):
+    """Gather and scatter explicit shape rows inside a cold CUDA graph capture."""
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("CUDA graph capture of allocations requires the mempool")
+    model = _make_interleaved_robot_model(device)
+    view = ArticulationView(model, "robot", verbose=False)
+    rows = _owned_shape_rows(model, view)
+    values = wp.full(rows.shape, -1.0, dtype=float, device=device)
+    margins = wp.zeros(rows.shape, dtype=float, device=device)
+    with wp.ScopedCapture(device) as capture:
+        wp.copy(margins, view.get_attribute("shape_margin", model))
+        view.set_attribute("shape_margin", model, values, mask=[False, True, False])
+    for offset in (1.0, 2.0):
+        source = np.arange(model.shape_count, dtype=np.float32) + offset
+        model.shape_margin.assign(source)
+        wp.capture_launch(capture.graph)
+        assert_np_equal(margins.numpy(), source[rows])
+        expected = source.copy()
+        expected[rows[1].reshape(-1)] = -1.0
+        assert_np_equal(model.shape_margin.numpy(), expected)
+
+
 class TestSelectionShapeRows(unittest.TestCase):
     pass
 
 
-for _test in (
-    test_interleaved_shape_rows_differ_between_worlds,
-    test_interleaved_shape_rows_of_grouped_objects,
-    test_interleaved_shape_rows_require_matching_owners,
+for _test, _devices in (
+    (test_interleaved_shape_rows_differ_between_worlds, get_test_devices()),
+    (test_interleaved_shape_rows_of_grouped_objects, get_test_devices()),
+    (test_interleaved_shape_rows_require_matching_owners, get_test_devices()),
+    (test_interleaved_shape_rows_capture_cold, get_cuda_test_devices()),
 ):
-    add_function_test(TestSelectionShapeRows, _test.__name__, _test, devices=get_test_devices())
+    add_function_test(TestSelectionShapeRows, _test.__name__, _test, devices=_devices)
 
 
 if __name__ == "__main__":
