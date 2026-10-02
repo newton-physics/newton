@@ -21,10 +21,11 @@ Covers:
 """
 
 import unittest
+import warnings
 
 import numpy as np
 
-from newton._src.geometry.utils import _is_mesh_convex
+from newton._src.geometry.utils import _hull_volume_gain, _is_mesh_convex
 
 
 def box_mesh(cx=0.0, cy=0.0, cz=0.0, hx=1.0, hy=1.0, hz=1.0):
@@ -159,6 +160,58 @@ class TestIsMeshConvex(unittest.TestCase):
         verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
         faces = np.array([[0, 1, 2], [0, 1, 1], [1, 2, 2], [0, 0, 0]], dtype=np.int32)
         self.assertTrue(_is_mesh_convex(verts, faces))
+
+
+class TestHullVolumeGain(unittest.TestCase):
+    def test_box_has_zero_gain(self):
+        """Return 0.0 for a convex mesh: the hull encloses nothing extra."""
+        verts, faces = box_mesh()
+        self.assertEqual(_hull_volume_gain(verts, faces), 0.0)
+
+    def test_u_channel_gain_matches_geometry(self):
+        """Return the analytic cavity share for a three-box U-channel."""
+        # Hull is the 1.2 x 1.2 x 0.5 bounding box (0.72); the solid is the
+        # three boxes (0.528), so the gain is 1 - 0.528 / 0.72 ~= 0.2667.
+        verts, faces = u_channel_mesh()
+        gain = _hull_volume_gain(verts, faces)
+        self.assertIsNotNone(gain)
+        self.assertAlmostEqual(gain, 1.0 - 0.528 / 0.72, places=3)
+
+    def test_gain_is_scale_invariant(self):
+        """Return the same gain for a uniformly scaled mesh."""
+        verts, faces = u_channel_mesh()
+        gain = _hull_volume_gain(verts, faces)
+        scaled = _hull_volume_gain(verts * 13.7, faces)
+        self.assertAlmostEqual(gain, scaled, places=5)
+
+    def test_flattened_indices_accepted(self):
+        """Accept flattened (3*K,) index arrays like Mesh.indices."""
+        verts, faces = u_channel_mesh()
+        gain = _hull_volume_gain(verts, faces.flatten())
+        self.assertAlmostEqual(gain, _hull_volume_gain(verts, faces), places=5)
+
+    def test_inward_winding_reads_as_hollow(self):
+        """Err toward warning (large gain) for inconsistently wound meshes."""
+        verts, faces = u_channel_mesh()
+        gain = _hull_volume_gain(verts, faces)
+        inverted = _hull_volume_gain(verts, faces[:, ::-1])
+        self.assertGreater(inverted, gain)
+
+    def test_open_mesh_has_no_gain(self):
+        """Return None for an open (non-closed) mesh: no measurable cavity."""
+        xs, ys = np.meshgrid(np.linspace(0, 1, 4), np.linspace(0, 1, 4))
+        verts = np.stack([xs.ravel(), ys.ravel(), np.zeros(16)], axis=1).astype(np.float32)
+        faces = []
+        for y in range(3):
+            for x in range(3):
+                i = y * 4 + x
+                faces += [i, i + 1, i + 4, i + 1, i + 5, i + 4]
+        # The planar grid hits remesh_convex_hull's coplanar-degeneracy path,
+        # which warns about the zero-volume fallback; that fallback is exactly
+        # the "no measurable hull" signal the helper reports as None.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            self.assertIsNone(_hull_volume_gain(verts, np.array(faces, dtype=np.int32)))
 
 
 if __name__ == "__main__":

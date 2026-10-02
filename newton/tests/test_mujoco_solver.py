@@ -17,6 +17,7 @@ import warp as wp
 import newton
 from newton import BodyFlags, JointType, Mesh, ModelFlags
 from newton._src.core.types import vec5
+from newton._src.geometry.utils import _is_mesh_convex
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
     KINEMATIC_ARMATURE,
@@ -34,6 +35,7 @@ from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.kernels import convert_solref
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.examples import get_asset
+from newton.geometry import NonConvexMeshWarning, UnverifiedConvexityWarning
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 
@@ -7196,7 +7198,55 @@ class TestMuJoCoConversion(unittest.TestCase):
         builder.add_shape_sphere(ball, radius=0.08)
         model = builder.finalize()
 
-        with self.assertWarnsRegex(UserWarning, "convex hull"):
+        # The U-channel loses ~27% of its volume to the hull, so it warns.
+        with self.assertWarnsRegex(NonConvexMeshWarning, "convex hull"):
+            SolverMuJoCo(model)
+
+    def test_nonconvex_mesh_warning_is_filterable(self):
+        """Test that the non-convex warning can be silenced by its dedicated category."""
+        verts, faces = self._u_channel_mesh()
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=Mesh(verts, faces.flatten()), label="u_channel")
+        ball = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+        builder.add_shape_sphere(ball, radius=0.08)
+        model = builder.finalize()
+
+        # Every warning is an error except the dedicated category, which is
+        # ignored: this is the clean filtering the class enables.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            warnings.filterwarnings("ignore", category=NonConvexMeshWarning)
+            SolverMuJoCo(model)
+
+    def test_near_convex_mesh_stays_silent(self):
+        """Test that a mesh whose cavity is negligible for hulling stays silent."""
+
+        # Shrink the U-channel walls until they barely rise above the floor:
+        # the inner wall planes still separate the vertex set (the exact test
+        # stays False), but the cavity is ~4% of the hull volume, so warning
+        # would be noise for robot-link-style assets with negligible dents.
+        def shallow_verts():
+            v, f = self._u_channel_mesh()
+            # Wall-box vertices sit strictly above the floor top (z > 0.1) and
+            # outside the cavity span (|y| > 0.2), plus the wall tops at z=0.5.
+            mask = ((np.abs(v[:, 1]) > 0.2) & (v[:, 2] > 0.1)) | ((np.abs(v[:, 1]) > 0.19) & (v[:, 2] > 0.49))
+            v = v.copy()
+            v[mask, 2] = 0.1 + (v[mask, 2] - 0.1) * 0.03
+            return v, f
+
+        v, f = shallow_verts()
+        # The exact convexity test still flags it: the hull-volume gate, not a
+        # relaxed convexity test, is what keeps the warning quiet.
+        self.assertFalse(_is_mesh_convex(v, f))
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=Mesh(v, f.flatten()), label="shallow_channel")
+        ball = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+        builder.add_shape_sphere(ball, radius=0.08)
+        model = builder.finalize()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             SolverMuJoCo(model)
 
     def test_convex_hull_shape_no_warning(self):
@@ -7204,6 +7254,20 @@ class TestMuJoCoConversion(unittest.TestCase):
         verts, faces = self._u_channel_mesh()
         builder = newton.ModelBuilder()
         builder.add_shape_convex_hull(-1, mesh=Mesh(verts, faces.flatten()), label="u_channel_hull")
+        ball = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+        builder.add_shape_sphere(ball, radius=0.08)
+        model = builder.finalize()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", category=UserWarning)
+            SolverMuJoCo(model)
+
+    def test_approximate_meshes_convex_hull_no_warning(self):
+        """Test that hulls produced by approximate_meshes() stay silent."""
+        verts, faces = self._u_channel_mesh()
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=Mesh(verts, faces.flatten()), label="u_channel")
+        builder.approximate_meshes(method="convex_hull")
         ball = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
         builder.add_shape_sphere(ball, radius=0.08)
         model = builder.finalize()
@@ -7260,7 +7324,21 @@ class TestMuJoCoConversion(unittest.TestCase):
         model = builder.finalize()
 
         self.assertGreater(len(faces) * len(verts), 5_000_000)
-        with self.assertWarnsRegex(UserWarning, "too many faces and vertices to verify convexity"):
+        with self.assertWarnsRegex(UnverifiedConvexityWarning, "too many faces and vertices to verify convexity"):
+            SolverMuJoCo(model)
+
+    def test_unverified_convexity_warning_is_filterable(self):
+        """Test that the unverified-convexity warning can be silenced by its dedicated category."""
+        verts, faces = self._subdivided_u_channel(4)
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=Mesh(verts, faces.flatten()), label="big_u_channel")
+        ball = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+        builder.add_shape_sphere(ball, radius=0.08)
+        model = builder.finalize()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            warnings.filterwarnings("ignore", category=UnverifiedConvexityWarning)
             SolverMuJoCo(model)
 
     def test_mesh_geoms_across_worlds(self):

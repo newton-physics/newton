@@ -693,6 +693,89 @@ def _convex_hull_2d_indices(points2d: np.ndarray) -> np.ndarray:
     return order[np.array(chain, dtype=np.int32)]
 
 
+class NonConvexMeshWarning(UserWarning):
+    """Warning emitted when a mesh collider is non-convex and a backend will
+    compile it through a convex-hull path, so its cavities are not simulated.
+
+    Filter it cleanly with ``warnings.filterwarnings("ignore", category=NonConvexMeshWarning)``.
+    """
+
+
+class UnverifiedConvexityWarning(UserWarning):
+    """Warning emitted when a mesh collider is too large to verify convexity
+    and a backend will compile it through a convex-hull path, so cavities it
+    may have are not simulated.
+
+    Filter it cleanly with ``warnings.filterwarnings("ignore", category=UnverifiedConvexityWarning)``.
+    """
+
+
+def _hull_volume_gain(
+    vertices: np.ndarray,
+    indices: np.ndarray | None = None,
+) -> float | None:
+    """Return ``1 - mesh_volume / hull_volume`` for a triangle mesh.
+
+    This measures how much cavity volume the convex hull closes over: ``0.0``
+    for a (nearly) convex mesh, ``1.0`` for a maximally hollow shell. It is
+    scale-invariant.
+
+    The mesh volume is the **signed** tetrahedron sum toward the mesh centroid,
+    which is the exact enclosed volume for any consistently (outward-) wound
+    closed surface, including disjoint multi-component meshes. Meshes with
+    inconsistent winding produce a degenerate value (near zero or negative),
+    which reads as a large gain and errs toward warning.
+
+    Returns ``None`` when the hull could not be computed or is degenerate, so
+    callers can fall back to the exact separating-plane test instead of guessing.
+
+    Internal helper: kept private until it has a proven contract.
+    """
+    try:
+        hull_vertices, hull_faces = remesh_convex_hull(vertices, maxhullvert=0)
+    except Exception:
+        return None
+    if len(hull_faces) < 2:
+        return None
+
+    tri = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
+    hull_vertices = np.asarray(hull_vertices, dtype=np.float64).reshape(-1, 3)
+    if len(tri) == 0:
+        return None
+
+    origin = tri.mean(axis=0)
+    tri = tri - origin
+    hull_vertices = hull_vertices - origin
+
+    mesh_volume = None
+    if indices is not None:
+        faces = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+        if len(faces) > 0:
+            v0 = tri[faces[:, 0]]
+            v1 = tri[faces[:, 1]]
+            v2 = tri[faces[:, 2]]
+            mesh_volume = float(np.einsum("ij,ij->i", v0, np.cross(v1, v2)).sum() / 6.0)
+    if mesh_volume is None:
+        # Fall back to a tetrahedralization of the hull's own triangles, which
+        # is exact for a closed mesh; an open mesh (e.g. a grid) encloses no
+        # cavity, so the hull gain is not measurable and the caller should
+        # rely on the separating-plane verdict alone.
+        return None
+
+    hfaces = np.asarray(hull_faces, dtype=np.int64).reshape(-1, 3)
+    w0 = hull_vertices[hfaces[:, 0]]
+    w1 = hull_vertices[hfaces[:, 1]]
+    w2 = hull_vertices[hfaces[:, 2]]
+    # The hull from Qhull is consistently wound, but sum as absolute values
+    # anyway so the result does not depend on the winding convention.
+    hull_volume = float(np.abs(np.einsum("ij,ij->i", w0, np.cross(w1, w2))).sum() / 6.0)
+    if hull_volume <= 0.0:
+        return None
+    ratio = 1.0 - mesh_volume / hull_volume
+    # Guard against floating-point noise pushing a (nearly) convex mesh above zero.
+    return ratio if ratio > 1e-9 else 0.0
+
+
 def _is_mesh_convex(
     vertices: np.ndarray,
     indices: np.ndarray | None = None,

@@ -25,6 +25,7 @@ from ._src.geometry.narrow_phase import NarrowPhase
 from ._src.geometry.particle_surface import ParticleSurface, extract_particle_surface
 from ._src.geometry.sdf_hydroelastic import HydroelasticSDF
 from ._src.geometry.sdf_utils import compute_offset_mesh, create_empty_sdf_data
+from ._src.geometry.utils import NonConvexMeshWarning, UnverifiedConvexityWarning
 
 __all__ = [
     "BroadPhaseAllPairs",
@@ -32,8 +33,10 @@ __all__ = [
     "BroadPhaseSAP",
     "HydroelasticSDF",
     "NarrowPhase",
+    "NonConvexMeshWarning",
     "ParticleSurface",
     "TriMeshCollisionInfo",
+    "UnverifiedConvexityWarning",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",
