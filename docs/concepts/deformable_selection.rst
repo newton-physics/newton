@@ -146,6 +146,13 @@ independent input values and device selectors. The indexed setters and getters
 that reuse staging buffers can then be captured and replayed. A later replay may
 use changed values or indices without a host copy.
 
+Indexed setters preserve gradients to the input values when recorded with
+``wp.Tape``. If the values or target array requires gradients, each device-indexed
+write allocates an integer buffer with one entry per selected deformable object.
+This keeps later writes from changing the earlier write's backward calculation.
+Ordinary writes reuse the view's buffer. Keep input values and selectors unchanged
+until backward execution, and use separate state buffers for successive steps.
+
 Deformable objects and worlds
 -----------------------------
 

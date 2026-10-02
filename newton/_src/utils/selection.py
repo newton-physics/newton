@@ -2603,12 +2603,17 @@ class _DeformableViewBase:
             dst_start, dst_end = byte_bounds(dst)
             if values_start < dst_end and dst_start < values_end:
                 raise ValueError("values must not overlap the target state array; use wp.clone() to copy them first")
+        last_rows = self._last_object_rows
         if device_indices:
-            self._last_object_rows.fill_(-1)
+            # Backward execution needs each write's original duplicate winners.
+            # The tape retains this buffer; ordinary writes can reuse scratch.
+            if values.requires_grad or dst.requires_grad:
+                last_rows = wp.empty_like(last_rows)
+            last_rows.fill_(-1)
             wp.launch(
                 _mark_last_object_row_kernel,
                 dim=rows,
-                inputs=[objects, self.count, self._last_object_rows],
+                inputs=[objects, self.count, last_rows],
                 device=self.device,
             )
         wp.launch(
@@ -2619,7 +2624,7 @@ class _DeformableViewBase:
                 self._starts[kind],
                 objects,
                 sources,
-                self._last_object_rows,
+                last_rows,
                 device_indices,
                 dst,
             ],

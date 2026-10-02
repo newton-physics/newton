@@ -143,6 +143,69 @@ class TestDeformableStateReads(unittest.TestCase):
 class TestDeformableStateWrites(unittest.TestCase):
     """Validate selectors and write state on CPU and under CUDA graph capture."""
 
+    def test_repeated_device_index_writes_preserve_gradients(self):
+        """Preserve each write's gradients when one view updates separate states."""
+
+        def differentiate_writes(setter, states, values, indices, sources, seeds):
+            with wp.Tape() as tape:
+                for state, value, index in zip(states, values, indices, strict=True):
+                    setter(state, value, deformable_object_indices=index, source_indices=sources)
+            tape.backward(grads=seeds)
+            return tape
+
+        for device in wp.get_devices():
+            model = _replicated_model(3, device=device)
+            cloth = DeformableSurfaceView(model, "/World/Cloth")
+            cable = DeformableCurveView(model, "/World/Cable")
+            for getter, setter, attribute in (
+                (cloth.get_particle_positions, cloth.set_particle_positions, "particle_q"),
+                (cloth.get_particle_velocities, cloth.set_particle_velocities, "particle_qd"),
+                (cable.get_body_transforms, cable.set_body_transforms, "body_q"),
+                (cable.get_body_velocities, cable.set_body_velocities, "body_qd"),
+            ):
+                for source_rows, row_gradients in (
+                    (None, [0, 1, 1, 0, 0]),
+                    ([2, 0, 0, 1, 1], [2, 0, 0]),
+                    ([2, 3, 0, 1, 1], [1, 0, 0]),
+                ):
+                    with self.subTest(device=device, setter=setter.__name__, source_rows=source_rows):
+                        states = [model.state(requires_grad=True) for _ in range(2)]
+                        targets = [getattr(state, attribute) for state in states]
+                        values = [
+                            wp.array(
+                                np.repeat(getter(state).numpy()[:1], len(row_gradients), axis=0),
+                                dtype=target.dtype,
+                                device=device,
+                                requires_grad=True,
+                            )
+                            for state, target in zip(states, targets, strict=True)
+                        ]
+                        # Only the last duplicate and object 2 are written. The
+                        # second call must not erase the first call's winners.
+                        indices = [wp.array([i, i, 2, -1, 3], dtype=wp.int32, device=device) for i in range(2)]
+                        sources = None if source_rows is None else wp.array(source_rows, dtype=wp.int32, device=device)
+                        seeds = {target: wp.full_like(target, i + 1) for i, target in enumerate(targets)}
+                        expected = [
+                            np.broadcast_to(
+                                (i + 1) * np.array(row_gradients, dtype=np.float32)[:, None, None], value.numpy().shape
+                            )
+                            for i, value in enumerate(values)
+                        ]
+
+                        tape = differentiate_writes(setter, states, values, indices, sources, seeds)
+                        for value, gradient in zip(values, expected, strict=True):
+                            np.testing.assert_array_equal(value.grad.numpy(), gradient)
+
+                        if device.is_cuda:
+                            tape.zero()
+                            with wp.ScopedCapture(device) as capture:
+                                tape = differentiate_writes(setter, states, values, indices, sources, seeds)
+                            for _ in range(2):
+                                tape.zero()
+                                wp.capture_launch(capture.graph)
+                                for value, gradient in zip(values, expected, strict=True):
+                                    np.testing.assert_array_equal(value.grad.numpy(), gradient)
+
     def test_indexed_partial_writes_touch_only_selected_objects(self):
         """deformable_object_indices= scatters into selected deformable objects only, from host and device index
         forms, and cable body velocities round-trip through an indexed write."""
