@@ -41,6 +41,8 @@ from newton._src.solvers.vbd.interval_arithmetic import (
     rigid_point_plane_signed_distance_interval,
 )
 
+from .tendon_kernels import TendonForceElementAdjacencyInfo, evaluate_tendon_force_hessians
+
 wp.set_module_options({"enable_backward": False})
 
 # ---------------------------------
@@ -5774,6 +5776,24 @@ def solve_rigid_body(
     external_hessian_ll: wp.array[wp.mat33],
     external_hessian_al: wp.array[wp.mat33],
     external_hessian_aa: wp.array[wp.mat33],
+    # Tendon data
+    tendon_adjacency: TendonForceElementAdjacencyInfo,
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_radius: wp.array[float],
+    tendon_guide_mu: wp.array[float],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
+    tendon_guide_cone_seg_l: wp.array[int],
+    tendon_guide_cone_seg_r: wp.array[int],
+    tendon_seg_rest_length: wp.array[float],
+    tendon_seg_attachment_l_local: wp.array[wp.vec3],
+    tendon_seg_attachment_r_local: wp.array[wp.vec3],
+    tendon_seg_active_compliance: wp.array[float],
+    tendon_seg_active_damping: wp.array[float],
+    tendon_seg_active: wp.array[int],
+    tendon_seg_active_guide_l: wp.array[int],
+    tendon_seg_active_guide_r: wp.array[int],
     # Output
     body_q_new: wp.array[wp.transform],
 ):
@@ -5892,6 +5912,36 @@ def solve_rigid_body(
         ext_h_ll[2, 1],
         ext_h_ll[2, 2] + inertial_coeff,
     )
+
+    tendon_force, tendon_torque, tendon_h_ll, tendon_h_al, tendon_h_aa = evaluate_tendon_force_hessians(
+        body_index,
+        dt,
+        body_q,
+        body_q_prev,
+        body_com,
+        tendon_adjacency,
+        tendon_guide_body,
+        tendon_guide_type,
+        tendon_guide_radius,
+        tendon_guide_mu,
+        tendon_guide_offset,
+        tendon_guide_axis,
+        tendon_guide_cone_seg_l,
+        tendon_guide_cone_seg_r,
+        tendon_seg_rest_length,
+        tendon_seg_attachment_l_local,
+        tendon_seg_attachment_r_local,
+        tendon_seg_active_compliance,
+        tendon_seg_active_damping,
+        tendon_seg_active,
+        tendon_seg_active_guide_l,
+        tendon_seg_active_guide_r,
+    )
+    f_force = f_force + tendon_force
+    f_torque = f_torque + tendon_torque
+    h_ll = h_ll + tendon_h_ll
+    h_al = h_al + tendon_h_al
+    h_aa = h_aa + tendon_h_aa
 
     # Accumulate joint forces (constraints)
     num_adj_joints = get_body_num_adjacent_joints(adjacency, body_index)
