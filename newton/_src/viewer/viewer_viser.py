@@ -747,7 +747,11 @@ class ViewerViser(ViewerBase):
         Args:
             worlds: World indices to show, or ``None`` to show all worlds.
         """
+        previous_batches = tuple(self._shape_instances.values())
         super().set_visible_worlds(worlds)
+        # Batches absent from the new selection will no longer be logged.
+        for shapes in previous_batches:
+            self.log_instances(shapes.name, shapes.mesh, None, None, None, None, hidden=True)
         self._build_packed_shape_arrays()
         if self.picking is not None:
             self.picking.visible_worlds_mask = self._visible_worlds_mask

@@ -156,11 +156,14 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.viewer.set_model(model)
         state = model.state()
         self.viewer.log_state(state)
-        for worlds, count in (([0], 1), (None, 3), ([1, 2], 2), ([0, 2], 2)):
+        for worlds, count in (([0], 1), (None, 3), ([1, 2], 2), ([0, 2], 2), ([], 0), (None, 3)):
             with self.subTest(worlds=worlds):
                 self.viewer.set_visible_worlds(worlds)
                 self.viewer.log_state(state)
-                handles = [h for h in self.viewer._scene_handles.values() if hasattr(h, "batched_scales")]
+                handles = [h for h in self.viewer._scene_handles.values() if hasattr(h, "batched_scales") and h.visible]
+                if count == 0:
+                    self.assertEqual(handles, [])
+                    continue
                 self.assertEqual(len(handles), 1)
                 self.assertEqual(handles[0].batched_positions.shape, (count, 3))
                 np.testing.assert_allclose(handles[0].batched_scales, np.ones((count, 3)))
