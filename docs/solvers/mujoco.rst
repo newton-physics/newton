@@ -155,8 +155,13 @@ Geometry types
      - MuJoCo has no cone primitive, so Newton tessellates the cone into a
        32-segment mesh at conversion time. Collision uses that convex
        polyhedral approximation. Changing :attr:`~newton.Model.shape_scale`
-       after construction raises ``ValueError``; recreate the solver to resize
-       the cone.
+       after construction is unsupported; recreate the solver to resize the
+       cone. Eager shape-property notifications validate cone scales and raise
+       ``ValueError`` on changes. This host-side check is skipped during CUDA
+       graph capture and replay: keep cone scales fixed, and call
+       :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` with
+       :attr:`~newton.ModelFlags.SHAPE_PROPERTIES` outside capture to validate
+       any preceding edits.
    * - :attr:`~newton.GeoType.GAUSSIAN`
      - *unsupported*
      - Not present in the MuJoCo geom-type map.
@@ -232,6 +237,20 @@ implicit MJCF default. This extra flag is needed because the two-component
 ``solreflimit`` value alone cannot distinguish an unauthored value from an
 authored native value such as ``solreflimit="0 0"`` or USD
 ``mjc:solreflimit = [0, 0]``.
+
+Authored raw ``solreflimit`` values are validated during solver construction
+and eager :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` notifications on
+both backends. CUDA graph capture skips this host validation and leaves it
+pending until the next eager solref update. Graph replay does not validate
+values; call :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` with
+``JOINT_DOF_PROPERTIES`` outside capture after reassigning raw values to
+check them.
+
+On the MuJoCo Warp backend, runtime joint- and tendon-limit updates are
+stored in ``solver.mjw_model.jnt_solref``, ``tendon_solref_lim``, and
+``tendon_range`` per world. The corresponding arrays in the host template
+``solver.mj_model`` are not updated; inspect the Warp arrays for current
+values. The MuJoCo CPU backend keeps the host arrays synchronized.
 
 .. note::
 
@@ -496,6 +515,30 @@ on import from MJCF/USD and parsed into MuJoCo's tendon structures by
 ``geom``, and ``pulley`` wrap elements; any other wrap type and any
 degenerate tendon definition produces a warning and is skipped rather
 than raising.
+
+For force-based limit gains, set ``model.mujoco.tendon_limit_ke`` (stiffness
+[N/m]) and ``tendon_limit_kd`` (damping [N s/m]), select force-space authoring
+with ``tendon_solref_limit_mode = 0``, then notify
+:attr:`~newton.ModelFlags.TENDON_PROPERTIES`. For angular tendon coordinates,
+the corresponding units are [N m/rad] and [N m s/rad]. The solver converts
+these gains to ``solreflimit`` using tendon inverse inertia and impedance,
+and refreshes the conversion after inertia changes, as it does for joint limits.
+MuJoCo impedance and timestep clamping still affect transient response.
+
+``tendon_solref_limit_mode`` follows the joint-limit authoring convention:
+0 selects Newton force gains, 1 preserves authored MuJoCo parameters, and 2
+uses MuJoCo's implicit default. Tendons default to mode 1 and report their
+equivalent force gains after solver initialization. In force-space mode,
+zero stiffness disables the limit without changing the authored ``tendon_range``.
+Limit damping is independent of passive ``tendon_damping``. Tendon limits must
+already be enabled in the imported model.
+
+.. code-block:: python
+
+    model.mujoco.tendon_limit_ke.fill_(100.0)
+    model.mujoco.tendon_limit_kd.fill_(20.0)
+    model.mujoco.tendon_solref_limit_mode.zero_()  # Newton force-space mode
+    solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
 
 
 .. _mujoco-collision-pipeline:

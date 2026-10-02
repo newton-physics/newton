@@ -2617,6 +2617,33 @@ def sync_site_xposes_kernel(
 
 
 @wp.kernel
+def update_joint_limit_solref_mode_kernel(
+    joint_limit_ke: wp.array[float],
+    joint_limit_kd: wp.array[float],
+    joint_limit_solref_mode: wp.array[wp.int32],
+    joint_limit_ke_snapshot: wp.array[float],
+    joint_limit_kd_snapshot: wp.array[float],
+    solreflimit_mode_snapshot: wp.array[wp.int32],
+):
+    """Promote edited MJCF-default limit gains and retain their history during graph replay."""
+    dof = wp.tid()
+    ke = joint_limit_ke[dof]
+    kd = joint_limit_kd[dof]
+    mode = joint_limit_solref_mode[dof]
+    if (
+        mode == SOLREF_MODE_MJCF_DEFAULT
+        and solreflimit_mode_snapshot[dof] == SOLREF_MODE_MJCF_DEFAULT
+        and (ke != joint_limit_ke_snapshot[dof] or kd != joint_limit_kd_snapshot[dof])
+    ):
+        mode = SOLREF_MODE_FORCE_SPACE
+        joint_limit_solref_mode[dof] = mode
+
+    joint_limit_ke_snapshot[dof] = ke
+    joint_limit_kd_snapshot[dof] = kd
+    solreflimit_mode_snapshot[dof] = mode
+
+
+@wp.kernel
 def update_jnt_solref_from_invweight0_kernel(
     mjc_jnt_to_newton_dof: wp.array2d[wp.int32],
     joint_limit_ke: wp.array[float],
@@ -2728,6 +2755,83 @@ def update_jnt_solref_from_invweight0_kernel(
     direct_stiffness = wp.max(ke * factor, MJ_MINVAL)
     direct_damping = wp.max(kd * factor, MJ_MINVAL)
     jnt_solref[world, mjc_jnt] = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
+
+
+@wp.kernel
+def compute_physical_meaninertia_kernel(
+    nv: int,
+    M_rownnz: wp.array[wp.int32],
+    M_rowadr: wp.array[wp.int32],
+    M: wp.array2d[float],
+    meaninertia: wp.array[float],
+):
+    """Remove kinematic locking armature from MuJoCo's mean-inertia statistic."""
+    world = wp.tid()
+    if nv == 0:
+        meaninertia[world % meaninertia.shape[0]] = 1.0
+        return
+
+    total = float(0.0)
+    for mjc_dof in range(nv):
+        total += M[world, M_rowadr[mjc_dof] + M_rownnz[mjc_dof] - 1]
+
+    meaninertia[world % meaninertia.shape[0]] = total / float(nv)
+
+
+@wp.kernel(enable_backward=False)
+def update_tendon_limit_gains_kernel(
+    tendon_mapping: wp.array2d[wp.int32],
+    solref_mode: wp.array[wp.int32],
+    limit_ke: wp.array[float],
+    limit_kd: wp.array[float],
+    authored_solref: wp.array[wp.vec2],
+    authored_range: wp.array[wp.vec2],
+    invweight0: wp.array2d[float],
+    solimp: wp.array2d[vec5],
+    solref: wp.array2d[wp.vec2],
+    tendon_range: wp.array2d[wp.vec2],
+):
+    """Convert tendon force gains after MuJoCo recomputes inverse inertia."""
+    world, tendon = wp.tid()
+    source = tendon_mapping[world, tendon]
+    if source < 0:
+        return
+
+    invw = invweight0[world, tendon]
+    dmax = solimp[world, tendon][1]
+    factor = float(1.0)
+    if invw > 0.0 and dmax < 1.0:
+        factor = invw * (1.0 - dmax)
+    tendon_range[world, tendon] = authored_range[source]
+    solref[world, tendon] = authored_solref[source]
+    mode = solref_mode[source]
+    if mode == SOLREF_MODE_MJCF_DEFAULT:
+        solref[world, tendon] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
+    if mode != SOLREF_MODE_FORCE_SPACE:
+        # Report physical gains for readback/randomization without changing native dynamics.
+        raw = solref[world, tendon]
+        stiffness = wp.max(-raw[0], 0.0)
+        damping = wp.max(-raw[1], 0.0)
+        if raw[0] > 0.0 and raw[1] > 0.0:
+            stiffness = 1.0 / (raw[0] * raw[0] * raw[1] * raw[1])
+            damping = 2.0 / raw[0]
+        if factor > 0.0:
+            limit_ke[source] = stiffness / factor
+            limit_kd[source] = damping / factor
+        return
+    ke = limit_ke[source]
+    if ke == 0.0:
+        # Removing the row also removes its acceleration-dependent constraint force.
+        tendon_range[world, tendon] = wp.vec2(-wp.inf, wp.inf)
+        return
+
+    stiffness = ke * factor
+    damping = limit_kd[source] * factor
+    if damping > 0.0:
+        solref[world, tendon] = convert_solref(stiffness, damping, 1.0, 1.0)
+    else:
+        # The direct convention represents an undamped spring without a default fallback.
+        solref[world, tendon] = wp.vec2(-stiffness, 0.0)
 
 
 @wp.kernel(enable_backward=False)
