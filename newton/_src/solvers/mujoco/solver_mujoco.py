@@ -5026,6 +5026,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._set_const_0_with_physical_meaninertia()
             if need_solref_update:
                 self._update_solref_from_invweight0()
+            if need_const_0:
                 self._update_tendon_limit_gains()
             # MuJoCo constant recomputation overwrites per-world CONNECT anchors, so restore them last.
             if (
@@ -5057,6 +5058,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         self._set_const_0_with_physical_meaninertia()
                     if need_solref_update:
                         self._update_solref_from_invweight0()
+                    if need_const_0:
                         self._update_tendon_limit_gains()
                     # MuJoCo constant recomputation overwrites per-world CONNECT anchors, so restore them last.
                     if (

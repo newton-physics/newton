@@ -1018,9 +1018,10 @@ and ``solreflimit`` custom attributes. Optional attributes that are absent
 retain their solver values. General MuJoCo actuator properties still use
 :attr:`~newton.ModelFlags.ACTUATOR_PROPERTIES`.
 
-The force flag skips mass-constant recomputation, reference-pose updates, and
-contact-cache invalidation. Joint-limit coefficients use the cached inverse
-weights. Compiled actuator length ranges are preserved.
+The force flag skips mass-constant recomputation, reference-pose updates,
+tendon-limit refreshes, and contact-cache invalidation. Joint-limit coefficients
+use the cached inverse weights. Compiled actuator length ranges are preserved,
+and pending tendon-limit edits are left unpublished.
 When sleeping is enabled, updated parameters wake all worlds. The MuJoCo Warp
 path supports CUDA graph capture; the MuJoCo CPU backend copies values to its
 host model and cannot be captured.
@@ -1038,6 +1039,16 @@ axes, without recomputing constants or applying pending reference edits. Combine
 flags with ``|`` when several categories change. The existing
 :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` flag retains its integer value
 and full-update behavior, including force, armature, and reference properties.
+
+**Tendon-limit dependency:** Notifications that recompute constants also refresh
+tendon limits using the current ``model.mujoco`` limit modes, gains, raw
+``solref`` values, and ranges. Those pending edits are therefore published even
+without :attr:`~newton.ModelFlags.TENDON_PROPERTIES`. This includes joint
+inertial/reference updates and the broad joint-DOF, body, body-inertial, and
+actuator notifications. Publish tendon edits explicitly with
+:attr:`~newton.ModelFlags.TENDON_PROPERTIES` before these updates rather than
+relying on them to preserve pending tendon-limit changes. Force-only joint
+notifications do not recompute constants and leave tendon limits unchanged.
 
 For example, actuator models with load-dependent friction can compute effective
 budgets and publish them in the same graph as the simulation step. Given device

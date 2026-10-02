@@ -12514,6 +12514,53 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
                 np.testing.assert_allclose(tendon_parameter("tendon_solref_lim")[0], [0.02, 1.0])
                 np.testing.assert_allclose(attrs.tendon_solref_limit.numpy()[0], [-100.0, -20.0])
 
+    def test_joint_force_updates_preserve_pending_tendon_limits(self):
+        """Publish joint damping without consuming tendon edits in eager or captured updates."""
+        modes = (SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW, SOLREF_MODE_MJCF_DEFAULT)
+        for use_cpu, capture, mode in itertools.product((True, False), (False, True), modes):
+            if capture and use_cpu:
+                continue
+            if not use_cpu and not wp.get_cuda_device_count():
+                continue
+            device = wp.get_device("cpu" if use_cpu else "cuda:0")
+            if capture and not wp.is_mempool_enabled(device):
+                continue
+            with self.subTest(use_cpu=use_cpu, capture=capture, mode=mode), wp.ScopedDevice(device):
+                model = self._build_tendon_limit_model(worlds=1 if use_cpu else 2)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_cpu, disable_contacts=True)
+
+                def runtime_parameter(name, solver=solver):
+                    """Read the active backend rather than the Warp backend's host template."""
+                    if solver.use_mujoco_cpu:
+                        return getattr(solver.mj_model, name).copy()
+                    return getattr(solver.mjw_model, name).numpy().copy()
+
+                initial_range = runtime_parameter("tendon_range")
+                initial_solref = runtime_parameter("tendon_solref_lim")
+                attrs = model.mujoco
+                attrs.tendon_range.fill_(wp.vec2(-0.5, 0.5))
+                attrs.tendon_limit_ke.fill_(100.0)
+                attrs.tendon_limit_kd.fill_(20.0)
+                attrs.tendon_solref_limit.fill_(wp.vec2(-200.0, -40.0))
+                attrs.tendon_solref_limit_mode.fill_(mode)
+                model.joint_damping.fill_(0.6)
+
+                if capture:
+                    with wp.ScopedCapture(device=device) as graph:
+                        solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                    wp.capture_launch(graph.graph)
+                else:
+                    solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+
+                np.testing.assert_allclose(runtime_parameter("dof_damping"), 0.6)
+                np.testing.assert_array_equal(runtime_parameter("tendon_range"), initial_range)
+                np.testing.assert_array_equal(runtime_parameter("tendon_solref_lim"), initial_solref)
+
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                expected_range = np.broadcast_to([-0.5, 0.5], initial_range.shape)
+                np.testing.assert_allclose(runtime_parameter("tendon_range"), expected_range)
+                self.assertFalse(np.array_equal(runtime_parameter("tendon_solref_lim"), initial_solref))
+
     def test_tendon_limit_force_gains_select_worlds(self):
         """Keep native parameters in untouched worlds and update selected gains independently."""
         model = self._build_tendon_limit_model(worlds=2)

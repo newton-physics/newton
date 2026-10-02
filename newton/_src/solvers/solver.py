@@ -592,7 +592,12 @@ class SolverBase:
         checking ``JOINT_DOF_PROPERTIES`` alone does not detect them. The broad
         flag covers force, inertial, and reference properties; friction/damping
         belongs to the force category. Solvers may ignore categories they do
-        not cache or support, but should preserve unrelated pending edits.
+        not cache or support, but should preserve unrelated pending edits
+        except for documented backend dependencies. In MuJoCo, notifications
+        that recompute constants also republish the current tendon limit
+        modes, gains, raw solref values, and ranges, even without
+        ``TENDON_PROPERTIES``. Force-only joint notifications leave these
+        tendon parameters unchanged.
         Valid flags are:
 
         * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms, axes, or coordinates
