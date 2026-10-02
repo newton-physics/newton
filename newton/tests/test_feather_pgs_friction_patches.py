@@ -169,6 +169,25 @@ class TestFrictionPatchHistory(unittest.TestCase):
                     np.testing.assert_allclose(locations @ axis, [-0.025, 0.025], rtol=0.0, atol=tolerance)
                     np.testing.assert_allclose(locations @ across, [0.0, shear], rtol=0.0, atol=tolerance)
 
+    def test_aligned_narrow_patch_anchors_span_the_full_footprint(self):
+        """Anchor aligned narrow footprints at their axial extremes, including near-extreme samples."""
+        device = "cuda:0" if wp.is_cuda_available() else "cpu"
+        theta = np.linspace(0.0, 2.0 * np.pi, 32, endpoint=False)
+        footprints = {
+            # Edge samples just inside each end must not pull the anchors inward.
+            "intermediate_edge_samples": [[x, y, 0.0] for x in (-0.001, 0.001) for y in (-0.025, -0.023, 0.023, 0.025)],
+            "sampled_ellipse": np.stack([0.019 * np.cos(theta), 0.025 * np.sin(theta), np.zeros_like(theta)], axis=1),
+        }
+        for name, points in footprints.items():
+            with self.subTest(footprint=name):
+                _, _, _, patches = _patch_fixture(np.asarray(points, dtype=np.float32), device=device)
+                active = patches.view.weight.numpy() > 0.0
+                locations = patches.view.point_a.numpy()[active]
+                self.assertEqual(len(locations), 2)
+                locations = locations[np.argsort(locations[:, 1])]
+                np.testing.assert_allclose(locations[:, 0], 0.0, atol=1.0e-7)
+                np.testing.assert_allclose(locations[:, 1], [-0.025, 0.025], rtol=0.0, atol=1.0e-6)
+
     def test_pose_increment_preserves_fixed_pivots_and_no_slip_rolling(self):
         """Distinguish rigid rotation from slip without querying the collision shape."""
         device = "cuda:0" if wp.is_cuda_available() else "cpu"
