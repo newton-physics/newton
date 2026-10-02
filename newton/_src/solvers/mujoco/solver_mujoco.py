@@ -8133,34 +8133,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"of at least {minimum_njmax_nnz}; the initial Jacobian contains "
                         f"{initial_required_nnz} nonzeros."
                     )
-            elif njmax_nnz is None:
-                from mujoco_warp._src.io import _default_nconmax as estimate_mujoco_warp_nconmax
-                from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
-                from mujoco_warp._src.io import _default_njmax_nnz as estimate_mujoco_warp_njmax_nnz
-
-                if is_mujoco_warp_sparse(self.mj_model):
-                    resolved_nconmax = (
-                        nconmax if nconmax is not None else estimate_mujoco_warp_nconmax(self.mj_model, self.mj_data)
-                    )
-                    resolved_njmax = (
-                        njmax if njmax is not None else estimate_mujoco_warp_njmax(self.mj_model, self.mj_data)
-                    )
-                    joint_limit_nnz = 0
-                    for limited, joint_type in zip(self.mj_model.jnt_limited, self.mj_model.jnt_type, strict=True):
-                        if not limited:
-                            continue
-                        joint_type_value = int(joint_type)
-                        if joint_type_value == mujoco.mjtJoint.mjJNT_BALL:
-                            joint_limit_nnz += 3
-                        elif joint_type_value in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
-                            joint_limit_nnz += 1
-
-                    # work around buffer under-sizing until the fix is released (mjwarp #1630)
-                    njmax_nnz = min(
-                        estimate_mujoco_warp_njmax_nnz(self.mj_model, resolved_nconmax, resolved_njmax)
-                        + joint_limit_nnz,
-                        resolved_njmax * self.mj_model.nv,
-                    )
 
             if nvmax is not None:
                 if nvmax > self.mj_model.nv:
