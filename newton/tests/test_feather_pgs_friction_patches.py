@@ -143,6 +143,29 @@ class TestFrictionPatchHistory(unittest.TestCase):
                 np.testing.assert_allclose(locations @ across, 0.0, atol=1.0e-7)
                 np.testing.assert_allclose(np.sort(locations @ axis), [-0.025, 0.025], atol=1.0e-7)
 
+    def test_sheared_narrow_patch_averages_whole_support_edges(self):
+        """Average each whole support edge when a slight shear tilts the principal axis."""
+        device = "cuda:0" if wp.is_cuda_available() else "cpu"
+        # A faceted wheel's line contact: three points across each cap edge, one cap
+        # offset slightly along the edges. The principal axis then deviates from the
+        # caps' normal, and keeping only each edge's extreme point anchors opposite
+        # corners, a diagonal couple that steers a symmetric wheel.
+        across_offsets = (-0.0145, 0.0, 0.0145)
+        for angle in (0.0, 0.37):
+            axis = np.array([np.sin(angle), np.cos(angle), 0.0])
+            across = np.array([np.cos(angle), -np.sin(angle), 0.0])
+            for shear in (1.0e-5, -1.0e-4):
+                points = [x * across - 0.025 * axis for x in across_offsets]
+                points += [(x + shear) * across + 0.025 * axis for x in across_offsets]
+                with self.subTest(angle=angle, shear=shear):
+                    _, _, _, patches = _patch_fixture(points, device=device)
+                    active = patches.view.weight.numpy() > 0.0
+                    locations = patches.view.point_a.numpy()[active]
+                    self.assertEqual(len(locations), 2)
+                    locations = locations[np.argsort(locations @ axis)]
+                    np.testing.assert_allclose(locations @ axis, [-0.025, 0.025], atol=1.0e-6)
+                    np.testing.assert_allclose(locations @ across, [0.0, shear], atol=1.0e-6)
+
     def test_pose_increment_preserves_fixed_pivots_and_no_slip_rolling(self):
         """Distinguish rigid rotation from slip without querying the collision shape."""
         device = "cuda:0" if wp.is_cuda_available() else "cpu"
