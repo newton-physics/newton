@@ -4389,6 +4389,102 @@ def trisolve_loop(
 
 
 @wp.kernel
+def factor_diagonal_mass(
+    H_group: wp.array3d[float],  # [n_arts, n_dofs, n_dofs]
+    R_group: wp.array2d[float],  # [n_arts, n_dofs]
+    group_to_art: wp.array[int],
+    mass_update_mask: wp.array[int],
+    n_dofs: int,
+    # output
+    L_group: wp.array3d[float],  # [n_arts, n_dofs, n_dofs]
+):
+    """Factor structurally diagonal mass matrices, one thread per DOF.
+
+    Writes only the diagonal of ``L``; its off-diagonal entries stay zero, so the result
+    equals :func:`cholesky_loop` on the same matrix.
+    """
+    element = wp.tid()
+    group = element // n_dofs
+    dof = element - group * n_dofs
+    art = group_to_art[group]
+    if mass_update_mask[art] != 0:
+        L_group[group, dof, dof] = wp.sqrt(H_group[group, dof, dof] + R_group[group, dof])
+
+
+@wp.kernel
+def solve_diagonal_mass(
+    L_group: wp.array3d[float],  # [n_arts, n_dofs, n_dofs]
+    group_to_art: wp.array[int],
+    articulation_dof_start: wp.array[int],
+    n_dofs: int,
+    joint_tau: wp.array[float],  # [total_dofs]
+    # output
+    joint_qdd: wp.array[float],  # [total_dofs]
+):
+    """Solve ``L L^T qdd = tau`` for a diagonal factor, one thread per DOF.
+
+    Divides by the factor twice, in the order of :func:`trisolve_loop`.
+    """
+    element = wp.tid()
+    group = element // n_dofs
+    dof = element - group * n_dofs
+    global_dof = articulation_dof_start[group_to_art[group]] + dof
+    factor = L_group[group, dof, dof]
+    value = float(0.0)
+    if factor != 0.0:
+        value = joint_tau[global_dof] / factor
+        value = value / factor
+    joint_qdd[global_dof] = value
+
+
+@wp.kernel
+def hinv_jt_diagonal(
+    L_group: wp.array3d[float],  # [n_arts, n_dofs, n_dofs]
+    J_group: wp.array3d[float],  # [n_arts, max_constraints, n_dofs]
+    group_to_art: wp.array[int],
+    art_to_world: wp.array[int],
+    articulation_world_dof_offset: wp.array[int],
+    world_constraint_count: wp.array[int],
+    n_dofs: int,
+    max_constraints: int,
+    n_arts: int,
+    write_world: int,
+    # outputs
+    Y_group: wp.array3d[float],
+    J_world: wp.array3d[float],
+    Y_world: wp.array3d[float],
+):
+    """Compute ``Y = H^-1 J^T`` for a diagonal factor, one thread per row.
+
+    The same outputs and division order as :func:`hinv_jt_par_row`, without its
+    triangular substitutions.
+    """
+    tid = wp.tid()
+    c = tid % max_constraints
+    idx = tid // max_constraints
+    if idx >= n_arts:
+        return
+    art = group_to_art[idx]
+    world = art_to_world[art]
+    if c >= world_constraint_count[world]:
+        return
+    dof_offset = int(0)
+    if write_world != 0:
+        dof_offset = articulation_world_dof_offset[art]
+    for i in range(n_dofs):
+        jacobian = J_group[idx, c, i]
+        factor = L_group[idx, i, i]
+        response = float(0.0)
+        if factor != 0.0:
+            response = jacobian / factor
+            response = response / factor
+        Y_group[idx, c, i] = response
+        if write_world != 0:
+            J_world[world, c, dof_offset + i] = jacobian
+            Y_world[world, c, dof_offset + i] = response
+
+
+@wp.kernel
 def gather_tau_to_groups(
     joint_tau: wp.array[float],  # [total_dofs]
     group_to_art: wp.array[int],
