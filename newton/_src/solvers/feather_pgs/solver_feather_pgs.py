@@ -1282,10 +1282,11 @@ class SolverFeatherPGS(SolverBase):
 
         Call outside capture, with the states the graph will use, before capturing a
         step with contact torsion. It requires ``contact_torsion_device=True`` and does not
-        advance the simulation. Afterwards torsion errors are no longer raised by
-        :meth:`step`; they latch on the device, the step publishes its input state
-        unchanged and solves no rows, and :meth:`validate_contact_torsion` raises them.
-        Does nothing when contact torsion is disabled.
+        advance the simulation. Afterwards torsion errors latch on the device: the failing
+        step publishes its input state unchanged and solves no rows. An eager :meth:`step`
+        still validates and raises them when it returns; a graph replay cannot, so call
+        :meth:`validate_contact_torsion` after replays. Does nothing when contact torsion
+        is disabled.
 
         Args:
             state_in: Input state of the captured step.
