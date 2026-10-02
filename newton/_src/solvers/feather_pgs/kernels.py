@@ -4413,18 +4413,33 @@ def _allocate_world_contact_slot(
         contact_path[c] = -1
         return
 
-    # Determine world (both bodies must be in same world, or one is ground)
+    # The responding sides select the solve world, so a prescribed global (world -1)
+    # body, solved in world 0, touches the bodies of every world through its target
+    # velocity. A contact that would couple two solve worlds (a dynamic global body
+    # touching another world) or needs a non-responding side's DOFs from another world
+    # cannot be solved: drop it and flag both worlds as having lost rows.
     world = -1
-    if art_a >= 0:
+    if a_can_respond:
         world = art_to_world[art_a]
-    if art_b >= 0:
+    if b_can_respond:
         world_b = art_to_world[art_b]
         if world >= 0 and world_b != world:
-            # Cross-world contact - shouldn't happen, skip
-            contact_slot[c] = -1
-            contact_path[c] = -1
-            return
-        world = world_b
+            world = -2
+        elif world != -2:
+            world = world_b
+    if world >= 0:
+        if not a_can_respond and a_has_dofs and art_to_world[art_a] != world:
+            world = -2
+        if not b_can_respond and b_has_dofs and art_to_world[art_b] != world:
+            world = -2
+    if world == -2:
+        if art_a >= 0:
+            wp.atomic_add(dense_dropped_contact_rows, art_to_world[art_a], 3)
+        if art_b >= 0:
+            wp.atomic_add(dense_dropped_contact_rows, art_to_world[art_b], 3)
+        contact_slot[c] = -1
+        contact_path[c] = -1
+        return
 
     if world < 0:
         # No articulation involved (ground-ground?)
