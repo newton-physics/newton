@@ -3205,6 +3205,66 @@ def apply_augmented_mass_diagonal_grouped(
 
 
 @wp.kernel
+def scatter_augmented_drive_dof_K(
+    group_to_art: wp.array[int],
+    articulation_dof_start: wp.array[int],
+    n_dofs: int,
+    max_dofs: int,
+    mass_update_mask: wp.array[int],
+    row_counts: wp.array[int],
+    row_dof_index: wp.array[int],
+    row_K: wp.array[float],
+    # outputs
+    dof_K: wp.array[float],
+):
+    """Write each DOF's implicit drive term ``dt * kd + dt^2 * ke`` for a mass refresh.
+
+    The DOF-indexed form of :func:`apply_augmented_mass_diagonal_grouped`, consumed by the
+    sparse mass factors, which assemble the mass matrix without dense storage.
+    """
+    idx = wp.tid()
+    articulation = group_to_art[idx]
+    if mass_update_mask[articulation] == 0:
+        return
+    dof_start = articulation_dof_start[articulation]
+    for local in range(n_dofs):
+        dof_K[dof_start + local] = 0.0
+    for i in range(row_counts[articulation]):
+        row_index = articulation * max_dofs + i
+        dof = row_dof_index[row_index]
+        local = dof - dof_start
+        K = row_K[row_index]
+        if local >= 0 and local < n_dofs and K > 0.0:
+            dof_K[dof] = K
+
+
+@wp.kernel
+def invert_lower_factor_grouped(
+    group_to_art: wp.array[int],
+    mass_update_mask: wp.array[int],
+    n_dofs: int,
+    L_group: wp.array3d[float],
+    # outputs
+    Linv_group: wp.array3d[float],
+):
+    """Invert each refreshed lower Cholesky factor of a size group by forward substitution."""
+    idx = wp.tid()
+    if mass_update_mask[group_to_art[idx]] == 0:
+        return
+    for col in range(n_dofs):
+        for row in range(n_dofs):
+            if row < col:
+                Linv_group[idx, row, col] = 0.0
+                continue
+            value = float(0.0)
+            if row == col:
+                value = 1.0
+            for k in range(col, row):
+                value -= L_group[idx, row, k] * Linv_group[idx, k, col]
+            Linv_group[idx, row, col] = value / L_group[idx, row, row]
+
+
+@wp.kernel
 def update_body_qd_from_featherstone(
     body_v_s: wp.array[wp.spatial_vector],
     body_q: wp.array[wp.transform],
