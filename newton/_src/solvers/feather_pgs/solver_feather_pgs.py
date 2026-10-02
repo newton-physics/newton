@@ -144,6 +144,29 @@ def _validate_supported_model(model: Model) -> None:
         raise NotImplementedError("SolverFeatherPGS does not support mimic constraints yet.")
 
 
+def _model_has_bilateral_constraints(model: Model) -> bool:
+    """Return whether the model has mimic relationships or loop-closing joints.
+
+    These become dense bilateral rows wherever the solver supports them. Disabled joints
+    count too, because a released closure can be re-enabled without rebuilding the solver.
+    """
+    if int(getattr(model, "constraint_mimic_count", 0)):
+        return True
+    if not model.joint_count:
+        return False
+    if model.joint_mimic_joint is not None and np.any(model.joint_mimic_joint.numpy() >= 0):
+        return True
+    if model.joint_articulation is None or not model.body_count:
+        return False
+    joint_articulation = model.joint_articulation.numpy()
+    joint_child = model.joint_child.numpy()
+    owned = np.zeros(model.body_count, dtype=bool)
+    tree = joint_articulation >= 0
+    owned[joint_child[tree & (joint_child >= 0)]] = True
+    closure = (~tree) & (joint_child >= 0)
+    return bool(np.any(owned[joint_child[closure]]))
+
+
 def _unprojected_equality_constraints(model: Model) -> np.ndarray:
     """Return the enabled MuJoCo equality rows that no Newton loop joint or mimic enforces.
 
@@ -837,8 +860,8 @@ class SolverFeatherPGS(SolverBase):
     - Gradients are not supported.
 
     Branched articulations use sparse mass factors when every articulated (non-free-body)
-    response group shares one joint topology with at most 64 DOFs and joint velocity-limit
-    rows are disabled: the mass matrix is assembled and factored in the fill-free pattern
+    response group shares one joint topology with at most 64 DOFs, joint velocity-limit
+    rows are disabled and the model has no mimic or loop-closing joints: the mass matrix is assembled and factored in the fill-free pattern
     of the kinematic tree, and constraint rows keep only the DOFs that support them.
     Otherwise, and for free bodies, dense factors are used. Both give the same dynamics up
     to floating-point rounding. ``parallel_tree=True`` additionally traverses the
@@ -1675,10 +1698,16 @@ class SolverFeatherPGS(SolverBase):
         fewer nonzeros than a dense lower triangle (the tree branches), the articulation has at
         most 64 DOFs, and joint velocity-limit rows are disabled. Free bodies keep their dense
         6 x 6 factors. Otherwise the dense factors are kept.
+
+        Models with mimic relationships or loop-closing joints, including disabled ones that
+        can be re-enabled at runtime, keep the dense factors: their bilateral rows are built
+        on the dense response storage, which the sparse factors replace by placeholders.
         """
         self._sparse_mass_matrix_size = None
         self._sparse_mass_matrix_plan = None
         if not self._kernel_overrides.get("sparse_mass_matrix", True):
+            return
+        if _model_has_bilateral_constraints(model):
             return
         if self.enable_joint_velocity_limits or self.pgs_iterations <= 0 or not self.size_groups:
             return

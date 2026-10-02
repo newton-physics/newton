@@ -43,6 +43,7 @@ def _model(device, inertia, omega, *, armature=0.0, mass=1.0):
 
 
 def test_free_spin_energy(test, device):
+    """Conserve kinetic energy and angular momentum of a torque-free asymmetric spinning body."""
     inertia = np.diag([0.001, 0.02, 0.0205])
     model, state, output = _model(device, inertia, (100.0, 20.0, 50.0))
     solver = newton.solvers.SolverFeatherPGS(model)
@@ -62,6 +63,7 @@ def test_free_spin_energy(test, device):
 
 
 def test_principal_axis_torque(test, device):
+    """Accelerate a body about a principal axis by torque over inertia plus armature."""
     inertia = np.diag([0.04, 0.02, 0.05])
     for armature in (0.0, 0.03):
         model, state, output = _model(device, inertia, (0.0, 0.0, 2.0), armature=armature)
@@ -78,6 +80,7 @@ def test_principal_axis_torque(test, device):
 
 
 def test_rotated_inertia_and_armature(test, device):
+    """Conserve rotational energy with a rotated inertia and armature across mass scales."""
     rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
     basis = np.asarray(wp.quat_to_matrix(rotation), dtype=np.float64).reshape(3, 3)
     local_basis = np.asarray(wp.quat_to_matrix(wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.4))).reshape(3, 3)
@@ -105,6 +108,7 @@ def test_rotated_inertia_and_armature(test, device):
 
 
 def test_gyro_precession_converges(test, device):
+    """Match a double-precision Euler-equation reference for gyroscopic precession."""
     inertia = np.diag([0.001, 0.02, 0.0205])
     inverse = np.linalg.inv(inertia)
     initial = np.array([20.0, 4.0, 10.0])
