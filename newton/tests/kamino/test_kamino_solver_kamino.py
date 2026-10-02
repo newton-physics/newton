@@ -34,7 +34,7 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.sampling import sample_world_mask
 from newton.tests.utils import basics
-from newton.tests.utils.basics import build_boxes_fourbar
+from newton.tests.utils.basics import build_box_on_plane, build_boxes_fourbar, build_boxes_hinged
 from newton.tests.utils.testing import build_binary_revolute_joint_test, build_shape_pairs_test
 
 ###
@@ -122,6 +122,7 @@ def assert_solver_config(testcase: unittest.TestCase, config: SolverKaminoImpl.C
     testcase.assertIsInstance(config.constraints, kamino_config.ConstraintStabilizationConfig)
     testcase.assertIsInstance(config.dynamics, kamino_config.ConstrainedDynamicsConfig)
     testcase.assertIsInstance(config.padmm, kamino_config.PADMMSolverConfig)
+    testcase.assertIsInstance(config.lox, kamino_config.LOXSolverConfig)
     testcase.assertIsInstance(config.rotation_correction, str)
 
 
@@ -388,6 +389,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
             msg.reset_log_level()
 
     def test_00_make_default(self):
+        """Construct the default solver configuration."""
         config = SolverKaminoImpl.Config()
         assert_solver_config(self, config)
         self.assertEqual(config.rotation_correction, "twopi")
@@ -421,6 +423,108 @@ class TestSolverKaminoConfig(unittest.TestCase):
                 sparse_dynamics=False,
                 padmm=kamino_config.PADMMSolverConfig(penalty_update_method="balanced"),
             )
+
+    def test_02_lox_config_validation(self):
+        """Accept supported LOX projection methods and reject invalid config values."""
+        with self.assertRaises(TypeError):
+            kamino_config.LOXSolverConfig(10)
+
+        config = SolverKaminoImpl.Config(dynamics_solver="lox")
+        self.assertEqual(config.dynamics_solver, "lox")
+        for method in (
+            "key_and_position",
+            "geom_pair_net_force",
+            "key_and_position_with_net_force_backup",
+            "key_and_position_with_tangential_net_force",
+            "key_and_position_with_net_force_backup_and_tangential_net_force",
+        ):
+            with self.subTest(contact_warmstart_method=method):
+                kamino_config.LOXSolverConfig(contact_warmstart_method=method)
+        for method in ("geom_pair_net_wrench", "key_and_position_with_net_wrench_backup"):
+            with self.subTest(contact_warmstart_method=method):
+                with self.assertRaisesRegex(ValueError, "contact warmstart method is not implemented"):
+                    kamino_config.LOXSolverConfig(contact_warmstart_method=method)
+        for projection_acceleration in ("none", "apgd", "anderson"):
+            with self.subTest(projection_acceleration=projection_acceleration):
+                self.assertEqual(
+                    kamino_config.LOXSolverConfig(
+                        gauss_seidel_max_colors=1,
+                        projection_acceleration=projection_acceleration,
+                    ).projection_acceleration,
+                    projection_acceleration,
+                )
+        with self.assertRaisesRegex(ValueError, "projection_acceleration"):
+            kamino_config.LOXSolverConfig(projection_acceleration="invalid")
+        with self.assertRaisesRegex(ValueError, "requires gauss_seidel_max_colors=1"):
+            kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="apgd")
+        self.assertEqual(
+            kamino_config.LOXSolverConfig(
+                gauss_seidel_max_colors=4, projection_acceleration="anderson"
+            ).projection_acceleration,
+            "anderson",
+        )
+        with self.assertRaisesRegex(ValueError, "projection_anderson_recycle.*boolean"):
+            kamino_config.LOXSolverConfig(projection_anderson_recycle=1)
+
+        for color_count in (1, 2, 17):
+            with self.subTest(gauss_seidel_max_colors=color_count):
+                self.assertEqual(
+                    kamino_config.LOXSolverConfig(gauss_seidel_max_colors=color_count).gauss_seidel_max_colors,
+                    color_count,
+                )
+        for color_count in (-1, 0, 1.0, True):
+            with self.subTest(invalid_gauss_seidel_max_colors=color_count):
+                with self.assertRaisesRegex(ValueError, "gauss_seidel_max_colors"):
+                    kamino_config.LOXSolverConfig(gauss_seidel_max_colors=color_count)
+
+        invalid_values = (
+            {"max_iterations": 0},
+            {"use_graph_conditionals": 1},
+            {"fixed_iterations": 1},
+            {"projection_iterations": 0},
+            {"position_tolerance": 0.0},
+            {"rotation_tolerance": 0.0},
+            {"velocity_tolerance": 0.0},
+            {"weight_sigma": 0.0},
+            {"weight_sigma": 1.1},
+            {"weight_beta": 0.0},
+            {"weight_beta": 0.5},
+            {"selective_weights": 1},
+            {"joint_penalty_scale": 0.0},
+            {"joint_multiplier_projected_fraction": -0.1},
+            {"joint_multiplier_projected_fraction": 1.1},
+            {"joint_warmstart_factor": -0.1},
+            {"joint_warmstart_factor": 1.1},
+            {"position_tolerance": float("nan")},
+            {"velocity_tolerance": float("nan")},
+            {"weight_beta": float("inf")},
+            {"joint_multiplier_projected_fraction": float("nan")},
+            {"joint_warmstart_factor": float("nan")},
+        )
+        for kwargs in invalid_values:
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                kamino_config.LOXSolverConfig(**kwargs)
+
+        # Contact extensions are opt-in boolean flags
+        config = kamino_config.LOXSolverConfig()
+        for field in ("contact_compliance", "contact_restitution", "contact_spatial_friction"):
+            self.assertFalse(getattr(config, field))
+            for value in (1, 1.0e-3, "true"):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    kamino_config.LOXSolverConfig(**{field: value})
+        kamino_config.LOXSolverConfig(contact_compliance=True, contact_restitution=True, contact_spatial_friction=True)
+
+        with self.assertRaises(ValueError):
+            SolverKaminoImpl.Config(dynamics_solver="invalid")
+        SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=True)
+        with self.assertRaises(ValueError):
+            SolverKaminoImpl.Config(
+                dynamics_solver="lox",
+                sparse_jacobian=True,
+                sparse_dynamics=True,
+            )
+        config = SolverKaminoImpl.Config(dynamics_solver="lox", integrator="moreau")
+        self.assertEqual(config.integrator, "moreau")
 
 
 class TestCollisionCapacityInitialization(unittest.TestCase):
@@ -481,48 +585,60 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
 
     def test_moreau_detects_midpoint_contact(self):
-        """Verify Moreau-Jean detects contacts created at the midpoint."""
-        # Start the sphere surface 0.3 m above the zero-gap ground plane.
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        SolverKamino.register_custom_attributes(builder)
-        basics.build_sphere_on_plane(builder=builder, z_offset=0.3)
-        model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+        """Verify Moreau-Jean detects midpoint contacts with each dynamics solver."""
+        for dynamics_solver in ("padmm", "lox"):
+            with self.subTest(dynamics_solver=dynamics_solver):
+                # Start the sphere surface 0.3 m above the zero-gap ground plane.
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                SolverKamino.register_custom_attributes(builder)
+                basics.build_sphere_on_plane(builder=builder, z_offset=0.3)
+                model = builder.finalize(device=self.default_device, skip_validation_joints=True)
 
-        config = SolverKamino.Config(integrator="moreau", use_collision_detector=True)
-        solver = SolverKamino(model, config=config)
+                config = SolverKamino.Config(
+                    dynamics_solver=dynamics_solver,
+                    integrator="moreau",
+                    use_collision_detector=True,
+                )
+                solver = SolverKamino(model, config=config)
 
-        detector = solver._collision_detector_kamino
-        contacts = solver._contacts_kamino
-        assert detector is not None
-        assert contacts is not None
-        assert contacts.model_active_contacts is not None
+                detector = solver._collision_detector_kamino
+                contacts = solver._contacts_kamino
+                assert detector is not None
+                assert contacts is not None
+                assert contacts.model_active_contacts is not None
 
-        # Establish that the step-start configuration has no contacts.
-        detector.collide(data=solver._solver_kamino._data, contacts=contacts)
-        self.assertEqual(int(contacts.model_active_contacts.numpy()[0]), 0)
+                # Establish that the step-start configuration has no contacts.
+                detector.collide(data=solver._solver_kamino._data, contacts=contacts)
+                self.assertEqual(int(contacts.model_active_contacts.numpy()[0]), 0)
 
-        state_in = model.state()
-        state_out = model.state()
-        assert state_in.body_qd is not None
-        # Over the first half-step, the sphere moves 0.35 m down and penetrates the plane.
-        state_in.body_qd.assign(np.array([[0.0, 0.0, -7.0, 0.0, 0.0, 0.0]], dtype=np.float32))
+                state_in = model.state()
+                state_out = model.state()
+                assert state_in.body_qd is not None
+                # The sphere moves 0.35 m down over the first half-step.
+                state_in.body_qd.assign(np.array([[0.0, 0.0, -7.0, 0.0, 0.0, 0.0]], dtype=np.float32))
 
-        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+                solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
 
-        # This contact exists only if detection uses the midpoint rather than state_in.
-        self.assertGreater(int(contacts.model_active_contacts.numpy()[0]), 0)
+                # This contact exists only if detection uses the midpoint.
+                self.assertGreater(int(contacts.model_active_contacts.numpy()[0]), 0)
 
     def test_external_contacts_use_euler(self):
-        """Verify external-contact configurations warn and pick Euler."""
-        model = self._make_three_world_model()
-        with self.assertLogs(level="WARNING") as logs:
-            solver = SolverKamino(
-                model,
-                config=SolverKamino.Config(integrator="moreau", use_collision_detector=False),
-            )
+        """Verify external-contact configurations warn and pick Euler for each solver."""
+        for dynamics_solver in ("padmm", "lox"):
+            with self.subTest(dynamics_solver=dynamics_solver):
+                model = self._make_three_world_model()
+                with self.assertLogs(level="WARNING") as logs:
+                    solver = SolverKamino(
+                        model,
+                        config=SolverKamino.Config(
+                            dynamics_solver=dynamics_solver,
+                            integrator="moreau",
+                            use_collision_detector=False,
+                        ),
+                    )
 
-        self.assertIsInstance(solver._solver_kamino._integrator, IntegratorEuler)
-        self.assertTrue(any("Falling back to the 'euler' integrator" in message for message in logs.output))
+                self.assertIsInstance(solver._solver_kamino._integrator, IntegratorEuler)
+                self.assertTrue(any("Falling back to the 'euler' integrator" in message for message in logs.output))
 
     def test_external_collisions_preserve_explicit_rigid_contact_max(self):
         """Verify external collisions preserve an explicit contact capacity."""
@@ -633,6 +749,23 @@ class TestSolverKaminoStatus(unittest.TestCase):
                     ),
                 )
                 self._step_and_assert_status_contract(solver, model)
+
+    def test_lox_status_is_always_available(self):
+        """Verify LOX terminal status is available with or without solution metrics."""
+        model = self._make_three_world_model()
+
+        for compute_solution_metrics in (False, True):
+            with self.subTest(compute_solution_metrics=compute_solution_metrics):
+                config = newton.solvers.SolverKamino.Config(
+                    dynamics_solver="lox",
+                    compute_solution_metrics=compute_solution_metrics,
+                )
+                solver = newton.solvers.SolverKamino(model, config=config)
+                self._step_and_assert_status_contract(solver, model)
+
+                status_host = solver.status.numpy()
+                np.testing.assert_array_equal(status_host["failed"], 0)
+                self.assertTrue(np.all(status_host["iterations"] <= config.lox.max_iterations))
 
 
 class TestSolverKaminoScratchStateReset(unittest.TestCase):
@@ -766,6 +899,49 @@ class TestSolverKaminoImpl(unittest.TestCase):
         self.assertIsInstance(solver, SolverKaminoImpl)
         assert_solver_components(self, solver)
         self.assertIsNone(solver._limits.data.wid)
+
+    def test_backend_specific_sparse_jacobian_default(self):
+        """Select sparse Jacobians by default only for LOX."""
+        model = ModelKamino.from_newton(build_boxes_fourbar().finalize(device=self.default_device))
+
+        padmm_solver = SolverKaminoImpl(model=model, config=SolverKaminoImpl.Config())
+        self.assertIsInstance(padmm_solver._jacobians, DenseSystemJacobians)
+
+        lox_config = SolverKaminoImpl.Config(dynamics_solver="lox")
+        lox_solver = SolverKaminoImpl(model=model, config=lox_config)
+        self.assertIsInstance(lox_solver._jacobians, SparseSystemJacobians)
+
+        with self.assertRaisesRegex(ValueError, "requires `sparse_jacobian=True`"):
+            SolverKaminoImpl(
+                model=model,
+                config=SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=False),
+            )
+
+    def test_lox_joint_penalty_scale_seed(self):
+        """Seed each world's LOX joint penalty from its structural spectrum."""
+        builder = newton.ModelBuilder()
+        builder.add_world(build_box_on_plane(ground=False))
+        builder.add_world(build_boxes_hinged(ground=False))
+        model = builder.finalize(device=self.default_device)
+        config = SolverKamino.Config(dynamics_solver="lox")
+        config.lox.joint_penalty_scale = 123.0
+        solver = SolverKamino(model, config=config)
+
+        with self.assertRaises(ValueError):
+            solver.lox_joint_penalty_scale_seed(0.0)
+        with self.assertRaises(ValueError):
+            SolverKamino(model).lox_joint_penalty_scale_seed(0.001)
+
+        # A world without joints keeps the configured scale
+        seed = solver.lox_joint_penalty_scale_seed(0.001).numpy()
+        self.assertEqual(len(seed), 2)
+        self.assertTrue(np.all(np.isfinite(seed)))
+        self.assertTrue(np.all(seed > 0.0))
+        self.assertAlmostEqual(seed[0], 123.0)
+        self.assertNotAlmostEqual(seed[1], seed[0])
+        self.assertEqual(config.lox.joint_penalty_scale, 123.0)
+        solver.step(model.state(), model.state(), control=None, contacts=None, dt=0.001)
+        self.assertTrue(np.all(np.isfinite(solver.status.numpy()["r_p"])))
 
     ###
     # Test Reset Operations
@@ -1758,7 +1934,19 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
 
 class TestSolverKaminoMasslessBodies(unittest.TestCase):
-    """Massless bodies are supported when welded to the world and rejected otherwise."""
+    """Massless bodies are supported when fixed or prescribed and rejected otherwise."""
+
+    def test_massless_kinematic_body_attached_to_dynamic_body_is_supported(self):
+        """Accept an explicitly kinematic body coupled to a dynamic body."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        base = builder.add_link(mass=0.0, label="kinematic_base")
+        link = builder.add_link(mass=1.0, inertia=UNIT_INERTIA, label="dynamic_link")
+        builder.body_flags[base] = int(newton.BodyFlags.KINEMATIC)
+        joint = builder.add_joint_revolute(parent=base, child=link, axis=newton.Axis.Y)
+        builder.add_articulation([joint])
+        model = builder.finalize()
+
+        self.assertEqual(SolverKamino._find_unsupported_singular_inertia_bodies(model), [])
 
     def test_massless_body_welded_to_world_stays_at_rest(self):
         """Verify a massless body welded to the world stays at rest, along with its welded child.

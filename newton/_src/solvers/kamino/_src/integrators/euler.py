@@ -46,6 +46,7 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 @wp.func
 def euler_semi_implicit_with_logmap(
     alpha: wp.float32,
+    integrate_singular_bodies: bool,
     dt: wp.float32,
     g: wp.vec3f,
     inv_m_i: wp.float32,
@@ -64,6 +65,7 @@ def euler_semi_implicit_with_logmap(
         inv_I_i=inv_I_i,
         u_i=u_i,
         w_i=w_i,
+        integrate_singular_bodies=integrate_singular_bodies,
     )
 
     # Apply damping to angular velocity
@@ -90,6 +92,7 @@ def euler_semi_implicit_with_logmap(
 def _integrate_semi_implicit_euler_inplace(
     # Inputs:
     alpha: float,
+    integrate_singular_bodies: bool,
     model_dt: wp.array[wp.float32],
     model_gravity: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
@@ -113,7 +116,7 @@ def _integrate_semi_implicit_euler_inplace(
 
     # Retrieve the model data
     inv_m_i = model_bodies_inv_m[tid]
-    if inv_m_i <= 0.0:
+    if inv_m_i <= 0.0 and not integrate_singular_bodies:
         return
     I_i = model_bodies_I[tid]
     inv_I_i = model_bodies_inv_I[tid]
@@ -126,6 +129,7 @@ def _integrate_semi_implicit_euler_inplace(
     # Compute the next pose and twist
     q_i_n, u_i_n = euler_semi_implicit_with_logmap(
         alpha,
+        integrate_singular_bodies,
         dt,
         g,
         inv_m_i,
@@ -146,13 +150,20 @@ def _integrate_semi_implicit_euler_inplace(
 ###
 
 
-def integrate_euler_semi_implicit(model: ModelKamino, data: DataKamino, alpha: float = 0.0):
+def integrate_euler_semi_implicit(
+    model: ModelKamino,
+    data: DataKamino,
+    alpha: float = 0.0,
+    *,
+    integrate_singular_bodies: bool = False,
+):
     wp.launch(
         _integrate_semi_implicit_euler_inplace,
         dim=model.size.sum_of_num_bodies,
         inputs=[
             # Inputs:
             alpha,  # alpha: angular damping
+            integrate_singular_bodies,
             model.time.dt,
             model.gravity.vector,
             model.bodies.wid,
@@ -195,13 +206,20 @@ class IntegratorEuler(IntegratorBase):
     constraint reactions.
     """
 
-    def __init__(self, model: ModelKamino, alpha: float | None = None):
+    def __init__(
+        self,
+        model: ModelKamino,
+        alpha: float | None = None,
+        *,
+        integrate_singular_bodies: bool = False,
+    ):
         """
         Initializes the Semi-Implicit Euler integrator with the given :class:`ModelKamino` instance.
 
         Args:
             model: The model container holding the time-invariant parameters of the system being simulated.
             alpha: The angular damping coefficient. Defaults to 0.0 if `None` is provided.
+            integrate_singular_bodies: Whether singular bodies carry a velocity supplied by the dynamics solver.
         """
         super().__init__(model)
 
@@ -210,6 +228,7 @@ class IntegratorEuler(IntegratorBase):
         Damping coefficient for angular velocity used to improve numerical stability of the integrator.
         Defaults to `0.0`, corresponding to no damping being applied.
         """
+        self._integrate_singular_bodies = integrate_singular_bodies
 
     ###
     # Operations
@@ -259,4 +278,9 @@ class IntegratorEuler(IntegratorBase):
         )
 
         # Perform forward integration to compute the next state of the system
-        integrate_euler_semi_implicit(model=model, data=data, alpha=self._alpha)
+        integrate_euler_semi_implicit(
+            model=model,
+            data=data,
+            alpha=self._alpha,
+            integrate_singular_bodies=self._integrate_singular_bodies,
+        )
