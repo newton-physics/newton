@@ -46,6 +46,9 @@ class _EffortModeExplicit:
 
         Returns the buffer holding the final (clamped) effort.
         """
+        compute_kwargs: dict[str, Any] = {"device": self._device}
+        if self._drive.custom_inputs:
+            compute_kwargs["custom_inputs"] = custom_inputs
         self._drive.compute(
             positions,
             velocities,
@@ -59,8 +62,7 @@ class _EffortModeExplicit:
             computed_forces,
             drive_state,
             dt,
-            device=self._device,
-            custom_inputs=custom_inputs,
+            **compute_kwargs,
         )
         forces = computed_forces
         for clamp in self._clamping:

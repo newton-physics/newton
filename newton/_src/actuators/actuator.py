@@ -134,16 +134,6 @@ def _get_attribute(source: Any, name: str, default: Any = _MISSING) -> Any:
     return value
 
 
-def _check_length(owner: str, name: str, array: Any, minimum: int) -> None:
-    """Reject an array too short for the indices that gather from it.
-
-    Raises:
-        ValueError: *array* is shorter than *minimum*.
-    """
-    if len(array) < minimum:
-        raise ValueError(f"{owner}: '{name}' has length {len(array)}; the actuator's indices need at least {minimum}.")
-
-
 def _require_array(source: Any, name: str) -> Any:
     """Read *name* from *source* and require an array.
 
@@ -360,10 +350,6 @@ class Actuator:
 
             self.target_pos_indices = self.pos_indices if newton.use_coord_layout_targets else indices
         self.effort_indices = effort_indices if effort_indices is not None else indices
-        self._min_pos_len = int(self.pos_indices.numpy().max()) + 1
-        self._min_vel_len = int(self.indices.numpy().max()) + 1
-        self._min_target_pos_len = int(self.target_pos_indices.numpy().max()) + 1
-        self._min_effort_len = int(self.effort_indices.numpy().max()) + 1
         if self.pos_indices.shape != indices.shape:
             raise ValueError(f"pos_indices shape {self.pos_indices.shape} must match indices shape {indices.shape}")
         if self.target_pos_indices.shape != indices.shape:
@@ -416,6 +402,9 @@ class Actuator:
         states. Re-pointing has no effect on an already-captured CUDA graph,
         which holds the pointers bound at capture time.
 
+        Assigned arrays must be long enough for :attr:`pos_indices` and
+        :attr:`indices`; their lengths are not checked.
+
         Returns:
             Container whose slots are the required ``sim_state`` attributes.
         """
@@ -424,6 +413,10 @@ class Actuator:
 
     def sim_control(self) -> Any:
         """Return an empty container with the fields this actuator reads from ``sim_control``.
+
+        Target arrays must be long enough for :attr:`target_pos_indices` and
+        :attr:`indices`, and output arrays for :attr:`effort_indices`; their
+        lengths are not checked.
 
         Returns:
             Container whose slots are the required ``sim_control`` attributes.
@@ -606,23 +599,15 @@ class Actuator:
                 "Stateful actuator requires both current_act_state and next_act_state; create them via actuator.state()"
             )
 
-        owner = type(self).__name__
         positions = _require_array(sim_state, self.state_pos_attr)
         velocities = _require_array(sim_state, self.state_vel_attr)
-        _check_length(owner, self.state_pos_attr, positions, self._min_pos_len)
-        _check_length(owner, self.state_vel_attr, velocities, self._min_vel_len)
 
         orig_target_pos = _require_array(sim_control, self.control_target_pos_attr)
         orig_target_vel = _require_array(sim_control, self.control_target_vel_attr)
-        if self.delay is None:
-            _check_length(owner, self.control_target_pos_attr, orig_target_pos, self._min_target_pos_len)
-            _check_length(owner, self.control_target_vel_attr, orig_target_vel, self._min_vel_len)
 
         orig_feedforward = None
         if self.control_feedforward_attr is not None:
             orig_feedforward = _get_attribute(sim_control, self.control_feedforward_attr, None)
-            if orig_feedforward is not None and self.delay is None:
-                _check_length(owner, self.control_feedforward_attr, orig_feedforward, self._min_vel_len)
 
         target_pos = orig_target_pos
         target_vel = orig_target_vel
@@ -666,14 +651,12 @@ class Actuator:
 
         # --- 4. Scatter-add to output ---
         applied_output = _require_array(sim_control, self.control_output_attr)
-        _check_length(owner, self.control_output_attr, applied_output, self._min_effort_len)
         computed_output = None
         if (
             self.control_computed_output_attr is not None
             and self.control_computed_output_attr != self.control_output_attr
         ):
             computed_output = _require_array(sim_control, self.control_computed_output_attr)
-            _check_length(owner, self.control_computed_output_attr, computed_output, self._min_effort_len)
         wp.launch(
             kernel=_scatter_add_kernel,
             dim=self.num_actuators,

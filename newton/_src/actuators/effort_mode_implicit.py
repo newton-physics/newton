@@ -592,6 +592,12 @@ class _EffortModeImplicit:
                 outputs=[self._slot_response],
                 device=self._device,
             )
+            prepare_kwargs: dict[str, Any] = {
+                "inv_mass": self._slot_response,
+                "device": self._device,
+            }
+            if self._drive.custom_inputs:
+                prepare_kwargs["custom_inputs"] = custom_inputs
             self._drive.prepare_implicit(
                 positions,
                 velocities,
@@ -603,9 +609,7 @@ class _EffortModeImplicit:
                 target_vel_indices,
                 drive_state,
                 float(dt),
-                inv_mass=self._slot_response,
-                device=self._device,
-                custom_inputs=custom_inputs,
+                **prepare_kwargs,
             )
         inverse_blocks = self._response.inverse_blocks
 

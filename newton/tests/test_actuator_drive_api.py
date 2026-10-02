@@ -127,6 +127,35 @@ class TestActuatorDriveAPI(unittest.TestCase):
         self.assertIs(drive.seen_custom_inputs["custom_control_input"], control_input)
         self.assertIsNone(drive.seen_custom_inputs["missing_control_input"])
 
+    def test_explicit_drive_without_custom_inputs_keyword_remains_compatible(self):
+        """Keep drives using the previous compute signature working."""
+
+        class _LegacyDrive(actuators.DrivePD):
+            def compute(self, *args, device=None):
+                return super().compute(*args, device=device)
+
+        actuator = actuators.Actuator(
+            indices=wp.array([0], dtype=wp.uint32),
+            drive=_LegacyDrive(
+                kp=wp.array([1.0], dtype=wp.float32),
+                kd=wp.array([0.0], dtype=wp.float32),
+            ),
+        )
+        state = types.SimpleNamespace(
+            joint_q=wp.zeros(1, dtype=wp.float32),
+            joint_qd=wp.zeros(1, dtype=wp.float32),
+        )
+        control = types.SimpleNamespace(
+            joint_target_q=wp.ones(1, dtype=wp.float32),
+            joint_target_qd=wp.zeros(1, dtype=wp.float32),
+            joint_act=None,
+            joint_f=wp.zeros(1, dtype=wp.float32),
+        )
+
+        actuator.step(state, control, dt=0.01)
+
+        self.assertAlmostEqual(float(control.joint_f.numpy()[0]), 1.0)
+
     def test_actuator_registers_drive_inputs_only(self):
         """Ignore undeclared input conventions on delay and clamping components."""
         drive = actuators.DrivePD(

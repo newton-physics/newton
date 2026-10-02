@@ -1038,25 +1038,6 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         np.testing.assert_allclose(effort, self._expected(metadata, case)[0], rtol=1e-5, atol=1e-6)
 
-    def test_rejects_arrays_too_short_for_the_actuator_indices(self):
-        """Reject state, control and output arrays shorter than the actuator's indices reach."""
-        case = self._make_case(self._save_gru("short_arrays.onnx"), 3)
-        short = wp.zeros(3, dtype=wp.float32, device=self.device)
-
-        with self.assertRaisesRegex(ValueError, r"'joint_q' has length 3"):
-            case.actuator.step(
-                {"joint_q": short, "joint_qd": case.state.joint_qd},
-                case.control,
-                case.state_a,
-                case.state_b,
-                dt=self.SAMPLE_DT,
-            )
-
-        control = types.SimpleNamespace(**vars(case.control))
-        control.joint_f = short
-        with self.assertRaisesRegex(ValueError, r"'joint_f' has length 3"):
-            case.actuator.step(case.state, control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
-
     def test_reset_rejects_a_short_mask(self):
         """Reject a reset mask shorter than the actuator count instead of reading past it."""
         case = self._make_case(self._save_gru("short_mask.onnx"), 3)
@@ -1371,6 +1352,34 @@ class TestDriveNeuralGRU(unittest.TestCase):
         del control.bias_force
         actuator.step(state, control, dt=0.01)
         self.assertIsNone(_RecordingDrive.seen["bias_force"])
+
+    def test_implicit_drive_without_custom_inputs_keyword_remains_compatible(self):
+        """Keep drives using the previous prepare_implicit signature working."""
+
+        class _LegacyDrive(DrivePD):
+            prepared = False
+
+            def prepare_implicit(self, *args, inv_mass=None, device=None):
+                type(self).prepared = True
+                return super().prepare_implicit(*args, inv_mass=inv_mass, device=device)
+
+        device = self.device
+        model = _build_pendulum(device)
+        state, control = model.state(), model.control()
+        response = JointSpaceResponse(model)
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32, device=device),
+            drive=_LegacyDrive(
+                kp=wp.array([100.0], dtype=wp.float32, device=device),
+                kd=wp.array([10.0], dtype=wp.float32, device=device),
+            ),
+        )
+        actuator.set_effort_mode_implicit(response=response)
+
+        response.refresh(state)
+        actuator.step(state, control, dt=0.01)
+
+        self.assertTrue(_LegacyDrive.prepared)
 
     def test_custom_input_name_comes_from_metadata(self):
         """Take the caller-supplied column's name from custom_inputs metadata."""
