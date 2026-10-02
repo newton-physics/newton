@@ -20,8 +20,7 @@ import warp as wp
 import newton
 from newton._src.solvers.feather_pgs.kernels import PROPAGATION_UNIT_META, PROPAGATION_UNIT_RING
 from newton._src.solvers.feather_pgs.solver_feather_pgs import _colored_staging_supported
-
-from .test_feather_pgs_colored_scheduling import _heap
+from newton.tests.test_feather_pgs_colored_scheduling import _heap
 
 _VARIANT_ENV = (
     "FEATHER_PGS_COLORED_PREFETCH",
