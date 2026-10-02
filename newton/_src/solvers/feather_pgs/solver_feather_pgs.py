@@ -5,7 +5,7 @@ import re
 import warnings
 from dataclasses import dataclass
 from functools import cache
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import numpy as np
 import warp as wp
@@ -30,12 +30,16 @@ from .kernels import (
     apply_augmented_mass_diagonal_grouped,
     apply_free_root_transport_to_predictor,
     apply_free_root_velocity_corrections,
+    apply_impulses_world_par_dof,
+    build_joint_limit_rows,
     build_mass_update_mask,
+    build_mf_body_map,
     build_mf_contact_rows,
     cholesky_loop,
     compute_com_transforms,
     compute_composite_inertia,
     compute_contact_linear_force_from_impulses,
+    compute_delta_and_accumulate,
     compute_mf_body_Hinv,
     compute_mf_effective_mass_and_rhs,
     compute_mf_world_dof_offsets,
@@ -43,6 +47,7 @@ from .kernels import (
     compute_velocity_predictor,
     compute_world_contact_bias,
     crba_fill_par_dof,
+    delassus_par_row_col,
     diag_from_JY_par_art,
     diag_from_JY_world,
     eval_rigid_fk_id,
@@ -56,6 +61,8 @@ from .kernels import (
     hinv_jt_par_row,
     integrate_generalized_joints,
     pack_contact_linear_force_as_spatial,
+    pgs_solve_loop,
+    pgs_solve_mf_loop,
     populate_joint_velocity_limit_J_for_size,
     populate_rigid_velocity_limit_rows,
     populate_world_J_for_compact_size,
@@ -65,10 +72,12 @@ from .kernels import (
     prescale_joint_velocity_limits,
     refresh_masked_body_inertia,
     remove_free_root_transport_from_qdd,
+    rhs_accum_world_par_art,
     scatter_qdd_from_groups,
     trisolve_loop,
     update_body_qd_from_featherstone,
     update_qdd_from_velocity,
+    vector_add_inplace,
 )
 
 _SMALL_DOF_THRESHOLD_DEFAULT = 12
@@ -507,10 +516,18 @@ def _estimate_cholesky_shared_memory(n_dofs: int) -> int:
     return 3 * matrix_bytes + vector_bytes
 
 
-def _estimate_hinv_jt_shared_memory(n_dofs: int, constraint_count: int, *, tile_threads: int) -> int:
-    """Estimate the complete tiled H-inverse shared-memory footprint [B]."""
+def _estimate_hinv_jt_shared_memory(
+    n_dofs: int, constraint_count: int, *, tile_threads: int, fused: bool = False
+) -> int:
+    """Estimate the complete tiled H-inverse shared-memory footprint [B].
+
+    ``fused`` adds the ``constraint_count x constraint_count`` Delassus tile of the fused
+    split-mode kernel.
+    """
     footprint = _align_shared_memory(4 * n_dofs * n_dofs)
     footprint += 3 * _align_shared_memory(4 * n_dofs * constraint_count)
+    if fused:
+        footprint += _align_shared_memory(4 * constraint_count * constraint_count)
     return footprint + 4 * tile_threads
 
 
@@ -544,6 +561,7 @@ class _FeatherPGSExecutionPlan:
     cholesky_tiled_sizes: frozenset[int]
     hinv_jt_tiled_sizes: frozenset[int]
     hinv_jt_chunk_sizes: tuple[tuple[int, int], ...]
+    hinv_jt_fused_sizes: frozenset[int]
 
     @classmethod
     def build(
@@ -561,6 +579,7 @@ class _FeatherPGSExecutionPlan:
         cholesky_tiled_sizes: set[int] = set()
         tiled_sizes: set[int] = set()
         chunk_sizes: list[tuple[int, int]] = []
+        fused_sizes: set[int] = set()
         for size in size_groups:
             cholesky_requested = cholesky_kernel == "tiled" or (
                 cholesky_kernel == "auto" and size > small_dof_threshold
@@ -592,8 +611,14 @@ class _FeatherPGSExecutionPlan:
                 continue
             tiled_sizes.add(size)
             chunk_sizes.append((size, chunk_size))
+            # The fused split-mode kernel holds the whole row set and its Delassus tile.
+            if (
+                _estimate_hinv_jt_shared_memory(size, max_constraints, tile_threads=tile_threads, fused=True)
+                <= max_shared_memory
+            ):
+                fused_sizes.add(size)
 
-        return cls(frozenset(cholesky_tiled_sizes), frozenset(tiled_sizes), tuple(chunk_sizes))
+        return cls(frozenset(cholesky_tiled_sizes), frozenset(tiled_sizes), tuple(chunk_sizes), frozenset(fused_sizes))
 
     def use_tiled_cholesky(self, size: int) -> bool:
         """Return whether an articulation group uses tiled Cholesky."""
@@ -610,6 +635,10 @@ class _FeatherPGSExecutionPlan:
         """Return whether a response group uses tiled H-inverse application."""
         return size in self.hinv_jt_tiled_sizes
 
+    def use_fused_hinv_jt(self, size: int) -> bool:
+        """Return whether a response group may fuse H-inverse application and Delassus assembly."""
+        return size in self.hinv_jt_fused_sizes
+
 
 class SolverFeatherPGS(SolverBase):
     """Reduced-coordinate articulated dynamics with a projected Gauss-Seidel constraint solve.
@@ -624,13 +653,22 @@ class SolverFeatherPGS(SolverBase):
     (CRBA) and factors it, and integrates an unconstrained velocity prediction
     (Featherstone, *Rigid Body Dynamics Algorithms*, Springer, 2014). Contacts, joint
     position limits and joint velocity limits then become constraint rows solved by
-    projected Gauss-Seidel (PGS) in impulse space. The solve is *matrix-free*: for each
-    row it keeps the response ``Y = H^-1 J^T`` and its diagonal ``J Y`` and recomputes
-    ``J v`` every iteration instead of assembling a Delassus matrix. Rows of articulated
-    bodies apply their impulse to the articulation immediately (one world-local velocity
-    vector per world); contacts between free rigid bodies (a single body with a
+    projected Gauss-Seidel (PGS) in impulse space. Rows of articulated bodies use the
+    response ``Y = H^-1 J^T``; contacts between free rigid bodies (a single body with a
     world-rooted free joint) and the ground or other free bodies use per-body inverse
     inertia. Positions are integrated from the solved velocities with symplectic Euler.
+
+    ``pgs_mode`` selects the solve:
+
+    - ``"matrix_free"`` (default, CUDA only): for each row the solver keeps ``Y`` and the
+      diagonal ``J Y`` and recomputes ``J v`` every iteration instead of assembling a
+      Delassus matrix. Every row applies its impulse to one world-local velocity vector
+      immediately, and one fused kernel sweeps all rows of a world.
+    - ``"split"`` (CPU and CUDA): the rows of articulated bodies of each world are
+      assembled into a dense Delassus matrix ``C = J H^-1 J^T`` (``dense_max_constraints``
+      squared per world) and solved in impulse space; the free-body rows are then solved
+      against the resulting velocity. Worlds with both kinds of rows alternate one sweep
+      of each per iteration. Joint velocity limits are not supported.
 
     Like :class:`~newton.solvers.SolverFeatherstone`, the solver uses
     :attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd` as its state and
@@ -662,7 +700,8 @@ class SolverFeatherPGS(SolverBase):
 
     Limitations:
 
-    - CUDA only; constructing the solver on a CPU device raises :class:`NotImplementedError`.
+    - CPU devices support only ``pgs_mode="split"``; constructing the default matrix-free
+      solve on a CPU device raises :class:`NotImplementedError`.
     - Mimic joints and constraints, loop-closing joints and disabled joints raise
       :class:`NotImplementedError`. So do enabled MuJoCo equality constraints
       (``model.mujoco.equality_constraint_*``) that the importer did not convert to a
@@ -731,7 +770,9 @@ class SolverFeatherPGS(SolverBase):
     """
 
     # Test hook: pin a kernel implementation regardless of the size heuristic
-    # (keys: cholesky_kernel, trisolve_kernel, hinv_jt_kernel).
+    # (keys: cholesky_kernel, trisolve_kernel, hinv_jt_kernel; split mode also
+    # delassus_kernel and pgs_kernel, which selects the native or scalar Gauss-Seidel
+    # kernels of both row families).
     _kernel_overrides: ClassVar[dict[str, str]] = {}
 
     @classmethod
@@ -809,6 +850,7 @@ class SolverFeatherPGS(SolverBase):
         self,
         model: Model,
         *,
+        pgs_mode: Literal["matrix_free", "split"] = "matrix_free",
         pgs_iterations: int = 12,
         pgs_beta: float = 0.2,
         pgs_cfm: float = 1.0e-6,
@@ -822,10 +864,17 @@ class SolverFeatherPGS(SolverBase):
         mf_max_constraints: int = 512,
         warn_constraint_overflow: bool = True,
     ):
-        """Create a FeatherPGS solver for a finalized CUDA model.
+        """Create a FeatherPGS solver for a finalized model.
 
         Args:
-            model: Model to simulate. It must be finalized on a CUDA device.
+            model: Model to simulate.
+            pgs_mode: Constraint solve. ``"matrix_free"`` (CUDA only) sweeps every row in one
+                fused kernel and recomputes ``J v`` from the current velocity. ``"split"``
+                (CPU and CUDA) assembles the rows of articulated bodies into a dense Delassus
+                matrix ``J H^-1 J^T`` per world, solves it in impulse space and then solves the
+                free-body rows against the resulting velocity; worlds that contain both kinds
+                of rows alternate one sweep of each per iteration. ``"split"`` does not
+                support ``enable_joint_velocity_limits``.
             pgs_iterations: Number of projected Gauss-Seidel iterations per step.
             pgs_beta: Baumgarte position-correction factor of contact and joint-limit rows,
                 as a fraction of the position error removed per step.
@@ -866,7 +915,9 @@ class SolverFeatherPGS(SolverBase):
                 during a step is clamped one step later. Must be in ``[0, 1]`` or ``inf``.
             dense_max_constraints: Capacity of rows involving articulated bodies (contacts,
                 enabled joint limits and joint velocity limits) per world. Rows beyond it are
-                dropped and reported, see :attr:`constraint_overflow`.
+                dropped and reported, see :attr:`constraint_overflow`. The split solve also
+                stores a ``dense_max_constraints x dense_max_constraints`` Delassus matrix
+                per world.
             mf_max_constraints: Capacity of free-body contact rows per world. Rows beyond it
                 are dropped and reported, see :attr:`constraint_overflow`.
             warn_constraint_overflow: Print a device-side warning the first time a world
@@ -874,8 +925,15 @@ class SolverFeatherPGS(SolverBase):
                 compatible with CUDA graph capture.
         """
         super().__init__(model)
-        if not model.device.is_cuda:
-            raise NotImplementedError("SolverFeatherPGS requires a CUDA device; this solver does not support CPU yet.")
+        if pgs_mode not in ("matrix_free", "split"):
+            raise ValueError(f"pgs_mode must be 'matrix_free' or 'split', got {pgs_mode!r}")
+        self.pgs_mode = pgs_mode
+        if pgs_mode == "matrix_free" and not model.device.is_cuda:
+            raise NotImplementedError(
+                "SolverFeatherPGS pgs_mode='matrix_free' requires a CUDA device; use pgs_mode='split' on CPU."
+            )
+        if pgs_mode == "split" and enable_joint_velocity_limits:
+            raise NotImplementedError("enable_joint_velocity_limits=True requires pgs_mode='matrix_free'")
         if model.requires_grad:
             raise NotImplementedError("SolverFeatherPGS does not support gradients (model.requires_grad=True).")
         _validate_supported_model(model)
@@ -931,12 +989,25 @@ class SolverFeatherPGS(SolverBase):
         self.cholesky_kernel = self._kernel_overrides.get("cholesky_kernel", "auto")
         self.trisolve_kernel = self._kernel_overrides.get("trisolve_kernel", "auto")
         self.hinv_jt_kernel = self._kernel_overrides.get("hinv_jt_kernel", "auto")
+        self.delassus_kernel = self._kernel_overrides.get("delassus_kernel", "auto")
+        self.pgs_kernel = self._kernel_overrides.get("pgs_kernel", "auto")
         if self.cholesky_kernel not in ("tiled", "loop", "auto"):
             raise ValueError("cholesky_kernel must be one of ['auto', 'loop', 'tiled']")
         if self.trisolve_kernel not in ("tiled", "loop", "auto"):
             raise ValueError("trisolve_kernel must be one of ['auto', 'loop', 'tiled']")
         if self.hinv_jt_kernel not in ("tiled", "par_row", "auto"):
             raise ValueError("hinv_jt_kernel must be one of ['auto', 'par_row', 'tiled']")
+        if self.delassus_kernel not in ("tiled", "par_row_col", "auto"):
+            raise ValueError("delassus_kernel must be one of ['auto', 'par_row_col', 'tiled']")
+        if self.pgs_kernel not in ("tiled", "loop", "auto"):
+            raise ValueError("pgs_kernel must be one of ['auto', 'loop', 'tiled']")
+        if not model.device.is_cuda:
+            # The tiled and native kernels are CUDA-only; CPU runs the scalar Warp kernels.
+            self.cholesky_kernel = "loop"
+            self.trisolve_kernel = "loop"
+            self.hinv_jt_kernel = "par_row"
+            self.delassus_kernel = "par_row_col"
+            self.pgs_kernel = "loop"
         self.small_dof_threshold = _SMALL_DOF_THRESHOLD_DEFAULT
 
         self._step = 0
@@ -971,10 +1042,13 @@ class SolverFeatherPGS(SolverBase):
             small_dof_threshold=self.small_dof_threshold,
             tile_threads=_TILE_THREADS,
         )
-        self._jy_world_aliased = self._detect_jy_world_identity()
-        # Tiled H^-1 J^T writes the world-gathered response directly unless the group and
-        # world layouts already alias, and also computes the row diagonal.
-        self._hinv_jt_writes_world = not self._jy_world_aliased
+        split = self.pgs_mode == "split"
+        # Split mode assembles the Delassus matrix from the grouped responses and never
+        # reads world-gathered J/Y.
+        self._jy_world_aliased = not split and self._detect_jy_world_identity()
+        # Matrix-free tiled H^-1 J^T writes the world-gathered response directly unless the
+        # group and world layouts already alias, and also computes the row diagonal.
+        self._hinv_jt_writes_world = not split and not self._jy_world_aliased
         self._hinv_jt_tiled_writes_group = not self._hinv_jt_writes_world
         self._hinv_jt_diag_sizes = frozenset(
             size for size in self.size_groups if self._execution_plan.use_tiled_hinv_jt(size)
@@ -1168,7 +1242,8 @@ class SolverFeatherPGS(SolverBase):
         self._build_body_maps(model)
         self._classify_free_rigid_bodies(model)
         self._compact_contact_jacobian = bool(
-            self.body_response_dof_mask is not None
+            model.device.is_cuda
+            and self.body_response_dof_mask is not None
             and self.size_groups
             and max(self.size_groups) <= _CONTACT_JACOBIAN_MAX_DOF
         )
@@ -1601,6 +1676,9 @@ class SolverFeatherPGS(SolverBase):
 
     def _classify_free_rigid_bodies(self, model):
         """Materialize free-rigid execution metadata from the model plan."""
+        self._has_mixed_contacts = False
+        self._is_one_solve_art_per_world = False
+        self._max_free_bodies_per_world = 0
         if not model.articulation_count or not model.joint_count:
             self._has_free_rigid_bodies = False
             self.is_free_rigid = None
@@ -1613,6 +1691,19 @@ class SolverFeatherPGS(SolverBase):
         is_free_rigid = self._model_plan.is_free_rigid
         self._free_rigid_body_count = len(self._model_plan.response_free_rigid_body_indices)
         self._has_free_rigid_bodies = self._free_rigid_body_count > 0
+
+        # Per-world census of solved articulations for split mode: worlds holding both
+        # free bodies and articulated bodies interleave the dense and free-body solves,
+        # and the free-body solve keeps every free body of a world in its body table.
+        world_count = self._model_plan.world_count
+        articulation_world = self._model_plan.articulation_world
+        solved = self._model_plan.response_dof_count > 0
+        free = is_free_rigid != 0
+        free_counts = np.bincount(articulation_world[solved & free], minlength=world_count)
+        articulated_counts = np.bincount(articulation_world[solved & ~free], minlength=world_count)
+        self._has_mixed_contacts = bool(np.any((free_counts > 0) & (articulated_counts > 0)))
+        self._is_one_solve_art_per_world = bool(np.all(free_counts + articulated_counts == 1))
+        self._max_free_bodies_per_world = int(np.max(free_counts)) if free_counts.size else 0
 
         self.is_free_rigid = wp.array(is_free_rigid, dtype=wp.int32, device=model.device)
         self.free_rigid_body_indices = wp.array(
@@ -1781,7 +1872,13 @@ class SolverFeatherPGS(SolverBase):
         """Allocate the per-world dense row system (response, metadata and impulses)."""
         device = model.device
         shape = (self.world_count, self.dense_max_constraints)
-        if self._jy_world_aliased:
+        if self.pgs_mode == "split":
+            # Split mode solves the assembled Delassus system and never reads world J/Y; the
+            # one-element stand-ins satisfy the shared H^-1 J^T launches.
+            self.C = wp.zeros((*shape, self.dense_max_constraints), dtype=wp.float32, device=device)
+            self.J_world = wp.zeros((1, 1, 1), dtype=wp.float32, device=device)
+            self.Y_world = wp.zeros((1, 1, 1), dtype=wp.float32, device=device)
+        elif self._jy_world_aliased:
             # One articulation per world in a single size group: the world-indexed
             # views alias the group buffers, so no gather or duplicate storage is needed.
             size = self.size_groups[0]
@@ -1831,6 +1928,19 @@ class SolverFeatherPGS(SolverBase):
         #   .x = (dof_a << 16) | (dof_b & 0xFFFF), .y = eff_mass_inv bits,
         #   .z = rhs bits, .w = row_type | (row_parent << 16)
         self.mf_meta_packed = wp.zeros((worlds, rows * 4), dtype=wp.int32, device=device)
+        if self.pgs_mode == "split":
+            # Local body table of the native free-body solve, which keeps the velocities of a
+            # world's free bodies in shared memory.
+            bodies = max(self._max_free_bodies_per_world, 1)
+            self.mf_body_dof_start = wp.zeros((worlds, bodies), dtype=wp.int32, device=device)
+            self.mf_body_count = wp.zeros((worlds,), dtype=wp.int32, device=device)
+            self.mf_local_body_a = wp.zeros((worlds, rows), dtype=wp.int32, device=device)
+            self.mf_local_body_b = wp.zeros((worlds, rows), dtype=wp.int32, device=device)
+        if self.pgs_mode == "split" and self._has_mixed_contacts:
+            # Free-body velocity change accumulated across the interleaved iterations, and
+            # the per-iteration snapshot it is computed from.
+            self.v_mf_accum = wp.zeros_like(model.joint_qd)
+            self.v_out_snap = wp.zeros_like(model.joint_qd)
         if not self._has_free_rigid_bodies:
             self.rigid_velocity_limit_slot = None
             self.rigid_velocity_limit_sign = None
@@ -1915,6 +2025,12 @@ class SolverFeatherPGS(SolverBase):
                     write_group=self._hinv_jt_tiled_writes_group,
                 )
 
+        if self.pgs_mode == "split":
+            self._pack_mf_meta_kernel = None
+            self._pgs_solve_mf_gs_kernel = None
+            self._init_split_kernels(model)
+            return
+
         self._pack_mf_meta_kernel = _get_pack_mf_meta_kernel(self.mf_meta_packed.shape[1] // 4, device_arch)
         self._pgs_solve_mf_gs_kernel = None
         if self.world_count > 0 and self.max_world_dofs > 0:
@@ -1933,6 +2049,55 @@ class SolverFeatherPGS(SolverBase):
                 has_dense_velocity_limit_rows=self.enable_joint_velocity_limits,
                 shared_metadata=shared_metadata,
             )
+
+    def _init_split_kernels(self, model):
+        """Resolve the split-mode Delassus and Gauss-Seidel kernels for this solver shape.
+
+        Every native kernel has a scalar Warp fallback; a kernel whose shared-memory
+        working set does not fit the device falls back instead of failing to launch.
+        """
+        device_arch = model.device.arch
+        is_cuda = model.device.is_cuda
+        max_constraints = self.dense_max_constraints
+        # One fused tile kernel per world computes H^-1 J^T and stores the whole Delassus
+        # block; it requires every world to solve exactly one articulation.
+        self._split_fused_response = bool(
+            is_cuda
+            and self.size_groups
+            and self._is_one_solve_art_per_world
+            and self.hinv_jt_kernel != "par_row"
+            and self.delassus_kernel != "par_row_col"
+            and all(self._execution_plan.use_fused_hinv_jt(size) for size in self.size_groups)
+        )
+        self._hinv_jt_fused_kernels_by_size = {
+            size: _get_hinv_jt_fused_kernel(size, max_constraints, device_arch, _TILE_THREADS)
+            for size in (self.size_groups if self._split_fused_response else ())
+        }
+        self._delassus_kernels_by_size = {}
+        for size in self.size_groups:
+            chunk = _select_delassus_chunk_size(size, max_constraints)
+            self._delassus_kernels_by_size[size] = (
+                _get_delassus_kernel(size, max_constraints, chunk, device_arch)
+                if is_cuda and self.delassus_kernel != "par_row_col" and chunk is not None
+                else None
+            )
+        self._pgs_solve_tiled_row_kernel = (
+            _get_pgs_solve_tiled_row_kernel(max_constraints, device_arch)
+            if is_cuda
+            and self.pgs_kernel != "loop"
+            and _estimate_tiled_row_shared_memory(max_constraints) <= _STATIC_SHARED_MEMORY_BYTES
+            else None
+        )
+        mf_rows = self.mf_body_a.shape[1]
+        mf_bodies = self.mf_body_dof_start.shape[1]
+        self._pgs_solve_mf_kernel = (
+            _get_pgs_solve_mf_kernel(mf_rows, mf_bodies, device_arch)
+            if is_cuda
+            and self._has_free_rigid_bodies
+            and self.pgs_kernel != "loop"
+            and _estimate_mf_solve_shared_memory(mf_rows, mf_bodies) <= _STATIC_SHARED_MEMORY_BYTES
+            else None
+        )
 
     def _pack_mf_meta(self) -> None:
         wp.launch_tiled(
@@ -2057,6 +2222,62 @@ class SolverFeatherPGS(SolverBase):
 
         # Stage 4: constraint rows, responses Y = H^-1 J^T, diagonals and right-hand sides.
         self._stage4_build_rows(state_in, state_aug, contacts)
+        if self.pgs_mode == "split":
+            self._solve_split(state_aug, dt)
+        else:
+            self._solve_matrix_free(state_aug, dt)
+
+        # Stage 7: convert the solved velocity to accelerations, integrate and publish.
+        wp.launch(
+            update_qdd_from_velocity,
+            dim=model.joint_dof_count,
+            inputs=[state_in.joint_qd, self._kinematic_dof_mask, 1.0 / dt],
+            outputs=[self.v_out, state_aug.joint_qdd],
+            device=model.device,
+        )
+        if self._free_root_joint_count:
+            # Invert the free-root transport of the integrator so it realizes the solved velocity.
+            wp.launch(
+                remove_free_root_transport_from_qdd,
+                dim=self._free_root_joint_count,
+                inputs=[
+                    self._free_root_joint_indices,
+                    model.joint_qd_start,
+                    self._kinematic_joint_mask,
+                    state_in.joint_qd,
+                ],
+                outputs=[state_aug.joint_qdd],
+                device=model.device,
+            )
+        wp.launch(
+            kernel=integrate_generalized_joints,
+            dim=model.joint_count,
+            inputs=[
+                model.joint_type,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_q_start,
+                model.joint_qd_start,
+                self._kinematic_joint_mask,
+                model.joint_dof_dim,
+                model.body_com,
+                model.joint_X_c,
+                state_in.joint_q,
+                state_in.joint_qd,
+                state_aug.joint_qdd,
+                dt,
+                self.rigid_body_angular_damping,
+            ],
+            outputs=[state_out.joint_q, state_out.joint_qd],
+            device=model.device,
+        )
+        self._stage7_update_kinematics(state_out)
+        self._step += 1
+        return state_out
+
+    def _solve_matrix_free(self, state_aug: State, dt: float) -> None:
+        """Build the matrix-free responses and right-hand sides and run the fused solve into ``v_out``."""
+        model = self.model
         for size in self.size_groups:
             if self._execution_plan.use_tiled_hinv_jt(size):
                 self._stage4_hinv_jt_tiled(size)
@@ -2134,53 +2355,284 @@ class SolverFeatherPGS(SolverBase):
         self._pack_mf_meta()
         self._launch_pgs_solve()
 
-        # Stage 7: convert the solved velocity to accelerations, integrate and publish.
-        wp.launch(
-            update_qdd_from_velocity,
-            dim=model.joint_dof_count,
-            inputs=[state_in.joint_qd, self._kinematic_dof_mask, 1.0 / dt],
-            outputs=[self.v_out, state_aug.joint_qdd],
-            device=model.device,
-        )
-        if self._free_root_joint_count:
-            # Invert the free-root transport of the integrator so it realizes the solved velocity.
+    def _solve_split(self, state_aug: State, dt: float) -> None:
+        """Assemble and solve the dense Delassus systems, then the free-body rows, into ``v_out``.
+
+        Worlds with both articulated and free-body rows alternate one dense sweep and one
+        free-body sweep per iteration: the dense right-hand side absorbs ``J dv`` of each
+        free-body sweep, and ``v_out`` carries the accumulated free-body velocity change.
+        """
+        model = self.model
+        if self._split_fused_response:
+            for size in self.size_groups:
+                wp.launch_tiled(
+                    self._hinv_jt_fused_kernels_by_size[size],
+                    dim=[self.n_arts_by_size[size]],
+                    inputs=[
+                        self.L_by_size[size],
+                        self.J_by_size[size],
+                        self.group_to_art[size],
+                        self.art_to_world,
+                        self.constraint_count,
+                        self.pgs_cfm,
+                    ],
+                    outputs=[self.C, self.diag, self.Y_by_size[size]],
+                    block_dim=_TILE_THREADS,
+                    device=model.device,
+                )
+        else:
+            self.C.zero_()
+            self.diag.zero_()
+            for size in self.size_groups:
+                if self._execution_plan.use_tiled_hinv_jt(size):
+                    self._stage4_hinv_jt_tiled(size)
+                else:
+                    self._stage4_hinv_jt_par_row(size)
+            for size in self.size_groups:
+                self._stage4_delassus(size)
             wp.launch(
-                remove_free_root_transport_from_qdd,
-                dim=self._free_root_joint_count,
-                inputs=[
-                    self._free_root_joint_indices,
-                    model.joint_qd_start,
-                    self._kinematic_joint_mask,
-                    state_in.joint_qd,
-                ],
-                outputs=[state_aug.joint_qdd],
+                finalize_world_diag_cfm,
+                dim=self.world_count,
+                inputs=[self.constraint_count, self.pgs_cfm],
+                outputs=[self.diag],
                 device=model.device,
             )
+        # rhs = bias + J v_hat; the dense solve sees velocity only through C lambda.
         wp.launch(
-            kernel=integrate_generalized_joints,
-            dim=model.joint_count,
-            inputs=[
-                model.joint_type,
-                model.joint_parent,
-                model.joint_child,
-                model.joint_q_start,
-                model.joint_qd_start,
-                self._kinematic_joint_mask,
-                model.joint_dof_dim,
-                model.body_com,
-                model.joint_X_c,
-                state_in.joint_q,
-                state_in.joint_qd,
-                state_aug.joint_qdd,
-                dt,
-                self.rigid_body_angular_damping,
-            ],
-            outputs=[state_out.joint_q, state_out.joint_qd],
+            compute_world_contact_bias,
+            dim=self.world_count,
+            inputs=[self.constraint_count, self.phi, self.row_type, self.target_velocity, self.pgs_beta, dt],
+            outputs=[self.rhs],
             device=model.device,
         )
-        self._stage7_update_kinematics(state_out)
-        self._step += 1
-        return state_out
+        for size in self.size_groups:
+            self._accumulate_dense_rhs(size, self.v_hat)
+        wp.launch(
+            prepare_world_impulses,
+            dim=self.world_count,
+            inputs=[self.constraint_count],
+            outputs=[self.impulses],
+            device=model.device,
+        )
+
+        if not self._has_free_rigid_bodies:
+            self._dense_pgs_solve(self.pgs_iterations)
+            self._apply_dense_impulses()
+            return
+
+        self._mf_pgs_setup(state_aug, dt)
+        if self._pgs_solve_mf_kernel is not None:
+            wp.launch(
+                build_mf_body_map,
+                dim=self.world_count,
+                inputs=[
+                    self.mf_constraint_count,
+                    self.mf_body_a,
+                    self.mf_body_b,
+                    self.body_to_articulation,
+                    self.articulation_dof_start,
+                    self.mf_body_dof_start.shape[1],
+                ],
+                outputs=[self.mf_body_dof_start, self.mf_body_count, self.mf_local_body_a, self.mf_local_body_b],
+                device=model.device,
+            )
+        if not self._has_mixed_contacts:
+            self._dense_pgs_solve(self.pgs_iterations)
+            self._apply_dense_impulses()
+            self._mf_pgs_solve(self.pgs_iterations)
+            return
+
+        self.v_mf_accum.zero_()
+        wp.copy(self.v_out, self.v_hat)
+        for _ in range(self.pgs_iterations):
+            self._dense_pgs_solve(1)
+            # v_out = v_hat + Y lambda + accumulated free-body change.
+            self._apply_dense_impulses()
+            wp.launch(
+                vector_add_inplace,
+                dim=self.v_out.shape[0],
+                inputs=[self.v_out, self.v_mf_accum],
+                device=model.device,
+            )
+            wp.copy(self.v_out_snap, self.v_out)
+            self._mf_pgs_solve(1)
+            # v_mf_accum += dv; v_out_snap = dv, so the dense rhs absorbs J dv.
+            wp.launch(
+                compute_delta_and_accumulate,
+                dim=self.v_out.shape[0],
+                inputs=[self.v_out, self.v_out_snap, self.v_mf_accum],
+                device=model.device,
+            )
+            for size in self.size_groups:
+                self._accumulate_dense_rhs(size, self.v_out_snap)
+
+    def _stage4_delassus(self, size: int) -> None:
+        """Accumulate one size group's ``C += J Y^T`` and its diagonal."""
+        n_arts = self.n_arts_by_size[size]
+        kernel = self._delassus_kernels_by_size[size]
+        if kernel is not None:
+            wp.launch_tiled(
+                kernel,
+                dim=[n_arts],
+                inputs=[
+                    self.J_by_size[size],
+                    self.Y_by_size[size],
+                    self.group_to_art[size],
+                    self.art_to_world,
+                    self.constraint_count,
+                    n_arts,
+                ],
+                outputs=[self.C, self.diag],
+                block_dim=128,
+                device=self.model.device,
+            )
+            return
+        wp.launch(
+            delassus_par_row_col,
+            dim=n_arts * self.dense_max_constraints * self.dense_max_constraints,
+            inputs=[
+                self.J_by_size[size],
+                self.Y_by_size[size],
+                self.group_to_art[size],
+                self.art_to_world,
+                self.constraint_count,
+                size,
+                self.dense_max_constraints,
+                n_arts,
+            ],
+            outputs=[self.C, self.diag],
+            device=self.model.device,
+        )
+
+    def _accumulate_dense_rhs(self, size: int, velocity: wp.array) -> None:
+        """Add one size group's ``J velocity`` to the dense right-hand side."""
+        wp.launch(
+            rhs_accum_world_par_art,
+            dim=self.n_arts_by_size[size],
+            inputs=[
+                self.constraint_count,
+                self.art_to_world,
+                self.articulation_dof_start,
+                velocity,
+                self.group_to_art[size],
+                self.J_by_size[size],
+                size,
+            ],
+            outputs=[self.rhs],
+            device=self.model.device,
+        )
+
+    def _dense_pgs_solve(self, iterations: int) -> None:
+        """Run ``iterations`` Gauss-Seidel sweeps over each world's dense Delassus system."""
+        if iterations <= 0:
+            return
+        inputs = [
+            self.constraint_count,
+            self.diag,
+            self.C,
+            self.rhs,
+            iterations,
+            self.pgs_omega,
+            self.row_type,
+            self.row_parent,
+            self.row_mu,
+        ]
+        if self._pgs_solve_tiled_row_kernel is not None:
+            wp.launch_tiled(
+                self._pgs_solve_tiled_row_kernel,
+                dim=[self.world_count],
+                inputs=inputs,
+                outputs=[self.impulses],
+                block_dim=32,
+                device=self.model.device,
+            )
+            return
+        wp.launch(
+            pgs_solve_loop,
+            dim=self.world_count,
+            inputs=inputs,
+            outputs=[self.impulses],
+            device=self.model.device,
+        )
+
+    def _apply_dense_impulses(self) -> None:
+        """Write ``v_out = v_hat + Y lambda`` from the dense impulses."""
+        wp.copy(self.v_out, self.v_hat)
+        for size in self.size_groups:
+            n_arts = self.n_arts_by_size[size]
+            wp.launch(
+                apply_impulses_world_par_dof,
+                dim=n_arts * size,
+                inputs=[
+                    self.group_to_art[size],
+                    self.art_to_world,
+                    self.articulation_dof_start,
+                    size,
+                    n_arts,
+                    self.constraint_count,
+                    self.Y_by_size[size],
+                    self.impulses,
+                    self.v_hat,
+                ],
+                outputs=[self.v_out],
+                device=self.model.device,
+            )
+
+    def _mf_pgs_solve(self, iterations: int) -> None:
+        """Run ``iterations`` Gauss-Seidel sweeps over the free-body rows, updating ``v_out``."""
+        if iterations <= 0:
+            return
+        if self._pgs_solve_mf_kernel is not None:
+            wp.launch_tiled(
+                self._pgs_solve_mf_kernel,
+                dim=[self.world_count],
+                inputs=[
+                    self.mf_constraint_count,
+                    self.mf_body_count,
+                    self.mf_body_dof_start,
+                    self.mf_local_body_a,
+                    self.mf_local_body_b,
+                    self.mf_J_a,
+                    self.mf_J_b,
+                    self.mf_MiJt_a,
+                    self.mf_MiJt_b,
+                    self.mf_eff_mass_inv,
+                    self.mf_rhs,
+                    self.mf_row_type,
+                    self.mf_row_parent,
+                    self.mf_row_mu,
+                    iterations,
+                    self.pgs_omega,
+                ],
+                outputs=[self.mf_impulses, self.v_out],
+                block_dim=32,
+                device=self.model.device,
+            )
+            return
+        wp.launch(
+            pgs_solve_mf_loop,
+            dim=self.world_count,
+            inputs=[
+                self.mf_constraint_count,
+                self.mf_body_a,
+                self.mf_body_b,
+                self.mf_MiJt_a,
+                self.mf_MiJt_b,
+                self.mf_J_a,
+                self.mf_J_b,
+                self.mf_eff_mass_inv,
+                self.mf_rhs,
+                self.mf_row_type,
+                self.mf_row_parent,
+                self.mf_row_mu,
+                self.body_to_articulation,
+                self.articulation_dof_start,
+                iterations,
+                self.pgs_omega,
+            ],
+            outputs=[self.mf_impulses, self.v_out],
+            device=self.model.device,
+        )
 
     def check_constraint_capacity(self) -> None:
         """Raise if any world, or the global entry, lost contacts or constraint rows since its last reset.
@@ -2720,6 +3172,34 @@ class SolverFeatherPGS(SolverBase):
         limit_sizes = self._joint_limit_sizes if self.enable_joint_limits else frozenset()
         for size in limit_sizes:
             n_arts = self.n_arts_by_size[size]
+            if size not in self._joint_limit_warp_kernels:
+                wp.launch(
+                    build_joint_limit_rows,
+                    dim=n_arts,
+                    inputs=[
+                        self.articulation_dof_start,
+                        self.art_to_world,
+                        self.group_to_art[size],
+                        self._joint_limit_q_index,
+                        model.joint_limit_lower,
+                        model.joint_limit_upper,
+                        state_in.joint_q,
+                        self.joint_limit_activation_gap,
+                        max_constraints,
+                        size,
+                    ],
+                    outputs=[
+                        self.slot_counter,
+                        self.J_by_size[size],
+                        self.row_type,
+                        self.row_parent,
+                        self.row_mu,
+                        self.phi,
+                        self.target_velocity,
+                    ],
+                    device=model.device,
+                )
+                continue
             wp.launch_tiled(
                 self._joint_limit_warp_kernels[size],
                 dim=[(n_arts + _JOINT_LIMIT_WARPS_PER_BLOCK - 1) // _JOINT_LIMIT_WARPS_PER_BLOCK],
@@ -4131,3 +4611,705 @@ def _get_pgs_solve_mf_gs_kernel(
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
     return wp.kernel(enable_backward=False, module="unique")(pgs_solve_mf_gs)
+
+
+# Static shared memory available to a CUDA block without opt-in [B].
+_STATIC_SHARED_MEMORY_BYTES = 48 * 1024
+# Shared-memory budget of the streaming Delassus kernel's J and Y row chunks [B].
+_DELASSUS_SHARED_MEMORY_BYTES = 45000
+_DELASSUS_MAX_CHUNK_SIZE = 64
+
+
+def _select_delassus_chunk_size(n_dofs: int, max_constraints: int) -> int | None:
+    """Select the rows staged per chunk by the streaming Delassus kernel.
+
+    The whole row set is staged when its ``J`` and ``Y`` rows fit the budget; otherwise
+    chunks of at most 64 rows. Returns ``None`` when a single row does not fit. The chunk
+    size does not change the result: every Delassus entry is computed once.
+    """
+    row_bytes = 2 * 4 * n_dofs
+    if max_constraints * row_bytes <= _DELASSUS_SHARED_MEMORY_BYTES:
+        return max_constraints
+    chunk = min(_DELASSUS_MAX_CHUNK_SIZE, _DELASSUS_SHARED_MEMORY_BYTES // row_bytes)
+    return chunk if chunk >= 1 else None
+
+
+def _estimate_tiled_row_shared_memory(max_constraints: int) -> int:
+    """Estimate the shared memory of the dense split-mode Gauss-Seidel kernel [B]."""
+    return 4 * (max_constraints * (max_constraints + 1) // 2 + 6 * max_constraints)
+
+
+def _estimate_mf_solve_shared_memory(mf_max_constraints: int, max_mf_bodies: int) -> int:
+    """Estimate the shared memory of the split-mode free-body Gauss-Seidel kernel [B]."""
+    return 4 * (7 * max_mf_bodies + mf_max_constraints)
+
+
+@cache
+def _get_hinv_jt_fused_kernel(
+    n_dofs: int, max_constraints: int, device_arch: str, tile_threads: int = 64
+) -> "wp.Kernel":
+    """Build the fused split-mode ``Y = H^-1 J^T`` and Delassus ``C = J Y^T`` kernel.
+
+    One block per articulation stores the whole ``max_constraints x max_constraints``
+    Delassus tile of its world, so it requires one solved articulation per world. The
+    diagonal receives the constraint force mixing.
+    """
+    TILE_DOF_LOCAL = wp.constant(int(n_dofs))
+    TILE_CONSTRAINTS_LOCAL = wp.constant(int(max_constraints))
+
+    def hinv_jt_tiled_fused_template(
+        L_group: wp.array3d[float],  # [n_arts, n_dofs, n_dofs]
+        J_group: wp.array3d[float],  # [n_arts, max_c, n_dofs]
+        group_to_art: wp.array[int],
+        art_to_world: wp.array[int],
+        world_constraint_count: wp.array[int],
+        pgs_cfm: float,
+        # outputs
+        world_C: wp.array3d[float],  # [world_count, max_c, max_c]
+        world_diag: wp.array2d[float],  # [world_count, max_c]
+        Y_group: wp.array3d[float],  # [n_arts, max_c, n_dofs]
+    ):
+        idx, thread = wp.tid()
+        art = group_to_art[idx]
+        world = art_to_world[art]
+        n_constraints = world_constraint_count[world]
+
+        if n_constraints == 0:
+            return
+
+        # Load L (Cholesky factor) and J (Jacobian rows)
+        L_tile = wp.tile_load(L_group[idx], shape=(TILE_DOF_LOCAL, TILE_DOF_LOCAL), bounds_check=False)
+        J_tile = wp.tile_load(J_group[idx], shape=(TILE_CONSTRAINTS_LOCAL, TILE_DOF_LOCAL), bounds_check=False)
+
+        # Solve L * Z = J^T (forward substitution)
+        Jt_tile = wp.tile_transpose(J_tile)
+        Z_tile = wp.tile_lower_solve(L_tile, Jt_tile)
+
+        # Solve L^T * Y = Z (backward substitution)
+        Lt_tile = wp.tile_transpose(L_tile)
+        X_tile = wp.tile_upper_solve(Lt_tile, Z_tile)
+
+        # Store Y = H^-1 * J^T (transpose back to row layout)
+        Y_out_tile = wp.tile_transpose(X_tile)
+        wp.tile_store(Y_group[idx], Y_out_tile)
+
+        # Form C = J * H^-1 * J^T
+        C_tile = wp.tile_zeros(shape=(TILE_CONSTRAINTS_LOCAL, TILE_CONSTRAINTS_LOCAL), dtype=wp.float32)
+        wp.tile_matmul(J_tile, X_tile, C_tile)
+        wp.tile_store(world_C[world], C_tile)
+
+        if thread == 0:
+            for i in range(n_constraints):
+                world_diag[world, i] = C_tile[i, i] + pgs_cfm
+
+    hinv_jt_tiled_fused_template.__name__ = f"hinv_jt_tiled_fused_{n_dofs}_{max_constraints}_bd{tile_threads}"
+    hinv_jt_tiled_fused_template.__qualname__ = f"hinv_jt_tiled_fused_{n_dofs}_{max_constraints}_bd{tile_threads}"
+    return wp.kernel(enable_backward=False, module="unique")(hinv_jt_tiled_fused_template)
+
+
+@cache
+def _get_delassus_kernel(n_dofs: int, max_constraints: int, chunk_size: int, device_arch: str) -> "wp.Kernel":
+    """Build the streaming Delassus kernel ``C += J Y^T`` of one size group.
+
+    One block per articulation stages ``chunk_size`` rows of ``J`` and ``Y`` at a time in
+    shared memory (see :func:`_select_delassus_chunk_size`) and adds each entry of its
+    world's block once.
+    """
+    _ = device_arch
+    TILE_D = n_dofs
+    TILE_M = max_constraints
+    CHUNK = chunk_size
+
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+const int TILE_D = {TILE_D};
+const int TILE_M = {TILE_M};
+const int CHUNK = {CHUNK};
+
+int lane = threadIdx.x;
+int art = group_to_art.data[idx];
+int world = art_to_world.data[art];
+int m = world_constraint_count.data[world];
+if (m == 0) return;
+
+__shared__ float s_J[CHUNK * TILE_D];
+__shared__ float s_Y[CHUNK * TILE_D];
+
+int num_chunks = (m + CHUNK - 1) / CHUNK;
+
+for (int ci = 0; ci < num_chunks; ci++) {{
+    int i0 = ci * CHUNK, i1 = min(i0 + CHUNK, m);
+
+    for (int t = lane; t < (i1 - i0) * TILE_D; t += blockDim.x)
+        s_J[t] = J_group.data[idx * TILE_M * TILE_D + i0 * TILE_D + t];
+    __syncthreads();
+
+    for (int cj = 0; cj < num_chunks; cj++) {{
+        int j0 = cj * CHUNK, j1 = min(j0 + CHUNK, m);
+
+        for (int t = lane; t < (j1 - j0) * TILE_D; t += blockDim.x)
+            s_Y[t] = Y_group.data[idx * TILE_M * TILE_D + j0 * TILE_D + t];
+        __syncthreads();
+
+        // Each thread computes multiple C elements
+        for (int e = lane; e < (i1 - i0) * (j1 - j0); e += blockDim.x) {{
+            int il = e / (j1 - j0), jl = e % (j1 - j0);
+            float sum = 0.0f;
+            for (int k = 0; k < TILE_D; k++)
+                sum += s_J[il * TILE_D + k] * s_Y[jl * TILE_D + k];
+            if (sum != 0.0f) {{
+                int ig = i0 + il, jg = j0 + jl;
+                atomicAdd(&world_C.data[world * TILE_M * TILE_M + ig * TILE_M + jg], sum);
+                if (ig == jg) atomicAdd(&world_diag.data[world * TILE_M + ig], sum);
+            }}
+        }}
+        __syncthreads();
+    }}
+}}
+#endif
+"""
+
+    @wp.func_native(snippet)
+    def delassus_native(
+        idx: int,
+        J_group: wp.array3d[float],
+        Y_group: wp.array3d[float],
+        group_to_art: wp.array[int],
+        art_to_world: wp.array[int],
+        world_constraint_count: wp.array[int],
+        world_C: wp.array3d[float],
+        world_diag: wp.array2d[float],
+    ): ...
+
+    def delassus_template(
+        J_group: wp.array3d[float],
+        Y_group: wp.array3d[float],
+        group_to_art: wp.array[int],
+        art_to_world: wp.array[int],
+        world_constraint_count: wp.array[int],
+        n_arts: int,
+        world_C: wp.array3d[float],
+        world_diag: wp.array2d[float],
+    ):
+        idx, _lane = wp.tid()
+        if idx < n_arts:
+            delassus_native(
+                idx, J_group, Y_group, group_to_art, art_to_world, world_constraint_count, world_C, world_diag
+            )
+
+    delassus_template.__name__ = f"delassus_streaming_{n_dofs}_{max_constraints}_chunk{CHUNK}"
+    delassus_template.__qualname__ = f"delassus_streaming_{n_dofs}_{max_constraints}_chunk{CHUNK}"
+    return wp.kernel(enable_backward=False, module="unique")(delassus_template)
+
+
+@cache
+def _get_pgs_solve_tiled_row_kernel(max_constraints: int, device_arch: str) -> "wp.Kernel":
+    """Build the one-warp-per-world Gauss-Seidel kernel of the dense Delassus system.
+
+    The kernel stages only the lower triangle of ``C`` (``M (M + 1) / 2`` floats, see
+    :func:`_estimate_tiled_row_shared_memory`) and reads ``C_ij`` by symmetry. Each row's
+    ``sum_j C_ij lambda_j`` is a warp reduction; the projection matches
+    :func:`~newton._src.solvers.feather_pgs.kernels.pgs_solve_loop`.
+    """
+    TILE_M = max_constraints
+    TILE_M_SQ = TILE_M * TILE_M
+    TILE_TRI = TILE_M * (TILE_M + 1) // 2
+
+    ELEMS_PER_THREAD_1D = (TILE_M + 31) // 32
+
+    def gen_load_1d(dst, src):
+        lines = []
+        for k in range(ELEMS_PER_THREAD_1D):
+            offset = k * 32
+            guard = f"if (lane + {offset} < TILE_M) " if offset + 32 > TILE_M else ""
+            lines.append(f"    {guard}{dst}[lane + {offset}] = {src}.data[off1 + lane + {offset}];")
+        return "\n".join(lines)
+
+    # Build a deterministic packed-lower-tri index order: row-major over (i, j<=i)
+    # idx = i*(i+1)/2 + j
+    tri_pairs = []
+    for i in range(TILE_M):
+        base = i * (i + 1) // 2
+        for j in range(i + 1):
+            tri_pairs.append((base + j, i, j))
+    assert len(tri_pairs) == TILE_TRI
+
+    load_code = "\n".join(
+        [
+            gen_load_1d("s_lam", "world_impulses"),
+            gen_load_1d("s_rhs", "world_rhs"),
+            gen_load_1d("s_diag", "world_diag"),
+            gen_load_1d("s_rtype", "world_row_type"),
+            gen_load_1d("s_parent", "world_row_parent"),
+            gen_load_1d("s_mu", "world_row_mu"),
+        ]
+    )
+
+    # Precompute lane's column indices (j_k) and their triangular bases (j_k*(j_k+1)/2)
+    # so inside the dot we avoid multiply.
+    precompute_j = []
+    for k in range(ELEMS_PER_THREAD_1D):
+        j = k * 32
+        if j < TILE_M:
+            precompute_j.append(f"    const int j{k} = lane + {j};\n    const int jb{k} = (j{k} * (j{k} + 1)) >> 1;")
+    precompute_j_code = "\n".join(precompute_j)
+
+    # Dot code: guarded on j_k < m
+    dot_terms = []
+    for k in range(ELEMS_PER_THREAD_1D):
+        joff = k * 32
+        if joff < TILE_M:
+            dot_terms.append(
+                f"""    if (j{k} < m) {{
+        // Use symmetry to fetch C(i, j{k}) from packed-lower shared.
+        // base_i = i*(i+1)/2
+        float cij = (j{k} <= i) ? s_Ctri[base_i + j{k}] : s_Ctri[jb{k} + i];
+        my_sum += cij * s_lam[j{k}];
+    }}"""
+            )
+    dot_code = "\n".join(["float my_sum = 0.0f;", "int base_i = (i * (i + 1)) >> 1;", *dot_terms])
+
+    store_lines = []
+    for k in range(ELEMS_PER_THREAD_1D):
+        offset = k * 32
+        guard = f"if (lane + {offset} < TILE_M) " if offset + 32 > TILE_M else ""
+        store_lines.append(f"    {guard}world_impulses.data[off1 + lane + {offset}] = s_lam[lane + {offset}];")
+    store_code = "\n".join(store_lines)
+
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+    const int TILE_M = {TILE_M};
+    const int TILE_M_SQ = {TILE_M_SQ};
+    const int TILE_TRI = {TILE_TRI};
+    const unsigned MASK = 0xFFFFFFFF;
+
+    int lane = threadIdx.x;
+
+    int m = world_constraint_count.data[world];
+    if (m == 0) return;
+
+    // Packed LOWER triangle of C in row-major (i*(i+1)/2 + j), j<=i
+    __shared__ float s_Ctri[TILE_TRI];
+
+    __shared__ float s_lam[TILE_M];
+    __shared__ float s_rhs[TILE_M];
+    __shared__ float s_diag[TILE_M];
+    __shared__ int   s_rtype[TILE_M];
+    __shared__ int   s_parent[TILE_M];
+    __shared__ float s_mu[TILE_M];
+
+    int off1 = world * TILE_M;
+    int off2 = world * TILE_M_SQ;
+
+{load_code}
+
+    // Load only lower triangle from global full matrix into packed shared.
+    // Work distribution: each lane walks rows; for each row i, lane loads j = lane, lane+32, lane+64...
+    for (int i = 0; i < TILE_M; ++i) {{
+        int base = (i * (i + 1)) >> 1; // packed base for row i
+        for (int j = lane; j <= i; j += 32) {{
+            s_Ctri[base + j] = world_C.data[off2 + i * TILE_M + j];
+        }}
+    }}
+    __syncwarp();
+
+{precompute_j_code}
+
+    for (int iter = 0; iter < iterations; iter++) {{
+        for (int i = 0; i < m; i++) {{
+            {dot_code}
+
+            // Warp reduce my_sum
+            my_sum += __shfl_down_sync(MASK, my_sum, 16);
+            my_sum += __shfl_down_sync(MASK, my_sum, 8);
+            my_sum += __shfl_down_sync(MASK, my_sum, 4);
+            my_sum += __shfl_down_sync(MASK, my_sum, 2);
+            my_sum += __shfl_down_sync(MASK, my_sum, 1);
+            float dot_sum = __shfl_sync(MASK, my_sum, 0);
+
+            float denom = s_diag[i];
+            if (denom <= 0.0f && s_rtype[i] != 2) continue;
+
+            float w_val = s_rhs[i] + dot_sum;
+            float delta = denom > 0.0f ? -w_val / denom : 0.0f;
+            float new_impulse = s_lam[i] + omega * delta;
+            int row_type = s_rtype[i];
+
+            if (row_type == 2 && i != s_parent[i] + 1) continue;
+
+            // Contact (0) and joint-limit (3) rows are unilateral.
+            if (row_type == 0 || row_type == 3) {{
+                if (new_impulse < 0.0f) new_impulse = 0.0f;
+                s_lam[i] = new_impulse;
+            }} else if (row_type == 2) {{
+                int parent_idx = s_parent[i];
+                float radius = fmaxf(s_mu[i] * s_lam[parent_idx], 0.0f);
+                int sib = parent_idx + 2;
+                float sibling_residual = 0.0f;
+                int sib_base = (sib * (sib + 1)) >> 1;
+                for (int j = lane; j < m; j += 32) {{
+                    float c = j <= sib ? s_Ctri[sib_base + j] : s_Ctri[((j * (j + 1)) >> 1) + sib];
+                    sibling_residual += c * s_lam[j];
+                }}
+                for (int offset = 16; offset > 0; offset >>= 1)
+                    sibling_residual += __shfl_down_sync(MASK, sibling_residual, offset);
+                sibling_residual = __shfl_sync(MASK, sibling_residual, 0) + s_rhs[sib];
+                float2 pair = friction_pair_candidate(denom, s_Ctri[sib_base + i], s_diag[sib],
+                    w_val, sibling_residual, s_lam[i], s_lam[sib], radius, omega);
+                float a = pair.x;
+                float b = pair.y;
+                float mag = sqrtf(a * a + b * b);
+                float scale = mag > radius ? radius / mag : 1.0f;
+                s_lam[i] = a * scale;
+                s_lam[sib] = b * scale;
+            }} else {{
+                s_lam[i] = new_impulse;
+            }}
+        }}
+    }}
+
+{store_code}
+#endif
+"""
+
+    snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA, 1)
+
+    @wp.func_native(snippet)
+    def pgs_solve_native(
+        world: int,
+        world_constraint_count: wp.array[int],
+        world_diag: wp.array2d[float],
+        world_C: wp.array3d[float],
+        world_rhs: wp.array2d[float],
+        iterations: int,
+        omega: float,
+        world_row_type: wp.array2d[int],
+        world_row_parent: wp.array2d[int],
+        world_row_mu: wp.array2d[float],
+        world_impulses: wp.array2d[float],
+    ): ...
+
+    def pgs_solve_tiled_template(
+        world_constraint_count: wp.array[int],
+        world_diag: wp.array2d[float],
+        world_C: wp.array3d[float],
+        world_rhs: wp.array2d[float],
+        iterations: int,
+        omega: float,
+        world_row_type: wp.array2d[int],
+        world_row_parent: wp.array2d[int],
+        world_row_mu: wp.array2d[float],
+        world_impulses: wp.array2d[float],
+    ):
+        world, _lane = wp.tid()
+        pgs_solve_native(
+            world,
+            world_constraint_count,
+            world_diag,
+            world_C,
+            world_rhs,
+            iterations,
+            omega,
+            world_row_type,
+            world_row_parent,
+            world_row_mu,
+            world_impulses,
+        )
+
+    pgs_solve_tiled_template.__name__ = f"pgs_solve_tiled_row_{max_constraints}"
+    pgs_solve_tiled_template.__qualname__ = f"pgs_solve_tiled_row_{max_constraints}"
+    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_tiled_template)
+
+
+@cache
+def _get_pgs_solve_mf_kernel(mf_max_constraints: int, max_mf_bodies: int, device_arch: str) -> "wp.Kernel":
+    """Build the one-warp-per-world Gauss-Seidel kernel of the split-mode free-body rows.
+
+    The velocities of the world's free bodies (through the local body table of
+    :func:`~newton._src.solvers.feather_pgs.kernels.build_mf_body_map`) and the row impulses
+    stay in shared memory for all iterations, see :func:`_estimate_mf_solve_shared_memory`;
+    lane 0 sweeps the rows. The projection matches
+    :func:`~newton._src.solvers.feather_pgs.kernels.pgs_solve_mf_loop`.
+    """
+    MF_MAX_C = mf_max_constraints
+    MAX_BODIES = max_mf_bodies
+
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+    const int MF_MAX_C = {MF_MAX_C};
+    const int MAX_BODIES = {MAX_BODIES};
+
+    int lane = threadIdx.x;
+
+    int m = mf_constraint_count.data[world];
+    if (m == 0) return;
+    if (m > MF_MAX_C) m = MF_MAX_C;
+
+    int n_bodies = mf_body_count.data[world];
+    if (n_bodies > MAX_BODIES) n_bodies = MAX_BODIES;
+
+    // ═══════════════════════════════════════════════════════════════
+    // SHARED MEMORY
+    // ═══════════════════════════════════════════════════════════════
+    __shared__ float s_vel[{MAX_BODIES * 6}];
+    __shared__ float s_impulse[{MF_MAX_C}];
+    __shared__ int s_dof_start[{MAX_BODIES}];
+
+    int body_off = world * MAX_BODIES;
+    int c_off = world * MF_MAX_C;
+
+    // ═══════════════════════════════════════════════════════════════
+    // LOAD PHASE
+    // ═══════════════════════════════════════════════════════════════
+
+    // Load body DOF starts and velocities
+    for (int b = lane; b < n_bodies; b += 32) {{
+        int dof = mf_body_dof_start.data[body_off + b];
+        s_dof_start[b] = dof;
+        for (int k = 0; k < 6; k++) {{
+            s_vel[b * 6 + k] = v_out.data[dof + k];
+        }}
+    }}
+
+    // Load impulses
+    for (int i = lane; i < m; i += 32) {{
+        s_impulse[i] = mf_impulses.data[c_off + i];
+    }}
+    __syncwarp();
+
+    // ═══════════════════════════════════════════════════════════════
+    // SOLVE PHASE (lane 0)
+    // ═══════════════════════════════════════════════════════════════
+
+    if (lane == 0) {{
+        for (int iter = 0; iter < iterations; iter++) {{
+            for (int i = 0; i < m; i++) {{
+                int row_type = mf_row_type.data[c_off + i];
+
+                float eff_inv = mf_eff_mass_inv.data[c_off + i];
+                if (eff_inv <= 0.0f && row_type != 2) continue;
+
+                int lba = mf_local_body_a.data[c_off + i];
+                int lbb = mf_local_body_b.data[c_off + i];
+
+                // Load J from global memory
+                int j_base = (c_off + i) * 6;
+                float ja0 = mf_J_a.data[j_base + 0];
+                float ja1 = mf_J_a.data[j_base + 1];
+                float ja2 = mf_J_a.data[j_base + 2];
+                float ja3 = mf_J_a.data[j_base + 3];
+                float ja4 = mf_J_a.data[j_base + 4];
+                float ja5 = mf_J_a.data[j_base + 5];
+
+                float jb0 = mf_J_b.data[j_base + 0];
+                float jb1 = mf_J_b.data[j_base + 1];
+                float jb2 = mf_J_b.data[j_base + 2];
+                float jb3 = mf_J_b.data[j_base + 3];
+                float jb4 = mf_J_b.data[j_base + 4];
+                float jb5 = mf_J_b.data[j_base + 5];
+
+                // Compute J * v from shared memory
+                float jv = 0.0f;
+                if (lba >= 0) {{
+                    int va = lba * 6;
+                    jv += ja0 * s_vel[va] + ja1 * s_vel[va+1] + ja2 * s_vel[va+2]
+                        + ja3 * s_vel[va+3] + ja4 * s_vel[va+4] + ja5 * s_vel[va+5];
+                }}
+                if (lbb >= 0) {{
+                    int vb = lbb * 6;
+                    jv += jb0 * s_vel[vb] + jb1 * s_vel[vb+1] + jb2 * s_vel[vb+2]
+                        + jb3 * s_vel[vb+3] + jb4 * s_vel[vb+4] + jb5 * s_vel[vb+5];
+                }}
+
+                // PGS update
+                float rhs_i = mf_rhs.data[c_off + i];
+                float old_impulse = s_impulse[i];
+                float delta = -(jv + rhs_i) * eff_inv;
+                float new_impulse = old_impulse + omega * delta;
+                float delta_impulse = 0.0f;
+
+                if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)}) {{
+                    // Stateless velocity limit: apply only the impulse of the current overshoot.
+                    new_impulse = jv + rhs_i < 0.0f ? delta : 0.0f;
+                    delta_impulse = new_impulse;
+                }}
+                // Project: contact
+                else if (row_type == 0) {{
+                    if (new_impulse < 0.0f) new_impulse = 0.0f;
+                }}
+                // Project: friction
+                else if (row_type == 2) {{
+                    int parent_idx = mf_row_parent.data[c_off + i];
+                    float radius = fmaxf(mf_row_mu.data[c_off + i] * s_impulse[parent_idx], 0.0f);
+
+                    if (i != parent_idx + 1) {{
+                        new_impulse = old_impulse;
+                    }} else {{
+                        int sib = parent_idx + 2;
+                        int sib_base = (c_off + sib) * 6;
+                        float sibling_residual = mf_rhs.data[c_off + sib];
+                        for (int k = 0; k < 6; ++k) {{
+                            if (lba >= 0) sibling_residual += mf_J_a.data[sib_base + k] * s_vel[lba * 6 + k];
+                            if (lbb >= 0) sibling_residual += mf_J_b.data[sib_base + k] * s_vel[lbb * 6 + k];
+                        }}
+                        float inv_sib = mf_eff_mass_inv.data[c_off + sib];
+                        float cross = 0.0f;
+                        for (int k = 0; k < 6; ++k) {{
+                            if (lba >= 0) cross += mf_J_a.data[j_base + k] * mf_MiJt_a.data[sib_base + k];
+                            if (lbb >= 0) cross += mf_J_b.data[j_base + k] * mf_MiJt_b.data[sib_base + k];
+                        }}
+                        float2 pair = friction_pair_candidate(eff_inv > 0.0f ? 1.0f / eff_inv : 0.0f, cross, inv_sib > 0.0f ? 1.0f / inv_sib : 0.0f,
+                            jv + rhs_i, sibling_residual, old_impulse, s_impulse[sib], radius, omega);
+                        float a_val = pair.x;
+                        float b_val = pair.y;
+                        float mag = sqrtf(a_val * a_val + b_val * b_val);
+                        float scale = mag > radius ? radius / mag : 1.0f;
+                        new_impulse = a_val * scale;
+                        float sib_new = b_val * scale;
+                        float sib_delta = sib_new - s_impulse[sib];
+                        s_impulse[sib] = sib_new;
+
+                        // Apply sibling correction to body velocities
+                        int sib_lba = mf_local_body_a.data[c_off + sib];
+                        int sib_lbb = mf_local_body_b.data[c_off + sib];
+                        int sib_j_base = (c_off + sib) * 6;
+                        if (sib_lba >= 0) {{
+                            int sva = sib_lba * 6;
+                            s_vel[sva+0] += mf_MiJt_a.data[sib_j_base+0] * sib_delta;
+                            s_vel[sva+1] += mf_MiJt_a.data[sib_j_base+1] * sib_delta;
+                            s_vel[sva+2] += mf_MiJt_a.data[sib_j_base+2] * sib_delta;
+                            s_vel[sva+3] += mf_MiJt_a.data[sib_j_base+3] * sib_delta;
+                            s_vel[sva+4] += mf_MiJt_a.data[sib_j_base+4] * sib_delta;
+                            s_vel[sva+5] += mf_MiJt_a.data[sib_j_base+5] * sib_delta;
+                        }}
+                        if (sib_lbb >= 0) {{
+                            int svb = sib_lbb * 6;
+                            s_vel[svb+0] += mf_MiJt_b.data[sib_j_base+0] * sib_delta;
+                            s_vel[svb+1] += mf_MiJt_b.data[sib_j_base+1] * sib_delta;
+                            s_vel[svb+2] += mf_MiJt_b.data[sib_j_base+2] * sib_delta;
+                            s_vel[svb+3] += mf_MiJt_b.data[sib_j_base+3] * sib_delta;
+                            s_vel[svb+4] += mf_MiJt_b.data[sib_j_base+4] * sib_delta;
+                            s_vel[svb+5] += mf_MiJt_b.data[sib_j_base+5] * sib_delta;
+                        }}
+                    }}
+                }}
+
+                if (row_type != {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)}) delta_impulse = new_impulse - old_impulse;
+                s_impulse[i] = new_impulse;
+
+                // Apply velocity correction: v += MiJt * delta_impulse
+                int mijt_base = (c_off + i) * 6;
+                if (lba >= 0) {{
+                    int va = lba * 6;
+                    s_vel[va+0] += mf_MiJt_a.data[mijt_base+0] * delta_impulse;
+                    s_vel[va+1] += mf_MiJt_a.data[mijt_base+1] * delta_impulse;
+                    s_vel[va+2] += mf_MiJt_a.data[mijt_base+2] * delta_impulse;
+                    s_vel[va+3] += mf_MiJt_a.data[mijt_base+3] * delta_impulse;
+                    s_vel[va+4] += mf_MiJt_a.data[mijt_base+4] * delta_impulse;
+                    s_vel[va+5] += mf_MiJt_a.data[mijt_base+5] * delta_impulse;
+                }}
+                if (lbb >= 0) {{
+                    int vb = lbb * 6;
+                    s_vel[vb+0] += mf_MiJt_b.data[mijt_base+0] * delta_impulse;
+                    s_vel[vb+1] += mf_MiJt_b.data[mijt_base+1] * delta_impulse;
+                    s_vel[vb+2] += mf_MiJt_b.data[mijt_base+2] * delta_impulse;
+                    s_vel[vb+3] += mf_MiJt_b.data[mijt_base+3] * delta_impulse;
+                    s_vel[vb+4] += mf_MiJt_b.data[mijt_base+4] * delta_impulse;
+                    s_vel[vb+5] += mf_MiJt_b.data[mijt_base+5] * delta_impulse;
+                }}
+            }}
+        }}
+    }}
+    __syncwarp();
+
+    // ═══════════════════════════════════════════════════════════════
+    // STORE PHASE
+    // ═══════════════════════════════════════════════════════════════
+
+    // Write body velocities back to v_out
+    for (int b = lane; b < n_bodies; b += 32) {{
+        int dof = s_dof_start[b];
+        for (int k = 0; k < 6; k++) {{
+            v_out.data[dof + k] = s_vel[b * 6 + k];
+        }}
+    }}
+
+    // Write impulses back
+    for (int i = lane; i < m; i += 32) {{
+        mf_impulses.data[c_off + i] = s_impulse[i];
+    }}
+#endif
+"""
+
+    snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA, 1)
+
+    @wp.func_native(snippet)
+    def pgs_solve_mf_native(
+        world: int,
+        mf_constraint_count: wp.array[int],
+        mf_body_count: wp.array[int],
+        mf_body_dof_start: wp.array2d[int],
+        mf_local_body_a: wp.array2d[int],
+        mf_local_body_b: wp.array2d[int],
+        mf_J_a: wp.array3d[float],
+        mf_J_b: wp.array3d[float],
+        mf_MiJt_a: wp.array3d[float],
+        mf_MiJt_b: wp.array3d[float],
+        mf_eff_mass_inv: wp.array2d[float],
+        mf_rhs: wp.array2d[float],
+        mf_row_type: wp.array2d[int],
+        mf_row_parent: wp.array2d[int],
+        mf_row_mu: wp.array2d[float],
+        iterations: int,
+        omega: float,
+        mf_impulses: wp.array2d[float],
+        v_out: wp.array[float],
+    ): ...
+
+    def pgs_solve_mf_template(
+        mf_constraint_count: wp.array[int],
+        mf_body_count: wp.array[int],
+        mf_body_dof_start: wp.array2d[int],
+        mf_local_body_a: wp.array2d[int],
+        mf_local_body_b: wp.array2d[int],
+        mf_J_a: wp.array3d[float],
+        mf_J_b: wp.array3d[float],
+        mf_MiJt_a: wp.array3d[float],
+        mf_MiJt_b: wp.array3d[float],
+        mf_eff_mass_inv: wp.array2d[float],
+        mf_rhs: wp.array2d[float],
+        mf_row_type: wp.array2d[int],
+        mf_row_parent: wp.array2d[int],
+        mf_row_mu: wp.array2d[float],
+        iterations: int,
+        omega: float,
+        mf_impulses: wp.array2d[float],
+        v_out: wp.array[float],
+    ):
+        world, _lane = wp.tid()
+        pgs_solve_mf_native(
+            world,
+            mf_constraint_count,
+            mf_body_count,
+            mf_body_dof_start,
+            mf_local_body_a,
+            mf_local_body_b,
+            mf_J_a,
+            mf_J_b,
+            mf_MiJt_a,
+            mf_MiJt_b,
+            mf_eff_mass_inv,
+            mf_rhs,
+            mf_row_type,
+            mf_row_parent,
+            mf_row_mu,
+            iterations,
+            omega,
+            mf_impulses,
+            v_out,
+        )
+
+    name = f"pgs_solve_mf_{mf_max_constraints}_{max_mf_bodies}"
+    pgs_solve_mf_template.__name__ = name
+    pgs_solve_mf_template.__qualname__ = name
+    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_mf_template)

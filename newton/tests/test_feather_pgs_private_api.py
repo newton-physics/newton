@@ -6,6 +6,7 @@
 import ast
 import inspect
 import re
+import typing
 import unittest
 from pathlib import Path
 
@@ -22,6 +23,10 @@ _KERNEL_FACTORIES = (
     "_get_hinv_jt_kernel",
     "_get_hinv_jt_plain_kernel",
     "_get_joint_limit_warp_kernel",
+    "_get_hinv_jt_fused_kernel",
+    "_get_delassus_kernel",
+    "_get_pgs_solve_tiled_row_kernel",
+    "_get_pgs_solve_mf_kernel",
 )
 
 
@@ -69,7 +74,6 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
             "angular_damping",
             "enable_contact_friction",
             "contact_compliance",
-            "pgs_mode",
             "articulated_contact_response",
             "drive_mode",
             "friction_mode",
@@ -77,6 +81,15 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
         ):
             with self.subTest(option=removed):
                 self.assertNotIn(removed, parameters)
+
+    def test_pgs_mode_selects_only_the_supported_solves(self):
+        """Offer exactly the matrix-free and split solves, with the matrix-free solve as the default."""
+        parameter = inspect.signature(SolverFeatherPGS.__init__).parameters["pgs_mode"]
+        self.assertEqual(parameter.default, "matrix_free")
+        self.assertEqual(typing.get_args(parameter.annotation), ("matrix_free", "split"))
+        for option in ("pgs_kernel", "delassus_kernel", "tile_threads", "pgs_chunk_size"):
+            with self.subTest(option=option):
+                self.assertNotIn(option, inspect.signature(SolverFeatherPGS.__init__).parameters)
 
     def test_solver_reads_no_environment_variables(self):
         """Configure the solver only through its constructor, never through the environment."""
