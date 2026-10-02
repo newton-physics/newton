@@ -61,6 +61,81 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 """
 
 
+class TestImportMjcfZAxis(unittest.TestCase):
+    def test_zaxis_matches_mujoco(self):
+        """Match native rotations and inertia for zaxis and equivalent quaternions."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        directions = (
+            "1 0 0",
+            "1 2 3",
+            "-2 3 -4",
+            "0 0 1",
+            "0 0 -1",
+            "1e-8 0 -1",
+            "0 9.99e-8 -1",
+            "0 1.001e-7 -1",
+            "1.001e-7 0 -1",
+            "6e-8 8.01e-8 -1",
+            "1e-6 -2e-6 -1",
+        )
+        for direction in directions:
+            oracle = mujoco.MjModel.from_xml_string(
+                f'<mujoco><worldbody><body zaxis="{direction}"/></worldbody></mujoco>'
+            )
+            quat = " ".join(str(x) for x in oracle.body_quat[1])
+            for element in ("body", "geom", "site", "inertial", "frame"):
+                for orientation in (f'zaxis="{direction}"', f'quat="{quat}"'):
+                    with self.subTest(direction=direction, element=element, orientation=orientation):
+                        attrs = dict.fromkeys(("body", "geom", "site", "inertial", "frame"), "")
+                        attrs[element] = orientation
+                        xml = f"""
+                        <mujoco>
+                            <worldbody>
+                                <frame pos="0.2 -0.3 0.4" euler="20 -30 10">
+                                    <frame pos="-0.1 0.2 0.3" {attrs["frame"]}>
+                                        <body name="body" pos="0.3 0.1 -0.2" {attrs["body"]}>
+                                            <freejoint/>
+                                            <inertial pos="0.1 0.2 0.3" mass="2"
+                                                diaginertia="0.2 0.3 0.4" {attrs["inertial"]}/>
+                                            <geom name="geom" type="box" size="0.1 0.2 0.3"
+                                                pos="0.2 -0.1 0.3" {attrs["geom"]}/>
+                                            <site name="site" type="box" size="0.1 0.2 0.3"
+                                                pos="-0.2 0.3 0.1" {attrs["site"]}/>
+                                        </body>
+                                    </frame>
+                                </frame>
+                            </worldbody>
+                        </mujoco>
+                        """
+                        native = mujoco.MjModel.from_xml_string(xml)
+                        with wp.ScopedDevice("cpu"):
+                            builder = newton.ModelBuilder()
+                            builder.add_mjcf(xml, parse_sites=True, ignore_inertial_definitions=False)
+                        transforms = (
+                            (builder.body_q[0], native.body_pos[1], native.body_quat[1]),
+                            (builder.shape_transform[0], native.geom_pos[0], native.geom_quat[0]),
+                            (builder.shape_transform[1], native.site_pos[0], native.site_quat[0]),
+                        )
+                        for actual, position, wxyz in transforms:
+                            np.testing.assert_allclose(np.array(actual)[:3], position, atol=1e-6, rtol=0)
+                            # Compare matrices to ignore quaternion sign and WXYZ/XYZW ordering.
+                            expected = np.empty(9)
+                            mujoco.mju_quat2Mat(expected, wxyz)
+                            rotation = np.array(wp.quat_to_matrix(wp.transform_get_rotation(actual)))
+                            # Imported transforms use float32, including nested composition.
+                            np.testing.assert_allclose(
+                                rotation.reshape(3, 3), expected.reshape(3, 3), atol=1e-6, rtol=0
+                            )
+                        rotation = np.empty(9)
+                        mujoco.mju_quat2Mat(rotation, native.body_iquat[1])
+                        rotation = rotation.reshape(3, 3)
+                        inertia = rotation @ np.diag(native.body_inertia[1]) @ rotation.T
+                        np.testing.assert_allclose(
+                            np.array(builder.body_inertia[0]).reshape(3, 3), inertia, atol=1e-6, rtol=0
+                        )
+                        np.testing.assert_allclose(builder.body_com[0], native.body_ipos[1], atol=1e-6, rtol=0)
+
+
 class TestImportMjcfBasic(unittest.TestCase):
     def test_geom_rgba_preserves_opacity(self):
         """Preserve authored MJCF geometry opacity."""
