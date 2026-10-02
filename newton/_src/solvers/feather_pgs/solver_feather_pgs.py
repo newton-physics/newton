@@ -836,6 +836,14 @@ class SolverFeatherPGS(SolverBase):
       Particles are not simulated.
     - Gradients are not supported.
 
+    Branched articulations use sparse mass factors when every articulated (non-free-body)
+    response group shares one joint topology with at most 64 DOFs and joint velocity-limit
+    rows are disabled: the mass matrix is assembled and factored in the fill-free pattern
+    of the kinematic tree, and constraint rows keep only the DOFs that support them.
+    Otherwise, and for free bodies, dense factors are used. Both give the same dynamics up
+    to floating-point rounding. ``parallel_tree=True`` additionally traverses the
+    independent branches of each tree in parallel.
+
     Constraint rows are stored per world with fixed capacities (``dense_max_constraints``
     for rows of articulated bodies, ``mf_max_constraints`` for free-body contacts). Rows
     that do not fit are dropped and the world is flagged in :attr:`constraint_overflow`,
