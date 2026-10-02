@@ -847,7 +847,11 @@ def create_narrow_phase_primitive_kernel(
                 bb_data.margin_b = margin_offset_b
                 bb_data.shape_a = shape_a
                 bb_data.shape_b = shape_b
-                bb_data.gap_sum = gap_sum
+                if wp.static(speculative):
+                    # gap_sum is the velocity-expanded search gap here; admission needs the authored gap.
+                    bb_data.gap_sum = writer_data.shape_gap[shape_a] + writer_data.shape_gap[shape_b]
+                else:
+                    bb_data.gap_sum = gap_sum
                 num_valid = int(0)
                 for c4 in range(4):
                     ci = chosen[c4]

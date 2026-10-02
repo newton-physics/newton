@@ -2306,12 +2306,9 @@ class ArticulationView:
             mapping = cache.get(actuator)
         except TypeError:
             # the actuator cannot be weakly referenced; build an uncached mapping
-            cache = None
-            mapping = None
+            return self._create_actuator_dof_mapping(actuator)
         if mapping is None:
-            mapping = self._create_actuator_dof_mapping(actuator)
-            if cache is not None:
-                cache[actuator] = mapping
+            mapping = cache[actuator] = self._create_actuator_dof_mapping(actuator)
         return mapping
 
     def _create_actuator_dof_mapping(self, actuator: Actuator):

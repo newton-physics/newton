@@ -1,0 +1,1 @@
+Fix `CollisionPipeline(box_box_sat=True)` with speculative contacts admitting box-box contacts between separated boxes that rotate without approaching; admission now uses the authored shape gap instead of the velocity-expanded search gap.
