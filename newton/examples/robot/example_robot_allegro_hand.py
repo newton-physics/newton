@@ -8,11 +8,12 @@
 # from a USD file using newton.ModelBuilder.add_usd().
 # We also apply a sinusoidal trajectory to the joint targets and
 # apply a continuous rotation to the fixed root joint in the form
-# of the joint parent transform. The MuJoCo solver is updated
+# of the joint parent transform. The solver is updated
 # about this change in the joint parent transform by calling
 # self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES).
 #
 # Command: python -m newton.examples robot_allegro_hand --world-count 16
+#          python -m newton.examples robot_allegro_hand --solver kamino
 #
 ###########################################################################
 
@@ -60,6 +61,7 @@ def move_hand(
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 
@@ -67,7 +69,10 @@ class Example:
         self.sim_substeps = 8
         self.sim_dt = self.frame_dt / self.sim_substeps
 
+        self.solver_type = args.solver
         self.world_count = args.world_count
+        if self.world_count is None:
+            self.world_count = 100
 
         self.viewer = viewer
 
@@ -77,7 +82,10 @@ class Example:
         max_contacts_per_world = 300
 
         allegro_hand = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(allegro_hand)
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(allegro_hand)
+        else:
+            newton.solvers.SolverMuJoCo.register_custom_attributes(allegro_hand)
         allegro_hand.default_shape_cfg.ke = 1.0e3
         allegro_hand.default_shape_cfg.kd = 1.0e2
         allegro_hand.default_shape_cfg.margin = 0.005
@@ -130,20 +138,34 @@ class Example:
 
         self.world_time = wp.zeros(self.world_count, dtype=wp.float32)
 
-        self.solver = newton.solvers.SolverMuJoCo(
-            self.model,
-            solver="newton",
-            integrator="implicitfast",
-            njmax=200,
-            nconmax=max_contacts_per_world,
-            impratio=20.0,
-            # Preserve the example's solref-inherited grasp friction; its
-            # purpose is articulation control rather than kf mapping.
-            cone="pyramidal",
-            iterations=100,
-            ls_iterations=50,
-            use_mujoco_contacts=False,
-        )
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.dvi.bilateral_solve_interval = 8
+            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
+            solver_config.dvi.omega = 1.2
+            solver_config.dvi.contact_warmstart_method = (
+                "key_and_position_with_net_force_backup_and_tangential_net_force"
+            )
+            solver_config.dvi.use_schur_complement = True
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        else:
+            self.solver = newton.solvers.SolverMuJoCo(
+                self.model,
+                solver="newton",
+                integrator="implicitfast",
+                njmax=200,
+                nconmax=max_contacts_per_world,
+                impratio=20.0,
+                # Preserve the example's solref-inherited grasp friction; its
+                # purpose is articulation control rather than kf mapping.
+                cone="pyramidal",
+                iterations=100,
+                ls_iterations=50,
+                use_mujoco_contacts=False,
+            )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -162,7 +184,8 @@ class Example:
         self.graph = capture.graph
 
     def simulate(self):
-        self.collision_pipeline.collide(self.state_0, self.contacts)
+        if self.solver_type != "kamino":
+            self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -183,8 +206,10 @@ class Example:
                 outputs=[self.control.joint_target_q, self.model.joint_X_p],
             )
 
-            # # update the solver since we have updated the joint parent transforms
+            # Update the solver since we have updated the joint parent transforms.
             self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+            if self.solver_type == "kamino":
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
@@ -250,7 +275,8 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
-        parser.set_defaults(world_count=100)
+        parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
+        parser.set_defaults(world_count=None)
         return parser
 
 
