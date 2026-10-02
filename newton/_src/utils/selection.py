@@ -215,78 +215,45 @@ for _dtype in [float, wp.transform, wp.spatial_vector]:
 
 
 @wp.kernel
-def build_actuator_dof_mapping_slice_kernel(
-    actuator_input_indices: wp.array[wp.uint32],
-    actuators_per_world: int,
-    base_offset: int,
-    slice_start: int,
-    slice_stop: int,
-    stride_within_worlds: int,
-    count_per_world: int,
-    dofs_per_arti: int,
-    dofs_per_world: int,
-    num_worlds: int,
-    mapping: wp.array[int],
-):
-    """Build DOF-to-actuator mapping for slice-based view selection.
+def _build_actuator_dof_lookup_kernel(actuator_dofs: wp.array[wp.uint32], lookup: wp.array[int]):
+    """Scatter ``lookup[actuator_dofs[i]] = i``, skipping DOFs beyond the lookup range.
 
-    Iterates over first world's actuators only, replicates pattern to all worlds.
-    For each actuator, checks all articulations in the view to find matching DOF ranges.
+    ``lookup`` must be filled with -1. If an actuator lists a DOF more than once, the last entry wins.
     """
-    local_idx = wp.tid()  # 0 to actuators_per_world-1
-
-    # Get global DOF from first world's actuator entry
-    global_dof = int(actuator_input_indices[local_idx])
-
-    for arti_idx in range(count_per_world):
-        arti_global_start = base_offset + arti_idx * stride_within_worlds + slice_start
-        arti_global_stop = base_offset + arti_idx * stride_within_worlds + slice_stop
-        if global_dof >= arti_global_start and global_dof < arti_global_stop:
-            view_local_pos = arti_idx * dofs_per_arti + (global_dof - arti_global_start)
-
-            # Replicate to all worlds
-            for world_idx in range(num_worlds):
-                view_pos = world_idx * dofs_per_world + view_local_pos
-                actuator_idx = world_idx * actuators_per_world + local_idx
-                mapping[view_pos] = actuator_idx
-            break
+    i = wp.tid()
+    dof = int(actuator_dofs[i])
+    if dof < lookup.shape[0]:
+        wp.atomic_max(lookup, dof, i)
 
 
 @wp.kernel
-def build_actuator_dof_mapping_indices_kernel(
-    actuator_input_indices: wp.array[wp.uint32],
-    view_dof_indices: wp.array[int],
-    base_offset: int,
+def _map_regular_dofs_to_actuator_kernel(
+    lookup: wp.array[int],
+    offset: int,
+    stride_between_worlds: int,
     stride_within_worlds: int,
-    count_per_world: int,
-    actuators_per_world: int,
-    dofs_per_arti: int,
-    dofs_per_world: int,
-    num_worlds: int,
-    mapping: wp.array[int],
+    slice_start: int,
+    local_indices: wp.array[int],
+    use_local_indices: int,
+    mapping: wp.array3d[int],
 ):
-    """Build DOF-to-actuator mapping for index-array-based view selection.
+    """Gather ``mapping[world, arti, value] = lookup[dof]`` for the view's regular-layout DOF rows."""
+    world, arti, value = wp.tid()
+    local = slice_start + value
+    if use_local_indices != 0:
+        local = local_indices[value]
+    mapping[world, arti, value] = lookup[offset + world * stride_between_worlds + arti * stride_within_worlds + local]
 
-    Iterates over first world's actuators only, replicates pattern to all worlds.
-    For each actuator, checks all articulations in the view to find matching DOF indices.
-    """
-    local_idx = wp.tid()  # 0 to actuators_per_world-1
 
-    global_dof = int(actuator_input_indices[local_idx])
-
-    for arti_idx in range(count_per_world):
-        arti_base = base_offset + arti_idx * stride_within_worlds
-        for i in range(dofs_per_arti):
-            # view_dof_indices[i] is local within the articulation, add arti_base to get global
-            if arti_base + view_dof_indices[i] == global_dof:
-                view_local_pos = arti_idx * dofs_per_arti + i
-
-                # Replicate to all worlds
-                for world_idx in range(num_worlds):
-                    view_pos = world_idx * dofs_per_world + view_local_pos
-                    actuator_idx = world_idx * actuators_per_world + local_idx
-                    mapping[view_pos] = actuator_idx
-                break
+@wp.kernel
+def _map_explicit_dofs_to_actuator_kernel(
+    lookup: wp.array[int],
+    model_indices: wp.array3d[int],
+    mapping: wp.array3d[int],
+):
+    """Gather ``mapping[world, arti, value] = lookup[model_indices[world, arti, value]]``."""
+    world, arti, value = wp.tid()
+    mapping[world, arti, value] = lookup[model_indices[world, arti, value]]
 
 
 @wp.kernel
@@ -473,6 +440,15 @@ class FrequencyLayout:
         """Whether attributes require gather/scatter through absolute model indices."""
         return self._model_starts is not None or self._model_indices is not None
 
+    @staticmethod
+    def _model_index_key(value_slice: Slice | slice | int | None):
+        if isinstance(value_slice, Slice):
+            value_slice = value_slice.get()
+        # Native slice objects are unhashable before Python 3.12, so key slices by their bounds.
+        if isinstance(value_slice, slice):
+            return ("slice", value_slice.start, value_slice.stop, value_slice.step)
+        return value_slice
+
     def get_model_indices(self, value_slice: Slice | int | None = None):
         """Return absolute model indices for a sparse/non-uniform view layout."""
         if not self.uses_explicit_model_indices:
@@ -481,7 +457,7 @@ class FrequencyLayout:
         if isinstance(value_slice, Slice):
             value_slice = value_slice.get()
 
-        cache_key = value_slice
+        cache_key = self._model_index_key(value_slice)
         if cache_key in self._model_index_cache:
             return self._model_index_cache[cache_key]
 
@@ -520,6 +496,28 @@ class FrequencyLayout:
         model_indices = wp.array(host_indices, dtype=int, device=self._device)
         self._model_index_cache[cache_key] = model_indices
         return model_indices
+
+    def has_model_indices(self, value_slice: Slice | int | None = None) -> bool:
+        """Whether :meth:`get_model_indices` has already prepared ``value_slice`` on the device."""
+        return self._model_index_key(value_slice) in self._model_index_cache
+
+    def max_model_index(self, world_count: int, count_per_world: int) -> int:
+        """Return the largest absolute model index the layout selects, or -1 if it selects none.
+
+        Computed from host layout metadata only, without reading device memory.
+        """
+        if not self._selected_indices or world_count == 0 or count_per_world == 0:
+            return -1
+        if self._model_indices is not None:
+            return max(index for world in self._model_indices for indices in world for index in indices)
+        if self._model_starts is not None:
+            return max(start for world in self._model_starts for start in world) + max(self._selected_indices)
+        return (
+            self.offset
+            + (world_count - 1) * self.stride_between_worlds
+            + (count_per_world - 1) * self.stride_within_worlds
+            + max(self._selected_indices)
+        )
 
     def __str__(self):
         indices = self.indices if self.indices is not None else self.slice
@@ -1282,6 +1280,10 @@ class ArticulationView:
         self.uses_explicit_model_indices = any(
             layout.uses_explicit_model_indices for layout in self.frequency_layouts.values()
         )
+        dof_layout = self.frequency_layouts[AttributeFrequency.JOINT_DOF]
+        if dof_layout.uses_explicit_model_indices:
+            # Upload the absolute DOF rows now, so actuator DOF mappings can be built inside capture.
+            dof_layout.get_model_indices()
 
         # default mask includes all articulations in all worlds
         self.full_mask = wp.full(world_count, True, dtype=bool, device=self.device)
@@ -2097,13 +2099,21 @@ class ArticulationView:
     # Actuator parameter access
 
     def _get_actuator_dof_mapping(self, actuator: Actuator):
-        if actuator not in self._actuator_dof_mapping_cache:
-            self._actuator_dof_mapping_cache[actuator] = self._create_actuator_dof_mapping(actuator)
-        return self._actuator_dof_mapping_cache[actuator]
+        mapping = self._actuator_dof_mapping_cache.get(actuator)
+        if mapping is None:
+            mapping = self._create_actuator_dof_mapping(actuator)
+            self._actuator_dof_mapping_cache[actuator] = mapping
+        return mapping
 
     def _create_actuator_dof_mapping(self, actuator: Actuator):
         """
         Build mapping from view DOF positions to actuator parameter indices.
+
+        The mapping is built by absolute model DOF identity, so it holds for any layout: sparse
+        world selections, irregular per-world rows, and actuators that do not own an equal block of
+        entries per selected world. It is built with device kernels only (a lookup from model DOF
+        to actuator entry, then a gather over the view's DOF rows), so a first access may run
+        inside CUDA graph capture when the device's memory pool is enabled.
 
         Note:
             Assumes SISO actuators (one DOF per actuator).
@@ -2112,69 +2122,72 @@ class ArticulationView:
         - actuator parameter index if that DOF is actuated
         - -1 if that DOF is not actuated by this actuator
         """
-        num_actuators = actuator.indices.shape[0]
-        actuators_per_world = num_actuators // self.world_count
-
+        # ``self.device`` may be a device alias string (e.g. ``"cuda:0"``) on view-like callers
+        # that borrow these methods, so resolve it before querying the device.
+        device = wp.get_device(self.device)
         dof_layout = self.frequency_layouts[AttributeFrequency.JOINT_DOF]
         dofs_per_arti = dof_layout.selected_value_count
-        dofs_per_world = dofs_per_arti * self.count_per_world
+        mapping_shape = (self.world_count, self.count_per_world, dofs_per_arti)
 
-        if dofs_per_world == 0:
-            return wp.empty(0, dtype=int, device=self.device)
+        if self.world_count * self.count_per_world * dofs_per_arti == 0:
+            return wp.empty(0, dtype=int, device=device)
 
-        mapping = wp.full(self.world_count * dofs_per_world, -1, dtype=int, device=self.device)
+        if device.is_cuda and wp.get_stream(device).is_capturing:
+            if not wp.is_mempool_enabled(device):
+                raise RuntimeError(
+                    "Building the view's DOF mapping for this actuator allocates device memory, "
+                    "which requires the CUDA memory pool during graph capture. Enable the memory pool "
+                    "or call get_actuator_parameter() or set_actuator_parameter() for this actuator "
+                    "once before capturing."
+                )
+            if dof_layout.uses_explicit_model_indices and not dof_layout.has_model_indices():
+                raise RuntimeError(
+                    "The view's absolute DOF rows are not prepared on the device, so the actuator "
+                    "DOF mapping cannot be built inside CUDA graph capture. Call "
+                    "get_actuator_parameter() or set_actuator_parameter() for this actuator once "
+                    "before capturing."
+                )
 
-        if dof_layout.uses_explicit_model_indices:
-            # Sparse views may skip model worlds and their selected DOFs need not have a
-            # regular stride. Build the map by absolute DOF identity instead.
-            actuator_by_dof = {int(dof): index for index, dof in enumerate(actuator.indices.numpy())}
-            selected_model_dofs = dof_layout.get_model_indices().numpy().reshape(-1)
-            mapping = wp.array(
-                [actuator_by_dof.get(int(dof), -1) for dof in selected_model_dofs],
-                dtype=int,
-                device=self.device,
-            )
-            return mapping
-
-        if dof_layout.is_contiguous:
+        lookup = wp.full(
+            dof_layout.max_model_index(self.world_count, self.count_per_world) + 1, -1, dtype=int, device=device
+        )
+        actuator_dofs = actuator.indices
+        if actuator_dofs.shape[0] > 0:
             wp.launch(
-                build_actuator_dof_mapping_slice_kernel,
-                dim=actuators_per_world,
-                inputs=[
-                    actuator.indices,
-                    actuators_per_world,
-                    dof_layout.offset,
-                    dof_layout.slice.start,
-                    dof_layout.slice.stop,
-                    dof_layout.stride_within_worlds,
-                    self.count_per_world,
-                    dofs_per_arti,
-                    dofs_per_world,
-                    self.world_count,
-                ],
+                _build_actuator_dof_lookup_kernel,
+                dim=actuator_dofs.shape[0],
+                inputs=[actuator_dofs],
+                outputs=[lookup],
+                device=device,
+            )
+
+        mapping = wp.empty(mapping_shape, dtype=int, device=device)
+        if dof_layout.uses_explicit_model_indices:
+            wp.launch(
+                _map_explicit_dofs_to_actuator_kernel,
+                dim=mapping_shape,
+                inputs=[lookup, dof_layout.get_model_indices()],
                 outputs=[mapping],
-                device=self.device,
+                device=device,
             )
         else:
+            use_local_indices = dof_layout.indices is not None
             wp.launch(
-                build_actuator_dof_mapping_indices_kernel,
-                dim=actuators_per_world,
+                _map_regular_dofs_to_actuator_kernel,
+                dim=mapping_shape,
                 inputs=[
-                    actuator.indices,
-                    dof_layout.indices,
+                    lookup,
                     dof_layout.offset,
+                    dof_layout.stride_between_worlds,
                     dof_layout.stride_within_worlds,
-                    self.count_per_world,
-                    actuators_per_world,
-                    dofs_per_arti,
-                    dofs_per_world,
-                    self.world_count,
+                    0 if use_local_indices else dof_layout.slice.start,
+                    dof_layout.indices,
+                    int(use_local_indices),
                 ],
                 outputs=[mapping],
-                device=self.device,
+                device=device,
             )
-
-        return mapping
+        return mapping.flatten()
 
     def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str):
         """Read an actuator-component parameter for every DOF in this view.
@@ -2183,6 +2196,11 @@ class ArticulationView:
         per DOF, one row per world).  DOFs that are not driven by
         *actuator* are left at zero; driven DOFs contain the
         corresponding value gathered from ``component.<name>``.
+
+        The first :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for an
+        actuator builds and caches the view's DOF mapping for it with device kernels. That first
+        call allocates the mapping, so capturing it in a CUDA graph requires the device's memory
+        pool, as for other allocating view accessors.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which
@@ -2229,6 +2247,11 @@ class ArticulationView:
         *values* must cover all DOFs in the view (one column per DOF, one row
         per world).  Only entries whose DOFs are actually driven by *actuator*
         are written back to ``component.<name>``; the rest are ignored.
+
+        The first :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for an
+        actuator builds and caches the view's DOF mapping for it with device kernels. That first
+        call allocates the mapping, so capturing it in a CUDA graph requires the device's memory
+        pool, as for other allocating view accessors.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which
