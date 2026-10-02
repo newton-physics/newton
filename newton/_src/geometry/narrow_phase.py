@@ -2182,7 +2182,10 @@ def verify_narrow_phase_buffers(
         )
     if reduction_ht_capacity > 0:
         reduction_ht_active_count = reduction_ht_active_slots[reduction_ht_capacity]
-        if reduction_ht_active_count * 100 >= reduction_ht_capacity * reduction_ht_warn_load_percent:
+        # Promote before multiplying: large tables can overflow either int32 product.
+        if wp.int64(reduction_ht_active_count) * wp.int64(100) >= wp.int64(reduction_ht_capacity) * wp.int64(
+            reduction_ht_warn_load_percent
+        ):
             wp.printf(
                 "Warning: Contact reduction hashtable fill ratio exceeded %d%% (%d / %d). "
                 "Increase contact_reduction_hashtable_size_factor or max_triangle_pairs.\n",
@@ -2258,7 +2261,8 @@ class NarrowPhase:
             shape_aabb_lower: Optional external AABB lower bounds array (if provided, AABBs won't be computed internally)
             shape_aabb_upper: Optional external AABB upper bounds array (if provided, AABBs won't be computed internally)
             shape_voxel_resolution: Optional per-shape voxel resolution array used for mesh/SDF and
-                hydroelastic contact processing.
+                hydroelastic contact processing. When omitted, :class:`~newton.CollisionPipeline`
+                supplies the model's table. A supplied table must match that model's shape count and device.
             contact_writer_warp_func: Optional custom contact writer function (first arg: ContactData, second arg: custom struct type)
             hydroelastic_sdf: Optional SDF hydroelastic instance. Set is_hydroelastic=True on shapes to enable hydroelastic collisions.
             has_meshes: Whether the scene contains any mesh shapes (GeoType.MESH). When False, mesh-related

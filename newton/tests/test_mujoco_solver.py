@@ -11210,10 +11210,33 @@ class TestMultiWorldQfrcActuatorCom(unittest.TestCase):
         np.testing.assert_allclose(angular_1, [0.3, 1.0, 0.0], atol=0.05)
 
 
-class TestActuatorLengthRangeRuntime(unittest.TestCase):
-    """Verify per-world actuator lengthrange updates after runtime gear changes."""
+class TestActuatorLengthRange(unittest.TestCase):
+    """Verify that actuator length ranges keep MuJoCo's compiled values."""
 
-    MJCF = """<?xml version="1.0" ?>
+    MUSCLE_PRM = "0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2 0"
+    MUSCLE_MJCF = f"""<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body pos="0 0 1">
+                <joint name="j1" type="hinge" axis="0 1 0" limited="true" range="-1 1"/>
+                <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1"/>
+                <site name="s1" pos="0.3 0 0.05"/>
+            </body>
+            <site name="s0" pos="0 0 1.2"/>
+        </worldbody>
+        <tendon>
+            <spatial name="t1"><site site="s0"/><site site="s1"/></spatial>
+        </tendon>
+        <actuator>
+            <general name="joint_muscle" joint="j1" gaintype="muscle" biastype="muscle" dyntype="muscle"
+                     gainprm="{MUSCLE_PRM}" biasprm="{MUSCLE_PRM}"/>
+            <general name="tendon_muscle" tendon="t1" gaintype="muscle" biastype="muscle" dyntype="muscle"
+                     gainprm="{MUSCLE_PRM}" biasprm="{MUSCLE_PRM}"/>
+        </actuator>
+    </mujoco>
+    """
+
+    MOTOR_MJCF = """<?xml version="1.0" ?>
     <mujoco>
         <worldbody>
             <body>
@@ -11223,34 +11246,98 @@ class TestActuatorLengthRangeRuntime(unittest.TestCase):
         </worldbody>
         <actuator>
             <motor name="motor1" joint="j1" gear="2"/>
+            <general name="authored" joint="j1" lengthrange="-0.3 0.4"/>
         </actuator>
     </mujoco>
     """
 
-    @classmethod
-    def setUpClass(cls):
+    @staticmethod
+    def _build(mjcf: str, world_count: int = 2) -> newton.Model:
         robot_builder = newton.ModelBuilder()
-        robot_builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        SolverMuJoCo.register_custom_attributes(robot_builder)
+        robot_builder.add_mjcf(mjcf, ctrl_direct=True)
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.replicate(robot_builder, 2)
-        cls.model = builder.finalize()
-        cls.solver = SolverMuJoCo(cls.model)
+        builder.replicate(robot_builder, world_count)
+        return builder.finalize()
 
-    def test_lengthrange_updates_with_gear(self):
-        lr0 = self.solver.mjw_model.actuator_lengthrange.numpy()[:, 0]
-        jnt_range = self.solver.mjw_model.jnt_range.numpy()[:, 0]
-        np.testing.assert_allclose(lr0, jnt_range * 2.0, atol=1e-5)
+    def test_muscle_lengthrange_matches_compiler(self):
+        """Keep compiled joint and tendon muscle length ranges through model notifications."""
+        import mujoco
 
-        gear = self.model.mujoco.actuator_gear.numpy()
-        gear[0, 0] = 3.0
-        gear[1, 0] = 4.0
-        self.model.mujoco.actuator_gear.assign(gear)
-        self.solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+        expected = mujoco.MjModel.from_xml_string(self.MUSCLE_MJCF).actuator_lengthrange
+        self.assertTrue(np.all(expected[:, 0] < expected[:, 1]))
+        for use_mujoco_cpu in (True, False):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                # The MuJoCo CPU backend supports a single world.
+                model = self._build(self.MUSCLE_MJCF, world_count=1 if use_mujoco_cpu else 2)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                for flags in (None, ModelFlags.ALL):
+                    if flags is not None:
+                        solver.notify_model_changed(flags)
+                    np.testing.assert_allclose(solver.mj_model.actuator_lengthrange, expected, rtol=1e-6)
+                    for world_lengthrange in solver.mjw_model.actuator_lengthrange.numpy():
+                        np.testing.assert_allclose(world_lengthrange, expected, rtol=1e-5)
 
-        lr1 = self.solver.mjw_model.actuator_lengthrange.numpy()[:, 0]
-        np.testing.assert_allclose(lr1[0], jnt_range[0] * 3.0, atol=1e-5)
-        np.testing.assert_allclose(lr1[1], jnt_range[1] * 4.0, atol=1e-5)
+    def test_muscle_forces_match_cpu_backend(self):
+        """Produce the same joint and tendon muscle forces on MuJoCo Warp as on MuJoCo CPU."""
+        model = self._build(self.MUSCLE_MJCF, world_count=1)
+        forces = {}
+        for use_mujoco_cpu in (True, False):
+            solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+            state_0, state_1 = model.state(), model.state()
+            control = model.control()
+            control.mujoco.ctrl.fill_(1.0)
+            for _ in range(5):
+                solver.step(state_0, state_1, control, None, 0.002)
+                state_0, state_1 = state_1, state_0
+            forces[use_mujoco_cpu] = (
+                solver.mj_data.actuator_force.copy() if use_mujoco_cpu else solver.mjw_data.actuator_force.numpy()[0]
+            )
+        self.assertTrue(np.all(np.abs(forces[True]) > 0.1))
+        np.testing.assert_allclose(forces[False], forces[True], rtol=1e-4)
+
+    def test_runtime_updates_preserve_lengthrange(self):
+        """Forward authored ranges and keep compiled ranges after runtime gear changes."""
+        expected = [[0.0, 0.0], [-0.3, 0.4]]
+        for use_mujoco_cpu in (True, False):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                model = self._build(self.MOTOR_MJCF, world_count=1 if use_mujoco_cpu else 2)
+                np.testing.assert_allclose(model.mujoco.actuator_lengthrange.numpy()[:2], expected)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                np.testing.assert_allclose(solver.mj_model.actuator_lengthrange, expected, rtol=1e-6)
+
+                gear = model.mujoco.actuator_gear.numpy()
+                gear[:, 0] = 3.0
+                model.mujoco.actuator_gear.assign(gear)
+                solver.notify_model_changed(
+                    ModelFlags.ACTUATOR_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.TENDON_PROPERTIES
+                )
+
+                np.testing.assert_allclose(solver.mjw_model.actuator_gear.numpy()[..., 0], 3.0)
+                for world_lengthrange in solver.mjw_model.actuator_lengthrange.numpy():
+                    np.testing.assert_allclose(world_lengthrange, expected, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_authored_lengthrange(self):
+        """Forward an authored USD mjc:lengthRange to MuJoCo."""
+        from pxr import Sdf, Vt
+
+        def set_actuator_attrs(act):
+            # A non-default gear keeps the actuator CTRL_DIRECT.
+            act.CreateAttribute("mjc:gear", Sdf.ValueTypeNames.DoubleArray, True).Set(
+                Vt.DoubleArray([2.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            )
+            act.CreateAttribute("mjc:lengthRange:min", Sdf.ValueTypeNames.Double, True).Set(-0.3)
+            act.CreateAttribute("mjc:lengthRange:max", Sdf.ValueTypeNames.Double, True).Set(0.4)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(_create_actuator_test_stage(extra_actuator_attrs=set_actuator_attrs))
+        model = builder.finalize()
+        np.testing.assert_allclose(model.mujoco.actuator_lengthrange.numpy(), [[-0.3, 0.4]])
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.actuator_lengthrange, [[-0.3, 0.4]], rtol=1e-6)
 
 
 class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
@@ -11918,6 +12005,121 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
     stiffness. The contact case therefore needs a separate contact-time
     mixing design.
     """
+
+    @staticmethod
+    def _build_tendon_limit_model(mass=1.0, worlds=1):
+        """Build independent sliders with an authored native tendon limit."""
+        template = newton.ModelBuilder()
+        template.add_mjcf(f"""<mujoco><option gravity="0 0 0"/>
+          <worldbody><body name="slider">
+            <joint name="slide" type="slide" axis="1 0 0" limited="false"/>
+            <geom type="sphere" size="0.05" mass="{mass}" contype="0" conaffinity="0"/>
+          </body></worldbody>
+          <tendon><fixed name="limit" limited="true" range="-0.1 0.1"
+            solreflimit="-100 -20" solimplimit="0.95 0.95 0.001 0.5 2">
+            <joint joint="slide" coef="1"/>
+          </fixed></tendon>
+        </mujoco>""")
+        builder = newton.ModelBuilder()
+        builder.replicate(template, worlds)
+        return builder.finalize()
+
+    def test_tendon_limit_force_gains_preserve_compliance(self):
+        """Preserve static stiffness after mass edits and support zero gains and native restoration."""
+        for use_cpu, mass in itertools.product((False, True), (1.0, 10.0)):
+            with self.subTest(use_cpu=use_cpu, mass=mass):
+                model = self._build_tendon_limit_model(mass)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_cpu, disable_contacts=True)
+                attrs = model.mujoco
+                np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], [-100.0, -20.0])
+                attrs.tendon_limit_ke.fill_(100.0)
+                attrs.tendon_limit_kd.fill_(20.0)
+                attrs.tendon_solref_limit_mode.fill_(SOLREF_MODE_FORCE_SPACE)
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+
+                def step_at_equilibrium(model=model, solver=solver):
+                    """Apply 3 N at 3 cm penetration, the equilibrium for 100 N/m."""
+                    state_in, state_out = model.state(), model.state()
+                    state_in.joint_q.fill_(0.13)
+                    state_in.joint_qd.zero_()
+                    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+                    control = model.control()
+                    control.joint_f.fill_(3.0)
+                    solver.step(state_in, state_out, control, None, 0.001)
+                    return state_out.joint_qd.numpy()[0]
+
+                self.assertAlmostEqual(float(step_at_equilibrium()), 0.0, delta=1.0e-7)
+                model.body_mass.assign(model.body_mass.numpy() * 2.0)
+                model.body_inertia.assign(model.body_inertia.numpy() * 2.0)
+                solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+                self.assertAlmostEqual(float(step_at_equilibrium()), 0.0, delta=1.0e-7)
+
+                attrs.tendon_limit_kd.zero_()
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                self.assertAlmostEqual(float(step_at_equilibrium()), 0.0, delta=1.0e-7)
+                self.assertEqual(float(solver.mj_model.tendon_solref_lim[0, 1]), 0.0)
+
+                attrs.tendon_limit_ke.zero_()
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                self.assertAlmostEqual(float(step_at_equilibrium()), 3.0 / (2.0 * mass) * 0.001, delta=1.0e-7)
+                np.testing.assert_allclose(attrs.tendon_range.numpy()[0], [-0.1, 0.1])
+
+                attrs.tendon_solref_limit_mode.fill_(SOLREF_MODE_RAW)
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], [-100.0, -20.0])
+                np.testing.assert_allclose(solver.mj_model.tendon_range[0], [-0.1, 0.1])
+
+                attrs.tendon_solref_limit_mode.fill_(SOLREF_MODE_MJCF_DEFAULT)
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], [0.02, 1.0])
+                np.testing.assert_allclose(attrs.tendon_solref_limit.numpy()[0], [-100.0, -20.0])
+
+    def test_tendon_limit_force_gains_select_worlds(self):
+        """Keep native parameters in untouched worlds and update selected gains independently."""
+        model = self._build_tendon_limit_model(worlds=2)
+        self.assertFalse(hasattr(model.mujoco, "tendon_limit_gains_enabled"))
+        model.mujoco.tendon_limit_ke.fill_(100.0)
+        model.mujoco.tendon_limit_kd.fill_(20.0)
+        model.mujoco.tendon_solref_limit_mode.assign(
+            np.array([SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW], dtype=np.int32)
+        )
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        initial = solver.mjw_model.tendon_solref_lim.numpy().copy()
+        np.testing.assert_allclose(initial[1, 0], [-100.0, -20.0])
+        self.assertTrue(np.all(initial[0, 0] > 0.0))
+        self.assertGreater(float(model.mujoco.tendon_limit_ke.numpy()[1]), 0.0)
+
+        model.mujoco.tendon_limit_ke.assign(np.array([0.0, 100.0], dtype=np.float32))
+        model.mujoco.tendon_limit_kd.fill_(20.0)
+        model.mujoco.tendon_solref_limit_mode.fill_(SOLREF_MODE_FORCE_SPACE)
+        solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+        updated = solver.mjw_model.tendon_solref_lim.numpy()
+        np.testing.assert_allclose(updated[1, 0], initial[0, 0])
+        ranges = solver.mjw_model.tendon_range.numpy()
+        self.assertTrue(np.isneginf(ranges[0, 0, 0]))
+        self.assertTrue(np.isposinf(ranges[0, 0, 1]))
+        np.testing.assert_allclose(ranges[1, 0], [-0.1, 0.1])
+
+    def test_tendon_limit_force_gains_degenerate_scaling(self):
+        """Preserve damped and undamped tendon gains when inverse-inertia scaling degenerates."""
+        for use_cpu, boundary, kd in itertools.product((False, True), ("zero_invweight", "unit_dmax"), (0.0, 20.0)):
+            with self.subTest(use_cpu=use_cpu, boundary=boundary, kd=kd):
+                model = self._build_tendon_limit_model()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_cpu, disable_contacts=True)
+                model.mujoco.tendon_limit_ke.fill_(100.0)
+                model.mujoco.tendon_limit_kd.fill_(kd)
+                model.mujoco.tendon_solref_limit_mode.fill_(SOLREF_MODE_FORCE_SPACE)
+                if boundary == "zero_invweight":
+                    # Exercise the conversion boundary without a subsequent inertia recomputation.
+                    solver.mj_model.tendon_invweight0[:] = 0.0
+                    solver.mjw_model.tendon_invweight0.zero_()
+                    solver._update_tendon_limit_gains()
+                else:
+                    model.mujoco.tendon_solimp_limit.assign(np.array([[0.95, 1.0, 0.001, 0.5, 2.0]], dtype=np.float32))
+                    solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                expected = _expected_positive_limit_solref(100.0, kd, 1.0) if kd else [-100.0, 0.0]
+                np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], expected, rtol=1.0e-5)
+                np.testing.assert_allclose(solver.mjw_model.tendon_solref_lim.numpy()[0, 0], expected, rtol=1.0e-5)
 
     def _build_pendulum_model(
         self,

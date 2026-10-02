@@ -30,6 +30,7 @@ Newton Physics
    
    Worlds <concepts/worlds>
    Articulations <concepts/articulations>
+   Deformable Objects <concepts/deformable_objects>
    Mass and Inertia <concepts/mass_inertia>
    Sites <concepts/sites>
    Sensors <concepts/sensors>
