@@ -498,7 +498,7 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
                 if group_root < 0:
                     continue
 
-                hit_dist, _normal, _bary_u, _bary_v, _face_idx = raycast.ray_intersect_mesh_no_normal(
+                hit_dist, _normal, _bary_u, _bary_v, face_idx = raycast.ray_intersect_mesh_no_normal(
                     ray_origin_world,
                     ray_dir_world,
                     wp.vec3f(1.0),
@@ -510,6 +510,8 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
                 if hit_dist >= 0.0:
                     closest_hit.distance = hit_dist
                     closest_hit.shape_index = TRIANGLE_MESH_SHAPE_ID
+                    # Albedo-only renders also use this path when textures are disabled.
+                    closest_hit.face_idx = face_idx
 
         return closest_hit
 

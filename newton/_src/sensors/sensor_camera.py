@@ -75,6 +75,10 @@ class SensorCamera:
     ``camera_rays`` bundle stores per-pixel origins in ``[..., 0]`` and
     directions in ``[..., 1]``, both expressed in camera space.
 
+    Deformable triangle surfaces render from both sides with camera-facing
+    normals. Their albedo uses :attr:`Model.tri_color` as sRGB, like shape
+    colors, and falls back to white when triangle colors are unavailable.
+
     The render configuration types are exposed as nested attributes (e.g.
     ``SensorCamera.RenderConfig``, ``SensorCamera.ClearData``,
     ``SensorCamera.WorldRenderFlag``); they are not part of the top-level
