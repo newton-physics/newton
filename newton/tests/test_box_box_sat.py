@@ -357,6 +357,68 @@ def test_box_box_sat_feature_keys_survive_convex_key_width(test: unittest.TestCa
         test.assertTrue(np.all(sub_keys >= 64), f"feature ids truncated to {bits} bits: {sub_keys.tolist()}")
 
 
+def test_box_box_sat_speculative_admission_uses_authored_gap(test: unittest.TestCase, device):
+    """Admit speculative SAT box-box contacts against the authored gap, not the search gap.
+
+    A free 10 cm cube sits above a static slab; each shape has a 3 mm gap (6 mm
+    per pair). Spinning about the vertical axis at 20 rad/s widens the search gap
+    to roughly 35 mm without closing the separation, so a separated cube must get no
+    contacts. Touching and within-gap cubes keep the four contacts of the
+    non-speculative pipeline, and a falling cube still gets a speculative manifold.
+    """
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        builder.rigid_gap = 0.003
+        cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
+        builder.add_shape_box(
+            -1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()), hx=0.2, hy=0.2, hz=0.05, cfg=cfg
+        )
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()))
+        builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
+        model = builder.finalize(device=device)
+        dt = 1.0 / 60.0
+
+        def pipeline(**kwargs):
+            p = newton.CollisionPipeline(model, rigid_contact_max=64, broad_phase="nxn", box_box_sat=True, **kwargs)
+            return p, p.contacts()
+
+        speculative, spec_contacts = pipeline(speculative_contact_gap_max=0.1)
+        plain, plain_contacts = pipeline()
+        state = model.state()
+
+        def count(separation, linear_z=0.0, spin_z=0.0):
+            body_q = state.body_q.numpy()
+            body_q[body, :3] = (0.0, 0.0, 0.15 + separation)
+            body_q[body, 3:] = (0.0, 0.0, 0.0, 1.0)
+            state.body_q.assign(body_q)
+            qd = np.zeros((model.body_count, 6), dtype=np.float32)
+            qd[body, 2] = linear_z
+            qd[body, 5] = spin_z
+            state.body_qd.assign(qd)
+            speculative.collide(state, spec_contacts, dt=dt)
+            plain.collide(state, plain_contacts)
+            return int(spec_contacts.rigid_contact_count.numpy()[0]), int(plain_contacts.rigid_contact_count.numpy()[0])
+
+        # Separated beyond the authored gap: no contacts at rest or spinning in place.
+        for separation in (0.008, 0.02):
+            for spin in (0.0, 20.0):
+                spec, plain_count = count(separation, spin_z=spin)
+                test.assertEqual(plain_count, 0, f"separation {separation}, spin {spin}")
+                test.assertEqual(spec, 0, f"contact admitted for separation {separation}, spin {spin}")
+
+        # Touching, slightly penetrating, or within the authored gap: unchanged four-contact manifold.
+        for separation in (-0.0005, 0.0, 0.005):
+            for spin in (0.0, 20.0):
+                spec, plain_count = count(separation, spin_z=spin)
+                test.assertEqual(plain_count, 4, f"separation {separation}, spin {spin}")
+                test.assertEqual(spec, 4, f"separation {separation}, spin {spin}")
+
+        # Approaching at 5 m/s: closes 83 mm per step, so the 20 mm gap is admitted speculatively.
+        spec, plain_count = count(0.02, linear_z=-5.0)
+        test.assertEqual(plain_count, 0)
+        test.assertEqual(spec, 4, "approaching box should receive a speculative four-contact manifold")
+
+
 class TestBoxBoxSAT(unittest.TestCase):
     pass
 
@@ -402,6 +464,12 @@ add_function_test(
     "test_box_box_aligned_manifold_distinct_corners",
     test_box_box_aligned_manifold_distinct_corners,
     devices=get_selected_cuda_test_devices(),
+)
+add_function_test(
+    TestBoxBoxSAT,
+    "test_box_box_sat_speculative_admission_uses_authored_gap",
+    test_box_box_sat_speculative_admission_uses_authored_gap,
+    devices=get_test_devices(),
 )
 
 if __name__ == "__main__":
