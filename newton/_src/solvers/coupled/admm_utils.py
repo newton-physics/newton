@@ -863,6 +863,12 @@ def contact_u_update_kernel(
     n = normal[i]
     mu = wp.max(0.0, friction[i])
     shifted = p - u_min_i * n
+    if wp.dot(shifted, n) >= 0.0:
+        # The separating projection is the identity. Subtracting and adding a
+        # large speculative gap/dt offset would lose small velocity components
+        # and create an artificial ADMM residual and contact force.
+        u_out[i] = p
+        return
     u_out[i] = solve_coulomb_isotropic(mu, n, shifted) + u_min_i * n
 
 
