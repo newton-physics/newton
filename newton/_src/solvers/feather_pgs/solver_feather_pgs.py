@@ -892,7 +892,11 @@ class SolverFeatherPGS(SolverBase):
                 driven DOF (positive ``joint_target_ke`` or ``joint_target_kd``) whose impulse
                 follows the PhysX articulation force-drive update in every iteration, so
                 drives are solved together with contacts and limits instead of before them.
-                Drive rows are allocated first in each world, count against
+                Without contacts or limits and below the effort limit, the converged row
+                reproduces the implicit drive of ``"augmented"``. Under effort saturation
+                the two differ: ``"augmented"`` clamps the explicit drive force before the
+                implicit solve, while the row clamps its accumulated impulse at
+                ``joint_effort_limit * dt``. Drive rows are allocated first in each world, count against
                 ``dense_max_constraints``, and a drive whose row does not fit is not applied
                 (the world is flagged in :attr:`constraint_overflow`).
             fuse_joint_velocity_limits: With ``drive_mode="physx_pgs"`` and

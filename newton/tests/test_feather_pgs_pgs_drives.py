@@ -159,7 +159,7 @@ def _run_arm_and_box(model, solver, steps, *, capture=False):
 
 
 def test_pgs_drive_matches_backward_euler_reference(test, device):
-    """Reach the implicit PD drive solution: the force-drive row converges to backward Euler."""
+    """Reach the implicit PD drive solution below the effort limit: the force-drive row converges to backward Euler."""
     np.testing.assert_allclose(
         _slider_trajectory(_build_slider(device), 120), _backward_euler_trajectory(120), rtol=1.0e-4, atol=1.0e-5
     )
@@ -174,6 +174,27 @@ def test_pgs_drive_impulse_is_clamped_to_the_effort_limit(test, device):
     test.assertLessEqual(float(np.max(np.abs(drive_force))), effort_limit * (1.0 + 1.0e-3))
     # The drive saturates early in the step response.
     test.assertGreater(float(np.max(np.abs(drive_force))), 0.99 * effort_limit)
+
+
+def test_saturated_pgs_drive_differs_from_the_augmented_drive(test, device):
+    """Differ from the implicit drive when the effort limit saturates, at any iteration count.
+
+    The augmented drive clamps the explicit drive force before the implicit solve, so the
+    clamped force is divided by the drive-augmented mass. The drive row clamps its
+    accumulated impulse at ``joint_effort_limit * dt``, which acts on the plain mass.
+    """
+    effort_limit = 5.0
+    model = _build_slider(device, effort_limit=effort_limit)
+    qd = {}
+    for drive_mode in ("augmented", "physx_pgs"):
+        solver = SolverFeatherPGS(model, drive_mode=drive_mode, pgs_iterations=100)
+        state_0, state_1 = model.state(), model.state()
+        solver.step(state_0, state_1, model.control(), None, DT)
+        qd[drive_mode] = float(state_1.joint_qd.numpy()[0])
+    augmented_mass = MASS + ARMATURE + DT * KD + DT * DT * KE
+    test.assertAlmostEqual(qd["augmented"], DT * effort_limit / augmented_mass, delta=1.0e-6)
+    test.assertAlmostEqual(qd["physx_pgs"], DT * effort_limit / (MASS + ARMATURE), delta=1.0e-6)
+    test.assertGreater(qd["physx_pgs"] - qd["augmented"], 1.0e-3)
 
 
 def test_drive_rows_precede_limit_rows_and_count_against_capacity(test, device):
@@ -317,6 +338,10 @@ devices = get_cuda_test_devices()
 for _name, _func in (
     ("test_pgs_drive_matches_backward_euler_reference", test_pgs_drive_matches_backward_euler_reference),
     ("test_pgs_drive_impulse_is_clamped_to_the_effort_limit", test_pgs_drive_impulse_is_clamped_to_the_effort_limit),
+    (
+        "test_saturated_pgs_drive_differs_from_the_augmented_drive",
+        test_saturated_pgs_drive_differs_from_the_augmented_drive,
+    ),
     (
         "test_drive_rows_precede_limit_rows_and_count_against_capacity",
         test_drive_rows_precede_limit_rows_and_count_against_capacity,
