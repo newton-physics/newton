@@ -230,7 +230,10 @@ repository examples spend tuning effort, not a shared solver API.
        ``warn_constraint_overflow``, ``friction_anchor_beta``,
        ``pgs_contact_regularization``, ``pgs_velocity_iterations``,
        ``pgs_warmstart``, ``restitution_velocity_threshold``,
-       ``contact_speculative_scale``, ``contact_gap_gate``, ``parallel_tree``.
+       ``contact_speculative_scale``, ``contact_gap_gate``, ``parallel_tree``,
+       ``enable_sleeping``, ``sleep_linear_threshold``,
+       ``sleep_angular_threshold``, ``sleep_quiet_time``,
+       ``sleep_skip_constraints``.
      - Experimental and CUDA-only. Joint limits are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
@@ -263,7 +266,12 @@ repository examples spend tuning effort, not a shared solver API.
        (``friction_anchor_beta=0``), not from a performance estimate
        (depending on the topology and the world count they can be faster or
        markedly slower); ``parallel_tree`` traverses independent tree branches
-       in parallel and is worth measuring on broad trees such as hands.
+       in parallel and is worth measuring on broad trees such as hands. The
+       experimental ``enable_sleeping`` freezes settled, supported islands of
+       articulations and skips their rows and dynamics until a force, state
+       change, contact with a moving body, reset or model notification wakes
+       them; it saves work on scenes where many objects rest, and costs a few
+       extra launches per step when nothing sleeps.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.
