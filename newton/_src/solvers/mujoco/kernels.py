@@ -1448,6 +1448,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
         mj_contact_geom: wp.array[wp.vec2i],
         mj_contact_efc_address: wp.array2d[int],
         mj_contact_worldid: wp.array[wp.int32],
+        mj_contact_adhesion: wp.array[float],
         mj_efc_force: wp.array2d[float],
         mj_geom_bodyid: wp.array[int],
         mj_xpos: wp.array2d[wp.vec3],
@@ -1515,6 +1516,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
                 mj_contact_friction,
                 mj_contact_dim,
                 mj_contact_efc_address,
+                mj_contact_adhesion,
                 mj_efc_force,
                 njmax,
                 mj_nacon,
@@ -2617,6 +2619,33 @@ def sync_site_xposes_kernel(
 
 
 @wp.kernel
+def update_joint_limit_solref_mode_kernel(
+    joint_limit_ke: wp.array[float],
+    joint_limit_kd: wp.array[float],
+    joint_limit_solref_mode: wp.array[wp.int32],
+    joint_limit_ke_snapshot: wp.array[float],
+    joint_limit_kd_snapshot: wp.array[float],
+    solreflimit_mode_snapshot: wp.array[wp.int32],
+):
+    """Promote edited MJCF-default limit gains and retain their history during graph replay."""
+    dof = wp.tid()
+    ke = joint_limit_ke[dof]
+    kd = joint_limit_kd[dof]
+    mode = joint_limit_solref_mode[dof]
+    if (
+        mode == SOLREF_MODE_MJCF_DEFAULT
+        and solreflimit_mode_snapshot[dof] == SOLREF_MODE_MJCF_DEFAULT
+        and (ke != joint_limit_ke_snapshot[dof] or kd != joint_limit_kd_snapshot[dof])
+    ):
+        mode = SOLREF_MODE_FORCE_SPACE
+        joint_limit_solref_mode[dof] = mode
+
+    joint_limit_ke_snapshot[dof] = ke
+    joint_limit_kd_snapshot[dof] = kd
+    solreflimit_mode_snapshot[dof] = mode
+
+
+@wp.kernel
 def update_jnt_solref_from_invweight0_kernel(
     mjc_jnt_to_newton_dof: wp.array2d[wp.int32],
     joint_limit_ke: wp.array[float],
@@ -2728,6 +2757,27 @@ def update_jnt_solref_from_invweight0_kernel(
     direct_stiffness = wp.max(ke * factor, MJ_MINVAL)
     direct_damping = wp.max(kd * factor, MJ_MINVAL)
     jnt_solref[world, mjc_jnt] = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
+
+
+@wp.kernel
+def compute_physical_meaninertia_kernel(
+    nv: int,
+    M_rownnz: wp.array[wp.int32],
+    M_rowadr: wp.array[wp.int32],
+    M: wp.array2d[float],
+    meaninertia: wp.array[float],
+):
+    """Remove kinematic locking armature from MuJoCo's mean-inertia statistic."""
+    world = wp.tid()
+    if nv == 0:
+        meaninertia[world % meaninertia.shape[0]] = 1.0
+        return
+
+    total = float(0.0)
+    for mjc_dof in range(nv):
+        total += M[world, M_rowadr[mjc_dof] + M_rownnz[mjc_dof] - 1]
+
+    meaninertia[world % meaninertia.shape[0]] = total / float(nv)
 
 
 @wp.kernel(enable_backward=False)

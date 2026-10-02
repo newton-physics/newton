@@ -1336,6 +1336,8 @@ class CollisionPipeline:
                 a prebuilt broad phase instance for expert usage.
             narrow_phase: Optional prebuilt narrow phase instance. Must be
                 provided together with a broad phase instance for expert usage.
+                If its voxel-resolution table is omitted, use the model's table.
+                A supplied table must match the model's shape count and device.
             shape_pairs_filtered: Precomputed shape pairs for EXPLICIT mode.
                 When broad_phase is "explicit", uses model.shape_contact_pairs if not provided. For
                 "nxn"/"sap" modes, ignored. The pair count and shape-type routing are used to size
@@ -1822,6 +1824,21 @@ class CollisionPipeline:
             raise ValueError(
                 "narrow_phase.shape_aabb_upper must have one entry per model shape "
                 f"(expected {shape_count}, got {self.narrow_phase.shape_aabb_upper.shape[0]})"
+            )
+
+        # Mesh/SDF contact reduction indexes this table even for custom components.
+        voxel_resolution = getattr(self.narrow_phase, "shape_voxel_resolution", None)
+        if voxel_resolution is None:
+            self.narrow_phase.shape_voxel_resolution = model._shape_voxel_resolution
+        elif voxel_resolution.shape[0] != shape_count:
+            raise ValueError(
+                "narrow_phase.shape_voxel_resolution must have one entry per model shape "
+                f"(expected {shape_count}, got {voxel_resolution.shape[0]})"
+            )
+        elif voxel_resolution.device != model.device:
+            raise ValueError(
+                "narrow_phase.shape_voxel_resolution must be on the model device "
+                f"(expected {model.device}, got {voxel_resolution.device})"
             )
 
         # Built here (not in finalize) so models/tasks that never collide don't pay for it.
