@@ -6652,9 +6652,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         # Convexity is affine-invariant, so the verdict does not
                         # depend on the per-shape scale, and this check is only
                         # ever consulted when MuJoCo contacts are active.
-                        mesh_convexity_cache[mesh_asset_key] = _is_mesh_convex(
-                            mesh_src.vertices, mesh_src.indices
-                        )
+                        mesh_convexity_cache[mesh_asset_key] = _is_mesh_convex(mesh_src.vertices, mesh_src.indices)
                     is_convex = mesh_convexity_cache.get(mesh_asset_key)
                     uses_mujoco_contacts = (
                         bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
