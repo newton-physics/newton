@@ -686,8 +686,10 @@ class SolverFeatherPGS(SolverBase):
       steps, so static friction holds without creep (``friction_anchor_beta``). Setting
       ``friction_anchor_beta=0`` selects point friction, two coupled tangent rows per
       contact. Restitution follows the shapes'
-      :attr:`~newton.ModelBuilder.ShapeConfig.restitution`. Contact compliance and
-      torsional friction are not applied.
+      :attr:`~newton.ModelBuilder.ShapeConfig.restitution`. Optional contact
+      regularization, warm start from the previous step's impulses, velocity-only
+      iterations and gap gates for speculative contacts are configured on the
+      constructor. Contact compliance and torsional friction are not applied.
     - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds.
     - CUDA graph capture of :meth:`step` and :meth:`reset`.
 

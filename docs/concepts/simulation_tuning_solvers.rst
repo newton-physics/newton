@@ -227,13 +227,26 @@ repository examples spend tuning effort, not a shared solver API.
        ``joint_limit_activation_gap``, ``enable_joint_velocity_limits``,
        ``velocity_limit_activation_fraction``,
        ``dense_max_constraints``, ``mf_max_constraints``,
-       ``warn_constraint_overflow``.
+       ``warn_constraint_overflow``, ``friction_anchor_beta``,
+       ``pgs_contact_regularization``, ``pgs_velocity_iterations``,
+       ``pgs_warmstart``, ``restitution_velocity_threshold``,
+       ``contact_speculative_scale``, ``contact_gap_gate``.
      - Experimental and CUDA-only. Joint limits are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``pgs_iterations`` reduce residual penetration and
        slip, and ``pgs_beta`` sets how much position error is corrected per
-       step. Joint drives are integrated implicitly, which keeps large drive
+       step. Friction acts through persistent patches by default
+       (``friction_anchor_beta``), which hold static loads without creep;
+       ``friction_anchor_beta=0`` selects point friction. A small
+       ``pgs_contact_regularization`` (for example ``0.02``) makes the
+       normal-force split of redundant contacts unique and helps stacks hold at
+       low iteration counts, at the cost of a small resting sag.
+       ``pgs_velocity_iterations`` remove the velocity that position correction
+       adds, and ``pgs_warmstart`` (with contact matching in the
+       :class:`~newton.CollisionPipeline`) reuses the previous step's
+       impulses. ``contact_gap_gate`` and ``contact_speculative_scale`` bound
+       the work and the closing allowance of speculative contacts. Joint drives are integrated implicitly, which keeps large drive
        gains stable at ordinary ``dt``. Rows beyond ``dense_max_constraints``
        (articulated bodies) or ``mf_max_constraints`` (free bodies) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world

@@ -195,8 +195,10 @@ formulation.
   :class:`~newton.solvers.SolverSemiImplicit`; ``kf`` is also used by
   :class:`~newton.solvers.SolverMuJoCo`
   (see :ref:`mujoco-contact-friction-solreffriction`).
-- ``restitution``: :class:`~newton.solvers.SolverXPBD` when
-  ``enable_restitution=True``, and :class:`~newton.solvers.SolverKamino`.
+- ``restitution``: :class:`~newton.solvers.SolverFeatherPGS` (arithmetic mean of
+  the two shapes, for impacts faster than ``restitution_velocity_threshold``),
+  :class:`~newton.solvers.SolverXPBD` when ``enable_restitution=True``, and
+  :class:`~newton.solvers.SolverKamino`.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
   :class:`~newton.solvers.SolverMuJoCo`.
 - ``kh``: consumed by hydroelastic contact generation for Newton-generated
