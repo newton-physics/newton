@@ -234,7 +234,8 @@ repository examples spend tuning effort, not a shared solver API.
        step. Joint drives are integrated implicitly, which keeps large drive
        gains stable at ordinary ``dt``. Rows beyond ``dense_max_constraints``
        (articulated bodies) or ``mf_max_constraints`` (free bodies) per world
-       are dropped and flagged in ``constraint_overflow``; call
+       are dropped and flagged in ``constraint_overflow`` (one entry per world
+       and a final entry for global articulations); call
        ``check_constraint_capacity()`` at an observation boundary, and raise the
        capacity and reset the world when it reports a world. Per-body angular
        damping and free-body velocity bounds are model attributes registered by

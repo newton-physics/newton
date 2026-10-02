@@ -40,6 +40,7 @@ def test_allocator_rejects_incomplete_contact_frame(test, device):
             0,
             8,
             8,
+            wp.zeros((1,), dtype=wp.int32, device=device),
         ],
         outputs=[
             wp.zeros((capacity,), dtype=wp.int32, device=device),
@@ -53,6 +54,7 @@ def test_allocator_rejects_incomplete_contact_frame(test, device):
             wp.zeros((1,), dtype=wp.int32, device=device),
             wp.full((1,), _UNBOUNDED, dtype=wp.int32, device=device),
             wp.full((1,), _UNBOUNDED, dtype=wp.int32, device=device),
+            wp.zeros((2,), dtype=wp.int32, device=device),
         ],
         device=device,
     )
@@ -90,7 +92,7 @@ def test_overflowed_contact_count_invalidates_every_world(test, device):
     pipeline.collide(state_in, contacts)
     contacts.rigid_contact_count.fill_(contacts.rigid_contact_max + 1)
     solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
-    np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [True, True])
+    np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [True, True, True])
     np.testing.assert_array_equal(solver.contact_path.numpy()[: contacts.rigid_contact_max], -1)
 
 

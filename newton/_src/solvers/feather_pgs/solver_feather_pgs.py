@@ -131,29 +131,53 @@ def _clear_dense_row_state(slot_counter: wp.array[int], dropped: wp.array2d[int]
         dropped[family, world] = 0
 
 
+@wp.func
+def _world_rows_lost(
+    world: int,
+    dense_count: wp.array[int],
+    mf_count: wp.array[int],
+    dropped: wp.array2d[int],
+    dense_capacity: int,
+    mf_capacity: int,
+):
+    return (
+        dense_count[world] > dense_capacity
+        or mf_count[world] > mf_capacity
+        or dropped[0, world] > 0
+        or dropped[1, world] > 0
+    )
+
+
 @wp.kernel
 def _finalize_constraint_status(
     dense_count: wp.array[int],
     mf_count: wp.array[int],
     dropped: wp.array2d[int],
+    cross_world_contacts: wp.array[int],
     contact_count: wp.array[int],
     reduction_overflow: wp.array[int],
     dense_capacity: int,
     mf_capacity: int,
     contact_capacity: int,
+    has_responding_global: int,
     overflow: wp.array[wp.bool],
 ):
-    """Latch invalid-world status until reset; counts come from the per-family finalize kernels."""
-    world = wp.tid()
-    if (
-        dense_count[world] > dense_capacity
-        or mf_count[world] > mf_capacity
-        or dropped[0, world] > 0
-        or dropped[1, world] > 0
-        or contact_count[0] > contact_capacity
-        or reduction_overflow[0] != 0
-    ):
-        overflow[world] = True
+    """Latch invalid-world status until reset; counts come from the per-family finalize kernels.
+
+    ``overflow`` has one entry per world plus a final entry for global (world ``-1``)
+    articulations. Global articulations are solved in world 0's row storage, so a row
+    loss in world 0 also flags the global entry while a responding global articulation
+    exists.
+    """
+    slot = wp.tid()
+    global_slot = overflow.shape[0] - 1
+    lost = contact_count[0] > contact_capacity or reduction_overflow[0] != 0 or cross_world_contacts[slot] > 0
+    if slot < global_slot:
+        lost = lost or _world_rows_lost(slot, dense_count, mf_count, dropped, dense_capacity, mf_capacity)
+    elif has_responding_global != 0:
+        lost = lost or _world_rows_lost(0, dense_count, mf_count, dropped, dense_capacity, mf_capacity)
+    if lost:
+        overflow[slot] = True
 
 
 @wp.kernel
@@ -166,8 +190,9 @@ def _reset_solver_status(
 ):
     """Clear the status of selected worlds and request a mass refresh of their articulations.
 
-    ``articulation_world`` holds the model's articulation worlds, so global articulations
-    (world ``-1``) are selected by the final mask entry.
+    ``overflow`` and ``world_mask`` share the ``(world_count + 1,)`` layout. ``articulation_world``
+    holds the model's articulation worlds, so global articulations (world ``-1``) are selected
+    by the final mask entry.
     """
     tid = wp.tid()
     if tid < overflow.shape[0]:
@@ -187,10 +212,20 @@ def _warn_constraint_row_overflow(
     mf_dropped_contact_rows: wp.array[wp.int32],
     mf_capacity: int,
     mf_active: int,
+    cross_world_contacts: wp.array[wp.int32],
     warning_emitted: wp.array[wp.int32],
 ):
     """Emit one device-side warning per overflowing FeatherPGS row family."""
     world = wp.tid()
+    if cross_world_contacts[world] > 0 and wp.atomic_exch(warning_emitted, 2, 1) == 0:
+        wp.printf(
+            "Warning: FeatherPGS dropped %d contacts of status entry %d (the last entry is global bodies) "
+            "that couple a global body with another world. Dynamic global bodies only interact with world 0.\n",
+            cross_world_contacts[world],
+            world,
+        )
+    if world >= dense_raw_counts.shape[0]:
+        return
 
     dense_dropped = dense_dropped_contact_rows[world]
     dense_requested = dense_raw_counts[world]
@@ -274,8 +309,10 @@ class _FeatherPGSModelPlan:
         is_free_rigid = np.zeros(articulation_count, dtype=np.int32)
         free_rigid_body_indices: list[int] = []
 
+        model_articulation_world = np.zeros(articulation_count, dtype=np.int32)
         if articulation_count:
-            articulation_world = model.articulation_world.numpy().astype(np.int32, copy=True)
+            model_articulation_world = model.articulation_world.numpy().astype(np.int32, copy=True)
+            articulation_world = model_articulation_world.copy()
             articulation_world[articulation_world < 0] = 0
 
         if articulation_count and model.joint_count:
@@ -312,11 +349,15 @@ class _FeatherPGSModelPlan:
                 dof_end = dof_start + int(articulation_dof_count[art])
                 if np.all(kinematic_dof_mask[dof_start:dof_end] != 0):
                     candidates[art] = 1
+            retained = (articulation_dof_count > 0) & (candidates == 0)
             for world in range(int(np.max(articulation_world)) + 1):
                 in_world = articulation_world == world
-                has_retained_response = np.any(in_world & (articulation_dof_count > 0) & (candidates == 0))
-                if has_retained_response:
+                if np.any(in_world & retained):
                     prescribed[in_world & (candidates != 0)] = 1
+            # A global kinematic body touches the bodies of every world, so it is elided
+            # whenever any world keeps a response.
+            if np.any(retained):
+                prescribed[(model_articulation_world < 0) & (candidates != 0)] = 1
 
         response_dof_count = articulation_dof_count.copy()
         response_dof_count[prescribed != 0] = 0
@@ -539,10 +580,16 @@ class SolverFeatherPGS(SolverBase):
     Constraint rows are stored per world with fixed capacities (``dense_max_constraints``
     for rows of articulated bodies, ``mf_max_constraints`` for free-body contacts). Rows
     that do not fit are dropped and the world is flagged in :attr:`constraint_overflow`,
-    a device boolean array with one entry per world that also records contact-buffer
-    overflow and contacts dropped by global contact reduction. The flags persist until
-    :meth:`reset`. Read them in a device kernel (for example an RL termination term) or
-    call :meth:`check_constraint_capacity` outside graph capture.
+    a device boolean array with one entry per world plus a final entry for global
+    (world ``-1``) articulations. It also records contact-buffer overflow and contacts
+    dropped by global contact reduction. The flags persist until :meth:`reset`. Read them
+    in a device kernel (for example an RL termination term) or call
+    :meth:`check_constraint_capacity` outside graph capture.
+
+    Global articulations are solved together with world 0. A kinematic global free body
+    (for example a moving platform) contacts the bodies of every world. A contact between
+    a body of another world and a dynamic global body, or a kinematic global articulation
+    with joints, cannot be solved: it is dropped and flagged in :attr:`constraint_overflow`.
 
     Extended state attributes:
         :attr:`~newton.State.body_parent_f` is populated when requested via
@@ -834,15 +881,27 @@ class SolverFeatherPGS(SolverBase):
 
         # Capacity status is allocated before any CUDA graph capture.
         self._row_overflow_warning_emitted = (
-            wp.zeros(2, dtype=wp.int32, device=model.device) if self.warn_constraint_overflow else None
+            wp.zeros(3, dtype=wp.int32, device=model.device) if self.warn_constraint_overflow else None
         )
-        self.constraint_overflow = wp.zeros(self.world_count, dtype=wp.bool, device=model.device)
-        """Per-world capacity failure flags, shape ``[world_count]``, dtype ``bool``.
+        self.constraint_overflow = wp.zeros(self.world_count + 1, dtype=wp.bool, device=model.device)
+        """Capacity failure flags, shape ``[world_count + 1]``, dtype ``bool``.
 
-        Set when a step drops constraint rows (``dense_max_constraints`` or
-        ``mf_max_constraints`` exceeded), receives more contacts than the contact buffer
-        holds, or receives contacts from which global contact reduction dropped candidates
-        (the last two flag every world). Flags persist until :meth:`reset` clears them."""
+        One entry per world plus a final entry for global (world ``-1``) articulations,
+        the layout of the :meth:`reset` mask. An entry is set when a step drops constraint
+        rows of that world (``dense_max_constraints`` or ``mf_max_constraints`` exceeded)
+        or drops a contact that couples a dynamic global body with another world. Global
+        articulations share world 0's row storage, so a row loss in world 0 also sets the
+        global entry while a dynamic global articulation exists. Receiving more contacts
+        than the contact buffer holds, or contacts from which global contact reduction
+        dropped candidates, sets every entry. Flags persist until :meth:`reset` clears
+        them."""
+        self._cross_world_contacts = wp.zeros(self.world_count + 1, dtype=wp.int32, device=model.device)
+        if self._model_plan is not None and model.articulation_count:
+            self._has_responding_global = bool(
+                np.any((model.articulation_world.numpy() < 0) & (self._model_plan.response_dof_count > 0))
+            )
+        else:
+            self._has_responding_global = False
         self._row_dropped_all = wp.zeros((2, max(self.world_count, 1)), dtype=wp.int32, device=model.device)
         self._row_dropped_dense = self._row_dropped_all[0]
         self._row_dropped_mf = self._row_dropped_all[1]
@@ -947,8 +1006,8 @@ class SolverFeatherPGS(SolverBase):
             state: Simulation state; left unchanged.
             world_mask: Optional boolean mask of shape ``(world_count + 1,)``. The first
                 ``world_count`` entries select worlds; the final entry selects global
-                articulations (world ``-1``), whose status entry is shared with world 0.
-                ``None`` resets everything.
+                articulations (world ``-1``) and the final entry of
+                :attr:`constraint_overflow`. ``None`` resets everything.
             flags: Unused; the solver keeps no per-attribute state.
         """
         del flags
@@ -1885,7 +1944,7 @@ class SolverFeatherPGS(SolverBase):
         return state_out
 
     def check_constraint_capacity(self) -> None:
-        """Raise if any world exceeded a contact or constraint-row capacity since its last reset.
+        """Raise if any world, or the global entry, lost contacts or constraint rows since its last reset.
 
         Reads :attr:`constraint_overflow` on the host, so call it outside CUDA graph capture,
         for example at an observation boundary. Kernels can read :attr:`constraint_overflow`
@@ -1893,15 +1952,20 @@ class SolverFeatherPGS(SolverBase):
         new solver (and newly captured graphs) and a :meth:`reset` of the affected worlds.
 
         Raises:
-            RuntimeError: If called during graph capture, or if any world is flagged.
+            RuntimeError: If called during graph capture, or if any entry is flagged.
         """
         if self.model.device.is_capturing:
             raise RuntimeError("check_constraint_capacity() must run outside CUDA graph capture")
-        worlds = np.flatnonzero(self.constraint_overflow.numpy())
-        if worlds.size:
+        flags = self.constraint_overflow.numpy()
+        worlds = np.flatnonzero(flags[:-1])
+        global_flagged = bool(flags[-1])
+        if worlds.size or global_flagged:
+            where = f"worlds {worlds[:16].tolist()} ({worlds.size} invalid worlds)"
+            if global_flagged:
+                where += " and global (world -1) articulations"
             raise RuntimeError(
-                f"FeatherPGS constraint/contact capacity exceeded in worlds {worlds[:16].tolist()}"
-                f" ({worlds.size} invalid worlds); increase capacities and reset before accepting transitions."
+                f"FeatherPGS constraint/contact capacity exceeded in {where}; "
+                "increase capacities and reset before accepting transitions."
             )
 
     @override
@@ -2390,6 +2454,7 @@ class SolverFeatherPGS(SolverBase):
             device=model.device,
         )
         self._dense_first_rejected_slot.fill_(_ROW_SLOT_UNBOUNDED)
+        self._cross_world_contacts.zero_()
         if mf_active:
             self.mf_slot_counter.zero_()
             self._mf_first_rejected_slot.fill_(_ROW_SLOT_UNBOUNDED)
@@ -2513,6 +2578,7 @@ class SolverFeatherPGS(SolverBase):
                     int(mf_active),
                     max_constraints,
                     self.mf_max_constraints,
+                    self._articulation_model_world,
                 ],
                 outputs=[
                     self.contact_world,
@@ -2526,6 +2592,7 @@ class SolverFeatherPGS(SolverBase):
                     self._row_dropped_mf,
                     self._dense_first_rejected_slot,
                     mf_first_rejected_slot,
+                    self._cross_world_contacts,
                 ],
                 device=model.device,
             )
@@ -2716,16 +2783,18 @@ class SolverFeatherPGS(SolverBase):
         )
         wp.launch(
             _finalize_constraint_status,
-            dim=self.world_count,
+            dim=self.world_count + 1,
             inputs=[
                 self.slot_counter,
                 mf_slot_counter,
                 self._row_dropped_all,
+                self._cross_world_contacts,
                 contacts.rigid_contact_count if contacts is not None else self._dummy_contact_count,
                 contacts._reduction_overflow if contacts is not None else self._dummy_contact_count,
                 self.dense_max_constraints,
                 self.mf_max_constraints,
                 contacts.rigid_contact_max if contacts is not None else 0,
+                int(self._has_responding_global),
                 self.constraint_overflow,
             ],
             device=model.device,
@@ -2733,7 +2802,7 @@ class SolverFeatherPGS(SolverBase):
         if self.warn_constraint_overflow:
             wp.launch(
                 _warn_constraint_row_overflow,
-                dim=self.world_count,
+                dim=self.world_count + 1,
                 inputs=[
                     self.slot_counter,
                     self._row_dropped_dense,
@@ -2742,6 +2811,7 @@ class SolverFeatherPGS(SolverBase):
                     self._row_dropped_mf,
                     self.mf_max_constraints,
                     int(mf_active),
+                    self._cross_world_contacts,
                     self._row_overflow_warning_emitted,
                 ],
                 device=model.device,

@@ -45,6 +45,7 @@ def _allocate_overflowing_contacts(device, contact_count, row_capacity):
             1,
             row_capacity,
             row_capacity,
+            wp.zeros((1,), dtype=wp.int32, device=device),
         ],
         outputs=[
             wp.zeros((contact_count,), dtype=wp.int32, device=device),
@@ -58,6 +59,7 @@ def _allocate_overflowing_contacts(device, contact_count, row_capacity):
             dropped,
             wp.full((1,), _UNBOUNDED, dtype=wp.int32, device=device),
             first_rejected,
+            wp.zeros((2,), dtype=wp.int32, device=device),
         ],
         device=device,
     )

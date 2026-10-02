@@ -2039,6 +2039,7 @@ def _allocate_world_contact_slot(
     has_free_rigid: int,
     max_constraints: int,
     mf_max_constraints: int,
+    art_model_world: wp.array[int],
     # outputs
     contact_world: wp.array[int],
     contact_slot: wp.array[int],
@@ -2051,14 +2052,22 @@ def _allocate_world_contact_slot(
     mf_dropped_contact_rows: wp.array[int],
     dense_first_rejected_slot: wp.array[int],
     mf_first_rejected_slot: wp.array[int],
+    cross_world_contacts: wp.array[int],
 ):
     """Classify one contact and reserve its normal and two friction rows.
 
     Contacts whose responding sides are only free bodies (or ground) go to the
     free-body rows (``contact_path == 1``); every other contact with a responding
     side goes to the dense rows of its world (``contact_path == 0``). Contacts
-    without a responding side, across worlds, or past a capacity get
-    ``contact_path == -1``.
+    without a responding side or past a capacity get ``contact_path == -1``.
+
+    The solve world comes from the responding sides only, so a global (world ``-1``)
+    kinematic or prescribed body touches the bodies of every world; its motion enters
+    through the row target velocity. A contact that would couple two solve worlds (a
+    dynamic global body, solved in world 0, touching a body of another world), or whose
+    non-responding side keeps response DOFs in another world, cannot be solved. It gets
+    ``contact_path == -1`` and is counted in ``cross_world_contacts`` for each side's
+    model world, the final entry standing for global bodies.
     """
     shape_a = contact_shape0[c]
     shape_b = contact_shape1[c]
@@ -2090,17 +2099,36 @@ def _allocate_world_contact_slot(
         contact_path[c] = -1
         return
 
-    # Both bodies must be in the same world, or one side is ground.
+    # The responding sides select the solve world; a non-responding side must not need
+    # response DOFs of another world.
     world = -1
-    if art_a >= 0:
+    if a_can_respond:
         world = art_to_world[art_a]
-    if art_b >= 0:
+    if b_can_respond:
         world_b = art_to_world[art_b]
         if world >= 0 and world_b != world:
-            contact_slot[c] = -1
-            contact_path[c] = -1
-            return
-        world = world_b
+            world = -2
+        elif world != -2:
+            world = world_b
+    if world >= 0:
+        if not a_can_respond and a_has_dofs and art_to_world[art_a] != world:
+            world = -2
+        if not b_can_respond and b_has_dofs and art_to_world[art_b] != world:
+            world = -2
+    if world == -2:
+        global_slot = cross_world_contacts.shape[0] - 1
+        for side in range(2):
+            art = art_a
+            if side == 1:
+                art = art_b
+            if art >= 0:
+                model_world = art_model_world[art]
+                if model_world < 0 or model_world >= global_slot:
+                    model_world = global_slot
+                wp.atomic_add(cross_world_contacts, model_world, 1)
+        contact_slot[c] = -1
+        contact_path[c] = -1
+        return
     if world < 0:
         contact_slot[c] = -1
         contact_path[c] = -1
@@ -2154,6 +2182,7 @@ def allocate_world_contact_slots(
     has_free_rigid: int,
     max_constraints: int,
     mf_max_constraints: int,
+    art_model_world: wp.array[int],
     # outputs
     contact_world: wp.array[int],
     contact_slot: wp.array[int],
@@ -2166,6 +2195,7 @@ def allocate_world_contact_slots(
     mf_dropped_contact_rows: wp.array[int],
     dense_first_rejected_slot: wp.array[int],
     mf_first_rejected_slot: wp.array[int],
+    cross_world_contacts: wp.array[int],
 ):
     """Allocate the rows of every active contact with a grid-stride loop.
 
@@ -2198,6 +2228,7 @@ def allocate_world_contact_slots(
             has_free_rigid,
             max_constraints,
             mf_max_constraints,
+            art_model_world,
             contact_world,
             contact_slot,
             contact_art_a,
@@ -2209,6 +2240,7 @@ def allocate_world_contact_slots(
             mf_dropped_contact_rows,
             dense_first_rejected_slot,
             mf_first_rejected_slot,
+            cross_world_contacts,
         )
 
 

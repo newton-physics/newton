@@ -61,11 +61,12 @@ def test_reset_isolates_global_slot(test, device):
     control = model.control()
     solver.step(state, output, control, None, 0.01)
 
+    # The status has the mask's layout, so every entry is cleared only by its own mask entry.
     cases = (
-        ([False, False, True], [0, 0, 1], [True, True]),
-        ([True, False, False], [1, 0, 0], [False, True]),
-        ([False, True, False], [0, 1, 0], [True, False]),
-        (None, [1, 1, 1], [False, False]),
+        ([False, False, True], [0, 0, 1], [True, True, False]),
+        ([True, False, False], [1, 0, 0], [False, True, True]),
+        ([False, True, False], [0, 1, 0], [True, False, True]),
+        (None, [1, 1, 1], [False, False, False]),
     )
     for mask, expected_refresh, expected_overflow in cases:
         with test.subTest(mask=mask):
