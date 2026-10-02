@@ -958,9 +958,12 @@ class SolverFeatherPGS(SolverBase):
                 by contact identity through :attr:`~newton.Contacts.rigid_contact_match_index`,
                 so the :class:`~newton.CollisionPipeline` must be created with contact matching
                 enabled. Substeps that reuse a contact set without a collision pass seed each
-                contact from its own previous substep. History carries across at most one
-                collision pass into the same :class:`~newton.Contacts` buffer; a different
-                buffer or skipped passes start cold. Carried impulses are scaled by the
+                contact from its own previous substep. History carries across one collision
+                pass into the same :class:`~newton.Contacts` buffer when that pass matched
+                against the solved contact set
+                (:attr:`~newton.Contacts.rigid_contact_match_generation`); a different
+                buffer, skipped passes, or a pass after the pipeline wrote another buffer
+                start cold. Carried impulses are scaled by the
                 ratio of the step to the previous one, including under graph replay; tangent
                 impulses are rotated into the current tangent frame and clamped to the
                 current friction cone; other rows start cold.
@@ -3299,6 +3302,7 @@ class SolverFeatherPGS(SolverBase):
                 self.contact_slot,
                 self.contact_world,
                 contacts.rigid_contact_match_index,
+                contacts.rigid_contact_match_generation,
                 prev_slot,
                 prev_impulses,
                 prev_type,

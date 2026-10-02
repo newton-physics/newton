@@ -3326,24 +3326,26 @@ def snapshot_step_warmstart(
 @wp.func
 def warmstart_history_relation(
     contact_generation: wp.array[wp.int32],
+    match_generation: wp.array[wp.int32],
     contact_stream: int,
     history_generation: wp.array[wp.int32],
     history_stream: wp.array[wp.int32],
 ):
-    """Relate the current contact set to the solved history: 0 unrelated, 1 same set, 2 next collision pass."""
+    """Relate the current contact set to the solved history: 0 unrelated, 1 same set, 2 matched to it.
+
+    ``match_generation`` is the generation of this buffer that the match indices refer
+    to (:attr:`~newton.Contacts.rigid_contact_match_generation`). Only the solved
+    generation makes them usable: after a pass into another buffer or a skipped pass,
+    they refer to a contact set this solver never solved.
+    """
     if contact_stream == 0 or history_stream[0] != contact_stream:
         return 0
-    generation = contact_generation[0]
     previous = history_generation[0]
     if previous == CONTACT_GENERATION_NONE:
         return 0
-    if generation == previous:
+    if contact_generation[0] == previous:
         return 1
-    # Collision passes advance the generation by one, wrapping like Contacts does.
-    following = previous + 1
-    if previous == 2147483647:
-        following = 0
-    if generation == following:
+    if match_generation[0] == previous:
         return 2
     return 0
 
@@ -3356,6 +3358,7 @@ def gather_contact_warmstart(
     contact_slot: wp.array[int],
     contact_world: wp.array[int],
     match_index: wp.array[int],
+    match_generation: wp.array[wp.int32],
     prev_slot_sorted: wp.array[int],
     prev_impulses: wp.array2d[float],
     prev_row_type: wp.array2d[int],
@@ -3382,10 +3385,12 @@ def gather_contact_warmstart(
     ``prev_slot_sorted`` maps a contact's index in the contact set the previous step
     solved to its first row then, so contacts keep their impulses when their rows move.
     When the solver steps again on the same contact set (same buffer ``contact_stream``,
-    unchanged generation) the index is ``c`` itself. After exactly one collision pass
-    into that buffer, ``match_index[c]`` is contact ``c``'s index in the solved set.
-    Any other relation (another buffer, skipped collision passes, no history) starts
-    every contact cold, since the match indices then refer to an unsolved set.
+    unchanged generation) the index is ``c`` itself. When the buffer's last collision
+    pass matched against the solved set (``match_generation`` equals the solved
+    generation), ``match_index[c]`` is contact ``c``'s index in that set. Any other
+    relation (another buffer, skipped collision passes, a pass after the pipeline wrote
+    another buffer, no history) starts every contact cold, since the match indices then
+    refer to an unsolved set.
     A friction row is seeded only when both steps allocated it for the contact
     (contacts may change between one and three rows). Unmatched contacts stay cold.
     Seeded impulses are scaled by ``decay`` and by ``dt / history[0]``, the ratio of the
@@ -3404,7 +3409,9 @@ def gather_contact_warmstart(
     if new_slot >= count:
         return
 
-    relation = warmstart_history_relation(contact_generation, contact_stream, history_generation, history_stream)
+    relation = warmstart_history_relation(
+        contact_generation, match_generation, contact_stream, history_generation, history_stream
+    )
     if relation == 0:
         return
     mi = match_index[c]

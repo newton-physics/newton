@@ -106,6 +106,8 @@ def _gather_rows(
             wp.array(current_slots, dtype=wp.int32, device=device),
             wp.array([0] * n, dtype=wp.int32, device=device),
             wp.array(match_indices, dtype=wp.int32, device=device),
+            # The match indices refer to the solved generation 0.
+            wp.zeros(1, dtype=wp.int32, device=device),
             wp.array(prev_slots, dtype=wp.int32, device=device),
             wp.array([prev_impulses], dtype=wp.float32, device=device),
             wp.array([prev_types], dtype=wp.int32, device=device),
@@ -119,7 +121,7 @@ def _gather_rows(
             decay,
             dt_scale,
             # The previous step is 1, so the step ratio is dt_scale; generation 1 of
-            # stream 1 follows the solved generation 0, so match indices apply.
+            # stream 1 was matched against the solved generation 0, so match indices apply.
             wp.ones(1, dtype=float, device=device),
             wp.ones(1, dtype=wp.int32, device=device),
             1,
@@ -317,37 +319,68 @@ def test_real_contact_insertion_moves_slots_without_cross_seeding(test, device):
     test.assertEqual(float(impulses[a_slot]), 0.0)
 
 
-def _insertion_after_solved_single_contact(device):
-    """Solve sphere B alone on the ground, then lower sphere A so its contact sorts before B's."""
+def _insertion_after_solved_single_contact(device, articulated: bool = False):
+    """Solve sphere B alone on the ground, then lower sphere A so its contact sorts before B's.
+
+    ``articulated`` mounts each sphere on a vertical prismatic joint, so the contacts are
+    dense rows; otherwise the spheres are free bodies on the free-body rows.
+    """
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-    body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0.0, 1.0), wp.quat_identity()))
-    shape_a = builder.add_shape_sphere(body_a, radius=0.1)
-    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.5, 0.0, 0.099), wp.quat_identity()))
-    shape_b = builder.add_shape_sphere(body_b, radius=0.1)
+    shapes = []
+    for x, z in ((-0.5, 1.0), (0.5, 0.099)):
+        xform = wp.transform(wp.vec3(x, 0.0, z), wp.quat_identity())
+        if articulated:
+            body = builder.add_link(xform=xform)
+            joint = builder.add_joint_prismatic(-1, body, axis=wp.vec3(0.0, 0.0, 1.0), parent_xform=xform)
+            builder.add_articulation([joint])
+        else:
+            body = builder.add_body(xform=xform)
+        shapes.append(builder.add_shape_sphere(body, radius=0.1))
     builder.add_ground_plane()
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="sticky")
     contacts = pipeline.contacts()
     solver = newton.solvers.SolverFeatherPGS(model, pgs_iterations=8, pgs_warmstart=True)
     state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     pipeline.collide(state_0, contacts)
     solver.step(state_0, state_1, model.control(), contacts, 1.0 / 240.0)
-    test_impulse = float(solver._ws_prev_mf_impulses.numpy()[0, int(solver._ws_prev_mf_slot.numpy()[0])])
-    q = state_1.body_q.numpy()
-    q[body_a][2] = 0.099
-    state_1.body_q.assign(q)
-    return model, pipeline, contacts, solver, state_1, state_0, (shape_a, shape_b), test_impulse
+    if articulated:
+        prev_slot, prev_impulses = solver._ws_prev_dense_slot, solver._ws_prev_impulses
+    else:
+        prev_slot, prev_impulses = solver._ws_prev_mf_slot, solver._ws_prev_mf_impulses
+    test_impulse = float(prev_impulses.numpy()[0, int(prev_slot.numpy()[0])])
+    if articulated:
+        # Sphere A's joint coordinate is its height offset from the 1 m start.
+        q = state_1.joint_q.numpy()
+        q[0] = 0.099 - 1.0
+        state_1.joint_q.assign(q)
+        newton.eval_fk(model, state_1.joint_q, state_1.joint_qd, state_1)
+    else:
+        q = state_1.body_q.numpy()
+        q[0][2] = 0.099
+        state_1.body_q.assign(q)
+        # Keep A's free-joint coordinates consistent, so a repeated step starts from the same pose.
+        q = state_1.joint_q.numpy()
+        q[2] = 0.099
+        state_1.joint_q.assign(q)
+    return model, pipeline, contacts, solver, state_1, state_0, tuple(shapes), test_impulse
 
 
-def _seeded_sphere_impulses(solver, contacts, shapes, state_in, state_out, model):
-    """Step without a sweep and return the seeded normal impulses of A's and B's contacts."""
-    solver.pgs_iterations = 0
-    solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+def _seeded_sphere_impulses(solver, contacts, shapes, state_in, state_out, model, articulated=False, step=True):
+    """Step without a sweep and return the seeded normal impulses of A's and B's contacts.
+
+    ``articulated`` reads the dense rows instead of the free-body rows. With ``step=False``
+    the caller has already stepped (for example by a graph replay).
+    """
+    if step:
+        solver.pgs_iterations = 0
+        solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
     count = int(contacts.rigid_contact_count.numpy()[0])
     shape0 = contacts.rigid_contact_shape0.numpy()[:count]
     shape1 = contacts.rigid_contact_shape1.numpy()[:count]
     slots = solver.contact_slot.numpy()[:count]
-    impulses = solver.mf_impulses.numpy()[0]
+    impulses = (solver.impulses if articulated else solver.mf_impulses).numpy()[0]
     seeds = []
     for shape in shapes:
         index = np.flatnonzero((shape0 == shape) | (shape1 == shape))
@@ -387,6 +420,77 @@ def test_skipped_collision_pass_starts_cold(test, device):
     seed_a, seed_b = _seeded_sphere_impulses(solver, contacts, shapes, state_in, state_out, model)
     test.assertEqual(seed_a, 0.0)
     test.assertEqual(seed_b, 0.0)
+
+
+def test_interleaved_contact_buffers_start_cold(test, device):
+    """A pass into the solved buffer after a pass into another buffer starts cold.
+
+    The pipeline matches against its last pass, whichever buffer it wrote. The second
+    pass into the solved buffer advances its generation by one, but its match indices
+    refer to the other buffer's contacts: reading them as indices into the solved set
+    would seed the new contact A with B's impulse. One pass straight into the solved
+    buffer carries B's impulse, so the cold start is not vacuous.
+    """
+    for articulated in (False, True):
+        with test.subTest(articulated=articulated):
+            model, pipeline, contacts, solver, state_in, state_out, shapes, carried = (
+                _insertion_after_solved_single_contact(device, articulated)
+            )
+            test.assertGreater(carried, 0.0)
+            other = pipeline.contacts()
+            pipeline.collide(state_in, other)
+            pipeline.collide(state_in, contacts)
+            test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 2)
+            seed_a, seed_b = _seeded_sphere_impulses(solver, contacts, shapes, state_in, state_out, model, articulated)
+            test.assertEqual(seed_a, 0.0)
+            test.assertEqual(seed_b, 0.0)
+
+            model, pipeline, contacts, solver, state_in, state_out, shapes, carried = (
+                _insertion_after_solved_single_contact(device, articulated)
+            )
+            pipeline.collide(state_in, contacts)
+            seed_a, seed_b = _seeded_sphere_impulses(solver, contacts, shapes, state_in, state_out, model, articulated)
+            test.assertEqual(seed_a, 0.0)
+            test.assertAlmostEqual(seed_b, carried, delta=1.0e-6)
+
+
+def test_interleaved_contact_buffers_start_cold_under_graph_replay(test, device):
+    """Alternating captured collision passes keep the interleaved-buffer cold start."""
+    for articulated in (False, True):
+        with test.subTest(articulated=articulated):
+            model, pipeline, contacts, solver, state_in, state_out, shapes, carried = (
+                _insertion_after_solved_single_contact(device, articulated)
+            )
+            other = pipeline.contacts()
+            solver.pgs_iterations = 0
+            graphs = {}
+            with wp.ScopedCapture(device) as capture:
+                pipeline.collide(state_in, contacts)
+            graphs["collide"] = capture.graph
+            with wp.ScopedCapture(device) as capture:
+                pipeline.collide(state_in, other)
+            graphs["collide_other"] = capture.graph
+            with wp.ScopedCapture(device) as capture:
+                solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+            graphs["step"] = capture.graph
+
+            # One pass straight into the solved buffer carries B's impulse.
+            wp.capture_launch(graphs["collide"])
+            wp.capture_launch(graphs["step"])
+            seed_a, seed_b = _seeded_sphere_impulses(
+                solver, contacts, shapes, state_in, state_out, model, articulated, step=False
+            )
+            test.assertEqual(seed_a, 0.0)
+            test.assertAlmostEqual(seed_b, carried, delta=1.0e-6)
+
+            wp.capture_launch(graphs["collide_other"])
+            wp.capture_launch(graphs["collide"])
+            wp.capture_launch(graphs["step"])
+            seed_a, seed_b = _seeded_sphere_impulses(
+                solver, contacts, shapes, state_in, state_out, model, articulated, step=False
+            )
+            test.assertEqual(seed_a, 0.0)
+            test.assertEqual(seed_b, 0.0)
 
 
 def test_substeps_reuse_contacts_with_their_own_history(test, device):
@@ -641,6 +745,8 @@ for _fn in (
     test_substeps_reuse_contacts_with_their_own_history,
     test_replaced_contact_buffer_starts_cold,
     test_skipped_collision_pass_starts_cold,
+    test_interleaved_contact_buffers_start_cold,
+    test_interleaved_contact_buffers_start_cold_under_graph_replay,
     test_graph_replay_rescales_history_once_after_a_timestep_change,
 ):
     add_function_test(TestFeatherPGSIdentityWarmstart, _fn.__name__, _fn, devices=devices)
