@@ -479,6 +479,8 @@ def _flood_native(
 
 
 _FLOOD_MIN_CONTACTS = 32
+# Fraction of a footprint's principal extent that groups members into each end's support edge.
+_SUPPORT_EDGE_FRACTION = wp.constant(0.05)
 """Body pairs with more contacts than this grow their regions on a warp; smaller pairs in ``_build``."""
 
 
@@ -764,7 +766,15 @@ def _build(
                 sum1 = wp.vec3d(0.0)
                 count0 = int(0)
                 count1 = int(0)
-                edge_tolerance = 1.0e-5 * frame.radius[seed]
+                # A support edge spans the footprint's minor extent. A small
+                # misalignment between it and the principal axis, from a slightly
+                # sheared or tilted footprint, spreads the edge's projections; a
+                # round-off tolerance then keeps only one corner per edge and
+                # restores the diagonal couple. Members within a fraction of the
+                # axial extent form each edge: this shifts the anchors by at most
+                # that fraction along the axis and tolerates a misalignment of at
+                # least that fraction in radians.
+                edge_tolerance = wp.max(1.0e-5 * frame.radius[seed], _SUPPORT_EDGE_FRACTION * (high - low))
                 for j in range(member_start, member_stop):
                     c = frame.members[j]
                     if frame.eligible[c] != 0:
