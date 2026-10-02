@@ -349,7 +349,8 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                 ``0.0`` (default) disables the cutoff and computes the exact
                 closest distance.
             MAX_ITER: Maximum number of GJK iterations (default: 30)
-            COLLIDE_EPSILON: Relative duality-gap tolerance and near-contact distance [m] (default: 1e-4)
+            COLLIDE_EPSILON: Relative duality-gap tolerance, also used as an absolute distance
+                threshold [m] for overlap and duplicate vertices (default: 1e-4).
 
         Returns:
             Tuple of:
@@ -432,9 +433,9 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             # distance-vs-threshold test consistent.
             if simplex_usage_mask != wp.uint32(0) and max_dist > 0.0 and wp.dot(v, w_v) > max_dist * wp.sqrt(dist_sq):
                 break
-            # Relative duality gap; an absolute cutoff is too loose at millimeter gaps.
-            # A populated simplex supplies surface witnesses for either early exit.
             delta_dist = wp.dot(v, v - w_v)
+            # Compare the gap relative to squared distance; an absolute cutoff is too loose at small gaps.
+            # An empty simplex cannot supply surface witnesses, even when the center offset passes this test.
             if simplex_usage_mask != wp.uint32(0) and (delta_dist <= 0.0 or delta_dist < COLLIDE_EPSILON * dist_sq):
                 break
 
