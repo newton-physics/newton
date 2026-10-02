@@ -525,6 +525,14 @@ The table below shows PhysX attribute remapping examples:
      - ``self_collision_enabled`` (per articulation)
      - Direct mapping
 
+When :class:`newton.usd.SchemaResolverPhysx` is enabled and
+:meth:`newton.solvers.SolverMuJoCo.register_custom_attributes` has registered
+MuJoCo's body attributes, an authored ``physxRigidBody:disableGravity`` maps
+to ``mujoco:gravcomp`` (1.0 when disabled, 0.0 when enabled). An explicitly
+authored ``mjc:gravcomp`` takes precedence, including partial compensation
+and an explicit zero. This mapping uses MuJoCo's existing gravity compensation;
+it does not add per-body gravity support to other solvers.
+
 **Newton articulation remapping:**
 
 On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArticulationRootAPI``), the following is resolved:
