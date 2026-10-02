@@ -663,6 +663,16 @@ def parse_mjcf(
         for texture in asset.findall("texture"):
             tex_name = texture.attrib.get("name")
             tex_file = texture.attrib.get("file")
+            builtin = texture.attrib.get("builtin", "none")
+            if tex_name and not tex_file and builtin != "none":
+                # Procedural MuJoCo textures (checker, gradient, flat) have no image; keep their
+                # mean color so textured geoms such as floors keep their authored tone.
+                rgb1 = np.array(texture.attrib.get("rgb1", "0.8 0.8 0.8").split(), dtype=np.float32)[:3]
+                rgb2 = np.array(texture.attrib.get("rgb2", "0.5 0.5 0.5").split(), dtype=np.float32)[:3]
+                # Flat textures fill everything but the bottom face of cube textures with rgb1.
+                mean = rgb1 if builtin == "flat" else 0.5 * (rgb1 + rgb2)
+                texture_assets[tex_name] = {"builtin_color": tuple(float(v) for v in mean)}
+                continue
             if not tex_name or not tex_file:
                 continue
             tex_path = os.path.join(texture_dir, tex_file)
@@ -1106,6 +1116,12 @@ def parse_mjcf(
             material_info = material_assets.get(material_name, {})
             rgba = geom_attrib.get("rgba", material_info.get("rgba"))
             material_color = None
+            builtin_color = texture_assets.get(material_info.get("texture"), {}).get("builtin_color")
+            if builtin_color is not None and "rgba" not in geom_attrib:
+                # MuJoCo multiplies the material rgba (default white) with the texture color.
+                tint = np.array((rgba or "1 1 1 1").split(), dtype=np.float32)
+                tint = np.pad(tint, (0, max(0, 4 - tint.size)), constant_values=1.0)
+                rgba = " ".join(str(v) for v in (*(np.array(builtin_color) * tint[:3]), tint[3]))
             if rgba is not None:
                 rgba_values = np.array(rgba.split(), dtype=np.float32)
                 if len(rgba_values) >= 3:
