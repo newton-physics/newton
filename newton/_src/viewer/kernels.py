@@ -277,17 +277,9 @@ def estimate_world_extents(
 
     # Get shape's world assignment
     world_idx = shape_world[tid]
-    shape_parent = shape_body[tid]
 
-    # A regular single-world model stores body-attached shapes as global
-    # (world -1). Attribute those shapes to its only world, while leaving
-    # static fixtures outside the per-world layout.
-    if world_idx < 0:
-        if world_count == 1 and shape_parent >= 0:
-            world_idx = 0
-        else:
-            return
-    elif world_idx >= world_count:
+    # Skip global shapes (world -1) or invalid world indices
+    if world_idx < 0 or world_idx >= world_count:
         return
 
     # Get collision radius and skip shapes with unreasonably large radii
@@ -297,6 +289,7 @@ def estimate_world_extents(
 
     # Get shape's world position
     shape_xform = shape_transform[tid]
+    shape_parent = shape_body[tid]
 
     # Compute world transform
     if shape_parent >= 0:
