@@ -260,6 +260,108 @@ def test_unconverted_equality_constraints_raise(test, device):
     test.assertLess(float(state_0.body_q.numpy()[0, 2]), 0.95)
 
 
+def test_equality_link_must_name_the_projected_constraint(test, device):
+    """Reject an equality row whose projection link names an entity that does not enforce it."""
+    # A CONNECT row holding a free box to the world that claims the box's own free joint: the
+    # joint is in range but is not a loop joint, so the box would fall through the constraint.
+    with test.assertRaisesRegex(NotImplementedError, r"equality_constraint rows \[0\]"):
+        SolverFeatherPGS(_build_box_with_equality(device, enabled=True, target_kind=1, target=0))
+
+    def build_pendulum_with_connect(eq_type: int, joint_kind: str, row_names_world: bool):
+        builder = newton.ModelBuilder()
+        link = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+        builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+        hinge = builder.add_joint_revolute(-1, link, axis=newton.Axis.Y)
+        builder.add_articulation([hinge])
+        other = builder.add_body(xform=wp.transform((0.5, 0.0, 1.0), wp.quat_identity()))
+        builder.add_shape_box(other, hx=0.1, hy=0.1, hz=0.1)
+        add_joint = builder.add_joint_ball if joint_kind == "ball" else builder.add_joint_fixed
+        loop = add_joint(link, other)
+        builder.add_custom_values(
+            **{
+                "mujoco:equality_constraint_type": eq_type,
+                "mujoco:equality_constraint_objtype": 1,
+                "mujoco:equality_constraint_body1": link,
+                "mujoco:equality_constraint_body2": -1 if row_names_world else other,
+                "mujoco:equality_constraint_enabled": True,
+                "mujoco:equality_constraint_target_kind": 1,
+                "mujoco:equality_constraint_target": loop,
+            }
+        )
+        return builder.finalize(device=device)
+
+    # Mismatched projections: a WELD row linking a ball joint, and a row whose bodies are not
+    # the linked joint's endpoints. Each is an unenforced equality, not a loop joint.
+    for eq_type, joint_kind, row_names_world in ((1, "ball", False), (0, "ball", True)):
+        with test.subTest(eq_type=eq_type, joint_kind=joint_kind, row_names_world=row_names_world):
+            with test.assertRaisesRegex(NotImplementedError, "equality"):
+                SolverFeatherPGS(build_pendulum_with_connect(eq_type, joint_kind, row_names_world))
+    # A tree joint between the row's bodies is not a projection either: the row's anchor is
+    # not enforced by it.
+    builder = newton.ModelBuilder()
+    root = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+    tip = builder.add_link(xform=wp.transform((0.5, 0.0, 1.0), wp.quat_identity()))
+    for body in (root, tip):
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    hinge = builder.add_joint_revolute(-1, root, axis=newton.Axis.Y)
+    ball = builder.add_joint_ball(root, tip, parent_xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity()))
+    builder.add_articulation([hinge, ball])
+    builder.add_custom_values(
+        **{
+            "mujoco:equality_constraint_type": 0,
+            "mujoco:equality_constraint_objtype": 1,
+            "mujoco:equality_constraint_body1": root,
+            "mujoco:equality_constraint_body2": tip,
+            "mujoco:equality_constraint_enabled": True,
+            "mujoco:equality_constraint_target_kind": 1,
+            "mujoco:equality_constraint_target": ball,
+        }
+    )
+    with test.subTest(target="tree ball joint"):
+        with test.assertRaisesRegex(NotImplementedError, "equality"):
+            SolverFeatherPGS(builder.finalize(device=device))
+    # The matching projection is judged through its loop joint instead.
+    for eq_type, joint_kind in ((0, "ball"), (1, "fixed")):
+        with test.subTest(eq_type=eq_type, joint_kind=joint_kind, matching=True):
+            with test.assertRaisesRegex(NotImplementedError, "loop-closing"):
+                SolverFeatherPGS(build_pendulum_with_connect(eq_type, joint_kind, False))
+
+    # A JOINT row linking a mimic between other joints is likewise unenforced; the importer's
+    # own projection is judged through its mimic constraint.
+    mjcf = """
+    <mujoco>
+      <worldbody>
+        <body name="a" pos="0 0 1">
+          <joint name="ja" type="hinge" axis="0 1 0"/>
+          <geom type="box" size="0.1 0.1 0.1"/>
+          <body name="b" pos="0.3 0 0">
+            <joint name="jb" type="hinge" axis="0 1 0"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="c" pos="0.3 0 0">
+              <joint name="jc" type="hinge" axis="0 1 0"/>
+              <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+      <equality><joint joint1="jb" joint2="ja"/></equality>
+    </mujoco>
+    """
+    for swap, message in ((False, "mimic constraints"), (True, "equality")):
+        with test.subTest(mimic_joints_swapped=swap):
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            model = builder.finalize(device=device)
+            test.assertEqual(int(model.mujoco.equality_constraint_target_kind.numpy()[0]), 2)
+            if swap:
+                joint0 = model.constraint_mimic_joint0.numpy()
+                joint1 = model.constraint_mimic_joint1.numpy()
+                model.constraint_mimic_joint0.assign(joint1)
+                model.constraint_mimic_joint1.assign(joint0)
+            with test.assertRaisesRegex(NotImplementedError, message):
+                SolverFeatherPGS(model)
+
+
 def test_enabling_equality_constraint_at_runtime_raises(test, device):
     """Re-check the MuJoCo equality rows when constraint properties change."""
     model = _build_box_with_equality(device, enabled=False)
@@ -386,6 +488,10 @@ for _name, _func in (
     ),
     ("test_tiled_and_loop_kernels_step_identically", test_tiled_and_loop_kernels_step_identically),
     ("test_unconverted_equality_constraints_raise", test_unconverted_equality_constraints_raise),
+    (
+        "test_equality_link_must_name_the_projected_constraint",
+        test_equality_link_must_name_the_projected_constraint,
+    ),
     ("test_enabling_equality_constraint_at_runtime_raises", test_enabling_equality_constraint_at_runtime_raises),
 ):
     add_function_test(TestFeatherPGSLaunchConfig, _name, _func, devices=devices)
