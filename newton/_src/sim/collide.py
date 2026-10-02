@@ -1637,25 +1637,24 @@ class CollisionPipeline:
             explicit_pairs_host = None
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
-                colliding_mask = _shape_collide_mask(model, len(shape_types))
-                colliding_shape_types = shape_types[colliding_mask]
-                # Only shapes that can reach the narrow phase enable its mesh and
-                # heightfield stages: the explicit broad phase emits only listed
-                # pairs, and NXN/SAP only pair shapes that collide with shapes.
-                stage_mask = colliding_mask
+                route_mask = _shape_collide_mask(model, len(shape_types))
+                # Shapes that can reach the narrow phase decide which stages it builds.
+                # NXN/SAP pair only shapes that collide with shapes. The explicit list is
+                # authoritative: every listed shape reaches the narrow phase, including
+                # one with shape collision disabled, and an unlisted shape never does.
                 if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
                     explicit_pairs_host = self.shape_pairs_filtered.numpy().reshape(-1, 2)
-                    paired = np.zeros(len(shape_types), dtype=bool)
+                    route_mask = np.zeros(len(shape_types), dtype=bool)
                     pair_shapes = explicit_pairs_host.ravel()
-                    paired[pair_shapes[(pair_shapes >= 0) & (pair_shapes < len(shape_types))]] = True
-                    stage_mask = colliding_mask & paired
-                mesh_mask = colliding_mask & (shape_types == int(GeoType.MESH))
-                heightfield_mask = colliding_mask & (shape_types == int(GeoType.HFIELD))
-                plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
+                    route_mask[pair_shapes[(pair_shapes >= 0) & (pair_shapes < len(shape_types))]] = True
+                route_shape_types = shape_types[route_mask]
+                mesh_mask = route_mask & (shape_types == int(GeoType.MESH))
+                heightfield_mask = route_mask & (shape_types == int(GeoType.HFIELD))
+                plane_mask = route_mask & (shape_types == int(GeoType.PLANE))
                 mesh_sdf_pair_mask = mesh_mask | heightfield_mask
                 planar_sdf_mask = np.zeros(len(shape_types), dtype=bool)
-                has_meshes = bool(np.any(mesh_mask & stage_mask))
-                has_heightfields = bool(np.any(heightfield_mask & stage_mask))
+                has_meshes = bool(np.any(mesh_mask))
+                has_heightfields = bool(np.any(heightfield_mask))
                 if (
                     hasattr(model, "_shape_sdf_index")
                     and model._shape_sdf_index is not None
@@ -1664,11 +1663,11 @@ class CollisionPipeline:
                 ):
                     shape_sdf_index = model._shape_sdf_index.numpy()
                     shape_edge_range = model.shape_edge_range.numpy()
-                    planar_sdf_mask = colliding_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
-                    has_planar_sdf_shapes = bool(np.any(planar_sdf_mask & stage_mask))
+                    planar_sdf_mask = route_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
+                    has_planar_sdf_shapes = bool(np.any(planar_sdf_mask))
                     has_meshes = has_meshes or has_planar_sdf_shapes
                     mesh_sdf_pair_mask |= planar_sdf_mask
-                    mesh_sdf_shapes = colliding_mask & (
+                    mesh_sdf_shapes = route_mask & (
                         (shape_types != int(GeoType.HFIELD))
                         & ((shape_types == int(GeoType.MESH)) | (shape_edge_range[:, 1] > 0))
                     )
@@ -1704,7 +1703,7 @@ class CollisionPipeline:
                         explicit_pairs = explicit_pairs_host
                         shape_a = explicit_pairs[:, 0]
                         shape_b = explicit_pairs[:, 1]
-                        box_mask = colliding_mask & (shape_types == int(GeoType.BOX))
+                        box_mask = route_mask & (shape_types == int(GeoType.BOX))
                         mesh_mesh_routes = (
                             (mesh_mask[shape_a] & mesh_mask[shape_b])
                             | (heightfield_mask[shape_a] & mesh_mask[shape_b])
@@ -1740,7 +1739,7 @@ class CollisionPipeline:
                     int(GeoType.CYLINDER),
                     int(GeoType.CONE),
                 }
-                use_lean_gjk_mpr = not bool(lean_unsupported & set(colliding_shape_types.tolist()))
+                use_lean_gjk_mpr = not bool(lean_unsupported & set(route_shape_types.tolist()))
 
             if self.broad_phase_mode == "explicit":
                 candidate_pair_work_estimate = self.shape_pairs_max

@@ -1481,6 +1481,70 @@ add_function_test(
 )
 
 
+def test_explicit_pairs_reach_shapes_without_shape_collision(test, device):
+    """Route explicit pairs whose shapes have shape collision disabled like enabled ones.
+
+    The explicit pair list is authoritative, so the narrow phase must build the stage each
+    listed pair needs. Flags are compared before ``collide()`` because launching a pair whose
+    stage was not built reads absent storage.
+    """
+    heightfield = newton.Heightfield(
+        data=np.zeros((3, 3), dtype=np.float32), nrow=3, ncol=3, hx=1.0, hy=1.0, min_z=0.0, max_z=0.0
+    )
+    capsule_xform = wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * wp.pi))
+
+    def build(scene, has_shape_collision):
+        cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=has_shape_collision)
+        builder = newton.ModelBuilder()
+        if scene == "heightfield_box":
+            first = builder.add_shape_heightfield(heightfield=heightfield, cfg=cfg)
+        elif scene == "mesh_box":
+            mesh = newton.Mesh.create_box(1.0, 1.0, 0.1)
+            first = builder.add_shape_mesh(-1, mesh=mesh, xform=wp.transform(wp.vec3(0.0, 0.0, -0.1)), cfg=cfg)
+        elif scene == "plane_mesh":
+            first = builder.add_ground_plane()
+        else:
+            first = builder.add_shape_capsule(-1, radius=0.1, half_height=0.5, xform=capsule_xform, cfg=cfg)
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.09)))
+        if scene == "plane_mesh":
+            second = builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1), cfg=cfg)
+        else:
+            second = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device=device)
+        pairs = wp.array([[first, second]], dtype=wp.vec2i, device=device)
+        return model, newton.CollisionPipeline(model, broad_phase="explicit", shape_pairs_filtered=pairs)
+
+    for scene in ("heightfield_box", "mesh_box", "plane_mesh", "capsule_box"):
+        with test.subTest(scene=scene):
+            control_stages = None
+            contact_counts = []
+            for has_shape_collision in (True, False):
+                model, pipeline = build(scene, has_shape_collision)
+                narrow_phase = pipeline.narrow_phase
+                stages = (
+                    narrow_phase.has_meshes,
+                    narrow_phase.has_heightfields,
+                    narrow_phase.max_mesh_mesh_pairs,
+                    narrow_phase.max_mesh_plane_pairs,
+                )
+                if control_stages is None:
+                    control_stages = stages
+                test.assertEqual(stages, control_stages, "stage setup differs from the colliding control")
+                contacts = pipeline.contacts()
+                pipeline.collide(model.state(), contacts)
+                contact_counts.append(int(contacts.rigid_contact_count.numpy()[0]))
+            test.assertGreater(contact_counts[0], 0)
+            test.assertEqual(contact_counts[1], contact_counts[0])
+
+
+add_function_test(
+    TestCollisionPipelineFilterPairs,
+    "test_explicit_pairs_reach_shapes_without_shape_collision",
+    test_explicit_pairs_reach_shapes_without_shape_collision,
+    devices=get_test_devices(),
+)
+
+
 def test_collision_filter_consistent_across_broadphases(test, device):
     """Verify that all broad phase modes produce the same contact pairs when collision filtering is applied.
 
