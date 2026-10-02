@@ -1238,8 +1238,8 @@ def make_dynamic_color_block_indices_kernel(geo_partition: fem.GeometryPartition
             color_indices[0, i] = 0
             color_indices[1, i] = 0
             return
-        color_indices[0, i] = cell_node_offsets[cell]
-        color_indices[1, i] = cell_node_offsets[cell + 1]
+        color_indices[0, i] = cell_node_offsets[elem_idx]
+        color_indices[1, i] = cell_node_offsets[elem_idx + 1]
 
     return fill_dynamic_color_block_indices
 

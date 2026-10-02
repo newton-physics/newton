@@ -646,7 +646,11 @@ class ImplicitMPMScratchpad:
             self.collider_total_volumes = fem.borrow_temporary(temporary_store, shape=collider_count, dtype=float)
 
         if max_colors > 0:
-            self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, strain_node_count), dtype=int)
+            # cell-based coloring (pic and DG bases) needs one block per partition cell
+            color_block_count = max(
+                strain_node_count, self._strain_space_restriction.space_partition.geo_partition.cell_count()
+            )
+            self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, color_block_count), dtype=int)
             self.color_offsets = fem.borrow_temporary(temporary_store, shape=max_colors + 1, dtype=int)
 
     def release_temporaries(self):
