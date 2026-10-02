@@ -245,7 +245,10 @@ repository examples spend tuning effort, not a shared solver API.
        way; the constructor warns when a model allows them. Per-body angular
        damping and free-body velocity bounds are model attributes registered by
        ``register_custom_attributes()``. Branched articulations of one shared
-       topology select sparse mass factors automatically; ``parallel_tree``
+       topology select sparse mass factors automatically from the model's
+       structure, not from a performance estimate (depending on the robot and
+       the world count they can be a few percent slower; large batches tend to
+       benefit); ``parallel_tree``
        traverses independent tree branches in parallel and is worth measuring
        on broad trees such as hands.
    * - :class:`~newton.solvers.SolverSemiImplicit`

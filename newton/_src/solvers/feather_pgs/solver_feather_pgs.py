@@ -864,7 +864,10 @@ class SolverFeatherPGS(SolverBase):
     rows are disabled and the model has no mimic or loop-closing joints: the mass matrix is assembled and factored in the fill-free pattern
     of the kinematic tree, and constraint rows keep only the DOFs that support them.
     Otherwise, and for free bodies, dense factors are used. Both give the same dynamics up
-    to floating-point rounding. ``parallel_tree=True`` additionally traverses the
+    to floating-point rounding. The selection follows the model's structure only; it is not
+    a performance prediction. Sparse factors take longer to set up and, depending on the
+    articulation and the number of worlds, can run a few percent slower than dense factors;
+    large batches of branched articulations tend to benefit. ``parallel_tree=True`` additionally traverses the
     independent branches of each tree in parallel.
 
     Constraint rows are stored per world with fixed capacities (``dense_max_constraints``
