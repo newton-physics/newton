@@ -105,18 +105,6 @@ Changing ``mujoco.dof_ref`` at runtime (via
 ``qpos0``, ``jnt_range``, and position controls with the new reference.
 Native MuJoCo attributes remain absolute and are not shifted.
 
-Equal joint limits
-------------------
-
-Revolute, prismatic, and D6 axes support equal finite lower and upper limits.
-These constrain the coordinate to the specified value using MuJoCo's soft
-joint-limit constraints; their compliance still depends on the limit stiffness
-and damping. MuJoCo's compiler requires a non-empty range, so Newton warns and
-temporarily widens each side by ``1e-6 * max(1, abs(limit))`` [m or rad]. The
-runtime model uses the exact authored limits. Files written with
-``save_to_mjcf`` retain the widened range. Reversed limits raise a
-``ValueError`` identifying the Newton joint, axis, and limit values.
-
 
 Geometry types
 --------------
@@ -190,6 +178,14 @@ collision pipeline (see `Collision pipeline`_ below).
 Joint-limit stiffness and damping
 ---------------------------------
 
+Revolute, prismatic, and D6 axes use MuJoCo's soft joint-limit constraints.
+Equal finite lower and upper limits constrain the coordinate to the specified
+value with the stiffness and damping described below. MuJoCo's compiler
+requires a non-empty range, so Newton warns and temporarily widens each side
+by ``1e-6 * max(1, abs(limit))`` [m or rad]. The runtime model uses the exact
+authored limits. Reversed limits raise a ``ValueError`` identifying the Newton
+joint, axis, and limit values.
+
 :attr:`~newton.Model.joint_limit_ke` and
 :attr:`~newton.Model.joint_limit_kd` are force-space gains (for example,
 ``N·m/rad`` and ``N·m·s/rad`` for revolute joints). MuJoCo converts
@@ -247,12 +243,12 @@ authored native value such as ``solreflimit="0 0"`` or USD
 
 .. note::
 
-   ``SolverMuJoCo(..., save_to_mjcf=path)`` is not a fully semantic
-   round-trip for ``SOLREF_MODE_FORCE_SPACE`` joints. MJCF only stores
-   ``solreflimit``; it has no field for "use Newton force-space
-   scaling with these gains". The exporter therefore only writes
-   ``solreflimit`` for ``SOLREF_MODE_RAW`` joints (where the authored
-   value carries the full intent). ``joint_limit_ke`` /
+   ``SolverMuJoCo(..., save_to_mjcf=path)`` retains the widened range for
+   equal joint limits. For ``SOLREF_MODE_FORCE_SPACE`` joints, it is not a
+   fully semantic round-trip: MJCF only stores ``solreflimit``; it has no
+   field for "use Newton force-space scaling with these gains". The exporter
+   therefore only writes ``solreflimit`` for ``SOLREF_MODE_RAW`` joints
+   (where the authored value carries the full intent). ``joint_limit_ke`` /
    ``joint_limit_kd`` from the original ``SOLREF_MODE_FORCE_SPACE`` /
    ``SOLREF_MODE_MJCF_DEFAULT`` joints will not be preserved; reapply
    them on the rebuilt model if you need those force-space gains.
@@ -389,16 +385,16 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
        :attr:`~newton.JointTargetMode.EFFORT`
      - No MuJoCo actuator created.
 
-:attr:`~newton.Model.joint_effort_limit` is forwarded as ``actfrcrange`` on the joint
-(prismatic, revolute, and D6) or as ``forcerange`` on the actuator (ball).
-
-For prismatic, revolute, and D6 axes, a zero effort limit clamps the total
-actuator force to zero. Actuators are retained so that changing the effort
-limit and calling :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed`
+:attr:`~newton.Model.joint_effort_limit` clamps the total actuator force via
+``actfrcrange`` on prismatic, revolute, and D6 joints. A zero limit suppresses
+actuator force; negative limits raise a ``ValueError`` naming the joint and
+value. Actuators are retained so that changing the effort limit and calling
+:meth:`~newton.solvers.SolverMuJoCo.notify_model_changed`
 with :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` can enable them again.
-Negative effort limits raise a ``ValueError`` naming the joint and value.
 MJCF cannot represent a zero joint actuator-force range, so ``save_to_mjcf``
-raises an actionable error for these axes; omit that option to simulate them.
+raises an actionable error for these joints; omit that option to simulate them.
+
+For ball joints, effort limits are forwarded as ``forcerange`` on each actuator.
 
 The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
 and parameters, explicit transmission targets, ctrl/force/act ranges) is
