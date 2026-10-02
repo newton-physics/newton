@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import warnings
@@ -38,6 +39,8 @@ if TYPE_CHECKING:
     from ._resolution_policy import _PhysicsMaterial
     from ._visuals import _UsdVisuals
     from .schema_resolver import SchemaResolverManager
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_colliders(
@@ -115,7 +118,7 @@ def _parse_colliders(
                 shape_already_added = path in path_shape_map
                 body_path = str(shape_spec.rigidBody)
                 if verbose:
-                    print(f"collision shape {prim.GetPath()} ({prim.GetTypeName()}), body = {body_path}")
+                    logger.info("collision shape %s (%s), body = %s", prim.GetPath(), prim.GetTypeName(), body_path)
                 body_id = path_body_map.get(body_path, -1)
                 scale = usd.get_scale(prim, local=False, xform_cache=xform_cache)
                 collision_group = builder.default_shape_cfg.collision_group
@@ -124,14 +127,23 @@ def _parse_colliders(
                 has_shape_material = len(shape_spec.materials) >= 1
                 if has_shape_material:
                     if len(shape_spec.materials) > 1 and verbose:
-                        print(f"Warning: More than one material found on shape at '{path}'.\nUsing only the first one.")
+                        logger.warning(
+                            "More than one material found on shape at '%s'.\nUsing only the first one.", path
+                        )
                     material = material_specs[str(shape_spec.materials[0])]
                     if verbose:
-                        print(
-                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\ttorsional friction: {material.torsionalFriction},\trolling friction: {material.rollingFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
+                        logger.info(
+                            "\tMaterial of '%s':\tfriction: %s,\ttorsional friction: %s,\trolling friction: "
+                            "%s,\trestitution: %s,\tdensity: %s",
+                            path,
+                            material.dynamicFriction,
+                            material.torsionalFriction,
+                            material.rollingFriction,
+                            material.restitution,
+                            material.density,
                         )
                 elif verbose:
-                    print(f"No material found for shape at '{path}'.")
+                    logger.info("No material found for shape at '%s'.", path)
 
                 # Non-MassAPI body mass accumulation in ModelBuilder uses shape cfg density.
                 # Use per-shape physics material density when present; otherwise use default density.
@@ -222,7 +234,7 @@ def _parse_colliders(
                         thickness=inertia_margin,
                     )
                     if verbose:
-                        print(f"Shape at {path} already added; skipping duplicate geometry.")
+                        logger.info("Shape at %s already added; skipping duplicate geometry.", path)
                     continue
 
                 shape_params = {
@@ -273,7 +285,7 @@ def _parse_colliders(
                     )
                 elif key == UsdPhysics.ObjectType.SphereShape:
                     if not _is_uniform_scale(scale):
-                        print(f"Warning: Non-uniform scaling of spheres is not supported, at {path}.")
+                        logger.warning("Non-uniform scaling of spheres is not supported, at %s.", path)
                     radius = shape_spec.radius
                     shape_id = builder.add_shape_sphere(
                         **shape_params,
@@ -382,8 +394,10 @@ def _parse_colliders(
                                 remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
                                 if remeshing_method is None:
                                     if verbose:
-                                        print(
-                                            f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
+                                        logger.warning(
+                                            "Unknown physics:approximation attribute '%s' on shape at '%s'.",
+                                            approximation,
+                                            path,
                                         )
                                 else:
                                     if remeshing_method not in remeshing_queue:

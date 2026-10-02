@@ -278,8 +278,9 @@ Logging
 -------
 
 Library code reports diagnostics, progress, and results through
-:mod:`logging`, never with ``print()``. Declare one logger per module and use
-it for every message:
+:mod:`logging`, never with ``print()``; Ruff rejects ``print()`` in
+``newton/_src`` except where marked ``# noqa: T201``, such as in Warp kernels.
+Declare one logger per module and use it for every message:
 
 .. code-block:: python
 
@@ -314,11 +315,13 @@ When writing a message:
 - do not start with the level, such as ``Warning:``, because the level already
   conveys it;
 - log one record per event, joining multi-line summaries into one message; and
-- in library code, do not add handlers, change levels, or call
-  :func:`logging.basicConfig`; that is the application's decision.
+- do not add handlers, change levels, or call :func:`logging.basicConfig`;
+  the application owns logging configuration, and the default output above
+  is set up once in ``newton/_src/diagnostics.py``.
 
-Test log output with :meth:`~unittest.TestCase.assertLogs` on the module's
-logger rather than by capturing stdout.
+Test log output with :meth:`~unittest.TestCase.assertLogs` on the ``newton``
+logger rather than by capturing stdout, which depends on how the test process
+configured logging.
 
 Documentation and comments
 --------------------------

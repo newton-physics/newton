@@ -10,6 +10,7 @@ import ctypes
 import functools
 import gc
 import inspect
+import logging
 import math
 import os
 import warnings
@@ -86,6 +87,8 @@ if TYPE_CHECKING:
     UsdStage = Usd.Stage
 else:
     UsdStage = Any
+
+logger = logging.getLogger(__name__)
 
 
 def _validate_opacity(value: Any, value_name: str) -> float:
@@ -6782,9 +6785,13 @@ class ModelBuilder:
                 if verbose:
                     parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
                     child_lbl = self.body_label[child_body]
-                    print(
-                        f"Skipping collapse of fixed joint {joint['label']} between {parent_lbl} and {child_lbl}: "
-                        f"{child_lbl} is referenced in an equality constraint and cannot be merged into world"
+                    logger.info(
+                        "Skipping collapse of fixed joint %s between %s and %s: %s is referenced in an "
+                        "equality constraint and cannot be merged into world",
+                        joint["label"],
+                        parent_lbl,
+                        child_lbl,
+                        child_lbl,
                     )
 
             if joint_in_keep_list and joint["type"] == JointType.FIXED:
@@ -6792,9 +6799,13 @@ class ModelBuilder:
                 parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
                 child_lbl = self.body_label[child_body]
                 if verbose:
-                    print(
-                        f"Skipping collapse of joint {joint['label']} between {parent_lbl} and {child_lbl}: "
-                        f"{child_lbl} is listed in joints_to_keep and this fixed joint will be preserved"
+                    logger.info(
+                        "Skipping collapse of joint %s between %s and %s: %s is listed in joints_to_keep "
+                        "and this fixed joint will be preserved",
+                        joint["label"],
+                        parent_lbl,
+                        child_lbl,
+                        child_lbl,
                     )
                 # Warn if the child_body of skipped joint has zero or negative mass
                 if body_data[child_body]["mass"] <= 0:
@@ -6812,9 +6823,13 @@ class ModelBuilder:
                 child_lbl = self.body_label[child_body]
                 last_dynamic_body_label = self.body_label[last_dynamic_body] if last_dynamic_body > -1 else "world"
                 if verbose:
-                    print(
-                        f"Remove fixed joint {joint['label']} between {parent_lbl} and {child_lbl}, "
-                        f"merging {child_lbl} into {last_dynamic_body_label}"
+                    logger.info(
+                        "Remove fixed joint %s between %s and %s, merging %s into %s",
+                        joint["label"],
+                        parent_lbl,
+                        child_lbl,
+                        child_lbl,
+                        last_dynamic_body_label,
                     )
                 child_id = body_data[child_body]["original_id"]
                 relative_xform = incoming_xform
@@ -6828,8 +6843,11 @@ class ModelBuilder:
                     shape_tf = self.shape_transform[shape]
                     self.shape_transform[shape] = incoming_xform * shape_tf
                     if verbose:
-                        print(
-                            f"  Shape {shape} moved to body {last_dynamic_body_label} with transform {self.shape_transform[shape]}"
+                        logger.info(
+                            "  Shape %s moved to body %s with transform %s",
+                            shape,
+                            last_dynamic_body_label,
+                            self.shape_transform[shape],
                         )
                     if last_dynamic_body > -1:
                         self.shape_body[shape] = body_data[last_dynamic_body]["id"]
@@ -7318,14 +7336,14 @@ class ModelBuilder:
 
             if old_joint1 != -1 and old_joint1 not in joint_remap:
                 if verbose:
-                    print(f"Warning: Equality constraint references removed joint {old_joint1}, disabling constraint")
+                    logger.warning("Equality constraint references removed joint %s, disabling constraint", old_joint1)
                 while len(enabled_values) <= i:
                     enabled_values.append(None)
                 enabled_values[i] = False
 
             if old_joint2 != -1 and old_joint2 not in joint_remap:
                 if verbose:
-                    print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
+                    logger.warning("Equality constraint references removed joint %s, disabling constraint", old_joint2)
                 while len(enabled_values) <= i:
                     enabled_values.append(None)
                 enabled_values[i] = False
@@ -7339,14 +7357,14 @@ class ModelBuilder:
                 self.constraint_mimic_joint0[i] = joint_remap[old_joint0]
             elif old_joint0 != -1:
                 if verbose:
-                    print(f"Warning: Mimic constraint references removed joint {old_joint0}, disabling constraint")
+                    logger.warning("Mimic constraint references removed joint %s, disabling constraint", old_joint0)
                 self.constraint_mimic_enabled[i] = False
 
             if old_joint1 in joint_remap:
                 self.constraint_mimic_joint1[i] = joint_remap[old_joint1]
             elif old_joint1 != -1:
                 if verbose:
-                    print(f"Warning: Mimic constraint references removed joint {old_joint1}, disabling constraint")
+                    logger.warning("Mimic constraint references removed joint %s, disabling constraint", old_joint1)
                 self.constraint_mimic_enabled[i] = False
 
         target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
@@ -10105,7 +10123,7 @@ class ModelBuilder:
         area = np.linalg.det(D) / 2.0
 
         if area <= 0.0:
-            print("inverted or degenerate triangle element")
+            logger.warning("inverted or degenerate triangle element")
             return 0.0
         else:
             inv_D = np.linalg.inv(D)
@@ -10198,7 +10216,7 @@ class ModelBuilder:
         areas[areas < 0.0] = 0.0
         valid_inds = (areas > 0.0).nonzero()[0]
         if len(valid_inds) < len(areas):
-            print("inverted or degenerate triangle elements")
+            logger.warning("inverted or degenerate triangle elements")
 
         filtered_custom_attributes = None
         if custom_attributes:
@@ -10312,7 +10330,7 @@ class ModelBuilder:
         volume = np.linalg.det(Dm) / 6.0
 
         if volume <= 0.0:
-            print("inverted tetrahedral element")
+            logger.warning("inverted tetrahedral element")
         else:
             inv_Dm = np.linalg.inv(Dm)
 

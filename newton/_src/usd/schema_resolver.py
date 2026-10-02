@@ -11,6 +11,7 @@ types from :mod:`newton.usd`.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
     from pxr import Usd
 
     from ..sim.builder import ModelBuilder
+
+logger = logging.getLogger(__name__)
 
 
 class PrimType(IntEnum):
@@ -250,11 +253,13 @@ class SchemaResolverManager:
         except (AttributeError, RuntimeError):
             prim_path = "<invalid>"
         if verbose:
-            error_message = (
-                f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
-                + "no authored value, no explicit default, and no solver mapping default."
+            logger.info(
+                "Cannot resolve value for '%s:%s' on prim '%s'; "
+                "no authored value, no explicit default, and no solver mapping default.",
+                prim_type.name.lower(),
+                key,
+                prim_path,
             )
-            print(error_message)
         return None, None
 
     def deformable_compat_namespaces(self) -> list[str]:

@@ -11,6 +11,7 @@ Imports ``UsdGeom.TetMesh`` prims as soft bodies via :meth:`ModelBuilder.add_sof
 from __future__ import annotations
 
 import copy
+import logging
 import warnings
 
 import numpy as np
@@ -37,6 +38,8 @@ from .import_usd_deformable_utils import (
     _warn_unsupported_rest_fields,
     _world_matrix_reflects,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
@@ -266,4 +269,6 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             }
 
         if verbose:
-            print(f"Added soft mesh {path} with {tetmesh.vertex_count} vertices and {tetmesh.tet_count} tetrahedra.")
+            logger.info(
+                "Added soft mesh %s with %s vertices and %s tetrahedra.", path, tetmesh.vertex_count, tetmesh.tet_count
+            )

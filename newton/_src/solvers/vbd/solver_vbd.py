@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 from collections.abc import Mapping
 from typing import Any
@@ -95,6 +96,8 @@ from .vbd_coupling_kernels import (
     _harvest_vbd_proxy_wrenches_kernel,
     _update_vbd_body_input_state_kernel,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["SolverVBD"]
 
@@ -967,7 +970,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         # Tile solve settings
         if model.device.is_cpu and particle_enable_tile_solve and wp.config.log_level <= wp.LOG_DEBUG:
-            print("Info: Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
+            logger.info("Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
 
         self.use_particle_tile_solve = particle_enable_tile_solve and model.device.is_cuda
         # One tiled elasticity kernel, specialized at code generation from static model data.

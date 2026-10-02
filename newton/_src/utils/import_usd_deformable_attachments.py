@@ -11,6 +11,7 @@ index remap. Driven by :func:`.import_usd.parse_usd` via a
 
 from __future__ import annotations
 
+import logging
 import math
 import warnings
 from collections.abc import Mapping, Sequence
@@ -28,6 +29,8 @@ from .import_usd_deformable_utils import (
     _mark_attachment_unsupported,
     _resolve_attachment_target,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in_shared_graphs: set[str]) -> None:
@@ -238,7 +241,7 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in
             path_attachment_map[path] = joints
             attrs["joint_indices"] = list(joints)
             if verbose:
-                print(f"Added PhysicsAttachment {path} with {len(joints)} joint(s).")
+                logger.info("Added PhysicsAttachment %s with %s joint(s).", path, len(joints))
 
 
 def _deformable_remap_collapsed(
@@ -489,4 +492,4 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
         if skip:
             continue
         if verbose:
-            print(f"Applied PhysicsElementCollisionFilter {path}: {len(seen_pairs)} shape pair(s).")
+            logger.info("Applied PhysicsElementCollisionFilter %s: %s shape pair(s).", path, len(seen_pairs))

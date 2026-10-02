@@ -8,11 +8,14 @@ from __future__ import annotations
 import collections
 import datetime
 import hashlib
+import logging
 import os
 import posixpath
 import re
 from pathlib import PureWindowsPath
 from urllib.parse import urljoin, urlparse
+
+logger = logging.getLogger(__name__)
 
 
 def _validate_https_usd_url(url: str) -> None:
@@ -126,7 +129,7 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
     stage = Usd.Stage.Open(target_filename, Usd.Stage.LoadNone)
     root_layer = stage.GetRootLayer()
     stage_str = root_layer.ExportToString()
-    print(f"Downloaded USD file to {target_filename}.")
+    logger.info("Downloaded USD file to %s.", target_filename)
 
     # Recursively resolve referenced USD files like `references = @./franka_collisions.usd@`
     # Each entry in the queue is (resolved_url, cache_relative_path).
@@ -193,7 +196,7 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
         usda_filename = _resolve_usd_cache_path(target_folder_name, base_name + ".usda")
         with open(usda_filename, "w") as f:
             f.write(stage_str)
-            print(f"Exported USDA file to {usda_filename}.")
+            logger.info("Exported USDA file to %s.", usda_filename)
 
     while pending:
         ref_url, local_path = pending.popleft()
@@ -203,7 +206,7 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
         try:
             response, resolved_ref_url = _download_https_url(ref_url)
             if response.status_code != 200:
-                print(f"Failed to download reference {local_path}. Status code: {response.status_code}")
+                logger.warning("Failed to download reference %s. Status code: %s", local_path, response.status_code)
                 continue
             downloaded_urls.add(resolved_ref_url)
             file = response.content
@@ -211,13 +214,13 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
             try:
                 ref_filename = _resolve_usd_cache_path(target_folder_name, local_path)
             except ValueError:
-                print(f"Skipping reference that escapes target folder: {local_path}")
+                logger.warning("Skipping reference that escapes target folder: %s", local_path)
                 continue
             os.makedirs(os.path.dirname(ref_filename), exist_ok=True)
             if not os.path.exists(ref_filename):
                 with open(ref_filename, "wb") as f:
                     f.write(file)
-            print(f"Downloaded USD reference {local_path} to {ref_filename}.")
+            logger.info("Downloaded USD reference %s to %s.", local_path, ref_filename)
 
             ref_stage = Usd.Stage.Open(ref_filename, Usd.Stage.LoadNone)
             ref_layer = ref_stage.GetRootLayer()
@@ -237,9 +240,9 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
                 usda_filename = _resolve_usd_cache_path(target_folder_name, usda_relative_path)
                 with open(usda_filename, "w") as f:
                     f.write(ref_stage_str)
-                    print(f"Exported USDA file to {usda_filename}.")
+                    logger.info("Exported USDA file to %s.", usda_filename)
         except ValueError:
             raise
         except Exception:
-            print(f"Failed to download {local_path}.")
+            logger.warning("Failed to download %s.", local_path)
     return target_filename

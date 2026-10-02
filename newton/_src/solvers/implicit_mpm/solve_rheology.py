@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import gc
+import logging
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -54,6 +55,8 @@ from .rheology_solver_kernels import (
     reorder_strain_mat,
     vec6,
 )
+
+logger = logging.getLogger(__name__)
 
 _TILED_SUM_BLOCK_DIM = 512
 _STRESS_DOF_COUNT = 6
@@ -1570,7 +1573,7 @@ class _LinearSolver:
                 end_iter = end_iter.numpy()[0]
             residual, _ = _linear_solver_result_norms(residual, atol, use_graph)
             res = residual if is_batched else residual / tolerance_scale
-            print(f"{self.name} terminated after {end_iter} iterations with residual {res}")
+            logger.info("%s terminated after %s iterations with residual %s", self.name, end_iter, res)
 
     @property
     def name(self):
@@ -1862,8 +1865,12 @@ def _run_solver_loop(
                     else l2_tolerance_scale.numpy()
                 )
                 res_l2, res_linf = _nonlinear_solver_result_norms(residual, host_tolerance_scale)
-                print(
-                    f"{rheology_solver.name} terminated after {iteration_and_condition.numpy()[0]} iterations with residuals {res_l2}, {res_linf}"
+                logger.info(
+                    "%s terminated after %s iterations with residuals %s, %s",
+                    rheology_solver.name,
+                    iteration_and_condition.numpy()[0],
+                    res_l2,
+                    res_linf,
                 )
 
         iteration_and_condition.release()
@@ -1884,8 +1891,12 @@ def _run_solver_loop(
             res_l2, res_linf = _nonlinear_solver_result_norms(residual, host_tolerance_scale)
 
             if verbose:
-                print(
-                    f"{rheology_solver.name} iteration #{(batch + 1) * solve_granularity} \t res(l2)={res_l2}, res(linf)={res_linf}"
+                logger.info(
+                    "%s iteration #%s \t res(l2)=%s, res(linf)=%s",
+                    rheology_solver.name,
+                    (batch + 1) * solve_granularity,
+                    res_l2,
+                    res_linf,
                 )
             if res_l2 < tolerance and res_linf < tolerance:
                 break

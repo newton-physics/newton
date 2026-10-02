@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import subprocess
 import warnings
 from typing import Any
@@ -26,6 +27,8 @@ try:
 except ImportError:
     rr = None
     rrb = None
+
+logger = logging.getLogger(__name__)
 
 
 class ViewerRerun(ViewerBase):
@@ -194,7 +197,7 @@ class ViewerRerun(ViewerBase):
                 self._grpc_server_uri = rr.serve_grpc(grpc_port=grpc_port, default_blueprint=blueprint)
                 rr.serve_web_viewer(connect_to=self._grpc_server_uri, web_port=web_port)
                 query = urlencode({"url": self._grpc_server_uri})
-                print(f"Rerun web viewer running at: http://127.0.0.1:{web_port}/?{query}", flush=True)
+                logger.info("Rerun web viewer running at: http://127.0.0.1:%s/?%s", web_port, query)
             else:
                 rr.spawn(port=grpc_port)
 

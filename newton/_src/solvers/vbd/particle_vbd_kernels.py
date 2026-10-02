@@ -502,7 +502,7 @@ def _test_compute_force_element_adjacency(
             bd_id, v_order = get_vertex_adjacent_edge_id_order(adjacency, vertex, i_bd)
 
             if edge_indices[bd_id, v_order] != vertex:
-                print("Error!!!")
+                print("Error!!!")  # noqa: T201
                 wp.printf("vertex: %d | num_adj_edges: %d\n", vertex, num_adj_edges)
                 wp.printf("--iBd: %d | ", i_bd)
                 wp.printf("edge id: %d | v_order: %d\n", bd_id, v_order)
@@ -517,7 +517,7 @@ def _test_compute_force_element_adjacency(
             )
 
             if face_indices[face, v_order] != vertex:
-                print("Error!!!")
+                print("Error!!!")  # noqa: T201
                 wp.printf("vertex: %d | num_adj_faces: %d\n", vertex, num_adj_faces)
                 wp.printf("--i_face: %d | face id: %d | v_order: %d\n", i_face, face, v_order)
                 wp.printf(

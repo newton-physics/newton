@@ -10,6 +10,7 @@ surface material onto the isotropic membrane. Driven by :func:`.import_usd.parse
 
 from __future__ import annotations
 
+import logging
 import math
 import warnings
 
@@ -38,6 +39,8 @@ from .import_usd_deformable_utils import (
     _warn_unsupported_rest_fields,
     _world_matrix_reflects,
 )
+
+logger = logging.getLogger(__name__)
 
 # Attributes introduced after the family-prefix rename; density is shared and intentionally omitted.
 _POST_RENAME_SURFACE_MATERIAL_ATTRS = (
@@ -529,4 +532,4 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                     "legacy_implicit_type": authored_masses.legacy_implicit_type,
                 }
         if verbose:
-            print(f"Added cloth {path} with {builder.particle_count - p0} particles.")
+            logger.info("Added cloth %s with %s particles.", path, builder.particle_count - p0)

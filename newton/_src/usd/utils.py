@@ -573,14 +573,14 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
                 assignment_val = AttributeAssignment[assignment_meta.upper()]
                 frequency_val = AttributeFrequency[frequency_meta.upper()]
             except KeyError:
-                print(
-                    f"Warning: Custom attribute '{attr_name}' has invalid assignment or frequency in customData. Skipping."
+                logger.warning(
+                    "Custom attribute '%s' has invalid assignment or frequency in customData. Skipping.", attr_name
                 )
                 continue
         else:
             # No metadata found - skip with warning
-            print(
-                f"Warning: Custom attribute '{attr_name}' is missing required customData (assignment and frequency). Skipping."
+            logger.warning(
+                "Custom attribute '%s' is missing required customData (assignment and frequency). Skipping.", attr_name
             )
             continue
 

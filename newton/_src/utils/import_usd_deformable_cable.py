@@ -12,6 +12,7 @@ curves. Driven by :func:`.import_usd.parse_usd` via a
 
 from __future__ import annotations
 
+import logging
 import math
 import warnings
 from dataclasses import dataclass, replace
@@ -53,6 +54,8 @@ from .import_usd_deformable_utils import (
     _warn_subset_material_bindings,
     _warn_unsupported_rest_fields,
 )
+
+logger = logging.getLogger(__name__)
 
 # Attributes introduced after the family-prefix rename; density is shared and intentionally omitted.
 _POST_RENAME_CURVE_MATERIAL_ATTRS = (
@@ -1039,7 +1042,7 @@ def _deformable_prepare_cable_topology(
                     }
             cables_in_shared_graphs.add(key)
         if verbose:
-            print(f"Added cable graph {cid} with {len(body_ids)} segments across {len(comp_paths)} curves.")
+            logger.info("Added cable graph %s with %s segments across %s curves.", cid, len(body_ids), len(comp_paths))
         return True
 
     for cid, comp_curves in components.items():
@@ -1438,4 +1441,4 @@ def _deformable_import_cable(
                         "legacy_implicit_type": authored_masses.legacy_implicit_type,
                     }
             if verbose:
-                print(f"Added cable {path} with {len(cable_bodies)} segments.")
+                logger.info("Added cable %s with %s segments.", path, len(cable_bodies))

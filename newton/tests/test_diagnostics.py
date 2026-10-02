@@ -106,6 +106,14 @@ class TestLoggingDefaults(unittest.TestCase):
         self.assertEqual((stdout, stderr), ("", ""))
         self.assertEqual(len(handler.records), 1)
 
+    def test_verbose_diagnostics_print_without_configuration(self):
+        """Keep ``verbose=True`` importer output on stdout when the application has not configured logging."""
+        mjcf = '<mujoco><worldbody><body name="b"><geom type="box" size="0.1 0.1 0.1"/></body></worldbody></mujoco>'
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            newton.ModelBuilder().add_mjcf(mjcf, verbose=True)
+        self.assertIn("no class defined for geom", stdout.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
