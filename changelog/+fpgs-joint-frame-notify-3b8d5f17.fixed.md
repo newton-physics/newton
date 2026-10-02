@@ -1,0 +1,1 @@
+Fix `SolverFeatherPGS` keeping a stale mass factorization after `notify_model_changed(ModelFlags.JOINT_PROPERTIES)` when `update_mass_matrix_interval > 1`; joint-frame changes now request a mass-matrix refresh on the next step, as joint DOF, body and inertial notifications already did.

@@ -1,0 +1,1 @@
+Fix `SolverFeatherPGS` ignoring joint armature in the contact response of free rigid bodies; the free-body rows now invert the body inertia plus the free joint's armature, so contact impulses match the dynamics of the same body (with nonzero armature they were too small), including after `notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)`.

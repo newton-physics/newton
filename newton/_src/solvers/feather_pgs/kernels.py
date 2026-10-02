@@ -4410,18 +4410,33 @@ def _allocate_world_contact_slot(
         contact_path[c] = -1
         return
 
-    # Determine world (both bodies must be in same world, or one is ground)
+    # The responding sides select the solve world, so a prescribed global (world -1)
+    # body, solved in world 0, touches the bodies of every world through its target
+    # velocity. A contact that would couple two solve worlds (a dynamic global body
+    # touching another world) or needs a non-responding side's DOFs from another world
+    # cannot be solved: drop it and flag both worlds as having lost rows.
     world = -1
-    if art_a >= 0:
+    if a_can_respond:
         world = art_to_world[art_a]
-    if art_b >= 0:
+    if b_can_respond:
         world_b = art_to_world[art_b]
         if world >= 0 and world_b != world:
-            # Cross-world contact - shouldn't happen, skip
-            contact_slot[c] = -1
-            contact_path[c] = -1
-            return
-        world = world_b
+            world = -2
+        elif world != -2:
+            world = world_b
+    if world >= 0:
+        if not a_can_respond and a_has_dofs and art_to_world[art_a] != world:
+            world = -2
+        if not b_can_respond and b_has_dofs and art_to_world[art_b] != world:
+            world = -2
+    if world == -2:
+        if art_a >= 0:
+            wp.atomic_add(dense_dropped_contact_rows, art_to_world[art_a], 3)
+        if art_b >= 0:
+            wp.atomic_add(dense_dropped_contact_rows, art_to_world[art_b], 3)
+        contact_slot[c] = -1
+        contact_path[c] = -1
+        return
 
     if world < 0:
         # No articulation involved (ground-ground?)
@@ -7819,13 +7834,16 @@ def compute_mf_body_Hinv(
     is_free_rigid: wp.array[int],
     body_to_articulation: wp.array[int],
     body_flags: wp.array[wp.int32],
+    articulation_dof_start: wp.array[int],
+    joint_armature: wp.array[float],
     # outputs
     mf_body_Hinv: wp.array[wp.spatial_matrix],
 ):
-    """Compute H^-1 = inverse(body_I_s) for free rigid bodies.
+    """Compute H^-1 = inverse(body_I_s + diag(armature)) for free rigid bodies.
 
-    For root free joints, H = body_I_s in articulation-local coordinates.
-    This remains a full 6x6 matrix for bodies with non-zero CoM offsets.
+    For root free joints, H = body_I_s in articulation-local coordinates, plus the free
+    joint's armature on the diagonal as in the articulated mass matrix. This remains a
+    full 6x6 matrix for bodies with non-zero CoM offsets.
     """
     b = free_rigid_body_indices[wp.tid()]
     art = body_to_articulation[b]
@@ -7837,7 +7855,11 @@ def compute_mf_body_Hinv(
         mf_body_Hinv[b] = wp.spatial_matrix(0.0)
         return
 
-    mf_body_Hinv[b] = spatial_matrix_block_inverse(body_I_s[b])
+    H = body_I_s[b]
+    dof_start = articulation_dof_start[art]
+    for k in range(6):
+        H[k, k] = H[k, k] + joint_armature[dof_start + k]
+    mf_body_Hinv[b] = spatial_matrix_block_inverse(H)
 
 
 @wp.kernel

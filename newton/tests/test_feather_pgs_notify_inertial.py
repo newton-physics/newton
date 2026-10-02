@@ -180,6 +180,54 @@ class TestFeatherPGSNotifyInertial(unittest.TestCase):
         stale_drift = np.abs(histories[False] - reference).max()
         self.assertGreater(stale_drift, 1.0e-2, "stale-solver trajectory should diverge without notify")
 
+    def test_joint_frame_change_with_notify_matches_freshly_built_solver(self):
+        """Refresh cached mass factors on JOINT_PROPERTIES, eagerly and under graph replay."""
+        device = wp.get_device()
+        interval = 100
+        modes = ["split", "matrix_free"] if device.is_cuda else ["split"]
+
+        def shift_child_frame(model):
+            joint_X_c = model.joint_X_c.numpy()
+            joint_X_c[0, 0] = 0.5
+            model.joint_X_c.assign(joint_X_c)
+
+        for mode in modes:
+            reference_model = _build_model(device)
+            shift_child_frame(reference_model)
+            reference_solver = SolverFeatherPGS(reference_model, pgs_mode=mode, update_mass_matrix_interval=interval)
+            reference = _run_trajectory(reference_model, reference_solver, 5)
+            for capture in [False, True] if device.is_cuda else [False]:
+                with self.subTest(mode=mode, capture=capture):
+                    model = _build_model(device)
+                    solver = SolverFeatherPGS(model, pgs_mode=mode, update_mass_matrix_interval=interval)
+                    state_0, state_1 = model.state(), model.state()
+                    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+                    control = model.control()
+
+                    def substep(solver=solver, state_0=state_0, state_1=state_1, control=control):
+                        solver.step(state_0, state_1, control, None, DT)
+                        wp.copy(state_0.joint_q, state_1.joint_q)
+                        wp.copy(state_0.joint_qd, state_1.joint_qd)
+
+                    substep()
+                    initial_q = model.joint_q.numpy().copy()
+                    graph = None
+                    if capture:
+                        with wp.ScopedCapture(device=device) as graph:
+                            substep()
+                    state_0.joint_q.assign(initial_q)
+                    state_0.joint_qd.zero_()
+                    shift_child_frame(model)
+                    solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+                    history = []
+                    for _ in range(5):
+                        if graph is None:
+                            substep()
+                        else:
+                            wp.capture_launch(graph.graph)
+                        history.append(state_0.joint_q.numpy().copy())
+                    np.testing.assert_allclose(np.asarray(history), reference, rtol=0.0, atol=1.0e-5)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

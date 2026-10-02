@@ -235,7 +235,86 @@ def _assert_owner_parity(test, general, local):
             )
 
 
+_ARMATURE = (9.0, 4.0, 2.0, 0.5, 1.5, 3.0)
+
+
+def _armature_sphere_on_ground(device, armature, dense, com=(0.0, 0.0, 0.0), mu=0.0):
+    """A 1 kg sphere on a free joint, optionally with a massless fixed child that routes it to dense rows."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    body = builder.add_link(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.0999), wp.quat_identity()),
+        mass=1.0,
+        com=wp.vec3(com),
+        inertia=wp.mat33(np.eye(3) * 0.01),
+    )
+    joints = [builder.add_joint_free(body)]
+    if dense:
+        child = builder.add_link(mass=0.0, inertia=wp.mat33(0.0))
+        joints.append(builder.add_joint_fixed(body, child))
+    builder.add_articulation(joints)
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=mu)
+    builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=mu))
+    model = builder.finalize(device=device)
+    joint_armature = model.joint_armature.numpy()
+    joint_armature[:6] = armature
+    model.joint_armature.assign(joint_armature)
+    return model
+
+
+def _armature_impact(model, solver, joint_qd):
+    state_in, state_out = model.state(), model.state()
+    qd = state_in.joint_qd.numpy()
+    qd[:6] = joint_qd
+    state_in.joint_qd.assign(qd)
+    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_in, contacts)
+    solver.step(state_in, state_out, model.control(), contacts, 0.01)
+    solver.update_contacts(contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    return state_out.joint_qd.numpy()[:6], contacts.rigid_contact_force.numpy()[:count].sum(axis=0)
+
+
+def _armature_modes(device):
+    return ["matrix_free", "split"] if device.is_cuda else ["split"]
+
+
 class TestFeatherPGSResponseDiagonal(unittest.TestCase):
+    def test_free_body_contact_response_includes_armature(self):
+        """Free-body rows respond with the same armature-augmented inertia as articulated rows."""
+        device = wp.get_device()
+        stop = (0.0, 0.0, -1.0, 0.0, 0.0, 0.0)
+        oblique = (0.3, -0.2, -1.0, 0.4, 0.5, -0.3)
+        for mode in _armature_modes(device):
+            kwargs = {"pgs_mode": mode, "pgs_cfm": 0.0, "friction_anchor_beta": 0.0}
+            for armature, expected in ((0.0, 100.0), (9.0, 1000.0)):
+                with self.subTest(mode=mode, armature=armature):
+                    model = _armature_sphere_on_ground(device, armature, dense=False)
+                    qd, force = _armature_impact(model, SolverFeatherPGS(model, **kwargs), stop)
+                    # The sphere starts 0.1 mm deep, so the depenetration bias adds 0.2 %.
+                    self.assertAlmostEqual(abs(float(force[2])), expected, delta=5.0e-3 * expected)
+                    self.assertAlmostEqual(float(qd[2]), 0.0, delta=5.0e-3)
+            with self.subTest(mode=mode, case="notified"):
+                # An armature change notified after construction reaches the free-body response.
+                model = _armature_sphere_on_ground(device, 0.0, dense=False)
+                solver = SolverFeatherPGS(model, **kwargs)
+                joint_armature = model.joint_armature.numpy()
+                joint_armature[:6] = 9.0
+                model.joint_armature.assign(joint_armature)
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+                _, force = _armature_impact(model, solver, stop)
+                self.assertAlmostEqual(abs(float(force[2])), 1000.0, delta=5.0)
+            with self.subTest(mode=mode, case="oblique"):
+                results = {}
+                for dense in (False, True):
+                    model = _armature_sphere_on_ground(device, _ARMATURE, dense=dense, com=(0.03, -0.02, 0.01), mu=0.5)
+                    solver = SolverFeatherPGS(model, pgs_iterations=64, **kwargs)
+                    results[dense] = _armature_impact(model, solver, oblique)
+                np.testing.assert_allclose(results[False][0], results[True][0], rtol=0.0, atol=1.0e-4)
+                np.testing.assert_allclose(results[False][1], results[True][1], rtol=1.0e-3, atol=1.0e-2)
+
     @unittest.skipUnless(wp.is_cuda_available(), "sparse diagonal GS requires CUDA")
     def test_sparse_diagonal_gs_matches_scalar_reference(self):
         """Match a scalar PGS reference with coupled limits and friction."""
