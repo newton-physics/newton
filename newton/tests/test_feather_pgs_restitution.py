@@ -436,6 +436,30 @@ def test_restitution_velocity_threshold_uses_incident_relative_speed(test, devic
     test.assertAlmostEqual(out_a + out_b, 19.6, delta=1.0e-4, msg="relative threshold: momentum drifted")
 
 
+def test_largest_finite_threshold_disables_restitution_without_material_edits(test, device):
+    """A float32-maximum threshold gives the zero-restitution result with materials unchanged.
+
+    This is the solver-wide way to turn restitution off; an infinite threshold is
+    rejected, and zeroing one shape's coefficient still leaves the average.
+    """
+    speed = 2.0
+    separation = IMPACT_FRACTION * speed * DEFAULT_DT
+    largest = float(np.finfo(np.float32).max)
+    for scene in ("free", "articulated"):
+        with test.subTest(scene=scene):
+            common = {"separation": separation, "speed": speed, "scene": scene}
+            bouncing = _step_plane(device, restitution=0.8, plane_restitution=0.8, **common)
+            one_zero = _step_plane(device, restitution=0.0, plane_restitution=0.8, **common)
+            inelastic = _step_plane(device, restitution=0.0, plane_restitution=0.0, **common)
+            disabled = _step_plane(
+                device, restitution=0.8, plane_restitution=0.8, restitution_velocity_threshold=largest, **common
+            )
+            _assert_velocity(test, bouncing["after"], 0.8 * speed, speed, f"{scene}: authored rebound")
+            _assert_velocity(test, one_zero["after"], 0.4 * speed, speed, f"{scene}: averaged rebound")
+            test.assertAlmostEqual(disabled["after"], inelastic["after"], delta=1.0e-6 * speed)
+            test.assertAlmostEqual(disabled["end_gap"], inelastic["end_gap"], delta=1.0e-7)
+
+
 def test_bouncing_ball_settles_to_rest_under_gravity(test, device):
     """Settle a bouncing ball on the surface without perpetual micro-bounce or sinking.
 
@@ -1029,6 +1053,7 @@ for _fn in (
     test_non_crossing_speculative_contact_does_not_bounce,
     test_shape_restitution_uses_symmetric_arithmetic_average,
     test_restitution_velocity_threshold_uses_incident_relative_speed,
+    test_largest_finite_threshold_disables_restitution_without_material_edits,
     test_bouncing_ball_settles_to_rest_under_gravity,
     test_two_body_impact_conserves_momentum_and_reverses_relative_speed,
     test_restitution_is_relative_to_a_moving_kinematic_surface,

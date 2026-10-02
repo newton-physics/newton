@@ -970,7 +970,8 @@ class SolverFeatherPGS(SolverBase):
                 incident normal velocity in the unconstrained prediction. The contact must
                 also touch, or be predicted to reach the surface during the step. Slower
                 contacts keep the ordinary contact law, so resting contacts do not bounce
-                under small accelerations.
+                under small accelerations. The largest finite float32 value turns
+                restitution off for every contact without editing materials.
             contact_speculative_scale: Fraction of a positive contact gap that the contact
                 may close during the step (``rhs = scale * phi / dt``). ``0`` removes the
                 speculative allowance; penetration correction is unchanged.
