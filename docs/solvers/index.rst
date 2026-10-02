@@ -161,7 +161,7 @@ Supported Features
 
 .. experimental::
     :class:`~newton.solvers.SolverFeatherPGS`'s public API and behavior may change without prior notice.
-    It requires a CUDA device.
+    Its default matrix-free solve requires a CUDA device; ``pgs_mode="split"`` also runs on CPU.
 
 .. experimental::
     :class:`~newton.solvers.SolverKamino`'s public API and behavior may change without prior notice.
@@ -458,7 +458,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 | :sup:`8` FeatherPGS rejects models with disabled joints or mimic relationships instead of ignoring them.
 | :sup:`9` FeatherPGS enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
 | :sup:`10` FeatherPGS clamps the joint drive force to the effort limit.
-| :sup:`11` FeatherPGS enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True``.
+| :sup:`11` FeatherPGS enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True`` (matrix-free solve only).
 
 
 

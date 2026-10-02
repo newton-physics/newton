@@ -222,13 +222,16 @@ repository examples spend tuning effort, not a shared solver API.
        ``update_mass_matrix_interval`` when articulation dynamics are coupled
        with cloth or soft-body work.
    * - :class:`~newton.solvers.SolverFeatherPGS`
-     - ``pgs_iterations``, ``pgs_beta``, ``pgs_cfm``, ``pgs_omega``,
+     - ``pgs_mode``, ``pgs_iterations``, ``pgs_beta``, ``pgs_cfm``, ``pgs_omega``,
        ``update_mass_matrix_interval``, ``enable_joint_limits``,
        ``joint_limit_activation_gap``, ``enable_joint_velocity_limits``,
        ``velocity_limit_activation_fraction``,
        ``dense_max_constraints``, ``mf_max_constraints``,
        ``warn_constraint_overflow``.
-     - Experimental and CUDA-only. Joint limits are enforced only with
+     - Experimental. The default ``pgs_mode="matrix_free"`` requires CUDA;
+       ``pgs_mode="split"`` runs on CPU and CUDA, stores a dense
+       ``dense_max_constraints`` squared Delassus matrix per world and does not
+       support joint velocity limits. Joint limits are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``pgs_iterations`` reduce residual penetration and
