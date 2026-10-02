@@ -685,11 +685,13 @@ Multi-world support
 
 Constructing :class:`~newton.solvers.SolverMuJoCo` with
 ``separate_worlds=True`` (the default for GPU mode with multiple
-worlds) builds a MuJoCo model from the **first world** only and
-replicates it across all worlds via ``mujoco_warp``. This requires
-all Newton worlds to be structurally identical (same bodies, joints,
-and shapes); :class:`~newton.solvers.SolverMuJoCo` validates this at
-construction and raises ``ValueError`` on a mismatch.
+worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
+Bodies, joints, equality constraints, mimic relationships, primitive geoms,
+and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh
+assets, scales, and convex-hull counts may differ across worlds. Native
+MuJoCo contacts require matching collision groups and exclusions for
+corresponding geom slots. The solver validates compatibility at construction
+and raises ``ValueError`` on a mismatch.
 
 Bodies, joints, equality constraints, and mimic relationships cannot have
 a negative world index — assigning any of them to the global world
