@@ -1619,6 +1619,7 @@ class CollisionPipeline:
             # Keep mesh and heightfield flags independent: heightfield-only scenes
             # should not trigger mesh-only kernel setup/launches.
             has_meshes = False
+            has_capsule_cylinder_pairs = True
             use_lean_gjk_mpr = False
             mesh_sdf_texture_only = False
             mesh_sdf_identity_scale_only = False
@@ -1628,6 +1629,10 @@ class CollisionPipeline:
                 shape_types = model.shape_type.numpy()
                 colliding_mask = _shape_collide_mask(model, len(shape_types))
                 colliding_shape_types = shape_types[colliding_mask]
+                has_capsule_cylinder_pairs = bool(
+                    np.any(colliding_shape_types == int(GeoType.CAPSULE))
+                    and np.any(colliding_shape_types == int(GeoType.CYLINDER))
+                )
                 mesh_mask = colliding_mask & (shape_types == int(GeoType.MESH))
                 heightfield_mask = colliding_mask & (shape_types == int(GeoType.HFIELD))
                 plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
@@ -1768,6 +1773,7 @@ class CollisionPipeline:
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
                 convex_support_acceleration=model._convex_support_lut.shape[0] > 1,
                 has_generic_convex_pairs=has_generic_convex_pairs,
+                has_capsule_cylinder_pairs=has_capsule_cylinder_pairs,
                 split_gjk_mpr=split_gjk_mpr,
                 candidate_pair_work_estimate=candidate_pair_work_estimate,
                 mesh_sdf_identity_scale_only=mesh_sdf_identity_scale_only,

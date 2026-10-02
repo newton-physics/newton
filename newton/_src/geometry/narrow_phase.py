@@ -26,6 +26,7 @@ from ..geometry.collision_core import (
 from ..geometry.collision_primitive import (
     _collide_plane_capsule_contacts,
     collide_capsule_capsule,
+    collide_capsule_cylinder,
     collide_plane_box,
     collide_plane_cylinder,
     collide_plane_ellipsoid,
@@ -274,13 +275,14 @@ def create_prepare_convex_pair(external_aabb: bool, speculative: bool = False):
 
         radius_eff_a = float(0.0)
         radius_eff_b = float(0.0)
-        small_radius = 0.0001
+        # A tiny support radius perturbs near-touching witnesses. Query the
+        # core point/segment and apply its physical radius afterward.
         if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
             radius_eff_a = geom_a.scale[0]
-            geom_a.scale[0] = small_radius
+            geom_a.scale[0] = 0.0
         if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
             radius_eff_b = geom_b.scale[0]
-            geom_b.scale[0] = small_radius
+            geom_b.scale[0] = 0.0
 
         margin_sum = margin_a + margin_b
         eps = 1.0e-4
@@ -418,25 +420,29 @@ def create_narrow_phase_primitive_kernel(
     speculative: bool = False,
     sparse_gjk_pairs: bool = False,
     hydroelastic_enabled: bool = False,
+    capsule_cylinder_enabled: bool = True,
 ):
     """
-    Create a kernel for fast analytical collision detection of primitive shapes.
+    Create a kernel for specialized collision detection of primitive shapes.
 
     This kernel handles lightweight primitive pairs (sphere-sphere, sphere-capsule,
     capsule-capsule, plane-sphere, plane-capsule) using direct analytical formulas
     instead of iterative GJK/MPR. Remaining pairs are routed to specialized buffers
     for mesh handling or to the GJK/MPR kernel for complex convex pairs.
+    Sharp capsule-cylinder pairs use a finite-cylinder feature solver with
+    closed-form fast paths and a bounded root search for general skew rims.
 
     Args:
         writer_func: Contact writer function (e.g., write_contact_simple).
         speculative: Enable predictive contact admission.
         sparse_gjk_pairs: Preserve broad-phase pair indices in the GJK buffer.
         hydroelastic_enabled: Route hydroelastic pairs to the SDF-SDF pipeline.
+        capsule_cylinder_enabled: Compile capsule-cylinder contacts when these pairs can occur.
 
     Returns:
         A warp kernel for primitive collision detection
     """
-    _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}_{sparse_gjk_pairs}_{hydroelastic_enabled}"
+    _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}_{sparse_gjk_pairs}_{hydroelastic_enabled}_{capsule_cylinder_enabled}"
 
     @wp.func(module=_module)
     def _admit(
@@ -655,7 +661,7 @@ def create_narrow_phase_primitive_kernel(
             if (
                 type_a >= GeoType.ELLIPSOID
                 or type_b == GeoType.CONE
-                or (type_a == GeoType.CAPSULE and type_b > GeoType.CAPSULE)
+                or (type_a == GeoType.CAPSULE and type_b > GeoType.CAPSULE and type_b != GeoType.CYLINDER)
             ):
                 if wp.static(sparse_gjk_pairs):
                     wp.atomic_add(gjk_candidate_pairs_count, 0, 1)
@@ -865,6 +871,20 @@ def create_narrow_phase_primitive_kernel(
                     pos_a, sphere_radius, pos_b, cylinder_axis, cylinder_radius, cylinder_half_height
                 )
 
+            elif wp.static(capsule_cylinder_enabled) and is_capsule_a and is_cylinder_b and scale_b[2] == 0.0:
+                capsule_axis = wp.quat_rotate(quat_a, wp.vec3(0.0, 0.0, 1.0))
+                cylinder_axis = wp.quat_rotate(quat_b, wp.vec3(0.0, 0.0, 1.0))
+                contact_dist_0, contact_pos_0, contact_dist_1, contact_pos_1, contact_normal = collide_capsule_cylinder(
+                    pos_a,
+                    capsule_axis,
+                    scale_a[0],
+                    scale_a[1],
+                    pos_b,
+                    cylinder_axis,
+                    scale_b[0],
+                    scale_b[1],
+                )
+
             # -----------------------------------------------------------------
             # Sphere-Box collision (type_a=SPHERE=2, type_b=BOX=6)
             # -----------------------------------------------------------------
@@ -1011,6 +1031,7 @@ def create_narrow_phase_primitive_kernel(
                 (is_plane_a and (is_sphere_b or is_capsule_b or is_ellipsoid_b or use_plane_cylinder or is_box_b))
                 or (is_sphere_a and (is_sphere_b or is_capsule_b or (is_cylinder_b and scale_b[2] == 0.0) or is_box_b))
                 or (is_capsule_a and is_capsule_b)
+                or (wp.static(capsule_cylinder_enabled) and is_capsule_a and is_cylinder_b and scale_b[2] == 0.0)
             ):
                 continue
 
@@ -1742,6 +1763,7 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(
                 data_provider,
                 writer_data,
                 (tri_idx << 1) | 1,
+                1.0e-4 if type_a == GeoType.MESH else 0.0,
             )
 
     return narrow_phase_process_mesh_triangle_contacts_kernel
@@ -2230,6 +2252,7 @@ class NarrowPhase:
         use_lean_gjk_mpr: bool = False,
         convex_support_acceleration: bool = True,
         has_generic_convex_pairs: bool = True,
+        has_capsule_cylinder_pairs: bool = True,
         sparse_gjk_pairs: bool | None = None,
         split_gjk_mpr: bool = False,
         candidate_pair_work_estimate: int | None = None,
@@ -2275,6 +2298,10 @@ class NarrowPhase:
             has_generic_convex_pairs: Whether any candidate pair can require
                 generic GJK/MPR processing. Set to False only from a complete
                 scene-topology proof; this omits the GJK/MPR launch entirely.
+            has_capsule_cylinder_pairs: Whether capsule-cylinder pairs can occur.
+                False omits their specialized solver from the primitive kernel
+                to reduce kernel memory use in unrelated scenes; any such pairs
+                still route to GJK/MPR. Defaults to True.
             sparse_gjk_pairs: Whether GJK routing preserves broad-phase pair
                 indices instead of compacting its work buffer. Defaults to
                 automatic enablement for large CUDA candidate buffers.
@@ -2434,6 +2461,7 @@ class NarrowPhase:
             speculative=speculative,
             sparse_gjk_pairs=self.sparse_gjk_pairs,
             hydroelastic_enabled=hydroelastic_sdf is not None,
+            capsule_cylinder_enabled=has_capsule_cylinder_pairs,
         )
         # GJK/MPR kernel handles remaining convex-convex pairs. Only models with cooked
         # support data select the accelerated support function; other models

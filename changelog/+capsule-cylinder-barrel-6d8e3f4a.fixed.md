@@ -1,0 +1,1 @@
+Compute capsule contacts with sharp finite cylinders using cap, barrel, and rim features, including tilted rim overhangs and core intersections, preserve two-point barrel manifolds for nearly parallel axes, and preserve sphere and capsule radii in convex queries.

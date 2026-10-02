@@ -438,6 +438,39 @@ class _NarrowPhaseSetupMixin:
 class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
     """Test NarrowPhase collision detection API with various primitive pairs."""
 
+    def test_capsule_cylinder_dispatch_flag(self):
+        """Route sharp capsule-cylinder pairs to GJK only when their solver is disabled."""
+        capsule = {
+            "type": GeoType.CAPSULE,
+            "transform": ([1.09, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+            "data": ([0.1, 0.5, 0.0], 0.0),
+        }
+        cylinder = {
+            "type": GeoType.CYLINDER,
+            "data": ([1.0, 1.0, 0.0], 0.0),
+        }
+        for device in wp.get_devices():
+            with wp.ScopedDevice(device):
+                for enabled in (False, True):
+                    for sparse in (False, True):
+                        for reversed_order in (False, True):
+                            with self.subTest(device=device, enabled=enabled, sparse=sparse, order=reversed_order):
+                                self.narrow_phase = NarrowPhase(
+                                    max_candidate_pairs=1,
+                                    max_triangle_pairs=1,
+                                    reduce_contacts=False,
+                                    has_meshes=False,
+                                    has_capsule_cylinder_pairs=enabled,
+                                    sparse_gjk_pairs=sparse,
+                                )
+                                shapes = [capsule, cylinder] if reversed_order else [cylinder, capsule]
+                                count, _, _, _, distances, _ = self._run_narrow_phase(shapes, [(0, 1)])
+                                self.assertEqual(
+                                    int(self.narrow_phase.gjk_candidate_pairs_count.numpy()[0]), int(not enabled)
+                                )
+                                self.assertGreater(count, 0)
+                                np.testing.assert_allclose(distances, -0.01, atol=5e-4)
+
     def test_launch_forwards_convex_support_metadata(self):
         """Forward cooked convex support metadata through the standard launch path."""
         self.narrow_phase = NarrowPhase(

@@ -2540,4 +2540,5 @@ def mesh_triangle_contacts_to_reducer_kernel(
             data_provider,
             reducer_data,
             (tri_idx << 1) | 1,
+            1.0e-4 if type_a == GeoType.MESH else 0.0,
         )
