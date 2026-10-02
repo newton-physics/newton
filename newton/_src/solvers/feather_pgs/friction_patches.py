@@ -269,7 +269,14 @@ def _pose_motion(q: wp.array[wp.transform], previous_q: wp.array[wp.transform], 
         previous = previous_q[body]
         x0 = wp.transform_get_translation(previous)
         x1 = wp.transform_get_translation(current)
-        rotation = wp.transform_get_rotation(current) * wp.quat_inverse(wp.transform_get_rotation(previous))
+        r0 = wp.transform_get_rotation(previous)
+        r1 = wp.transform_get_rotation(current)
+        # An unchanged pose has no motion. The quaternion product below is not exactly the
+        # identity in float32 (fused multiply-adds), and its residual times the lever arm
+        # would accumulate into the anchor displacement of a resting body every step.
+        if x0 == x1 and r0[0] == r1[0] and r0[1] == r1[1] and r0[2] == r1[2] and r0[3] == r1[3]:
+            return motion
+        rotation = r1 * wp.quat_inverse(r0)
         if rotation[3] < 0.0:
             rotation = -rotation
         vector = wp.vec3(rotation[0], rotation[1], rotation[2])
