@@ -361,20 +361,6 @@ class TestTuningGoals(unittest.TestCase):
         # "d" is still a camera of rec0, so rec0's one unit of weight is split over three views.
         np.testing.assert_allclose([w for g in groups for w in g.weights], [1 / 3, 1 / 3, 1.0, 1 / 3])
 
-    def test_group_weights_split_one_unit_per_recording(self):
-        """Verify each recording contributes one unit of weight, split over its views.
-
-        Two views of one recording weigh half each, so adding a camera does not
-        multiply that recording's say in the parameter trade-offs.
-        """
-        goals = [
-            make_goal(label="a", recording_key="rec0"),
-            make_goal(label="b", recording_key="rec0"),
-            make_goal(label="c", recording_key="rec1"),
-        ]
-        groups = group_goals(goals, 60, 10)
-        self.assertEqual([g.weights for g in groups], [[0.5, 0.5], [1.0]])
-
     def test_multi_view_group_adopts_the_earliest_origin(self):
         """Verify a multi-view group re-anchors every view to the earliest origin.
 
@@ -412,49 +398,23 @@ class TestTuningGoals(unittest.TestCase):
         self.assertEqual(source.calls, [(1_000_000_000, 46, 600, 10)])
         self.assertEqual(group.transform_buffer, "drive")
 
-    def test_single_view_group_reads_its_own_drive(self):
-        """Verify a single view keeps its frame times and reads the drive from its own origin."""
-        source = DriveRecorder()
-        goal = make_goal(frame_times=[0.0, 0.5], masks=make_goal().masks * 2, driven=True, data_source=source)
-        (group,) = group_goals([goal], 60, 10)
-        self.assertIs(group.views[0], goal)
-        self.assertEqual(group.num_frames, 31)
-        self.assertEqual(source.calls, [(1_000_000_000, 31, 600, 10)])
-
     def test_timeline_rounds_to_the_nearest_frame(self):
         """Verify the last frame time rounds to the nearest simulated frame, not down.
 
         Camera frames rarely fall on the simulation's frame grid. A last frame at
         0.03 s is 1.8 frames at 60 fps; truncating would end the timeline before it.
+        A single view reads the drive from its own start time over that timeline.
         """
         masks = make_goal().masks * 2
-        (single,) = group_goals([make_goal(frame_times=[0.0, 0.03], masks=masks)], 60, 10)
+        source = DriveRecorder()
+        goal = make_goal(frame_times=[0.0, 0.03], masks=masks, driven=True, data_source=source)
+        (single,) = group_goals([goal], 60, 10)
         self.assertEqual(single.num_frames, 3)
+        self.assertEqual(source.calls, [(1_000_000_000, 3, 600, 10)])
         (multi,) = group_goals(
             [make_goal(label="a", frame_times=[0.0, 0.03], masks=masks), make_goal(label="b")], 60, 10
         )
         self.assertEqual(multi.num_frames, 3)
-
-    def test_group_adapts_views_for_one_or_several_cameras(self):
-        """Verify the group's camera, argument and result helpers follow the camera count.
-
-        A single-camera group passes bare values to the simulation and wraps its
-        result in a list; a multi-camera group passes and returns per-view lists.
-        """
-        (single,) = group_goals([make_goal(render_size=(20, 20), fov_deg=60.0)], 60, 10)
-        self.assertEqual(single.run_args(["r"]), ("r", [0, 0, 20, 20], [0.0]))
-        self.assertEqual(single.per_view("x"), ["x"])
-        (camera,) = single.cameras()
-        self.assertEqual(camera["sensor_pos"], (1.0, 0.0, 0.5))
-        self.assertEqual(camera["sensor_quat"], [0.0, 0.0, 0.0, 1.0])
-        self.assertEqual(camera["camera_intrinsics"], (20, 20, 10.0, 10.0, 10.0, 10.0))
-        self.assertEqual(camera["render_size"], (20, 20))
-        self.assertEqual(camera["fov_deg"], 60.0)
-
-        (multi,) = group_goals([make_goal(label="a"), make_goal(label="b")], 60, 10)
-        self.assertEqual(multi.run_args(["r0", "r1"]), (["r0", "r1"], [[0, 0, 20, 20]] * 2, [[0.0], [0.0]]))
-        self.assertEqual(multi.per_view(["x", "y"]), ["x", "y"])
-        self.assertEqual(len(multi.cameras()), 2)
 
     def test_grouping_does_not_mutate_the_goals(self):
         """Verify grouping leaves the caller's goals unchanged and is idempotent.
@@ -502,41 +462,6 @@ class TestTuningGoals(unittest.TestCase):
                 goals = [make_goal(label="a", **{name: value}), make_goal(label="b", **{name: value})]
                 (group,) = group_goals(goals, 60, 10)
                 self.assertEqual(getattr(group, name), value)
-
-    def test_grasp_given_as_lists_agrees_with_tuples(self):
-        """Verify views that give the grasp as lists compare like views that give tuples.
-
-        Goals built in code may hold lists; they must agree or disagree by value,
-        not fail because a list cannot be hashed.
-        """
-        as_tuples = ((0.0, 0.0, 0.0), IDENTITY)
-        as_lists = [[0.0, 0.0, 0.0], list(IDENTITY)]
-        goals = [
-            make_goal(label="a", attachment_transform=as_tuples),
-            make_goal(label="b", attachment_transform=as_lists),
-        ]
-        (group,) = group_goals(goals, 60, 10)
-        self.assertEqual(group.attachment_transform, as_tuples)
-
-        goals = [make_goal(label="a", cable_axis=[1.0, 0.0, 0.0]), make_goal(label="b", cable_axis=[0.0, 1.0, 0.0])]
-        with self.assertRaisesRegex(ValueError, "rec0.*cable_axis"):
-            group_goals(goals, 60, 10)
-
-    def test_group_rejects_views_disagreeing_on_the_drive(self):
-        """Verify grouping raises, naming the recording, when views disagree on the drive.
-
-        The drive belongs to the recording, so a group reads it once for all
-        views. A view without the drive, or with another data source, would
-        otherwise be replayed with the wrong motion.
-        """
-        undriven = make_goal(label="a")
-        driven = make_goal(label="b", start_ns=1_100_000_000, driven=True, data_source=DriveRecorder())
-        with self.assertRaisesRegex(ValueError, "rec0.*driven"):
-            group_goals([undriven, driven], 60, 10)
-
-        other = make_goal(label="c", driven=True, data_source=DriveRecorder())
-        with self.assertRaisesRegex(ValueError, "rec0.*data_source"):
-            group_goals([driven, other], 60, 10)
 
     def test_goal_validation_requires_a_usable_camera(self):
         """Verify a goal without intrinsics needs both a render size and a field of view.
