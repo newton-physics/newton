@@ -578,7 +578,6 @@ class ViewerViser(ViewerBase):
         self._camera_up_axis = 2
         self._camera_pitch = Camera.DEFAULT_PITCH
         self._camera_yaw = Camera.DEFAULT_YAW
-        self._pending_camera_clients: set[int] = set()
         self._server.on_client_connect(self._handle_client_connect)
         self._server.on_client_disconnect(self._handle_client_disconnect)
         self._reset_camera_to_default(self._camera_up_axis)
@@ -625,16 +624,6 @@ class ViewerViser(ViewerBase):
             if owns(plane_name):
                 self._remove_plane_handles(plane_name)
         self._plane_meshes = {name: value for name, value in self._plane_meshes.items() if not owns(name)}
-
-        for gaussian_name in list(getattr(self, "_gaussian_splats", {}).keys()):
-            if owns(gaussian_name):
-                handle = self._scene_handles.pop(gaussian_name, None)
-                if handle is not None:
-                    try:
-                        handle.remove()
-                    except Exception:
-                        pass
-                self._gaussian_splats.pop(gaussian_name, None)
 
         for name, handle in list(getattr(self, "_scene_handles", {}).items()):
             if not owns(name):
@@ -1147,54 +1136,6 @@ class ViewerViser(ViewerBase):
                 pass
 
     @staticmethod
-    def _call_scene_method(method, **kwargs):
-        """Call a viser scene method with only supported keyword args."""
-        try:
-            signature = inspect.signature(method)
-        except (TypeError, ValueError):
-            return method(**kwargs)
-
-        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
-        allowed = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
-        dropped_appearance = [
-            key
-            for key in ("opacity", "batched_opacities", "color", "batched_colors", "material")
-            if kwargs.get(key) is not None and key not in signature.parameters and not accepts_kwargs
-        ]
-        if dropped_appearance:
-            warnings.warn(
-                f"Viser {method.__name__} does not support requested appearance argument(s): "
-                f"{', '.join(dropped_appearance)}.",
-                stacklevel=2,
-            )
-        return method(**allowed)
-
-    @staticmethod
-    def _set_handle_property_if_changed(handle: Any, name: str, value: Any) -> None:
-        """Update a Viser property only when its serialized value changed."""
-        try:
-            current = getattr(handle, name)
-            if isinstance(current, (np.ndarray, tuple, list)) or isinstance(value, (np.ndarray, tuple, list)):
-                unchanged = np.array_equal(np.asarray(current), np.asarray(value))
-            else:
-                unchanged = current == value
-            if unchanged:
-                return
-        except Exception:
-            pass
-        setattr(handle, name, value)
-
-    @staticmethod
-    def _transform_to_viser(transform: wp.transform) -> tuple[np.ndarray, np.ndarray]:
-        """Return a Warp transform as Viser position and WXYZ rotation."""
-        return transform_to_position_wxyz(transform)
-
-    @staticmethod
-    def _assign_transform(transform: wp.transform, position, wxyz) -> None:
-        """Mutate a pass-by-reference Warp transform from Viser values."""
-        transform_assign_position_wxyz(transform, position, wxyz)
-
-    @staticmethod
     def _normalize_gizmo_axes(axes: Sequence[Axis] | None) -> tuple[Axis, ...]:
         """Normalize an optional axis sequence into stable XYZ order."""
         axis_order = (Axis.X, Axis.Y, Axis.Z)
@@ -1210,7 +1151,7 @@ class ViewerViser(ViewerBase):
 
     def _sync_gizmo_handles(self, entry: dict[str, Any]) -> None:
         """Push a gizmo's current pass-by-reference transform to Viser."""
-        position, wxyz = self._transform_to_viser(entry["transform"])
+        position, wxyz = transform_to_position_wxyz(entry["transform"])
         for handle in entry["handles"].values():
             handle.position = position
             handle.wxyz = wxyz
@@ -1252,7 +1193,7 @@ class ViewerViser(ViewerBase):
         snap_to: wp.transform | None,
     ) -> dict[str, Any]:
         """Create translation and rotation controls for one logged gizmo."""
-        position, wxyz = self._transform_to_viser(transform)
+        position, wxyz = transform_to_position_wxyz(transform)
         handles: dict[str, Any] = {}
 
         def add_handle(kind: str, axes: tuple[Axis, ...], **kwargs):
@@ -1501,7 +1442,7 @@ class ViewerViser(ViewerBase):
                 _, name, handles, position, wxyz = event
                 if self._is_current_gizmo(name, handles):
                     entry = self._gizmo_handles[name]
-                    self._assign_transform(entry["transform"], position, wxyz)
+                    transform_assign_position_wxyz(entry["transform"], position, wxyz)
                     self._sync_gizmo_handles(entry)
             elif event_type == "gizmo_drag_start":
                 _, name, handles, client_id = event
@@ -1746,30 +1687,14 @@ class ViewerViser(ViewerBase):
             "The notebook playback feature requires a Viser client build."
         )
 
-    @staticmethod
-    def _is_client_camera_ready(client: Any) -> bool:
-        """Return True if the client has reported an initial camera state."""
-        try:
-            update_timestamp = float(client.camera.update_timestamp)
-        except Exception:
-            # Older viser versions may not expose update_timestamp.
-            try:
-                _ = client.camera.position
-            except Exception:
-                return False
-            return True
-        return update_timestamp > 0.0
-
     def _handle_client_connect(self, client: Any):
         """Apply cached camera and loading state to a newly connected client."""
-        self._pending_camera_clients.discard(int(client.client_id))
         self._apply_camera_to_client(client)
         self._show_loading_notification(client)
 
     def _handle_client_disconnect(self, client: Any):
         """Clear pending client-specific state for a disconnected client."""
         client_id = int(client.client_id)
-        self._pending_camera_clients.discard(client_id)
         self._loading_notification_handles.pop(client_id, None)
         # Release interactions owned by this client on the simulation thread.
         self._interaction_events.put(("client_disconnect", client_id))
@@ -1849,58 +1774,27 @@ class ViewerViser(ViewerBase):
         if fov is not None:
             self._camera_fov_radians = float(np.deg2rad(fov))
 
-        if hasattr(self._server, "initial_camera"):
-            self._server.initial_camera.position = tuple(position.tolist())
-            self._server.initial_camera.look_at = tuple(look_at.tolist())
-            if hasattr(self._server.initial_camera, "up"):
-                self._server.initial_camera.up = tuple(up_direction.tolist())
-            elif hasattr(self._server.initial_camera, "up_direction"):
-                self._server.initial_camera.up_direction = tuple(up_direction.tolist())
-            if self._camera_fov_radians is not None and hasattr(self._server.initial_camera, "fov"):
-                self._server.initial_camera.fov = self._camera_fov_radians
+        self._server.initial_camera.position = position
+        self._server.initial_camera.look_at = look_at
+        self._server.initial_camera.up = up_direction
+        if self._camera_fov_radians is not None:
+            self._server.initial_camera.fov = self._camera_fov_radians
 
         for client in self._server.get_clients().values():
             self._apply_camera_to_client(client)
 
     def _apply_camera_to_client(self, client: Any):
-        """Apply the cached camera request to a connected client if ready."""
+        """Apply the cached camera request to a connected client."""
         if self._camera_request is None:
             return
 
-        client_id = int(client.client_id)
-        if not self._is_client_camera_ready(client):
-            if client_id in self._pending_camera_clients:
-                return
-
-            self._pending_camera_clients.add(client_id)
-
-            def _on_camera_update(_camera: Any):
-                if client_id not in self._pending_camera_clients:
-                    return
-                self._pending_camera_clients.discard(client_id)
-                self._apply_camera_to_client(client)
-
-            client.camera.on_update(_on_camera_update)
-            return
-
-        self._pending_camera_clients.discard(client_id)
         position, look_at, up_direction = self._camera_request
-        fov = self._camera_fov_radians
-
-        # Keep camera updates synchronized to avoid transient jitter.
-        if hasattr(client, "atomic"):
-            with client.atomic():
-                client.camera.position = tuple(position.tolist())
-                client.camera.look_at = tuple(look_at.tolist())
-                client.camera.up_direction = tuple(up_direction.tolist())
-                if fov is not None:
-                    client.camera.fov = fov
-        else:
-            client.camera.position = tuple(position.tolist())
-            client.camera.look_at = tuple(look_at.tolist())
-            client.camera.up_direction = tuple(up_direction.tolist())
-            if fov is not None:
-                client.camera.fov = fov
+        with client.atomic():
+            client.camera.position = position
+            client.camera.look_at = look_at
+            client.camera.up_direction = up_direction
+            if self._camera_fov_radians is not None:
+                client.camera.fov = self._camera_fov_radians
 
     @override
     def set_camera(self, pos: wp.vec3, pitch: float | None = None, yaw: float | None = None):
@@ -2035,7 +1929,7 @@ class ViewerViser(ViewerBase):
 
         existing_handle = self._scene_handles.get(name)
         if hidden and existing_handle is not None:
-            self._set_handle_property_if_changed(existing_handle, "visible", False)
+            existing_handle.visible = False
             return
 
         # Convert to numpy arrays
@@ -2098,7 +1992,7 @@ class ViewerViser(ViewerBase):
                 existing_handle.vertices = points_np
                 if not np.array_equal(existing_mesh["indices"], indices_np):
                     existing_handle.faces = indices_np
-                self._set_handle_property_if_changed(existing_handle, "visible", True)
+                existing_handle.visible = True
                 return
             except Exception:
                 pass
@@ -2131,7 +2025,7 @@ class ViewerViser(ViewerBase):
             }
             if opacity is not None:
                 mesh_kwargs["opacity"] = float(np.clip(opacity, 0.0, 1.0))
-            handle = self._call_scene_method(self._server.scene.add_mesh_simple, **mesh_kwargs)
+            handle = self._server.scene.add_mesh_simple(**mesh_kwargs)
         self._scene_handles[name] = handle
 
     @staticmethod
@@ -2208,13 +2102,13 @@ class ViewerViser(ViewerBase):
         )
         if hidden or xforms is None:
             for handle in handles:
-                self._set_handle_property_if_changed(handle, "visible", False)
+                handle.visible = False
             return
 
         xforms_np = to_numpy(xforms)
         if xforms_np is None or len(xforms_np) == 0:
             for handle in handles:
-                self._set_handle_property_if_changed(handle, "visible", False)
+                handle.visible = False
             return
 
         xforms_np = np.asarray(xforms_np, dtype=np.float32)
@@ -2248,18 +2142,17 @@ class ViewerViser(ViewerBase):
 
             if idx < len(handles):
                 handle = handles[idx]
-                self._set_handle_property_if_changed(handle, "position", position)
-                self._set_handle_property_if_changed(handle, "wxyz", quat_wxyz)
-                self._set_handle_property_if_changed(handle, "width", width)
-                self._set_handle_property_if_changed(handle, "height", length)
-                self._set_handle_property_if_changed(handle, "cell_size", cell_size)
-                self._set_handle_property_if_changed(handle, "section_size", cell_size)
-                self._set_handle_property_if_changed(handle, "infinite_grid", infinite_grid)
-                self._set_handle_property_if_changed(handle, "visible", True)
+                handle.position = position
+                handle.wxyz = quat_wxyz
+                handle.width = width
+                handle.height = length
+                handle.cell_size = cell_size
+                handle.section_size = cell_size
+                handle.infinite_grid = infinite_grid
+                handle.visible = True
             else:
                 # The plane's local frame has its normal along +Z, so the grid lies in the local XY plane.
-                handle = self._call_scene_method(
-                    self._server.scene.add_grid,
+                handle = self._server.scene.add_grid(
                     name=f"{name}/grid_{idx}",
                     width=width,
                     height=length,
@@ -2392,48 +2285,26 @@ class ViewerViser(ViewerBase):
                 del self._scene_handles[name]
                 del self._instances[name]
             else:
-                # Update transforms in-place
-                try:
-                    instance = self._instances[name]
-                    self._set_handle_property_if_changed(handle, "visible", True)
-                    if instance["pickable"]:
-                        self._attach_picking_callback(handle, instance["layer_id"])
-                    if not np.array_equal(instance["positions"], positions):
-                        handle.batched_positions = positions
-                        instance["positions"] = positions.copy()
-                    if not np.array_equal(instance["wxyzs"], quats_wxyz):
-                        handle.batched_wxyzs = quats_wxyz
-                        instance["wxyzs"] = quats_wxyz.copy()
-                    if hasattr(handle, "batched_scales") and not np.array_equal(instance["scales"], batched_scales):
-                        handle.batched_scales = batched_scales
-                        instance["scales"] = batched_scales.copy()
-                    # Only update colors if they were explicitly provided
-                    if batched_colors is not None and hasattr(handle, "batched_colors"):
-                        if not np.array_equal(instance["colors"], batched_colors):
-                            handle.batched_colors = batched_colors
-                            instance["colors"] = batched_colors.copy()
-                    if opacities_np is not None and not np.array_equal(instance.get("opacities"), opacities_np):
-                        if use_trimesh:
-                            handle.glb_data = self._export_textured_batch(trimesh_mesh, opacities_np)
-                            instance["opacities"] = opacities_np.copy()
-                        elif hasattr(handle, "batched_opacities"):
-                            handle.batched_opacities = opacities_np
-                            instance["opacities"] = opacities_np.copy()
-                        else:
-                            warnings.warn(
-                                f"Viser handle for {name!r} does not support batched opacity updates.",
-                                stacklevel=2,
-                            )
-                    return
-                except Exception:
-                    # If update fails, recreate the mesh
-                    self._detach_picking_callback(handle)
-                    try:
-                        handle.remove()
-                    except Exception:
-                        pass
-                    del self._scene_handles[name]
-                    del self._instances[name]
+                instance = self._instances[name]
+                handle.visible = True
+                if instance["pickable"]:
+                    self._attach_picking_callback(handle, instance["layer_id"])
+                # Viser suppresses unchanged properties, including array values.
+                handle.batched_positions = positions
+                handle.batched_wxyzs = quats_wxyz
+                handle.batched_scales = batched_scales
+                instance["scales"] = batched_scales
+                if use_trimesh:
+                    # Re-export the textured asset only when its material changes.
+                    if opacities_np is not None and not np.array_equal(instance["opacities"], opacities_np):
+                        handle.glb_data = self._export_textured_batch(trimesh_mesh, opacities_np)
+                        instance["opacities"] = opacities_np.copy()
+                else:
+                    if batched_colors is not None:
+                        handle.batched_colors = batched_colors
+                    if opacities_np is not None:
+                        handle.batched_opacities = opacities_np
+                return
 
         # For new instances, use provided colors or default gray
         if batched_colors is None:
@@ -2452,8 +2323,7 @@ class ViewerViser(ViewerBase):
                 lod="off",
             )
         else:
-            handle = self._call_scene_method(
-                self._server.scene.add_batched_meshes_simple,
+            handle = self._server.scene.add_batched_meshes_simple(
                 name=name,
                 vertices=base_points,
                 faces=base_indices,
@@ -2471,10 +2341,7 @@ class ViewerViser(ViewerBase):
         self._instances[name] = {
             "mesh": mesh,
             "count": num_instances,
-            "positions": positions.copy(),
-            "wxyzs": quats_wxyz.copy(),
             "scales": batched_scales.copy(),
-            "colors": batched_colors.copy(),
             "opacities": None if opacities_np is None else opacities_np.copy(),
             "use_trimesh": use_trimesh,
             "layer_id": self.layer.layer_id,
@@ -3017,7 +2884,7 @@ class ViewerViser(ViewerBase):
         existing_handle = self._scene_handles.get(name) if name in self._point_cloud_colors else None
         if hidden or points is None:
             if existing_handle is not None:
-                self._set_handle_property_if_changed(existing_handle, "visible", False)
+                existing_handle.visible = False
             return
 
         pts = to_numpy(points)
@@ -3026,7 +2893,7 @@ class ViewerViser(ViewerBase):
 
         if n_points == 0:
             if existing_handle is not None:
-                self._set_handle_property_if_changed(existing_handle, "visible", False)
+                existing_handle.visible = False
             return
 
         # Handle radii (point size)
@@ -3066,11 +2933,11 @@ class ViewerViser(ViewerBase):
                 colors_val = np.asarray(base_color, dtype=np.uint8)
             try:
                 existing_handle.points = points_val
-                self._set_handle_property_if_changed(existing_handle, "point_size", point_size)
+                existing_handle.point_size = point_size
                 if colors_val is not None and not np.array_equal(cached_colors, colors_val):
                     existing_handle.colors = colors_val
                     self._point_cloud_colors[name] = colors_val.copy()
-                self._set_handle_property_if_changed(existing_handle, "visible", True)
+                existing_handle.visible = True
                 return
             except (AttributeError, RuntimeError, TypeError, ValueError) as error:
                 _logger.warning("Failed to update Viser point cloud %r in place; recreating it: %s", name, error)
@@ -3300,8 +3167,7 @@ class ViewerViser(ViewerBase):
                 except Exception:
                     pass
 
-            handle = self._call_scene_method(
-                self._server.scene.add_gaussian_splats,
+            handle = self._server.scene.add_gaussian_splats(
                 name=name,
                 centers=centers,
                 covariances=covariances,
