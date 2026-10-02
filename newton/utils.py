@@ -4,6 +4,8 @@
 import warnings
 from typing import TYPE_CHECKING
 
+from ._src.exceptions import NewtonDeprecationWarning
+
 # ==================================================================================
 # sim utils
 # ==================================================================================
@@ -122,7 +124,7 @@ def __getattr__(name: str):
     warnings.warn(
         f"newton.utils.{name} is deprecated in Newton 1.6; "
         "pass direct stiffness values to newton.ModelBuilder.add_rod() instead.",
-        DeprecationWarning,
+        NewtonDeprecationWarning,
         stacklevel=2,
     )
     return value

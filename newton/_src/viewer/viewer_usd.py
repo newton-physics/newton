@@ -15,6 +15,7 @@ import warp as wp
 import newton
 
 from ..core.types import override
+from ..exceptions import NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 
 try:
@@ -433,6 +434,7 @@ class ViewerUSD(ViewerBase):
         except Exception as exc:
             warnings.warn(
                 f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. Mesh will render without texture.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None

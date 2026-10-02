@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning
 from .clamping.base import ClampingBase
 from .delay import Delay
 from .drives.base import DriveBase
@@ -169,7 +170,7 @@ class Actuator:
             if controller_state is not _DEPRECATED_UNSET:
                 if drive_state is not _DEPRECATED_UNSET:
                     raise TypeError("Specify only one of 'drive_state' and deprecated 'controller_state'.")
-                warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+                warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
                 drive_state = controller_state
 
             self.delay_state = delay_state
@@ -182,12 +183,12 @@ class Actuator:
             .. deprecated:: 1.6
                 Use :attr:`drive_state` instead.
             """
-            warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return self.drive_state
 
         @controller_state.setter
         def controller_state(self, value: DriveBase.State | None) -> None:
-            warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             self.drive_state = value
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
@@ -287,7 +288,7 @@ class Actuator:
         if controller is not _DEPRECATED_UNSET:
             if drive is not None:
                 raise TypeError("Specify only one of 'drive' and deprecated 'controller'.")
-            warnings.warn(_CONTROLLER_KEYWORD_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_CONTROLLER_KEYWORD_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             drive = controller
         if drive is None:
             raise TypeError("Actuator() missing required argument: 'drive'")
@@ -352,12 +353,12 @@ class Actuator:
         .. deprecated:: 1.6
             Use :attr:`drive` instead.
         """
-        warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self.drive
 
     @controller.setter
     def controller(self, value: DriveBase) -> None:
-        warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self.drive = value
 
     # To achieve public API Actuator.ImplicitOptions.

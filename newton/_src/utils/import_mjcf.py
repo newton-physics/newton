@@ -15,6 +15,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
+from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
@@ -819,6 +820,7 @@ def parse_mjcf(
                 f"MJCF attribute {key!r} provided a single value but expects "
                 f"{len(default)} components; replicating to fill. If this is a "
                 f"MuJoCo shorthand please extend ``parse_vec``'s whitelist.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return wp.types.vector(len(default), wp.float32)(*([float(out[0])] * len(default)))
@@ -840,6 +842,7 @@ def parse_mjcf(
             "MuJoCo may silently disable the limit or divide by zero — fix the "
             "authored solreflimit or set model.mujoco.solreflimit_mode = "
             "SOLREF_MODE_FORCE_SPACE to switch to Newton force-space scaling.",
+            NewtonWarning,
             stacklevel=3,
         )
 
@@ -1064,6 +1067,7 @@ def parse_mjcf(
                             f"Geom '{geom_name}': legacy translation yields "
                             f"negative margin (mj_margin={mj_margin}, "
                             f"mj_gap={mj_gap}).",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                     shape_cfg.margin = newton_margin
@@ -1484,6 +1488,7 @@ def parse_mjcf(
                     warnings.warn(
                         f"explicit mass ({geom_mass_explicit}) on geom '{geom_name}' "
                         f"with type '{geom_type}' is not supported — mass will be ignored",
+                        NewtonWarning,
                         stacklevel=2,
                     )
 
@@ -2662,6 +2667,7 @@ def parse_mjcf(
                             f"Warning: Joint equality '{common['name']}' uses higher-order polycoef terms. "
                             "They are preserved for SolverMuJoCo, but generic Newton mimic constraints use "
                             "only coef0/coef1.",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                     mjc_add_equality_mimic(
@@ -3044,6 +3050,7 @@ def parse_mjcf(
                     if site_idx < 0:
                         warnings.warn(
                             f"Spatial tendon '{tendon_name}' references unknown site '{site_name}', skipping element.",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                         continue
@@ -3057,6 +3064,7 @@ def parse_mjcf(
                     if geom_idx < 0:
                         warnings.warn(
                             f"Spatial tendon '{tendon_name}' references unknown geom '{geom_name}', skipping element.",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                         continue
@@ -3069,6 +3077,7 @@ def parse_mjcf(
                         if sidesite_idx < 0:
                             warnings.warn(
                                 f"Spatial tendon '{tendon_name}' sidesite '{sidesite_name}' not found.",
+                                NewtonWarning,
                                 stacklevel=2,
                             )
                     wrap_entries.append((1, geom_idx, sidesite_idx, 0.0))
@@ -3080,6 +3089,7 @@ def parse_mjcf(
             if not wrap_entries:
                 warnings.warn(
                     f"Spatial tendon '{tendon_name}' has no valid wrap elements, skipping.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 continue

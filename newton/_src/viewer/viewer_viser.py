@@ -17,6 +17,7 @@ import warp as wp
 import newton
 
 from ..core.types import override
+from ..exceptions import NewtonWarning
 from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
 
@@ -257,6 +258,7 @@ class ViewerViser(ViewerBase):
             warnings.warn(
                 f"Viser {method.__name__} does not support requested appearance argument(s): "
                 f"{', '.join(dropped_appearance)}.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return method(**allowed)
@@ -656,11 +658,14 @@ class ViewerViser(ViewerBase):
         texture_image = prepare_viewer_texture(texture)
 
         if texture_image is not None and uvs_np is None:
-            warnings.warn(f"Mesh {name} has a texture but no UVs; texture will be ignored.", stacklevel=2)
+            warnings.warn(
+                f"Mesh {name} has a texture but no UVs; texture will be ignored.", NewtonWarning, stacklevel=2
+            )
             texture_image = None
         if texture_image is not None and uvs_np is not None and len(uvs_np) != len(points_np):
             warnings.warn(
                 f"Mesh {name} has {len(uvs_np)} UVs for {len(points_np)} vertices; texture will be ignored.",
+                NewtonWarning,
                 stacklevel=2,
             )
             texture_image = None
@@ -675,6 +680,7 @@ class ViewerViser(ViewerBase):
             if trimesh_mesh is None:
                 warnings.warn(
                     "Viser textured meshes require trimesh; falling back to untextured rendering.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -1003,6 +1009,7 @@ class ViewerViser(ViewerBase):
                         else:
                             warnings.warn(
                                 f"Viser handle for {name!r} does not support batched opacity updates.",
+                                NewtonWarning,
                                 stacklevel=2,
                             )
                     return

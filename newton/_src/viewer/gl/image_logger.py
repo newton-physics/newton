@@ -22,6 +22,8 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ...exceptions import NewtonWarning
+
 _ACCEPTED_C = (1, 3, 4)
 _TILE_SPACING_PX: float = 2.0
 _INITIAL_TILE_PX: int = 192
@@ -590,6 +592,7 @@ class ImageLogger:
         warnings.warn(
             f"log_image('{name}'): array is on {image.device} but viewer is on "
             f"{self._device}; falling back to CPU upload (D2H copy per frame).",
+            NewtonWarning,
             stacklevel=3,
         )
         self._warned_device_mismatch[name] = image.device
@@ -768,6 +771,7 @@ class ImageLogger:
             if not sys.is_finalizing():
                 warnings.warn(
                     f"log_image('{entry.name}'): GL cleanup failed: {exc!r}",
+                    NewtonWarning,
                     stacklevel=2,
                 )
         finally:

@@ -245,6 +245,31 @@ Python source conventions
   distribution. Update license metadata and notices when required. Treat an
   unknown or undeclared dependency license as requiring review before merge.
 
+Errors and warnings
+-------------------
+
+Choose how to report a problem by who has to act on it:
+
+- Raise an exception when Newton cannot do what the caller asked. Do not warn
+  and continue with a guessed result.
+- Call :func:`warnings.warn` when the caller should change their code or input,
+  for example to stop using a deprecated feature or to remove an option that
+  has no effect.
+- Log with :mod:`logging` when the caller has nothing to change.
+
+Every warning must use a :mod:`newton.exceptions` category so applications can
+filter Newton warnings without matching messages:
+
+- :class:`~newton.exceptions.NewtonDeprecationWarning` for deprecations, as
+  required by the deprecation policy; and
+- :class:`~newton.exceptions.NewtonWarning`, or a subclass of it, for
+  everything else.
+
+Pass a ``stacklevel`` that attributes the warning to the caller's code rather
+than to Newton internals. CI runs tests with ``--strict-warnings``, which turns
+Newton warnings into errors; a test that triggers a warning on purpose must
+assert it, for example with :meth:`~unittest.TestCase.assertWarns`.
+
 Documentation and comments
 --------------------------
 

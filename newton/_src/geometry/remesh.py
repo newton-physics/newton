@@ -71,6 +71,7 @@ import warnings
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from ..geometry.hashtable import HashTable, hashtable_find_or_insert
 from ..geometry.types import Mesh
 
@@ -1217,6 +1218,7 @@ class PointCloudExtractor:
             warnings.warn(
                 f"Voxel hash table is {load_factor:.0%} full ({num_voxels_after_primary}/{voxel_grid.capacity}). "
                 f"This may cause slowdowns. Consider increasing max_voxels or using a larger voxel_size.",
+                NewtonWarning,
                 stacklevel=2,
             )
 

@@ -11,6 +11,7 @@ import warp as wp
 
 from newton import Mesh
 
+from ...exceptions import NewtonWarning
 from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
 from ..utils import OPAQUE_OPACITY_THRESHOLD
@@ -1939,6 +1940,7 @@ class RendererGL:
                 "ViewerGL: weighted order-independent transparency is unavailable on this GL context "
                 "(requires independent blending and a float OIT framebuffer). Falling back to unsorted "
                 "alpha blending, so overlapping transparent surfaces may blend in the wrong order.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return self._oit_supported

@@ -15,6 +15,7 @@ import warp as wp
 import newton
 
 from ..core.types import override
+from ..exceptions import NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
@@ -446,6 +447,7 @@ class ViewerRerun(ViewerBase):
                 if not np.allclose(opacities_np, first_opacity):
                     warnings.warn(
                         "ViewerRerun does not support per-instance opacity; using the first opacity for the batch.",
+                        NewtonWarning,
                         stacklevel=2,
                     )
             if colors is not None and not has_texture:

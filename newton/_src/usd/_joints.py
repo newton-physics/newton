@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
@@ -194,6 +195,7 @@ def parse_joint(
             warnings.warn(
                 f"Ignoring {usd_attrs} on native D6 joint {joint_path}: "
                 "MuJoCo has no D6 joint or corresponding reference-coordinate semantics.",
+                NewtonWarning,
                 stacklevel=2,
             )
             for attr_key in unsupported_ref_attrs:
@@ -590,6 +592,7 @@ def parse_merged_joints(
             warnings.warn(
                 f"Merged joint {jp} has different anchor positions than representative "
                 f"{first_desc.primPath}; using representative positions for the D6 joint.",
+                NewtonWarning,
                 stacklevel=2,
             )
             break

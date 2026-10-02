@@ -16,6 +16,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis
+from ..exceptions import NewtonWarning
 from ..geometry import ShapeFlags
 from ..sim.builder import ModelBuilder
 from . import utils as usd
@@ -374,6 +375,7 @@ def _parse_colliders(
                                 warnings.warn(
                                     f"{prim.GetPath()}: physics:approximation={approximation!r} is "
                                     f"ignored on a shape with NewtonSDFCollisionAPI applied.",
+                                    NewtonWarning,
                                     stacklevel=3,
                                 )
                             else:

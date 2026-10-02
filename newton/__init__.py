@@ -123,11 +123,25 @@ __all__ += [
 # ==================================================================================
 # submodule APIs
 # ==================================================================================
-from . import actuators, controllers, geometry, ik, math, selection, sensors, solvers, usd, utils, viewer  # noqa: E402
+from . import (  # noqa: E402
+    actuators,
+    controllers,
+    exceptions,
+    geometry,
+    ik,
+    math,
+    selection,
+    sensors,
+    solvers,
+    usd,
+    utils,
+    viewer,
+)
 
 __all__ += [
     "actuators",
     "controllers",
+    "exceptions",
     "geometry",
     "ik",
     "math",

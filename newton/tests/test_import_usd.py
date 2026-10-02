@@ -6490,7 +6490,7 @@ def Xform "Articulation" (
             result = builder.add_usd(stage)
 
         self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, UserWarning)
+        self.assertEqual(caught[0].category, newton.exceptions.NewtonWarning)
         self.assertRegex(str(caught[0].message), _MIRRORED_BODY_WARNING)
 
         for case_name, _scale, _angle, _com, include_partial in cases:
@@ -8156,7 +8156,7 @@ def Xform "Articulation" (
             model = builder.finalize()
 
         self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, UserWarning)
+        self.assertEqual(caught[0].category, newton.exceptions.NewtonWarning)
         self.assertRegex(str(caught[0].message), _PARTIAL_EQ_SOLREF_WARNING)
 
         self.assertNotIn("/World/EqualityConnect", result["path_joint_map"])
