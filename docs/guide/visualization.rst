@@ -111,8 +111,9 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
 - :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
 - :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — display numeric diagnostics as scalar plots or array visualizations; see :ref:`viewer-live-plots`
-- :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image in :class:`~newton.viewer.ViewerGL` as a dockable window or, with ``fullscreen=True``, as the main viewer surface for the current frame (no-op on other
-  backends)
+- :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image in a
+  :class:`~newton.viewer.ViewerGL` dock or fullscreen surface, or in the selected-image
+  panel of :class:`~newton.viewer.ViewerViser` (no-op on other backends)
 
 **Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance.
 All viewers support ``set_visible_worlds()`` to limit visualization to a subset of environments:
@@ -590,7 +591,7 @@ providing web-based 3D visualization that works in any browser and has native Ju
 
 .. code-block:: bash
 
-    pip install viser
+    pip install 'viser>=1.1.1'
 
 **Usage**:
 
@@ -610,6 +611,48 @@ providing web-based 3D visualization that works in any browser and has native Ju
 
     # Close the viewer when done
     viewer.close()
+
+``--paused`` also applies when launching examples with ``--viewer viser``.
+The native Simulation panel provides Pause, Step, and Reset; the Examples
+panel can switch scenarios without reconnecting the browser. Example controls
+run on the simulation thread. A Layers panel toggles visibility of named
+simulation layers, including the multi-solver overlay example.
+Press-and-hold buttons use browser heartbeats
+and release within 150 ms of the last heartbeat, or immediately on disconnect.
+
+For application-specific panels, lighting, or scene tools, use the read-only
+:attr:`~newton.viewer.ViewerViser.server` property to access the native Viser API:
+
+.. code-block:: python
+
+    with viewer.server.gui.add_folder("Diagnostics"):
+        viewer.server.gui.add_markdown("Application-specific status")
+    viewer.server.scene.configure_environment_map(hdri="studio", background=False)
+
+The viewer owns this server and stops it when closed. Native Viser callbacks
+run asynchronously; enqueue changes to simulation state and consume them on
+the simulation thread before stepping. The common ImGui-style callback adapter
+supports buttons, checkboxes, radio buttons, float/int sliders, float inputs,
+text, separators, disabled scopes, and button hold state. The ``same_line``
+layout helper is a no-op. See
+:meth:`~newton.viewer.ViewerViser.register_ui_callback` for the complete subset.
+The adapter reports ``is_available = False`` because no full ImGui context is
+present; registered callbacks still run. Unsupported calls raise an
+``AttributeError`` directing you to ``viewer.server.gui``. Use that native API
+for richer interfaces.
+
+Bind each layer's model with ``activate()`` and ``set_model()`` before capturing
+its CUDA graph, and call ``apply_forces(state)`` for that active layer during
+capture. Picking uses device state, so picks made later in the browser take
+effect on graph replay. ``clear_all_layers()`` restores the default Viser camera
+when switching examples; clearing one layer preserves the current view.
+
+Textured meshes preserve texture alpha and display opacity using glTF blend
+materials. A textured instance batch can share one opacity value; Viser does
+not expose varying per-instance opacity for textured batches. Such requests
+warn and retain the mesh material's opacity. Applications using
+:meth:`~newton.viewer.ViewerViser.log_instances` can use separate batches for
+different opacities. Untextured batches support per-instance opacity directly.
 
 **Recording and playback**
 
@@ -660,6 +703,9 @@ The viser viewer provides features like:
 
 - Real-time 3D visualization in any web browser
 - Interactive camera controls (pan, zoom, orbit)
+- Native simulation and visualization controls
+- Interactive transform gizmos and object picking
+- A selected-image panel and live scalar plots
 - GPU-accelerated batched mesh rendering
 - Recording and playback capabilities
 - Public URL sharing via viser's share feature
@@ -764,13 +810,14 @@ Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gi
 **Logging images:**
 
 Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including batched/tiled
-outputs from :class:`~newton.sensors.SensorTiledCamera`) in
-:class:`~newton.viewer.ViewerGL`. By default, non-headless :class:`~newton.viewer.ViewerGL`
-shows logged images as dockable windows. Pass ``fullscreen=True`` to draw the image
-as the main viewer surface for the current frame instead of the 3D scene. Accepted
-shapes are ``(H, W)``, ``(H, W, C)``, ``(N, H, W)``, and ``(N, H, W, C)`` with
-``C in (1, 3, 4)``. Accepted dtypes are ``uint8`` (values in ``[0, 255]``) and
-``float32`` (values in ``[0, 1]``; values outside the range are clipped).
+outputs from :class:`~newton.sensors.SensorTiledCamera`). By default, non-headless
+:class:`~newton.viewer.ViewerGL` shows logged images as dockable windows. Pass
+``fullscreen=True`` to draw the image as the main ViewerGL surface for the current
+frame instead of the 3D scene. :class:`~newton.viewer.ViewerViser` displays the selected
+stream in a persistent native ``Images`` panel and accepts, but ignores, the
+``fullscreen`` option. Accepted shapes are ``(H, W)``, ``(H, W, C)``, ``(N, H, W)``,
+and ``(N, H, W, C)`` with ``C in (1, 3, 4)``. Accepted dtypes are ``uint8`` (values in
+``[0, 255]``) and ``float32`` (values in ``[0, 1]``; values outside the range are clipped).
 
 .. testcode:: viewer-log-image
 
@@ -828,22 +875,24 @@ frame capture where the image should replace the 3D scene:
     rgba = sensor.utils.to_rgba_from_color(color_image)
     viewer.log_image("tiled_camera", rgba, fullscreen=True)
 
-The ``fullscreen=True`` selection is per-frame: call
+For :class:`~newton.viewer.ViewerGL`, the ``fullscreen=True`` selection is per-frame: call
 :meth:`~newton.viewer.ViewerBase.log_image` with ``fullscreen=True`` after
 :meth:`~newton.viewer.ViewerBase.begin_frame` and before
 :meth:`~newton.viewer.ViewerBase.end_frame` on every frame that should show the
 image. If a frame does not log a fullscreen image, :class:`~newton.viewer.ViewerGL`
-renders the 3D scene for that frame. Image rendering is currently implemented only
-by :class:`~newton.viewer.ViewerGL`; other viewer backends inherit the no-op base
-implementation, so they ignore both the image and the ``fullscreen`` option.
+renders the 3D scene for that frame. :class:`~newton.viewer.ViewerViser` retains its
+``Images`` panel and updates only the stream selected there. Other viewer backends
+inherit the no-op base implementation and ignore both the image and the ``fullscreen``
+option.
 
 **Camera and world layout:**
 
-Set the camera programmatically with :meth:`~newton.viewer.ViewerBase.set_camera`:
+Set the camera programmatically with :meth:`~newton.viewer.ViewerBase.set_camera`.
+``pitch`` and ``yaw`` are specified in degrees:
 
 .. code-block:: python
 
-    viewer.set_camera(pos=wp.vec3(5.0, 2.0, 3.0), pitch=-0.3, yaw=0.5)
+    viewer.set_camera(pos=wp.vec3(5.0, 2.0, 3.0), pitch=-20.0, yaw=30.0)
     viewer.camera_speed = 0.2  # m/s
 
 When visualizing multiple worlds, use :meth:`~newton.viewer.ViewerBase.set_world_offsets` to arrange them in a grid

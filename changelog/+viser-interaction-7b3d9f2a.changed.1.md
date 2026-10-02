@@ -1,0 +1,1 @@
+Align `ViewerViser` default camera views with `ViewerGL`, render particles as shaded spheres, and reduce geometry recreation and device-to-host transfers during rendering. Use `set_camera()` to choose a custom view; existing logging calls require no changes.
