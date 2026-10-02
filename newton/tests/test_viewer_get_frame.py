@@ -516,5 +516,64 @@ class TestViewerGLGetFrame(unittest.TestCase):
             viewer.close()
 
 
+class TestViewerGLMultisampling(unittest.TestCase):
+    def test_window_config_requests_the_scene_sample_count(self):
+        """Verify the window config is negotiated at the scene's sample count.
+
+        The scene is never drawn into the window's own buffer: it is rendered
+        into the multi-sampled framebuffer allocated at ``msaa_samples`` and
+        resolved into a texture. Requesting a different count from the window
+        therefore buys a default framebuffer that goes unused, and narrows the
+        set of drivers that can match the request.
+        """
+        viewer = _make_headless_viewer_gl_or_skip(self)
+
+        try:
+            # A driver offering no multi-sampled config at all reports 0, and a
+            # backend that leaves the attribute unset reports None; any other
+            # value has to agree with what the scene is rendered at.
+            granted = viewer.renderer.window.config.samples or 0
+            self.assertIn(granted, (0, viewer.renderer.msaa_samples))
+        finally:
+            viewer.close()
+
+    def test_scene_keeps_msaa_without_a_multisampled_window_config(self):
+        """Verify the scene stays anti-aliased when the window config has no MSAA."""
+        try:
+            import pyglet.window
+        except Exception as exc:
+            if not _is_viewer_gl_unavailable_error(self, exc):
+                raise
+            self.skipTest(f"pyglet window backend not available: {exc}")
+
+        real_window = pyglet.window.Window
+        requested_samples = []
+
+        def _reject_multisampled_config(*args, **kwargs):
+            """Stand in for a driver that matches no multi-sampled window config."""
+            config = kwargs.pop("config", None)
+            if config is not None:
+                requested_samples.append(config.samples)
+                raise pyglet.window.NoSuchConfigException("no multi-sampled config")
+            return real_window(*args, **kwargs)
+
+        with mock.patch.object(pyglet.window, "Window", _reject_multisampled_config):
+            viewer = _make_headless_viewer_gl_or_skip(self)
+
+        try:
+            # _setup_frame_buffer creates the multi-sampled framebuffer before
+            # checking it, so a driver that cannot complete one leaves the
+            # framebuffer behind and only zeroes the sample count. A missing
+            # framebuffer instead means the window-config fallback disabled the
+            # scene's MSAA, which is the regression under test.
+            self.assertIsNotNone(viewer.renderer._frame_msaa_fbo)
+            if viewer.renderer.msaa_samples == 0:
+                self.skipTest("no complete multi-sampled framebuffer at this size")
+            self.assertEqual(viewer.renderer.msaa_samples, RendererGL.MSAA_SAMPLES)
+            self.assertEqual(requested_samples, [RendererGL.MSAA_SAMPLES])
+        finally:
+            viewer.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
