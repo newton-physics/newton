@@ -11064,6 +11064,39 @@ def Xform "Body" (
         np.testing.assert_allclose(builder.tri_opacity, np.full(4, 0.44), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_tet_mesh_invalid_display_color_does_not_abort_import(self):
+        """Clamp or ignore an invalid TetMesh display color instead of raising from the builder."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        cases = (
+            ("out_of_range", (1.5, -0.25, 0.5), "Clamping imported color", color_linear_to_srgb((1.0, 0.0, 0.5))),
+            ("non_finite", (float("nan"), 0.5, 0.5), "Ignoring non-finite imported color", (0.7, 0.5, 0.3)),
+        )
+        for name, authored_color, message, expected_color in cases:
+            with self.subTest(name=name):
+                stage = Usd.Stage.CreateInMemory()
+                tet_mesh = UsdGeom.TetMesh.Define(stage, "/SoftTet")
+                tet_mesh.CreatePointsAttr().Set(
+                    [
+                        (0.0, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                        (0.0, 1.0, 0.0),
+                        (0.0, 0.0, 1.0),
+                    ]
+                )
+                tet_mesh.CreateTetVertexIndicesAttr().Set([(0, 1, 2, 3)])
+                UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
+                    "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
+                ).Set([authored_color])
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, message):
+                    builder.add_usd(stage)
+
+                self.assertEqual(builder.tri_count, 4)
+                np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (4, 1)), atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_primitive_collider_drawability_follows_purpose_not_material(self):
         """A collider's drawability comes from USD purpose, not from a bound material.
 
