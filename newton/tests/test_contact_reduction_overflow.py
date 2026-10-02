@@ -14,6 +14,9 @@ from newton._src.geometry.contact_reduction_global import (
     GlobalContactReducerData,
     export_contact_to_buffer,
 )
+from newton._src.geometry.contact_reduction_hydroelastic import HydroelasticContactReduction
+from newton.solvers import SolverSemiImplicit
+from newton.solvers.experimental.coupled import SolverCoupled
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -127,6 +130,59 @@ def test_pipeline_flags_hashtable_insert_failures(test, device):
     test.assertEqual(int(contacts._reduction_overflow.numpy()[0]), 0)
 
 
+def test_unreduced_hydroelastic_clear_resets_buffer_overflows(test, device):
+    """Clear the overflow counter of an unreduced hydroelastic buffer between passes."""
+    hydro = HydroelasticContactReduction(1, device=device, enable_reduction=False)
+    allocated = wp.zeros(2, dtype=wp.int32, device=device)
+    wp.launch(_fill_reducer, dim=2, inputs=[hydro.get_data_struct(), allocated], device=device)
+    test.assertEqual(int(hydro.reducer.buffer_overflows.numpy()[0]), 1)
+    hydro.clear()
+    test.assertEqual(int(hydro.reducer.buffer_overflows.numpy()[0]), 0)
+    test.assertEqual(int(hydro.reducer.contact_count.numpy()[0]), 0)
+
+
+def test_coupled_entry_contacts_keep_reduction_loss(test, device):
+    """Carry reduction loss from the source contacts into a coupled entry's filtered contacts."""
+    model = _boxes_on_mesh_model(device)
+    state = model.state()
+    reference = newton.CollisionPipeline(model)
+    reference.collide(state, reference.contacts())
+    capacity = int(reference.narrow_phase.global_contact_reducer.contact_count.numpy()[0]) - 2
+    pipeline = newton.CollisionPipeline(model, max_triangle_pairs=capacity, verify_buffers=False)
+    contacts = pipeline.contacts()
+    coupled = SolverCoupled(
+        model,
+        entries=[SolverCoupled.Entry(name="all", solver=SolverSemiImplicit, bodies=list(range(model.body_count)))],
+    )
+    separated = model.state()
+    body_q = separated.body_q.numpy()
+    body_q[:, 2] += 1.0
+    separated.body_q.assign(body_q)
+
+    def filtered_flag():
+        filtered = coupled.entry_contacts("all", contacts)
+        test.assertIsNot(filtered, contacts)
+        return int(filtered.rigid_contact_count.numpy()[0]), int(filtered._reduction_overflow.numpy()[0])
+
+    # A lossy pass, a cached reuse of the same pass, a loss-free pass, then a lossy pass again.
+    pipeline.collide(state, contacts)
+    test.assertEqual(int(contacts._reduction_overflow.numpy()[0]), 1)
+    count, flag = filtered_flag()
+    test.assertEqual(count, int(contacts.rigid_contact_count.numpy()[0]))
+    test.assertGreater(count, 0)
+    test.assertEqual(flag, 1)
+    test.assertEqual(filtered_flag()[1], 1)
+    pipeline.collide(separated, contacts)
+    test.assertEqual(filtered_flag(), (0, 0))
+    pipeline.collide(state, contacts)
+    test.assertEqual(filtered_flag()[1], 1)
+
+    # A different source buffer refreshes the cached entry buffer and its flag.
+    other = pipeline.contacts()
+    pipeline.collide(separated, other)
+    test.assertEqual(int(coupled.entry_contacts("all", other)._reduction_overflow.numpy()[0]), 0)
+
+
 class TestContactReductionOverflow(unittest.TestCase):
     pass
 
@@ -150,7 +206,18 @@ add_function_test(
     test_pipeline_flags_hashtable_insert_failures,
     devices=devices,
 )
-
+add_function_test(
+    TestContactReductionOverflow,
+    "test_unreduced_hydroelastic_clear_resets_buffer_overflows",
+    test_unreduced_hydroelastic_clear_resets_buffer_overflows,
+    devices=devices,
+)
+add_function_test(
+    TestContactReductionOverflow,
+    "test_coupled_entry_contacts_keep_reduction_loss",
+    test_coupled_entry_contacts_keep_reduction_loss,
+    devices=devices,
+)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
