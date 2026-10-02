@@ -217,6 +217,48 @@ for _dtype in [float, wp.transform, wp.spatial_vector]:
 
 
 @wp.kernel
+def _build_actuator_dof_lookup_kernel(actuator_dofs: wp.array[wp.uint32], lookup: wp.array[int]):
+    """Scatter ``lookup[actuator_dofs[i]] = i``, skipping DOFs beyond the lookup range.
+
+    ``lookup`` must be filled with -1. If an actuator lists a DOF more than once, the last entry wins.
+    """
+    i = wp.tid()
+    dof = int(actuator_dofs[i])
+    if dof < lookup.shape[0]:
+        wp.atomic_max(lookup, dof, i)
+
+
+@wp.kernel
+def _map_regular_dofs_to_actuator_kernel(
+    lookup: wp.array[int],
+    offset: int,
+    stride_between_worlds: int,
+    stride_within_worlds: int,
+    slice_start: int,
+    local_indices: wp.array[int],
+    use_local_indices: int,
+    mapping: wp.array3d[int],
+):
+    """Gather ``mapping[world, arti, value] = lookup[dof]`` for the view's regular-layout DOF rows."""
+    world, arti, value = wp.tid()
+    local = slice_start + value
+    if use_local_indices != 0:
+        local = local_indices[value]
+    mapping[world, arti, value] = lookup[offset + world * stride_between_worlds + arti * stride_within_worlds + local]
+
+
+@wp.kernel
+def _map_explicit_dofs_to_actuator_kernel(
+    lookup: wp.array[int],
+    model_indices: wp.array3d[int],
+    mapping: wp.array3d[int],
+):
+    """Gather ``mapping[world, arti, value] = lookup[model_indices[world, arti, value]]``."""
+    world, arti, value = wp.tid()
+    mapping[world, arti, value] = lookup[model_indices[world, arti, value]]
+
+
+@wp.kernel
 def _gather_1d_kernel(
     src: Any,
     indices: wp.array[int],
@@ -504,6 +546,24 @@ class FrequencyLayout:
         world_offsets = np.arange(world_count, dtype=np.int64) * self.stride_between_worlds
         articulation_offsets = np.arange(count_per_world, dtype=np.int64) * self.stride_within_worlds
         return self.offset + world_offsets[:, None, None] + articulation_offsets[None, :, None] + selected
+
+    def max_model_index(self, world_count: int, count_per_world: int) -> int:
+        """Return the largest absolute model row the layout selects, or -1 if it selects none.
+
+        Computed from host layout metadata only, without reading device memory.
+        """
+        if not self._selected_indices or world_count == 0 or count_per_world == 0:
+            return -1
+        if self._model_value_indices is not None:
+            return int(self._model_value_indices.max(initial=-1))
+        if self._model_starts is not None:
+            return int(self._model_starts.max()) + max(self._selected_indices)
+        return (
+            self.offset
+            + (world_count - 1) * self.stride_between_worlds
+            + (count_per_world - 1) * self.stride_within_worlds
+            + max(self._selected_indices)
+        )
 
     @property
     def selected_value_count(self):
@@ -2259,9 +2319,7 @@ class ArticulationView:
     def _get_actuator_dof_mapping(self, actuator: Actuator):
         """Return the cached DOF mapping for ``actuator``, built on first use.
 
-        The cache belongs to the view and holds actuators weakly. Building a mapping reads the
-        actuator's DOF indices back to the host, so the first access must not happen during CUDA
-        graph capture.
+        The cache belongs to the view and holds actuators weakly.
         """
         # views that borrow the actuator methods may not define the cache
         cache = getattr(self, "_actuator_dof_mapping_cache", None)
@@ -2274,14 +2332,6 @@ class ArticulationView:
             cache = None
             mapping = None
         if mapping is None:
-            # views that borrow the actuator methods may store the device as an alias string
-            device = wp.get_device(self.device)
-            if device.is_cuda and wp.get_stream(device).is_capturing:
-                raise RuntimeError(
-                    "The view's DOF mapping for this actuator is built on first access with a host readback, "
-                    "which cannot run during CUDA graph capture. Call get_actuator_parameter() or "
-                    "set_actuator_parameter() for this actuator once before capturing."
-                )
             mapping = self._create_actuator_dof_mapping(actuator)
             if cache is not None:
                 cache[actuator] = mapping
@@ -2293,7 +2343,9 @@ class ArticulationView:
 
         The mapping matches absolute model DOF indices, so it holds for every layout, including
         sparse world selections, explicit model indices, and actuators whose entries are not
-        ordered as equal per-world blocks. It reads ``actuator.indices`` back to the host.
+        ordered as equal per-world blocks. It is built with device kernels only (a lookup from model
+        DOF to actuator entry, then a gather over the view's DOF rows), so a first access may run
+        during CUDA graph capture when the device's memory pool is enabled.
 
         Note:
             Assumes SISO actuators (one DOF per actuator).
@@ -2302,21 +2354,64 @@ class ArticulationView:
         - actuator parameter index if that DOF is actuated
         - -1 if that DOF is not actuated by this actuator
         """
+        # views that borrow the actuator methods may store the device as an alias string
         device = wp.get_device(self.device)
         dof_layout = self.frequency_layouts.get(AttributeFrequency.JOINT_DOF)
         if dof_layout is None:
             reason = getattr(self, "_unavailable_reasons", {}).get(AttributeFrequency.JOINT_DOF)
             raise AttributeError(f"Actuator parameter access is unavailable: {reason}")
-        dofs_per_world = dof_layout.selected_value_count * self.count_per_world
+        mapping_shape = (self.world_count, self.count_per_world, dof_layout.selected_value_count)
 
-        if dofs_per_world == 0:
+        if self.world_count * self.count_per_world * dof_layout.selected_value_count == 0:
             return wp.empty(0, dtype=int, device=device)
 
-        selected_dofs = dof_layout.get_absolute_indices(self.world_count, self.count_per_world).reshape(-1)
-        actuator_dofs = actuator.indices.numpy().astype(np.int64)
-        lookup = np.full(int(max(selected_dofs.max(), actuator_dofs.max(initial=-1))) + 1, -1, dtype=np.int64)
-        lookup[actuator_dofs] = np.arange(len(actuator_dofs), dtype=np.int64)
-        return wp.array(lookup[selected_dofs], dtype=int, device=device)
+        if device.is_cuda and wp.get_stream(device).is_capturing and not wp.is_mempool_enabled(device):
+            raise RuntimeError(
+                "Building the view's DOF mapping for this actuator allocates device memory, which requires "
+                "the CUDA memory pool during graph capture. Enable the memory pool or call "
+                "get_actuator_parameter() or set_actuator_parameter() for this actuator once before capturing."
+            )
+
+        lookup = wp.full(
+            dof_layout.max_model_index(self.world_count, self.count_per_world) + 1, -1, dtype=int, device=device
+        )
+        if actuator.indices.shape[0] > 0:
+            wp.launch(
+                _build_actuator_dof_lookup_kernel,
+                dim=actuator.indices.shape[0],
+                inputs=[actuator.indices],
+                outputs=[lookup],
+                device=device,
+            )
+
+        mapping = wp.empty(mapping_shape, dtype=int, device=device)
+        if dof_layout.uses_explicit_model_indices:
+            # prepared at view construction; raises a clear error if a borrowing view did not prepare it
+            wp.launch(
+                _map_explicit_dofs_to_actuator_kernel,
+                dim=mapping_shape,
+                inputs=[lookup, dof_layout.get_model_indices()],
+                outputs=[mapping],
+                device=device,
+            )
+        else:
+            use_local_indices = dof_layout.indices is not None
+            wp.launch(
+                _map_regular_dofs_to_actuator_kernel,
+                dim=mapping_shape,
+                inputs=[
+                    lookup,
+                    dof_layout.offset,
+                    dof_layout.stride_between_worlds,
+                    dof_layout.stride_within_worlds,
+                    0 if use_local_indices else dof_layout.slice.start,
+                    dof_layout.indices,
+                    int(use_local_indices),
+                ],
+                outputs=[mapping],
+                device=device,
+            )
+        return mapping.flatten()
 
     def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str):
         """Read an actuator-component parameter for every DOF in this view.
@@ -2327,10 +2422,9 @@ class ArticulationView:
         corresponding value gathered from ``component.<name>``.
 
         The first :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for an
-        actuator builds and caches the view's DOF mapping for it, which reads the actuator's DOF
-        indices back to the host. Make that first call before CUDA graph capture; later calls
-        launch only device kernels and can be captured. A first call during capture raises
-        :class:`RuntimeError`.
+        actuator builds and caches the view's DOF mapping for it with device kernels. That first
+        call allocates the mapping, so capturing it in a CUDA graph requires the device's memory
+        pool, as for other allocating view accessors.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which
@@ -2379,10 +2473,9 @@ class ArticulationView:
         are written back to ``component.<name>``; the rest are ignored.
 
         The first :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for an
-        actuator builds and caches the view's DOF mapping for it, which reads the actuator's DOF
-        indices back to the host. Make that first call before CUDA graph capture; later calls
-        launch only device kernels and can be captured. A first call during capture raises
-        :class:`RuntimeError`.
+        actuator builds and caches the view's DOF mapping for it with device kernels. That first
+        call allocates the mapping, so capturing it in a CUDA graph requires the device's memory
+        pool, as for other allocating view accessors.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which
