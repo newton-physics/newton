@@ -230,7 +230,8 @@ repository examples spend tuning effort, not a shared solver API.
        ``warn_constraint_overflow``, ``friction_anchor_beta``,
        ``pgs_contact_regularization``, ``pgs_velocity_iterations``,
        ``pgs_warmstart``, ``restitution_velocity_threshold``,
-       ``contact_speculative_scale``, ``contact_gap_gate``.
+       ``contact_speculative_scale``, ``contact_gap_gate``,
+       ``contact_compliance``.
      - Experimental and CUDA-only. Joint limits are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
@@ -246,7 +247,10 @@ repository examples spend tuning effort, not a shared solver API.
        adds, and ``pgs_warmstart`` (with contact matching in the
        :class:`~newton.CollisionPipeline`) reuses the previous step's
        impulses. ``contact_gap_gate`` and ``contact_speculative_scale`` bound
-       the work and the closing allowance of speculative contacts. Joint drives are integrated implicitly, which keeps large drive
+       the work and the closing allowance of speculative contacts. The
+       experimental ``contact_compliance`` option solves hydroelastic contacts
+       with positive stiffness as implicit spring-dampers instead; it uses point
+       friction and does not support CUDA graph capture. Joint drives are integrated implicitly, which keeps large drive
        gains stable at ordinary ``dt``. Rows beyond ``dense_max_constraints``
        (articulated bodies) or ``mf_max_constraints`` (free bodies) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world

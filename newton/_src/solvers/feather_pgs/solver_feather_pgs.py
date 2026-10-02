@@ -17,6 +17,7 @@ from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk
 from ..solver import SolverBase
+from . import contact_compliance as _contact_compliance
 from .friction import FRICTION_PAIR_CUDA
 from .friction_patches import _FrictionPatchState, finish_patch_impulses, link_patch_rows, seed_patch_impulses
 from .kernels import (
@@ -693,7 +694,8 @@ class SolverFeatherPGS(SolverBase):
       :attr:`~newton.ModelBuilder.ShapeConfig.restitution`. Optional contact
       regularization, warm start from the previous step's impulses, velocity-only
       iterations and gap gates for speculative contacts are configured on the
-      constructor. Contact compliance and torsional friction are not applied.
+      constructor. Experimental implicit compliance of hydroelastic contacts is opt-in
+      (``contact_compliance``). Torsional friction is not applied.
     - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds.
     - CUDA graph capture of :meth:`step` and :meth:`reset`.
 
@@ -858,7 +860,7 @@ class SolverFeatherPGS(SolverBase):
         dense_max_constraints: int = 32,
         mf_max_constraints: int = 512,
         warn_constraint_overflow: bool = True,
-        friction_anchor_beta: float = 0.2,
+        friction_anchor_beta: float | None = None,
         pgs_contact_regularization: float = 0.0,
         pgs_velocity_iterations: int = 0,
         pgs_velocity_drive_mode: Literal["freeze", "active"] = "freeze",
@@ -871,6 +873,7 @@ class SolverFeatherPGS(SolverBase):
         articulation_pair_contact_gap_gate: float = 0.0,
         contact_friction_gap_threshold: float = float("inf"),
         contact_friction_articulation_pairs_only: bool = False,
+        contact_compliance: bool = False,
     ):
         """Create a FeatherPGS solver for a finalized CUDA model.
 
@@ -923,7 +926,8 @@ class SolverFeatherPGS(SolverBase):
                 exceeds a row capacity. The warning does not synchronize the host and is
                 compatible with CUDA graph capture.
             friction_anchor_beta: Position-correction gain of persistent friction patches;
-                ``0`` selects point friction. With a positive gain, the contacts of a body
+                ``0`` selects point friction. ``None`` selects ``0.2``, or point friction
+                when ``contact_compliance`` is enabled. With a positive gain, the contacts of a body
                 pair whose normals, contact planes and friction coefficients agree and whose
                 shapes touch form a region. Each region's friction acts at up to two anchors
                 along its principal extent, which share the region's total normal impulse;
@@ -993,7 +997,57 @@ class SolverFeatherPGS(SolverBase):
             contact_friction_articulation_pairs_only: Apply
                 ``contact_friction_gap_threshold`` only to contacts between two articulated
                 (non-free) bodies.
+            contact_compliance: Experimental: solve contacts that carry a positive
+                :attr:`~newton.Contacts.rigid_contact_stiffness` [N/m] with an implicit
+                unilateral spring-damper law instead of the rigid normal law. The material
+                comes from the contacts (per-shape hydroelastic stiffness, the contact damping
+                [N s/m], zero staying zero, and the friction weight, applied once to the pair
+                friction); contacts with zero stiffness stay rigid. A compliant row's force is
+                ``max(0, -k phi_next - c u_next)``, solved by updating its residual
+                ``u + k phi / (dt k + c) + lambda / (dt (dt k + c))`` after every sweep; the
+                damping term is dropped while the gap is open. Requires point friction
+                (``None`` or ``0`` for ``friction_anchor_beta``; ``None`` warns), positive
+                ``pgs_iterations``, no warm start, no velocity-only iterations, no contact
+                regularization and zero shape restitution. The contacts must carry the
+                hydroelastic material arrays. Each step synchronizes the row metadata with the
+                host, so the option rejects CUDA graph capture and is not a performance path.
+                Contacts the allocator excludes on purpose are counted in
+                ``compliance_skipped_contact_count`` and compliant contacts in
+                ``compliance_contact_count``; a compliant contact lost to a row capacity
+                raises, even with ``warn_constraint_overflow`` off. This option may change
+                without the normal deprecation period.
         """
+        if contact_compliance:
+            # Reject unsupported combinations before any allocation.
+            _contact_compliance.validate_configuration(
+                {
+                    "pgs_iterations": int(pgs_iterations),
+                    "pgs_velocity_iterations": int(pgs_velocity_iterations),
+                    "pgs_warmstart": bool(pgs_warmstart),
+                    "pgs_contact_regularization": float(pgs_contact_regularization),
+                }
+            )
+        if friction_anchor_beta is None:
+            if contact_compliance:
+                friction_anchor_beta = 0.0
+                warnings.warn(
+                    "The contact_compliance material law uses point friction; it does not support "
+                    "persistent friction patches. Set friction_anchor_beta=0 to select point friction "
+                    "without this warning.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            else:
+                friction_anchor_beta = 0.2
+        elif contact_compliance and float(friction_anchor_beta) > 0.0:
+            raise ValueError("contact_compliance is not validated with friction_anchor_beta > 0")
+        self.contact_compliance = bool(contact_compliance)
+        self.compliance_contact_count = 0
+        """Compliant contacts consumed by the last step (``contact_compliance`` only)."""
+        self.compliance_skipped_contact_count = 0
+        """Positive-stiffness contacts the row allocator excluded in the last step (``contact_compliance`` only)."""
+        self._compliant_contacts = None
+        self._compliant_prepared = False
         super().__init__(model)
         if not model.device.is_cuda:
             raise NotImplementedError("SolverFeatherPGS requires a CUDA device; this solver does not support CPU yet.")
@@ -1349,6 +1403,8 @@ class SolverFeatherPGS(SolverBase):
             flags: Unused; the solver's history is cleared regardless of the state flags.
         """
         del flags
+        if self.contact_compliance:
+            _contact_compliance.clear(self)
         world_mask = self._normalize_reset_world_mask(world_mask)
         if self.world_count == 0:
             return
@@ -2299,6 +2355,9 @@ class SolverFeatherPGS(SolverBase):
         Returns:
             ``state_out``.
         """
+        if self.contact_compliance:
+            # Reject unsupported state before any stage can launch work.
+            _contact_compliance.validate_step(self)
         if contacts is not None and contacts.rigid_contact_max > self._max_contacts_alloc:
             raise ValueError(
                 "FeatherPGS contact capacity mismatch: received "
@@ -2495,8 +2554,11 @@ class SolverFeatherPGS(SolverBase):
                 )
             if self._has_free_rigid_bodies:
                 self._apply_mf_warmstart_velocity()
-        self._pack_mf_meta(self.mf_rhs)
-        self._launch_pgs_solve(self.rhs, self.pgs_iterations, regularize=self._regularization_enabled)
+        if self.contact_compliance:
+            _contact_compliance.solve(self, iterations=self.pgs_iterations)
+        else:
+            self._pack_mf_meta(self.mf_rhs)
+            self._launch_pgs_solve(self.rhs, self.pgs_iterations, regularize=self._regularization_enabled)
 
         # Stage 7: convert the solved velocity to accelerations, integrate and publish.
         if self.pgs_velocity_iterations > 0:
@@ -3359,6 +3421,8 @@ class SolverFeatherPGS(SolverBase):
         hold ``[contacts and friction][free-body velocity limits]``. Rows past a capacity
         are dropped, counted and latched into :attr:`constraint_overflow`.
         """
+        if self.contact_compliance:
+            _contact_compliance.start_step(self, contacts, dt)
         model = self.model
         max_constraints = self.dense_max_constraints
         mf_active = self._has_free_rigid_bodies
