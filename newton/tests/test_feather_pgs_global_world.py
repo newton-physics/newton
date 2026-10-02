@@ -133,6 +133,42 @@ def test_global_kinematic_floor_capture_replay(test, device):
     np.testing.assert_allclose(eager_q[0, 2], eager_q[1, 2], atol=1.0e-5)
 
 
+def test_jointed_global_kinematic_flags_other_world_contacts(test, device):
+    """A kinematic global articulation with joints is solved in world 0; its other-world contacts are flagged."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    for x in (-2.0, 2.0):
+        world = newton.ModelBuilder(gravity=wp.vec3(0.0))
+        body = world.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.999), wp.quat_identity()), mass=1.0)
+        world.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
+        builder.add_world(world)
+    floor = builder.add_link(mass=1.0, is_kinematic=True)
+    builder.add_articulation([builder.add_joint_prismatic(-1, floor, axis=newton.Axis.Z)])
+    builder.add_shape_box(floor, hx=5.0, hy=5.0, hz=0.5)
+    model = builder.finalize(device=device)
+
+    solver = SolverFeatherPGS(model, warn_constraint_overflow=False)
+    state, output = model.state(), model.state()
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    solver.step(state, output, model.control(), contacts, _DT)
+
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0)
+    shape_body = model.shape_body.numpy()
+    body_world = model.body_world.numpy()
+    pairs = contacts.rigid_contact_shape0.numpy()[:count], contacts.rigid_contact_shape1.numpy()[:count]
+    box_world = np.maximum(body_world[shape_body[pairs[0]]], body_world[shape_body[pairs[1]]])
+    path = solver.contact_path.numpy()[:count]
+    test.assertTrue(np.any(box_world == 0) and np.any(box_world == 1))
+    np.testing.assert_array_equal(path[box_world == 0] >= 0, True)
+    np.testing.assert_array_equal(path[box_world == 1], -1)
+    np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [False, True, True])
+    with test.assertRaisesRegex(RuntimeError, "cannot be solved per world"):
+        solver.check_constraint_capacity()
+
+
 def _lift_box(model, world):
     """Move one world's box 3 m up, out of contact."""
     joint_q = model.joint_q.numpy()
@@ -249,6 +285,98 @@ def test_global_overflow_has_its_own_reset_slot(test, device):
     test.assertEqual(solver.constraint_overflow.numpy().tolist(), [True, False, False])
 
 
+def _few_articulation_models(device):
+    """Models whose global status entry lies beyond their articulation count.
+
+    Yields ``(name, model, z_contact, z_free)``: one global free box on the ground
+    (one world, one articulation), and two worlds holding one articulation between them
+    (world 0 has only static geometry, world 1 a box) plus a global box. ``z_contact``
+    places the boxes on the ground, where their contacts overflow ``mf_max_constraints=3``;
+    ``z_free`` lifts them out of contact.
+    """
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.099), wp.quat_identity()), mass=1.0)
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_ground_plane()
+    yield "single_global_body", builder.finalize(device=device), [0.099], [2.0]
+
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    world = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    world.add_shape_sphere(-1, xform=wp.transform(wp.vec3(0.0, 5.0, 5.0), wp.quat_identity()), radius=0.1)
+    builder.add_world(world)
+    world = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    body = world.add_body(xform=wp.transform(wp.vec3(3.0, 0.0, 0.099), wp.quat_identity()), mass=1.0)
+    world.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_world(world)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.099), wp.quat_identity()), mass=1.0)
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_ground_plane()
+    yield "two_worlds_two_articulations", builder.finalize(device=device), [0.099, 0.099], [2.0, 2.0]
+
+
+def _check_global_slot_reset(test, device, model, z_contact, z_free):
+    entries = model.world_count + 1
+    solver = SolverFeatherPGS(model, mf_max_constraints=3, warn_constraint_overflow=False)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state, output = model.state(), model.state()
+    control = model.control()
+    every = [True] * entries
+    clear = [False] * entries
+
+    def step(z):
+        _place(model, state, z)
+        pipeline.collide(state, contacts)
+        solver.step(state, output, control, contacts, _DT)
+        return solver.constraint_overflow.numpy().tolist()
+
+    def reset(mask):
+        solver.reset(state, None if mask is None else wp.array(mask, dtype=wp.bool, device=device))
+        return solver.constraint_overflow.numpy().tolist()
+
+    # Actual contact overflow sets every entry: the world rows, and the global entry
+    # because the global box shares world 0's row storage.
+    test.assertEqual(step(z_contact), every)
+    with test.assertRaisesRegex(RuntimeError, "global"):
+        solver.check_constraint_capacity()
+    test.assertEqual(reset(None), clear)
+    solver.check_constraint_capacity()
+
+    global_only = [False] * (entries - 1) + [True]
+    worlds_only = [True] * (entries - 1) + [False]
+    mixed = [False] * (entries - 2) + [True, True]
+    for mask in (global_only, worlds_only, mixed, every):
+        test.assertEqual(step(z_contact), every)
+        test.assertEqual(reset(mask), [not selected for selected in mask], msg=f"mask {mask}")
+
+    # Stepping again recomputes the status: a lossless step keeps it clear.
+    test.assertEqual(step(z_free), clear)
+
+    # Captured resets, unmasked and with the mask reassigned between replays.
+    mask = wp.array(global_only, dtype=wp.bool, device=device)
+    with wp.ScopedCapture(device=device) as capture_all:
+        solver.reset(state)
+    with wp.ScopedCapture(device=device) as capture_masked:
+        solver.reset(state, mask)
+    test.assertEqual(step(z_contact), every)
+    wp.capture_launch(capture_all.graph)
+    test.assertEqual(solver.constraint_overflow.numpy().tolist(), clear)
+    test.assertEqual(step(z_contact), every)
+    wp.capture_launch(capture_masked.graph)
+    test.assertEqual(solver.constraint_overflow.numpy().tolist(), worlds_only)
+    mask.assign(np.array(worlds_only))
+    wp.capture_launch(capture_masked.graph)
+    test.assertEqual(solver.constraint_overflow.numpy().tolist(), clear)
+
+
+def test_global_slot_reset_with_few_articulations(test, device):
+    """Every reset mask clears the global entry even when articulations do not outnumber the status entries."""
+    for name, model, z_contact, z_free in _few_articulation_models(device):
+        with test.subTest(model=name):
+            test.assertLessEqual(model.articulation_count, model.world_count)
+            _check_global_slot_reset(test, device, model, z_contact, z_free)
+
+
 class TestFeatherPGSGlobalWorld(unittest.TestCase):
     pass
 
@@ -258,7 +386,12 @@ for _name, _func in (
     ("test_global_kinematic_floor_supports_every_world", test_global_kinematic_floor_supports_every_world),
     ("test_global_kinematic_floor_capture_replay", test_global_kinematic_floor_capture_replay),
     ("test_dynamic_global_body_flags_other_world_contacts", test_dynamic_global_body_flags_other_world_contacts),
+    (
+        "test_jointed_global_kinematic_flags_other_world_contacts",
+        test_jointed_global_kinematic_flags_other_world_contacts,
+    ),
     ("test_global_overflow_has_its_own_reset_slot", test_global_overflow_has_its_own_reset_slot),
+    ("test_global_slot_reset_with_few_articulations", test_global_slot_reset_with_few_articulations),
 ):
     add_function_test(TestFeatherPGSGlobalWorld, _name, _func, devices=devices)
 

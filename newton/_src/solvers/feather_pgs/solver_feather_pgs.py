@@ -884,7 +884,7 @@ class SolverFeatherPGS(SolverBase):
         self._row_overflow_warning_emitted = (
             wp.zeros(3, dtype=wp.int32, device=model.device) if self.warn_constraint_overflow else None
         )
-        self.constraint_overflow = wp.zeros(self.world_count + 1, dtype=wp.bool, device=model.device)
+        self.constraint_overflow = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
         """Capacity failure flags, shape ``[world_count + 1]``, dtype ``bool``.
 
         One entry per world plus a final entry for global (world ``-1``) articulations,
@@ -1004,11 +1004,11 @@ class SolverFeatherPGS(SolverBase):
         """Clear solver-owned state of the selected worlds.
 
         The simulation state is not modified. For the selected worlds this clears the
-        capacity status in :attr:`constraint_overflow`, drops the cached next-step
-        kinematics and requests a mass-matrix refresh on the next step, so a teleported
-        articulation does not reuse a stale factorization; other worlds keep their refresh
-        cadence. The solver keeps no impulse history between steps. The reset is launched
-        on the device without host synchronization and can be captured in a CUDA graph.
+        capacity status in :attr:`constraint_overflow` and requests a mass-matrix refresh
+        on the next step, so a teleported articulation does not reuse a stale factorization;
+        other worlds keep their refresh cadence. The solver keeps no impulse history between
+        steps. The reset is launched on the device without host synchronization and can be
+        captured in a CUDA graph.
 
         Args:
             state: Simulation state; left unchanged.
@@ -1023,9 +1023,11 @@ class SolverFeatherPGS(SolverBase):
         if self.world_count == 0:
             return
 
+        # One launch covers both the status entries (world_count + 1, including the
+        # global entry) and the articulations whose mass factors are refreshed.
         wp.launch(
             _reset_solver_status,
-            dim=max(self.world_count, self.model.articulation_count),
+            dim=max(self.constraint_overflow.shape[0], self.model.articulation_count),
             inputs=[
                 world_mask,
                 int(self.model.world_count),
@@ -1956,8 +1958,10 @@ class SolverFeatherPGS(SolverBase):
 
         Reads :attr:`constraint_overflow` on the host, so call it outside CUDA graph capture,
         for example at an observation boundary. Kernels can read :attr:`constraint_overflow`
-        directly without host synchronization. Recovering requires larger capacities, a
-        new solver (and newly captured graphs) and a :meth:`reset` of the affected worlds.
+        directly without host synchronization. Recovering from a capacity loss requires larger
+        capacities, a new solver (and newly captured graphs) and a :meth:`reset` of the affected
+        worlds. Contacts that couple a dynamic global body, or a kinematic global articulation
+        with joints, with another world are flagged too; no capacity can solve them.
 
         Raises:
             RuntimeError: If called during graph capture, or if any entry is flagged.
@@ -1972,8 +1976,13 @@ class SolverFeatherPGS(SolverBase):
             if global_flagged:
                 where += " and global (world -1) articulations"
             raise RuntimeError(
-                f"FeatherPGS constraint/contact capacity exceeded in {where}; "
-                "increase capacities and reset before accepting transitions."
+                f"FeatherPGS dropped contacts or constraint rows in {where} (capacity exceeded, or "
+                "contacts that cannot be solved per world). Rows beyond "
+                "dense_max_constraints or mf_max_constraints, and contacts beyond the contact buffer or "
+                "dropped by contact reduction, need larger capacities. Contacts that couple a dynamic "
+                "global body, or a kinematic global articulation with joints, with another world cannot "
+                "be solved per world at any capacity and need a different scene layout. Reset the "
+                "affected worlds before accepting transitions."
             )
 
     @override
