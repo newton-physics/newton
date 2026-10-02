@@ -39,6 +39,7 @@ from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
 from ..geometry.types import GeoType
 from ..sim.contacts import Contacts
 from ..sim.model import Model
+from ..sim.shape_contact_pairs import _shape_contact_pair_count_for_mask
 from ..sim.state import State
 
 
@@ -779,6 +780,16 @@ def _estimate_rigid_contact_max_per_world(model: Model, rigid_contact_max: int) 
     """
     if rigid_contact_max <= 0 or model.shape_contact_pair_count == 0:
         return 0
+
+    data = model._shape_contact_pair_data
+    if data is not None:
+        is_mesh = np.isin(model.shape_type.numpy(), (int(GeoType.MESH), int(GeoType.HFIELD)))
+        primitive_counts = data.count_pairs(~is_mesh) if is_mesh.any() else data.counts
+        contacts = (
+            primitive_counts * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR
+            + (data.counts - primitive_counts) * _RIGID_CONTACTS_PER_MESH_PAIR
+        )
+        return min(rigid_contact_max, int(contacts[0] + np.max(contacts[1:], initial=0)))
 
     pairs = model.shape_contact_pairs.numpy().reshape((-1, 2))
     types = model.shape_type.numpy()
@@ -1600,12 +1611,12 @@ class CollisionPipeline:
             if self._speculative_enabled:
                 shape_flags_np = model.shape_flags.numpy()
                 is_hydroelastic = (shape_flags_np & int(ShapeFlags.HYDROELASTIC)) != 0
-                if model.shape_contact_pairs is not None:
-                    shape_pairs_np = model.shape_contact_pairs.numpy().reshape(-1, 2)
-                    if np.any(is_hydroelastic[shape_pairs_np[:, 0]] & is_hydroelastic[shape_pairs_np[:, 1]]):
-                        raise NotImplementedError(
-                            "Speculative contact generation does not yet support hydroelastic SDF contacts"
-                        )
+                if np.count_nonzero(is_hydroelastic) > 1 and _shape_contact_pair_count_for_mask(
+                    model, is_hydroelastic, shape_pairs=self.shape_pairs_filtered
+                ):
+                    raise NotImplementedError(
+                        "Speculative contact generation does not yet support hydroelastic SDF contacts"
+                    )
 
             # Initialize SDF hydroelastic (returns None if no hydroelastic shape pairs in the model)
             hydroelastic_sdf = HydroelasticSDF._from_model(
@@ -1613,6 +1624,7 @@ class CollisionPipeline:
                 config=sdf_hydroelastic_config,
                 writer_func=contact_writer,
                 deterministic=deterministic,
+                shape_pairs_filtered=self.shape_pairs_filtered,
             )
 
             # Detect shape classes to optimize narrow-phase kernel launches.

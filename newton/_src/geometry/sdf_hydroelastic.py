@@ -41,6 +41,7 @@ from newton._src.core.types import MAXVAL, Devicelike
 
 from ..sim.builder import ShapeFlags
 from ..sim.model import Model
+from ..sim.shape_contact_pairs import _shape_contact_pairs_for_mask
 from .collision_core import sat_box_intersection
 from .contact_data import ContactData
 from .contact_reduction import get_slot
@@ -808,6 +809,8 @@ class HydroelasticSDF:
         config: HydroelasticSDF.Config | None = None,
         writer_func: Any = None,
         deterministic: bool = False,
+        *,
+        shape_pairs_filtered: wp.array[wp.vec2i] | None = None,
     ) -> HydroelasticSDF | None:
         """Create HydroelasticSDF from a model.
 
@@ -816,6 +819,7 @@ class HydroelasticSDF:
             config: Optional configuration for hydroelastic collision handling.
             writer_func: Optional writer function for decoding contacts.
             deterministic: Whether to enable deterministic hydroelastic kernels.
+            shape_pairs_filtered: Explicit candidate pairs, when provided by the pipeline.
 
         Returns:
             HydroelasticSDF instance, or None if no hydroelastic shape pairs exist.
@@ -824,13 +828,11 @@ class HydroelasticSDF:
 
         # Check if any shapes have hydroelastic flag.
         is_hydroelastic = (shape_flags & int(ShapeFlags.HYDROELASTIC)) != 0
-        if not is_hydroelastic.any():
+        if np.count_nonzero(is_hydroelastic) < 2:
             return None
 
-        shape_pairs = model.shape_contact_pairs.numpy().reshape(-1, 2)
-        num_hydroelastic_pairs = int(
-            np.count_nonzero(is_hydroelastic[shape_pairs[:, 0]] & is_hydroelastic[shape_pairs[:, 1]])
-        )
+        hydroelastic_pairs = _shape_contact_pairs_for_mask(model, is_hydroelastic, shape_pairs=shape_pairs_filtered)
+        num_hydroelastic_pairs = len(hydroelastic_pairs)
 
         if num_hydroelastic_pairs == 0:
             return None
@@ -868,10 +870,13 @@ class HydroelasticSDF:
         # walks only its finer SDF and samples the other SDF at those points.
         total_num_tiles = 0
         total_num_active_tiles = 0
-        hydroelastic_pairs = shape_pairs[is_hydroelastic[shape_pairs[:, 0]] & is_hydroelastic[shape_pairs[:, 1]]]
+        shape_types = model.shape_type.numpy()
         for shape_a, shape_b in hydroelastic_pairs:
             sdf_idx_a = int(shape_sdf_index[shape_a])
             sdf_idx_b = int(shape_sdf_index[shape_b])
+            # NarrowPhase sorts by type before routing pairs to hydroelastic.
+            if shape_types[shape_a] > shape_types[shape_b]:
+                sdf_idx_a, sdf_idx_b = sdf_idx_b, sdf_idx_a
             # Match broadphase_collision_pairs_count(): equal-resolution pairs
             # retain shape B as the traversal grid.
             sdf_idx = sdf_idx_b
