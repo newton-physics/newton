@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs import kernels as feather_pgs_kernels
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_CONNECT, PGS_CONSTRAINT_TYPE_MIMIC
 from newton.solvers import SolverFeatherPGS
 from newton.tests.test_feather_pgs_connect import _build_carried_load, _build_four_bar, _loop_anchor_gap
@@ -35,6 +36,138 @@ class TestPreeliminationSignature(unittest.TestCase):
             with self.subTest(option=name):
                 self.assertEqual(parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
                 self.assertIs(parameters[name].default, default)
+
+
+class TestPreeliminationKernels(unittest.TestCase):
+    """Kernel-level contracts of the connect rows and the regularized elimination, on CPU."""
+
+    def test_connect_rows_are_normalized(self):
+        """Scale each connect row to a unit Jacobian so a short lever arm does not weaken it."""
+        device = "cpu"
+
+        def arr(values, dtype=int):
+            return wp.array(values, dtype=dtype, device=device)
+
+        J = wp.zeros((1, 3, 1), dtype=float, device=device)
+        phi = wp.zeros((1, 3), dtype=float, device=device)
+        target = wp.zeros((1, 3), dtype=float, device=device)
+        # A world anchor and one rotational child DOF with a 2 mm lever arm.
+        wp.launch(
+            feather_pgs_kernels.populate_connect_J_for_size,
+            dim=1,
+            inputs=[
+                arr([0]),
+                arr([0]),
+                arr([0]),
+                1,
+                arr([0]),
+                arr([0]),
+                arr([-1]),
+                arr([0]),
+                arr([[0.002, 0.001, 0.0]], wp.vec3),
+                arr([[0.002, 0.0, 0.0]], wp.vec3),
+                arr([1]),
+                arr([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], wp.transform),
+                wp.zeros(1, dtype=wp.spatial_vector, device=device),
+                wp.zeros(1, dtype=wp.vec3, device=device),
+                arr([0]),
+                arr([-1]),
+                arr([0, 1]),
+                arr([[0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], wp.spatial_vector),
+                wp.zeros(1, dtype=wp.vec3, device=device),
+            ],
+            outputs=[
+                J,
+                wp.zeros((1, 3), dtype=int, device=device),
+                wp.zeros((1, 3), dtype=int, device=device),
+                wp.zeros((1, 3), dtype=float, device=device),
+                phi,
+                target,
+            ],
+            device=device,
+        )
+        # Unnormalized, the row would be J = -0.002 with phi = 0.001.
+        self.assertAlmostEqual(float(J.numpy()[0, 1, 0]), -1.0, places=5)
+        self.assertAlmostEqual(float(phi.numpy()[0, 1]), 0.5, places=5)
+
+    def test_regularized_projection_leaves_documented_residual(self):
+        """Leave the residual ``R (S + R)^-1 (J_B v + b_B)`` of the regularized block factor.
+
+        With ``H = I``, a bilateral row ``J_B = [1, -1]`` (``S = 2``) and a second row
+        ``[1, 0]``, the projection of ``v = [1, 0]`` and the corrected response of the second
+        row both keep the factor ``R / (S + R)`` of their bilateral violation, with
+        ``R = 1e-3 S + 1e-7``. The elimination is not exact.
+        """
+        device = "cpu"
+
+        def arr(values, dtype=int):
+            return wp.array(values, dtype=dtype, device=device)
+
+        J = arr([[[1.0, -1.0], [1.0, 0.0]]], float)
+        Y = arr(J.numpy(), float)
+        slots = wp.full(8, -1, dtype=int, device=device)
+        nB = wp.zeros(1, dtype=int, device=device)
+        S = wp.zeros(64, dtype=float, device=device)
+        reg = wp.zeros(8, dtype=float, device=device)
+        LS = wp.zeros(64, dtype=float, device=device)
+        reg_rel, reg_floor = 1.0e-3, 1.0e-7
+        wp.launch(
+            feather_pgs_kernels.preelim_setup_for_size,
+            dim=1,
+            inputs=[
+                arr([0]),
+                arr([0]),
+                arr([0]),
+                arr([0, 1]),
+                arr([0]),
+                1,
+                arr([-1]),
+                arr([-1]),
+                0,
+                J,
+                Y,
+                2,
+                reg_rel,
+                reg_floor,
+            ],
+            outputs=[slots, nB, S, reg, LS],
+            device=device,
+        )
+        v = arr([1.0, 0.0], float)
+        wp.launch(
+            feather_pgs_kernels.preelim_project_velocity_for_size,
+            dim=1,
+            inputs=[
+                arr([0]),
+                arr([0]),
+                arr([0]),
+                arr([0]),
+                slots,
+                nB,
+                LS,
+                J,
+                Y,
+                wp.zeros((1, 2), dtype=float, device=device),
+                2,
+            ],
+            outputs=[v],
+            device=device,
+        )
+        wp.launch(
+            feather_pgs_kernels.preelim_correct_Y_for_size,
+            dim=2,
+            inputs=[arr([0]), arr([0]), arr([0]), arr([2]), slots, nB, LS, J, 2, 2, 1],
+            outputs=[Y],
+            device=device,
+        )
+        s_block = 2.0
+        regularizer = reg_rel * s_block + reg_floor
+        self.assertAlmostEqual(float(reg.numpy()[0]), regularizer, places=7)
+        expected = regularizer / (s_block + regularizer)
+        residual = float(v.numpy()[0] - v.numpy()[1])
+        leak = float(J.numpy()[0, 0] @ Y.numpy()[0, 1])
+        np.testing.assert_allclose([residual, leak], [expected, expected], rtol=1.0e-3)
+        self.assertGreater(residual, 0.0)
 
 
 def _run_four_bar(device, steps: int = 720, crank_target: float = 0.6, pgs_iterations: int = 2, **solver_kwargs):
@@ -143,11 +276,11 @@ def test_mimics_can_remain_iterative_when_total_rows_exceed_capacity(test, devic
     test.assertIn(int(PGS_CONSTRAINT_TYPE_MIMIC), seen)
 
 
-def test_closure_exact_at_low_iterations(test, device):
-    """Pre-elimination makes the loop closure independent of the iteration count.
+def test_closure_held_at_low_iterations(test, device):
+    """Pre-elimination keeps the loop closure tight at a low iteration count.
 
     At 2 iterations the iterative connect rows cannot converge (the anchor gap stays
-    near half a millimetre); the eliminated solve holds the closure 100x tighter
+    near half a millimetre); the regularized elimination holds the closure 100x tighter
     through the same driven stroke.
     """
     solver_off, _, _, gap_off = _run_four_bar(device)
@@ -158,12 +291,12 @@ def test_closure_exact_at_low_iterations(test, device):
 
     test.assertTrue(np.isfinite(state_on.body_q.numpy()).all())
     test.assertGreater(gap_off, 1.0e-4, "iterative baseline unexpectedly tight; the comparison is meaningless")
-    test.assertLess(gap_on, 2.0e-5, f"pre-eliminated closure gap {gap_on:.2e} m not exact")
+    test.assertLess(gap_on, 2.0e-5, f"pre-eliminated closure gap {gap_on:.2e} m too loose")
     test.assertLess(gap_on, 0.01 * gap_off, f"expected >100x tightening, got {gap_off / max(gap_on, 1e-12):.1f}x")
 
 
-def test_mimic_exact_at_low_iterations(test, device):
-    """An eliminated mimic row coupled to a closure holds independently of the iteration count.
+def test_mimic_held_at_low_iterations(test, device):
+    """An eliminated mimic row coupled to a closure holds at one iteration.
 
     In the parallel four-bar the coupler joint angle is minus the crank angle; a mimic row
     stating the same relationship competes with the connect rows in an iterative sweep.
@@ -253,12 +386,27 @@ def test_rows_remain_allocated(test, device):
 
 
 def test_prescribed_parent_closure_warns_and_falls_back(test, device):
-    """Closures with a kinematic or world parent keep iterative rows."""
+    """A closure with a kinematic or world parent disables elimination for the whole solver."""
     b, _, _, _ = _build_carried_load()
-    with test.assertWarnsRegex(UserWarning, "kinematic or world parent"):
+    with test.assertWarnsRegex(UserWarning, "kinematic or world parent.*whole solver"):
         solver = SolverFeatherPGS(b.finalize(device=device), enable_bilateral_preelimination=True)
     test.assertFalse(solver._preelim_active)
     test.assertEqual(solver._connect_count, 3)
+
+    # An eligible four-bar is eliminated alone, but not next to a world-parent closure.
+    eligible = SolverFeatherPGS(_build_four_bar().finalize(device=device), enable_bilateral_preelimination=True)
+    test.assertTrue(eligible._preelim_active)
+    b = _build_four_bar()
+    load = b.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.5), wp.quat_identity()))
+    b.add_shape_box(load, hx=0.04, hy=0.04, hz=0.04)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*another joint already connects these bodies")
+        b.add_joint_ball(-1, load, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.5), wp.quat_identity()))
+    with test.assertWarnsRegex(UserWarning, "whole solver"):
+        mixed = SolverFeatherPGS(b.finalize(device=device), enable_bilateral_preelimination=True)
+    test.assertFalse(mixed._preelim_active)
+    test.assertEqual(mixed._preelim_count, 0)
+    test.assertEqual(mixed._connect_count, 2)
 
 
 def test_preelimination_capture_matches_eager(test, device):
@@ -334,8 +482,8 @@ cuda_devices = get_cuda_test_devices()
 for _name in (
     "test_default_preserves_all_bilateral_trajectory",
     "test_mimics_can_remain_iterative_when_total_rows_exceed_capacity",
-    "test_closure_exact_at_low_iterations",
-    "test_mimic_exact_at_low_iterations",
+    "test_closure_held_at_low_iterations",
+    "test_mimic_held_at_low_iterations",
     "test_preelimination_with_free_body_in_world",
     "test_mechanism_behavior_preserved",
     "test_rows_remain_allocated",

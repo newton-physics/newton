@@ -168,14 +168,17 @@ def check_invalid_legacy_mimic_keeps_precedence(test, device, **solver_kwargs):
 
 
 def test_reject_quaternion_mimics_at_construction(test, device):
+    """Reject mimics of BALL, FREE and DISTANCE joints at construction."""
     check_reject_quaternion_mimics_at_construction(test, device)
 
 
 def test_scalar_and_d6_mimic_coordinate_maps(test, device):
+    """Map scalar and D6 mimic followers to their coordinate rows."""
     check_scalar_and_d6_mimic_coordinate_maps(test, device)
 
 
 def test_invalid_legacy_mimic_keeps_precedence(test, device):
+    """Validate a legacy mimic entry in place of the joint-owned mimic it replaces."""
     check_invalid_legacy_mimic_keeps_precedence(test, device)
 
 
@@ -320,14 +323,17 @@ def test_mimic_row_overflow_is_reported(test, device):
 
 
 def test_split_reject_quaternion_mimics_at_construction(test, device):
+    """Reject quaternion mimics at construction in the split solve."""
     check_reject_quaternion_mimics_at_construction(test, device, pgs_mode="split")
 
 
 def test_split_scalar_and_d6_mimic_coordinate_maps(test, device):
+    """Map scalar and D6 mimic followers to their coordinate rows in the split solve."""
     check_scalar_and_d6_mimic_coordinate_maps(test, device, pgs_mode="split")
 
 
 def test_split_invalid_legacy_mimic_keeps_precedence(test, device):
+    """Keep legacy mimic precedence during validation in the split solve."""
     check_invalid_legacy_mimic_keeps_precedence(test, device, pgs_mode="split")
 
 

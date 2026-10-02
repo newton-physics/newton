@@ -2299,11 +2299,11 @@ def preelim_correct_Y_for_size(
     # outputs
     Y_group: wp.array3d[float],
 ):
-    """Correct the response of every row outside the block: ``Y_i -= Y_B S^-1 (J_B Y_i)``.
+    """Correct the response of every row outside the block: ``Y_i -= Y_B (S + R)^-1 (J_B Y_i)``.
 
     One thread per (articulation, row). Rows of the block keep their response for the
-    projection; their sweep visits apply no impulse because the projected velocity
-    already satisfies ``J_B v = -b_B``.
+    projection and stay in the sweep, where they only see the small residual that the
+    regularization ``R`` leaves, see :func:`preelim_project_velocity_for_size`.
     """
     idx = wp.tid()
     group_idx = idx // max_constraints
@@ -2363,11 +2363,14 @@ def preelim_project_velocity_for_size(
     # outputs
     v_out: wp.array[float],
 ):
-    """Project the predictor velocity once: ``v -= Y_B S^-1 (J_B v + b_B)``.
+    """Project the predictor velocity once: ``v -= Y_B (S + R)^-1 (J_B v + b_B)``.
 
-    Runs after the solve velocity is seeded with the predictor. Afterwards
-    ``J_B v = -b_B`` holds, and every corrected response keeps it. Each thread owns one
-    articulation's DOF range.
+    Runs after the solve velocity is seeded with the predictor. ``R`` is the diagonal
+    regularization of :func:`preelim_setup_for_size`, so the projection is not exact:
+    afterwards ``J_B v + b_B = R (S + R)^-1 (J_B v_0 + b_B)`` for the predictor ``v_0``,
+    and a corrected response ``Y_i`` still changes ``J_B v`` by ``R (S + R)^-1 J_B Y_i``
+    per unit impulse. The bilateral rows stay in the sweep and reduce this residual. Each
+    thread owns one articulation's DOF range.
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]

@@ -703,7 +703,8 @@ class SolverFeatherPGS(SolverBase):
       world. Closures can be released and re-anchored at runtime, see
       :meth:`set_loop_joint_enabled` and :meth:`set_loop_joint_anchors`. With
       ``enable_bilateral_preelimination`` the mimic and connect rows are eliminated
-      exactly instead of iterated.
+      before the sweep through a regularized Schur complement; this is not exact
+      elimination, see the option.
     - Contacts: rigid contacts from :class:`~newton.CollisionPipeline` with Coulomb
       point friction (one normal and two coupled tangent rows per contact, friction
       coefficient from the two shapes' ``mu``). Contact restitution, compliance and
@@ -930,11 +931,20 @@ class SolverFeatherPGS(SolverBase):
                 exceeds a row capacity. The warning does not synchronize the host and is
                 compatible with CUDA graph capture.
             enable_bilateral_preelimination: Eliminate the mimic and connect rows of each
-                articulation exactly before the iterative sweep (a Schur complement of the
-                bilateral block), so closures and mimic couplings hold independently of
-                ``pgs_iterations``. The rows stay allocated. Articulations with more than
-                eight bilateral rows, and loop closures with a kinematic or world parent,
-                keep iterative rows and warn at construction.
+                articulation before the iterative sweep with a Schur complement of the
+                bilateral block ``S = J_B H^-1 J_B^T``: the predicted velocity is projected
+                once and the responses of the other rows are corrected, so closures and mimic
+                couplings depend much less on ``pgs_iterations``. The block is factored with a
+                diagonal regularization ``R`` of ``1e-3`` times each row's diagonal plus a
+                floor of ``max(pgs_cfm, 1e-7)``, which keeps nearly dependent closure axes
+                positive definite. The elimination is therefore not exact: a bilateral
+                velocity residual of ``R (S + R)^-1 (J_B v + b_B)`` remains after the
+                projection, and the corrected responses of other rows still couple into the
+                bilateral rows by the same factor. The rows stay allocated and in the sweep,
+                which reduces this residual further. If any articulation owns more than
+                eight bilateral rows, or any loop closure has a kinematic or world parent,
+                elimination is disabled for the whole solver (every articulation keeps
+                iterative rows) with a warning at construction.
             bilateral_preelimination_include_mimics: With pre-elimination enabled, also
                 eliminate mimic rows. ``False`` eliminates only the connect rows and keeps
                 mimic rows iterative, which avoids a singular block when a mimic row is
@@ -1679,7 +1689,8 @@ class SolverFeatherPGS(SolverBase):
         if self._connect_count and np.any(self._connect_parent_prescribed_np != 0):
             warnings.warn(
                 "SolverFeatherPGS: enable_bilateral_preelimination does not support loop closures with a "
-                "kinematic or world parent; mimic and connect rows stay iterative.",
+                "kinematic or world parent; pre-elimination is disabled for the whole solver and every "
+                "articulation keeps iterative mimic and connect rows.",
                 stacklevel=3,
             )
             return
@@ -1698,7 +1709,8 @@ class SolverFeatherPGS(SolverBase):
         if rows > PREELIM_MAX_ROWS:
             warnings.warn(
                 f"SolverFeatherPGS: an articulation owns {rows} bilateral rows, more than the pre-elimination "
-                f"capacity of {PREELIM_MAX_ROWS}; mimic and connect rows stay iterative. Set "
+                f"capacity of {PREELIM_MAX_ROWS}; pre-elimination is disabled for the whole solver and every "
+                "articulation keeps iterative mimic and connect rows. Set "
                 "bilateral_preelimination_include_mimics=False to pre-eliminate only the connect rows.",
                 stacklevel=3,
             )

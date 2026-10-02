@@ -247,8 +247,11 @@ repository examples spend tuning effort, not a shared solver API.
        damping and free-body velocity bounds are model attributes registered by
        ``register_custom_attributes()``. Mimic joints and loop-closing BALL
        joints are bilateral rows that converge with ``pgs_iterations`` like the
-       other rows; ``enable_bilateral_preelimination`` eliminates them exactly
-       instead, which keeps closed chains closed at low iteration counts.
+       other rows; ``enable_bilateral_preelimination`` eliminates them before
+       the sweep with a regularized Schur complement, which keeps closed chains
+       nearly closed at low iteration counts. The regularization leaves a small
+       residual (it is not exact elimination), and an unsupported articulation
+       disables elimination for the whole solver with a warning.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.
