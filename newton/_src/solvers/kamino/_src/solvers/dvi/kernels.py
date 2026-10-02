@@ -34,6 +34,14 @@ int32 = wp.int32
 vec3f = wp.vec3f
 
 _FUSED_INEQUALITY_BLOCK = -2
+# Diagonal floor added to the unit-scaled bilateral block. Smaller floors reduce
+# the equality residual, but closed-loop robots lose contact below this.
+BILATERAL_DIAGONAL_FLOOR = 7.0e-7
+
+# Extra diagonal shift for bilateral blocks whose factorization fails. Float32
+# round-off can make near-singular closed-loop blocks indefinite.
+BILATERAL_FAILED_PIVOT_SHIFT = 1.0e-5
+
 _FUSED_BILATERAL_BLOCK = -3
 
 
@@ -138,6 +146,7 @@ def _copy_bilateral_block(
     problem_njc: wp.array[int32],
     problem_D: wp.array[float32],
     bilateral_mio: wp.array[int32],
+    bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     # Outputs:
     bilateral_D: wp.array[float32],
@@ -168,10 +177,9 @@ def _copy_bilateral_block(
 
     val = p_row * problem_D[pmio + ncts * row + col] * p_col
     if row == col:
-        # Smaller floors reduce equality residual, but closed-loop robots lose contact below this.
-        val += float32(7.0e-7)
+        val += float32(BILATERAL_DIAGONAL_FLOOR)
         bilateral_P[bvio + row] = p_row
-    bilateral_D[bmio + njc * row + col] = val
+    bilateral_D[bmio + bilateral_ld[wid] * row + col] = val
 
 
 @wp.kernel
@@ -445,6 +453,7 @@ def _solve_bilateral_contact_response(
     problem_mio: wp.array[int32],
     problem_njc: wp.array[int32],
     bilateral_mio: wp.array[int32],
+    bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     bilateral_P: wp.array[float32],
     projected_mio: wp.array[int32],
@@ -464,6 +473,7 @@ def _solve_bilateral_contact_response(
 
     source = problem_mio[wid]
     factor = bilateral_mio[wid]
+    ld = bilateral_ld[wid]
     bvio = bilateral_vio[wid]
     target = projected_mio[wid]
 
@@ -473,15 +483,15 @@ def _solve_bilateral_contact_response(
             original_row = bilateral_permutation[bvio + row]
         value = bilateral_P[bvio + original_row] * problem_D[source + ncts * original_row + unilateral]
         for k in range(row):
-            value -= bilateral_L[factor + njc * row + k] * projected_D[target + ncts * k + unilateral]
-        projected_D[target + ncts * row + unilateral] = value / bilateral_L[factor + njc * row + row]
+            value -= bilateral_L[factor + ld * row + k] * projected_D[target + ncts * k + unilateral]
+        projected_D[target + ncts * row + unilateral] = value / bilateral_L[factor + ld * row + row]
 
     for reverse_row in range(njc):
         row = njc - int32(1) - reverse_row
         value = projected_D[target + ncts * row + unilateral]
         for k in range(row + int32(1), njc):
-            value -= bilateral_L[factor + njc * k + row] * projected_D[target + ncts * k + unilateral]
-        projected_D[target + ncts * row + unilateral] = value / bilateral_L[factor + njc * row + row]
+            value -= bilateral_L[factor + ld * k + row] * projected_D[target + ncts * k + unilateral]
+        projected_D[target + ncts * row + unilateral] = value / bilateral_L[factor + ld * row + row]
 
 
 @wp.kernel
@@ -560,6 +570,7 @@ def _compact_schur_fits(njc: int32, nu: int32, stride: int32) -> bool:
 def _find_bilateral_factor_row_start(
     njc: wp.array[int32],
     mio: wp.array[int32],
+    bilateral_ld: wp.array[int32],
     vio: wp.array[int32],
     factor: wp.array[float32],
     row_start: wp.array[int32],
@@ -571,7 +582,7 @@ def _find_bilateral_factor_row_start(
         return
     first = int32(0)
     offset = mio[wid]
-    while first < row and factor[offset + n * row + first] == float32(0.0):
+    while first < row and factor[offset + bilateral_ld[wid] * row + first] == float32(0.0):
         first += int32(1)
     row_start[vio[wid] + row] = first / int32(16) * int32(16)
 
@@ -580,6 +591,7 @@ def _find_bilateral_factor_row_start(
 def _find_bilateral_factor_row_start_rcm(
     njc: wp.array[int32],
     mio: wp.array[int32],
+    bilateral_ld: wp.array[int32],
     vio: wp.array[int32],
     factor: wp.array[float32],
     row_start: wp.array[int32],
@@ -603,7 +615,7 @@ def _find_bilateral_factor_row_start_rcm(
             first = end
         else:
             # Marked tiles can contain numerical zeros: preserve the exact prefix.
-            while first < end and factor[offset + n * row + first] == float32(0.0):
+            while first < end and factor[offset + bilateral_ld[wid] * row + first] == float32(0.0):
                 first += 1
             if first < end:
                 break
@@ -616,6 +628,7 @@ def _solve_bilateral_unilateral_response_compact(
     problem_dim: wp.array[int32],
     problem_njc: wp.array[int32],
     bilateral_mio: wp.array[int32],
+    bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     bilateral_P: wp.array[float32],
     bilateral_L: wp.array[float32],
@@ -637,8 +650,12 @@ def _solve_bilateral_unilateral_response_compact(
         original_row = bilateral_permutation[bilateral_vio[wid] + row]
         value = bilateral_P[bilateral_vio[wid] + original_row] * coupling[offset + original_row * nu + unilateral]
         for k in range(factor_row_start[bilateral_vio[wid] + row], row):
-            value -= bilateral_L[bilateral_mio[wid] + njc * row + k] * response[offset + k * nu + unilateral]
-        response[offset + row * nu + unilateral] = value / bilateral_L[bilateral_mio[wid] + njc * row + row]
+            value -= (
+                bilateral_L[bilateral_mio[wid] + bilateral_ld[wid] * row + k] * response[offset + k * nu + unilateral]
+            )
+        response[offset + row * nu + unilateral] = (
+            value / bilateral_L[bilateral_mio[wid] + bilateral_ld[wid] * row + row]
+        )
 
 
 @wp.kernel
@@ -646,6 +663,7 @@ def _solve_bilateral_unilateral_response_cooperative(
     problem_dim: wp.array[int32],
     problem_njc: wp.array[int32],
     bilateral_mio: wp.array[int32],
+    bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     bilateral_P: wp.array[float32],
     bilateral_L: wp.array[float32],
@@ -674,6 +692,7 @@ def _solve_bilateral_unilateral_response_cooperative(
     njc = problem_njc[wid]
     nu = problem_dim[wid] - njc
     factor = bilateral_mio[wid]
+    ld = bilateral_ld[wid]
     bvio = bilateral_vio[wid]
     offset = response_mio[wid]
     unilateral_stride = response_stride[wid]
@@ -705,7 +724,7 @@ def _solve_bilateral_unilateral_response_cooperative(
             partial = float32(0.0)
             if active:
                 for k in range(factor_row_start[bvio + row] + local_lane, row, int32(16)):
-                    partial += bilateral_L[factor + njc * row + k] * response_factor[offset + unilateral * njc + k]
+                    partial += bilateral_L[factor + ld * row + k] * response_factor[offset + unilateral * njc + k]
             total = _subgroup_sum_16(partial)
             if local_lane == int32(0) and active:
                 original_row = row
@@ -715,7 +734,7 @@ def _solve_bilateral_unilateral_response_cooperative(
                     bilateral_P[bvio + original_row] * coupling[offset + original_row * coupling_stride + unilateral]
                 )
                 response_factor[offset + unilateral * njc + row] = (value - total) / bilateral_L[
-                    factor + njc * row + row
+                    factor + ld * row + row
                 ]
             _sync_warp()
         backward_rows = njc
@@ -727,12 +746,12 @@ def _solve_bilateral_unilateral_response_cooperative(
             partial = float32(0.0)
             if active:
                 for k in range(row + int32(1) + local_lane, njc, int32(16)):
-                    partial += bilateral_L[factor + njc * k + row] * response_factor[offset + unilateral * njc + k]
+                    partial += bilateral_L[factor + ld * k + row] * response_factor[offset + unilateral * njc + k]
             total = _subgroup_sum_16(partial)
             if local_lane == int32(0) and active:
                 value = response_factor[offset + unilateral * njc + row]
                 response_factor[offset + unilateral * njc + row] = (value - total) / bilateral_L[
-                    factor + njc * row + row
+                    factor + ld * row + row
                 ]
             _sync_warp()
         if active:
@@ -753,6 +772,7 @@ def _solve_bilateral_unilateral_response(
     problem_dim: wp.array[int32],
     problem_njc: wp.array[int32],
     bilateral_mio: wp.array[int32],
+    bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     bilateral_P: wp.array[float32],
     bilateral_L: wp.array[float32],
@@ -773,6 +793,7 @@ def _solve_bilateral_unilateral_response(
     njc = problem_njc[wid]
     nu = problem_dim[wid] - njc
     factor = bilateral_mio[wid]
+    ld = bilateral_ld[wid]
     bvio = bilateral_vio[wid]
     offset = response_mio[wid]
     unilateral_stride = response_stride[wid]
@@ -784,10 +805,10 @@ def _solve_bilateral_unilateral_response(
             value = bilateral_P[bvio + original_row] * coupling[offset + original_row * unilateral_stride + unilateral]
             for k in range(row):
                 value -= (
-                    bilateral_L[factor + njc * row + k] * response_factor[offset + k * unilateral_stride + unilateral]
+                    bilateral_L[factor + ld * row + k] * response_factor[offset + k * unilateral_stride + unilateral]
                 )
             response_factor[offset + row * unilateral_stride + unilateral] = (
-                value / bilateral_L[factor + njc * row + row]
+                value / bilateral_L[factor + ld * row + row]
             )
 
         for reverse_row in range(njc):
@@ -795,10 +816,10 @@ def _solve_bilateral_unilateral_response(
             value = response_factor[offset + row * unilateral_stride + unilateral]
             for k in range(row + int32(1), njc):
                 value -= (
-                    bilateral_L[factor + njc * k + row] * response_factor[offset + k * unilateral_stride + unilateral]
+                    bilateral_L[factor + ld * k + row] * response_factor[offset + k * unilateral_stride + unilateral]
                 )
             response_factor[offset + row * unilateral_stride + unilateral] = (
-                value / bilateral_L[factor + njc * row + row]
+                value / bilateral_L[factor + ld * row + row]
             )
 
         for row in range(njc):

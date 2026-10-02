@@ -26,6 +26,7 @@ from ..common import (
 from .kernels import (
     _FUSED_BILATERAL_BLOCK,
     _FUSED_INEQUALITY_BLOCK,
+    BILATERAL_FAILED_PIVOT_SHIFT,
     _assemble_bilateral_contact_response,
     _build_bilateral_rhs,
     _compute_dvi_desaxce_corrections,
@@ -56,6 +57,9 @@ from .types import DVIConfigStruct, DVIData, convert_config_to_struct
 wp.set_module_options({"enable_backward": False})
 
 float32 = wp.float32
+
+# Bound optional non-Schur storage independently of contact capacity and batch size.
+_MAX_CACHED_BILATERAL_COUPLING_ENTRIES = 16 * 1024 * 1024  # 64 MiB of float32.
 
 
 class DVISolver:
@@ -305,20 +309,6 @@ class DVISolver:
         if model.size.sum_of_num_bilateral_joint_cts == 0:
             return
 
-        bilateral_joint_cts_per_world = model.info.num_joint_bilateral_cts.numpy().astype(int).tolist()
-        # LLT metadata requires positive blocks; assembly makes zero-row worlds disconnected identities.
-        factor_dims = [max(1, njc) for njc in bilateral_joint_cts_per_world]
-
-        operator = DenseLinearOperatorData()
-        operator.info = DenseSquareMultiLinearInfo()
-        operator.info.finalize(factor_dims, dtype=float32, device=self._device)
-        operator.mat = wp.zeros(shape=(operator.info.total_mat_size,), dtype=float32, device=self._device)
-        self._data.state.bilateral_rhs = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
-        self._data.state.bilateral_solution = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
-        self._data.state.bilateral_preconditioner = wp.zeros(
-            operator.info.total_vec_size, dtype=float32, device=self._device
-        )
-        self._data.bilateral_operator = operator
         first_config = self._config[0]
         if any(
             config.bilateral_solver_type != first_config.bilateral_solver_type
@@ -336,7 +326,31 @@ class DVISolver:
             kwargs.setdefault("solve_block_dim", 256)
             solver_class = LLTBlockedSolver
         else:
+            kwargs.setdefault("failed_pivot_shift", BILATERAL_FAILED_PIVOT_SHIFT)
+            kwargs.setdefault("capacity_stride", True)
             solver_class = LLTBlockedRCMSolver
+
+        bilateral_joint_cts_per_world = model.info.num_joint_bilateral_cts.numpy().astype(int).tolist()
+        # LLT metadata requires positive blocks; assembly makes zero-row worlds disconnected identities.
+        factor_dims = [max(1, njc) for njc in bilateral_joint_cts_per_world]
+        capacities = factor_dims
+        if kwargs.get("capacity_stride", False):
+            # Tile-aligned row strides let blocked kernels use vectorized, unmasked tile loads.
+            tile = kwargs.get("block_size", 32)
+            capacities = [(dim + tile - 1) // tile * tile for dim in factor_dims]
+
+        operator = DenseLinearOperatorData()
+        operator.info = DenseSquareMultiLinearInfo()
+        operator.info.finalize(capacities, dtype=float32, device=self._device)
+        self._data.bilateral_dim = wp.array(factor_dims, dtype=wp.int32, device=self._device)
+        operator.info.dim = self._data.bilateral_dim
+        operator.mat = wp.zeros(shape=(operator.info.total_mat_size,), dtype=float32, device=self._device)
+        self._data.state.bilateral_rhs = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
+        self._data.state.bilateral_solution = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
+        self._data.state.bilateral_preconditioner = wp.zeros(
+            operator.info.total_vec_size, dtype=float32, device=self._device
+        )
+        self._data.bilateral_operator = operator
         self._bilateral_solver = solver_class(operator=operator, device=self._device, **kwargs)
 
     @staticmethod
@@ -443,6 +457,15 @@ class DVISolver:
                     self._unilateral_strides_host,
                     bilateral_vector_size,
                     self._use_schur_complement,
+                    cache_bilateral_coupling=(
+                        self._data.bilateral_operator is not None
+                        and not self._use_schur_complement
+                        and sum(
+                            rows * stride
+                            for rows, stride in zip(self._joint_rows_host, self._unilateral_strides_host, strict=True)
+                        )
+                        <= _MAX_CACHED_BILATERAL_COUPLING_ENTRIES
+                    ),
                 )
             elif self._use_schur_complement:
                 self._data.state.allocate_dense_projection(self._size)
@@ -558,7 +581,7 @@ class DVISolver:
         # Classify the final iterate using all DVI conditions. This replaces
         # provisional iterate-change convergence from the dense fallback;
         # direct and sparse paths reach this check after fixed iteration counts.
-        residual_workers = 32 if self._device.is_cuda and self._size.num_worlds <= 16 else 1
+        residual_workers = 32 if self._device.is_cuda else 1
         wp.launch(
             kernel=_compute_dvi_status_residuals,
             dim=self._size.num_worlds * residual_workers,
@@ -814,7 +837,7 @@ class DVISolver:
     def _factor_bilateral_block(self, problem: DualProblem):
         """Extract, symmetrically scale, and factor the bilateral block ``D_bb``."""
         operator = self._data.bilateral_operator
-        operator.info.dim = operator.info.maxdim
+        operator.info.dim = self._data.bilateral_dim
         wp.launch(
             kernel=_copy_bilateral_block,
             dim=(
@@ -827,6 +850,7 @@ class DVISolver:
                 problem.data.njc,
                 problem.data.D,
                 operator.info.mio,
+                operator.info.maxdim,
                 operator.info.vio,
                 operator.mat,
                 self._data.state.bilateral_preconditioner,
@@ -954,6 +978,7 @@ class DVISolver:
                 problem.data.mio,
                 problem.data.njc,
                 operator.info.mio,
+                operator.info.maxdim,
                 operator.info.vio,
                 self._data.state.bilateral_preconditioner,
                 self._data.state.projected_mio,
