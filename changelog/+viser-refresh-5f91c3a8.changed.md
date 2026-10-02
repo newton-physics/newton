@@ -1,1 +1,0 @@
-Update `ViewerViser` and notebook playback to Viser 1.1.1 with ordered drag events, press-and-hold example controls, native layer visibility controls, and a read-only `server` property for native Viser extensions. Install `viser==1.1.1` when using the viewer outside the notebook or documentation extras.

@@ -1,1 +1,0 @@
-Apply `ViewerViser` picking forces during CUDA graph replay and isolate them by viewer layer. Preserve geometry and current colors across visibility toggles, including batches first shown after startup, release hidden mesh assets on scene clear, reset the camera when switching examples, honor `--paused`, and keep recordings monotonic across simulation resets.
