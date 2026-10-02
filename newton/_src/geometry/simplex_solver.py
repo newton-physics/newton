@@ -38,7 +38,17 @@ from .mpr import Vert, create_support_map_function
 
 EPSILON = 1e-8
 
+# Relative float32 rounding margin of the separation cutoff (64 machine epsilons).
+# Scales with the coordinate magnitudes [m] involved in a query.
+GJK_CUTOFF_TOLERANCE = 64.0 * 1.1920929e-7
+
 Mat83f = wp.types.matrix(shape=(8, 3), dtype=wp.float32)
+
+
+@wp.func
+def coordinate_scale(x: wp.vec3) -> float:
+    """Return the sum of absolute coordinates, an upper bound on the length [m]."""
+    return wp.abs(x[0]) + wp.abs(x[1]) + wp.abs(x[2])
 
 
 def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None):
@@ -346,9 +356,13 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                 threshold [m] for overlap and duplicate vertices (default: 1e-4).
             max_dist: Separation cutoff [m]. When positive, iteration stops once a
                 support plane proves that the shapes are farther apart than
+                ``max_dist`` plus a float32 rounding margin
+                (``GJK_CUTOFF_TOLERANCE`` times the support-point coordinate scale), so
+                the exact query (``max_dist=0.0``) would also return a distance above
                 ``max_dist``. The returned distance is then an upper bound on the true
                 distance that still exceeds ``max_dist``, and the witness points are the
-                current simplex estimate rather than the closest points. ``0.0``
+                current simplex estimate rather than the closest points. Queries the
+                cutoff does not stop return the exact query's results. ``0.0``
                 (default) disables the cutoff.
 
         Returns:
@@ -381,6 +395,8 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
 
         last_search_dir = wp.vec3(1.0, 0.0, 0.0)
         certified_near = bool(False)
+        # Largest support-point coordinate scale seen, for the cutoff's rounding margin.
+        cutoff_scale = float(0.0)
 
         while iter_count > 0:
             iter_count -= 1
@@ -425,11 +441,16 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             # Use BtoA directly (Minkowski difference)
             w_v = w.BtoA
             # The support plane orthogonal to v lower-bounds the distance by
-            # dot(v, w_v) / |v|. Once that exceeds max_dist, the exit below returns
-            # |v| >= true distance > max_dist, so callers comparing the distance with
-            # max_dist reach the same decision without further refinement.
-            if simplex_usage_mask != wp.uint32(0) and max_dist > 0.0 and wp.dot(v, w_v) > max_dist * wp.sqrt(dist_sq):
-                break
+            # dot(v, w_v) / |v|. The exact query's float32 distance can fall a few
+            # rounding errors below that bound, so exit only once the bound clears
+            # max_dist by a margin relative to the coordinates involved. The exit below
+            # then returns |v| >= bound > max_dist, and the exact query would also have
+            # returned a distance above max_dist.
+            if max_dist > 0.0:
+                cutoff_scale = wp.max(cutoff_scale, coordinate_scale(w.B) + coordinate_scale(w_v))
+                cutoff = max_dist + GJK_CUTOFF_TOLERANCE * (cutoff_scale + max_dist)
+                if simplex_usage_mask != wp.uint32(0) and wp.dot(v, w_v) > cutoff * wp.sqrt(dist_sq):
+                    break
             delta_dist = wp.dot(v, v - w_v)
             # Compare the gap relative to squared distance; an absolute cutoff is too loose at small gaps.
             # An empty simplex cannot supply surface witnesses, even when the center offset passes this test.
