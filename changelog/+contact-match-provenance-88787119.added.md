@@ -1,0 +1,1 @@
+Add `Contacts.rigid_contact_match_generation`, the contact generation of the buffer that `rigid_contact_match_index` refers to, or -1 when the pipeline's previous collision pass wrote a different buffer, so code that carries per-contact state across frames can check that the match indices refer to the contact set it saved.
