@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Literal
 
@@ -12,6 +13,8 @@ import warp as wp
 from ..sim import Contacts, Model, State
 from ..sim.contacts import contact_surface_point
 from ..utils.selection import match_labels
+
+logger = logging.getLogger(__name__)
 
 _SENSING_KIND_SHAPE = 1
 _SENSING_KIND_BODY = 2
@@ -574,15 +577,17 @@ class SensorContact:
         self.counterpart_indices = [counterparts_by_world[w] for w in worlds]
 
         if self.verbose:
-            print("SensorContact initialized:")
-            print(f"  Sensing objects: {n_rows} ({self.sensing_type}s)")
-            print(
-                f"  Counterpart columns: {max_readings}"
-                + (f" ({self.counterpart_type}s)" if self.counterpart_type else "")
-            )
-            print(
-                f"  total_force: {'yes' if measure_total else 'no'}, "
-                f"force_matrix: {'yes' if max_readings > 0 else 'no'}"
+            logger.info(
+                "SensorContact initialized:\n"
+                "  Sensing objects: %s (%ss)\n"
+                "  Counterpart columns: %s%s\n"
+                "  total_force: %s, force_matrix: %s",
+                n_rows,
+                self.sensing_type,
+                max_readings,
+                f" ({self.counterpart_type}s)" if self.counterpart_type else "",
+                "yes" if measure_total else "no",
+                "yes" if max_readings > 0 else "no",
             )
 
         self._model = model

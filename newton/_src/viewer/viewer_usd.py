@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import tempfile
 import warnings
@@ -15,6 +16,7 @@ import warp as wp
 import newton
 
 from ..core.types import override
+from ..exceptions import NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 
 try:
@@ -24,6 +26,8 @@ except ImportError:
 
 from .utils import promote_to_clamped_float_array
 from .viewer import _DEFAULT_LAYER_ID, ViewerBase
+
+logger = logging.getLogger(__name__)
 
 
 # transforms a cylinder such that it connects the two points pos0, pos1
@@ -276,7 +280,7 @@ class ViewerUSD(ViewerBase):
         self.stage = None
 
         if self.output_path:
-            print(f"USD output saved in: {os.path.abspath(self.output_path)}")
+            logger.info("USD output saved in: %s", os.path.abspath(self.output_path))
 
     def _get_path(self, name):
         # Handle both absolute and relative paths correctly
@@ -433,6 +437,7 @@ class ViewerUSD(ViewerBase):
         except Exception as exc:
             warnings.warn(
                 f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. Mesh will render without texture.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None

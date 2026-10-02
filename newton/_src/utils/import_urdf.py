@@ -16,6 +16,7 @@ import warp as wp
 
 from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
+from ..exceptions import NewtonWarning
 from ..geometry import Mesh, ShapeFlags
 from ..sim import ModelBuilder
 from ..sim.enums import JointTargetMode
@@ -268,6 +269,7 @@ def parse_urdf(
                         f"Check that the package is installed and that relevant environment variables "
                         f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
                         f"See https://github.com/ami-iit/resolve-robotics-uri-py for details.",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return None, None
@@ -277,6 +279,7 @@ def parse_urdf(
                         f'Warning: cannot resolve URI "{filename}" when URDF is loaded from XML string. '
                         f"Load URDF from a file path, or install resolve-robotics-uri-py: "
                         f"pip install resolve-robotics-uri-py",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return None, None
@@ -297,6 +300,7 @@ def parse_urdf(
                             f'Warning: could not resolve package "{package_name}" in URI "{filename}". '
                             f"For robust URI resolution, install resolve-robotics-uri-py: "
                             f"pip install resolve-robotics-uri-py",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                         return None, None
@@ -304,6 +308,7 @@ def parse_urdf(
                     warnings.warn(
                         f'Warning: cannot resolve model:// URI "{filename}" without resolve-robotics-uri-py. '
                         f"Install it with: pip install resolve-robotics-uri-py",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return None, None
@@ -316,13 +321,14 @@ def parse_urdf(
                     warnings.warn(
                         f'Warning: cannot resolve relative URI "{filename}" when URDF is loaded from XML string. '
                         f"Load URDF from a file path.",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return None, None
                 filename = os.path.join(os.path.dirname(source), filename)
 
         if not os.path.exists(filename):
-            warnings.warn(f"Warning: asset file {filename} does not exist", stacklevel=2)
+            warnings.warn(f"Warning: asset file {filename} does not exist", NewtonWarning, stacklevel=2)
             return None, None
 
         return filename, file_tmp
@@ -531,6 +537,7 @@ def parse_urdf(
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         warnings.warn(
                             f"Warning: mesh {resolved} has a texture but no UVs; texture will be ignored.",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                         m_mesh.texture = None
@@ -884,6 +891,7 @@ def parse_urdf(
             if mimic_target_name not in joint_name_to_idx:
                 warnings.warn(
                     f"Mimic joint '{joint['name']}' references unknown joint '{mimic_target_name}', skipping mimic constraint",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 continue
@@ -894,6 +902,7 @@ def parse_urdf(
             if follower_idx is None:
                 warnings.warn(
                     f"Mimic joint '{joint['name']}' was not created, skipping mimic constraint",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 continue

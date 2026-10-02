@@ -10329,7 +10329,7 @@ class TestMuJoCoSolverFreeJointNonWorldParent(unittest.TestCase):
             self.skipTest(f"MuJoCo or deps not installed: {e}")
         mjc_warnings = [w for w in caught if "SolverMuJoCo" in str(w.message)]
         self.assertEqual(len(mjc_warnings), 1)
-        self.assertEqual(mjc_warnings[0].category, UserWarning)
+        self.assertEqual(mjc_warnings[0].category, newton.exceptions.NewtonWarning)
         self.assertIn("floater", str(mjc_warnings[0].message))
 
 

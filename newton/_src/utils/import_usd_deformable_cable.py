@@ -12,6 +12,7 @@ curves. Driven by :func:`.import_usd.parse_usd` via a
 
 from __future__ import annotations
 
+import logging
 import math
 import warnings
 from dataclasses import dataclass, replace
@@ -20,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..sim.rod import _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION, Rod
 
 if TYPE_CHECKING:
@@ -52,6 +54,8 @@ from .import_usd_deformable_utils import (
     _warn_subset_material_bindings,
     _warn_unsupported_rest_fields,
 )
+
+logger = logging.getLogger(__name__)
 
 # Attributes introduced after the family-prefix rename; density is shared and intentionally omitted.
 _POST_RENAME_CURVE_MATERIAL_ATTRS = (
@@ -220,7 +224,9 @@ def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
     vertex_counts = curves.GetCurveVertexCountsAttr().Get()
     if not points or not vertex_counts:
         if warn:
-            warnings.warn(f"{path}: cable curve has no points / curveVertexCounts; skipping.", stacklevel=2)
+            warnings.warn(
+                f"{path}: cable curve has no points / curveVertexCounts; skipping.", NewtonWarning, stacklevel=2
+            )
         return None
     counts = [int(c) for c in vertex_counts]
     for i, count in enumerate(counts):
@@ -229,6 +235,7 @@ def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
                 warnings.warn(
                     f"{path}: curveVertexCounts[{i}] is {count}; counts must be non-negative; "
                     f"skipping malformed cable.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
             return None
@@ -238,6 +245,7 @@ def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
             warnings.warn(
                 f"{path}: curveVertexCounts total {total} does not match points length {len(points)}; "
                 f"skipping malformed cable.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return None
@@ -253,6 +261,7 @@ def _read_cable_rest_shape_points(prim, path: str, point_count: int, deformable_
         warnings.warn(
             f"{path}: restShapePoints length {len(rest_shape_points)} != points {point_count}; "
             f"ignoring rest shape (rest length taken from the imported points).",
+            NewtonWarning,
             stacklevel=2,
         )
         return None
@@ -274,6 +283,7 @@ def _cable_rest_segment_lengths(rest_points, world_mat, path: str, *, closed: bo
         warnings.warn(
             f"{path}: restShapePoints has a non-finite or zero-length segment; ignoring rest shape "
             f"(rest length taken from the imported points).",
+            NewtonWarning,
             stacklevel=2,
         )
         return None
@@ -285,6 +295,7 @@ def _warn_cable_rest_shape_effect(path: str) -> None:
     warnings.warn(
         f"{path}: restShapePoints does not establish the simulated rest state; it is used only for "
         f"material-gain discretization when stiffness or damping is available.",
+        NewtonWarning,
         stacklevel=2,
     )
 
@@ -302,6 +313,7 @@ def _warn_geometry_authored_newton_curve_damping_attrs(prim, path: str) -> None:
             warnings.warn(
                 f"{path}: deformable material attribute 'newton:{name}' is authored on the geometry; "
                 "it belongs on the bound material (NewtonCurvesDeformableMaterialAPI) and is ignored.",
+                NewtonWarning,
                 stacklevel=2,
             )
 
@@ -325,7 +337,7 @@ def _warn_legacy_curve_material(path: str, material: dict[str, float] | None) ->
             f"{path}: physics:curvesThickness on the curve material was removed from the AOUSD "
             "proposal and is deprecated; move diameter d to physics:thicknesses = [d] on the "
             "simulation geometry and set physics:thicknesses:elementType = 'constant'.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
     if material is not None and _has_legacy_curve_material(material):
@@ -335,7 +347,7 @@ def _warn_legacy_curve_material(path: str, material: dict[str, float] | None) ->
             f"geometry with physics:thicknesses:elementType, and convert "
             f"all four resolved legacy modes, including the stretch-to-shear and bend-to-twist "
             f"fallbacks, to structural values before authoring physics:curves*Stiffness.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
 
@@ -717,6 +729,7 @@ def _deformable_prepare_cable_topology(
             warnings.warn(
                 f"{prim.GetPath()}: curve-to-curve attachment does not author a hard "
                 f"(+inf stiffness) constraint; not welded.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -731,6 +744,7 @@ def _deformable_prepare_cable_topology(
             warnings.warn(
                 f"{prim.GetPath()}: curve-to-curve attachment sites are not coincident; not welded "
                 f"(welding would move the authored geometry).",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -789,6 +803,7 @@ def _deformable_prepare_cable_topology(
                         f"cable graph '{cid}': welding collapses segment {seg} of '{key}' (both "
                         f"endpoints merge into one node); skipping the weld so its curves import "
                         f"individually.",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return False
@@ -812,6 +827,7 @@ def _deformable_prepare_cable_topology(
             warnings.warn(
                 f"cable graph '{cid}': the welded component contains a cycle, which a rod graph "
                 f"cannot close; skipping the weld so its curves import individually.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return False
@@ -824,6 +840,7 @@ def _deformable_prepare_cable_topology(
             warnings.warn(
                 f"cable graph '{cid}': a welded curve has a zero-length segment (duplicate or collapsed "
                 f"points); skipping the welded component so its curves import individually.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return False
@@ -854,6 +871,7 @@ def _deformable_prepare_cable_topology(
                 warnings.warn(
                     f"{key}: per-point normals are dropped for a welded cable graph; its Rod segments use "
                     "auto-oriented frames instead of the authored cross-section frame.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -880,6 +898,7 @@ def _deformable_prepare_cable_topology(
                     f"cable graph '{cid}': welded curves have differing stiffness/damping; using "
                     f"'{comp_paths[0]}' as the representative material gains for the whole component. "
                     "Density remains local to each curve.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
         radius = rep.segment_radii[0]
@@ -894,6 +913,7 @@ def _deformable_prepare_cable_topology(
             warnings.warn(
                 f"cable graph '{cid}': welded cables mix collision-enabled and collision-disabled "
                 f"curves; the whole graph collides.",
+                NewtonWarning,
                 stacklevel=2,
             )
         # A zero representative density still needs geometric weights when any member
@@ -1022,7 +1042,7 @@ def _deformable_prepare_cable_topology(
                     }
             cables_in_shared_graphs.add(key)
         if verbose:
-            print(f"Added cable graph {cid} with {len(body_ids)} segments across {len(comp_paths)} curves.")
+            logger.info("Added cable graph %s with %s segments across %s curves.", cid, len(body_ids), len(comp_paths))
         return True
 
     for cid, comp_curves in components.items():
@@ -1096,7 +1116,7 @@ def _deformable_import_cable(
             continue
         skip_reason = _deformable_body_skip_reason(prim, deformable_read)
         if skip_reason is not None:
-            warnings.warn(f"{path}: {skip_reason}; skipping cable import.", stacklevel=2)
+            warnings.warn(f"{path}: {skip_reason}; skipping cable import.", NewtonWarning, stacklevel=2)
             continue
         if _skip_for_deformable_body_owner(ctx, prim, path):
             continue
@@ -1108,6 +1128,7 @@ def _deformable_import_cable(
         if curves.GetTypeAttr().Get() != UsdGeom.Tokens.linear:
             warnings.warn(
                 f"{path}: only linear BasisCurves import as cables; skipping non-linear curve.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -1152,12 +1173,14 @@ def _deformable_import_cable(
             warnings.warn(
                 f"{path}: normals interpolation '{normals_interp}' is not per-point (vertex/varying); "
                 f"ignoring normals.",
+                NewtonWarning,
                 stacklevel=2,
             )
             normals = None
         if normals is not None and len(normals) != len(points):
             warnings.warn(
                 f"{path}: normals length {len(normals)} != points {len(points)}; ignoring normals.",
+                NewtonWarning,
                 stacklevel=2,
             )
             normals = None
@@ -1228,6 +1251,7 @@ def _deformable_import_cable(
             if n < min_points:
                 warnings.warn(
                     f"{path}: curve {ci} has {n} points (need >= {min_points}); skipping that curve.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 flat_segment_index += curve_segment_count
@@ -1245,6 +1269,7 @@ def _deformable_import_cable(
             if min(seg_lengths, default=0.0) <= 1.0e-8:
                 warnings.warn(
                     f"{path}: curve {ci} has duplicate consecutive points (zero-length segment); skipping that curve.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 flat_segment_index += curve_segment_count
@@ -1416,4 +1441,4 @@ def _deformable_import_cable(
                         "legacy_implicit_type": authored_masses.legacy_implicit_type,
                     }
             if verbose:
-                print(f"Added cable {path} with {len(cable_bodies)} segments.")
+                logger.info("Added cable %s with %s segments.", path, len(cable_bodies))

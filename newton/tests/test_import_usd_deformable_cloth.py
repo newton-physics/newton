@@ -305,7 +305,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         messages = [str(warning.message) for warning in caught]
         self.assertTrue(
             any(
-                warning.category is DeprecationWarning
+                warning.category is newton.exceptions.NewtonDeprecationWarning
                 and "thicknesses" in str(warning.message)
                 and "thicknesses:elementType" in str(warning.message)
                 for warning in caught

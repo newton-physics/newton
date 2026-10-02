@@ -4,6 +4,8 @@
 import warnings
 from enum import EnumMeta, IntEnum
 
+from ..exceptions import NewtonDeprecationWarning
+
 
 class ModelFlags(IntEnum):
     """Flags indicating which parts of the model have been updated.
@@ -149,7 +151,7 @@ class BodyFlags(IntEnum):
 def _warn_joint_type_cable_deprecated() -> None:
     warnings.warn(
         "newton.JointType.CABLE is deprecated in Newton 1.6; use newton.JointType.ROD instead.",
-        DeprecationWarning,
+        NewtonDeprecationWarning,
         stacklevel=3,
     )
 

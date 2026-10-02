@@ -2,10 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
-import io
 import os
 import struct
-import sys
 import tempfile
 import unittest
 import warnings
@@ -6567,21 +6565,14 @@ class TestImportMjcfComposition(unittest.TestCase):
         builder = newton.ModelBuilder()
         mjcf_filename = os.path.join(os.path.dirname(__file__), "assets", "mjcf_exclude_test.xml")
 
-        # Capture verbose output
-        captured_output = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = captured_output
-
-        try:
+        with self.assertLogs("newton", level="INFO") as logs:
             builder.add_mjcf(
                 mjcf_filename,
                 enable_self_collisions=True,
                 verbose=True,
             )
-        finally:
-            sys.stdout = old_stdout
 
-        output = captured_output.getvalue()
+        output = "\n".join(logs.output)
 
         # Check that the verbose output includes information about the exclude
         self.assertIn("Parsed collision exclude", output)
@@ -6677,7 +6668,7 @@ class TestImportMjcfComposition(unittest.TestCase):
         self.assertIn("worldbody/body1", builder.body_label)
 
     def test_exclude_tag_warnings_verbose(self):
-        """Test that warnings are printed for invalid exclude tags when verbose=True."""
+        """Test that warnings are logged for invalid exclude tags when verbose=True."""
         mjcf_content = """
 <mujoco>
   <worldbody>
@@ -6696,21 +6687,10 @@ class TestImportMjcfComposition(unittest.TestCase):
 """
         builder = newton.ModelBuilder()
 
-        # Capture verbose output
-        captured_output = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = captured_output
-
-        try:
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder.add_mjcf(mjcf_content, enable_self_collisions=True, verbose=True)
-        finally:
-            sys.stdout = old_stdout
 
-        output = captured_output.getvalue()
-
-        # Check that warnings were printed for invalid exclude entries
-        self.assertIn("Warning", output)
-        self.assertIn("<exclude>", output)
+        self.assertIn("<exclude>", "\n".join(logs.output))
 
     def test_base_joint_on_fixed_root(self):
         """Test that base_joint works on MJCF with fixed root (no freejoint)."""

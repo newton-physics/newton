@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 from ..core.reset import normalize_reset_world_mask
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
@@ -1224,6 +1225,7 @@ def _warn_full_surface_fallbacks(model: Model, capable: np.ndarray) -> None:
         "edge/face contacts and fall back to per-particle soft contact only -- "
         + "; ".join(reasons)
         + ". Full-surface contacts still apply to the rest of the scene.",
+        NewtonWarning,
         stacklevel=3,
     )
 
@@ -1473,7 +1475,7 @@ class CollisionPipeline:
             warnings.warn(
                 "The soft_contact_margin parameter of CollisionPipeline is deprecated; "
                 "use soft_contact_gap (same value: detection-only distance added to the particle radius).",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
             soft_contact_gap = soft_contact_margin
@@ -1935,7 +1937,7 @@ class CollisionPipeline:
         """Deprecated alias of :attr:`soft_contact_gap`."""
         warnings.warn(
             "CollisionPipeline.soft_contact_margin is deprecated; use soft_contact_gap.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         return self.soft_contact_gap
@@ -1944,7 +1946,7 @@ class CollisionPipeline:
     def soft_contact_margin(self, value: float) -> None:
         warnings.warn(
             "CollisionPipeline.soft_contact_margin is deprecated; use soft_contact_gap.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         self.soft_contact_gap = value
@@ -1963,7 +1965,7 @@ class CollisionPipeline:
         """Deprecated alias of :attr:`soft_contact_pair_count`."""
         warnings.warn(
             "CollisionPipeline.soft_rigid_contact_pair_count is deprecated; use soft_contact_pair_count.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         return self.soft_contact_pair_count
@@ -2296,7 +2298,7 @@ class CollisionPipeline:
             warnings.warn(
                 "The soft_contact_margin argument of CollisionPipeline.collide() is deprecated; "
                 "set soft_contact_gap on the CollisionPipeline constructor instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
             soft_contact_gap = soft_contact_margin

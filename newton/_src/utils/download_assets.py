@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -14,6 +15,8 @@ import time
 from pathlib import Path
 
 from warp._src.thirdparty.appdirs import user_cache_dir
+
+logger = logging.getLogger(__name__)
 
 # External asset repositories and their pinned revisions.
 # Pinning to commit SHAs ensures reproducible downloads for any given Newton
@@ -389,12 +392,13 @@ def download_git_folder(
 
     try:
         if cached is not None:
-            print(
-                f"New version of {folder_path} found "
-                f"(cached: {cached.name.rsplit('_', 1)[-1]}, "
-                f"latest: {latest_commit[:8]}). Refreshing..."
+            logger.info(
+                "New version of %s found (cached: %s, latest: %s). Refreshing...",
+                folder_path,
+                cached.name.rsplit("_", 1)[-1],
+                latest_commit[:8],
             )
-        print(f"Cloning {git_url} (ref: {ref})...")
+        logger.info("Cloning %s (ref: %s)...", git_url, ref)
 
         is_sha = bool(_SHA_RE.fullmatch(ref))
         for attempt in range(_GIT_DOWNLOAD_ATTEMPTS):
@@ -433,7 +437,7 @@ def download_git_folder(
                 if attempt == _GIT_DOWNLOAD_ATTEMPTS - 1 or not _is_transient_git_error(e):
                     raise
                 delay = _GIT_DOWNLOAD_RETRY_DELAY * 2**attempt
-                print(f"Transient Git error. Retrying in {delay:g} seconds...")
+                logger.info("Transient Git error. Retrying in %g seconds...", delay)
                 time.sleep(delay)
 
         temp_target = temp_dir / folder_path
@@ -450,7 +454,7 @@ def download_git_folder(
         # Set mtime to now for TTL tracking
         os.utime(final_dir, None)
 
-        print(f"Successfully downloaded folder to: {final_dir / folder_path}")
+        logger.info("Successfully downloaded folder to: %s", final_dir / folder_path)
 
         # Best-effort cleanup of old versions
         _cleanup_old_versions(cache_path, base_prefix, final_dir)
@@ -487,9 +491,9 @@ def clear_git_cache(cache_dir: str | None = None) -> None:
     cache_path = Path(cache_dir)
     if cache_path.exists():
         _safe_rmtree(cache_path)
-        print(f"Cleared git cache: {cache_path}")
+        logger.info("Cleared git cache: %s", cache_path)
     else:
-        print("Git cache directory does not exist")
+        logger.info("Git cache directory does not exist")
 
 
 def download_asset(

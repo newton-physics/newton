@@ -245,6 +245,84 @@ Python source conventions
   distribution. Update license metadata and notices when required. Treat an
   unknown or undeclared dependency license as requiring review before merge.
 
+Errors and warnings
+-------------------
+
+Choose how to report a problem by who has to act on it:
+
+- Raise an exception when Newton cannot do what the caller asked. Do not warn
+  and continue with a guessed result.
+- Call :func:`warnings.warn` when the caller should change how they call
+  Newton, for example to stop using a deprecated feature or to remove an
+  option that has no effect.
+- Log problems in data Newton processes, such as asset content an importer
+  skips, and conditions the caller cannot change; see
+  :ref:`logging-guidelines`.
+
+Every warning must use a :mod:`newton.exceptions` category so applications can
+filter Newton warnings without matching messages:
+
+- :class:`~newton.exceptions.NewtonDeprecationWarning` for deprecations, as
+  required by the deprecation policy; and
+- :class:`~newton.exceptions.NewtonWarning`, or a subclass of it, for
+  everything else.
+
+Pass a ``stacklevel`` that attributes the warning to the caller's code rather
+than to Newton internals. CI runs tests with ``--strict-warnings``, which turns
+Newton warnings into errors; a test that triggers a warning on purpose must
+assert it, for example with :meth:`~unittest.TestCase.assertWarns`.
+
+.. _logging-guidelines:
+
+Logging
+-------
+
+Library code reports diagnostics, progress, and results through
+:mod:`logging`, never with ``print()``; Ruff rejects ``print()`` in
+``newton/_src`` except where marked ``# noqa: T201``, such as in Warp kernels.
+Declare one logger per module and use it for every message:
+
+.. code-block:: python
+
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    def load(path: str, *, verbose: bool = False) -> None:
+        if verbose:
+            logger.info("Loading %s", path)
+
+Choose the level by audience:
+
+- ``DEBUG``: details that help Newton developers investigate a problem.
+- ``INFO``: output the user asked for, such as ``verbose=True`` diagnostics, or
+  the outcome of a user action, such as a saved file or a server URL.
+- ``WARNING``: a problem Newton worked around that may cause unexpected
+  results, such as skipped or approximated asset content.
+- ``ERROR``: an operation failed and Newton continued without its result.
+
+Until the application configures logging, the ``newton`` logger prints
+``INFO`` records to stdout and ``WARNING`` and higher to stderr, prefixed with
+``Warning:`` or ``Error:``. ``INFO`` is therefore visible by default: reserve it
+for output a user would otherwise miss and use ``DEBUG`` for everything else.
+Once the application installs any handler, such as with
+:func:`logging.basicConfig`, Newton records go only to that handler.
+
+When writing a message:
+
+- pass values as arguments, as in ``logger.info("Loaded %s", path)``, so
+  formatting is skipped for disabled levels;
+- do not start with the level, such as ``Warning:``, because the level already
+  conveys it;
+- log one record per event, joining multi-line summaries into one message; and
+- do not add handlers, change levels, or call :func:`logging.basicConfig`;
+  the application owns logging configuration, and the default output above
+  is set up once in ``newton/_src/diagnostics.py``.
+
+Test log output with :meth:`~unittest.TestCase.assertLogs` on the ``newton``
+logger rather than by capturing stdout, which depends on how the test process
+configured logging.
+
 Documentation and comments
 --------------------------
 
