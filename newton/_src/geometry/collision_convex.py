@@ -38,8 +38,9 @@ def gjk_separation_cutoff(contact_threshold: float, position_a: wp.vec3, positio
     """Return the GJK separation cutoff [m] for a contact threshold, or zero to disable it.
 
     Contact writers re-derive the distance from world-space points, so the cutoff is
-    widened by their float32 rounding margin; a pair a writer could still accept is
-    always refined to the exact distance.
+    widened by an empirical float32 rounding margin (``GJK_CUTOFF_TOLERANCE`` times the
+    coordinate scale) so that pairs a writer could still accept are refined to the exact
+    distance. The margin is an engineering allowance, not a proven error bound.
     """
     if contact_threshold <= 0.0:
         return 0.0
@@ -211,8 +212,9 @@ def create_solve_convex_multi_contact(
             point_b = point_b + normal * half_enlarge
         else:
             # GJK fallback for separated shapes -- no Minkowski inflate; accurate normals/distances.
-            # The separation cutoff stops iterating once the pair is provably
-            # farther than contact_threshold (the write below is rejected then).
+            # The separation cutoff stops iterating once the support-plane bound
+            # clears contact_threshold plus the rounding margin (the write below
+            # is rejected then).
             _separated, point_a, point_b, normal, signed_distance = wp.static(solve_gjk.core)(
                 geom_a,
                 geom_b,
@@ -348,8 +350,9 @@ def create_solve_convex_single_contact(
             point_b = point_b + normal * half_enlarge
         else:
             # GJK fallback for separated shapes -- no Minkowski inflate; accurate normals/distances.
-            # The separation cutoff stops iterating once the pair is provably
-            # farther than contact_threshold (the writer's gap check rejects then).
+            # The separation cutoff stops iterating once the support-plane bound
+            # clears contact_threshold plus the rounding margin (the writer's gap
+            # check rejects then).
             _separated, point_a, point_b, normal, signed_distance = wp.static(solve_gjk.core)(
                 geom_a,
                 geom_b,
