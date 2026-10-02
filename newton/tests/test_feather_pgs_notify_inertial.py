@@ -188,6 +188,55 @@ def test_kinematic_flag_change_is_picked_up(test, device):
     test.assertAlmostEqual(float(state_0.joint_q.numpy()[0]), INITIAL_JOINT_Q, places=5)
 
 
+def _shift_child_frame(model):
+    joint_X_c = model.joint_X_c.numpy()
+    joint_X_c[0, 0] = 0.5
+    model.joint_X_c.assign(joint_X_c)
+
+
+def test_joint_frame_change_with_notify_matches_freshly_built_solver(test, device):
+    """Refresh cached mass factors on JOINT_PROPERTIES, eagerly and under graph replay."""
+    interval = 100
+    reference_model = _build_model(device)
+    _shift_child_frame(reference_model)
+    reference = _run_trajectory(
+        reference_model, SolverFeatherPGS(reference_model, update_mass_matrix_interval=interval), 5
+    )
+
+    for capture in (False, True):
+        with test.subTest(capture=capture):
+            model = _build_model(device)
+            solver = SolverFeatherPGS(model, update_mass_matrix_interval=interval)
+            state_0, state_1 = model.state(), model.state()
+            newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+            control = model.control()
+
+            def substep(solver=solver, state_0=state_0, state_1=state_1, control=control):
+                solver.step(state_0, state_1, control, None, DT)
+                wp.copy(state_0.joint_q, state_1.joint_q)
+                wp.copy(state_0.joint_qd, state_1.joint_qd)
+
+            # Factor the original frame on the first step; later steps reuse it until notified.
+            substep()
+            initial_q = model.joint_q.numpy().copy()
+            graph = None
+            if capture:
+                with wp.ScopedCapture(device=device) as graph:
+                    substep()
+            state_0.joint_q.assign(initial_q)
+            state_0.joint_qd.zero_()
+            _shift_child_frame(model)
+            solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+            history = []
+            for _ in range(5):
+                if graph is None:
+                    substep()
+                else:
+                    wp.capture_launch(graph.graph)
+                history.append(state_0.joint_q.numpy().copy())
+            np.testing.assert_allclose(np.asarray(history), reference, rtol=0.0, atol=1.0e-5)
+
+
 class TestFeatherPGSNotifyInertial(unittest.TestCase):
     pass
 
@@ -200,6 +249,7 @@ for _name in (
     "test_notify_refreshes_baked_com_and_inertia_buffers",
     "test_com_change_with_notify_matches_freshly_built_solver",
     "test_kinematic_flag_change_is_picked_up",
+    "test_joint_frame_change_with_notify_matches_freshly_built_solver",
 ):
     add_function_test(TestFeatherPGSNotifyInertial, _name, globals()[_name], devices=devices)
 

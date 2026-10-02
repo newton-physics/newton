@@ -953,11 +953,13 @@ class SolverFeatherPGS(SolverBase):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Refresh cached solver data after model changes.
 
-        Joint, body, inertial and model-property changes invalidate the cached next-step
-        kinematics and request a mass-matrix refresh of every articulation. Body flags
-        (kinematic membership) and joint DOF properties (armature) are re-read. A
-        kinematic free body that was removed from the response at construction cannot
-        become dynamic again; reconstruct the solver in that case. Capacity status in
+        Joint (frames), joint DOF (armature, drive gains), body (kinematic flags) and
+        inertial changes request a mass-matrix refresh of every articulation on the next
+        step, independent of ``update_mass_matrix_interval``. Body flags (kinematic
+        membership) and joint DOF properties (armature) are re-read. Other model data,
+        such as gravity, limits and shape properties, is read every step. A kinematic free
+        body that was removed from the response at construction cannot become dynamic
+        again; reconstruct the solver in that case. Capacity status in
         :attr:`constraint_overflow` is not cleared, see :meth:`reset`.
 
         Args:
@@ -966,6 +968,9 @@ class SolverFeatherPGS(SolverBase):
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
             self._update_kinematic_state()
             self._scatter_armature_to_groups()
+            self._mass_update_requested.fill_(1)
+        if flags & ModelFlags.JOINT_PROPERTIES:
+            # Joint frames move the bodies the mass matrix is built from.
             self._mass_update_requested.fill_(1)
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES and self.model.body_count:
             # Re-derive the buffers baked from body_com/body_mass/body_inertia in
