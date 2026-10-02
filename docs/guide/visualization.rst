@@ -633,8 +633,8 @@ The viewer owns this server and stops it when closed. Native Viser callbacks
 run asynchronously; enqueue changes to simulation state and consume them on
 the simulation thread before stepping. The common ImGui-style callback adapter
 supports buttons, checkboxes, radio buttons, float/int sliders, float inputs,
-text, separators, disabled scopes, and button hold state. Window and inline
-layout helpers are no-ops. See
+text, separators, disabled scopes, and button hold state. The ``same_line``
+layout helper is a no-op. See
 :meth:`~newton.viewer.ViewerViser.register_ui_callback` for the complete subset.
 The adapter reports ``is_available = False`` because no full ImGui context is
 present; registered callbacks still run. Unsupported calls raise an

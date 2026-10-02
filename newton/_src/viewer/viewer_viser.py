@@ -77,14 +77,6 @@ class ViewerViser(ViewerBase):
     class _ImmediateGuiAdapter:
         """Translate the examples' immediate-mode controls to native Viser GUI handles."""
 
-        class WindowFlags_:
-            class _Flag:
-                value = 0
-
-            no_title_bar = _Flag()
-            no_mouse_inputs = _Flag()
-            no_scrollbar = _Flag()
-
         _MISSING = object()
 
         def __init__(self, viewer: ViewerViser):
@@ -224,29 +216,26 @@ class ViewerViser(ViewerBase):
         def separator(self) -> None:
             self._next_handle("separator", lambda _key: self._add(self._viewer._server.gui.add_divider))
 
-        def checkbox(self, label: str, value: bool) -> tuple[bool, bool]:
+        def _input(self, kind: str, label: str, value: Any, factory: Callable, **properties) -> tuple[bool, Any]:
+            """Create or reconcile a persistent input and consume its queued edit."""
+
             def create(key):
-                handle = self._add(lambda: self._viewer._server.gui.add_checkbox(label, initial_value=bool(value)))
-                self._queue_updates(handle, key, bool)
+                handle = self._add(lambda: factory(label, initial_value=value, **properties))
+                self._queue_updates(handle, key, type(value))
                 return handle
 
-            key, handle = self._next_handle(f"checkbox:{label}", create)
+            key, handle = self._next_handle(f"{kind}:{label}", create)
             self._sync(handle, "disabled", any(self._disabled))
-            self._sync(handle, "label", label)
-            changed, new_value = self._consume(key, handle, bool(value))
-            return changed, bool(new_value)
+            for name, prop in properties.items():
+                self._sync(handle, name, prop)
+            return self._consume(key, handle, value)
+
+        def checkbox(self, label: str, value: bool) -> tuple[bool, bool]:
+            return self._input("checkbox", label, bool(value), self._viewer._server.gui.add_checkbox)
 
         def radio_button(self, label: str, active: bool) -> bool:
-            def create(key):
-                handle = self._add(lambda: self._viewer._server.gui.add_checkbox(label, initial_value=bool(active)))
-                self._queue_updates(handle, key, bool)
-                return handle
-
-            key, handle = self._next_handle(f"radio:{label}", create)
-            self._sync(handle, "disabled", any(self._disabled))
-            self._sync(handle, "label", label)
-            changed, new_value = self._consume(key, handle, bool(active))
-            return changed and bool(new_value)
+            changed, value = self._input("radio", label, bool(active), self._viewer._server.gui.add_checkbox)
+            return changed and value
 
         def slider_float(
             self,
@@ -257,29 +246,15 @@ class ViewerViser(ViewerBase):
             format: str = "%.3f",
             **_kwargs,
         ) -> tuple[bool, float]:
-            step = self._float_step(format, minimum, maximum)
-
-            def create(key):
-                handle = self._add(
-                    lambda: self._viewer._server.gui.add_slider(
-                        label,
-                        min=float(minimum),
-                        max=float(maximum),
-                        step=step,
-                        initial_value=float(value),
-                    )
-                )
-                self._queue_updates(handle, key, float)
-                return handle
-
-            key, handle = self._next_handle(f"slider_float:{label}", create)
-            self._sync(handle, "disabled", any(self._disabled))
-            self._sync(handle, "label", label)
-            self._sync(handle, "min", float(minimum))
-            self._sync(handle, "max", float(maximum))
-            self._sync(handle, "step", step)
-            changed, new_value = self._consume(key, handle, float(value))
-            return changed, float(new_value)
+            return self._input(
+                "slider_float",
+                label,
+                float(value),
+                self._viewer._server.gui.add_slider,
+                min=float(minimum),
+                max=float(maximum),
+                step=self._float_step(format, minimum, maximum),
+            )
 
         def slider_int(
             self,
@@ -290,26 +265,15 @@ class ViewerViser(ViewerBase):
             _format: str = "%d",
             **_kwargs,
         ) -> tuple[bool, int]:
-            def create(key):
-                handle = self._add(
-                    lambda: self._viewer._server.gui.add_slider(
-                        label,
-                        min=int(minimum),
-                        max=int(maximum),
-                        step=1,
-                        initial_value=int(value),
-                    )
-                )
-                self._queue_updates(handle, key, int)
-                return handle
-
-            key, handle = self._next_handle(f"slider_int:{label}", create)
-            self._sync(handle, "disabled", any(self._disabled))
-            self._sync(handle, "label", label)
-            self._sync(handle, "min", int(minimum))
-            self._sync(handle, "max", int(maximum))
-            changed, new_value = self._consume(key, handle, int(value))
-            return changed, int(new_value)
+            return self._input(
+                "slider_int",
+                label,
+                int(value),
+                self._viewer._server.gui.add_slider,
+                min=int(minimum),
+                max=int(maximum),
+                step=1,
+            )
 
         def input_float(
             self,
@@ -320,55 +284,13 @@ class ViewerViser(ViewerBase):
             format: str = "%.3f",
             **_kwargs,
         ) -> tuple[bool, float]:
-            step = self._float_step(format, 0.0, 1.0)
-
-            def create(key):
-                handle = self._add(
-                    lambda: self._viewer._server.gui.add_number(
-                        label,
-                        initial_value=float(value),
-                        step=step,
-                    )
-                )
-                self._queue_updates(handle, key, float)
-                return handle
-
-            key, handle = self._next_handle(f"input_float:{label}", create)
-            self._sync(handle, "disabled", any(self._disabled))
-            self._sync(handle, "label", label)
-            self._sync(handle, "step", step)
-            changed, new_value = self._consume(key, handle, float(value))
-            return changed, float(new_value)
-
-        # Minimal no-op window helpers keep callbacks that add an optional
-        # ImGui overlay from failing when their shared controls are used.
-        @staticmethod
-        def ImVec2(x: float, y: float) -> tuple[float, float]:
-            return (float(x), float(y))
-
-        @staticmethod
-        def calc_text_size(value: str) -> tuple[float, float]:
-            return (float(len(value) * 7), 14.0)
-
-        @staticmethod
-        def set_next_window_pos(*_args, **_kwargs) -> None:
-            return None
-
-        @staticmethod
-        def set_next_window_size(*_args, **_kwargs) -> None:
-            return None
-
-        @staticmethod
-        def set_cursor_pos(*_args, **_kwargs) -> None:
-            return None
-
-        @staticmethod
-        def begin(*_args, **_kwargs) -> bool:
-            return True
-
-        @staticmethod
-        def end() -> None:
-            return None
+            return self._input(
+                "input_float",
+                label,
+                float(value),
+                self._viewer._server.gui.add_number,
+                step=self._float_step(format, 0.0, 1.0),
+            )
 
     @property
     def picking_enabled(self) -> bool:
@@ -914,11 +836,8 @@ class ViewerViser(ViewerBase):
         ``slider_float``, ``slider_int``, ``input_float``, ``text``, ``separator``,
         ``begin_disabled``, ``end_disabled``, and ``is_item_active`` (button hold
         state). These accept the signatures used by Newton examples, not every
-        ImGui overload. ``same_line``, ``set_next_window_pos``,
-        ``set_next_window_size``, ``set_cursor_pos``, ``begin``, and ``end`` are
-        layout no-ops; ``begin`` always returns True. ``ImVec2``, an approximate
-        ``calc_text_size``, and ``WindowFlags_`` (``no_title_bar``,
-        ``no_mouse_inputs``, ``no_scrollbar``) support existing overlay callbacks.
+        ImGui overload. ``same_line`` is a layout no-op: controls use the native
+        panel's vertical layout.
 
         Callbacks run on the simulation thread even though the adapter's
         ``is_available`` is False: that flag indicates a full ImGui context.
