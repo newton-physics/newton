@@ -152,3 +152,8 @@ __all__ += [
     "utils",
     "viewer",
 ]
+
+from ._src.diagnostics import install_console_fallback as _install_console_fallback  # noqa: E402
+
+_install_console_fallback()
+del _install_console_fallback

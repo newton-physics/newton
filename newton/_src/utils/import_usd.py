@@ -72,7 +72,7 @@ from .import_usd_deformable_utils import (
 )
 from .import_usd_deformable_volume import _deformable_import_volume
 
-logger = logging.getLogger("newton")
+logger = logging.getLogger(__name__)
 
 AttributeFrequency = Model.AttributeFrequency
 

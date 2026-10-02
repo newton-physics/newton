@@ -5514,7 +5514,7 @@ def Xform "Articulation" (
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=False)
         builder = newton.ModelBuilder()
 
-        with self.assertLogs("newton", level=logging.INFO) as log_ctx:
+        with self.assertLogs("newton", level=logging.DEBUG) as log_ctx:
             result = builder.add_usd(stage)
 
         mesh = builder.shape_source[result["path_shape_map"][shape_path]]
@@ -5529,7 +5529,7 @@ def Xform "Articulation" (
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=True)
         builder = newton.ModelBuilder()
 
-        with self.assertLogs("newton", level=logging.INFO) as log_ctx:
+        with self.assertLogs("newton", level=logging.DEBUG) as log_ctx:
             result = builder.add_usd(stage)
 
         mesh = builder.shape_source[result["path_shape_map"][shape_path]]
@@ -6022,7 +6022,10 @@ def Xform "Articulation" (
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
 
         builder = newton.ModelBuilder()
-        with _warnings.catch_warnings(record=True) as caught, self.assertLogs("newton", level=_logging.INFO) as log_ctx:
+        with (
+            _warnings.catch_warnings(record=True) as caught,
+            self.assertLogs("newton", level=_logging.DEBUG) as log_ctx,
+        ):
             _warnings.simplefilter("always")
             builder.add_usd(stage)
         uv_warnings = [

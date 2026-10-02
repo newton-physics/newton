@@ -1038,7 +1038,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     @staticmethod
     def _warn_compaction_fallback(cfg: SolverCoupled.Entry, reason: str) -> None:
-        logger.info(
+        logger.debug(
             f"SolverCoupled entry {cfg.name!r} could not be compacted because {reason}; using the full model layout.",
         )
 

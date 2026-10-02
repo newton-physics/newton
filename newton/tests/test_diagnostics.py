@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
+import contextlib
+import io
+import logging
 import pathlib
 import unittest
 import warnings
@@ -46,6 +49,62 @@ class TestWarningCategories(unittest.TestCase):
                 if (ast.unparse(category) if category is not None else None) in generic:
                     offenders.append(f"{relative}:{node.lineno}")
         self.assertEqual(offenders, [], "use a newton.exceptions warning category")
+
+
+class _RecordingHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
+class TestLoggingDefaults(unittest.TestCase):
+    def setUp(self):
+        # Isolate from root handlers that the test runner or other tests may install.
+        root = logging.getLogger()
+        saved_handlers = root.handlers[:]
+        root.handlers.clear()
+        self.addCleanup(setattr, root, "handlers", saved_handlers)
+        self.logger = logging.getLogger("newton.test_diagnostics")
+
+    def _capture(self, *messages):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            for level, message in messages:
+                self.logger.log(level, message)
+        return stdout.getvalue(), stderr.getvalue()
+
+    def test_unconfigured_logging_prints_like_before(self):
+        """Print INFO records to stdout and prefixed warnings to stderr without logging configuration."""
+        self.assertEqual(logging.getLogger("newton").level, logging.INFO)
+        stdout, stderr = self._capture(
+            (logging.DEBUG, "detail"), (logging.INFO, "loaded asset"), (logging.WARNING, "ignored option")
+        )
+        self.assertEqual(stdout, "loaded asset\n")
+        self.assertEqual(stderr, "Warning: ignored option\n")
+
+    def test_configured_handler_replaces_console_fallback(self):
+        """Send records only to application handlers once the application configures logging."""
+        handler = _RecordingHandler()
+        logging.getLogger().addHandler(handler)
+
+        stdout, stderr = self._capture((logging.INFO, "loaded asset"))
+
+        self.assertEqual((stdout, stderr), ("", ""))
+        self.assertEqual([record.getMessage() for record in handler.records], ["loaded asset"])
+
+    def test_handler_on_child_logger_replaces_console_fallback(self):
+        """Treat a handler on any logger between the record's logger and the root as configuration."""
+        handler = _RecordingHandler()
+        self.logger.addHandler(handler)
+        self.addCleanup(self.logger.removeHandler, handler)
+
+        stdout, stderr = self._capture((logging.WARNING, "ignored option"))
+
+        self.assertEqual((stdout, stderr), ("", ""))
+        self.assertEqual(len(handler.records), 1)
 
 
 if __name__ == "__main__":

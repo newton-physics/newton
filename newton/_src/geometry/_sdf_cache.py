@@ -485,7 +485,7 @@ def try_load_sparse_data(
         with npz_path.open("rb") as cache_file, np.load(cache_file, allow_pickle=False) as npz:
             embedded = int(_require_array(npz, _VERSION_KEY, np.dtype(np.int32), ()).item())
             if embedded != CACHE_FORMAT_VERSION:
-                logger.info(
+                logger.debug(
                     "SDF cache: embedded version %d != %d, treating as miss (%s)",
                     embedded,
                     CACHE_FORMAT_VERSION,
