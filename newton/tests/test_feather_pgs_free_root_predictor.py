@@ -209,6 +209,7 @@ def test_integrator_transport_identities(test, device):
             wp.zeros_like(state.joint_qd),
             DT,
             wp.zeros(model.body_count, dtype=wp.float32, device=device),
+            wp.ones(model.joint_count, dtype=wp.int32, device=device),
         ],
         outputs=[q_new, qd_new],
         device=device,
@@ -245,14 +246,20 @@ def test_predictor_and_qdd_transport_identities(test, device):
     wp.launch(
         update_qdd_from_velocity,
         dim=model.joint_dof_count,
-        inputs=[state_in.joint_qd, solver._kinematic_dof_mask, 1.0 / DT],
+        inputs=[state_in.joint_qd, solver._kinematic_dof_mask, 1.0 / DT, solver._dynamics_dof_active],
         outputs=[solver.v_out, state_aug.joint_qdd],
         device=device,
     )
     wp.launch(
         remove_free_root_transport_from_qdd,
         dim=solver._free_root_joint_count,
-        inputs=[solver._free_root_joint_indices, model.joint_qd_start, solver._kinematic_joint_mask, state_in.joint_qd],
+        inputs=[
+            solver._free_root_joint_indices,
+            model.joint_qd_start,
+            solver._kinematic_joint_mask,
+            state_in.joint_qd,
+            solver._dynamics_joint_active,
+        ],
         outputs=[state_aug.joint_qdd],
         device=device,
     )
@@ -277,6 +284,7 @@ def test_predictor_and_qdd_transport_identities(test, device):
             state_aug.joint_qdd,
             DT,
             solver.rigid_body_angular_damping,
+            solver._dynamics_joint_active,
         ],
         outputs=[state_out.joint_q, state_out.joint_qd],
         device=device,
