@@ -174,7 +174,7 @@ def _query_distant_spheres_with_cutoff(cutoff: float, output: wp.array[float]):
     a.shape_type = int(GeoType.SPHERE)
     a.scale = wp.vec3(0.001, 0.0, 0.0)
     separated, pa, pb, normal, distance = wp.static(create_solve_closest_distance(support_map).core)(
-        a, a, wp.quat_identity(), wp.vec3(100.0, 0.0, 0.0), 0.0, SupportMapDataProvider(), cutoff
+        a, a, wp.quat_identity(), wp.vec3(100.0, 0.0, 0.0), 0.0, SupportMapDataProvider(), max_dist=cutoff
     )
     output[0] = float(separated)
     for axis in range(3):
@@ -248,6 +248,35 @@ def _write_query(
 
 
 @wp.kernel(module="unique")
+def _query_positional_arguments(cutoff: float, output: wp.array2d[float]):
+    """Bind the trailing optional arguments positionally and by keyword."""
+    a = GenericShapeData()
+    a.shape_type = int(GeoType.BOX)
+    a.scale = wp.vec3(0.1, 0.2, 0.3)
+    b = GenericShapeData()
+    b.shape_type = int(GeoType.BOX)
+    b.scale = wp.vec3(0.3, 0.1, 0.2)
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 1.0, 0.5)), 0.7)
+    position = wp.vec3(0.9, 0.4, 0.2)
+    provider = SupportMapDataProvider()
+    gjk = wp.static(create_solve_closest_distance(support_map).core)
+    separated, point_a, point_b, normal, distance = gjk(a, b, rotation, position, 0.0, provider)
+    _write_query(output, 0, separated, point_a, point_b, normal, distance)
+    separated, point_a, point_b, normal, distance = gjk(a, b, rotation, position, 0.0, provider, 30, 1e-4)
+    _write_query(output, 1, separated, point_a, point_b, normal, distance)
+    separated, point_a, point_b, normal, distance = gjk(a, b, rotation, position, 0.0, provider, 1, 1e-4)
+    _write_query(output, 2, separated, point_a, point_b, normal, distance)
+    separated, point_a, point_b, normal, distance = gjk(
+        a, b, rotation, position, 0.0, provider, MAX_ITER=1, COLLIDE_EPSILON=1e-4
+    )
+    _write_query(output, 3, separated, point_a, point_b, normal, distance)
+    separated, point_a, point_b, normal, distance = gjk(a, b, rotation, position, 0.0, provider, 30, 1e-4, cutoff)
+    _write_query(output, 4, separated, point_a, point_b, normal, distance)
+    separated, point_a, point_b, normal, distance = gjk(a, b, rotation, position, 0.0, provider, max_dist=cutoff)
+    _write_query(output, 5, separated, point_a, point_b, normal, distance)
+
+
+@wp.kernel(module="unique")
 def _query_pairs_at_cutoffs(
     shape_types: wp.array[int],
     scales: wp.array[wp.vec3],
@@ -280,6 +309,18 @@ def _query_pairs_at_cutoffs(
             a, b, rotations[i], positions[i], 0.0, SupportMapDataProvider()
         )
         _write_query(exact, i, separated, point_a, point_b, normal, distance)
+
+
+def test_positional_iteration_arguments_keep_their_meaning(test, device):
+    """Bind positional MAX_ITER and COLLIDE_EPSILON as before the cutoff argument was added."""
+    output = wp.zeros((6, 11), dtype=float, device=device)
+    wp.launch(_query_positional_arguments, dim=1, inputs=[0.05], outputs=[output], device=device)
+    default, positional, one_iter, one_iter_keyword, positional_cutoff, keyword_cutoff = output.numpy()
+    np.testing.assert_array_equal(positional, default)
+    np.testing.assert_array_equal(one_iter, one_iter_keyword)
+    np.testing.assert_array_equal(positional_cutoff, keyword_cutoff)
+    # One iteration leaves an unrefined, larger distance; the default converges.
+    test.assertGreater(float(one_iter[1]), float(default[1]) + 1e-3)
 
 
 # Pairs whose float32 exact distance sits just below a valid support-plane bound
@@ -442,6 +483,7 @@ def test_separation_cutoff_keeps_contact_at_the_exact_boundary(test, device):
 
 devices = get_test_devices()
 for _test in (
+    test_positional_iteration_arguments_keep_their_meaning,
     test_separation_cutoff_matches_exact_query_at_the_boundary,
     test_separation_cutoff_keeps_contact_at_the_exact_boundary,
 ):

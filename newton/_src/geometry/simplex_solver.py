@@ -331,9 +331,9 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         position_b: wp.vec3,
         extend: float,
         data_provider: Any,
-        max_dist: float = 0.0,
         MAX_ITER: int = 30,
         COLLIDE_EPSILON: float = 1e-4,
+        max_dist: float = 0.0,
     ) -> tuple[bool, wp.vec3, wp.vec3, wp.vec3, float]:
         """
         Core GJK distance algorithm implementation.
@@ -352,6 +352,8 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             position_b: Position of shape B relative to shape A
             extend: Contact offset extension (sum of contact offsets)
             data_provider: Support mapping data provider
+            MAX_ITER: Maximum number of GJK iterations (default: 30)
+            COLLIDE_EPSILON: Relative duality-gap tolerance and near-contact distance [m] (default: 1e-4)
             max_dist: Separation cutoff [m]. When positive, iteration stops as
                 soon as a support-plane lower bound exceeds ``max_dist`` plus a
                 float32 rounding margin (``GJK_CUTOFF_TOLERANCE`` times the
@@ -365,8 +367,6 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                 does not stop return the exact query's results. ``0.0``
                 (default) disables the cutoff and computes the exact closest
                 distance.
-            MAX_ITER: Maximum number of GJK iterations (default: 30)
-            COLLIDE_EPSILON: Relative duality-gap tolerance and near-contact distance [m] (default: 1e-4)
 
         Returns:
             Tuple of:
@@ -617,7 +617,6 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             relative_position_b,
             combined_margin,
             data_provider,
-            0.0,  # max_dist: exact distance query, no separation cutoff
             MAX_ITER,
             COLLIDE_EPSILON,
         )

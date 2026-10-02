@@ -222,7 +222,7 @@ def create_solve_convex_multi_contact(
                 relative_position_b,
                 0.0,
                 data_provider,
-                gjk_separation_cutoff(contact_threshold, position_a, position_b),
+                max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
 
         if skip_multi_contact or signed_distance > contact_threshold:
@@ -360,7 +360,7 @@ def create_solve_convex_single_contact(
                 relative_position_b,
                 0.0,
                 data_provider,
-                gjk_separation_cutoff(contact_threshold, position_a, position_b),
+                max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
 
         # Transform results back to world space (once).
