@@ -443,9 +443,34 @@ Newton supports the following geometry types via :class:`~GeoType`:
    * - ``ELLIPSOID``
      - Ellipsoid
    * - ``MESH``
-     - Triangle mesh (arbitrary, including non-convex)
+     - Triangle mesh (arbitrary, including non-convex; see note below)
    * - ``CONVEX_MESH``
      - Convex hull mesh
+
+.. note::
+   **Non-convex meshes are solver-dependent.** Newton's Warp-based collision pipeline
+   collides the exact triangles, so non-convex ``MESH`` shapes behave as authored. The
+   MuJoCo solver, however, compiles every mesh geom through a convex-hull path: a bowl,
+   tube or C-channel loses its cavity, and bodies can come to rest on the hull surface.
+   ``SolverMuJoCo`` warns (via :class:`~newton.geometry.NonConvexMeshWarning`) when it
+   exports a non-convex mesh collider whose convex hull closes over a meaningful share
+   of extra volume (≥ 5%) while generating MuJoCo contacts — near-convex robot-link
+   meshes with negligible dents stay silent. Meshes with too many faces and vertices
+   to verify convexity get a softer warning
+   (:class:`~newton.geometry.UnverifiedConvexityWarning`), since an unverified mesh may
+   still be non-convex. To resolve the warning, approximate the mesh with
+   ``builder.approximate_meshes("coacd")`` (convex decomposition), pass
+   ``use_mujoco_contacts=False`` so Newton's collision pipeline handles the contacts,
+   or build the shape with ``add_shape_convex_hull`` to make the approximation explicit.
+   If the hull is the intended collider (e.g. assets authored for MuJoCo, where every
+   mesh geom is collided as its convex hull by design), silence the warnings without
+   touching behavior::
+
+      import warnings
+      from newton.geometry import NonConvexMeshWarning, UnverifiedConvexityWarning
+
+      warnings.filterwarnings("ignore", category=NonConvexMeshWarning)
+      warnings.filterwarnings("ignore", category=UnverifiedConvexityWarning)
 
 .. note::
    **SDF is collision data, not a standalone shape type.** For mesh shapes, build and attach

@@ -19,6 +19,12 @@ import warp as wp
 
 from ...core.types import MAXVAL, Axis, override, vec5, vec10
 from ...geometry import GeoType, Mesh, ShapeFlags
+from ...geometry.utils import (
+    NonConvexMeshWarning,
+    UnverifiedConvexityWarning,
+    _hull_volume_gain,
+    _is_mesh_convex,
+)
 from ...sim import (
     BodyFlags,
     Contacts,
@@ -272,6 +278,15 @@ def _mujoco_warp_deterministic_max_records(mj_model: MjModel, mjw_data: MjWarpDa
 
 def _mesh_scale_key(mesh: Mesh, scale: np.ndarray) -> tuple[int, tuple[float, float, float]]:
     return id(mesh), tuple(float(s) for s in scale)
+
+
+# Sentinel marking "hull-volume ratio not computed yet" in mesh_hull_gain_cache
+# (None already means "computed; hull unavailable").
+_HULL_GAIN_UNEVALUATED = object()
+# Warn only when the convex hull closes over a meaningful share of extra volume;
+# robot-link meshes whose dents are negligible stay silent. 5% keeps the bowl /
+# U-channel from #4065 (gains ~30-60%) well above the threshold.
+_HULL_GAIN_WARN_THRESHOLD = 0.05
 
 
 def _mujoco_mesh_vertices_are_planar(
@@ -6056,6 +6071,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_size = model.shape_scale.numpy().copy()
         shape_flags = model.shape_flags.numpy()
         shape_collision_group = model.shape_collision_group.numpy()
+        shape_hull_authored = model._shape_hull_authored.numpy() if model._shape_hull_authored is not None else None
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()
         shape_ke = model.shape_material_ke.numpy()
@@ -6496,6 +6512,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         required_shapes = tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes
         mesh_export_cache: dict[tuple[int, tuple[float, float, float]], tuple[np.ndarray, np.ndarray, int, bool]] = {}
+        # Convexity verdict per unique mesh asset, populated on first GeoType.MESH
+        # use: True (convex), False (non-convex), or None (unverifiable). A key
+        # missing from this dict means the verdict has not been evaluated yet.
+        # Keyed by id(mesh) alone: convexity is affine-invariant, so one verdict
+        # covers every scaled shape sharing the asset.
+        mesh_convexity_cache: dict[int, bool | None] = {}
+        # Hull-volume ratio (1 - mesh/hull volume) per unique non-convex mesh
+        # asset, computed only when the exact test already reported a violation.
+        # ``None`` (hull unavailable) warns; a value below the threshold stays silent.
+        mesh_hull_gain_cache: dict[int, float | None] = {}
 
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
@@ -6634,6 +6660,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         mesh_export_cache[key] = mesh_export
 
                     vertices, indices, maxhullvert, is_planar = mesh_export
+                    mesh_asset_key = id(mesh_src)
+                    if (
+                        stype == GeoType.MESH
+                        and self._use_mujoco_contacts
+                        and not disable_contacts
+                        and mesh_asset_key not in mesh_convexity_cache
+                        and not (shape_hull_authored is not None and shape_hull_authored[shape])
+                    ):
+                        # Compute once per unique mesh asset from its raw geometry.
+                        # Convexity is affine-invariant, so the verdict does not
+                        # depend on the per-shape scale, and this check is only
+                        # ever consulted when MuJoCo contacts are active.
+                        # Hull-authored shapes (CONVEX_MESH / approximate_meshes /
+                        # add_shape_convex_hull) are skipped: the hull is the
+                        # author's intent, so there is nothing to verify or warn about.
+                        mesh_convexity_cache[mesh_asset_key] = _is_mesh_convex(mesh_src.vertices, mesh_src.indices)
+                    is_convex = mesh_convexity_cache.get(mesh_asset_key)
                     uses_mujoco_contacts = (
                         bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
                         and (
@@ -6650,6 +6693,47 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             f"{model.shape_label[shape]!r} (shape {shape}). Use use_mujoco_contacts=False so "
                             "Newton's collision pipeline handles this mesh, or replace it with a plane/box/thick mesh."
                         )
+                    if (
+                        stype == GeoType.MESH
+                        and self._use_mujoco_contacts
+                        and not disable_contacts
+                        and uses_mujoco_contacts
+                    ):
+                        if is_convex is False:
+                            # Skip the warning when the mesh is already (nearly) convex for
+                            # hulling purposes: assets whose concavity is negligible lose
+                            # nothing to the convex-hull path, so the warning would be noise.
+                            # is_convex is False only when the exact separating-plane test
+                            # found a violation; the hull-volume ratio decides significance.
+                            gain = mesh_hull_gain_cache.get(mesh_asset_key, _HULL_GAIN_UNEVALUATED)
+                            if gain is _HULL_GAIN_UNEVALUATED:
+                                gain = _hull_volume_gain(mesh_src.vertices, mesh_src.indices)
+                                mesh_hull_gain_cache[mesh_asset_key] = gain
+                            if gain is None or gain >= _HULL_GAIN_WARN_THRESHOLD:
+                                warnings.warn(
+                                    f"Mesh collider {model.shape_label[shape]!r} (shape {shape}) is non-convex, but the "
+                                    "MuJoCo solver compiles every mesh geom as a convex hull: its cavities are not "
+                                    "simulated and bodies may come to rest on the hull surface. Approximate concave "
+                                    "meshes with ModelBuilder.approximate_meshes('coacd'), or pass "
+                                    "use_mujoco_contacts=False so Newton's collision pipeline handles the exact triangles. "
+                                    "Filter with warnings.filterwarnings('ignore', category=NonConvexMeshWarning).",
+                                    category=NonConvexMeshWarning,
+                                    stacklevel=2,
+                                )
+                        elif is_convex is None:
+                            # The exactness budget was exceeded, so convexity is
+                            # unverified: state the uncertainty instead of asserting
+                            # that cavities are lost.
+                            warnings.warn(
+                                f"Mesh collider {model.shape_label[shape]!r} (shape {shape}) has too many faces and "
+                                "vertices to verify convexity, and the MuJoCo solver compiles every mesh geom as a "
+                                "convex hull: cavities it may have are not simulated. If the mesh is concave, "
+                                "approximate it with ModelBuilder.approximate_meshes('coacd'), or pass "
+                                "use_mujoco_contacts=False so Newton's collision pipeline handles the exact triangles. "
+                                "Filter with warnings.filterwarnings('ignore', category=UnverifiedConvexityWarning).",
+                                category=UnverifiedConvexityWarning,
+                                stacklevel=2,
+                            )
                     spec.add_mesh(
                         name=name,
                         uservert=vertices.flatten(),

@@ -326,6 +326,7 @@ class Model:
         "shape_filter": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_group": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_radius": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_hull_authored": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_world": AttributeSpec(AttributeFrequency.SHAPE, references=AttributeFrequency.WORLD),
         "shape_heightfield_index": AttributeSpec(
             AttributeFrequency.SHAPE,
@@ -705,6 +706,9 @@ class Model:
         self.shape_collision_group: wp.array[wp.int32] | None = None
         """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
         self._shape_collision_filter_pairs = _ShapeCollisionFilterPairs(np.empty(0, dtype=np.int64))
+        self._shape_hull_authored: wp.array[wp.uint8] | None = None
+        """Per-shape flag marking shapes whose geometry is explicitly authored or approximated as a
+        convex hull (``GeoType.CONVEX_MESH``), shape [shape_count], uint8. Internal diagnostic hint."""
         self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
         self.shape_contact_pairs: wp.array[wp.vec2i] | None = None

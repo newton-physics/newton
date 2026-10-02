@@ -661,6 +661,7 @@ class ModelBuilder:
         "shape_sdf_target_voxel_size": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_sdf_texture_format": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_sdf_padding": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
+        "_shape_hull_authored": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "muscle_start": Model.AttributeSpec("muscle", references="muscle_point", compaction_policy="start"),
         "muscle_params": Model.AttributeSpec("muscle"),
         "muscle_activations": Model.AttributeSpec("muscle"),
@@ -1695,6 +1696,9 @@ class ModelBuilder:
         self.shape_sdf_padding: list[float | None] = []
         """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
         When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
+        self._shape_hull_authored: list[bool] = []
+        """Per-shape flag marking shapes whose geometry is explicitly authored or approximated
+        as a convex hull (``GeoType.CONVEX_MESH``); retained on the builder only."""
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
         # filtering to ignore certain collision pairs
@@ -7703,6 +7707,14 @@ class ModelBuilder:
         self.shape_force_sdf.append(cfg.force_sdf)
         self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
         self.shape_sdf_padding.append(cfg.sdf_padding)
+        # A CONVEX_MESH is by definition a convex hull authored or approximated
+        # explicitly (add_shape_convex_hull / approximate_meshes), so backends
+        # that compile meshes through a convex-hull path lose nothing and
+        # convexity diagnostics can skip it.
+        if type == GeoType.CONVEX_MESH:
+            self._shape_hull_authored.append(True)
+        else:
+            self._shape_hull_authored.append(False)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent:
             for parent_body, joint_idx in self.joint_parents.get(body, ()):
@@ -8710,6 +8722,7 @@ class ModelBuilder:
                     self.shape_source[shape] = replacement_mesh
                     # mark as convex mesh type
                     self.shape_type[shape] = GeoType.CONVEX_MESH
+                    self._shape_hull_authored[shape] = True
                     if len(decomposition) > 1:
                         body = self.shape_body[shape]
                         xform = self.shape_transform[shape]
@@ -8809,6 +8822,7 @@ class ModelBuilder:
                 # mark convex_hull result as convex mesh type for efficient collision detection
                 if method == "convex_hull":
                     self.shape_type[shape] = GeoType.CONVEX_MESH
+                    self._shape_hull_authored[shape] = True
                 remeshed_shapes.add(shape)
             if remesh_failed:
                 # route the shapes that failed (not in remeshed_shapes) into the fallback below
@@ -13242,6 +13256,7 @@ class ModelBuilder:
             m.shape_gap = wp.array(self.shape_gap, dtype=wp.float32, requires_grad=requires_grad)
 
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
+            m._shape_hull_authored = wp.array(self._shape_hull_authored, dtype=wp.uint8)
 
             # ---------------------
             # Compute local AABBs and voxel resolutions for contact reduction

@@ -693,6 +693,181 @@ def _convex_hull_2d_indices(points2d: np.ndarray) -> np.ndarray:
     return order[np.array(chain, dtype=np.int32)]
 
 
+class NonConvexMeshWarning(UserWarning):
+    """Warning emitted when a mesh collider is non-convex and a backend will
+    compile it through a convex-hull path, so its cavities are not simulated.
+
+    Filter it cleanly with ``warnings.filterwarnings("ignore", category=NonConvexMeshWarning)``.
+    """
+
+
+class UnverifiedConvexityWarning(UserWarning):
+    """Warning emitted when a mesh collider is too large to verify convexity
+    and a backend will compile it through a convex-hull path, so cavities it
+    may have are not simulated.
+
+    Filter it cleanly with ``warnings.filterwarnings("ignore", category=UnverifiedConvexityWarning)``.
+    """
+
+
+def _hull_volume_gain(
+    vertices: np.ndarray,
+    indices: np.ndarray | None = None,
+) -> float | None:
+    """Return ``1 - mesh_volume / hull_volume`` for a triangle mesh.
+
+    This measures how much cavity volume the convex hull closes over: ``0.0``
+    for a (nearly) convex mesh, ``1.0`` for a maximally hollow shell. It is
+    scale-invariant.
+
+    The mesh volume is the **signed** tetrahedron sum toward the mesh centroid,
+    which is the exact enclosed volume for any consistently (outward-) wound
+    closed surface, including disjoint multi-component meshes. Meshes with
+    inconsistent winding produce a degenerate value (near zero or negative),
+    which reads as a large gain and errs toward warning.
+
+    Returns ``None`` when the hull could not be computed or is degenerate, so
+    callers can fall back to the exact separating-plane test instead of guessing.
+
+    Internal helper: kept private until it has a proven contract.
+    """
+    try:
+        hull_vertices, hull_faces = remesh_convex_hull(vertices, maxhullvert=0)
+    except Exception:
+        return None
+    if len(hull_faces) < 2:
+        return None
+
+    tri = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
+    hull_vertices = np.asarray(hull_vertices, dtype=np.float64).reshape(-1, 3)
+    if len(tri) == 0:
+        return None
+
+    origin = tri.mean(axis=0)
+    tri = tri - origin
+    hull_vertices = hull_vertices - origin
+
+    mesh_volume = None
+    if indices is not None:
+        faces = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+        if len(faces) > 0:
+            v0 = tri[faces[:, 0]]
+            v1 = tri[faces[:, 1]]
+            v2 = tri[faces[:, 2]]
+            mesh_volume = float(np.einsum("ij,ij->i", v0, np.cross(v1, v2)).sum() / 6.0)
+    if mesh_volume is None:
+        # Fall back to a tetrahedralization of the hull's own triangles, which
+        # is exact for a closed mesh; an open mesh (e.g. a grid) encloses no
+        # cavity, so the hull gain is not measurable and the caller should
+        # rely on the separating-plane verdict alone.
+        return None
+
+    hfaces = np.asarray(hull_faces, dtype=np.int64).reshape(-1, 3)
+    w0 = hull_vertices[hfaces[:, 0]]
+    w1 = hull_vertices[hfaces[:, 1]]
+    w2 = hull_vertices[hfaces[:, 2]]
+    # The hull from Qhull is consistently wound, but sum as absolute values
+    # anyway so the result does not depend on the winding convention.
+    hull_volume = float(np.abs(np.einsum("ij,ij->i", w0, np.cross(w1, w2))).sum() / 6.0)
+    if hull_volume <= 0.0:
+        return None
+    ratio = 1.0 - mesh_volume / hull_volume
+    # Guard against floating-point noise pushing a (nearly) convex mesh above zero.
+    return ratio if ratio > 1e-9 else 0.0
+
+
+def _is_mesh_convex(
+    vertices: np.ndarray,
+    indices: np.ndarray | None = None,
+    *,
+    max_face_vertex_pairs: int = 5_000_000,
+) -> bool | None:
+    """Test whether a triangle mesh is geometrically convex.
+
+    A mesh is convex when every vertex lies on the same side of (or on) every
+    face plane. The test is exact, independent of face winding and uniform
+    scale, and runs in O(faces x vertices): a face plane is violating when it
+    separates the vertex set into points strictly on both of its sides.
+
+    Use it to detect geometry whose cavities will disappear when a backend
+    compiles the mesh through a convex-hull path (e.g. the MuJoCo solver, which
+    hulls every mesh geom).
+
+    Args:
+        vertices: A numpy array of shape (N, 3) containing the vertex positions.
+        indices: A numpy array of shape (K, 3) or (3 * K,) containing the triangle
+            indices. When ``None`` the surface is unknown and the result is
+            ``None`` (no evidence either way).
+        max_face_vertex_pairs: Upper bound on faces x vertices for the exact
+            test. Larger meshes return ``None`` instead of paying the cost, so
+            the caller can decide how to treat an unverified mesh rather than
+            silently reading a skipped check as convex.
+
+    Returns:
+        ``False`` if some face plane separates the vertex set, ``True`` if the
+        exact test passes (or the mesh is too small to enclose a cavity, so its
+        convex hull loses nothing), and ``None`` when the check was skipped.
+
+    Internal helper: kept private until it has a proven contract; callers must
+    handle all three outcomes.
+    """
+    if indices is None:
+        return None
+    verts = np.asarray(vertices, dtype=np.float64)
+    faces = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    num_verts = len(verts)
+    num_faces = len(faces)
+    if num_verts < 4 or num_faces < 4:
+        # Too small to enclose a cavity: the convex hull equals the mesh, so
+        # hulling loses no geometry and "convex" is exact, not an assumption.
+        return True
+    if num_faces * num_verts > max_face_vertex_pairs:
+        # Skipped check; report unknown instead of pretending convex.
+        return None
+
+    # Translate onto the first vertex before any product: plane distances are
+    # translation-invariant, and differencing first keeps full double
+    # precision when the coordinates dwarf the features. Without it, a small
+    # mesh far from the origin turns the distance subtraction into pure
+    # cancellation noise that can swallow or fabricate violations.
+    verts = verts - verts[0]
+
+    extent = float(np.max(np.max(verts, axis=0) - np.min(verts, axis=0)))
+    # Purely relative tolerance, in the same true point-to-plane units the
+    # distances below use: clamping the extent to 1.0 made eps absolute and
+    # read micro-scale non-convex meshes as convex, because their separating
+    # distances sit below the 1e-6 floor (see the micro-scale regression
+    # test). Doubles carry ~10 orders of magnitude of headroom below
+    # 1e-6 * extent, so no absolute floor is needed; a zero extent yields
+    # zero normals, skips every chunk, and answers "convex" for a mesh whose
+    # hull loses nothing.
+    eps = 1e-6 * extent
+
+    # Process faces in chunks so the (chunk_faces, num_verts) distance matrix
+    # stays bounded; bail out on the first violating face.
+    chunk = max(1, int(max_face_vertex_pairs // num_verts))
+    for start in range(0, num_faces, chunk):
+        tri = faces[start : start + chunk]
+        v0 = verts[tri[:, 0]]
+        normals = np.cross(verts[tri[:, 1]] - v0, verts[tri[:, 2]] - v0)
+        norm = np.linalg.norm(normals, axis=1)
+        valid = norm > 0.0
+        if not np.any(valid):
+            continue
+        # Signed distances of every vertex to every face plane in the chunk.
+        # Checking both signs makes the test winding-agnostic: a plane of a
+        # convex mesh has all other vertices on exactly one of its sides.
+        # Divide by the plane-normal magnitude so the comparison is in units
+        # of true point-to-plane distance: the raw dot products scale with the
+        # square of mesh size, while ``eps`` scales only with the extent.
+        dists = (verts @ normals.T - np.einsum("ij,ij->i", v0, normals)[None, :]).T
+        dists = dists / np.where(norm[:, None] > 0.0, norm[:, None], 1.0)
+        separates = (dists > eps).any(axis=1) & (dists < -eps).any(axis=1) & valid
+        if np.any(separates):
+            return False
+    return True
+
+
 def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 1e-6):
     """Compute the convex hull of a set of 3D points and return the vertices and faces of the convex hull mesh.
 
