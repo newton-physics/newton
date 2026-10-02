@@ -55,6 +55,7 @@ from .contact_reduction_hydroelastic import (
     EPS_SMALL,
     HydroelasticContactReduction,
     HydroelasticReductionConfig,
+    _linearize_contact,
     export_hydroelastic_contact_to_buffer,
 )
 from .hashtable import hashtable_find_or_insert
@@ -275,6 +276,41 @@ def _extract_mc_corner_pair(corner_vals: vec8f, corner_sdf_vals: vec8f, corner_i
     pair_03 = wp.where(select_mid, pair_01, pair_23)
     pair_47 = wp.where(select_mid, pair_45, pair_67)
     return wp.where(select_high, pair_03, pair_47)
+
+
+@wp.func
+def _mc_trilinear_gradient(values: vec8f, point: wp.vec3, voxel_size: wp.vec3) -> wp.vec3:
+    """Differentiate the marching-cubes corner interpolant in physical coordinates."""
+    x = point[0]
+    y = point[1]
+    z = point[2]
+    dx0 = wp.lerp(values[1] - values[0], values[2] - values[3], y)
+    dx1 = wp.lerp(values[5] - values[4], values[6] - values[7], y)
+    dy0 = wp.lerp(values[3] - values[0], values[2] - values[1], x)
+    dy1 = wp.lerp(values[7] - values[4], values[6] - values[5], x)
+    dz0 = wp.lerp(values[4] - values[0], values[5] - values[1], x)
+    dz1 = wp.lerp(values[7] - values[3], values[6] - values[2], x)
+    return wp.cw_div(wp.vec3(wp.lerp(dx0, dx1, z), wp.lerp(dy0, dy1, z), wp.lerp(dz0, dz1, y)), voxel_size)
+
+
+@wp.func
+def _mc_pressure_gradient(
+    corner_sdf_a: vec8f,
+    corner_sdf_b: vec8f,
+    point: wp.vec3,
+    voxel_size: wp.vec3,
+    normal: wp.vec3,
+    kh_a: float,
+    kh_b: float,
+) -> float:
+    """Combine the two positive normal pressure derivatives in series."""
+    g_a = kh_a * wp.dot(_mc_trilinear_gradient(corner_sdf_a, point, voxel_size), normal)
+    g_b = -kh_b * wp.dot(_mc_trilinear_gradient(corner_sdf_b, point, voxel_size), normal)
+    if g_a > 0.0 and g_b > 0.0 and wp.isfinite(g_a) and wp.isfinite(g_b):
+        lower = wp.min(g_a, g_b)
+        upper = wp.max(g_a, g_b)
+        return lower / (1.0 + lower / upper)
+    return 0.0
 
 
 @wp.func
@@ -503,7 +539,13 @@ class HydroelasticSDF:
         undefined values for ``signed_depth >= 0`` will corrupt the prune
         intervals and the marching-cubes interpolation that locates the
         iso-pressure surface.
-        When ``None`` the default :func:`linear_pressure` is used.
+        When ``None`` the default :func:`linear_pressure` is used. Penetrating
+        contacts then use the projected pressure gradients to choose their
+        tangent stiffness and effective spring separation, preserving the
+        exported spring's current normal force. Nonpositive or numerically unusable gradients
+        retain the geometric-depth spring. Custom callbacks always retain the
+        pressure-over-geometric-depth spring, even for a linear callback.
+        Speculative-contact activation stiffness is unchanged.
         """
         pressure_data: Any = None
         """Optional ``wp.struct`` instance carrying state for :attr:`pressure_func`.
@@ -735,6 +777,7 @@ class HydroelasticSDF:
                 pressure_func=self.pressure_func,
                 mc_edge_clamp_min=self.config.mc_edge_clamp_min,
                 paired_samples=self.paired_samples,
+                linear_pressure_gradient=self.config.pressure_func is None,
             )
 
             if self.config.reduce_contacts:
@@ -1267,6 +1310,7 @@ class HydroelasticSDF:
                 self.contact_reduction.reducer.contact_fingerprints,
                 self.contact_reduction.reducer.contact_area,
                 self.contact_reduction.reducer.contact_pressure,
+                self.contact_reduction.reducer.contact_pressure_gradient,
                 self.max_num_face_contacts,
             ],
             outputs=[writer_data],
@@ -1846,6 +1890,7 @@ def get_decode_contacts_kernel(
         contact_fingerprints: wp.array[wp.int32],
         contact_area: wp.array[wp.float32],
         contact_pressure: wp.array[wp.float32],
+        contact_pressure_gradient: wp.array[wp.float32],
         max_num_face_contacts: int,
         # outputs
         writer_data: Any,
@@ -1914,11 +1959,15 @@ def get_decode_contacts_kernel(
                 k_b = shape_material_kh[shape_b]
                 c_stiffness = wp.static(margin_contact_area) * get_effective_stiffness(k_a, k_b)
 
+            c_stiffness, spring_distance = _linearize_contact(
+                c_stiffness, depth, face_pressure, contact_pressure_gradient[contact_id]
+            )
+
             # Create ContactData for the writer function
             contact_data = ContactData()
             contact_data.contact_point_center = pos_world
             contact_data.contact_normal_a_to_b = normal_world
-            contact_data.contact_distance = depth
+            contact_data.contact_distance = spring_distance
             contact_data.radius_eff_a = 0.0
             contact_data.radius_eff_b = 0.0
             contact_data.margin_a = 0.0
@@ -1950,6 +1999,7 @@ def get_generate_contacts_kernel(
     pressure_func: Any = None,
     mc_edge_clamp_min: float = 0.02,
     paired_samples: bool = True,
+    linear_pressure_gradient: bool = False,
 ):
     """Create kernel for hydroelastic contact generation.
 
@@ -1982,6 +2032,7 @@ def get_generate_contacts_kernel(
             interpolation parameter; see
             :attr:`HydroelasticSDF.Config.mc_edge_clamp_min`.
         paired_samples: Whether the generated kernel reads paired-X or scalar SDF texture storage.
+        linear_pressure_gradient: Differentiate the built-in linear pressure law at each penetrating face.
 
     Returns:
         generate_contacts_kernel: Warp kernel for contact generation.
@@ -2090,6 +2141,7 @@ def get_generate_contacts_kernel(
             best_pen0_depth = float(0.0)
             best_pen0_area = float(0.0)
             best_pen0_pressure = float(0.0)
+            best_pen0_gradient = float(0.0)
             best_pen0_fingerprint = int(0)
             best_pen0_normal = wp.vec2(0.0, 0.0)
             best_pen0_center = wp.vec3(0.0, 0.0, 0.0)
@@ -2102,6 +2154,7 @@ def get_generate_contacts_kernel(
             best_pen1_depth = float(0.0)
             best_pen1_area = float(0.0)
             best_pen1_pressure = float(0.0)
+            best_pen1_gradient = float(0.0)
             best_pen1_fingerprint = int(0)
             best_pen1_normal = wp.vec2(0.0, 0.0)
             best_pen1_center = wp.vec3(0.0, 0.0, 0.0)
@@ -2140,6 +2193,7 @@ def get_generate_contacts_kernel(
                 if classify_hydroelastic_contact(pair_separation, gap_sum) > 0:
                     continue
                 face_pressure = float(0.0)
+                face_gradient = float(0.0)
                 if pair_separation < 0.0:
                     # On the iso-pressure surface ``p_a == p_b``, so evaluating
                     # either side at its own margin-adjusted depth is equivalent.
@@ -2149,6 +2203,18 @@ def get_generate_contacts_kernel(
                         wp.static(pressure_func)(adjusted_sdf_shape_b, shape_b, pressure_data),
                         0.0,
                     )
+                    if wp.static(linear_pressure_gradient):
+                        voxel_point = wp.cw_div(face_center - sdf_data_b.sdf_box_lower, sdf_data_b.voxel_size)
+                        voxel_point = voxel_point - wp.vec3(float(x_id), float(y_id), float(z_id))
+                        face_gradient = _mc_pressure_gradient(
+                            corner_sdf_other,
+                            corner_sdf_self,
+                            voxel_point,
+                            sdf_data_b.voxel_size,
+                            normal,
+                            pressure_data.shape_kh[shape_a],
+                            pressure_data.shape_kh[shape_b],
+                        )
                 # Accumulate stats per normal bin
                 if pair_separation < 0.0 and wp.static(reduce_contacts and not deterministic_reduction):
                     bin_id = get_slot(normal)
@@ -2184,6 +2250,8 @@ def get_generate_contacts_kernel(
                         tid * MAX_MC_FACES_PER_VOXEL + fi,
                         reducer_data,
                     )
+                    if contact_id >= 0:
+                        reducer_data.contact_pressure_gradient[contact_id] = face_gradient
                     if wp.static(output_vertices) and contact_id >= 0:
                         buffer_idx = contact_id - 1
                         for vi in range(3):
@@ -2205,6 +2273,7 @@ def get_generate_contacts_kernel(
                         best_pen1_depth = best_pen0_depth
                         best_pen1_area = best_pen0_area
                         best_pen1_pressure = best_pen0_pressure
+                        best_pen1_gradient = best_pen0_gradient
                         best_pen1_fingerprint = best_pen0_fingerprint
                         best_pen1_normal = best_pen0_normal
                         best_pen1_center = best_pen0_center
@@ -2217,6 +2286,7 @@ def get_generate_contacts_kernel(
                         best_pen0_depth = pair_separation
                         best_pen0_area = force_area
                         best_pen0_pressure = face_pressure
+                        best_pen0_gradient = face_gradient
                         best_pen0_fingerprint = face_fingerprint
                         best_pen0_normal = encode_oct(normal)
                         best_pen0_center = face_center
@@ -2230,6 +2300,7 @@ def get_generate_contacts_kernel(
                             best_pen1_depth = pair_separation
                             best_pen1_area = force_area
                             best_pen1_pressure = face_pressure
+                            best_pen1_gradient = face_gradient
                             best_pen1_fingerprint = face_fingerprint
                             best_pen1_normal = encode_oct(normal)
                             best_pen1_center = face_center
@@ -2274,6 +2345,7 @@ def get_generate_contacts_kernel(
                             reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
                             reducer_data.contact_area[contact_id] = best_pen0_area
                             reducer_data.contact_pressure[contact_id] = best_pen0_pressure
+                            reducer_data.contact_pressure_gradient[contact_id] = best_pen0_gradient
                             reducer_data.contact_fingerprints[contact_id] = best_pen0_fingerprint
                             if wp.static(output_vertices):
                                 iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_pen0_v0)
@@ -2293,6 +2365,7 @@ def get_generate_contacts_kernel(
                                 reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
                                 reducer_data.contact_area[contact_id] = best_pen1_area
                                 reducer_data.contact_pressure[contact_id] = best_pen1_pressure
+                                reducer_data.contact_pressure_gradient[contact_id] = best_pen1_gradient
                                 reducer_data.contact_fingerprints[contact_id] = best_pen1_fingerprint
                                 if wp.static(output_vertices):
                                     iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_pen1_v0)
@@ -2311,6 +2384,7 @@ def get_generate_contacts_kernel(
                             reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
                             reducer_data.contact_area[contact_id] = best_nonpen_area
                             reducer_data.contact_pressure[contact_id] = 0.0
+                            reducer_data.contact_pressure_gradient[contact_id] = 0.0
                             reducer_data.contact_fingerprints[contact_id] = best_nonpen_fingerprint
                             if wp.static(output_vertices):
                                 iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_nonpen_v0)

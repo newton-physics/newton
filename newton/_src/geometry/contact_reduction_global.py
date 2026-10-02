@@ -719,6 +719,8 @@ class GlobalContactReducerData:
     contact_area: wp.array[wp.float32]
     # contact_pressure: current pressure evaluated once during contact generation
     contact_pressure: wp.array[wp.float32]
+    # Zero retains the secant spring for custom pressure laws and degenerate gradients.
+    contact_pressure_gradient: wp.array[wp.float32]
 
     # Cached normal-bin hashtable entry index per contact
     contact_nbin_entry: wp.array[wp.int32]
@@ -924,6 +926,7 @@ class GlobalContactReducer:
     - contact_area: force-bearing area when penetrating, full face area when speculative
       (optional, per hydroelastic contact)
     - contact_pressure: current face pressure (optional, per hydroelastic contact)
+    - contact_pressure_gradient: normal pressure derivative (optional, per hydroelastic contact)
 
     Attributes:
         capacity: Maximum number of contacts that can be stored
@@ -934,6 +937,7 @@ class GlobalContactReducer:
         contact_area: float array storing force-bearing area for penetrating
             contacts and full face area for speculative contacts (for hydroelastic)
         contact_pressure: float array storing current face pressure per contact (for hydroelastic)
+        contact_pressure_gradient: float array storing the positive pressure derivative [Pa/m].
         contact_count: Atomic counter for allocated contacts
         hashtable: HashTable for tracking best contacts (keys only)
         ht_values: Values array for hashtable (managed here, not by HashTable)
@@ -1004,10 +1008,12 @@ class GlobalContactReducer:
         if store_hydroelastic_data:
             self.contact_area = wp.zeros(buffer_size, dtype=wp.float32, device=device)
             self.contact_pressure = wp.zeros(buffer_size, dtype=wp.float32, device=device)
+            self.contact_pressure_gradient = wp.zeros(buffer_size, dtype=wp.float32, device=device)
             self.contact_nbin_entry = wp.zeros(buffer_size if enable_reduction else 0, dtype=wp.int32, device=device)
         else:
             self.contact_area = wp.zeros(0, dtype=wp.float32, device=device)
             self.contact_pressure = wp.zeros(0, dtype=wp.float32, device=device)
+            self.contact_pressure_gradient = wp.zeros(0, dtype=wp.float32, device=device)
             self.contact_nbin_entry = wp.zeros(0, dtype=wp.int32, device=device)
 
         # Generic reduction deduplicates cross-entry winners during export.
@@ -1157,6 +1163,7 @@ class GlobalContactReducer:
         data.contact_fingerprints = self.contact_fingerprints
         data.contact_area = self.contact_area
         data.contact_pressure = self.contact_pressure
+        data.contact_pressure_gradient = self.contact_pressure_gradient
         data.contact_nbin_entry = self.contact_nbin_entry
         data.agg_force = self.agg_force
         data.agg_depth_volume = self.agg_depth_volume
