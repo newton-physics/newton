@@ -3,6 +3,7 @@
 
 import re
 import warnings
+import weakref
 from dataclasses import dataclass
 from functools import cache
 from typing import ClassVar, Literal
@@ -957,7 +958,9 @@ class SolverFeatherPGS(SolverBase):
                 by contact identity through :attr:`~newton.Contacts.rigid_contact_match_index`,
                 so the :class:`~newton.CollisionPipeline` must be created with contact matching
                 enabled. Substeps that reuse a contact set without a collision pass seed each
-                contact from its own previous substep. Carried impulses are scaled by the
+                contact from its own previous substep. History carries across at most one
+                collision pass into the same :class:`~newton.Contacts` buffer; a different
+                buffer or skipped passes start cold. Carried impulses are scaled by the
                 ratio of the step to the previous one, including under graph replay; tangent
                 impulses are rotated into the current tangent frame and clamped to the
                 current friction cone; other rows start cold.
@@ -1984,10 +1987,15 @@ class SolverFeatherPGS(SolverBase):
             self._ws_prev_dense_slot = wp.full((max_contacts,), -1, dtype=wp.int32, device=device)
             self._ws_prev_mf_slot = wp.full((max_contacts,), -1, dtype=wp.int32, device=device)
             self._ws_prev_contact_normal = wp.zeros((max_contacts,), dtype=wp.vec3, device=device)
-        # Previous solver step and the contact generation it solved, on the device so a
-        # captured graph replays them instead of baking the first capture's ratio.
+        # Previous solver step, and the contact buffer and generation it solved, on the
+        # device so a captured graph replays them instead of baking the capture's values.
+        # Generations count collision passes per buffer, so each buffer gets its own
+        # nonzero stream id (0: no contacts).
         self._ws_history_dt = wp.zeros(1, dtype=float, device=device)
         self._ws_history_generation = wp.full(1, CONTACT_GENERATION_NONE, dtype=wp.int32, device=device)
+        self._ws_history_stream = wp.zeros(1, dtype=wp.int32, device=device)
+        self._ws_contact_streams: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+        self._ws_last_stream = 0
         self.slot_counter = wp.zeros((self.world_count,), dtype=wp.int32, device=device)
         self._dense_first_rejected_slot = wp.full(
             (self.world_count,), _ROW_SLOT_UNBOUNDED, dtype=wp.int32, device=device
@@ -2728,11 +2736,23 @@ class SolverFeatherPGS(SolverBase):
             inputs=[
                 float(dt),
                 contacts.contact_generation if contacts is not None else self._ws_history_generation,
-                has_contacts,
+                self._contact_stream(contacts),
             ],
-            outputs=[self._ws_history_dt, self._ws_history_generation],
+            outputs=[self._ws_history_dt, self._ws_history_generation, self._ws_history_stream],
             device=model.device,
         )
+
+    def _contact_stream(self, contacts: Contacts | None) -> int:
+        """Return the warm-start stream id of a contact buffer; 0 for no contacts."""
+        if contacts is None:
+            return 0
+        stream = self._ws_contact_streams.get(contacts)
+        if stream is None:
+            # Ids are never reused, so a replaced buffer cannot alias saved history.
+            self._ws_last_stream += 1
+            stream = self._ws_last_stream
+            self._ws_contact_streams[contacts] = stream
+        return stream
 
     def check_constraint_capacity(self) -> None:
         """Raise if any world, or the global entry, lost contacts or constraint rows since its last reset.
@@ -3293,7 +3313,9 @@ class SolverFeatherPGS(SolverBase):
                 dt,
                 self._ws_history_dt,
                 contacts.contact_generation,
+                self._contact_stream(contacts),
                 self._ws_history_generation,
+                self._ws_history_stream,
                 capacity,
             ],
             outputs=[impulses],

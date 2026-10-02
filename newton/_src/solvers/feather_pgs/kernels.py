@@ -3304,17 +3304,48 @@ def _transport_warmstart_contact(
 def snapshot_step_warmstart(
     dt: float,
     contact_generation: wp.array[wp.int32],
-    has_contacts: int,
+    contact_stream: int,
     # outputs
     history: wp.array[float],
     history_generation: wp.array[wp.int32],
+    history_stream: wp.array[wp.int32],
 ):
-    """Record the step and the contact set it solved on the device, so graph replays stay current."""
+    """Record the step and the contact set it solved on the device, so graph replays stay current.
+
+    ``contact_stream`` identifies the contact buffer (0: the step had none); generations
+    are only comparable within one buffer.
+    """
     history[0] = dt
-    if has_contacts != 0:
+    history_stream[0] = contact_stream
+    if contact_stream != 0:
         history_generation[0] = contact_generation[0]
     else:
         history_generation[0] = CONTACT_GENERATION_NONE
+
+
+@wp.func
+def warmstart_history_relation(
+    contact_generation: wp.array[wp.int32],
+    contact_stream: int,
+    history_generation: wp.array[wp.int32],
+    history_stream: wp.array[wp.int32],
+):
+    """Relate the current contact set to the solved history: 0 unrelated, 1 same set, 2 next collision pass."""
+    if contact_stream == 0 or history_stream[0] != contact_stream:
+        return 0
+    generation = contact_generation[0]
+    previous = history_generation[0]
+    if previous == CONTACT_GENERATION_NONE:
+        return 0
+    if generation == previous:
+        return 1
+    # Collision passes advance the generation by one, wrapping like Contacts does.
+    following = previous + 1
+    if previous == 2147483647:
+        following = 0
+    if generation == following:
+        return 2
+    return 0
 
 
 @wp.kernel
@@ -3339,7 +3370,9 @@ def gather_contact_warmstart(
     dt: float,
     history: wp.array[float],
     contact_generation: wp.array[wp.int32],
+    contact_stream: int,
     history_generation: wp.array[wp.int32],
+    history_stream: wp.array[wp.int32],
     max_constraints: int,
     # in/out
     impulses: wp.array2d[float],
@@ -3348,9 +3381,11 @@ def gather_contact_warmstart(
 
     ``prev_slot_sorted`` maps a contact's index in the contact set the previous step
     solved to its first row then, so contacts keep their impulses when their rows move.
-    After a collision pass ``match_index[c]`` is contact ``c``'s index in the previous
-    contact set; when the solver steps again on the same contact set
-    (``contact_generation`` equals ``history_generation``) the index is ``c`` itself.
+    When the solver steps again on the same contact set (same buffer ``contact_stream``,
+    unchanged generation) the index is ``c`` itself. After exactly one collision pass
+    into that buffer, ``match_index[c]`` is contact ``c``'s index in the solved set.
+    Any other relation (another buffer, skipped collision passes, no history) starts
+    every contact cold, since the match indices then refer to an unsolved set.
     A friction row is seeded only when both steps allocated it for the contact
     (contacts may change between one and three rows). Unmatched contacts stay cold.
     Seeded impulses are scaled by ``decay`` and by ``dt / history[0]``, the ratio of the
@@ -3369,8 +3404,11 @@ def gather_contact_warmstart(
     if new_slot >= count:
         return
 
+    relation = warmstart_history_relation(contact_generation, contact_stream, history_generation, history_stream)
+    if relation == 0:
+        return
     mi = match_index[c]
-    if contact_generation[0] == history_generation[0]:
+    if relation == 1:
         mi = c
     if mi < 0:
         return

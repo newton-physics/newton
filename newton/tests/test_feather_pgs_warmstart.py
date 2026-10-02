@@ -118,10 +118,13 @@ def _gather_rows(
             wp.full((1, max_c), 100.0, dtype=wp.float32, device=device),
             decay,
             dt_scale,
-            # The previous step is 1, so the step ratio is dt_scale; a fresh contact set.
+            # The previous step is 1, so the step ratio is dt_scale; generation 1 of
+            # stream 1 follows the solved generation 0, so match indices apply.
             wp.ones(1, dtype=float, device=device),
+            wp.ones(1, dtype=wp.int32, device=device),
+            1,
             wp.zeros(1, dtype=wp.int32, device=device),
-            wp.full(1, -1, dtype=wp.int32, device=device),
+            wp.ones(1, dtype=wp.int32, device=device),
             max_c,
         ],
         outputs=[impulses],
@@ -312,6 +315,78 @@ def test_real_contact_insertion_moves_slots_without_cross_seeding(test, device):
     impulses = solver.mf_impulses.numpy()[0]
     test.assertAlmostEqual(float(impulses[b_slot]), old_impulse, delta=1.0e-6)
     test.assertEqual(float(impulses[a_slot]), 0.0)
+
+
+def _insertion_after_solved_single_contact(device):
+    """Solve sphere B alone on the ground, then lower sphere A so its contact sorts before B's."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0.0, 1.0), wp.quat_identity()))
+    shape_a = builder.add_shape_sphere(body_a, radius=0.1)
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.5, 0.0, 0.099), wp.quat_identity()))
+    shape_b = builder.add_shape_sphere(body_b, radius=0.1)
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="sticky")
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverFeatherPGS(model, pgs_iterations=8, pgs_warmstart=True)
+    state_0, state_1 = model.state(), model.state()
+    pipeline.collide(state_0, contacts)
+    solver.step(state_0, state_1, model.control(), contacts, 1.0 / 240.0)
+    test_impulse = float(solver._ws_prev_mf_impulses.numpy()[0, int(solver._ws_prev_mf_slot.numpy()[0])])
+    q = state_1.body_q.numpy()
+    q[body_a][2] = 0.099
+    state_1.body_q.assign(q)
+    return model, pipeline, contacts, solver, state_1, state_0, (shape_a, shape_b), test_impulse
+
+
+def _seeded_sphere_impulses(solver, contacts, shapes, state_in, state_out, model):
+    """Step without a sweep and return the seeded normal impulses of A's and B's contacts."""
+    solver.pgs_iterations = 0
+    solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    slots = solver.contact_slot.numpy()[:count]
+    impulses = solver.mf_impulses.numpy()[0]
+    seeds = []
+    for shape in shapes:
+        index = np.flatnonzero((shape0 == shape) | (shape1 == shape))
+        seeds.append(float(impulses[int(slots[int(index[0])])]))
+    return seeds
+
+
+def test_replaced_contact_buffer_starts_cold(test, device):
+    """A fresh Contacts buffer whose generation equals the solved one never reuses its history.
+
+    Generations count collision passes per buffer, so the new buffer's first pass has the
+    same number as the old buffer's; treating it as the solved contact set would seed
+    the new contact A with B's impulse.
+    """
+    model, pipeline, contacts, solver, state_in, state_out, shapes, carried = _insertion_after_solved_single_contact(
+        device
+    )
+    test.assertGreater(carried, 0.0)
+    replacement = pipeline.contacts()
+    pipeline.collide(state_in, replacement)
+    test.assertEqual(int(replacement.rigid_contact_count.numpy()[0]), 2)
+    test.assertEqual(int(replacement.contact_generation.numpy()[0]), int(contacts.contact_generation.numpy()[0]))
+    seed_a, seed_b = _seeded_sphere_impulses(solver, replacement, shapes, state_in, state_out, model)
+    test.assertEqual(seed_a, 0.0)
+    test.assertEqual(seed_b, 0.0)
+
+
+def test_skipped_collision_pass_starts_cold(test, device):
+    """Two collision passes between solves match against an unsolved contact set, so start cold."""
+    model, pipeline, contacts, solver, state_in, state_out, shapes, carried = _insertion_after_solved_single_contact(
+        device
+    )
+    test.assertGreater(carried, 0.0)
+    pipeline.collide(state_in, contacts)
+    pipeline.collide(state_in, contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 2)
+    seed_a, seed_b = _seeded_sphere_impulses(solver, contacts, shapes, state_in, state_out, model)
+    test.assertEqual(seed_a, 0.0)
+    test.assertEqual(seed_b, 0.0)
 
 
 def test_substeps_reuse_contacts_with_their_own_history(test, device):
@@ -564,6 +639,8 @@ for _fn in (
     test_single_flag_enables_dense_and_mf_carry,
     test_both_row_families_seed_impulses_scaled_by_the_step_ratio,
     test_substeps_reuse_contacts_with_their_own_history,
+    test_replaced_contact_buffer_starts_cold,
+    test_skipped_collision_pass_starts_cold,
     test_graph_replay_rescales_history_once_after_a_timestep_change,
 ):
     add_function_test(TestFeatherPGSIdentityWarmstart, _fn.__name__, _fn, devices=devices)
