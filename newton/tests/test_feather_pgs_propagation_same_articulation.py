@@ -17,7 +17,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DENSE_PATH = 0
 PGS_CFM = 1.0e-6
@@ -151,10 +151,10 @@ def _analytic_H_and_X(model, state):
     return H, X
 
 
-def test_scissor_scene_produces_same_articulation_contact(test, device):
+def test_scissor_scene_produces_same_articulation_contact(test, device, pgs_mode="matrix_free"):
     """Route a contact between two links of one articulation to the dense articulated rows."""
     model = _build_scissor_model(device)
-    solver = SolverFeatherPGS(model, pgs_iterations=0, pgs_cfm=PGS_CFM)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, pgs_iterations=0, pgs_cfm=PGS_CFM)
     _, contact_count = _step_once(model, solver)
     test.assertGreater(contact_count, 0, "scissor scene produced no link-link contact")
     paths = solver.contact_path.numpy()[:contact_count]
@@ -164,16 +164,17 @@ def test_scissor_scene_produces_same_articulation_contact(test, device):
     test.assertEqual(int(solver.mf_constraint_count.numpy()[0]), 0)
 
 
-def test_scissor_dense_diagonal_matches_reference(test, device):
+def test_scissor_dense_diagonal_matches_reference(test, device, pgs_mode="matrix_free"):
     """Match each dense row's effective mass to ``J H^-1 J^T`` from an analytic joint-space inertia."""
     model = _build_scissor_model(device)
-    solver = SolverFeatherPGS(model, pgs_iterations=0, pgs_cfm=PGS_CFM)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, pgs_iterations=0, pgs_cfm=PGS_CFM)
     state, _ = _step_once(model, solver)
     H, _ = _analytic_H_and_X(model, state)
     count = int(solver.constraint_count.numpy()[0])
     test.assertGreater(count, 0)
     D = H.shape[0]
-    J = solver.J_world.numpy()[0, :count, :D].astype(np.float64)
+    # One articulation: the world rows are that articulation's grouped rows.
+    J = solver.J_by_size[D].numpy()[0, :count, :D].astype(np.float64)
     reference = np.einsum("rd,rd->r", J, np.linalg.solve(H, J.T).T) + PGS_CFM
     got = solver.diag.numpy()[0, :count].astype(np.float64)
     np.testing.assert_allclose(got, reference, rtol=1.0e-3, atol=1.0e-6)
@@ -186,6 +187,13 @@ class TestPropagationSameArticulation(unittest.TestCase):
 devices = get_cuda_test_devices()
 for _name in ("test_scissor_scene_produces_same_articulation_contact", "test_scissor_dense_diagonal_matches_reference"):
     add_function_test(TestPropagationSameArticulation, _name, globals()[_name], devices=devices)
+    add_function_test(
+        TestPropagationSameArticulation,
+        f"{_name}_split",
+        globals()[_name],
+        devices=get_test_devices(),
+        pgs_mode="split",
+    )
 
 
 if __name__ == "__main__":

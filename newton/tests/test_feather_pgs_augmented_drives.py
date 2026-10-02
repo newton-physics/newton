@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DT = 1.0 / 120.0
 MASS = 2.0
@@ -56,8 +56,8 @@ def _reference_trajectory(steps, *, effort_limit=1.0e6, damping=0.0):
     return np.asarray(history)
 
 
-def _solver_trajectory(model, steps):
-    solver = SolverFeatherPGS(model)
+def _solver_trajectory(model, steps, pgs_mode):
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     history = []
@@ -68,26 +68,26 @@ def _solver_trajectory(model, steps):
     return np.asarray(history)
 
 
-def test_implicit_drive_matches_backward_euler_reference(test, device):
+def test_implicit_drive_matches_backward_euler_reference(test, device, pgs_mode="matrix_free"):
     """Integrate the PD drive implicitly through the augmented mass matrix."""
     np.testing.assert_allclose(
-        _solver_trajectory(_build_slider(device), 120), _reference_trajectory(120), rtol=1.0e-4, atol=1.0e-5
+        _solver_trajectory(_build_slider(device), 120, pgs_mode), _reference_trajectory(120), rtol=1.0e-4, atol=1.0e-5
     )
 
 
-def test_drive_force_is_clamped_to_the_effort_limit(test, device):
+def test_drive_force_is_clamped_to_the_effort_limit(test, device, pgs_mode="matrix_free"):
     """Clamp the explicit drive force to the joint effort limit before the implicit solve."""
     reference = _reference_trajectory(120, effort_limit=5.0)
     np.testing.assert_allclose(
-        _solver_trajectory(_build_slider(device, effort_limit=5.0), 120), reference, rtol=1.0e-4, atol=1.0e-5
+        _solver_trajectory(_build_slider(device, effort_limit=5.0), 120, pgs_mode), reference, rtol=1.0e-4, atol=1.0e-5
     )
     test.assertGreater(float(np.abs(reference - _reference_trajectory(120)).max()), 1.0e-2, "the clamp must be active")
 
 
-def test_passive_joint_damping_is_applied(test, device):
+def test_passive_joint_damping_is_applied(test, device, pgs_mode="matrix_free"):
     """Apply Model.joint_damping as a passive joint force."""
     np.testing.assert_allclose(
-        _solver_trajectory(_build_slider(device, damping=3.0), 120),
+        _solver_trajectory(_build_slider(device, damping=3.0), 120, pgs_mode),
         _reference_trajectory(120, damping=3.0),
         rtol=1.0e-4,
         atol=1.0e-5,
@@ -99,12 +99,14 @@ class TestFeatherPGSAugmentedDrives(unittest.TestCase):
 
 
 devices = get_cuda_test_devices()
+split_devices = get_test_devices()
 for _name, _func in (
     ("test_implicit_drive_matches_backward_euler_reference", test_implicit_drive_matches_backward_euler_reference),
     ("test_drive_force_is_clamped_to_the_effort_limit", test_drive_force_is_clamped_to_the_effort_limit),
     ("test_passive_joint_damping_is_applied", test_passive_joint_damping_is_applied),
 ):
     add_function_test(TestFeatherPGSAugmentedDrives, _name, _func, devices=devices)
+    add_function_test(TestFeatherPGSAugmentedDrives, f"{_name}_split", _func, devices=split_devices, pgs_mode="split")
 
 
 if __name__ == "__main__":

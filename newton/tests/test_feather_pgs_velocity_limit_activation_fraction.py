@@ -15,7 +15,7 @@ from newton._src.solvers.feather_pgs.kernels import (
     allocate_rigid_velocity_limit_slots,
 )
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 QDOT_MAX = 0.5
 # Slack on the limit for an under-converged sweep; the final pass leaves the DOF at the limit.
@@ -214,7 +214,7 @@ def test_rigid_axis_past_threshold_allocates_rows_same_step(test, device):
     test.assertEqual(count, 2)
 
 
-def test_free_body_velocity_limits_hold(test, device):
+def test_free_body_velocity_limits_hold(test, device, pgs_mode="matrix_free"):
     """Hold a free body's authored linear and angular speed limits."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
     SolverFeatherPGS.register_custom_attributes(builder)
@@ -223,7 +223,7 @@ def test_free_body_velocity_limits_hold(test, device):
     )
     builder.add_shape_box(body, hx=0.1, hy=0.2, hz=0.3)
     model = builder.finalize(device=device)
-    solver = SolverFeatherPGS(model)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
     state_0, state_1 = model.state(), model.state()
     qd = state_0.joint_qd.numpy()
     qd[3:6] = (5.0, 0.0, 0.0)
@@ -255,6 +255,28 @@ for _name, _func in (
     ("test_free_body_velocity_limits_hold", test_free_body_velocity_limits_hold),
 ):
     add_function_test(TestFeatherPGSVelocityLimitActivationFraction, _name, _func, devices=devices)
+# The allocators are mode-independent kernels; free-body velocity limits are also rows in split mode.
+for _name, _func in (
+    ("test_fraction_zero_allocates_every_joint_row", test_fraction_zero_allocates_every_joint_row),
+    ("test_fraction_gates_static_joint_dof_to_zero_rows", test_fraction_gates_static_joint_dof_to_zero_rows),
+    ("test_joint_dof_past_threshold_allocates_rows_same_step", test_joint_dof_past_threshold_allocates_rows_same_step),
+    ("test_fraction_zero_allocates_every_rigid_row", test_fraction_zero_allocates_every_rigid_row),
+    ("test_fraction_gates_static_rigid_body_to_zero_rows", test_fraction_gates_static_rigid_body_to_zero_rows),
+    (
+        "test_rigid_axis_past_threshold_allocates_rows_same_step",
+        test_rigid_axis_past_threshold_allocates_rows_same_step,
+    ),
+):
+    add_function_test(
+        TestFeatherPGSVelocityLimitActivationFraction, _name, _func, devices=[d for d in get_test_devices() if d.is_cpu]
+    )
+add_function_test(
+    TestFeatherPGSVelocityLimitActivationFraction,
+    "test_free_body_velocity_limits_hold_split",
+    test_free_body_velocity_limits_hold,
+    devices=get_test_devices(),
+    pgs_mode="split",
+)
 
 
 if __name__ == "__main__":

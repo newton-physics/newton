@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 def _box_on_ground(device, worlds=1):
@@ -23,10 +23,10 @@ def _box_on_ground(device, worlds=1):
     return builder.finalize(device=device)
 
 
-def test_capacity_failure_is_observable(test, device):
+def test_capacity_failure_is_observable(test, device, pgs_mode="matrix_free"):
     """Flag dropped free-body contact rows until reset, without optional telemetry."""
     model = _box_on_ground(device)
-    solver = SolverFeatherPGS(model, mf_max_constraints=1, warn_constraint_overflow=False)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, mf_max_constraints=1, warn_constraint_overflow=False)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_in, state_out = model.state(), model.state()
@@ -40,7 +40,7 @@ def test_capacity_failure_is_observable(test, device):
     solver.check_constraint_capacity()
 
 
-def test_dense_capacity_failure_is_world_local(test, device):
+def test_dense_capacity_failure_is_world_local(test, device, pgs_mode="matrix_free"):
     """Flag only the world whose dense rows overflow."""
     template = newton.ModelBuilder()
     link = template.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
@@ -58,7 +58,7 @@ def test_dense_capacity_failure_is_world_local(test, device):
     builder.add_ground_plane()
     model = builder.finalize(device=device)
 
-    solver = SolverFeatherPGS(model, dense_max_constraints=3, warn_constraint_overflow=False)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, dense_max_constraints=3, warn_constraint_overflow=False)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_in, state_out = model.state(), model.state()
@@ -69,10 +69,10 @@ def test_dense_capacity_failure_is_world_local(test, device):
     test.assertLessEqual(int(solver.constraint_count.numpy()[0]), 3)
 
 
-def test_overflow_warning_is_printed_once(test, device):
+def test_overflow_warning_is_printed_once(test, device, pgs_mode="matrix_free"):
     """Print one device-side warning per overflowing row family."""
     model = _box_on_ground(device, worlds=2)
-    solver = SolverFeatherPGS(model, mf_max_constraints=1)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, mf_max_constraints=1)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_in, state_out = model.state(), model.state()
@@ -106,6 +106,19 @@ add_function_test(
     devices=devices,
     check_output=False,
 )
+for _name in (
+    "test_capacity_failure_is_observable",
+    "test_dense_capacity_failure_is_world_local",
+    "test_overflow_warning_is_printed_once",
+):
+    add_function_test(
+        TestFeatherPGSCapacityStatus,
+        f"{_name}_split",
+        globals()[_name],
+        devices=get_test_devices(),
+        check_output=_name != "test_overflow_warning_is_printed_once",
+        pgs_mode="split",
+    )
 
 
 if __name__ == "__main__":

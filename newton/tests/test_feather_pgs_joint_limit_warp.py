@@ -1,20 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Warp-parallel joint-limit row assembly of SolverFeatherPGS."""
+"""Joint-limit row assembly of SolverFeatherPGS: the warp-parallel CUDA builder and the scalar builder."""
 
 import unittest
 
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_JOINT_LIMIT
+from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_JOINT_LIMIT, build_joint_limit_rows
 from newton._src.solvers.feather_pgs.solver_feather_pgs import _get_joint_limit_warp_kernel
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
-def test_warp_builder_matches_reference_row_order_and_values(test, device):
-    """Emit active limit rows in DOF order with the lower row before the upper row of each DOF."""
+def test_warp_builder_matches_reference_row_order_and_values(test, device, scalar_builder=False):
+    """Emit active limit rows in DOF order with the lower row before the upper row of each DOF.
+
+    ``scalar_builder`` checks the one-thread-per-articulation builder of the CPU path instead.
+    """
     articulation_count = 257
     size = 6
     max_constraints = 2 * size
@@ -34,27 +37,36 @@ def test_warp_builder_matches_reference_row_order_and_values(test, device):
         wp.zeros((articulation_count, max_constraints), dtype=wp.float32, device=device),
         wp.zeros((articulation_count, max_constraints), dtype=wp.float32, device=device),
     )
-    warps_per_block = 4
-    kernel = _get_joint_limit_warp_kernel(size, wp.get_device(device).arch, warps_per_block)
-    wp.launch_tiled(
-        kernel,
-        dim=[(articulation_count + warps_per_block - 1) // warps_per_block],
-        inputs=[
-            articulation_count,
-            wp.array(np.arange(articulation_count) * size, dtype=wp.int32, device=device),
-            wp.array(np.arange(articulation_count), dtype=wp.int32, device=device),
-            wp.array(np.arange(articulation_count), dtype=wp.int32, device=device),
-            wp.array(np.arange(dof_count), dtype=wp.int32, device=device),
-            wp.array(lower, dtype=wp.float32, device=device),
-            wp.array(upper, dtype=wp.float32, device=device),
-            wp.array(q, dtype=wp.float32, device=device),
-            gap,
-            max_constraints,
-        ],
-        outputs=list(outputs),
-        block_dim=32 * warps_per_block,
-        device=device,
-    )
+    inputs = [
+        wp.array(np.arange(articulation_count) * size, dtype=wp.int32, device=device),
+        wp.array(np.arange(articulation_count), dtype=wp.int32, device=device),
+        wp.array(np.arange(articulation_count), dtype=wp.int32, device=device),
+        wp.array(np.arange(dof_count), dtype=wp.int32, device=device),
+        wp.array(lower, dtype=wp.float32, device=device),
+        wp.array(upper, dtype=wp.float32, device=device),
+        wp.array(q, dtype=wp.float32, device=device),
+        gap,
+        max_constraints,
+    ]
+    if scalar_builder:
+        wp.launch(
+            build_joint_limit_rows,
+            dim=articulation_count,
+            inputs=[*inputs, size],
+            outputs=list(outputs),
+            device=device,
+        )
+    else:
+        warps_per_block = 4
+        kernel = _get_joint_limit_warp_kernel(size, wp.get_device(device).arch, warps_per_block)
+        wp.launch_tiled(
+            kernel,
+            dim=[(articulation_count + warps_per_block - 1) // warps_per_block],
+            inputs=[articulation_count, *inputs],
+            outputs=list(outputs),
+            block_dim=32 * warps_per_block,
+            device=device,
+        )
     counter, J_group, row_type, row_parent, row_mu, phi, target = (array.numpy() for array in outputs)
 
     for art in range(articulation_count):
@@ -88,6 +100,13 @@ add_function_test(
     "test_warp_builder_matches_reference_row_order_and_values",
     test_warp_builder_matches_reference_row_order_and_values,
     devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestFeatherPGSJointLimitWarp,
+    "test_scalar_builder_matches_reference_row_order_and_values",
+    test_warp_builder_matches_reference_row_order_and_values,
+    devices=get_test_devices(),
+    scalar_builder=True,
 )
 
 

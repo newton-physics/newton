@@ -16,51 +16,54 @@ from newton._src.solvers.feather_pgs.kernels import (
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
     PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
+    build_joint_limit_rows,
 )
 from newton._src.solvers.feather_pgs.solver_feather_pgs import _get_joint_limit_warp_kernel
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
-def _built_rows(device, q: float, *, gap: float, lower: float = -1.0, upper: float = 1.0):
-    """Build the joint-limit rows of one single-DOF articulation and return ``(J, phi)``."""
+def _built_rows(device, q: float, *, gap: float, lower: float = -1.0, upper: float = 1.0, scalar_builder=False):
+    """Build the joint-limit rows of one single-DOF articulation and return ``(J, phi)``.
+
+    ``scalar_builder`` selects the one-thread-per-articulation Warp builder of the CPU path
+    instead of the one-warp-per-articulation CUDA builder.
+    """
     max_constraints = 8
     world_slot_counter = wp.zeros((1,), dtype=wp.int32, device=device)
     J_group = wp.zeros((1, max_constraints, 1), dtype=wp.float32, device=device)
     world_phi = wp.zeros((1, max_constraints), dtype=wp.float32, device=device)
-    kernel = _get_joint_limit_warp_kernel(1, wp.get_device(device).arch, 1)
-    wp.launch_tiled(
-        kernel,
-        dim=[1],
-        inputs=[
-            1,
-            wp.array([0], dtype=wp.int32, device=device),
-            wp.array([0], dtype=wp.int32, device=device),
-            wp.array([0], dtype=wp.int32, device=device),
-            wp.array([0], dtype=wp.int32, device=device),
-            wp.array([lower], dtype=wp.float32, device=device),
-            wp.array([upper], dtype=wp.float32, device=device),
-            wp.array([q], dtype=wp.float32, device=device),
-            gap,
-            max_constraints,
-        ],
-        outputs=[
-            world_slot_counter,
-            J_group,
-            wp.zeros((1, max_constraints), dtype=wp.int32, device=device),
-            wp.zeros((1, max_constraints), dtype=wp.int32, device=device),
-            wp.zeros((1, max_constraints), dtype=wp.float32, device=device),
-            world_phi,
-            wp.zeros((1, max_constraints), dtype=wp.float32, device=device),
-        ],
-        block_dim=32,
-        device=device,
-    )
+    index = wp.array([0], dtype=wp.int32, device=device)
+    inputs = [
+        index,
+        index,
+        index,
+        index,
+        wp.array([lower], dtype=wp.float32, device=device),
+        wp.array([upper], dtype=wp.float32, device=device),
+        wp.array([q], dtype=wp.float32, device=device),
+        gap,
+        max_constraints,
+    ]
+    outputs = [
+        world_slot_counter,
+        J_group,
+        wp.zeros((1, max_constraints), dtype=wp.int32, device=device),
+        wp.zeros((1, max_constraints), dtype=wp.int32, device=device),
+        wp.zeros((1, max_constraints), dtype=wp.float32, device=device),
+        world_phi,
+        wp.zeros((1, max_constraints), dtype=wp.float32, device=device),
+    ]
+    if scalar_builder:
+        wp.launch(build_joint_limit_rows, dim=1, inputs=[*inputs, 1], outputs=outputs, device=device)
+    else:
+        kernel = _get_joint_limit_warp_kernel(1, wp.get_device(device).arch, 1)
+        wp.launch_tiled(kernel, dim=[1], inputs=[1, *inputs], outputs=outputs, block_dim=32, device=device)
     count = int(world_slot_counter.numpy()[0])
     return J_group.numpy()[0, :count, 0].tolist(), world_phi.numpy()[0, :count].tolist()
 
 
-def _make_layout_run(device, *, enable_joint_velocity_limits=True):
+def _make_layout_run(device, *, enable_joint_velocity_limits=True, pgs_mode="matrix_free"):
     """Build a scene that produces every row family: limits, velocity limits and contacts."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverFeatherPGS.register_custom_attributes(builder)
@@ -98,6 +101,7 @@ def _make_layout_run(device, *, enable_joint_velocity_limits=True):
     model.joint_velocity_limit.assign(velocity_limits)
     solver = SolverFeatherPGS(
         model,
+        pgs_mode=pgs_mode,
         enable_joint_limits=True,
         enable_joint_velocity_limits=enable_joint_velocity_limits,
         velocity_limit_activation_fraction=0.5,
@@ -147,6 +151,31 @@ def test_combined_row_families_follow_the_documented_layout(test, device):
     test.assertTrue(np.all(mf_velocity_limits >= mf_contact_end))
 
 
+def test_dense_row_families_respect_phase_bounds(test, device):
+    """Lay out split-mode dense rows as limits, contacts; free-body rows as contacts, velocity limits."""
+    solver = _make_layout_run(device, enable_joint_velocity_limits=False, pgs_mode="split")
+    dense_count = int(solver.constraint_count.numpy()[0])
+    dense_types = solver.row_type.numpy()[0, :dense_count]
+    limit_rows = np.flatnonzero(dense_types == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
+    contact_rows = np.flatnonzero(
+        (dense_types == PGS_CONSTRAINT_TYPE_CONTACT) | (dense_types == PGS_CONSTRAINT_TYPE_FRICTION)
+    )
+    test.assertGreater(limit_rows.size, 0)
+    test.assertGreater(contact_rows.size, 0)
+    test.assertEqual(int(np.sum(dense_types == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)), 0)
+    test.assertLess(limit_rows.max(), contact_rows.min())
+
+    mf_count = int(solver.mf_constraint_count.numpy()[0])
+    mf_types = solver.mf_row_type.numpy()[0, :mf_count]
+    mf_contact_end = int(solver.mf_contact_rows_end.numpy()[0])
+    mf_contacts = np.flatnonzero((mf_types == PGS_CONSTRAINT_TYPE_CONTACT) | (mf_types == PGS_CONSTRAINT_TYPE_FRICTION))
+    mf_velocity_limits = np.flatnonzero(mf_types == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)
+    test.assertGreater(mf_contacts.size, 0)
+    test.assertGreater(mf_velocity_limits.size, 0)
+    test.assertTrue(np.all(mf_contacts < mf_contact_end))
+    test.assertTrue(np.all(mf_velocity_limits >= mf_contact_end))
+
+
 def test_velocity_limit_rows_require_the_option(test, device):
     """Build no joint velocity-limit rows unless velocity limits are enabled."""
     solver = _make_layout_run(device, enable_joint_velocity_limits=False)
@@ -156,25 +185,27 @@ def test_velocity_limit_rows_require_the_option(test, device):
     test.assertGreater(int(np.sum(dense_types == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)), 0)
 
 
-def test_finite_gap_builds_only_near_limit_rows(test, device):
+def test_finite_gap_builds_only_near_limit_rows(test, device, scalar_builder=False):
     """Create a limit row only within the activation gap of that limit."""
-    test.assertEqual(_built_rows(device, 0.0, gap=0.2), ([], []))
-    jacobian, phi = _built_rows(device, -0.85, gap=0.2)
+    test.assertEqual(_built_rows(device, 0.0, gap=0.2, scalar_builder=scalar_builder), ([], []))
+    jacobian, phi = _built_rows(device, -0.85, gap=0.2, scalar_builder=scalar_builder)
     test.assertEqual(jacobian, [1.0])
     test.assertAlmostEqual(phi[0], 0.15, places=6)
-    jacobian, phi = _built_rows(device, 0.85, gap=0.2)
+    jacobian, phi = _built_rows(device, 0.85, gap=0.2, scalar_builder=scalar_builder)
     test.assertEqual(jacobian, [-1.0])
     test.assertAlmostEqual(phi[0], 0.15, places=6)
 
 
-def test_finite_gap_does_not_activate_unlimited_sentinel_limits(test, device):
+def test_finite_gap_does_not_activate_unlimited_sentinel_limits(test, device, scalar_builder=False):
     """Treat the builder's unlimited sentinel as no limit."""
-    test.assertEqual(_built_rows(device, 0.0, gap=0.2, lower=-MAXVAL, upper=MAXVAL), ([], []))
+    test.assertEqual(
+        _built_rows(device, 0.0, gap=0.2, lower=-MAXVAL, upper=MAXVAL, scalar_builder=scalar_builder), ([], [])
+    )
 
 
-def test_infinite_gap_allocates_every_finite_limit(test, device):
+def test_infinite_gap_allocates_every_finite_limit(test, device, scalar_builder=False):
     """Create both rows of every finite limit with the default infinite gap."""
-    jacobian, phi = _built_rows(device, 0.0, gap=float("inf"))
+    jacobian, phi = _built_rows(device, 0.0, gap=float("inf"), scalar_builder=scalar_builder)
     test.assertEqual(jacobian, [1.0, -1.0])
     test.assertEqual(phi, [1.0, 1.0])
 
@@ -198,15 +229,17 @@ def _driven_limited_joint_position(device, **solver_kwargs) -> float:
     return float(state_0.joint_q.numpy()[0])
 
 
-def test_limit_holds_a_driven_joint(test, device):
+def test_limit_holds_a_driven_joint(test, device, pgs_mode="matrix_free"):
     """Hold a joint driven past its upper limit at the limit when joint limits are enabled."""
-    test.assertAlmostEqual(_driven_limited_joint_position(device, enable_joint_limits=True), 0.3, delta=2.0e-3)
+    position = _driven_limited_joint_position(device, pgs_mode=pgs_mode, enable_joint_limits=True)
+    test.assertAlmostEqual(position, 0.3, delta=2.0e-3)
 
 
-def test_disabled_joint_limits_are_not_enforced(test, device):
+def test_disabled_joint_limits_are_not_enforced(test, device, pgs_mode="matrix_free"):
     """Leave finite joint limits unenforced by default, so the drive reaches its target."""
-    test.assertAlmostEqual(_driven_limited_joint_position(device), 1.0, delta=2.0e-3)
-    test.assertAlmostEqual(_driven_limited_joint_position(device, enable_joint_limits=False), 1.0, delta=2.0e-3)
+    test.assertAlmostEqual(_driven_limited_joint_position(device, pgs_mode=pgs_mode), 1.0, delta=2.0e-3)
+    position = _driven_limited_joint_position(device, pgs_mode=pgs_mode, enable_joint_limits=False)
+    test.assertAlmostEqual(position, 1.0, delta=2.0e-3)
 
 
 def _build_default_limit_chain(device, count: int):
@@ -252,12 +285,15 @@ def test_default_finite_limits_keep_rows_and_warn_at_capacity(test, device):
     test.assertFalse(bool(gap_solver.constraint_overflow.numpy()[0]))
 
 
-def test_disabled_joint_limits_build_no_rows(test, device):
+def test_disabled_joint_limits_build_no_rows(test, device, **mode_kwargs):
     """Build no limit rows and use no capacity for finite limits when joint limits are disabled."""
     model = _build_default_limit_chain(device, 17)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        solvers = (SolverFeatherPGS(model), SolverFeatherPGS(model, enable_joint_limits=False))
+        solvers = (
+            SolverFeatherPGS(model, **mode_kwargs),
+            SolverFeatherPGS(model, enable_joint_limits=False, **mode_kwargs),
+        )
     # The 34 rows of the +/-1e10 defaults would exceed the default capacity of 32 if limits were enabled.
     test.assertFalse([w for w in caught if "joint position limits" in str(w.message)])
     for solver in solvers:
@@ -273,7 +309,7 @@ def test_disabled_joint_limits_build_no_rows(test, device):
     builder.add_articulation([joint])
     builder.joint_q[0] = 0.2
     model = builder.finalize(device=device)
-    solver = SolverFeatherPGS(model, joint_limit_activation_gap=0.5)
+    solver = SolverFeatherPGS(model, joint_limit_activation_gap=0.5, **mode_kwargs)
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, 0.01)
     test.assertEqual(int(solver.constraint_count.numpy()[0]), 0)
@@ -306,6 +342,41 @@ for _name, _func in (
     ),
 ):
     add_function_test(TestFeatherPGSJointLimitActivationGap, _name, _func, devices=devices)
+
+split_devices = get_test_devices()
+add_function_test(
+    TestFeatherPGSJointLimitActivationGap,
+    "test_dense_row_families_respect_phase_bounds",
+    test_dense_row_families_respect_phase_bounds,
+    devices=split_devices,
+)
+for _name, _func in (
+    ("test_limit_holds_a_driven_joint", test_limit_holds_a_driven_joint),
+    ("test_disabled_joint_limits_are_not_enforced", test_disabled_joint_limits_are_not_enforced),
+    ("test_disabled_joint_limits_build_no_rows", test_disabled_joint_limits_build_no_rows),
+):
+    add_function_test(
+        TestFeatherPGSJointLimitActivationGap,
+        f"{_name}_split",
+        _func,
+        devices=split_devices,
+        pgs_mode="split",
+    )
+for _name, _func in (
+    ("test_finite_gap_builds_only_near_limit_rows", test_finite_gap_builds_only_near_limit_rows),
+    (
+        "test_finite_gap_does_not_activate_unlimited_sentinel_limits",
+        test_finite_gap_does_not_activate_unlimited_sentinel_limits,
+    ),
+    ("test_infinite_gap_allocates_every_finite_limit", test_infinite_gap_allocates_every_finite_limit),
+):
+    add_function_test(
+        TestFeatherPGSJointLimitActivationGap,
+        f"{_name}_scalar_builder",
+        _func,
+        devices=split_devices,
+        scalar_builder=True,
+    )
 
 
 if __name__ == "__main__":

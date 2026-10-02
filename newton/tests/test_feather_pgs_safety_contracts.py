@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Selected-world reset of mass factors under eager stepping and CUDA graph capture."""
+"""Selected-world reset of mass factors and per-world row storage of the dense solve."""
 
 import unittest
 
@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 def _driven_model(device, worlds=2):
@@ -28,10 +28,10 @@ def _driven_model(device, worlds=2):
     return builder.finalize(device=device)
 
 
-def test_partial_reset_refreshes_only_selected_mass_factors(test, device):
+def test_partial_reset_refreshes_only_selected_mass_factors(test, device, pgs_mode="matrix_free"):
     """Refresh only the selected world's (or the global slot's) factors, eagerly and under graph replay."""
     model = _driven_model(device)
-    solver = SolverFeatherPGS(model, update_mass_matrix_interval=100)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, update_mass_matrix_interval=100)
     state, output = model.state(), model.state()
     control = model.control()
     solver.step(state, output, control, None, 0.01)
@@ -40,6 +40,8 @@ def test_partial_reset_refreshes_only_selected_mass_factors(test, device):
     solver.reset(state, mask)
     solver.step(state, output, control, None, 0.01)
     np.testing.assert_array_equal(solver.mass_update_mask.numpy(), [1, 0, 0])
+    if not wp.get_device(device).is_cuda:
+        return
 
     first_mask = wp.empty_like(solver.mass_update_mask)
     with wp.ScopedCapture(device=device) as capture:
@@ -57,6 +59,41 @@ def test_partial_reset_refreshes_only_selected_mass_factors(test, device):
             np.testing.assert_array_equal(solver.mass_update_mask.numpy(), [0, 0, 0])
 
 
+def test_partial_warp_capacity_preserves_world_boundaries(test, device, pgs_kernel="tiled"):
+    """Keep the dense split-mode solve's loads and stores inside each world's row storage.
+
+    Capacities that are not a multiple of the warp width leave partial warps in the native
+    kernel; an inactive world must stay untouched.
+    """
+    for capacity in (33, 35, 40):
+        with test.subTest(capacity=capacity):
+            SolverFeatherPGS._kernel_overrides = {"pgs_kernel": pgs_kernel}
+            try:
+                solver = SolverFeatherPGS(
+                    _driven_model(device, worlds=3), pgs_mode="split", dense_max_constraints=capacity
+                )
+            finally:
+                SolverFeatherPGS._kernel_overrides = {}
+            test.assertEqual(
+                solver._pgs_solve_tiled_row_kernel is not None, pgs_kernel == "tiled" and wp.get_device(device).is_cuda
+            )
+            initial = np.zeros((3, capacity), dtype=np.float32)
+            initial[2] = 1234.0
+            solver.constraint_count.assign(np.array([capacity, 1, 0], dtype=np.int32))
+            solver.impulses.assign(initial)
+            solver.diag.fill_(2.0)
+            solver.C.assign(np.tile(2.0 * np.eye(capacity, dtype=np.float32), (3, 1, 1)))
+            solver.rhs.fill_(-1.0)
+            solver.row_type.zero_()
+            solver.row_parent.zero_()
+            solver.row_mu.zero_()
+            solver._dense_pgs_solve(1)
+            expected = initial.copy()
+            expected[0] = 0.5
+            expected[1, 0] = 0.5
+            np.testing.assert_array_equal(solver.impulses.numpy(), expected)
+
+
 class TestFeatherPGSSafety(unittest.TestCase):
     pass
 
@@ -66,6 +103,26 @@ add_function_test(
     "test_partial_reset_refreshes_only_selected_mass_factors",
     test_partial_reset_refreshes_only_selected_mass_factors,
     devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestFeatherPGSSafety,
+    "test_partial_reset_refreshes_only_selected_mass_factors_split",
+    test_partial_reset_refreshes_only_selected_mass_factors,
+    devices=get_test_devices(),
+    pgs_mode="split",
+)
+add_function_test(
+    TestFeatherPGSSafety,
+    "test_partial_warp_capacity_preserves_world_boundaries",
+    test_partial_warp_capacity_preserves_world_boundaries,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestFeatherPGSSafety,
+    "test_partial_warp_capacity_preserves_world_boundaries_scalar",
+    test_partial_warp_capacity_preserves_world_boundaries,
+    devices=get_test_devices(),
+    pgs_kernel="loop",
 )
 
 

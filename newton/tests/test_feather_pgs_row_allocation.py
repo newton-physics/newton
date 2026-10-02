@@ -14,7 +14,7 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.feather_pgs.kernels import allocate_world_contact_slots, finalize_mf_constraint_counts
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 _UNBOUNDED = 2**31 - 1
 
@@ -102,7 +102,7 @@ add_function_test(
     TestFeatherPGSRowAllocation,
     "test_overflow_keeps_every_accepted_contact_below_the_count",
     test_overflow_keeps_every_accepted_contact_below_the_count,
-    devices=get_cuda_test_devices(),
+    devices=get_test_devices(),
 )
 
 

@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DT = 1.0 / 60.0
 # Per-articulation initial pose/velocity: [base, left branch, right branch].
@@ -82,10 +82,10 @@ def _run_trajectory(model, solver, num_steps):
     return np.stack(history)
 
 
-def test_mass_refresh_cadence_follows_interval(test, device):
+def test_mass_refresh_cadence_follows_interval(test, device, pgs_mode="matrix_free"):
     """Refresh every articulation's factorization on every ``interval``-th step only."""
     model = _build_model(device)
-    solver = SolverFeatherPGS(model, update_mass_matrix_interval=2)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, update_mass_matrix_interval=2)
     state_0 = _make_initial_state(model)
     state_1 = model.state()
     pipeline = newton.CollisionPipeline(model)
@@ -98,12 +98,12 @@ def test_mass_refresh_cadence_follows_interval(test, device):
         test.assertEqual(solver.mass_update_mask.numpy().tolist(), expected, f"step {step_index}")
 
 
-def test_stale_factorization_stays_close_to_interval_one(test, device):
+def test_stale_factorization_stays_close_to_interval_one(test, device, pgs_mode="matrix_free"):
     """Keep an interval-2 contact trajectory close to the every-step refresh."""
     history = {}
     for interval in (1, 2):
         model = _build_model(device)
-        solver = SolverFeatherPGS(model, update_mass_matrix_interval=interval)
+        solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, update_mass_matrix_interval=interval)
         history[interval] = _run_trajectory(model, solver, num_steps=60)
     test.assertTrue(np.isfinite(history[2]).all())
     # A stale factorization between refreshes is the intended trade-off, so the runs differ.
@@ -112,10 +112,10 @@ def test_stale_factorization_stays_close_to_interval_one(test, device):
     test.assertGreater(moved, 1.0e-3)
 
 
-def test_model_change_request_refreshes_a_reuse_step(test, device):
+def test_model_change_request_refreshes_a_reuse_step(test, device, pgs_mode="matrix_free"):
     """Refresh every articulation on a reuse step after a notification and consume the request."""
     model = _build_model(device, ground=False)
-    solver = SolverFeatherPGS(model, update_mass_matrix_interval=2)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, update_mass_matrix_interval=2)
     state_0 = _make_initial_state(model)
     state_1 = model.state()
     control = model.control()
@@ -127,10 +127,10 @@ def test_model_change_request_refreshes_a_reuse_step(test, device):
     test.assertEqual(solver._mass_update_requested.numpy().tolist(), [0] * model.articulation_count)
 
 
-def test_timestep_change_forces_a_refresh(test, device):
+def test_timestep_change_forces_a_refresh(test, device, pgs_mode="matrix_free"):
     """Refresh the augmented mass matrix when the time step changes on a reuse step."""
     model = _build_model(device, ground=False)
-    solver = SolverFeatherPGS(model, update_mass_matrix_interval=4)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, update_mass_matrix_interval=4)
     state_0 = _make_initial_state(model)
     state_1 = model.state()
     control = model.control()
@@ -141,12 +141,12 @@ def test_timestep_change_forces_a_refresh(test, device):
     test.assertEqual(solver.mass_update_mask.numpy().tolist(), [1, 1])
 
 
-def test_captured_two_substep_replay_matches_eager(test, device):
+def test_captured_two_substep_replay_matches_eager(test, device, pgs_mode="matrix_free"):
     """Replay two captured substeps, including the first-step allocations, like eager stepping."""
     graph_model = _build_model(device, ground=False)
     eager_model = _build_model(device, ground=False)
-    graph_solver = SolverFeatherPGS(graph_model, update_mass_matrix_interval=2)
-    eager_solver = SolverFeatherPGS(eager_model, update_mass_matrix_interval=2)
+    graph_solver = SolverFeatherPGS(graph_model, pgs_mode=pgs_mode, update_mass_matrix_interval=2)
+    eager_solver = SolverFeatherPGS(eager_model, pgs_mode=pgs_mode, update_mass_matrix_interval=2)
     graph_a, graph_b = _make_initial_state(graph_model), graph_model.state()
     eager_a, eager_b = _make_initial_state(eager_model), eager_model.state()
     graph_control, eager_control = graph_model.control(), eager_model.control()
@@ -169,9 +169,9 @@ def test_captured_two_substep_replay_matches_eager(test, device):
         np.testing.assert_allclose(captured, getattr(eager_a, name).numpy(), rtol=0.0, atol=2.0e-6, err_msg=name)
 
 
-def test_mass_refresh_has_no_obsolete_limit_count_state(test, device):
+def test_mass_refresh_has_no_obsolete_limit_count_state(test, device, pgs_mode="matrix_free"):
     """Keep no per-step joint-limit count state for the mass refresh."""
-    solver = SolverFeatherPGS(_build_model(device, ground=False))
+    solver = SolverFeatherPGS(_build_model(device, ground=False), pgs_mode=pgs_mode)
     for attribute in ("aug_limit_counts", "aug_prev_limit_counts", "limit_change_mask"):
         test.assertFalse(hasattr(solver, attribute), f"obsolete mass-refresh state {attribute!r} was restored")
 
@@ -190,6 +190,10 @@ for _name in (
     "test_mass_refresh_has_no_obsolete_limit_count_state",
 ):
     add_function_test(TestFeatherPGSMassUpdateInterval, _name, globals()[_name], devices=devices)
+    split_devices = devices if _name == "test_captured_two_substep_replay_matches_eager" else get_test_devices()
+    add_function_test(
+        TestFeatherPGSMassUpdateInterval, f"{_name}_split", globals()[_name], devices=split_devices, pgs_mode="split"
+    )
 
 
 if __name__ == "__main__":
