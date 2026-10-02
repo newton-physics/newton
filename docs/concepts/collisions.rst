@@ -1604,6 +1604,10 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
      - Per-contact frame-to-frame match result (int32). Only allocated when
        ``contact_matching`` is not ``"disabled"``.
        See :ref:`Contact Matching`.
+   * - ``rigid_contact_match_generation``
+     - Contact generation of this buffer that the match indices refer to, or ``-1``
+       (int32, one element). Allocated with ``rigid_contact_match_index``.
+       See :ref:`Contact Matching`.
    * - ``rigid_contact_new_indices``, ``rigid_contact_new_count``
      - Compact index list of new contacts in the current sorted buffer. Only
        allocated when ``contact_report=True``.
@@ -2256,6 +2260,15 @@ distance threshold and a normal dot-product threshold.  The sort key encodes
 ``(shape_a, shape_b, sub_key)`` so only contacts between the same shape pair
 are compared.
 
+The previous frame is the pipeline's last collision pass, whichever
+:class:`~newton.Contacts` buffer it wrote.
+:attr:`Contacts.rigid_contact_match_generation` holds the
+:attr:`~newton.Contacts.contact_generation` of the buffer's contact set that the
+match indices refer to, or ``-1`` when the previous pass wrote another buffer
+(or none).  Code that carries per-contact state across frames can compare it
+with the generation it saved, so indices into another buffer's contacts are not
+mistaken for its own.
+
 The distance metric is the world-space **contact midpoint**
 ``0.5 * (world(point0) + world(point1))`` — symmetric in shape 0 and shape 1
 — which means swapping the two shapes of a pair does not change whether a
@@ -2288,6 +2301,13 @@ fresh geometry becomes the saved history for the next frame.  The extra
 per-contact buffers (four ``vec3`` columns for the body-frame points and
 offsets) are only allocated when the mode is ``"sticky"``; ``"latest"`` and
 ``"disabled"`` pay zero additional memory and launch no additional kernels.
+
+**Memory**
+
+Both enabled modes keep the previous frame's sorted keys, uniqueness claims,
+contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
+``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
+``contact_report=True`` adds 4.  ``"disabled"`` allocates no matching history.
 
 .. _Contact Reports:
 
