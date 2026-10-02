@@ -50,13 +50,12 @@ class TestSensorTiledCameraHeightfield(unittest.TestCase):
 
         d = depth.numpy()[0, 0]  # .numpy() syncs the device-to-host copy
         hit = int(np.count_nonzero(d > 0.0))
-        # The terrain covers the whole frame, but ~10-15% of rays miss along
-        # triangle edges (non-watertight mesh_query_ray); measured stable across
-        # resolution and camera offset, so require "most" pixels rather than all.
-        self.assertGreaterEqual(
+        # The terrain covers the whole frame. The surface sits at min_z, so a
+        # bottom cap coplanar with it would make rays miss (issue #4452).
+        self.assertEqual(
             hit,
-            int(res * res * 0.8),
-            msg=f"heightfield should fill most of the view; only {hit}/{res * res} pixels hit",
+            res * res,
+            msg=f"heightfield should fill the view; only {hit}/{res * res} pixels hit",
         )
         # Every ray that hits sees the flat surface at z=1 from z=5: depth ~4,
         # up to ~4.25 toward the frame edges (ray-angle cosine).
