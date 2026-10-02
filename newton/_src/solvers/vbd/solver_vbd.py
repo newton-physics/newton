@@ -40,15 +40,14 @@ from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     # Topological filtering helper functions
+    accumulate_particle_body_contact_force_and_hessian,
     accumulate_self_contact_force_and_hessian,
     accumulate_spring_force_and_hessian,
     # Planar DAT (Divide and Truncate) kernels
     apply_planar_truncation_parallel_by_collision,
     apply_truncation_ts,
-    build_particle_body_contact_adjacency_active,
     # Solver kernels (particle VBD)
     forward_step,
-    gather_particle_body_contact_force_and_hessian,
     make_solve_elasticity_tile,
     reset_particle_state,
     solve_elasticity,
@@ -97,7 +96,8 @@ from .vbd_coupling_kernels import (
 
 __all__ = ["SolverVBD"]
 
-_PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
+# Block size of the fixed-size body-particle contact launch; see _init_body_particle_contact_state.
+_BODY_PARTICLE_CONTACT_BLOCK_DIM = 256
 
 
 def _is_tet_only_elasticity_model(model: Model) -> bool:
@@ -1264,9 +1264,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_particle_contact_material_ke = wp.zeros(0, dtype=float, device=self.device)
         self.body_particle_contact_material_kd = wp.zeros(0, dtype=float, device=self.device)
         self.body_particle_contact_material_mu = wp.zeros(0, dtype=float, device=self.device)
-        self._particle_contact_head = wp.full(model.particle_count, -1, dtype=wp.int32, device=self.device)
-        self._particle_contact_next = wp.empty(0, dtype=wp.int32, device=self.device)
-        self._particle_contact_adjacency_initialized = False
+        self._body_particle_contact_launch_dim = 0
+        self._body_particle_contact_initialized = False
         # Zero-length body poses for static-shape contact kernels when State.body_q is absent.
         self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
         if model.particle_count > 0 and model.shape_count > 0:
@@ -1660,8 +1659,16 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_particle_contact_material_ke = wp.zeros(soft_contact_max, dtype=float, device=self.device)
         self.body_particle_contact_material_kd = wp.zeros(soft_contact_max, dtype=float, device=self.device)
         self.body_particle_contact_material_mu = wp.zeros(soft_contact_max, dtype=float, device=self.device)
-        self._particle_contact_next = wp.empty(3 * soft_contact_max, dtype=wp.int32, device=self.device)
-        self._particle_contact_adjacency_initialized = False
+        # Fixed launch size for the per-record contact accumulation: one block per SM, each thread
+        # striding over the active contact prefix, so the launch stays CUDA-graph safe and its cost
+        # follows the active count rather than the capacity.
+        if self.device.is_cuda:
+            self._body_particle_contact_launch_dim = min(
+                soft_contact_max, self.device.sm_count * _BODY_PARTICLE_CONTACT_BLOCK_DIM
+            )
+        else:
+            self._body_particle_contact_launch_dim = soft_contact_max
+        self._body_particle_contact_initialized = False
 
     def _init_rigid_contact_warmstart(self, rigid_contact_max: int) -> None:
         """Allocate fresh contact-history buffers."""
@@ -3209,7 +3216,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             and contacts.soft_contact_max > 0
             and (
                 self.body_particle_contact_penalty_k.shape[0] < contacts.soft_contact_max
-                or not self._particle_contact_adjacency_initialized
+                or not self._body_particle_contact_initialized
             )
         ):
             refresh = True
@@ -3275,22 +3282,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             device=self.device,
         )
 
-        if model.particle_count > 0:
-            self._particle_contact_head.fill_(-1)
-            if contacts.soft_contact_max > 0:
-                wp.launch(
-                    kernel=build_particle_body_contact_adjacency_active,
-                    dim=contacts.soft_contact_max,
-                    inputs=[
-                        contacts.soft_contact_indices,
-                        contacts.soft_contact_count,
-                        contacts.soft_contact_max,
-                        self._particle_contact_head,
-                        self._particle_contact_next,
-                    ],
-                    device=self.device,
-                )
-            self._particle_contact_adjacency_initialized = True
+        self._body_particle_contact_initialized = True
 
     def _step_body_body_contact_frame(
         self,
@@ -3592,20 +3584,22 @@ class SolverVBD(SolverBase, CouplingInterface):
         for color in range(len(self.model.particle_color_groups)):
             if contacts is not None and contacts.soft_contact_max > 0:
                 wp.launch(
-                    kernel=gather_particle_body_contact_force_and_hessian,
-                    dim=self.model.particle_color_groups[color].size,
-                    block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
+                    kernel=accumulate_particle_body_contact_force_and_hessian,
+                    dim=self._body_particle_contact_launch_dim,
+                    block_dim=_BODY_PARTICLE_CONTACT_BLOCK_DIM,
                     inputs=[
                         dt,
-                        self.model.particle_color_groups[color],
+                        color,
                         self.particle_q_prev,
                         state_in.particle_q,
+                        self.model.particle_colors,
                         self.friction_epsilon,
                         self.rigid_soft_contact_use_log_barrier,
                         model.particle_radius,
                         contacts.soft_contact_indices,
-                        self._particle_contact_head,
-                        self._particle_contact_next,
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_max,
+                        self._body_particle_contact_launch_dim,
                         self.body_particle_contact_penalty_k,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,

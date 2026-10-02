@@ -16,8 +16,8 @@ from newton._src.geometry.tri_mesh_collision import TriMeshCollisionInfo, build_
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+    accumulate_particle_body_contact_force_and_hessian,
     apply_planar_truncation_parallel_by_collision,
-    build_particle_body_contact_adjacency_active,
     create_edge_edge_division_plane_closest_pt,
     create_vertex_triangle_division_plane_closest_pt,
     evaluate_dihedral_angle_based_bending_force_hessian,
@@ -27,7 +27,6 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
     evaluate_spring_force_and_hessian_both_vertices,
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
     evaluate_volumetric_neo_hookean_force_and_hessian,
-    gather_particle_body_contact_force_and_hessian,
     make_solve_elasticity_tile,
 )
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
@@ -35,8 +34,6 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _alm_relaxed_ascent,
     _compliant_alm_coefficients,
     _contact_tangent_conditioning_scale,
-    _eval_body_particle_contact,
-    _eval_soft_ef_contact,
     _evaluate_rigid_soft_contact_force_norm,
     _joint_angular_rho_seed,
     accumulate_body_body_contacts_per_body,
@@ -59,7 +56,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     update_duals_body_particle_contacts,
     update_duals_joint,
 )
-from newton._src.solvers.vbd.solver_vbd import _PARTICLE_CONTACT_GATHER_BLOCK_DIM, _is_tet_only_elasticity_model
+from newton._src.solvers.vbd.solver_vbd import _is_tet_only_elasticity_model
 from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -445,142 +442,6 @@ def _prepare_body_particle_dual_prefix(
     if i == 0:
         contact_count[0] = raw_count[0]
     penalty_k[i] = initial_penalty
-
-
-@wp.kernel
-def _prepare_particle_contact_gather_replay(
-    raw_count: wp.array[int],
-    contact_count: wp.array[int],
-    particle_contact_head: wp.array[int],
-    particle_forces: wp.array[wp.vec3],
-    particle_hessians: wp.array[wp.mat33],
-):
-    i = wp.tid()
-    if i == 0:
-        contact_count[0] = raw_count[0]
-    if i < particle_contact_head.shape[0]:
-        particle_contact_head[i] = -1
-        particle_forces[i] = wp.vec3(0.0)
-        particle_hessians[i] = wp.mat33(0.0)
-
-
-@wp.kernel
-def accumulate_particle_body_contact_force_and_hessian(
-    # inputs
-    dt: float,
-    current_color: int,
-    pos_anchor: wp.array[wp.vec3],
-    pos: wp.array[wp.vec3],
-    particle_colors: wp.array[int],
-    # body-particle contact
-    friction_epsilon: float,
-    particle_radius: wp.array[float],
-    body_particle_contact_indices: wp.array[wp.vec3i],
-    body_particle_contact_count: wp.array[int],
-    body_particle_contact_max: int,
-    # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
-    body_particle_contact_penalty_k: wp.array[float],
-    body_particle_contact_material_ke: wp.array[float],
-    body_particle_contact_material_kd: wp.array[float],
-    body_particle_contact_material_mu: wp.array[float],
-    shape_body: wp.array[int],
-    body_q: wp.array[wp.transform],
-    body_q_prev: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-    body_com: wp.array[wp.vec3],
-    contact_shape: wp.array[int],
-    contact_body_pos: wp.array[wp.vec3],
-    contact_body_vel: wp.array[wp.vec3],
-    contact_normal: wp.array[wp.vec3],
-    shape_margin: wp.array[float],
-    # Barycentric weights on each record's soft particles; (1, 0, 0) for a particle contact.
-    contact_barycentric: wp.array[wp.vec3],
-    use_log_barrier: bool,
-    # outputs: particle force and hessian
-    particle_forces: wp.array[wp.vec3],
-    particle_hessians: wp.array[wp.mat33],
-):
-    """Legacy capacity-scan scatter accumulation, kept as the reference oracle for the gather kernel."""
-    t_id = wp.tid()
-
-    # One unified soft-contact stream. body_particle_contact_count[0] is the total soft-contact count;
-    # each record self-describes via its -1-padded corner ids: (p, -1, -1) is a particle contact,
-    # (v0, v1, -1) an edge, (v0, v1, v2) a face. A contact energy E(x) at x = sum_i bary[i]*pos[c_i]
-    # contributes bary[i]*force to corner i and bary[i]^2*hessian to its block. VBD solves one color
-    # per launch, so only scatter to this record's corners of the active color.
-    count = min(body_particle_contact_max, body_particle_contact_count[0])
-    if t_id >= count:
-        return
-
-    corners = body_particle_contact_indices[t_id]
-    # Per-contact AVBD penalty + material properties shared with the rigid side.
-    contact_ke = body_particle_contact_penalty_k[t_id]
-    contact_kd = body_particle_contact_material_kd[t_id]
-    contact_mu = body_particle_contact_material_mu[t_id]
-
-    if corners[1] < 0:
-        # Particle contact (p, -1, -1): single-vertex path, unchanged from the pre-unification code.
-        particle_idx = corners[0]
-        if particle_colors[particle_idx] == current_color:
-            body_contact_force, body_contact_hessian = _eval_body_particle_contact(
-                particle_idx,
-                pos[particle_idx],
-                pos_anchor[particle_idx],
-                t_id,
-                contact_ke,
-                contact_kd,
-                contact_mu,
-                friction_epsilon,
-                particle_radius,
-                shape_body,
-                body_q,
-                body_q_prev,
-                body_qd,
-                body_com,
-                contact_shape,
-                contact_body_pos,
-                contact_body_vel,
-                contact_normal,
-                shape_margin,
-                dt,
-                use_log_barrier,
-            )
-            wp.atomic_add(particle_forces, particle_idx, body_contact_force)
-            wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
-    else:
-        # Edge/face contact: barycentric point over the record's 2-3 soft particles.
-        bary = contact_barycentric[t_id]
-        ef_force, ef_hessian, _cp_world = _eval_soft_ef_contact(
-            t_id,
-            corners,
-            bary,
-            pos,
-            pos_anchor,
-            particle_radius,
-            contact_ke,
-            contact_kd,
-            contact_mu,
-            friction_epsilon,
-            shape_body,
-            body_q,
-            body_q_prev,
-            body_qd,
-            body_com,
-            contact_shape,
-            contact_body_pos,
-            contact_body_vel,
-            contact_normal,
-            shape_margin,
-            dt,
-            use_log_barrier,
-        )
-        for i in range(3):
-            ci = corners[i]
-            if ci >= 0:
-                w = bary[i]
-                if particle_colors[ci] == current_color:
-                    wp.atomic_add(particle_forces, ci, w * ef_force)
-                    wp.atomic_add(particle_hessians, ci, (w * w) * ef_hessian)
 
 
 @wp.kernel
@@ -2089,32 +1950,23 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
         forces = wp.zeros(4, dtype=wp.vec3, device=device)
         hessians = wp.zeros(4, dtype=wp.mat33, device=device)
 
-        # Launch the production gather kernel the way SolverVBD does: build the per-particle
-        # incidence lists over the active prefix, then gather one color (all four particles here).
-        contact_head = wp.full(4, -1, dtype=int, device=device)
-        contact_next = wp.empty(3 * 4, dtype=int, device=device)
+        # Launch the production kernel the way SolverVBD does; all four particles share color 0.
         wp.launch(
-            build_particle_body_contact_adjacency_active,
+            accumulate_particle_body_contact_force_and_hessian,
             dim=4,
-            inputs=[contact_indices, contact_count, 4, contact_head, contact_next],
-            device=device,
-        )
-        color_group = wp.array([0, 1, 2, 3], dtype=wp.int32, device=device)
-        wp.launch(
-            gather_particle_body_contact_force_and_hessian,
-            dim=4,
-            block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
             inputs=[
                 0.1,
-                color_group,
+                0,  # current_color
                 particle_q_prev,
                 particle_q,
+                wp.zeros(4, dtype=int, device=device),  # particle_colors
                 0.01,
                 False,  # legacy quadratic rigid-soft normal law
                 particle_radius,
                 contact_indices,
-                contact_head,
-                contact_next,
+                contact_count,
+                4,  # body_particle_contact_max
+                4,  # thread_count
                 contact_penalty_k,
                 contact_material_kd,
                 contact_material_mu,
@@ -2141,7 +1993,7 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
         np.testing.assert_allclose(damping_unramped, [0.0, 0.0, 2.0], rtol=1.0e-6, atol=1.0e-6)
 
 
-def _make_particle_contact_gather_data(device, capacity=17, boundary=5, particle_count=6):
+def _make_particle_contact_data(device, capacity=17, boundary=5, particle_count=6):
     particle_q = wp.array(
         [[0.03 * i, 0.02 * (i % 2), 0.04] for i in range(particle_count)],
         dtype=wp.vec3,
@@ -2152,11 +2004,8 @@ def _make_particle_contact_gather_data(device, capacity=17, boundary=5, particle
         dtype=wp.vec3,
         device=device,
     )
-    particle_colors = wp.array([i % 3 for i in range(particle_count)], dtype=int, device=device)
-    color_groups = [
-        wp.array([i for i in range(particle_count) if i % 3 == color], dtype=wp.int32, device=device)
-        for color in range(3)
-    ]
+    color_count = 3
+    particle_colors = wp.array([i % color_count for i in range(particle_count)], dtype=int, device=device)
 
     indices = []
     barycentric = []
@@ -2179,14 +2028,13 @@ def _make_particle_contact_gather_data(device, capacity=17, boundary=5, particle
         "capacity": capacity,
         "boundary": boundary,
         "particle_count": particle_count,
+        "color_count": color_count,
         "particle_q": particle_q,
         "particle_q_prev": particle_q_prev,
         "particle_colors": particle_colors,
         "particle_radius": wp.full(particle_count, 0.1, dtype=float, device=device),
-        "color_groups": color_groups,
         "contact_indices": contact_indices,
         "contact_penalty_k": wp.array([100.0 + i for i in range(capacity)], dtype=float, device=device),
-        "contact_material_ke": wp.full(capacity, 200.0, dtype=float, device=device),
         "contact_material_kd": wp.full(capacity, 3.0, dtype=float, device=device),
         "contact_material_mu": wp.zeros(capacity, dtype=float, device=device),
         "shape_body": wp.array([-1], dtype=int, device=device),
@@ -2203,272 +2051,75 @@ def _make_particle_contact_gather_data(device, capacity=17, boundary=5, particle
     }
 
 
-def _particle_contact_gather_material_inputs(data):
-    return [
-        data["contact_penalty_k"],
-        data["contact_material_kd"],
-        data["contact_material_mu"],
-        data["shape_body"],
-        data["body_q"],
-        data["body_q_prev"],
-        data["body_qd"],
-        data["body_com"],
-        data["contact_shape"],
-        data["contact_body_pos"],
-        data["contact_body_vel"],
-        data["contact_normal"],
-        data["shape_margin"],
-        data["contact_barycentric"],
-    ]
-
-
-def _launch_particle_contact_gather(data, contact_count, contact_head, contact_next, forces, hessians, device):
-    wp.launch(
-        build_particle_body_contact_adjacency_active,
-        dim=data["capacity"],
-        inputs=[
-            data["contact_indices"],
-            contact_count,
-            data["capacity"],
-            contact_head,
-            contact_next,
-        ],
-        device=device,
-    )
-    for color_group in data["color_groups"]:
+def _accumulate_particle_contacts(data, raw_count, thread_count, device):
+    """Run the per-record accumulation over every color and return the forces and Hessians."""
+    contact_count = wp.array([raw_count], dtype=int, device=device)
+    forces = wp.zeros(data["particle_count"], dtype=wp.vec3, device=device)
+    hessians = wp.zeros(data["particle_count"], dtype=wp.mat33, device=device)
+    for current_color in range(data["color_count"]):
         wp.launch(
-            gather_particle_body_contact_force_and_hessian,
-            dim=color_group.size,
-            block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
+            accumulate_particle_body_contact_force_and_hessian,
+            dim=thread_count,
             inputs=[
                 0.01,
-                color_group,
+                current_color,
                 data["particle_q_prev"],
                 data["particle_q"],
+                data["particle_colors"],
                 1.0,
                 False,  # rigid_body_particle_contact_use_log_barrier
                 data["particle_radius"],
                 data["contact_indices"],
-                contact_head,
-                contact_next,
-                *_particle_contact_gather_material_inputs(data),
+                contact_count,
+                data["capacity"],
+                thread_count,
+                data["contact_penalty_k"],
+                data["contact_material_kd"],
+                data["contact_material_mu"],
+                data["shape_body"],
+                data["body_q"],
+                data["body_q_prev"],
+                data["body_qd"],
+                data["body_com"],
+                data["contact_shape"],
+                data["contact_body_pos"],
+                data["contact_body_vel"],
+                data["contact_normal"],
+                data["shape_margin"],
+                data["contact_barycentric"],
             ],
             outputs=[forces, hessians],
             device=device,
         )
+    return forces.numpy(), hessians.numpy()
 
 
-def _particle_contact_gather_order_pinned(test, device):
-    """Produce identical gather sums for any chain permutation with the same membership.
-
-    The adjacency build's atomic insertions make chain order scheduling-dependent; the gather's
-    ascending-node-id consumption must erase that. Reversing every per-particle chain is one such
-    permutation, so a regression to plain chain-order walking fails this test.
-    """
+def _particle_contact_accumulate_strides_over_active_prefix(test, device):
+    """Accumulate the same forces from any launch size over the active prefix, clamped to the capacity."""
     with wp.ScopedDevice(device):
-        data = _make_particle_contact_gather_data(device)
-        capacity = data["capacity"]
-        n = data["particle_count"]
-        contact_count = wp.array([capacity], dtype=int, device=device)
-        head = wp.full(n, -1, dtype=wp.int32, device=device)
-        nxt = wp.empty(3 * capacity, dtype=wp.int32, device=device)
-        forces = wp.zeros(n, dtype=wp.vec3, device=device)
-        hessians = wp.zeros(n, dtype=wp.mat33, device=device)
-        _launch_particle_contact_gather(data, contact_count, head, nxt, forces, hessians, device)
-
-        # Reverse every chain on the host: same membership, opposite link order.
-        head_np = head.numpy()
-        next_np = nxt.numpy()
-        rev_head = np.full_like(head_np, -1)
-        rev_next = next_np.copy()
-        for particle in range(n):
-            chain = []
-            node = head_np[particle]
-            while node >= 0:
-                chain.append(node)
-                node = next_np[node]
-            chain.reverse()
-            if chain:
-                rev_head[particle] = chain[0]
-                for i, node in enumerate(chain):
-                    rev_next[node] = chain[i + 1] if i + 1 < len(chain) else -1
-        rev_head_wp = wp.array(rev_head, dtype=wp.int32, device=device)
-        rev_next_wp = wp.array(rev_next, dtype=wp.int32, device=device)
-        forces_rev = wp.zeros(n, dtype=wp.vec3, device=device)
-        hessians_rev = wp.zeros(n, dtype=wp.mat33, device=device)
-        for color_group in data["color_groups"]:
-            wp.launch(
-                gather_particle_body_contact_force_and_hessian,
-                dim=color_group.size,
-                block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
-                inputs=[
-                    0.01,
-                    color_group,
-                    data["particle_q_prev"],
-                    data["particle_q"],
-                    1.0,
-                    False,  # rigid_body_particle_contact_use_log_barrier
-                    data["particle_radius"],
-                    data["contact_indices"],
-                    rev_head_wp,
-                    rev_next_wp,
-                    *_particle_contact_gather_material_inputs(data),
-                ],
-                outputs=[forces_rev, hessians_rev],
-                device=device,
-            )
-
-        np.testing.assert_array_equal(forces.numpy().view(np.uint32), forces_rev.numpy().view(np.uint32))
-        np.testing.assert_array_equal(hessians.numpy().view(np.uint32), hessians_rev.numpy().view(np.uint32))
-
-
-def _particle_contact_adjacency_follows_swapped_contacts(test, device):
-    """Rebuild the contact adjacency from whichever contacts buffer each step consumes.
-
-    Steps with buffer A, an empty equal-capacity buffer B, then A again; the adjacency must track
-    the passed buffer each time, including through the zero-contact intermediate.
-    """
-    with wp.ScopedDevice(device):
-        model, _vertices = _build_edge_over_post(device)
-        pipeline = newton.CollisionPipeline(
-            model,
-            broad_phase="nxn",
-            soft_contact_gap=0.1,
-            enable_rigid_soft_full_surface_contact=True,
-        )
-        contacts_a = pipeline.contacts()
-        contacts_b = pipeline.contacts()  # same capacity, never collided: zero contacts
-        state_in = model.state()
-        state_out = model.state()
-        pipeline.collide(state_in, contacts_a)
-        test.assertGreater(int(contacts_a.soft_contact_count.numpy()[0]), 0)
-
-        solver = newton.solvers.SolverVBD(model, iterations=1)
-        solver.step(state_in, state_out, None, contacts_a, 1.0 / 120.0)
-        members_a = solver._particle_contact_head.numpy() >= 0
-        test.assertTrue(np.any(members_a))
-
-        solver.step(state_in, state_out, None, contacts_b, 1.0 / 120.0)
-        test.assertTrue(np.all(solver._particle_contact_head.numpy() == -1))
-
-        solver.step(state_in, state_out, None, contacts_a, 1.0 / 120.0)
-        # Chain fronts are insertion-racy; membership per particle is the stable invariant.
-        np.testing.assert_array_equal(solver._particle_contact_head.numpy() >= 0, members_a)
-
-
-def _particle_contact_gather_matches_legacy(test, device):
-    """Linked particle incidence lists match the legacy mixed-record contact scatter."""
-    with wp.ScopedDevice(device):
-        data = _make_particle_contact_gather_data(device)
+        data = _make_particle_contact_data(device)
         capacity = data["capacity"]
         boundary = data["boundary"]
-        particle_count = data["particle_count"]
-        particle_q = data["particle_q"]
-        particle_q_prev = data["particle_q_prev"]
-        particle_colors = data["particle_colors"]
-        particle_radius = data["particle_radius"]
-        contact_indices = data["contact_indices"]
-        common_material_inputs = _particle_contact_gather_material_inputs(data)
+        full_forces, full_hessians = _accumulate_particle_contacts(data, capacity, capacity, device)
+        test.assertTrue(np.all(np.any(full_forces != 0.0, axis=1)))
 
         for raw_count in (0, 1, boundary - 1, boundary, boundary + 1, capacity, capacity + 2):
-            contact_count = wp.array([raw_count], dtype=int, device=device)
-            contact_head = wp.full(particle_count, -1, dtype=int, device=device)
-            contact_next = wp.empty(3 * capacity, dtype=int, device=device)
-            legacy_forces = wp.zeros(particle_count, dtype=wp.vec3, device=device)
-            legacy_hessians = wp.zeros(particle_count, dtype=wp.mat33, device=device)
-            gather_forces = wp.zeros_like(legacy_forces)
-            gather_hessians = wp.zeros_like(legacy_hessians)
-            for current_color, _color_group in enumerate(data["color_groups"]):
-                wp.launch(
-                    accumulate_particle_body_contact_force_and_hessian,
-                    dim=capacity,
-                    inputs=[
-                        0.01,
-                        current_color,
-                        particle_q_prev,
-                        particle_q,
-                        particle_colors,
-                        1.0,
-                        particle_radius,
-                        contact_indices,
-                        contact_count,
-                        capacity,
-                        common_material_inputs[0],
-                        data["contact_material_ke"],
-                        *common_material_inputs[1:],
-                        False,  # use_log_barrier
-                    ],
-                    outputs=[legacy_forces, legacy_hessians],
-                    device=device,
-                )
-            _launch_particle_contact_gather(
-                data, contact_count, contact_head, contact_next, gather_forces, gather_hessians, device
-            )
-
+            reference_forces, reference_hessians = _accumulate_particle_contacts(data, raw_count, capacity, device)
             with test.subTest(raw_count=raw_count):
-                np.testing.assert_allclose(gather_forces.numpy(), legacy_forces.numpy(), rtol=1.0e-5, atol=1.0e-6)
-                np.testing.assert_allclose(gather_hessians.numpy(), legacy_hessians.numpy(), rtol=1.0e-5, atol=1.0e-6)
+                if raw_count == 0:
+                    test.assertTrue(np.all(reference_forces == 0.0))
+                if raw_count >= capacity:
+                    np.testing.assert_allclose(reference_forces, full_forces, rtol=1.0e-5, atol=1.0e-6)
+                    np.testing.assert_allclose(reference_hessians, full_hessians, rtol=1.0e-5, atol=1.0e-6)
+                # Launches smaller than the record count stride over the active prefix.
+                for thread_count in (1, 4):
+                    forces, hessians = _accumulate_particle_contacts(data, raw_count, thread_count, device)
+                    np.testing.assert_allclose(forces, reference_forces, rtol=1.0e-5, atol=1.0e-6)
+                    np.testing.assert_allclose(hessians, reference_hessians, rtol=1.0e-5, atol=1.0e-6)
 
 
-def _particle_contact_gather_capture_replays_device_count(test, device):
-    """A captured adjacency build and gather must consume a changing device-side count."""
-    with wp.ScopedDevice(device):
-        data = _make_particle_contact_gather_data(device)
-        capacity = data["capacity"]
-        particle_count = data["particle_count"]
-        raw_count = wp.zeros(1, dtype=int, device=device)
-        contact_count = wp.zeros(1, dtype=int, device=device)
-        contact_head = wp.full(particle_count, -1, dtype=int, device=device)
-        contact_next = wp.empty(3 * capacity, dtype=int, device=device)
-        forces = wp.zeros(particle_count, dtype=wp.vec3, device=device)
-        hessians = wp.zeros(particle_count, dtype=wp.mat33, device=device)
-
-        wp.launch(
-            _prepare_particle_contact_gather_replay,
-            dim=particle_count,
-            inputs=[raw_count, contact_count, contact_head, forces, hessians],
-            device=device,
-        )
-        _launch_particle_contact_gather(data, contact_count, contact_head, contact_next, forces, hessians, device)
-        wp.synchronize_device(device)
-
-        with wp.ScopedCapture(device=device) as capture:
-            wp.launch(
-                _prepare_particle_contact_gather_replay,
-                dim=particle_count,
-                inputs=[raw_count, contact_count, contact_head, forces, hessians],
-                device=device,
-            )
-            _launch_particle_contact_gather(data, contact_count, contact_head, contact_next, forces, hessians, device)
-        graph = capture.graph
-        test.assertIsNotNone(graph)
-
-        for replay_count in (0, data["boundary"] + 1, capacity + 2, 1):
-            reference_count = wp.array([replay_count], dtype=int, device=device)
-            reference_head = wp.full(particle_count, -1, dtype=int, device=device)
-            reference_next = wp.empty(3 * capacity, dtype=int, device=device)
-            reference_forces = wp.zeros_like(forces)
-            reference_hessians = wp.zeros_like(hessians)
-            _launch_particle_contact_gather(
-                data,
-                reference_count,
-                reference_head,
-                reference_next,
-                reference_forces,
-                reference_hessians,
-                device,
-            )
-
-            raw_count.assign([replay_count])
-            wp.capture_launch(graph)
-            with test.subTest(replay_count=replay_count):
-                test.assertEqual(int(contact_count.numpy()[0]), replay_count)
-                np.testing.assert_allclose(forces.numpy(), reference_forces.numpy(), rtol=1.0e-5, atol=1.0e-6)
-                np.testing.assert_allclose(hessians.numpy(), reference_hessians.numpy(), rtol=1.0e-5, atol=1.0e-6)
-
-
-def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
-    """Exercise production gather dispatch, capture replay, and repeated-step consistency."""
+def _particle_contact_accumulate_solver_step(test, device):
+    """Accumulate body-particle contacts in step() and follow the device-side count under graph replay."""
     with wp.ScopedDevice(device):
         model, _vertices = _build_edge_over_post(device)
         pipeline = newton.CollisionPipeline(
@@ -2478,62 +2129,33 @@ def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
             enable_rigid_soft_full_surface_contact=True,
         )
         contacts = pipeline.contacts()
-        state_in = model.state()
-        state_out = model.state()
-        pipeline.collide(state_in, contacts)
-        active_count = min(int(contacts.soft_contact_count.numpy()[0]), contacts.soft_contact_max)
+        pipeline.collide(model.state(), contacts)
+        active_count = int(contacts.soft_contact_count.numpy()[0])
         test.assertGreater(active_count, 0)
 
         solver = newton.solvers.SolverVBD(model, iterations=1)
+        test.assertGreater(solver._body_particle_contact_launch_dim, 0)
+        test.assertLessEqual(solver._body_particle_contact_launch_dim, contacts.soft_contact_max)
+        state_in = model.state()
+        state_out = model.state()
         solver.step(state_in, state_out, None, contacts, 1.0 / 120.0)
-        test.assertTrue(solver._particle_contact_adjacency_initialized)
+        reference_q = state_out.particle_q.numpy().copy()
+        # Gravity is off, so only the contacts move the triangle.
+        test.assertGreater(np.abs(reference_q - model.particle_q.numpy()).max(), 1.0e-6)
 
-        raw_count = wp.array([active_count], dtype=int, device=device)
-        with wp.ScopedCapture(device=device) as capture:
-            wp.launch(
-                _prepare_particle_contact_gather_replay,
-                dim=model.particle_count,
-                inputs=[
-                    raw_count,
-                    contacts.soft_contact_count,
-                    solver._particle_contact_head,
-                    solver.particle_forces,
-                    solver.particle_hessians,
-                ],
-                device=device,
-            )
-            solver.step(state_in, state_out, None, contacts, 1.0 / 120.0)
-        graph = capture.graph
-        test.assertIsNotNone(graph)
-
-        for replay_count in (0, active_count):
-            raw_count.assign([replay_count])
-            wp.capture_launch(graph)
-            head = solver._particle_contact_head.numpy()
-            with test.subTest(replay_count=replay_count):
-                test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), replay_count)
-                if replay_count == 0:
-                    test.assertTrue(np.all(head == -1))
-                else:
-                    test.assertTrue(np.any(head >= 0))
-                test.assertTrue(np.all(np.isfinite(state_out.particle_q.numpy())))
-
-        # Repeated identical steps on the same contact buffer must produce identical results.
-        deterministic_solver = newton.solvers.SolverVBD(
-            model,
-            iterations=1,
-            deterministic=wp.DeterministicMode.RUN_TO_RUN,
-        )
-        test.assertEqual(deterministic_solver._particle_contact_head.shape[0], model.particle_count)
-        contacts.soft_contact_count.assign([active_count])
-        results = []
-        for _ in range(2):
-            state_a = model.state()
-            state_b = model.state()
-            deterministic_solver._particle_contact_adjacency_initialized = False
-            deterministic_solver.step(state_a, state_b, None, contacts, 1.0 / 120.0)
-            results.append(state_b.particle_q.numpy().copy())
-        np.testing.assert_array_equal(results[0], results[1])
+        if device.is_cuda:
+            # A captured step must follow the device-side contact count on replay.
+            replay_count = wp.array([active_count], dtype=int, device=device)
+            with wp.ScopedCapture(device=device) as capture:
+                wp.copy(state_in.particle_q, model.particle_q)
+                wp.copy(state_in.particle_qd, model.particle_qd)
+                wp.copy(contacts.soft_contact_count, replay_count)
+                solver.step(state_in, state_out, None, contacts, 1.0 / 120.0)
+            wp.capture_launch(capture.graph)
+            np.testing.assert_allclose(state_out.particle_q.numpy(), reference_q, rtol=1.0e-5, atol=1.0e-6)
+            replay_count.assign([0])
+            wp.capture_launch(capture.graph)
+            np.testing.assert_allclose(state_out.particle_q.numpy(), model.particle_q.numpy(), rtol=0.0, atol=1.0e-6)
 
 
 def _make_body_particle_dual_prefix_data(device, capacity):
@@ -5026,33 +4648,15 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_particle_contact_gather_matches_legacy",
-    _particle_contact_gather_matches_legacy,
+    "test_particle_contact_accumulate_strides_over_active_prefix",
+    _particle_contact_accumulate_strides_over_active_prefix,
     devices=devices,
 )
 add_function_test(
     TestSolverVBD,
-    "test_particle_contact_gather_capture_replays_device_count",
-    _particle_contact_gather_capture_replays_device_count,
-    devices=cuda_devices,
-)
-add_function_test(
-    TestSolverVBD,
-    "test_particle_contact_gather_solver_step_dispatch_and_capture",
-    _particle_contact_gather_solver_step_dispatch_and_capture,
-    devices=cuda_devices,
-)
-add_function_test(
-    TestSolverVBD,
-    "test_particle_contact_gather_order_pinned",
-    _particle_contact_gather_order_pinned,
+    "test_particle_contact_accumulate_solver_step",
+    _particle_contact_accumulate_solver_step,
     devices=devices,
-)
-add_function_test(
-    TestSolverVBD,
-    "test_particle_contact_adjacency_follows_swapped_contacts",
-    _particle_contact_adjacency_follows_swapped_contacts,
-    devices=cuda_devices,
 )
 add_function_test(
     TestSolverVBD,
@@ -5492,12 +5096,12 @@ def _set_slot(arr, idx, value):
 
 def _run_face_section2(device, shape_margin):
     """Build a single soft-FACE contact, seed the shared AVBD per-contact material via
-    ``init_body_particle_contacts``, then run the production two-kernel sequence
-    (``build_particle_body_contact_adjacency_active`` + ``gather_particle_body_contact_force_and_hessian``)
-    with the given ``shape_margin`` array. The geometry gives a 0.05 penetration along +z; returns
+    ``init_body_particle_contacts``, then run the production
+    ``accumulate_particle_body_contact_force_and_hessian`` kernel with the given ``shape_margin``
+    array. The geometry gives a 0.05 penetration along +z; returns
     ``(forces, hessians, ke, bary, (p0, p1, p2))`` where ``ke`` is the mixed effective stiffness
-    section 2 reads. All three vertices form one color group so one gather launch processes the
-    whole triangle."""
+    section 2 reads. All three vertices share one color so one launch processes the whole
+    triangle."""
     builder = newton.ModelBuilder()
     builder.add_shape_box(body=-1, xform=wp.transform(wp.vec3(0.0), wp.quat_identity()), hx=1.0, hy=1.0, hz=1.0)
     p0 = builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0), 0.1, radius=0.0)
@@ -5557,39 +5161,23 @@ def _run_face_section2(device, shape_margin):
         device=device,
     )
 
-    # Launch the production gather kernel the way SolverVBD does: build the per-particle
-    # incidence lists over the active prefix, then gather one color group holding all three
-    # triangle vertices.
-    contact_head = wp.full(model.particle_count, -1, dtype=int, device=device)
-    contact_next = wp.empty(3 * smax, dtype=int, device=device)
+    # Launch the production kernel the way SolverVBD does; the three vertices share color 0.
     wp.launch(
-        build_particle_body_contact_adjacency_active,
+        accumulate_particle_body_contact_force_and_hessian,
         dim=smax,
         inputs=[
-            contacts.soft_contact_indices,
-            contacts.soft_contact_count,
-            smax,
-            contact_head,
-            contact_next,
-        ],
-        device=device,
-    )
-    color_group = wp.array([p0, p1, p2], dtype=wp.int32, device=device)
-    wp.launch(
-        gather_particle_body_contact_force_and_hessian,
-        dim=color_group.shape[0],
-        block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
-        inputs=[
             0.01,  # dt
-            color_group,
+            0,  # current_color
             state.particle_q,  # pos_anchor == pos -> no damping / friction
             state.particle_q,
+            wp.zeros(model.particle_count, dtype=int, device=device),  # particle_colors
             1.0,  # friction_epsilon
             False,  # rigid_body_particle_contact_use_log_barrier
             model.particle_radius,
             contacts.soft_contact_indices,
-            contact_head,
-            contact_next,
+            contacts.soft_contact_count,
+            smax,
+            smax,  # thread_count
             penalty_k,
             material_kd,
             material_mu,
