@@ -23,6 +23,9 @@ PGS_CONSTRAINT_TYPE_JOINT_LIMIT = 3
 # Joint velocity-limit row: a per-DOF velocity clamp with one unilateral row per
 # bound and no position bias.
 PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT = 4
+# Experimental contact torsion row: one bounded angular row per contact group about the
+# group normal (see ``contact_torsion.py``). Types 5 and 6 are reserved for bilateral rows.
+PGS_CONSTRAINT_TYPE_TORSION = 7
 
 # Positive gaps below this slop [m] count as touching: it absorbs float32 residuals of
 # rows that land exactly at contact.

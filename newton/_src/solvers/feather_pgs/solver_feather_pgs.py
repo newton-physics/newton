@@ -17,6 +17,13 @@ from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk
 from ..solver import SolverBase
+from .contact_torsion import (
+    configure_contact_torsion,
+    prepare_torsion_rows,
+    prepare_torsion_velocity_pass,
+    torque_sweep_source,
+    validate_torsion_step,
+)
 from .friction import FRICTION_PAIR_CUDA
 from .friction_patches import _FrictionPatchState, finish_patch_impulses, link_patch_rows, seed_patch_impulses
 from .kernels import (
@@ -26,6 +33,7 @@ from .kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
     PGS_CONSTRAINT_TYPE_JOINT_TARGET,
     PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
+    PGS_CONSTRAINT_TYPE_TORSION,
     _compute_body_net_wrench,
     accumulate_group_diag_worlds,
     allocate_joint_velocity_limit_slots,
@@ -693,7 +701,9 @@ class SolverFeatherPGS(SolverBase):
       :attr:`~newton.ModelBuilder.ShapeConfig.restitution`. Optional contact
       regularization, warm start from the previous step's impulses, velocity-only
       iterations and gap gates for speculative contacts are configured on the
-      constructor. Contact compliance and torsional friction are not applied.
+      constructor. Experimental, default-off contact torsion (``contact_torsion_radius``)
+      adds a load-bounded spin-friction row per contact group. Contact compliance is not
+      applied.
     - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds.
     - CUDA graph capture of :meth:`step` and :meth:`reset`.
 
@@ -871,6 +881,10 @@ class SolverFeatherPGS(SolverBase):
         articulation_pair_contact_gap_gate: float = 0.0,
         contact_friction_gap_threshold: float = float("inf"),
         contact_friction_articulation_pairs_only: bool = False,
+        contact_torsion_radius: float = 0.0,
+        contact_torsion_shape_indices: tuple[int, ...] | None = None,
+        contact_torsion_shape_patterns: tuple[str, ...] | None = None,
+        contact_torsion_device: bool = False,
     ):
         """Create a FeatherPGS solver for a finalized CUDA model.
 
@@ -993,6 +1007,41 @@ class SolverFeatherPGS(SolverBase):
             contact_friction_articulation_pairs_only: Apply
                 ``contact_friction_gap_threshold`` only to contacts between two articulated
                 (non-free) bodies.
+            contact_torsion_radius: Experimental effective spin radius [m] of contact
+                torsion; ``0`` disables it. A positive radius adds one angular row per
+                contact group of an articulated body, about the group's normal, bounded by
+                ``radius * (mu * N - sliding)``: sliding and spin share one Coulomb budget,
+                and the normal load ``N`` is the final solved load of the group's normal
+                rows. With point friction a group is a coplanar cluster of touching contacts
+                of one shape pair; with friction patches it is one patch region, budgeted by
+                its pooled load and undivided friction coefficient. The radius is an explicit
+                footprint assumption, not derived from the geometry: for uniform pressure on
+                a disk of radius ``R`` it is ``2 * R / 3``. Rows are rebuilt every step and
+                carry no spin history. Velocity-only iterations keep the position solve's
+                spin impulse and retire the rows of groups that no longer touch. Free-body
+                contacts get no torsion rows. Requires ``pgs_warmstart=False``; contacts
+                with hydroelastic stiffness are rejected, and running out of
+                ``dense_max_constraints`` raises instead of dropping rows. Configure at
+                construction.
+            contact_torsion_shape_indices: Global shape indices selecting the contacts that
+                get torsion (contacts with at least one selected shape). ``None`` selects
+                every shape; an empty tuple selects none. Supported geometry is sphere, box,
+                capsule, cylinder, cone, ellipsoid, plane and convex mesh: selecting another
+                type raises, and without a selection contacts involving other types are
+                skipped. Mutually exclusive with ``contact_torsion_shape_patterns``.
+            contact_torsion_shape_patterns: Regular expressions full-matched against
+                :attr:`~newton.Model.shape_label` at construction, as an alternative to
+                ``contact_torsion_shape_indices``. A pattern that matches no shape raises.
+            contact_torsion_device: Prepare the torsion rows on the device instead of on
+                the host. The host preparation is the reference implementation; it reads
+                the contacts back every step and cannot be captured in a CUDA graph. The
+                device preparation builds the same groups and rows with preallocated
+                buffers. Eager steps check its errors synchronously. To capture
+                :meth:`step` in a CUDA graph, call :meth:`prepare_contact_torsion_capture`
+                outside capture, then :meth:`validate_contact_torsion` after every replay
+                batch before using the results. Grouping runs serially per world with
+                worst-case quadratic cost in the contacts of a world. No effect without a
+                positive ``contact_torsion_radius``.
         """
         super().__init__(model)
         if not model.device.is_cuda:
@@ -1065,6 +1114,9 @@ class SolverFeatherPGS(SolverBase):
         if np.isnan(self.contact_friction_gap_threshold):
             raise ValueError("contact_friction_gap_threshold must not be NaN")
         self.contact_friction_articulation_pairs_only = bool(contact_friction_articulation_pairs_only)
+        configure_contact_torsion(
+            self, contact_torsion_radius, contact_torsion_shape_indices, contact_torsion_shape_patterns
+        )
 
         self.rigid_body_angular_damping = getattr(model, "rigid_body_angular_damping", None)
         if self.rigid_body_angular_damping is None:
@@ -1142,6 +1194,14 @@ class SolverFeatherPGS(SolverBase):
         self._allocate_buffers(model)
         self._allocate_world_buffers(model)
         self._allocate_mf_buffers(model)
+        # Contact rows keep row_parent for their friction/patch load linkage; torsion keeps
+        # its own group membership.
+        self._contact_torsion_group = wp.full(
+            self.row_parent.shape if self._contact_torsion_enabled else (1, 1),
+            -1,
+            dtype=wp.int32,
+            device=model.device,
+        )
         self.mf_target_velocity = (
             wp.zeros_like(self.mf_rhs)
             if self._has_prescribed_response
@@ -1188,12 +1248,73 @@ class SolverFeatherPGS(SolverBase):
         self.shape_material_restitution = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._refresh_shape_material_restitution()
 
+        self.contact_torsion_device = bool(contact_torsion_device)
+        self._device_torsion = None
+        if self._contact_torsion_enabled and self.contact_torsion_device:
+            from .contact_torsion_device import enable_device_torsion  # noqa: PLC0415
+
+            enable_device_torsion(self)
+
     def _refresh_shape_material_restitution(self) -> None:
         """Copy the model's current restitution coefficients into the solver's fixed buffer."""
         # Users may replace model.shape_material_restitution; captured graphs keep this buffer's address.
         restitution = self.model.shape_material_restitution
         if restitution is not None and self.model.shape_count:
             wp.copy(self.shape_material_restitution, restitution, count=self.model.shape_count)
+
+    @property
+    def contact_torsion_radius(self) -> float:
+        """Effective contact torsion radius [m]; ``0`` when torsion is disabled."""
+        return self._contact_torsion_radius
+
+    @property
+    def contact_torsion_shape_indices(self) -> tuple[int, ...] | None:
+        """Shape indices selecting contact torsion, as given at construction."""
+        return self._contact_torsion_shape_indices
+
+    @property
+    def contact_torsion_shape_patterns(self) -> tuple[str, ...] | None:
+        """Shape-label patterns selecting contact torsion, as given at construction."""
+        return self._contact_torsion_shape_patterns
+
+    def prepare_contact_torsion_capture(self, state_in: State, state_out: State) -> None:
+        """Prepare device contact torsion for CUDA graph capture of :meth:`step`.
+
+        Call outside capture, with the states the graph will use, before capturing a
+        step with contact torsion. It requires ``contact_torsion_device=True`` and does not
+        advance the simulation. Afterwards torsion errors are no longer raised by
+        :meth:`step`; they latch on the device, the step publishes its input state
+        unchanged and solves no rows, and :meth:`validate_contact_torsion` raises them.
+        Does nothing when contact torsion is disabled.
+
+        Args:
+            state_in: Input state of the captured step.
+            state_out: Output state of the captured step.
+        """
+        if not self._contact_torsion_enabled:
+            return
+        preparation = self._device_torsion
+        if preparation is None:
+            raise RuntimeError("Contact torsion graph capture requires contact_torsion_device=True")
+        if wp.get_stream(self.model.device).is_capturing:
+            raise RuntimeError("Prepare contact torsion buffers outside CUDA graph capture")
+        preparation.validate()
+        preparation.deferred_errors = True
+        preparation.begin_step(state_in, state_out)
+
+    def validate_contact_torsion(self) -> None:
+        """Raise latched device contact torsion errors.
+
+        After :meth:`prepare_contact_torsion_capture`, call this outside capture after
+        every batch of graph replays, before using their results. Errors stay latched:
+        reconstruct the solver after correcting the input. Does nothing without device
+        torsion preparation.
+        """
+        preparation = self._device_torsion
+        if preparation is not None:
+            if wp.get_stream(self.model.device).is_capturing:
+                raise RuntimeError("Validate contact torsion outside CUDA graph capture")
+            preparation.validate()
 
     def _update_kinematic_state(self) -> None:
         """Refresh cached kinematic flags and effective joint armature."""
@@ -2205,6 +2326,7 @@ class SolverFeatherPGS(SolverBase):
                 device_arch,
                 has_dense_velocity_limit_rows=self.enable_joint_velocity_limits,
                 shared_metadata=shared_metadata,
+                contact_torsion=self._contact_torsion_enabled,
             )
 
     def _pack_mf_meta(self, mf_rhs: wp.array) -> None:
@@ -2264,6 +2386,8 @@ class SolverFeatherPGS(SolverBase):
                 self.mf_row_mu,
                 self.row_w,
                 self.mf_row_w,
+                self._contact_torsion_group,
+                self._contact_torsion_radius,
                 int(iterations),
                 self.pgs_omega,
                 int(regularize),
@@ -2310,6 +2434,10 @@ class SolverFeatherPGS(SolverBase):
                 "pgs_warmstart=True matches contacts across steps and requires a Contacts buffer created "
                 'with contact matching; create the CollisionPipeline with contact_matching="latest".'
             )
+        if self._contact_torsion_enabled:
+            validate_torsion_step(self)
+            if self._device_torsion is not None:
+                self._device_torsion.begin_step(state_in, state_out)
         if self._last_step_dt is not None and abs(self._last_step_dt - dt) > 1.0e-8:
             # The augmented mass matrix depends on dt through the implicit drive terms.
             self._force_mass_update = True
@@ -2349,6 +2477,8 @@ class SolverFeatherPGS(SolverBase):
 
         # Stage 4: constraint rows, responses Y = H^-1 J^T, diagonals and right-hand sides.
         self._stage4_build_rows(state_in, state_aug, contacts, dt)
+        if self._contact_torsion_enabled:
+            prepare_torsion_rows(self, state_in, state_aug, contacts)
         for size in self.size_groups:
             if self._execution_plan.use_tiled_hinv_jt(size):
                 self._stage4_hinv_jt_tiled(size)
@@ -2571,6 +2701,10 @@ class SolverFeatherPGS(SolverBase):
                 self._friction_patches.previous.valid.zero_()
         if self.pgs_warmstart:
             self._snapshot_warmstart(contacts, dt)
+        if self._device_torsion is not None:
+            self._device_torsion.end_step(state_out)
+            if self._device_torsion.deferred_errors and not wp.get_stream(model.device).is_capturing:
+                self.validate_contact_torsion()
         self._step += 1
         return state_out
 
@@ -2645,6 +2779,8 @@ class SolverFeatherPGS(SolverBase):
             outputs=[self.rhs_unbiased],
             device=model.device,
         )
+        if self._contact_torsion_enabled:
+            prepare_torsion_velocity_pass(self, dt)
         if self._has_free_rigid_bodies:
             wp.launch(
                 compute_mf_velocity_rhs,
@@ -4402,6 +4538,7 @@ def _get_pgs_solve_mf_gs_kernel(
     *,
     has_dense_velocity_limit_rows: bool,
     shared_metadata: bool,
+    contact_torsion: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -4413,7 +4550,9 @@ def _get_pgs_solve_mf_gs_kernel(
     2. the free-body contact and friction rows: lanes 0-5 handle body A and lanes 6-11
        body B;
     3. the dense joint velocity-limit rows and the free-body velocity-limit rows, so
-       velocity limits have the last word in each iteration.
+       velocity limits have the last word in each iteration;
+    4. with ``contact_torsion``, the contact torsion rows, which the dense pass skips
+       (``contact_torsion.torque_sweep_source``).
 
     Friction rows follow their normal row and solve the two tangent impulses together on
     the Coulomb disk of the current normal impulse (``FRICTION_PAIR_CUDA``). A
@@ -4432,6 +4571,7 @@ def _get_pgs_solve_mf_gs_kernel(
         device_arch: CUDA architecture; part of the cache key.
         has_dense_velocity_limit_rows: Emit the dense velocity-limit pass.
         shared_metadata: Keep the dense row metadata in shared memory.
+        contact_torsion: Emit the contact torsion pass.
     """
     M_D = max_constraints
     M_MF = mf_max_constraints
@@ -4484,6 +4624,9 @@ def _get_pgs_solve_mf_gs_kernel(
         if has_dense_velocity_limit_rows
         else ""
     )
+
+    torsion_skip = f"if (row_type == {int(PGS_CONSTRAINT_TYPE_TORSION)}) continue;" if contact_torsion else ""
+    torsion_sweep = torque_sweep_source(D) if contact_torsion else ""
 
     snippet = f"""
 #if defined(__CUDA_ARCH__)
@@ -4548,6 +4691,7 @@ def _get_pgs_solve_mf_gs_kernel(
             }}
 
             int row_type = s_meta_dense[i] & {type_mask};
+            {torsion_skip}
             if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)}) continue;
             if (freeze_drive_rows != 0 && row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_TARGET)}) continue;
             float denom = s_diag_dense[i];
@@ -4752,6 +4896,7 @@ def _get_pgs_solve_mf_gs_kernel(
             }}
             __syncwarp();
         }}
+{torsion_sweep}
 
         // An exactly stationary sweep is a fixed point; later sweeps are redundant.
         if (__ballot_sync(MASK, iteration_changed != 0) == 0u) break;
@@ -4835,6 +4980,8 @@ def _get_pgs_solve_mf_gs_kernel(
         mf_row_mu: wp.array2d[float],
         world_row_w: wp.array2d[float],
         mf_row_w: wp.array2d[float],
+        world_torsion_group: wp.array2d[int],
+        contact_torsion_radius: float,
         iterations: int,
         omega: float,
         regularize: int,
@@ -4864,6 +5011,8 @@ def _get_pgs_solve_mf_gs_kernel(
         mf_row_mu: wp.array2d[float],
         world_row_w: wp.array2d[float],
         mf_row_w: wp.array2d[float],
+        world_torsion_group: wp.array2d[int],
+        contact_torsion_radius: float,
         iterations: int,
         omega: float,
         regularize: int,
@@ -4894,6 +5043,8 @@ def _get_pgs_solve_mf_gs_kernel(
             mf_row_mu,
             world_row_w,
             mf_row_w,
+            world_torsion_group,
+            contact_torsion_radius,
             iterations,
             omega,
             regularize,
@@ -4904,6 +5055,7 @@ def _get_pgs_solve_mf_gs_kernel(
     name = (
         f"pgs_solve_mf_gs_{max_constraints}_{mf_max_constraints}_{max_world_dofs}"
         f"_vlim{int(has_dense_velocity_limit_rows)}{'' if shared_metadata else '_gmeta'}"
+        f"{'_torsion' if contact_torsion else ''}"
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
