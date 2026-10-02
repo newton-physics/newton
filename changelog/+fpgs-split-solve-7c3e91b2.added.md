@@ -1,1 +1,1 @@
-Add `pgs_mode="split"` to `newton.solvers.SolverFeatherPGS`: a dense Delassus solve of the articulated-body rows followed by the free-body rows, which also runs on CPU devices.
+Add `pgs_mode="split"` to `newton.solvers.SolverFeatherPGS` and make it the default: a dense Delassus solve of the articulated-body rows followed by the free-body rows, which also runs on CPU devices. Pass `pgs_mode="matrix_free"` for the CUDA matrix-free solve, which `enable_joint_velocity_limits=True` requires.

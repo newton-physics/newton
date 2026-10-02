@@ -253,7 +253,7 @@ for device in devices:
                 f"{name}_feather_pgs",
                 test_fn,
                 devices=[device],
-                solver_fn=newton.solvers.SolverFeatherPGS,
+                solver_fn=lambda model: newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free"),
             )
     # The FeatherPGS split solve publishes the same wrench on every device.
     for name, test_fn in (

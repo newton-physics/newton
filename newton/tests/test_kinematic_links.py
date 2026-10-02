@@ -745,7 +745,7 @@ def test_kinematic_prescribed_response_lifetime(
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
-    "feather_pgs_matrix_free": newton.solvers.SolverFeatherPGS,
+    "feather_pgs_matrix_free": lambda model: newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free"),
     "feather_pgs_split": lambda model: newton.solvers.SolverFeatherPGS(model, pgs_mode="split"),
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),

@@ -228,11 +228,11 @@ repository examples spend tuning effort, not a shared solver API.
        ``velocity_limit_activation_fraction``,
        ``dense_max_constraints``, ``mf_max_constraints``,
        ``warn_constraint_overflow``.
-     - Experimental. The default ``pgs_mode="matrix_free"`` requires CUDA;
-       ``pgs_mode="split"`` runs on CPU and CUDA, stores a dense
-       ``dense_max_constraints`` squared Delassus matrix per world and does not
-       support joint velocity limits. Joint limits are enforced only with
-       ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
+     - Experimental. The default ``pgs_mode="split"`` runs on CPU and CUDA and
+       stores a dense ``dense_max_constraints`` squared Delassus matrix per world;
+       ``pgs_mode="matrix_free"`` requires CUDA and is needed for joint velocity
+       limits. Joint limits are enforced only with ``enable_joint_limits=True``
+       (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``pgs_iterations`` reduce residual penetration and
        slip, and ``pgs_beta`` sets how much position error is corrected per

@@ -160,10 +160,10 @@ def _construct(test, model, expect_warning, **kwargs):
     return solver
 
 
-def test_jointed_global_kinematic_flags_other_world_contacts(test, device):
+def test_jointed_global_kinematic_flags_other_world_contacts(test, device, pgs_mode="matrix_free"):
     """A kinematic global articulation with joints is solved in world 0; its other-world contacts are flagged."""
     model = _jointed_kinematic_floor_model(device)
-    solver = _construct(test, model, True, warn_constraint_overflow=False)
+    solver = _construct(test, model, True, pgs_mode=pgs_mode, warn_constraint_overflow=False)
     state, output = model.state(), model.state()
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     pipeline = newton.CollisionPipeline(model)
@@ -186,16 +186,16 @@ def test_jointed_global_kinematic_flags_other_world_contacts(test, device):
         solver.check_constraint_capacity()
 
 
-def test_construction_warns_about_unsolvable_global_contacts(test, device):
+def test_construction_warns_about_unsolvable_global_contacts(test, device, pgs_mode="matrix_free"):
     """The constructor warns once when shapes allow contacts that couple a global articulation with another world."""
     # Dynamic global bodies and jointed kinematic global articulations warn.
-    _construct(test, _floor_model(device, "dynamic"), True)
-    _construct(test, _jointed_kinematic_floor_model(device), True)
+    _construct(test, _floor_model(device, "dynamic"), True, pgs_mode=pgs_mode)
+    _construct(test, _jointed_kinematic_floor_model(device), True, pgs_mode=pgs_mode)
 
     # World geometry and global kinematic free bodies are solvable in every world.
-    _construct(test, _floor_model(device, "static"), False)
-    _construct(test, _floor_model(device, "kinematic"), False)
-    _construct(test, _floor_model(device, "kinematic", kinematic_world0=True), False)
+    _construct(test, _floor_model(device, "static"), False, pgs_mode=pgs_mode)
+    _construct(test, _floor_model(device, "kinematic"), False, pgs_mode=pgs_mode)
+    _construct(test, _floor_model(device, "kinematic", kinematic_world0=True), False, pgs_mode=pgs_mode)
 
     # A dynamic global body with a single world, or whose shapes cannot collide with the
     # worlds' bodies, cannot produce such contacts.
@@ -203,17 +203,17 @@ def test_construction_warns_about_unsolvable_global_contacts(test, device):
     body = builder.add_body(mass=1.0)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
     builder.add_ground_plane()
-    _construct(test, builder.finalize(device=device), False)
+    _construct(test, builder.finalize(device=device), False, pgs_mode=pgs_mode)
     model = _floor_model(device, "dynamic")
     flags = model.shape_flags.numpy()
     flags[model.shape_body.numpy() == 2] &= ~int(newton.ShapeFlags.COLLIDE_SHAPES)
     model.shape_flags.assign(flags)
-    _construct(test, model, False)
+    _construct(test, model, False, pgs_mode=pgs_mode)
     model = _floor_model(device, "dynamic")
     groups = model.shape_collision_group.numpy()
     groups[model.shape_body.numpy() == 2] = 7
     model.shape_collision_group.assign(groups)
-    _construct(test, model, False)
+    _construct(test, model, False, pgs_mode=pgs_mode)
 
 
 def _lift_box(model, world):
@@ -363,9 +363,9 @@ def _few_articulation_models(device):
     yield "two_worlds_two_articulations", builder.finalize(device=device), [0.099, 0.099], [2.0, 2.0]
 
 
-def _check_global_slot_reset(test, device, model, z_contact, z_free):
+def _check_global_slot_reset(test, device, model, z_contact, z_free, pgs_mode):
     entries = model.world_count + 1
-    solver = SolverFeatherPGS(model, mf_max_constraints=3, warn_constraint_overflow=False)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, mf_max_constraints=3, warn_constraint_overflow=False)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state, output = model.state(), model.state()
@@ -400,6 +400,8 @@ def _check_global_slot_reset(test, device, model, z_contact, z_free):
 
     # Stepping again recomputes the status: a lossless step keeps it clear.
     test.assertEqual(step(z_free), clear)
+    if not wp.get_device(device).is_cuda:
+        return
 
     # Captured resets, unmasked and with the mask reassigned between replays.
     mask = wp.array(global_only, dtype=wp.bool, device=device)
@@ -418,12 +420,12 @@ def _check_global_slot_reset(test, device, model, z_contact, z_free):
     test.assertEqual(solver.constraint_overflow.numpy().tolist(), clear)
 
 
-def test_global_slot_reset_with_few_articulations(test, device):
+def test_global_slot_reset_with_few_articulations(test, device, pgs_mode="matrix_free"):
     """Every reset mask clears the global entry even when articulations do not outnumber the status entries."""
     for name, model, z_contact, z_free in _few_articulation_models(device):
         with test.subTest(model=name):
             test.assertLessEqual(model.articulation_count, model.world_count)
-            _check_global_slot_reset(test, device, model, z_contact, z_free)
+            _check_global_slot_reset(test, device, model, z_contact, z_free, pgs_mode)
 
 
 class TestFeatherPGSGlobalWorld(unittest.TestCase):

@@ -123,6 +123,7 @@ def _max_arm_speed_over_impact(device, *, enable_joint_velocity_limits: bool) ->
     # Deliberately under-converged: the velocity limit must still have the last word.
     solver = SolverFeatherPGS(
         model,
+        pgs_mode="matrix_free",
         enable_joint_velocity_limits=enable_joint_velocity_limits,
         pgs_iterations=8,
         dense_max_constraints=32,

@@ -114,6 +114,7 @@ def _build_heterogeneous_world_model(device):
 def test_defaults(test, device):
     """Keep the documented constructor defaults."""
     solver = SolverFeatherPGS(_build_chain_model(device, num_links=2, num_worlds=1))
+    test.assertEqual(solver.pgs_mode, "split")
     test.assertEqual(solver.pgs_iterations, 12)
     test.assertAlmostEqual(solver.pgs_beta, 0.2)
     test.assertAlmostEqual(solver.pgs_cfm, 1.0e-6)
@@ -147,9 +148,11 @@ def test_constructor_validates_options(test, device):
     for kwargs, message in invalid:
         with test.subTest(**kwargs):
             with test.assertRaisesRegex(ValueError, message):
-                SolverFeatherPGS(model, **kwargs)
+                SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs)
     test.assertEqual(
-        SolverFeatherPGS(model, velocity_limit_activation_fraction=float("inf")).velocity_limit_activation_fraction,
+        SolverFeatherPGS(
+            model, pgs_mode="matrix_free", velocity_limit_activation_fraction=float("inf")
+        ).velocity_limit_activation_fraction,
         float("inf"),
     )
 
@@ -182,8 +185,8 @@ def test_unsupported_model_features_raise(test, device):
 def test_default_kernel_selection_is_cached(test, device):
     """Resolve identical solver shapes to the same cached kernel objects."""
     model = _build_chain_model(device)
-    first = SolverFeatherPGS(model)
-    second = SolverFeatherPGS(model)
+    first = SolverFeatherPGS(model, pgs_mode="matrix_free")
+    second = SolverFeatherPGS(model, pgs_mode="matrix_free")
     for attr in ("_cholesky_kernels_by_size", "_triangular_solve_kernels_by_size", "_hinv_jt_kernels_by_size"):
         first_kernels = getattr(first, attr)
         second_kernels = getattr(second, attr)
@@ -195,7 +198,7 @@ def test_default_kernel_selection_is_cached(test, device):
 
 def test_compact_world_dof_mapping_pads_heterogeneous_worlds(test, device):
     """Pad the per-world response DOF map of worlds with fewer DOFs."""
-    solver = SolverFeatherPGS(_build_heterogeneous_world_model(device))
+    solver = SolverFeatherPGS(_build_heterogeneous_world_model(device), pgs_mode="matrix_free")
     test.assertEqual(solver.max_world_dofs, 6)
     np.testing.assert_array_equal(solver.world_dof_count.numpy(), np.array((6, 1), dtype=np.int32))
     indices = solver.world_dof_indices.numpy()
@@ -206,9 +209,13 @@ def test_compact_world_dof_mapping_pads_heterogeneous_worlds(test, device):
 
 def test_diagonal_fusion_requires_nonaliased_world_response(test, device):
     """Compute the row diagonal in H^-1 J^T only when it writes separate world storage."""
-    aliased = SolverFeatherPGS(_build_chain_model(device, num_links=23, num_worlds=1), dense_max_constraints=192)
+    aliased = SolverFeatherPGS(
+        _build_chain_model(device, num_links=23, num_worlds=1), pgs_mode="matrix_free", dense_max_constraints=192
+    )
     direct = SolverFeatherPGS(
-        _build_chain_model(device, num_links=23, num_worlds=1, with_free_body=True), dense_max_constraints=192
+        _build_chain_model(device, num_links=23, num_worlds=1, with_free_body=True),
+        pgs_mode="matrix_free",
+        dense_max_constraints=192,
     )
     test.assertTrue(aliased._jy_world_aliased)
     test.assertFalse(aliased._hinv_jt_writes_world)
@@ -225,7 +232,7 @@ def test_tiled_and_loop_kernels_step_identically(test, device):
         for overrides in ({}, {"cholesky_kernel": "loop", "trisolve_kernel": "loop", "hinv_jt_kernel": "par_row"}):
             SolverFeatherPGS._kernel_overrides = overrides
             model = _build_chain_model(device, num_links=14, num_worlds=2)
-            solver = SolverFeatherPGS(model, dense_max_constraints=64)
+            solver = SolverFeatherPGS(model, pgs_mode="matrix_free", dense_max_constraints=64)
             if not overrides:
                 test.assertTrue(solver._execution_plan.use_tiled_cholesky(14))
                 test.assertTrue(solver._execution_plan.use_tiled_hinv_jt(14))
@@ -533,11 +540,11 @@ def test_non_default_tile_threads_compiles_and_steps(test, device):
 
 class TestFeatherPGSLaunchConfig(unittest.TestCase):
     def test_cpu_construction_raises(self):
-        """Reject the CUDA-only matrix-free solve on a CPU device with a clear error."""
+        """Construct the default split solve on CPU and reject the CUDA-only matrix-free solve there."""
         model = _build_chain_model("cpu", num_links=2, num_worlds=1)
+        self.assertEqual(SolverFeatherPGS(model).pgs_mode, "split")
         with self.assertRaisesRegex(NotImplementedError, "requires a CUDA device; use pgs_mode='split' on CPU"):
-            SolverFeatherPGS(model)
-        self.assertEqual(SolverFeatherPGS(model, pgs_mode="split").pgs_mode, "split")
+            SolverFeatherPGS(model, pgs_mode="matrix_free")
 
     def test_hinv_fusion_requires_full_working_set_to_fit(self):
         """Fuse H^-1 J^T with the Delassus assembly only when the whole row set and its Delassus tile fit."""
