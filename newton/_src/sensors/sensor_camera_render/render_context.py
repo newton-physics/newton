@@ -544,6 +544,10 @@ class RenderContext:
                         pixels = normalize_texture(pixels, require_channels=True)
                         if pixels.dtype != np.uint8:
                             pixels = pixels.astype(np.uint8, copy=False)
+                        if pixels.shape[2] == 3:
+                            # In-memory RGB (and expanded grayscale) images are opaque; textures have 4 channels.
+                            alpha = np.full((*pixels.shape[:2], 1), 255, dtype=np.uint8)
+                            pixels = np.concatenate((pixels, alpha), axis=2)
 
                         texture_hashes[shape.texture_hash] = len(self._texture_data_source)
 
