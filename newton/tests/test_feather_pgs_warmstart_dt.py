@@ -77,6 +77,11 @@ def test_warm_carry_kernel_scales_rows_exactly(test: unittest.TestCase, device):
                 wp.array([2], dtype=wp.int32),  # current base slot
                 wp.array([0], dtype=wp.int32),  # contact_world
                 wp.array([0], dtype=wp.int32),  # current -> previous contact
+                wp.zeros(1, dtype=wp.int32),  # matched against the solved generation 0
+                wp.ones(1, dtype=wp.int32),  # contact generation 1
+                1,  # contact stream
+                wp.zeros(1, dtype=wp.int32),  # solved generation 0
+                wp.ones(1, dtype=wp.int32),  # solved stream
                 wp.array([4], dtype=wp.int32),  # previous base slot
                 wp.array(prev_impulses, dtype=wp.float32),
                 wp.array(prev_types, dtype=wp.int32),
