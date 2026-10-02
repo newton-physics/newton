@@ -22,6 +22,12 @@ _KERNEL_FACTORIES = (
     "_get_hinv_jt_kernel",
     "_get_hinv_jt_plain_kernel",
     "_get_joint_limit_warp_kernel",
+    "_get_pgs_solve_propagation_contact_kernel",
+    "_get_pgs_solve_propagation_full_iteration_kernel",
+    "_get_factor_propagation_tree_revolute_kernel",
+    "_get_propagation_tree_body_response_revolute_kernel",
+    "_get_propagate_tree_impulses_revolute_kernel",
+    "_get_refresh_propagation_tree_body_qd_warp_kernel",
 )
 
 
@@ -70,7 +76,6 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
             "enable_contact_friction",
             "contact_compliance",
             "pgs_mode",
-            "articulated_contact_response",
             "drive_mode",
             "friction_mode",
             "pgs_warmstart",

@@ -69,17 +69,24 @@ def test_dense_capacity_failure_is_world_local(test, device):
     test.assertLessEqual(int(solver.constraint_count.numpy()[0]), 3)
 
 
-def test_overflow_warning_is_printed_once(test, device):
+def test_overflow_warning_is_printed_once(test, device, response="immediate"):
     """Print one device-side warning per overflowing row family."""
     model = _box_on_ground(device, worlds=2)
-    solver = SolverFeatherPGS(model, mf_max_constraints=1)
+    if response == "propagation":
+        # The propagation rows hold every contact, in mf_max_constraints + dense_max_constraints rows.
+        solver = SolverFeatherPGS(
+            model, mf_max_constraints=1, dense_max_constraints=1, articulated_contact_response=response
+        )
+    else:
+        solver = SolverFeatherPGS(model, mf_max_constraints=1)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_in, state_out = model.state(), model.state()
     pipeline.collide(state_in, contacts)
     solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
     wp.synchronize_device(device)
-    np.testing.assert_array_equal(solver._row_overflow_warning_emitted.numpy(), [0, 1, 0])
+    expected = [0, 0, 0, 1] if response == "propagation" else [0, 1, 0, 0]
+    np.testing.assert_array_equal(solver._row_overflow_warning_emitted.numpy(), expected)
 
 
 class TestFeatherPGSCapacityStatus(unittest.TestCase):
@@ -105,6 +112,14 @@ add_function_test(
     test_overflow_warning_is_printed_once,
     devices=devices,
     check_output=False,
+)
+add_function_test(
+    TestFeatherPGSCapacityStatus,
+    "test_overflow_warning_is_printed_once_propagation",
+    test_overflow_warning_is_printed_once,
+    devices=devices,
+    check_output=False,
+    response="propagation",
 )
 
 
