@@ -577,6 +577,45 @@ class TestSensorCamera(unittest.TestCase):
         # The two projection modes produce distinct results on a curved surface.
         self.assertFalse(np.array_equal(cubic, triplanar))
 
+    def test_mesh_texture_transform_maps_uvs(self) -> None:
+        """Verify ``Mesh.texture_transform`` is applied to mesh UVs, as in the viewers."""
+        width, height = 16, 16
+        # Red for u < 0.5 and green for u >= 0.5.
+        texture = np.zeros((8, 16, 4), dtype=np.uint8)
+        texture[..., 3] = 255
+        texture[:, :8, 0] = 255
+        texture[:, 8:, 1] = 255
+
+        def albedo_at_u_quarter(texture_transform) -> np.ndarray:
+            mesh = newton.Mesh(
+                np.array([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]], dtype=np.float32),
+                np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
+                uvs=np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32),
+                compute_inertia=False,
+                texture=texture,
+                texture_transform=texture_transform,
+            )
+            builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            builder.add_shape_mesh(-1, mesh=mesh, color=(1.0, 1.0, 1.0))
+            model = builder.finalize(device="cpu")
+            camera = SensorCamera(model, default_render_config=SensorCamera.RenderConfig(enable_textures=True))
+            # The quad fills the view of a camera 1.8 m above it; pixel column 4 sees u = 0.25.
+            above = np.array([[0.0, 0.0, 1.8, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+            albedo = camera.create_albedo_image_output(1, width, height)
+            camera.update(
+                model.state(),
+                wp.array(above, dtype=wp.transformf, device="cpu"),
+                self._rays(width, height, math.radians(60.0)),
+                albedo_image=albedo,
+            )
+            packed = int(albedo.numpy()[0, height // 2, 4])
+            return np.array([packed & 0xFF, (packed >> 8) & 0xFF, (packed >> 16) & 0xFF])
+
+        identity = albedo_at_u_quarter(((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)))
+        shifted = albedo_at_u_quarter(((1.0, 0.0, 0.5), (0.0, 1.0, 0.0)))
+        np.testing.assert_allclose(identity, (255, 0, 0), atol=2)
+        np.testing.assert_allclose(shifted, (0, 255, 0), atol=2)
+
     def test_update_uses_default_render_settings(self) -> None:
         """Verify update falls back to the default clear data and render config."""
         parameters = inspect.signature(SensorCamera.update).parameters
