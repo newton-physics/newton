@@ -471,6 +471,90 @@ class TestFeatherPGSLaunchConfig(unittest.TestCase):
         self.assertFalse(_use_resident_mfgs_metadata(1024, 4096, 604, 101376))
         self.assertFalse(_use_resident_mfgs_metadata(192, 64, 29, 4096))
 
+    def test_mfgs_metadata_budget_counts_drive_arrays(self):
+        """Count the drive-row and fused-clamp arrays in the resident metadata budget."""
+        # The resident budget is 4 KiB: 128 rows hold 8 arrays (4 KiB) but not 9.
+        self.assertTrue(_use_resident_mfgs_metadata(128, 64, 29, 101376))
+        self.assertTrue(_use_resident_mfgs_metadata(128, 64, 29, 101376, has_drive_rows=True))
+        self.assertFalse(_use_resident_mfgs_metadata(128, 64, 29, 101376, has_drive_rows=True, fuse_vel_limits=True))
+        self.assertFalse(_use_resident_mfgs_metadata(256, 64, 29, 101376, has_drive_rows=True))
+
+
+def test_drive_mode_validation(test, device):
+    """Default to the implicit drive and reject unknown drive formulations."""
+    model = _build_chain_model(device, num_links=2, num_worlds=1)
+    solver = SolverFeatherPGS(model)
+    test.assertEqual(solver.drive_mode, "augmented")
+    test.assertFalse(solver.fuse_joint_velocity_limits)
+    test.assertEqual(SolverFeatherPGS(model, drive_mode="physx_pgs").drive_mode, "physx_pgs")
+    with test.assertRaisesRegex(ValueError, "drive_mode"):
+        SolverFeatherPGS(model, drive_mode="implicit")
+
+
+def test_fuse_joint_velocity_limits_validation(test, device):
+    """Engage the fused clamp only with PGS drive rows and active velocity limits, otherwise leave it inert."""
+    model = _build_chain_model(device, num_links=2, num_worlds=1)
+    inert = (
+        {"drive_mode": "augmented"},
+        {"drive_mode": "augmented", "enable_joint_velocity_limits": True},
+        {"drive_mode": "physx_pgs"},
+        {
+            "drive_mode": "physx_pgs",
+            "enable_joint_velocity_limits": True,
+            "velocity_limit_activation_fraction": float("inf"),
+        },
+        {"drive_mode": "physx_pgs", "enable_joint_velocity_limits": True, "fuse_joint_velocity_limits": False},
+    )
+    for kwargs in inert:
+        with test.subTest(**kwargs):
+            test.assertFalse(SolverFeatherPGS(model, **kwargs).fuse_joint_velocity_limits)
+    # The applicable combination engages by default.
+    solver = SolverFeatherPGS(model, drive_mode="physx_pgs", enable_joint_velocity_limits=True)
+    test.assertTrue(solver.fuse_joint_velocity_limits)
+
+
+def test_fuse_joint_velocity_limits_clamps_driven_dofs_without_rows(test, device):
+    """Hold the velocity limit of driven DOFs with the fused clamp and two fewer rows per driven DOF."""
+    num_links = 3
+    qdot_max = 1.0
+
+    def run(fuse):
+        model = _build_chain_model(device, num_links=num_links, num_worlds=1)
+        n = model.joint_dof_count
+        model.joint_target_ke.assign(np.full(n, 200.0, dtype=np.float32))
+        model.joint_target_kd.assign(np.full(n, 5.0, dtype=np.float32))
+        model.joint_velocity_limit.assign(np.full(n, qdot_max, dtype=np.float32))
+        solver = SolverFeatherPGS(
+            model,
+            drive_mode="physx_pgs",
+            enable_joint_velocity_limits=True,
+            fuse_joint_velocity_limits=fuse,
+            pgs_iterations=64,
+            dense_max_constraints=16,
+            mf_max_constraints=16,
+        )
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        control.joint_target_q.assign(np.full(n, 3.0, dtype=np.float32))
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        max_speed = 0.0
+        for _ in range(60):
+            solver.step(state_0, state_1, control, None, 1.0 / 60.0)
+            state_0, state_1 = state_1, state_0
+            max_speed = max(max_speed, float(np.max(np.abs(state_0.joint_qd.numpy()))))
+        return max_speed, int(solver.constraint_count.numpy()[0])
+
+    fused_speed, fused_rows = run(True)
+    dedicated_speed, dedicated_rows = run(False)
+    # Both formulations are stateless passes at the end of each iteration and leave the
+    # same small Gauss-Seidel residual above the limit on a coupled chain.
+    test.assertLessEqual(fused_speed, dedicated_speed * 1.05)
+    test.assertLessEqual(fused_speed, qdot_max * 1.25)
+    # The fused clamp drops the two velocity-limit rows of every driven DOF; the drive and
+    # position-limit rows remain.
+    test.assertGreaterEqual(fused_rows, num_links)
+    test.assertEqual(dedicated_rows - fused_rows, 2 * num_links)
+
 
 devices = get_cuda_test_devices()
 for _name, _func in (
@@ -493,6 +577,12 @@ for _name, _func in (
         test_equality_link_must_name_the_projected_constraint,
     ),
     ("test_enabling_equality_constraint_at_runtime_raises", test_enabling_equality_constraint_at_runtime_raises),
+    ("test_drive_mode_validation", test_drive_mode_validation),
+    ("test_fuse_joint_velocity_limits_validation", test_fuse_joint_velocity_limits_validation),
+    (
+        "test_fuse_joint_velocity_limits_clamps_driven_dofs_without_rows",
+        test_fuse_joint_velocity_limits_clamps_driven_dofs_without_rows,
+    ),
 ):
     add_function_test(TestFeatherPGSLaunchConfig, _name, _func, devices=devices)
 

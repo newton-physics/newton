@@ -13,6 +13,9 @@ from ...sim.articulation import (
 from .friction import contact_tangent_basis
 
 PGS_CONSTRAINT_TYPE_CONTACT = 0
+# PGS joint drive row (``drive_mode="physx_pgs"``): a bilateral row per driven DOF whose
+# impulse follows the PhysX force-drive update each iteration.
+PGS_CONSTRAINT_TYPE_JOINT_TARGET = 1
 PGS_CONSTRAINT_TYPE_FRICTION = 2
 PGS_CONSTRAINT_TYPE_JOINT_LIMIT = 3
 # Joint velocity-limit row: a per-DOF velocity clamp with one unilateral row per
@@ -68,6 +71,8 @@ def prescale_joint_velocity_limits(
     joint_dof_dim: wp.array2d[int],
     joint_velocity_limit: wp.array[float],
     body_flags: wp.array[wp.int32],
+    drive_slot: wp.array[int],
+    skip_driven: int,
     joint_qd: wp.array[float],
 ):
     """PhysX-style pre-solve joint velocity scaling.
@@ -75,6 +80,10 @@ def prescale_joint_velocity_limits(
     PhysX computes a single ratio per articulation from maxJointVelocity and
     applies that ratio to all articulation DOFs before building link velocities.
     This is separate from the velocity-limit constraint rows solved later.
+
+    ``skip_driven != 0`` (``fuse_joint_velocity_limits``) excludes DOFs with a drive
+    row (``drive_slot[dof] >= 0``) from the ratio and the scaling: the fused clamp
+    limits them inside the solve. With ``skip_driven == 0`` ``drive_slot`` is not read.
     """
     art = wp.tid()
     joint_start = articulation_start[art]
@@ -95,6 +104,9 @@ def prescale_joint_velocity_limits(
 
         for axis in range(axis_count):
             dof = qd_start + axis
+            if skip_driven != 0:
+                if drive_slot[dof] >= 0:
+                    continue
             limit = joint_velocity_limit[dof]
             qd_abs = wp.abs(joint_qd[dof])
             if limit > 0.0 and wp.isfinite(limit) and qd_abs > 0.0:
@@ -119,6 +131,9 @@ def prescale_joint_velocity_limits(
 
         for axis in range(axis_count):
             dof = qd_start + axis
+            if skip_driven != 0:
+                if drive_slot[dof] >= 0:
+                    continue
             joint_qd[dof] = joint_qd[dof] * ratio
 
 
@@ -1852,6 +1867,8 @@ def allocate_joint_velocity_limit_slots(
     joint_velocity_limit: wp.array[float],
     joint_qd: wp.array[float],
     velocity_limit_activation_fraction: float,
+    drive_slot: wp.array[int],
+    skip_driven: int,
     art_to_world: wp.array[int],
     max_constraints: int,
     velocity_limit_slot: wp.array[int],
@@ -1883,6 +1900,11 @@ def allocate_joint_velocity_limit_slots(
     always-allocate behavior. Because the gate samples the pre-solve
     velocity, a DOF that crosses the threshold during a step is clamped one
     step late.
+
+    ``skip_driven != 0`` (``fuse_joint_velocity_limits``) skips DOFs with a drive
+    row (``drive_slot[dof] >= 0``): the solve clamps their velocity at the end of
+    every iteration instead. DOFs without a drive row keep their rows. With
+    ``skip_driven == 0`` ``drive_slot`` is not read.
 
     Outputs two entries per DOF in ``velocity_limit_slot`` (world-constraint
     row, or -1) and ``velocity_limit_sign`` (+1 / -1).
@@ -1923,6 +1945,11 @@ def allocate_joint_velocity_limit_slots(
             # the stored limit is non-positive (treated as "unlimited").
             if qdot_max <= 0.0:
                 continue
+
+            # Fused clamp: driven DOFs are limited inside the solve.
+            if skip_driven != 0:
+                if drive_slot[dof] >= 0:
+                    continue
 
             # Proximity gate: only reserve the row pair when the DOF speed is
             # within ``fraction * qdot_max`` of the box edge. The fraction==0
@@ -2015,6 +2042,189 @@ def populate_joint_velocity_limit_J_for_size(
                 # rhs = -target + J v = qdot_max +/- qdot_i, negative exactly when
                 # that side of the velocity box is violated.
                 world_target_velocity[world, slot] = -qdot_max
+
+
+@wp.kernel
+def allocate_physx_drive_slots(
+    articulation_start: wp.array[int],
+    articulation_dof_start: wp.array[int],
+    articulation_H_rows: wp.array[int],
+    joint_type: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
+    art_to_world: wp.array[int],
+    max_constraints: int,
+    # outputs
+    drive_slot: wp.array[int],
+    world_slot_counter: wp.array[int],
+):
+    """Reserve one dense PGS drive row for every driven PRISMATIC, REVOLUTE or D6 DOF.
+
+    A DOF is driven when its target stiffness or damping is positive. Reservations
+    past ``max_constraints`` leave ``drive_slot[dof] = -1``; the raw counter still
+    counts them, so the world's capacity status records the loss.
+    """
+    art = wp.tid()
+    world = art_to_world[art]
+
+    dof_base = articulation_dof_start[art]
+    for d in range(articulation_H_rows[art]):
+        drive_slot[dof_base + d] = -1
+
+    for j in range(articulation_start[art], articulation_start[art + 1]):
+        jtype = joint_type[j]
+        if jtype != JointType.PRISMATIC and jtype != JointType.REVOLUTE and jtype != JointType.D6:
+            continue
+
+        axis_count = joint_dof_dim[j, 0] + joint_dof_dim[j, 1]
+        qd_start = joint_qd_start[j]
+        for axis in range(axis_count):
+            dof = qd_start + axis
+            if joint_target_ke[dof] <= 0.0 and joint_target_kd[dof] <= 0.0:
+                continue
+            slot = wp.atomic_add(world_slot_counter, world, 1)
+            if slot < max_constraints:
+                drive_slot[dof] = slot
+
+
+@wp.kernel
+def populate_physx_drive_J_for_size(
+    articulation_start: wp.array[int],
+    articulation_dof_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
+    joint_effort_limit: wp.array[float],
+    joint_q: wp.array[float],
+    joint_target_pos: wp.array[float],
+    joint_target_q_start: wp.array[int],
+    joint_target_vel: wp.array[float],
+    joint_velocity_limit: wp.array[float],
+    fuse_vel_limits: int,
+    art_to_world: wp.array[int],
+    drive_slot: wp.array[int],
+    group_to_art: wp.array[int],
+    # outputs
+    J_group: wp.array3d[float],
+    world_row_type: wp.array2d[int],
+    world_row_parent: wp.array2d[int],
+    world_row_mu: wp.array2d[float],
+    world_phi: wp.array2d[float],
+    world_target_velocity: wp.array2d[float],
+    world_drive_stiffness: wp.array2d[float],
+    world_drive_damping: wp.array2d[float],
+    world_drive_geom_error: wp.array2d[float],
+    world_drive_max_force: wp.array2d[float],
+    world_drive_vel_limit: wp.array2d[float],
+):
+    """Fill the selector Jacobian ``J = e_i`` and the drive parameters of each drive row.
+
+    Launched once per size group with ``dim = n_arts_of_size``. With
+    ``fuse_vel_limits != 0`` each row also records its DOF's velocity limit for the
+    fused clamp; non-positive or non-finite limits are stored as ``inf`` (no clamp).
+    With ``fuse_vel_limits == 0`` neither ``joint_velocity_limit`` nor
+    ``world_drive_vel_limit`` is accessed.
+    """
+    group_idx = wp.tid()
+    art = group_to_art[group_idx]
+    world = art_to_world[art]
+    dof_start = articulation_dof_start[art]
+
+    for j in range(articulation_start[art], articulation_start[art + 1]):
+        jtype = joint_type[j]
+        if jtype != JointType.PRISMATIC and jtype != JointType.REVOLUTE and jtype != JointType.D6:
+            continue
+
+        axis_count = joint_dof_dim[j, 0] + joint_dof_dim[j, 1]
+        qd_start = joint_qd_start[j]
+        q_start = joint_q_start[j]
+        for axis in range(axis_count):
+            dof = qd_start + axis
+            slot = drive_slot[dof]
+            if slot < 0:
+                continue
+
+            J_group[group_idx, slot, dof - dof_start] = 1.0
+            world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_JOINT_TARGET
+            world_row_parent[world, slot] = -1
+            world_row_mu[world, slot] = 0.0
+            world_phi[world, slot] = 0.0
+            world_target_velocity[world, slot] = joint_target_vel[dof]
+            world_drive_stiffness[world, slot] = joint_target_ke[dof]
+            world_drive_damping[world, slot] = joint_target_kd[dof]
+            world_drive_geom_error[world, slot] = (
+                joint_target_pos[joint_target_q_start[j] + axis] - joint_q[q_start + axis]
+            )
+            world_drive_max_force[world, slot] = joint_effort_limit[dof]
+            if fuse_vel_limits != 0:
+                qdot_max = joint_velocity_limit[dof]
+                if qdot_max <= 0.0 or not wp.isfinite(qdot_max):
+                    qdot_max = float(wp.inf)
+                world_drive_vel_limit[world, slot] = qdot_max
+
+
+@wp.kernel
+def compute_physx_pgs_drive_desc(
+    world_constraint_count: wp.array[int],
+    world_row_type: wp.array2d[int],
+    world_diag: wp.array2d[float],
+    world_target_velocity: wp.array2d[float],
+    world_drive_stiffness: wp.array2d[float],
+    world_drive_damping: wp.array2d[float],
+    world_drive_geom_error: wp.array2d[float],
+    world_drive_max_force: wp.array2d[float],
+    dt: float,
+    # outputs
+    world_drive_target_vel_bias: wp.array2d[float],
+    world_drive_vel_multiplier: wp.array2d[float],
+    world_drive_impulse_multiplier: wp.array2d[float],
+    world_drive_max_impulse: wp.array2d[float],
+):
+    """Precompute the force-drive impulse update of every drive row.
+
+    With stiffness ``ke``, damping ``kd``, unit response ``r = J H^-1 J^T`` (the row
+    diagonal), ``a = dt * (dt * ke + kd)`` and ``x = 1 / (1 + a * r)``, the solve updates
+    a drive row's impulse each iteration as
+
+    ``lambda = (1 - x) * lambda - x * a * (J v) + x * dt * kd * v_target + x * dt * ke * (q_target - q)``
+
+    clamped to ``+/- joint_effort_limit * dt`` when the effort limit is positive and
+    finite. This is the PGS force-drive update of PhysX articulations (zero elapsed
+    time, no accumulated position delta).
+    """
+    world = wp.tid()
+    for i in range(world_constraint_count[world]):
+        if world_row_type[world, i] != PGS_CONSTRAINT_TYPE_JOINT_TARGET:
+            world_drive_target_vel_bias[world, i] = 0.0
+            world_drive_vel_multiplier[world, i] = 0.0
+            world_drive_impulse_multiplier[world, i] = 0.0
+            world_drive_max_impulse[world, i] = 0.0
+            continue
+
+        stiffness = world_drive_stiffness[world, i]
+        damping = world_drive_damping[world, i]
+        unit_response = world_diag[world, i]
+
+        a = dt * (dt * stiffness + damping)
+        b = dt * (damping * world_target_velocity[world, i])
+        x = float(0.0)
+        if unit_response > 0.0:
+            x = 1.0 / (1.0 + a * unit_response)
+
+        world_drive_target_vel_bias[world, i] = x * b + stiffness * x * dt * world_drive_geom_error[world, i]
+        world_drive_vel_multiplier[world, i] = -x * a
+        world_drive_impulse_multiplier[world, i] = 1.0 - x
+
+        max_force = world_drive_max_force[world, i]
+        max_impulse = float(1.0e20)
+        if max_force > 0.0 and wp.isfinite(max_force):
+            max_impulse = max_force * dt
+        world_drive_max_impulse[world, i] = max_impulse
 
 
 # =============================================================================
@@ -3660,14 +3870,21 @@ def compute_mf_world_dof_offsets(
 @wp.kernel
 def finalize_world_diag_cfm(
     world_constraint_count: wp.array[int],
+    world_row_type: wp.array2d[int],
     pgs_cfm: float,
     # in/out
     world_diag: wp.array2d[float],
 ):
-    """Add constraint force mixing to every dense row's diagonal."""
+    """Add constraint force mixing to the diagonal of every dense row except drive rows.
+
+    A drive row's diagonal is its unit response ``J H^-1 J^T``: the force-drive update
+    and the fused velocity clamp divide by the exact response, and the drive is already
+    regularized by its own stiffness and damping.
+    """
     world = wp.tid()
     for i in range(world_constraint_count[world]):
-        world_diag[world, i] += pgs_cfm
+        if world_row_type[world, i] != PGS_CONSTRAINT_TYPE_JOINT_TARGET:
+            world_diag[world, i] += pgs_cfm
 
 
 # =============================================================================
