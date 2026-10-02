@@ -1,16 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Turning stored evidence back into something scorable.
+"""Read an evidence bundle into goals.
 
-:func:`bundle_to_goals` reads a :class:`~.evidence.CableEvidenceBundle` and
-returns the :class:`~.goal.CableGoal` entries an evaluation runs against. It is
-the only place a bundle's referenced files are opened, and it is what makes the
-boundary real: everything downstream sees decoded arrays, never paths.
+:func:`bundle_to_goals` reads a :class:`~.evidence.CableEvidenceBundle` from its
+directory and returns one :class:`~.goal.CableGoal` per recording. It is the only
+function that opens the files a bundle refers to. The code after it works with
+decoded arrays, not with file paths.
 
-Only the masks are read. The bundle also references the RGB frames, but those
-exist for review and for writing comparison artifacts, and no objective scores
-against them -- so an evaluation never pays to decode them.
+It reads only the masks and the drive trajectories. The RGB frames are for
+review, and no loss uses them, so they are not decoded.
 """
 
 from __future__ import annotations
