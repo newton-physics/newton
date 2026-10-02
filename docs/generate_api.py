@@ -34,6 +34,7 @@ import re
 import shutil
 import sys
 from datetime import datetime
+from itertools import groupby
 from pathlib import Path
 from types import ModuleType
 
@@ -57,6 +58,13 @@ TOCTREE_RST = OUTPUT_DIR / "_toctree.rst"
 # Where autosummary should place generated stub pages (relative to each .rst
 # file).  Keeping them alongside the .rst files avoids clutter elsewhere.
 TOCTREE_DIR = "_generated"  # sub-folder inside OUTPUT_DIR
+
+# These public views inherit their API from private, undocumented base classes.
+CLASS_TEMPLATES = {
+    "newton.selection.DeformableCurveView": "class.rst",
+    "newton.selection.DeformableSurfaceView": "class.rst",
+    "newton.selection.DeformableVolumeView": "class.rst",
+}
 
 COPYRIGHT_RE = re.compile(r"^\.\. SPDX-FileCopyrightText: Copyright \(c\) \d{4} The Newton Developers$")
 _COPYRIGHT_LINES: dict[Path, str] = {}
@@ -316,15 +324,22 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
             for cls in classes:
                 lines.extend([f".. autoclass:: {cls}", ""])
         else:
-            lines.extend(
-                [
-                    ".. autosummary::",
-                    f"   :toctree: {TOCTREE_DIR}",
-                    "   :nosignatures:",
-                    "",
-                ]
-            )
-            lines.extend([f"   {cls}" for cls in classes])
+            for template, template_classes in groupby(
+                classes, key=lambda cls: CLASS_TEMPLATES.get(f"{mod_name}.{cls}")
+            ):
+                if lines[-1]:
+                    lines.append("")
+                lines.extend(
+                    [
+                        ".. autosummary::",
+                        f"   :toctree: {TOCTREE_DIR}",
+                        "   :nosignatures:",
+                    ]
+                )
+                if template:
+                    lines.append(f"   :template: {template}")
+                lines.append("")
+                lines.extend([f"   {cls}" for cls in template_classes])
         lines.append("")
 
     if functions:
