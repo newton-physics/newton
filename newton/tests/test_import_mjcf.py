@@ -62,6 +62,140 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_compiler_mass_and_inertia_bounds_match_native_mujoco(self):
+        """Apply MJCF compiler mass and inertia lower bounds."""
+        mjcf = """
+<mujoco model="compiler_bounds">
+    <compiler boundmass="0.5" boundinertia="0.02"/>
+    <worldbody>
+        <body name="body">
+            <joint name="joint"/>
+            <inertial pos="0 0 0" mass="0.1" diaginertia="0.001 0.002 0.003"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+
+        self.assertAlmostEqual(builder.body_mass[0], native_model.body_mass[1], places=6)
+        np.testing.assert_allclose(
+            np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
+            native_model.body_inertia[1],
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        )
+
+    def test_compiler_balanceinertia_matches_native_mujoco(self):
+        """Balance invalid inertia only when the MJCF compiler requests it."""
+        body = """
+<worldbody>
+    <body name="body">
+        <joint name="joint"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.1"/>
+    </body>
+</worldbody>
+"""
+        balanced_mjcf = f'<mujoco><compiler balanceinertia="true"/>{body}</mujoco>'
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(balanced_mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(balanced_mjcf, ignore_inertial_definitions=False)
+        np.testing.assert_allclose(
+            np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
+            native_model.body_inertia[1],
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        )
+
+        unbalanced_mjcf = f'<mujoco><compiler balanceinertia="false"/>{body}</mujoco>'
+        with self.assertRaisesRegex(ValueError, "inertia must satisfy"):
+            newton.ModelBuilder().add_mjcf(unbalanced_mjcf, ignore_inertial_definitions=False)
+
+    def test_compiler_accepts_boundary_valid_inertia(self):
+        """Float32 storage must not reject a valid triangle boundary."""
+        mjcf = """
+<mujoco>
+    <worldbody><body name="body"><joint/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.3"/>
+    </body></worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        np.testing.assert_allclose(
+            np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
+            [0.1, 0.2, 0.3],
+            rtol=1e-6,
+        )
+
+    def test_compiler_inertia_guards_preserve_existing_bodies(self):
+        """Guard only imported bodies and update their inverse properties."""
+        mjcf = """
+<mujoco model="compiler_bounds">
+    <compiler boundmass="0.5" boundinertia="0.02"/>
+    <worldbody>
+        <body name="body">
+            <joint name="joint"/>
+            <inertial pos="0 0 0" mass="0.1" diaginertia="0.001 0.002 0.003"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        existing_inertia = np.diag([0.2, 0.3, 0.4])
+        builder = newton.ModelBuilder()
+        existing_body = builder.add_link(mass=2.0, inertia=wp.mat33(existing_inertia))
+        existing_properties = (
+            builder.body_mass[existing_body],
+            np.array(builder.body_inertia[existing_body]),
+            builder.body_inv_mass[existing_body],
+            np.array(builder.body_inv_inertia[existing_body]),
+        )
+
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        imported_body = existing_body + 1
+        imported_inertia = np.array(builder.body_inertia[imported_body]).reshape(3, 3)
+        imported_inv_inertia = np.array(builder.body_inv_inertia[imported_body]).reshape(3, 3)
+
+        self.assertEqual(builder.body_mass[existing_body], existing_properties[0])
+        np.testing.assert_array_equal(builder.body_inertia[existing_body], existing_properties[1])
+        self.assertEqual(builder.body_inv_mass[existing_body], existing_properties[2])
+        np.testing.assert_array_equal(builder.body_inv_inertia[existing_body], existing_properties[3])
+        self.assertAlmostEqual(builder.body_mass[imported_body], native_model.body_mass[1], places=6)
+        np.testing.assert_allclose(
+            np.linalg.eigvalsh(imported_inertia),
+            native_model.body_inertia[1],
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        )
+        self.assertAlmostEqual(builder.body_inv_mass[imported_body], 1.0 / native_model.body_mass[1], places=6)
+        np.testing.assert_allclose(imported_inv_inertia, np.linalg.inv(imported_inertia), rtol=1.0e-6, atol=1.0e-8)
+
+    def test_compiler_inertia_guards_reject_negative_values(self):
+        """Reject negative body mass and principal inertia before clamping."""
+        invalid_inertials = {
+            "mass": 'mass="-1" diaginertia="0.01 0.02 0.03"',
+            "inertia": 'mass="1" diaginertia="-0.01 0.02 0.03"',
+        }
+        for property_name, inertial_attrib in invalid_inertials.items():
+            with self.subTest(property=property_name):
+                mjcf = f"""
+<mujoco>
+    <worldbody>
+        <body name="body">
+            <joint/>
+            <inertial pos="0 0 0" {inertial_attrib}/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+                with self.assertRaisesRegex(ValueError, "mass and inertia must be nonnegative"):
+                    newton.ModelBuilder().add_mjcf(mjcf, ignore_inertial_definitions=False)
+
     def test_geom_rgba_preserves_opacity(self):
         """Preserve authored MJCF geometry opacity."""
         mjcf = """
@@ -465,7 +599,7 @@ class TestImportMjcfBasic(unittest.TestCase):
     <worldbody>
         <body>
             <inertial pos="0 0 0" quat="0.7071068 0 0 0.7071068"
-                      mass="1.0" diaginertia="1.0 2.0 3.0"/>
+                      mass="1.0" diaginertia="1.0 2.0 2.5"/>
         </body>
     </worldbody>
 </mujoco>
@@ -477,7 +611,7 @@ class TestImportMjcfBasic(unittest.TestCase):
     <worldbody>
         <body>
             <inertial pos="0 0 0" quat="0.7071068 0 0 0.7071068"
-                      mass="1.0" fullinertia="1.0 2.0 3.0 0.1 0.2 0.3"/>
+                      mass="1.0" fullinertia="2.0 3.0 4.0 0.1 0.2 0.3"/>
         </body>
     </worldbody>
 </mujoco>
@@ -489,8 +623,8 @@ class TestImportMjcfBasic(unittest.TestCase):
         model = builder.finalize()
 
         # The quaternion (0.7071068, 0, 0, 0.7071068) in MuJoCo WXYZ format represents a 90-degree rotation around Z-axis
-        # This transforms the diagonal inertia [1, 2, 3] to [2, 1, 3] via sandwich product R @ I @ R.T
-        expected_diagonal = np.array([[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 3.0]])
+        # This transforms the diagonal inertia [1, 2, 2.5] to [2, 1, 2.5].
+        expected_diagonal = np.array([[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.5]])
 
         actual_inertia = model.body_inertia.numpy()[0]
         # The validation may add a small epsilon for numerical stability
@@ -502,54 +636,13 @@ class TestImportMjcfBasic(unittest.TestCase):
         builder.add_mjcf(mjcf_full, ignore_inertial_definitions=False)
         model = builder.finalize()
 
-        # For full inertia, we need to compute the expected result manually
-        # Original inertia matrix:
-        # [1.0  0.1  0.2]
-        # [0.1  2.0  0.3]
-        # [0.2  0.3  3.0]
-
-        # The quaternion (0.7071068, 0, 0, 0.7071068) transforms the inertia
-        # We need to use the same quaternion-to-matrix conversion as the MJCF importer
-
-        original_inertia = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
-
-        # For full inertia, calculate the expected result analytically using the same quaternion
-        # Original inertia matrix:
-        # [1.0  0.1  0.2]
-        # [0.1  2.0  0.3]
-        # [0.2  0.3  3.0]
-
-        # The quaternion (0.7071068, 0, 0, 0.7071068) in MuJoCo WXYZ format represents a 90-degree rotation around Z-axis
-        # Calculate the expected result analytically using the correct rotation matrix
-        # For a 90-degree Z-axis rotation: R = [0 -1 0; 1 0 0; 0 0 1]
-
-        original_inertia = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
-
-        # Rotation matrix for 90-degree rotation around Z-axis
+        # Compare the rotated, physically valid non-diagonal inertia directly.
+        original_inertia = np.array([[2.0, 0.1, 0.2], [0.1, 3.0, 0.3], [0.2, 0.3, 4.0]])
         rotation_matrix = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
-
         expected_full = rotation_matrix @ original_inertia @ rotation_matrix.T
-
         actual_inertia = model.body_inertia.numpy()[0]
-
-        # The original inertia violates the triangle inequality, so validation will correct it
-        # The eigenvalues are [0.975, 1.919, 3.106], which violates I1 + I2 >= I3
-        # The validation adds ~0.212 to all eigenvalues to fix this
-        # We check that:
-        # 1. The rotation structure is preserved (off-diagonal elements match)
-        # 2. The diagonal has been increased by approximately the same amount
-
-        # Check off-diagonal elements are preserved
-        np.testing.assert_allclose(actual_inertia[0, 1], expected_full[0, 1], atol=1e-6)
-        np.testing.assert_allclose(actual_inertia[0, 2], expected_full[0, 2], atol=1e-6)
-        np.testing.assert_allclose(actual_inertia[1, 2], expected_full[1, 2], atol=1e-6)
-
-        # Check that diagonal elements have been increased by approximately the same amount
-        corrections = np.diag(actual_inertia - expected_full)
-        np.testing.assert_allclose(corrections, corrections[0], rtol=1e-3)
-
-        # Verify that the rotation was actually applied (not just identity)
-        assert not np.allclose(actual_inertia, original_inertia, atol=1e-6)
+        np.testing.assert_allclose(actual_inertia, expected_full, rtol=1e-5, atol=1e-5)
+        self.assertFalse(np.allclose(actual_inertia, original_inertia, atol=1e-6))
 
     def test_single_body_transform(self):
         """Test 1: Single body with pos/quat → verify body_q matches expected world transform."""
