@@ -470,9 +470,13 @@ def _flood_native(
 
 
 _FLOOD_MIN_CONTACTS = 32
-# Fraction of a footprint's principal extent that groups members into each end's support edge.
-_SUPPORT_EDGE_FRACTION = wp.constant(0.05)
 """Body pairs with more contacts than this grow their regions on a warp; smaller pairs in ``_build``."""
+
+_SUPPORT_EDGE_FRACTION = wp.constant(0.05)
+"""Fraction of a footprint's principal extent that groups members into each end's support edge.
+
+An empirical endpoint band, not a derived physical tolerance: it bounds how far an anchor moves inward along the
+principal axis, but not its transverse position or the change in friction wrench."""
 
 
 @wp.kernel(enable_backward=False)
@@ -770,9 +774,10 @@ def _build(
                 # sheared or tilted footprint, spreads the edge's projections; a
                 # round-off tolerance then keeps only one corner per edge and
                 # restores the diagonal couple. Members within a fraction of the
-                # axial extent form each edge: this shifts the anchors by at most
-                # that fraction along the axis and tolerates a misalignment of at
-                # least that fraction in radians.
+                # axial extent form each edge, which moves each anchor inward by at
+                # most that fraction along the axis. The misalignment it tolerates
+                # depends on the edge's span relative to the axial extent
+                # (roughly span * sin(angle) <= fraction * extent * cos(angle)).
                 edge_tolerance = wp.max(1.0e-5 * frame.radius[seed], _SUPPORT_EDGE_FRACTION * (high - low))
                 for j in range(member_start, member_stop):
                     c = frame.members[j]
