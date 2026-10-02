@@ -59,12 +59,15 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
                 self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
 
     def test_constructor_has_no_global_physics_switches(self):
-        """Keep physical behavior local to the model: no global friction, limit or damping switches."""
-        parameters = set(inspect.signature(SolverFeatherPGS.__init__).parameters)
+        """Keep physical behavior local to the model: no global friction or damping switches.
+
+        ``enable_joint_limits`` is the one deliberate exception; it is opt-in like the reference solver's.
+        """
+        parameters = inspect.signature(SolverFeatherPGS.__init__).parameters
+        self.assertIs(parameters["enable_joint_limits"].default, False)
         for removed in (
             "angular_damping",
             "enable_contact_friction",
-            "enable_joint_limits",
             "contact_compliance",
             "pgs_mode",
             "articulated_contact_response",

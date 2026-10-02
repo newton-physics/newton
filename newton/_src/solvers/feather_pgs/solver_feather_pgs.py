@@ -603,10 +603,11 @@ class SolverFeatherPGS(SolverBase):
       the drive force is clamped to :attr:`~newton.Model.joint_effort_limit`.
       :attr:`~newton.Model.joint_armature` and :attr:`~newton.Model.joint_damping` are
       applied.
-    - Joint limits: every finite :attr:`~newton.Model.joint_limit_lower` /
-      :attr:`~newton.Model.joint_limit_upper` of a PRISMATIC, REVOLUTE or D6 DOF is a
-      unilateral row. Joint velocity limits (:attr:`~newton.Model.joint_velocity_limit`)
-      are enforced as rows when ``enable_joint_velocity_limits`` is set.
+    - Joint limits: with ``enable_joint_limits=True``, every finite
+      :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
+      PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
+      default. Joint velocity limits (:attr:`~newton.Model.joint_velocity_limit`) are
+      enforced as rows when ``enable_joint_velocity_limits`` is set.
     - Contacts: rigid contacts from :class:`~newton.CollisionPipeline` with Coulomb
       point friction (one normal and two coupled tangent rows per contact, friction
       coefficient from the two shapes' ``mu``). Contact restitution, compliance and
@@ -766,6 +767,7 @@ class SolverFeatherPGS(SolverBase):
         pgs_cfm: float = 1.0e-6,
         pgs_omega: float = 1.0,
         update_mass_matrix_interval: int = 1,
+        enable_joint_limits: bool = False,
         joint_limit_activation_gap: float = float("inf"),
         enable_joint_velocity_limits: bool = False,
         velocity_limit_activation_fraction: float = 0.0,
@@ -790,14 +792,21 @@ class SolverFeatherPGS(SolverBase):
                 articulations. Under CUDA graph capture the
                 host-side cadence is baked into the graph, so the interval should divide the
                 number of steps captured per graph.
+            enable_joint_limits: Enforce :attr:`~newton.Model.joint_limit_lower` and
+                :attr:`~newton.Model.joint_limit_upper` of PRISMATIC, REVOLUTE and D6 DOFs as
+                unilateral rows. When ``False`` (the default), no joint-limit rows are created,
+                joint position limits are not enforced, and limits use no
+                ``dense_max_constraints`` capacity. The default matches the FeatherPGS
+                reference implementation this solver is ported from.
             joint_limit_activation_gap: Distance from a finite position limit [m or rad] at
-                which its row is created. ``inf`` creates the rows of every finite limit each
-                step; a smaller gap creates a row only when ``q <= lower + gap`` or
-                ``q >= upper - gap``. Every finite bound is enforced, however large: the
-                builder's default limits (``+/-1e10``) are finite, so with ``inf`` each such
-                DOF uses two rows of ``dense_max_constraints`` in every step. Use a finite gap
-                or unbounded (``+/-inf``) limits to avoid these rows; the constructor warns
-                when the finite limits alone exceed the capacity.
+                which its row is created, when ``enable_joint_limits`` is set. ``inf`` creates
+                the rows of every finite limit each step; a smaller gap creates a row only when
+                ``q <= lower + gap`` or ``q >= upper - gap``. Every finite bound is enforced,
+                however large: the builder's default limits (``+/-1e10``) are finite, so with
+                ``inf`` each such DOF uses two rows of ``dense_max_constraints`` in every step.
+                Use a finite gap or unbounded (``+/-inf``) limits to avoid these rows; the
+                constructor warns when the finite limits alone exceed the capacity. The value
+                is validated even when joint limits are disabled.
             enable_joint_velocity_limits: Enforce :attr:`~newton.Model.joint_velocity_limit`
                 of PRISMATIC, REVOLUTE and D6 DOFs with one row pair per limited DOF, after
                 scaling articulation velocities that already exceed a limit. The free-body
@@ -809,7 +818,7 @@ class SolverFeatherPGS(SolverBase):
                 samples the velocity before the solve, so a DOF that crosses the threshold
                 during a step is clamped one step later. Must be in ``[0, 1]`` or ``inf``.
             dense_max_constraints: Capacity of rows involving articulated bodies (contacts,
-                joint limits and joint velocity limits) per world. Rows beyond it are
+                enabled joint limits and joint velocity limits) per world. Rows beyond it are
                 dropped and reported, see :attr:`constraint_overflow`.
             mf_max_constraints: Capacity of free-body contact rows per world. Rows beyond it
                 are dropped and reported, see :attr:`constraint_overflow`.
@@ -833,6 +842,7 @@ class SolverFeatherPGS(SolverBase):
         self.pgs_beta = float(pgs_beta)
         self.pgs_cfm = float(pgs_cfm)
         self.pgs_omega = float(pgs_omega)
+        self.enable_joint_limits = bool(enable_joint_limits)
         self.joint_limit_activation_gap = float(joint_limit_activation_gap)
         if np.isnan(self.joint_limit_activation_gap) or self.joint_limit_activation_gap < 0.0:
             raise ValueError("joint_limit_activation_gap must be non-negative or inf")
@@ -1186,14 +1196,14 @@ class SolverFeatherPGS(SolverBase):
     def _persistent_dense_rows_per_world(self, model) -> np.ndarray:
         """Count the dense rows every step allocates regardless of the state, per world.
 
-        With ``joint_limit_activation_gap=inf`` each finite position limit of a responding
-        PRISMATIC, REVOLUTE or D6 DOF is a row in every step, mirroring the joint-limit row
-        builder. Large finite bounds, such as the builder's default ``+/-1e10``, count like
-        any other finite bound. Finite gaps make the count state dependent, so it is zero
-        then.
+        With ``enable_joint_limits`` and ``joint_limit_activation_gap=inf`` each finite
+        position limit of a responding PRISMATIC, REVOLUTE or D6 DOF is a row in every step,
+        mirroring the joint-limit row builder. Large finite bounds, such as the builder's
+        default ``+/-1e10``, count like any other finite bound. Finite gaps make the count
+        state dependent, and disabled joint limits create no rows, so it is zero then.
         """
         rows = np.zeros(max(self.world_count, 1), dtype=np.int64)
-        if not np.isinf(self.joint_limit_activation_gap) or not self._joint_limit_sizes:
+        if not self.enable_joint_limits or not np.isinf(self.joint_limit_activation_gap) or not self._joint_limit_sizes:
             return rows
         limit_q_index = self._joint_limit_q_index.numpy()
         lower = model.joint_limit_lower.numpy()
@@ -2659,7 +2669,9 @@ class SolverFeatherPGS(SolverBase):
         for size in self.size_groups:
             self.J_by_size[size].zero_()
 
-        for size in self._joint_limit_sizes:
+        # Disabled joint limits create no rows (and use no capacity), as in the reference solver.
+        limit_sizes = self._joint_limit_sizes if self.enable_joint_limits else frozenset()
+        for size in limit_sizes:
             n_arts = self.n_arts_by_size[size]
             wp.launch_tiled(
                 self._joint_limit_warp_kernels[size],

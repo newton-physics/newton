@@ -98,6 +98,7 @@ def _make_layout_run(device, *, enable_joint_velocity_limits=True):
     model.joint_velocity_limit.assign(velocity_limits)
     solver = SolverFeatherPGS(
         model,
+        enable_joint_limits=True,
         enable_joint_velocity_limits=enable_joint_velocity_limits,
         velocity_limit_activation_fraction=0.5,
         dense_max_constraints=64,
@@ -178,8 +179,8 @@ def test_infinite_gap_allocates_every_finite_limit(test, device):
     test.assertEqual(phi, [1.0, 1.0])
 
 
-def test_limit_holds_a_driven_joint(test, device):
-    """Hold a joint driven past its upper limit at the limit."""
+def _driven_limited_joint_position(device, **solver_kwargs) -> float:
+    """Drive a revolute joint limited to ``[-0.3, 0.3]`` toward 1 rad and return its final position."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
     joint = builder.add_joint_revolute(
@@ -187,14 +188,25 @@ def test_limit_holds_a_driven_joint(test, device):
     )
     builder.add_articulation([joint])
     model = builder.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_iterations=8)
+    solver = SolverFeatherPGS(model, pgs_iterations=8, **solver_kwargs)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     control.joint_target_q.fill_(1.0)
     for _ in range(240):
         solver.step(state_0, state_1, control, None, 1.0 / 240.0)
         state_0, state_1 = state_1, state_0
-    test.assertAlmostEqual(float(state_0.joint_q.numpy()[0]), 0.3, delta=2.0e-3)
+    return float(state_0.joint_q.numpy()[0])
+
+
+def test_limit_holds_a_driven_joint(test, device):
+    """Hold a joint driven past its upper limit at the limit when joint limits are enabled."""
+    test.assertAlmostEqual(_driven_limited_joint_position(device, enable_joint_limits=True), 0.3, delta=2.0e-3)
+
+
+def test_disabled_joint_limits_are_not_enforced(test, device):
+    """Leave finite joint limits unenforced by default, so the drive reaches its target."""
+    test.assertAlmostEqual(_driven_limited_joint_position(device), 1.0, delta=2.0e-3)
+    test.assertAlmostEqual(_driven_limited_joint_position(device, enable_joint_limits=False), 1.0, delta=2.0e-3)
 
 
 def _build_default_limit_chain(device, count: int):
@@ -217,7 +229,7 @@ def test_default_finite_limits_keep_rows_and_warn_at_capacity(test, device):
             test.assertEqual(float(model.joint_limit_upper.numpy()[0]), MAXVAL)
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                solver = SolverFeatherPGS(model, warn_constraint_overflow=False)
+                solver = SolverFeatherPGS(model, enable_joint_limits=True, warn_constraint_overflow=False)
             messages = [str(w.message) for w in caught if "joint position limits" in str(w.message)]
             test.assertEqual(len(messages), int(expect_warning), messages)
             if expect_warning:
@@ -232,12 +244,40 @@ def test_default_finite_limits_keep_rows_and_warn_at_capacity(test, device):
     model = _build_default_limit_chain(device, 17)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        SolverFeatherPGS(model, dense_max_constraints=34)
-        gap_solver = SolverFeatherPGS(model, joint_limit_activation_gap=0.5)
+        SolverFeatherPGS(model, enable_joint_limits=True, dense_max_constraints=34)
+        gap_solver = SolverFeatherPGS(model, enable_joint_limits=True, joint_limit_activation_gap=0.5)
     test.assertFalse([w for w in caught if "joint position limits" in str(w.message)])
     gap_solver.step(model.state(), model.state(), model.control(), None, 0.01)
     test.assertEqual(int(gap_solver.constraint_count.numpy()[0]), 0)
     test.assertFalse(bool(gap_solver.constraint_overflow.numpy()[0]))
+
+
+def test_disabled_joint_limits_build_no_rows(test, device):
+    """Build no limit rows and use no capacity for finite limits when joint limits are disabled."""
+    model = _build_default_limit_chain(device, 17)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        solvers = (SolverFeatherPGS(model), SolverFeatherPGS(model, enable_joint_limits=False))
+    # The 34 rows of the +/-1e10 defaults would exceed the default capacity of 32 if limits were enabled.
+    test.assertFalse([w for w in caught if "joint position limits" in str(w.message)])
+    for solver in solvers:
+        test.assertFalse(solver.enable_joint_limits)
+        solver.step(model.state(), model.state(), model.control(), None, 0.01)
+        test.assertEqual(int(solver.constraint_count.numpy()[0]), 0)
+        test.assertFalse(bool(solver.constraint_overflow.numpy()[0]))
+
+    # A joint outside its limit gets no row either, whatever the activation gap.
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
+    joint = builder.add_joint_revolute(-1, link, axis=newton.Axis.Z, limit_lower=-0.1, limit_upper=0.1)
+    builder.add_articulation([joint])
+    builder.joint_q[0] = 0.2
+    model = builder.finalize(device=device)
+    solver = SolverFeatherPGS(model, joint_limit_activation_gap=0.5)
+    state_0, state_1 = model.state(), model.state()
+    solver.step(state_0, state_1, model.control(), None, 0.01)
+    test.assertEqual(int(solver.constraint_count.numpy()[0]), 0)
+    test.assertAlmostEqual(float(state_1.joint_q.numpy()[0]), 0.2, places=6)
 
 
 class TestFeatherPGSJointLimitActivationGap(unittest.TestCase):
@@ -258,6 +298,8 @@ for _name, _func in (
     ),
     ("test_infinite_gap_allocates_every_finite_limit", test_infinite_gap_allocates_every_finite_limit),
     ("test_limit_holds_a_driven_joint", test_limit_holds_a_driven_joint),
+    ("test_disabled_joint_limits_are_not_enforced", test_disabled_joint_limits_are_not_enforced),
+    ("test_disabled_joint_limits_build_no_rows", test_disabled_joint_limits_build_no_rows),
     (
         "test_default_finite_limits_keep_rows_and_warn_at_capacity",
         test_default_finite_limits_keep_rows_and_warn_at_capacity,

@@ -79,6 +79,7 @@ def test_defaults(test, device):
     test.assertAlmostEqual(solver.pgs_cfm, 1.0e-6)
     test.assertEqual(solver.pgs_omega, 1.0)
     test.assertEqual(solver.update_mass_matrix_interval, 1)
+    test.assertFalse(solver.enable_joint_limits)
     test.assertEqual(solver.joint_limit_activation_gap, float("inf"))
     test.assertFalse(solver.enable_joint_velocity_limits)
     test.assertEqual(solver.velocity_limit_activation_fraction, 0.0)

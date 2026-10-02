@@ -456,7 +456,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 | :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 | :sup:`8` FeatherPGS rejects models with disabled joints or mimic relationships instead of ignoring them.
-| :sup:`9` FeatherPGS enforces joint limits as hard unilateral constraint rows.
+| :sup:`9` FeatherPGS enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
 | :sup:`10` FeatherPGS clamps the joint drive force to the effort limit.
 | :sup:`11` FeatherPGS enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True``.
 
