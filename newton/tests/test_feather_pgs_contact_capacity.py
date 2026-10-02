@@ -9,11 +9,24 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs.friction_patches import FrictionPatches
 from newton._src.solvers.feather_pgs.kernels import allocate_world_contact_slots
 from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 _UNBOUNDED = 2**31 - 1
+
+
+def _point_friction(device):
+    """Return the disabled friction-patch view: every contact gets point friction rows."""
+    patches = FrictionPatches()
+    patches.enabled = 0
+    patches.weight = wp.zeros(0, dtype=float, device=device)
+    patches.next_contact = wp.zeros(0, dtype=int, device=device)
+    patches.point_a = wp.zeros(0, dtype=wp.vec3, device=device)
+    patches.point_b = wp.zeros(0, dtype=wp.vec3, device=device)
+    patches.phi = wp.zeros(1, dtype=wp.vec2, device=device)
+    return patches
 
 
 def test_allocator_rejects_incomplete_contact_frame(test, device):
@@ -30,6 +43,12 @@ def test_allocator_rejects_incomplete_contact_frame(test, device):
             capacity,
             wp.zeros((capacity,), dtype=wp.int32, device=device),
             wp.full((capacity,), -1, dtype=wp.int32, device=device),
+            wp.zeros((capacity,), dtype=wp.vec3, device=device),
+            wp.zeros((capacity,), dtype=wp.vec3, device=device),
+            wp.zeros((capacity,), dtype=wp.vec3, device=device),
+            wp.zeros((capacity,), dtype=wp.float32, device=device),
+            wp.zeros((capacity,), dtype=wp.float32, device=device),
+            wp.zeros((1,), dtype=wp.transform, device=device),
             wp.array([0], dtype=wp.int32, device=device),
             wp.array([0], dtype=wp.int32, device=device),
             wp.array([0], dtype=wp.int32, device=device),
@@ -41,10 +60,17 @@ def test_allocator_rejects_incomplete_contact_frame(test, device):
             8,
             8,
             wp.zeros((1,), dtype=wp.int32, device=device),
+            0.0,
+            0.0,
+            0.0,
+            float("inf"),
+            0,
+            _point_friction(device),
         ],
         outputs=[
             wp.zeros((capacity,), dtype=wp.int32, device=device),
             contact_slot,
+            wp.zeros((capacity,), dtype=wp.int32, device=device),
             wp.zeros((capacity,), dtype=wp.int32, device=device),
             wp.zeros((capacity,), dtype=wp.int32, device=device),
             world_slot_counter,
