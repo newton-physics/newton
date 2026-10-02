@@ -8,6 +8,7 @@ the per-helper tests in ``test_viewer_image_logger.py`` cannot reach
 without instantiating ``ImageLogger`` itself.
 """
 
+import contextlib
 import sys
 import types
 import unittest
@@ -440,6 +441,34 @@ class TestViewerGuiDrawsLoggedImages(unittest.TestCase):
         gui.ui = types.SimpleNamespace(dpi_scale=2.0)
         gui._render_logged_images()
         gui._viewer._image_logger.draw.assert_called_once_with(gui.ui, sidebar_width_px=_SIDEBAR_WIDTH_PX)
+
+
+class TestViewerGLImageWindowSurvivesExampleSwitch(unittest.TestCase):
+    def test_clear_model_keeps_drawing_logged_images(self):
+        """Verify the image window is still drawn after clear_model drops example UI callbacks."""
+        from newton._src.viewer import viewer_gl, viewer_gui  # noqa: PLC0415
+
+        renderer = mock.MagicMock()
+        renderer.window.get_framebuffer_size.return_value = (640, 480)
+        renderer.window.get_size.return_value = (640, 480)
+        fake_ui = types.SimpleNamespace(is_available=True, imgui=mock.MagicMock(), dpi_scale=1.0)
+        with (
+            wp.ScopedDevice("cpu"),
+            mock.patch.object(viewer_gl, "RendererGL", return_value=renderer),
+            mock.patch.object(viewer_gl, "ImageLogger"),
+            mock.patch.object(viewer_gui, "UI", return_value=fake_ui),
+        ):
+            viewer = viewer_gl.ViewerGL(headless=False)
+        self.addCleanup(viewer.close)
+
+        viewer.clear_model()
+        panels = ("_render_gizmos", "_render_left_panel", "_render_stats_overlay", "_render_scalar_plots")
+        with contextlib.ExitStack() as stack:
+            for panel in panels:
+                stack.enter_context(mock.patch.object(viewer.gui, panel))
+            viewer.gui._render_ui()
+
+        viewer._image_logger.draw.assert_called_once()
 
 
 class TestViewerRTXLogImage(unittest.TestCase):
