@@ -710,6 +710,36 @@ def compute_shape_world_transforms(
 
 
 @wp.func
+def joint_angle_reference(limit_lower: float, limit_upper: float) -> float:
+    """Reference angle [rad] about which a single rotational DOF is measured.
+
+    Maximal-coordinate solvers recover a hinge angle from the relative orientation of two bodies, which only
+    determines it modulo ``2*pi``. Measuring it within ``pi`` of the middle of the limit range makes every angle
+    inside ``[limit_lower, limit_upper]`` (and overshoots of up to ``pi - (limit_upper - limit_lower) / 2``) read
+    correctly for any range narrower than ``2*pi``, including ranges that extend beyond ``+-pi``. Unlimited
+    (or ``2*pi``-wide and wider) ranges return 0, i.e. the principal value.
+
+    Args:
+        limit_lower: Lower joint limit [rad].
+        limit_upper: Upper joint limit [rad].
+
+    Returns:
+        The reference angle [rad].
+    """
+    if limit_upper >= limit_lower and limit_upper - limit_lower < 2.0 * wp.pi:
+        return 0.5 * (limit_lower + limit_upper)
+    return 0.0
+
+
+@wp.func
+def wrap_angle_near(angle: float, reference: float) -> float:
+    """Return ``angle + 2*pi*k`` in ``[reference - pi, reference + pi)``."""
+    two_pi = 2.0 * wp.pi
+    d = angle - reference + wp.pi
+    return reference - wp.pi + (d - two_pi * wp.floor(d / two_pi))
+
+
+@wp.func
 def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, axis: wp.vec3):
     """
     Reconstructs the angular joint coordinates and velocities given the relative rotation and angular velocity
@@ -750,6 +780,8 @@ def eval_articulation_ik(
     joint_dof_dim: wp.array2d[int],
     joint_q_start: wp.array[int],
     joint_qd_start: wp.array[int],
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
     body_flags: wp.array[wp.int32],
     body_flag_filter: int,
     joint_q: wp.array[float],
@@ -851,6 +883,11 @@ def eval_articulation_ik(
         q_pc = wp.quat_inverse(q_p) * q_c
 
         q, qd = reconstruct_angular_q_qd(q_pc, w_err, X_wpj, axis)
+        # the relative rotation fixes the angle modulo 2 pi only: report the value the solvers' limits use
+        lower = joint_limit_lower[qd_start]
+        upper = joint_limit_upper[qd_start]
+        if upper >= lower and upper - lower < 2.0 * wp.pi:
+            q = wrap_angle_near(q, joint_angle_reference(lower, upper))
 
         joint_q[q_start] = q
         joint_qd[qd_start] = qd
@@ -927,6 +964,10 @@ def eval_articulation_ik(
             axis = joint_axis[qd_start]
             q_pc = wp.quat_inverse(q_p) * q_c
             q, qd = reconstruct_angular_q_qd(q_pc, w_err, X_wpj, joint_axis[qd_start + lin_axis_count])
+            lower = joint_limit_lower[qd_start + lin_axis_count]
+            upper = joint_limit_upper[qd_start + lin_axis_count]
+            if upper >= lower and upper - lower < 2.0 * wp.pi:
+                q = wrap_angle_near(q, joint_angle_reference(lower, upper))
             joint_q[q_start + lin_axis_count] = q
             joint_qd[qd_start + lin_axis_count] = qd
 
@@ -1018,6 +1059,8 @@ def eval_ik(
             model.joint_dof_dim,
             model.joint_q_start,
             model.joint_qd_start,
+            model.joint_limit_lower,
+            model.joint_limit_upper,
             model.body_flags,
             body_flag_filter,
         ],
