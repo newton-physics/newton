@@ -141,6 +141,56 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertTrue(forced_collision_flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(forced_collision_flags & ShapeFlags.VISIBLE)
 
+    def test_fixed_joint_chains_filter_like_mujoco_weld_bodies(self):
+        """Bodies joined by fixed joints act as one weld body for contact filtering, as in MuJoCo."""
+        mjcf = """<mujoco>
+  <option><flag filterparent="{flag}"/></option>
+  <worldbody>
+    <geom name="floor" type="plane" size="1 1 0.1"/>
+    <body name="wrist" pos="0 0 0.5">
+      <joint name="hinge" type="hinge" axis="0 0 1"/>
+      <geom name="wrist_geom" type="capsule" size="0.03 0.05"/>
+      <body name="finger" pos="0 0.02 -0.05">
+        <joint name="slide" type="slide" axis="0 1 0"/>
+        <geom name="finger_geom" type="box" size="0.01 0.01 0.02"/>
+        <body name="pad" pos="0 0 -0.03">
+          <geom name="pad_geom" type="box" size="0.01 0.005 0.01"/>
+        </body>
+      </body>
+      <body name="other_finger" pos="0 -0.02 -0.05">
+        <joint name="slide2" type="slide" axis="0 1 0"/>
+        <geom name="other_geom" type="box" size="0.01 0.01 0.02"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"""
+
+        def filtered(flag):
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf.format(flag=flag))
+            model = builder.finalize(device="cpu")
+            index = {label.rsplit("/", 1)[-1]: i for i, label in enumerate(model.shape_label)}
+            pairs = model.shape_collision_filter_pairs
+
+            def pair(a, b):
+                i, j = index[a], index[b]
+                return (min(i, j), max(i, j)) in pairs
+
+            return pair
+
+        pair = filtered("enable")
+        # The pad is welded to the finger (no joint), so the two are one body for contacts.
+        self.assertTrue(pair("pad_geom", "finger_geom"))
+        # filterparent: the finger's weld body (finger + pad) does not collide with its parent, the wrist.
+        self.assertTrue(pair("pad_geom", "wrist_geom"))
+        self.assertTrue(pair("finger_geom", "wrist_geom"))
+        # Siblings and the world still collide.
+        self.assertFalse(pair("pad_geom", "other_geom"))
+        self.assertFalse(pair("pad_geom", "floor"))
+        pair = filtered("disable")
+        self.assertTrue(pair("pad_geom", "finger_geom"))
+        self.assertFalse(pair("pad_geom", "wrist_geom"))
+
     def test_collision_only_import_keeps_colliders_visible(self):
         """Collision-only MJCF assets must remain visible by default."""
         mjcf = """
