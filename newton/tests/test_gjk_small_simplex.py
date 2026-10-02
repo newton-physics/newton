@@ -32,9 +32,8 @@ def _query_triangle_point(a: wp.vec3, b: wp.vec3, c: wp.vec3, out: wp.array[floa
     point.scale = wp.vec3(0.0)
     # Keep the overlap and convergence tolerance below the face gap so this
     # query isolates simplex degeneracy rather than near-contact termination.
-    # max_dist = 0.0: exact distance query, no separation cutoff.
     separated, _, _, normal, distance = wp.static(create_solve_closest_distance(support_map).core)(
-        triangle, point, wp.quat_identity(), -a, 0.0, SupportMapDataProvider(), 0.0, 30, 1e-6
+        triangle, point, wp.quat_identity(), -a, 0.0, SupportMapDataProvider(), 30, 1e-6
     )
     out[0] = float(separated)
     out[1] = distance
