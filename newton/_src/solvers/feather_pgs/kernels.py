@@ -18,6 +18,12 @@ PGS_CONSTRAINT_TYPE_JOINT_LIMIT = 3
 # Joint velocity-limit row: a per-DOF velocity clamp with one unilateral row per
 # bound and no position bias.
 PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT = 4
+# Mimic row: the bilateral equality ``q_follower - coef1 * q_leader - coef0 = 0`` between
+# two DOFs of one articulation, with an unbounded impulse.
+PGS_CONSTRAINT_TYPE_MIMIC = 5
+# Connect row: one world axis of the point coincidence of a loop-closing BALL joint's
+# parent and child anchors (three rows per closure), with an unbounded impulse.
+PGS_CONSTRAINT_TYPE_CONNECT = 6
 
 # Keep launch-geometry-specific dynamics kernels out of the large general
 # kernel module. Warp compiles one whole module variant per block dimension.
@@ -1834,6 +1840,566 @@ def build_mass_update_mask(
 
 
 # =============================================================================
+# Bilateral Constraint Kernels (mimic and connect rows)
+# =============================================================================
+# Mimic rows enforce ``q_follower = coef0 + coef1 * q_leader`` between two DOFs of
+# one articulation, one row per follower coordinate. Connect rows close a kinematic
+# loop: three rows per loop-closing BALL joint pin its parent and child anchors
+# together. Both are bilateral equality rows with an unbounded impulse and the
+# Baumgarte bias ``pgs_beta * phi / dt``. Coefficients, enable flags and anchors are
+# read from device arrays every step, so runtime changes need no re-initialization
+# and stay compatible with CUDA graph capture.
+
+
+@wp.func
+def dense_index(stride: int, i: int, j: int):
+    return i * stride + j
+
+
+@wp.func
+def _reserve_bilateral_rows(
+    world: int,
+    row_count: int,
+    max_constraints: int,
+    world_slot_counter: wp.array[int],
+    first_rejected_slot: wp.array[int],
+    dropped_rows: wp.array[int],
+) -> int:
+    """Reserve ``row_count`` consecutive rows of a world, or reject the whole group.
+
+    A rejected group records its first slot so the row count is truncated before it,
+    and counts its rows as dropped; the raised slot counter latches the overflow status.
+    """
+    slot = wp.atomic_add(world_slot_counter, world, row_count)
+    if slot + row_count <= max_constraints:
+        return slot
+    wp.atomic_min(first_rejected_slot, world, slot)
+    wp.atomic_add(dropped_rows, world, row_count)
+    return -1
+
+
+@wp.kernel
+def allocate_mimic_slots(
+    mimic_legacy: wp.array[int],
+    mimic_enabled: wp.array[wp.bool],
+    mimic_world: wp.array[int],
+    max_constraints: int,
+    # outputs
+    mimic_slot: wp.array[int],
+    world_slot_counter: wp.array[int],
+    first_rejected_slot: wp.array[int],
+    dropped_rows: wp.array[int],
+):
+    """Allocate one dense row per enabled mimic row.
+
+    Launched with one thread per mimic row. A row from a disabled
+    :attr:`~newton.Model.constraint_mimic_enabled` entry gets ``mimic_slot = -1``;
+    joint-owned rows are always enabled.
+    """
+    k = wp.tid()
+    mimic_slot[k] = -1
+    legacy = mimic_legacy[k]
+    if legacy >= 0:
+        if not mimic_enabled[legacy]:
+            return
+    mimic_slot[k] = _reserve_bilateral_rows(
+        mimic_world[k], 1, max_constraints, world_slot_counter, first_rejected_slot, dropped_rows
+    )
+
+
+@wp.kernel
+def populate_mimic_J_for_size(
+    articulation_dof_start: wp.array[int],
+    art_to_world: wp.array[int],
+    group_to_art: wp.array[int],
+    mimic_slot: wp.array[int],
+    mimic_art_start: wp.array[int],
+    mimic_art_list: wp.array[int],
+    mimic_dof0: wp.array[int],
+    mimic_dof1: wp.array[int],
+    mimic_q0: wp.array[int],
+    mimic_q1: wp.array[int],
+    mimic_legacy: wp.array[int],
+    mimic_owner: wp.array[int],
+    mimic_coef0: wp.array[float],
+    mimic_coef1: wp.array[float],
+    joint_mimic_coeffs: wp.array[wp.vec2],
+    joint_q: wp.array[float],
+    # outputs
+    J_group: wp.array3d[float],
+    world_row_type: wp.array2d[int],
+    world_row_parent: wp.array2d[int],
+    world_row_mu: wp.array2d[float],
+    world_phi: wp.array2d[float],
+    world_target_velocity: wp.array2d[float],
+):
+    """Fill the Jacobian and metadata of the mimic rows of one size group.
+
+    One thread per articulation of the group visits the articulation's range of the
+    mimic table. The row is ``J = e_follower - coef1 * e_leader`` with the signed
+    violation ``phi = q_follower - coef1 * q_leader - coef0``.
+    """
+    group_idx = wp.tid()
+    art = group_to_art[group_idx]
+    world = art_to_world[art]
+    dof_start = articulation_dof_start[art]
+
+    for m in range(mimic_art_start[art], mimic_art_start[art + 1]):
+        k = mimic_art_list[m]
+        slot = mimic_slot[k]
+        if slot < 0:
+            continue
+
+        legacy = mimic_legacy[k]
+        c0 = float(0.0)
+        c1 = float(0.0)
+        if legacy >= 0:
+            c0 = mimic_coef0[legacy]
+            c1 = mimic_coef1[legacy]
+        else:
+            coeffs = joint_mimic_coeffs[mimic_owner[k]]
+            c0 = coeffs[0]
+            c1 = coeffs[1]
+
+        # The construction-time plan guarantees two distinct DOFs of this articulation.
+        J_group[group_idx, slot, mimic_dof0[k] - dof_start] = 1.0
+        J_group[group_idx, slot, mimic_dof1[k] - dof_start] = -c1
+
+        world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_MIMIC
+        world_row_parent[world, slot] = -1
+        world_row_mu[world, slot] = 0.0
+        world_phi[world, slot] = joint_q[mimic_q0[k]] - c1 * joint_q[mimic_q1[k]] - c0
+        world_target_velocity[world, slot] = 0.0
+
+
+@wp.kernel
+def allocate_connect_slots(
+    connect_enabled: wp.array[int],
+    connect_world: wp.array[int],
+    max_constraints: int,
+    # outputs
+    connect_slot: wp.array[int],
+    world_slot_counter: wp.array[int],
+    first_rejected_slot: wp.array[int],
+    dropped_rows: wp.array[int],
+):
+    """Allocate three consecutive dense rows per enabled loop closure.
+
+    A closure that does not fit is dropped whole (``connect_slot = -1``) rather than
+    enforced along some axes only.
+    """
+    k = wp.tid()
+    connect_slot[k] = -1
+    if connect_enabled[k] == 0:
+        return
+    connect_slot[k] = _reserve_bilateral_rows(
+        connect_world[k], 3, max_constraints, world_slot_counter, first_rejected_slot, dropped_rows
+    )
+
+
+@wp.kernel
+def populate_connect_J_for_size(
+    articulation_dof_start: wp.array[int],
+    art_to_world: wp.array[int],
+    group_to_art: wp.array[int],
+    n_dofs: int,
+    connect_slot: wp.array[int],
+    connect_art: wp.array[int],
+    connect_body_p: wp.array[int],
+    connect_body_c: wp.array[int],
+    connect_anchor_p: wp.array[wp.vec3],
+    connect_anchor_c: wp.array[wp.vec3],
+    connect_parent_prescribed: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_to_joint: wp.array[int],
+    joint_ancestor: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_S_s: wp.array[wp.spatial_vector],
+    articulation_origin: wp.array[wp.vec3],
+    # outputs
+    J_group: wp.array3d[float],
+    world_row_type: wp.array2d[int],
+    world_row_parent: wp.array2d[int],
+    world_row_mu: wp.array2d[float],
+    world_phi: wp.array2d[float],
+    world_target_velocity: wp.array2d[float],
+):
+    """Fill the Jacobian and metadata of the connect rows of one size group.
+
+    One thread per articulation of the group scans the closure table and writes three
+    rows per owned closure: for world axis ``e``, ``phi = e . (p_A - p_B)`` and
+    ``J = e . (J_point(parent, p_A) - J_point(child, p_B))``, built with the ancestor
+    walk of the contact rows. Shared ancestors cancel.
+
+    A prescribed parent (a kinematic body outside the child's articulation, or the world
+    when ``connect_body_p[k] < 0``) contributes no DOFs; its anchor velocity enters the
+    row target instead (``J v = -e . v_A``), so the child anchor follows the moving
+    parent anchor.
+
+    Each row is normalized. On a planar linkage one axis is nearly redundant with the
+    tree (``|J|`` around ``1e-4``), and an unnormalized row would relax a real velocity
+    error against a near-zero diagonal. Degenerate rows are left inert (zero ``J``,
+    ``phi`` and target).
+    """
+    group_idx = wp.tid()
+    art = group_to_art[group_idx]
+    world = art_to_world[art]
+    dof_start = articulation_dof_start[art]
+
+    n_connect = connect_art.shape[0]
+    for k in range(n_connect):
+        if connect_art[k] != art:
+            continue
+        base_slot = connect_slot[k]
+        if base_slot < 0:
+            continue
+
+        body_p = connect_body_p[k]
+        body_c = connect_body_c[k]
+        prescribed = connect_parent_prescribed[k] != 0
+        p_a = connect_anchor_p[k]
+        v_a = wp.vec3(0.0, 0.0, 0.0)
+        if body_p >= 0:
+            p_a = wp.transform_point(body_q[body_p], connect_anchor_p[k])
+            if prescribed:
+                # The anchor velocity of a prescribed parent comes from its body twist.
+                twist = body_qd[body_p]
+                x_com = wp.transform_point(body_q[body_p], body_com[body_p])
+                v_a = wp.spatial_top(twist) + wp.cross(wp.spatial_bottom(twist), p_a - x_com)
+        p_b = wp.transform_point(body_q[body_c], connect_anchor_c[k])
+        origin = articulation_origin[art]
+        rel_a = p_a - origin
+        rel_b = p_b - origin
+        delta = p_a - p_b
+
+        for axis in range(3):
+            slot = base_slot + axis
+            e = wp.vec3(0.0, 0.0, 0.0)
+            e[axis] = 1.0
+            target = float(0.0)
+
+            # Both walks accumulate into the row, which the caller zeroed this step.
+            if prescribed:
+                target = -wp.dot(e, v_a)
+            else:
+                curr = body_to_joint[body_p]
+                while curr != -1:
+                    for d in range(joint_qd_start[curr], joint_qd_start[curr + 1]):
+                        S = joint_S_s[d]
+                        lin = wp.vec3(S[0], S[1], S[2])
+                        ang = wp.vec3(S[3], S[4], S[5])
+                        J_group[group_idx, slot, d - dof_start] += wp.dot(e, lin + wp.cross(ang, rel_a))
+                    curr = joint_ancestor[curr]
+            curr = body_to_joint[body_c]
+            while curr != -1:
+                for d in range(joint_qd_start[curr], joint_qd_start[curr + 1]):
+                    S = joint_S_s[d]
+                    lin = wp.vec3(S[0], S[1], S[2])
+                    ang = wp.vec3(S[3], S[4], S[5])
+                    J_group[group_idx, slot, d - dof_start] -= wp.dot(e, lin + wp.cross(ang, rel_b))
+                curr = joint_ancestor[curr]
+
+            norm_sq = float(0.0)
+            for d in range(n_dofs):
+                norm_sq += J_group[group_idx, slot, d] * J_group[group_idx, slot, d]
+            phi_axis = delta[axis]
+            if norm_sq > 1.0e-8:
+                inv_norm = 1.0 / wp.sqrt(norm_sq)
+                for d in range(n_dofs):
+                    J_group[group_idx, slot, d] *= inv_norm
+                phi_axis *= inv_norm
+                target *= inv_norm
+            else:
+                for d in range(n_dofs):
+                    J_group[group_idx, slot, d] = 0.0
+                phi_axis = 0.0
+                target = 0.0
+
+            world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_CONNECT
+            world_row_parent[world, slot] = -1
+            world_row_mu[world, slot] = 0.0
+            world_phi[world, slot] = phi_axis
+            world_target_velocity[world, slot] = target
+
+
+# =============================================================================
+# Bilateral Pre-elimination Kernels
+# =============================================================================
+# Fold the bilateral rows B of an articulation into the response of its other rows
+# (a Schur complement): with Y_B = H^-1 J_B^T and S = J_B Y_B (+ regularization),
+# every other row's response becomes Y'_i = Y_i - Y_B S^-1 (J_B Y_i), so J_B Y'_i = 0
+# and sweep impulses preserve the closures. The corrected row diagonals follow from
+# the unchanged J Y diagonal pass. The predictor velocity is projected once
+# (J_B v + b_B = 0), which replaces the Baumgarte work of the eliminated rows.
+
+PREELIM_MAX_ROWS = 8
+"""Per-articulation capacity of the pre-eliminated bilateral block, for example one
+mimic row plus two three-row loop closures of a parallel gripper."""
+
+_preelim_vec = wp.types.vector(length=PREELIM_MAX_ROWS, dtype=wp.float32)
+
+
+@wp.func
+def dense_cholesky(
+    n: int,
+    A: wp.array[float],
+    R: wp.array[float],
+    A_start: int,
+    R_start: int,
+    # outputs
+    L: wp.array[float],
+):
+    """Factor ``A + diag(R) = L L^T`` for a packed row-major ``n x n`` block."""
+    for j in range(n):
+        s = A[A_start + dense_index(n, j, j)] + R[R_start + j]
+
+        for k in range(j):
+            r = L[A_start + dense_index(n, j, k)]
+            s -= r * r
+
+        s = wp.sqrt(s)
+        invS = 1.0 / s
+
+        L[A_start + dense_index(n, j, j)] = s
+
+        for i in range(j + 1, n):
+            s = A[A_start + dense_index(n, i, j)]
+
+            for k in range(j):
+                s -= L[A_start + dense_index(n, i, k)] * L[A_start + dense_index(n, j, k)]
+
+            L[A_start + dense_index(n, i, j)] = s * invS
+
+
+@wp.func
+def preelim_solve(
+    n: int,
+    L: wp.array[float],
+    L_start: int,
+    b: _preelim_vec,
+) -> _preelim_vec:
+    """Solve ``(L L^T) x = b`` for a packed per-articulation Cholesky factor."""
+    x = _preelim_vec()
+    for i in range(n):
+        s = b[i]
+        for j in range(i):
+            s -= L[L_start + dense_index(n, i, j)] * x[j]
+        x[i] = s / L[L_start + dense_index(n, i, i)]
+    for ii in range(n):
+        i = n - 1 - ii
+        s = x[i]
+        for j in range(i + 1, n):
+            s -= L[L_start + dense_index(n, j, i)] * x[j]
+        x[i] = s / L[L_start + dense_index(n, i, i)]
+    return x
+
+
+@wp.kernel
+def preelim_setup_for_size(
+    group_to_art: wp.array[int],
+    art_to_preelim: wp.array[int],
+    mimic_slot: wp.array[int],
+    mimic_art_start: wp.array[int],
+    mimic_art_list: wp.array[int],
+    n_mimic: int,
+    connect_slot: wp.array[int],
+    connect_art: wp.array[int],
+    n_connect: int,
+    J_group: wp.array3d[float],
+    Y_group: wp.array3d[float],
+    n_dofs: int,
+    reg_rel: float,
+    reg_floor: float,
+    # outputs
+    preelim_slots: wp.array[int],
+    preelim_nB: wp.array[int],
+    S_scratch: wp.array[float],
+    reg: wp.array[float],
+    LS: wp.array[float],
+):
+    """Gather the bilateral block of each articulation, form ``S = J_B Y_B`` and factor it.
+
+    One thread per articulation of the group, after ``Y = H^-1 J^T``. Ownership comes
+    from the per-row articulation tables, not from the per-world row type, which would
+    admit zero rows of other articulations and make ``S`` singular. Zero rows (inert
+    degenerate connect axes) are dropped for the same reason.
+    """
+    group_idx = wp.tid()
+    art = group_to_art[group_idx]
+    pe = art_to_preelim[art]
+    if pe < 0:
+        return
+    base = pe * PREELIM_MAX_ROWS
+
+    n = int(0)
+    if n_mimic > 0:
+        for m in range(mimic_art_start[art], mimic_art_start[art + 1]):
+            k = mimic_art_list[m]
+            if mimic_slot[k] >= 0 and n < PREELIM_MAX_ROWS:
+                preelim_slots[base + n] = mimic_slot[k]
+                n += 1
+    for k in range(n_connect):
+        if connect_art[k] == art and connect_slot[k] >= 0:
+            for a in range(3):
+                if n < PREELIM_MAX_ROWS:
+                    preelim_slots[base + n] = connect_slot[k] + a
+                    n += 1
+
+    m = int(0)
+    for p in range(n):
+        s = preelim_slots[base + p]
+        nrm = float(0.0)
+        for d in range(n_dofs):
+            nrm += J_group[group_idx, s, d] * J_group[group_idx, s, d]
+        if nrm > 1.0e-10:
+            preelim_slots[base + m] = s
+            m += 1
+    for p in range(m, PREELIM_MAX_ROWS):
+        preelim_slots[base + p] = -1
+    preelim_nB[pe] = m
+    if m == 0:
+        return
+
+    s_base = pe * PREELIM_MAX_ROWS * PREELIM_MAX_ROWS
+    for p in range(m):
+        sp = preelim_slots[base + p]
+        for q in range(m):
+            sq = preelim_slots[base + q]
+            acc = float(0.0)
+            for d in range(n_dofs):
+                acc += J_group[group_idx, sp, d] * Y_group[group_idx, sq, d]
+            S_scratch[s_base + dense_index(m, p, q)] = acc
+
+    # Relative diagonal regularization. A planar four-bar closure has a nearly dependent
+    # axis whose last pivot is float32 cancellation noise; an absolute epsilon below the
+    # Delassus scale of light links can turn it negative. Scaling by each row's own
+    # diagonal keeps the factor positive definite at any mass scale and leaves the
+    # redundant axis slightly soft, a direction the tree already enforces.
+    for p in range(m):
+        reg[base + p] = reg_rel * S_scratch[s_base + dense_index(m, p, p)] + reg_floor
+
+    dense_cholesky(m, S_scratch, reg, s_base, base, LS)
+
+
+@wp.kernel
+def preelim_correct_Y_for_size(
+    group_to_art: wp.array[int],
+    art_to_world: wp.array[int],
+    art_to_preelim: wp.array[int],
+    constraint_count: wp.array[int],
+    preelim_slots: wp.array[int],
+    preelim_nB: wp.array[int],
+    LS: wp.array[float],
+    J_group: wp.array3d[float],
+    n_dofs: int,
+    max_constraints: int,
+    n_arts: int,
+    # outputs
+    Y_group: wp.array3d[float],
+):
+    """Correct the response of every row outside the block: ``Y_i -= Y_B S^-1 (J_B Y_i)``.
+
+    One thread per (articulation, row). Rows of the block keep their response for the
+    projection; their sweep visits apply no impulse because the projected velocity
+    already satisfies ``J_B v = -b_B``.
+    """
+    idx = wp.tid()
+    group_idx = idx // max_constraints
+    i = idx % max_constraints
+    if group_idx >= n_arts:
+        return
+    art = group_to_art[group_idx]
+    pe = art_to_preelim[art]
+    if pe < 0:
+        return
+    world = art_to_world[art]
+    if i >= constraint_count[world]:
+        return
+    base = pe * PREELIM_MAX_ROWS
+    m = preelim_nB[pe]
+    if m == 0:
+        return
+    for p in range(m):
+        if preelim_slots[base + p] == i:
+            return
+
+    w = _preelim_vec()
+    nonzero = int(0)
+    for p in range(m):
+        sp = preelim_slots[base + p]
+        acc = float(0.0)
+        for d in range(n_dofs):
+            acc += J_group[group_idx, sp, d] * Y_group[group_idx, i, d]
+        w[p] = acc
+        if acc != 0.0:
+            nonzero = 1
+    if nonzero == 0:
+        return
+
+    z = preelim_solve(m, LS, pe * PREELIM_MAX_ROWS * PREELIM_MAX_ROWS, w)
+
+    for d in range(n_dofs):
+        acc = float(0.0)
+        for p in range(m):
+            acc += Y_group[group_idx, preelim_slots[base + p], d] * z[p]
+        Y_group[group_idx, i, d] -= acc
+
+
+@wp.kernel
+def preelim_project_velocity_for_size(
+    group_to_art: wp.array[int],
+    art_to_world: wp.array[int],
+    art_to_preelim: wp.array[int],
+    articulation_dof_start: wp.array[int],
+    preelim_slots: wp.array[int],
+    preelim_nB: wp.array[int],
+    LS: wp.array[float],
+    J_group: wp.array3d[float],
+    Y_group: wp.array3d[float],
+    world_rhs: wp.array2d[float],
+    n_dofs: int,
+    # outputs
+    v_out: wp.array[float],
+):
+    """Project the predictor velocity once: ``v -= Y_B S^-1 (J_B v + b_B)``.
+
+    Runs after the solve velocity is seeded with the predictor. Afterwards
+    ``J_B v = -b_B`` holds, and every corrected response keeps it. Each thread owns one
+    articulation's DOF range.
+    """
+    group_idx = wp.tid()
+    art = group_to_art[group_idx]
+    pe = art_to_preelim[art]
+    if pe < 0:
+        return
+    m = preelim_nB[pe]
+    if m == 0:
+        return
+    base = pe * PREELIM_MAX_ROWS
+    world = art_to_world[art]
+    dof_start = articulation_dof_start[art]
+
+    r = _preelim_vec()
+    for p in range(m):
+        sp = preelim_slots[base + p]
+        acc = world_rhs[world, sp]
+        for d in range(n_dofs):
+            acc += J_group[group_idx, sp, d] * v_out[dof_start + d]
+        r[p] = acc
+
+    z = preelim_solve(m, LS, pe * PREELIM_MAX_ROWS * PREELIM_MAX_ROWS, r)
+
+    for d in range(n_dofs):
+        acc = float(0.0)
+        for p in range(m):
+            acc += Y_group[group_idx, preelim_slots[base + p], d] * z[p]
+        if acc != 0.0:
+            v_out[dof_start + d] -= acc
+
+
+# =============================================================================
 # Joint Velocity-Limit Constraint Kernels
 # =============================================================================
 # These kernels clamp per-DOF joint speeds. They reuse the allocation / populate
@@ -2848,7 +3414,8 @@ def compute_world_contact_bias(
     ``rhs = -target_velocity + bias``. Penetrating contacts and violated joint limits
     get the Baumgarte term ``beta * phi / dt``; separated contacts and limits within
     their activation gap may close the remaining gap during the step (``phi / dt``).
-    Friction and velocity-limit rows have no position bias.
+    Mimic and connect rows get the Baumgarte term for either sign of ``phi``. Friction
+    and velocity-limit rows have no position bias.
     """
     world = wp.tid()
     inv_dt = 1.0 / dt
@@ -2866,6 +3433,9 @@ def compute_world_contact_bias(
                 rhs += pgs_beta * phi * inv_dt
             else:
                 rhs += phi * inv_dt
+        elif row_type == PGS_CONSTRAINT_TYPE_MIMIC or row_type == PGS_CONSTRAINT_TYPE_CONNECT:
+            # Equality rows correct the violation in both directions.
+            rhs += pgs_beta * phi * inv_dt
         world_rhs[world, i] = rhs
 
 

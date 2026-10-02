@@ -117,11 +117,13 @@ def test_constructor_validates_options(test, device):
 def test_unsupported_model_features_raise(test, device):
     """Reject model features the solver would otherwise silently ignore."""
     mimic = newton.ModelBuilder()
-    links = [mimic.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(2)]
-    leader = mimic.add_joint_revolute(-1, links[0], axis=newton.Axis.Y)
-    follower = mimic.add_joint_revolute(links[0], links[1], axis=newton.Axis.Y)
-    mimic.add_articulation([leader, follower])
-    mimic.add_constraint_mimic(follower, leader, coef1=1.0)
+    links = [mimic.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(3)]
+    root = mimic.add_joint_revolute(-1, links[0], axis=newton.Axis.Y)
+    leader = mimic.add_joint_ball(links[0], links[1])
+    follower = mimic.add_joint_ball(links[1], links[2])
+    mimic.add_articulation([root, leader, follower])
+    # Quaternion-coordinate mimics have no componentwise row.
+    mimic.set_joint_mimic(follower, leader)
     with test.assertRaisesRegex(NotImplementedError, "mimic"):
         SolverFeatherPGS(mimic.finalize(device=device))
 
@@ -327,7 +329,7 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
                 SolverFeatherPGS(build_pendulum_with_connect(eq_type, joint_kind, False))
 
     # A JOINT row linking a mimic between other joints is likewise unenforced; the importer's
-    # own projection is judged through its mimic constraint.
+    # own projection is enforced through its mimic constraint.
     mjcf = """
     <mujoco>
       <worldbody>
@@ -347,7 +349,7 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
       <equality><joint joint1="jb" joint2="ja"/></equality>
     </mujoco>
     """
-    for swap, message in ((False, "mimic constraints"), (True, "equality")):
+    for swap in (False, True):
         with test.subTest(mimic_joints_swapped=swap):
             builder = newton.ModelBuilder()
             builder.add_mjcf(mjcf)
@@ -358,7 +360,10 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
                 joint1 = model.constraint_mimic_joint1.numpy()
                 model.constraint_mimic_joint0.assign(joint1)
                 model.constraint_mimic_joint1.assign(joint0)
-            with test.assertRaisesRegex(NotImplementedError, message):
+            if swap:
+                with test.assertRaisesRegex(NotImplementedError, "equality"):
+                    SolverFeatherPGS(model)
+            else:
                 SolverFeatherPGS(model)
 
 
