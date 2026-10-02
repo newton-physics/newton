@@ -1,0 +1,1 @@
+Add the `articulated_contact_response="propagation"` and `"propagation-fused"` options to `newton.solvers.SolverFeatherPGS`, which solve contacts of articulated bodies as body-space rows with responses from an articulated-body factorization of each tree, and `propagation_same_articulation_rows` for contacts between links of the same articulation.

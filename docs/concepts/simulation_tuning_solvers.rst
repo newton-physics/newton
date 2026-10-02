@@ -227,7 +227,8 @@ repository examples spend tuning effort, not a shared solver API.
        ``joint_limit_activation_gap``, ``enable_joint_velocity_limits``,
        ``velocity_limit_activation_fraction``,
        ``dense_max_constraints``, ``mf_max_constraints``,
-       ``warn_constraint_overflow``.
+       ``warn_constraint_overflow``, ``articulated_contact_response``,
+       ``propagation_same_articulation_rows``.
      - Experimental and CUDA-only. Joint limits are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
@@ -244,7 +245,13 @@ repository examples spend tuning effort, not a shared solver API.
        with another world's bodies cannot be solved and are flagged the same
        way; the constructor warns when a model allows them. Per-body angular
        damping and free-body velocity bounds are model attributes registered by
-       ``register_custom_attributes()``.
+       ``register_custom_attributes()``. ``articulated_contact_response`` selects
+       how contacts of articulated bodies are solved: ``"immediate"`` rows of
+       the generalized coordinates, or the ``"propagation"`` responses, which
+       solve them as body-space rows and propagate their impulses through each
+       articulation tree. In ``"propagation"`` every contact row, free bodies
+       included, shares one family of ``mf_max_constraints +
+       dense_max_constraints`` rows per world.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.
