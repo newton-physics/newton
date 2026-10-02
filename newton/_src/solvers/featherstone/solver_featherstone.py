@@ -691,6 +691,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             contacts.rigid_contact_count,
                             contacts.rigid_contact_point0,
                             contacts.rigid_contact_point1,
+                            contacts.rigid_contact_surface_velocity,
                             contacts.rigid_contact_normal,
                             contacts.rigid_contact_shape0,
                             contacts.rigid_contact_shape1,
