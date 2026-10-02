@@ -3000,6 +3000,9 @@ class SolverFeatherPGS(SolverBase):
             self._update_kinematic_state()
             self._scatter_armature_to_groups()
             self._mass_update_requested.fill_(1)
+        if flags & ModelFlags.JOINT_PROPERTIES:
+            # Joint frames move the bodies the mass matrix is built from.
+            self._mass_update_requested.fill_(1)
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES and self.model.body_count:
             # Re-derive the buffers baked from body_com/body_mass/body_inertia
             # in _allocate_common_buffers so runtime CoM/mass randomization
