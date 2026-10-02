@@ -708,7 +708,8 @@ def _run_rolling(geometry, device, *, friction_anchor_beta=None, segments=64, hz
         solver.step(s0, s1, control, contacts, 1.0 / hz)
         s0, s1 = s1, s0
         if step >= 3 * hz // 4:
-            final_velocity.append(s0.body_qd.numpy()[0])
+            # CPU arrays expose their buffer; copy before the states swap.
+            final_velocity.append(s0.body_qd.numpy()[0].copy())
     pose, velocity = s0.body_q.numpy()[0], s0.body_qd.numpy()[0]
     return pose, velocity, np.mean(final_velocity, axis=0)
 
