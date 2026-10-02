@@ -1338,6 +1338,19 @@ for example_name in (
 
 
 add_contact_example_test(
+    name="contacts.example_adaptive_collision",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 45},
+    use_viewer=True,
+)
+add_contact_example_test(
+    name="contacts.example_adaptive_collision",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 45, "scheduler": False},
+    use_viewer=True,
+    test_suffix="no_scheduler",
+)
+add_contact_example_test(
     name="contacts.example_nut_bolt_sdf",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},

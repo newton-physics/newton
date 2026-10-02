@@ -39,6 +39,19 @@ _prepare_speculative_convex_pair = create_prepare_convex_pair(
 
 
 @wp.kernel
+def _mark_contact_detected(contact_count: wp.array[wp.int32], detected: wp.array[wp.int32]):
+    """Persist whether any scheduled collision pass emitted a rigid contact."""
+    if contact_count[0] > 0:
+        detected[0] = 1
+
+
+@wp.kernel
+def _increment_counter(counter: wp.array[wp.int32]):
+    """Increment a scalar callback counter for schedule tests."""
+    counter[0] += 1
+
+
+@wp.kernel
 def _extract_speculative_plane_proxy_scale(
     shape_types: wp.array[wp.int32],
     shape_data: wp.array[wp.vec4],
@@ -548,6 +561,47 @@ def _build_spheres(device, velocity: float, separation: float = 0.3, gap: float 
     return model, model.state()
 
 
+def _build_opposing_capsules(device, speed_a: float, speed_b: float, gap: float, margin: float):
+    """Build two side-on capsules moving toward one another along X."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    builder.rigid_gap = 0.0
+    cfg = newton.ModelBuilder.ShapeConfig(gap=gap, margin=margin, mu=0.0)
+
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0.0, 0.0)))
+    builder.add_shape_capsule(body_a, radius=0.05, half_height=0.1, cfg=cfg)
+    builder.body_qd[body_a] = (speed_a, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.5, 0.0, 0.0)))
+    builder.add_shape_capsule(body_b, radius=0.05, half_height=0.1, cfg=cfg)
+    builder.body_qd[body_b] = (-speed_b, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    return builder.finalize(device=device), body_a, body_b
+
+
+def _step_opposing_capsules(model, body_a, body_b, frame_dt, substeps, max_speculative_extension):
+    """Advance one frame with collision detection before every equal substep."""
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        speculative_contact_gap_max=max_speculative_extension,
+    )
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverXPBD(model, iterations=5)
+    state_in = model.state()
+    state_out = model.state()
+    substep_dt = frame_dt / substeps
+    detected_contact = False
+    for _ in range(substeps):
+        state_in.clear_forces()
+        pipeline.collide(state_in, contacts, dt=substep_dt)
+        detected_contact |= int(contacts.rigid_contact_count.numpy()[0]) > 0
+        solver.step(state_in, state_out, None, contacts, substep_dt)
+        state_in, state_out = state_out, state_in
+
+    positions = state_in.body_q.numpy()
+    return float(positions[body_a, 0]), float(positions[body_b, 0]), detected_contact
+
+
 def _collide(model, state, speculative: bool):
     """Run one collision pass and return the populated contact buffer."""
     speculative_contact_gap_max = 0.25 if speculative else None
@@ -891,6 +945,216 @@ def test_speculative_contacts_prevent_dynamic_tunneling(test, device):
 
     test.assertLess(step(False), 0.0)
     test.assertGreaterEqual(step(True), 0.04)
+
+
+def test_adaptive_collision_schedule_prevents_capsule_tunneling(test, device, external_capture=False):
+    """Refresh collisions often enough to prevent opposing capsules from tunneling."""
+    if external_capture and not wp.is_conditional_graph_supported():
+        test.skipTest("CUDA graph capture requires conditional graph support")
+    frame_dt = 0.01
+    substeps = 10
+    max_speculative_extension = 0.2
+    speed_a = 100.0
+    speed_b = 100.0
+
+    fixed_model, fixed_a, fixed_b = _build_opposing_capsules(device, speed_a, speed_b, 0.0, 0.0)
+    fixed_x_a, fixed_x_b, fixed_detected = _step_opposing_capsules(
+        fixed_model,
+        fixed_a,
+        fixed_b,
+        frame_dt,
+        1,
+        max_speculative_extension,
+    )
+    test.assertFalse(fixed_detected)
+    test.assertGreater(fixed_x_a, fixed_x_b)
+
+    adaptive_model, adaptive_a, adaptive_b = _build_opposing_capsules(device, speed_a, speed_b, 0.0, 0.0)
+    states = (adaptive_model.state(), adaptive_model.state())
+    pipeline = newton.CollisionPipeline(
+        adaptive_model,
+        broad_phase="nxn",
+        speculative_contact_gap_max=max_speculative_extension,
+    )
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverXPBD(adaptive_model, iterations=5)
+    detected = wp.zeros(1, dtype=wp.int32, device=device)
+    collision_calls = wp.zeros(1, dtype=wp.int32, device=device)
+    substep_calls = wp.zeros(1, dtype=wp.int32, device=device)
+
+    def collide(state, dt):
+        state.clear_forces()
+        pipeline.collide(state, contacts, dt=dt)
+        wp.launch(_increment_counter, dim=1, inputs=[collision_calls], device=device)
+        wp.launch(
+            _mark_contact_detected,
+            dim=1,
+            inputs=[contacts.rigid_contact_count, detected],
+            device=device,
+        )
+
+    def substep(state_in, state_out, dt):
+        solver.step(state_in, state_out, None, contacts, dt)
+        wp.launch(_increment_counter, dim=1, inputs=[substep_calls], device=device)
+
+    scheduler = newton.CollisionSubstepScheduler(
+        pipeline,
+        states,
+        collision_callback=collide,
+        substep_callback=substep,
+        frame_dt=frame_dt,
+        substeps=substeps,
+    )
+    if external_capture:
+        with wp.ScopedCapture(device=device) as capture:
+            scheduler.step()
+        wp.capture_launch(capture.graph)
+    else:
+        scheduler.step()
+
+    test.assertEqual(int(scheduler.interval_overflow.numpy()[0]), 0)
+    test.assertGreaterEqual(int(collision_calls.numpy()[0]), 2)
+    test.assertLessEqual(int(collision_calls.numpy()[0]), substeps)
+    test.assertEqual(int(substep_calls.numpy()[0]), substeps)
+    test.assertEqual(int(detected.numpy()[0]), 1)
+    positions = states[0].body_q.numpy()
+    adaptive_x_a = float(positions[adaptive_a, 0])
+    adaptive_x_b = float(positions[adaptive_b, 0])
+    test.assertLess(adaptive_x_a, adaptive_x_b)
+
+
+def test_adaptive_collision_schedule_reacts_to_acceleration(test, device):
+    """Refresh collision detection after observed speed grows during the frame."""
+    frame_dt = 1.0
+    substeps = 10
+    travel_budget = 2.0
+
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0, -10.0, 0.0))
+    body = builder.add_body()
+    builder.add_shape_sphere(body, radius=0.1)
+    model = builder.finalize(device=device)
+    states = (model.state(), model.state())
+    pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=travel_budget)
+    solver = newton.solvers.SolverXPBD(model, iterations=1)
+    collision_calls = wp.zeros(1, dtype=wp.int32, device=device)
+
+    def collide(state, dt):
+        del state, dt
+        wp.launch(_increment_counter, dim=1, inputs=[collision_calls], device=device)
+
+    def substep(state_in, state_out, dt):
+        state_in.clear_forces()
+        solver.step(state_in, state_out, None, None, dt)
+
+    scheduler = newton.CollisionSubstepScheduler(
+        pipeline,
+        states,
+        collision_callback=collide,
+        substep_callback=substep,
+        frame_dt=frame_dt,
+        substeps=substeps,
+    )
+    scheduler.step()
+
+    test.assertGreater(int(collision_calls.numpy()[0]), 1)
+    # Refreshing after each observed speed increase keeps travel within budget.
+    test.assertEqual(int(scheduler.interval_overflow.numpy()[0]), 0)
+
+
+def test_adaptive_collision_schedule_limits_refresh_interval(test, device):
+    """Refresh collisions at least as often as the configured time limit."""
+    frame_dt = 1.0 / 60.0
+    substeps = 12
+
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    body = builder.add_body()
+    builder.add_shape_sphere(body, radius=0.1)
+    model = builder.finalize(device=device)
+    states = (model.state(), model.state())
+    pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=0.1)
+    collision_calls = wp.zeros(1, dtype=wp.int32, device=device)
+
+    def collide(state, dt):
+        del state, dt
+        wp.launch(_increment_counter, dim=1, inputs=[collision_calls], device=device)
+
+    def substep(state_in, state_out, dt):
+        del state_in, state_out, dt
+
+    scheduler = newton.CollisionSubstepScheduler(
+        pipeline,
+        states,
+        collision_callback=collide,
+        substep_callback=substep,
+        frame_dt=frame_dt,
+        substeps=substeps,
+        max_collision_dt=1.0 / 120.0,
+    )
+    scheduler.step()
+
+    test.assertEqual(int(collision_calls.numpy()[0]), 2)
+
+
+def test_adaptive_collision_schedule_rejects_unsupported_inputs(test, device):
+    """Reject particles, aliased states, and undersized rigid-body buffers."""
+
+    def noop(*args):
+        del args
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body()
+    builder.add_shape_sphere(body, radius=0.1)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=0.1)
+    state = model.state()
+
+    with test.assertRaisesRegex(ValueError, "at least the solver substep duration"):
+        newton.CollisionSubstepScheduler(
+            pipeline,
+            (state, model.state()),
+            collision_callback=noop,
+            substep_callback=noop,
+            frame_dt=0.01,
+            substeps=2,
+            max_collision_dt=0.004,
+        )
+
+    with test.assertRaisesRegex(ValueError, "distinct ping-pong buffers"):
+        newton.CollisionSubstepScheduler(
+            pipeline,
+            (state, state),
+            collision_callback=noop,
+            substep_callback=noop,
+            frame_dt=0.01,
+            substeps=2,
+        )
+
+    short_state = model.state()
+    short_state.body_q = wp.empty(0, dtype=wp.transform, device=device)
+    short_state.body_qd = wp.empty(0, dtype=wp.spatial_vector, device=device)
+    with test.assertRaisesRegex(ValueError, "must contain all bodies"):
+        newton.CollisionSubstepScheduler(
+            pipeline,
+            (short_state, model.state()),
+            collision_callback=noop,
+            substep_callback=noop,
+            frame_dt=0.01,
+            substeps=2,
+        )
+
+    particle_builder = newton.ModelBuilder()
+    particle_builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+    particle_model = particle_builder.finalize(device=device)
+    particle_pipeline = newton.CollisionPipeline(particle_model, speculative_contact_gap_max=0.1)
+    with test.assertRaisesRegex(ValueError, "rigid contacts only"):
+        newton.CollisionSubstepScheduler(
+            particle_pipeline,
+            (particle_model.state(), particle_model.state()),
+            collision_callback=noop,
+            substep_callback=noop,
+            frame_dt=0.01,
+            substeps=2,
+        )
 
 
 def test_speculative_narrow_phase_launch(test, device):
@@ -1431,6 +1695,22 @@ for _name, _test in (
         test_stationary_contacts_match_non_speculative_pipeline,
     ),
     ("test_speculative_contacts_prevent_dynamic_tunneling", test_speculative_contacts_prevent_dynamic_tunneling),
+    (
+        "test_adaptive_collision_schedule_prevents_capsule_tunneling",
+        test_adaptive_collision_schedule_prevents_capsule_tunneling,
+    ),
+    (
+        "test_adaptive_collision_schedule_reacts_to_acceleration",
+        test_adaptive_collision_schedule_reacts_to_acceleration,
+    ),
+    (
+        "test_adaptive_collision_schedule_limits_refresh_interval",
+        test_adaptive_collision_schedule_limits_refresh_interval,
+    ),
+    (
+        "test_adaptive_collision_schedule_rejects_unsupported_inputs",
+        test_adaptive_collision_schedule_rejects_unsupported_inputs,
+    ),
     ("test_speculative_narrow_phase_launch", test_speculative_narrow_phase_launch),
     (
         "test_speculative_narrow_phase_rejects_hydroelastic",
@@ -1521,6 +1801,14 @@ for _deterministic in (False, True):
         devices=get_test_devices(),
         deterministic=_deterministic,
     )
+
+add_function_test(
+    TestSpeculativeContacts,
+    "test_adaptive_collision_schedule_external_capture",
+    test_adaptive_collision_schedule_prevents_capsule_tunneling,
+    devices=get_cuda_test_devices(),
+    external_capture=True,
+)
 
 add_function_test(
     TestSpeculativeMeshContacts,

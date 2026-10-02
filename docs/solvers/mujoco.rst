@@ -701,6 +701,47 @@ Contacts are **not** pulled back into a Newton ``Contacts`` object
 automatically. Call :meth:`~newton.solvers.SolverMuJoCo.update_contacts`
 when you need contact points, forces, or material indices in Newton form.
 
+Separated speculative contacts
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+With ``use_mujoco_contacts=False``, Newton's collision pipeline can generate
+separated candidates using velocity expansion. By default, MuJoCo activates
+constraints only inside the authored collision margin. Generating a candidate
+alone therefore does not prevent an object from crossing a thin collider in
+one dynamics step.
+
+Set ``use_speculative_contacts=True`` to add frictionless normal constraints
+for separated candidates. Their target bounds closing velocity by the current
+clearance divided by the physics timestep. Collision margins and the material
+response of penetrating contacts retain their authored values. Friction begins
+when the surfaces enter the authored margin.
+
+.. experimental::
+
+   The ``SolverMuJoCo(use_speculative_contacts=True)`` mode may change without
+   prior notice. It requires Newton contacts on the MuJoCo Warp backend and
+   Euler or implicitfast integration. It does not provide continuous collision
+   detection or guarantee zero penetration: candidate coverage, rotation,
+   contact compliance, forces, and timestep still matter.
+
+This is a runtime solver option, like the choice of contact backend. It does
+not add an asset-authoring attribute or change the USD collision schema.
+
+Pass a velocity-expansion horizon to the collision pipeline before each step::
+
+    pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=0.05)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverMuJoCo(
+        model, use_mujoco_contacts=False, use_speculative_contacts=True
+    )
+    pipeline.collide(state_in, contacts, dt=dt)
+    solver.step(state_in, state_out, control, contacts, dt)
+
+For scheduled collision refreshes, the expansion horizon must cover the
+interval until the next refresh. The solver's velocity bound uses each
+individual dynamics timestep. Speculative constraints can consume additional
+constraint rows, so check contact and constraint capacities for the scene.
+
 Push, pull, and contact-conversion are implemented by
 ``SolverMuJoCo._apply_mjc_control``, ``SolverMuJoCo._update_newton_state``,
 and :meth:`~newton.solvers.SolverMuJoCo.update_contacts`, using kernels
