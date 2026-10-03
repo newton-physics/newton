@@ -1345,7 +1345,7 @@ def block_sparse_gemv(
         wp.launch(
             kernel=_make_scale_vector_kernel_2d(0),
             dim=(A.num_matrices, A.max_of_max_dims[0]),
-            inputs=[A.dims, A.row_start, A.col_start, y, beta, matrix_mask],
+            inputs=[A.dims, y, beta, matrix_mask],
             device=A.device,
         )
 
