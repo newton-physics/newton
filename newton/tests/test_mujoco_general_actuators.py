@@ -414,7 +414,7 @@ class TestMuJoCoActuators(unittest.TestCase):
                     np.testing.assert_allclose(mj_model.actuator_biasprm[mj_idx, 2], -kd, atol=1e-5)
 
     def test_joint_target_distinct_position_velocity_ranges(self):
-        """Position + velocity actuators on one joint keep separate ctrl/force ranges.
+        """Preserve distinct position/velocity limits after composition and replication.
 
         The two are merged into a single POSITION_VELOCITY joint target, then rebuilt
         as two mj_model actuators; each must carry its own authored range.
@@ -434,8 +434,14 @@ class TestMuJoCoActuators(unittest.TestCase):
     </actuator>
 </mujoco>
 """
+        robot_builder = ModelBuilder()
+        robot_builder.add_mjcf(mjcf, ctrl_direct=False)
+        world_builder = ModelBuilder()
+        table = world_builder.add_body(mass=1.0, label="table")
+        world_builder.add_shape_box(table, hx=0.1, hy=0.1, hz=0.1)
+        world_builder.add_builder(robot_builder, label_prefix="robot")
         builder = ModelBuilder()
-        builder.add_mjcf(mjcf, ctrl_direct=False)
+        builder.replicate(world_builder, world_count=2)
         model = builder.finalize()
 
         self.assertEqual(
@@ -468,6 +474,49 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         self.assertTrue(seen_position, "no position sub-actuator found")
         self.assertTrue(seen_velocity, "no velocity sub-actuator found")
+
+    def test_actuator_transmissions_remap_during_composition(self):
+        """Preserve transmission targets, unused components, and sentinels when merging builders."""
+        source = ModelBuilder()
+        source.add_mjcf(MJCF_ACTUATORS, ctrl_direct=True)
+        # Include both shape-reference components and an unresolved target. Joint,
+        # body, and tendon rows are already supplied by the imported fixture.
+        for transmission, indices in (
+            (SolverMuJoCo.TrnType.JOINT_IN_PARENT, (6, 0)),
+            (SolverMuJoCo.TrnType.SITE, (0, -1)),
+            (SolverMuJoCo.TrnType.SITE, (0, 1)),
+            (SolverMuJoCo.TrnType.SLIDERCRANK, (1, 0)),
+            (SolverMuJoCo.TrnType.UNDEFINED, (-1, -1)),
+        ):
+            values = {attr.key: attr.default for attr in source.get_custom_attributes_by_frequency(["mujoco:actuator"])}
+            values["mujoco:actuator_trntype"] = transmission
+            values["mujoco:actuator_trnid"] = wp.vec2i(*indices)
+            source.add_custom_values(**values)
+
+        composed = ModelBuilder()
+        composed.add_builder(source, label_prefix="first")
+        composed.add_builder(source, label_prefix="second")
+        replicated = ModelBuilder()
+        replicated.replicate(composed, world_count=2)
+        model = replicated.finalize(device="cpu")
+        np.testing.assert_array_equal(
+            model.mujoco.actuator_trnid.numpy()[-13:],
+            [
+                [39, 0],
+                [40, 0],
+                [40, 0],
+                [41, 0],
+                [42, 0],
+                [43, 0],
+                [18, 0],
+                [3, 0],
+                [39, 0],
+                [18, -1],
+                [18, 19],
+                [19, 18],
+                [-1, -1],
+            ],
+        )
 
     def test_ball_joint_target_ranges_applied_to_all_axes(self):
         """Ball-joint axes share the actuator-range row stored at the joint's base DOF."""

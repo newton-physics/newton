@@ -4846,9 +4846,14 @@ class ModelBuilder:
             use_current_world = attr.references == "world"
             value_offset = 0 if use_current_world else get_offset(attr.references)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
+            is_actuator_transmission_attr = full_key == "mujoco:actuator_trnid"
             is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
             needs_remap = (
-                value_offset != 0 or use_current_world or is_equality_target_attr or is_collision_mask_domain_attr
+                value_offset != 0
+                or use_current_world
+                or is_equality_target_attr
+                or is_actuator_transmission_attr
+                or is_collision_mask_domain_attr
             )
 
             if needs_remap:
@@ -4880,6 +4885,34 @@ class ModelBuilder:
                         return target + entity_offsets["constraint_mimic"]
                     return value
 
+                def transform_actuator_transmission_value(entity_idx: int, value: Any) -> Any:
+                    from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+
+                    if value is None:
+                        return value
+                    type_attr = builder.custom_attributes.get("mujoco:actuator_trntype")
+                    transmission_type = type_attr.default if type_attr is not None else SolverMuJoCo.TrnType.JOINT
+                    if type_attr is not None and entity_idx < len(type_attr.values):
+                        if type_attr.values[entity_idx] is not None:
+                            transmission_type = type_attr.values[entity_idx]
+                    reference = {
+                        SolverMuJoCo.TrnType.JOINT: "joint_dof",
+                        SolverMuJoCo.TrnType.JOINT_IN_PARENT: "joint_dof",
+                        SolverMuJoCo.TrnType.TENDON: "mujoco:tendon",
+                        SolverMuJoCo.TrnType.SITE: "shape",
+                        SolverMuJoCo.TrnType.BODY: "body",
+                        SolverMuJoCo.TrnType.SLIDERCRANK: "shape",
+                    }.get(transmission_type)
+                    if reference is None:
+                        return value
+                    offset = get_offset(reference)
+                    target, alternate = value
+                    # Only site/refsite and slider/crank transmissions use two indices.
+                    return wp.vec2i(
+                        target + offset if target >= 0 else target,
+                        alternate + offset if alternate >= 0 and reference == "shape" else alternate,
+                    )
+
                 def transform_value(
                     value: Any,
                     offset: int = value_offset,
@@ -4905,10 +4938,13 @@ class ModelBuilder:
                     entity_idx: int,
                     value: Any,
                     is_equality_target: bool = is_equality_target_attr,
+                    is_actuator_transmission: bool = is_actuator_transmission_attr,
                     is_collision_mask_domain: bool = is_collision_mask_domain_attr,
                 ) -> Any:
                     if is_equality_target:
                         return transform_equality_target_value(entity_idx, value)
+                    if is_actuator_transmission:
+                        return transform_actuator_transmission_value(entity_idx, value)
                     if is_collision_mask_domain:
                         return collision_mask_domain_remap.get(int(value), value)
                     return transform_value(value)
