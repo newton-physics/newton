@@ -197,6 +197,40 @@ def test_saturated_pgs_drive_differs_from_the_augmented_drive(test, device):
     test.assertGreater(qd["physx_pgs"] - qd["augmented"], 1.0e-3)
 
 
+def test_pgs_drive_bounds_complete_reaction_under_external_load(test, device):
+    """Bound the complete drive reaction by ``joint_effort_limit`` under a large external load.
+
+    The augmented drive clamps only its explicit force, so its implicit reaction is unbounded in this scene.
+    """
+    dt = 0.01
+    for effort_limit in (1.0, 2.0):
+        for force in (-10000.0, 10000.0):
+            with test.subTest(effort_limit=effort_limit, force=force):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                joint = builder.add_joint_prismatic(
+                    -1,
+                    body,
+                    axis=newton.Axis.X,
+                    target_ke=10000.0,
+                    target_kd=0.0,
+                    target_pos=0.0,
+                    damping=0.0,
+                    armature=0.0,
+                    effort_limit=effort_limit,
+                )
+                builder.add_articulation([joint])
+                model = builder.finalize(device=device)
+                solver = SolverFeatherPGS(model, drive_mode="physx_pgs")
+                state_0, state_1 = model.state(), model.state()
+                newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+                state_0.body_f.assign(np.array([[force, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32))
+                solver.step(state_0, state_1, model.control(), None, dt)
+                reaction = float(state_1.joint_qd.numpy()[0]) / dt - force
+                test.assertLessEqual(abs(reaction), 1.05 * effort_limit)
+                test.assertAlmostEqual(reaction, -np.sign(force) * effort_limit, delta=0.05)
+
+
 def test_drive_rows_precede_limit_rows_and_count_against_capacity(test, device):
     """Allocate drive rows first in each world and flag the world when they do not fit."""
     model = _build_driven_chain(device, num_links=3, num_worlds=2)
@@ -341,6 +375,10 @@ for _name, _func in (
     (
         "test_saturated_pgs_drive_differs_from_the_augmented_drive",
         test_saturated_pgs_drive_differs_from_the_augmented_drive,
+    ),
+    (
+        "test_pgs_drive_bounds_complete_reaction_under_external_load",
+        test_pgs_drive_bounds_complete_reaction_under_external_load,
     ),
     (
         "test_drive_rows_precede_limit_rows_and_count_against_capacity",
