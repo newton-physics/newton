@@ -6559,6 +6559,25 @@ class TestMuJoCoConversion(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Recreate the solver after resizing"):
                     solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
 
+    def test_cone_differing_across_worlds_is_rejected_with_mujoco_contacts(self):
+        """Reject per-world cone sizes when MuJoCo, which compiles only world 0's cone mesh, collides them."""
+
+        def build(half_heights):
+            builder = newton.ModelBuilder()
+            for half_height in half_heights:
+                world = newton.ModelBuilder()
+                world.add_shape_cone(-1, radius=0.25, half_height=half_height)
+                body = world.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+                world.add_shape_sphere(body, radius=0.05)
+                builder.add_world(world)
+            return builder.finalize(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "world 1 has radius=0.25, half_height=0.1"):
+            SolverMuJoCo(build((0.05, 0.1)))
+        # Newton's collision pipeline collides each world against its own cone.
+        SolverMuJoCo(build((0.05, 0.1)), use_mujoco_contacts=False)
+        SolverMuJoCo(build((0.05, 0.05)))
+
     def test_setup_preserves_shape_scale(self):
         """Preserve model shape scales while converting MuJoCo geometry sizes."""
         builder = newton.ModelBuilder()
