@@ -30,6 +30,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
+        self.dynamics_solver = str(getattr(args, "dynamics_solver", "padmm")).lower()
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -71,20 +72,24 @@ class Example:
         self.model.joint_target_kd.fill_(0.001)
 
         # Create and configure settings for SolverKamino and the collision detector
-        solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
+        solver_config = newton.solvers.SolverKamino.Config.from_model(
+            self.model,
+            dynamics_solver=self.dynamics_solver,
+        )
         solver_config.use_collision_detector = True
         solver_config.use_fk_solver = True
         solver_config.collision_detector.pipeline = "primitive"
         solver_config.collision_detector.max_contacts = 32 * self.model.world_count
         solver_config.dynamics.preconditioning = True
-        solver_config.padmm.primal_tolerance = 1e-4
-        solver_config.padmm.dual_tolerance = 1e-4
-        solver_config.padmm.compl_tolerance = 1e-4
-        solver_config.padmm.max_iterations = 200
-        solver_config.padmm.rho_0 = 0.1
-        solver_config.padmm.use_acceleration = True
-        solver_config.padmm.warmstart_mode = "containers"
-        solver_config.padmm.contact_warmstart_method = "geom_pair_net_force"
+        if self.dynamics_solver == "padmm":
+            solver_config.padmm.primal_tolerance = 1e-4
+            solver_config.padmm.dual_tolerance = 1e-4
+            solver_config.padmm.compl_tolerance = 1e-4
+            solver_config.padmm.max_iterations = 200
+            solver_config.padmm.rho_0 = 0.1
+            solver_config.padmm.use_acceleration = True
+            solver_config.padmm.warmstart_mode = "containers"
+            solver_config.padmm.contact_warmstart_method = "geom_pair_net_force"
 
         # Create the Kamino solver for the given model
         self.solver = newton.solvers.SolverKamino(model=self.model, config=solver_config)
@@ -113,8 +118,7 @@ class Example:
         )
         self.solver.reset(state=self.state_0, config=reset_config)
 
-        # Capture the simulation graph if running on CUDA
-        # NOTE: This only has an effect on GPU devices
+        # Capture with CUDA graphs on GPU or APIC graphs on CPU.
         self.capture()
 
         # If only a single-world is created, set initial
@@ -127,7 +131,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda and not wp.config.verify_cuda:
+        if not self.device.is_cuda or not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -166,6 +170,7 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=1)
+        parser.add_argument("--dynamics-solver", choices=("padmm", "lox"), default="padmm")
         parser.add_argument(
             "--from-usd",
             action=argparse.BooleanOptionalAction,
