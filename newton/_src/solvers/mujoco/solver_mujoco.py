@@ -10055,16 +10055,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         given their own cone, and they would silently collide against the template's.
 
         Raises:
-            ValueError: If corresponding colliding cones differ in radius or half-height.
+            ValueError: If corresponding cones that MuJoCo may collide differ in radius or half-height.
         """
-        mj_model = self.mj_model
         geom_shapes = self.mjc_geom_to_newton_shape.numpy()
         geoms = np.flatnonzero(geom_shapes[0] >= 0)
         geoms = geoms[self.model.shape_type.numpy()[geom_shapes[0, geoms]] == GeoType.CONE]
-        # MuJoCo collides geoms with a nonzero contype or conaffinity, or in an explicit pair.
-        collides = (mj_model.geom_contype[geoms] | mj_model.geom_conaffinity[geoms]) != 0
-        collides |= np.isin(geoms, mj_model.pair_geom1) | np.isin(geoms, mj_model.pair_geom2)
-        geoms = geoms[collides]
+        # Keep cones in a geom pair MuJoCo Warp may collide. Its nxn_pairid is -2 for pairs
+        # that masks, same or parent-child bodies, or exclusions skip, and >= 0 for explicit pairs.
+        pairs = self.mjw_model.nxn_geom_pair_filtered.numpy()
+        geoms = geoms[np.isin(geoms, pairs[self.mjw_model.nxn_pairid_filtered.numpy()[:, 0] > -2])]
         # A cone's mesh is built from its radius and half-height, the first two scale components.
         sizes = self.model.shape_scale.numpy()[geom_shapes[:, geoms], :2]
         mismatches = np.any(sizes != sizes[:1], axis=2)
