@@ -1156,14 +1156,21 @@ def _load_mujoco_msh(filename: str):
         offset += size
     vertices = arrays[0].reshape(-1, 3)
     faces = arrays[3].reshape(-1, 3)
+    source_indices = slice(None)
     if nface == 0:
         # MuJoCo builds the convex hull of vertex-only meshes.
-        return trimesh.Trimesh(vertices=vertices, process=False).convex_hull
-    mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+        mesh = trimesh.Trimesh(vertices=vertices, process=False).convex_hull
+        # Hull construction can reorder vertices and discard interior or duplicate points.
+        source_index_by_vertex = {}
+        for index, vertex in enumerate(vertices):
+            source_index_by_vertex.setdefault(tuple(vertex), index)
+        source_indices = np.array([source_index_by_vertex[tuple(vertex)] for vertex in mesh.vertices], dtype=np.int32)
+    else:
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
     if nnormal == nvert:
-        mesh.vertex_normals = arrays[1].reshape(-1, 3)
+        mesh.vertex_normals = arrays[1].reshape(-1, 3)[source_indices]
     if ntexcoord == nvert:
-        mesh.visual = trimesh.visual.TextureVisuals(uv=arrays[2].reshape(-1, 2))
+        mesh.visual = trimesh.visual.TextureVisuals(uv=arrays[2].reshape(-1, 2)[source_indices])
     return mesh
 
 

@@ -142,27 +142,96 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertTrue(forced_collision_flags & ShapeFlags.VISIBLE)
 
     def test_mujoco_binary_msh_mesh(self):
-        """Load MuJoCo's binary .msh mesh format (counts, then vertices, normals, uvs, faces)."""
+        """Preserve MSH geometry, normals, and UVs with authored or convex-hull faces."""
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
         faces = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]], dtype=np.int32)
+        normals = np.array([[0, 0, -1], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        uvs = np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]], dtype=np.float32)
+
+        def canonical_faces(indices):
+            """Ignore triangle order and cyclic rotations while retaining winding."""
+            return [min(tuple(np.roll(face, shift)) for shift in range(3)) for face in indices]
+
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "tetra.msh")
-            with open(path, "wb") as file:
-                file.write(np.array([4, 0, 0, 4], dtype=np.int32).tobytes())
-                file.write(vertices.tobytes())
-                file.write(faces.tobytes())
-            mjcf = f"""
+            texture_path = os.path.join(directory, "texture.png")
+            for has_faces in (True, False):
+                for has_normals, has_uvs in ((False, False), (True, False), (False, True), (True, True)):
+                    with self.subTest(faces=has_faces, normals=has_normals, uvs=has_uvs):
+                        source_vertices, source_normals, source_uvs = vertices, normals, uvs
+                        if not has_faces:
+                            # Exercise attribute remapping when the hull drops an interior point and a duplicate.
+                            source_vertices = np.vstack(([0.2, 0.2, 0.2], vertices, vertices[1])).astype(np.float32)
+                            source_normals = np.vstack(([1, 0, 0], normals, [0, -1, 0])).astype(np.float32)
+                            source_uvs = np.vstack(([0, 0], uvs, [1, 1])).astype(np.float32)
+                        count = len(source_vertices)
+                        header = [count, count if has_normals else 0, count if has_uvs else 0, 4 if has_faces else 0]
+                        with open(path, "wb") as file:
+                            file.write(np.array(header, dtype=np.int32).tobytes())
+                            file.write(source_vertices.tobytes())
+                            if has_normals:
+                                file.write(source_normals.tobytes())
+                            if has_uvs:
+                                file.write(source_uvs.tobytes())
+                            if has_faces:
+                                file.write(faces.tobytes())
+                        material = ' material="textured"' if has_uvs else ""
+                        mjcf = f"""
 <mujoco model="msh">
-    <asset><mesh name="tetra" file="{path}"/></asset>
-    <worldbody><body name="b"><geom name="g" type="mesh" mesh="tetra"/></body></worldbody>
+    <asset>
+        <mesh name="tetra" file="{path}"/>
+        <texture name="texture" type="2d" file="{texture_path}"/>
+        <material name="textured" texture="texture"/>
+    </asset>
+    <worldbody><body name="b"><geom name="g" type="mesh" mesh="tetra"{material}/></body></worldbody>
 </mujoco>
 """
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf)
-        mesh = builder.shape_source[builder.shape_label.index("msh/worldbody/b/g")]
-        self.assertEqual(len(mesh.vertices), 4)
-        self.assertEqual(len(mesh.indices), 12)
-        np.testing.assert_allclose(np.sort(mesh.vertices, axis=0), np.sort(vertices, axis=0))
+                        builder = newton.ModelBuilder()
+                        builder.add_mjcf(mjcf)
+                        mesh = builder.shape_source[builder.shape_label.index("msh/worldbody/b/g")]
+                        self.assertEqual(len(mesh.vertices), 4)
+                        self.assertEqual(len(mesh.indices), 12)
+                        # Match complete vertex positions to check connectivity and attribute associations.
+                        source_indices = np.argmin(
+                            np.linalg.norm(mesh.vertices[:, None] - vertices[None, :], axis=2), axis=1
+                        )
+                        np.testing.assert_allclose(mesh.vertices, vertices[source_indices])
+                        self.assertCountEqual(source_indices, range(4))
+                        self.assertCountEqual(
+                            canonical_faces(source_indices[mesh.indices.reshape(-1, 3)]), canonical_faces(faces)
+                        )
+                        if has_normals:
+                            np.testing.assert_allclose(mesh.normals, normals[source_indices])
+                        if has_uvs:
+                            self.assertIsNotNone(mesh.uvs)
+                            np.testing.assert_allclose(mesh.uvs, uvs[source_indices])
+                            self.assertEqual(mesh.texture, texture_path)
+                        else:
+                            self.assertIsNone(mesh.uvs)
+
+    def test_mujoco_binary_msh_mesh_invalid_size(self):
+        """Reject short MSH headers, negative counts, and mismatched payload sizes."""
+        header = np.array([4, 0, 0, 4], dtype=np.int32).tobytes()
+        cases = {
+            "short header": (header[:-1], "MuJoCo mesh file is too short"),
+            "negative count": (np.array([-1, 0, 0, 0], dtype=np.int32).tobytes(), "Invalid MuJoCo mesh file"),
+            "truncated payload": (header + bytes(95), "Invalid MuJoCo mesh file"),
+            "trailing payload": (header + bytes(97), "Invalid MuJoCo mesh file"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "invalid.msh")
+            mjcf = f"""
+<mujoco>
+    <asset><mesh name="invalid" file="{path}"/></asset>
+    <worldbody><geom type="mesh" mesh="invalid"/></worldbody>
+</mujoco>
+"""
+            for name, (payload, message) in cases.items():
+                with self.subTest(case=name):
+                    with open(path, "wb") as file:
+                        file.write(payload)
+                    with self.assertRaisesRegex(ValueError, message):
+                        newton.ModelBuilder().add_mjcf(mjcf)
 
     def test_collision_only_import_keeps_colliders_visible(self):
         """Collision-only MJCF assets must remain visible by default."""
