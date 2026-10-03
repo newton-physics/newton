@@ -14,7 +14,7 @@ import newton
 class TestSleeping(unittest.TestCase):
     def test_disabled_allocates_no_state(self):
         """Keep sleep state absent on the default solver path."""
-        model, pipeline, solver, states, control = _scene(enabled=False)
+        _model, _pipeline, solver, _states, _control = _scene(enabled=False)
         self.assertIsNone(solver.sleeping)
 
     def test_separated_boxes_sleep_and_force_wakes_one(self):

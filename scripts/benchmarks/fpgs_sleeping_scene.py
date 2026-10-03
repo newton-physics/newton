@@ -287,8 +287,8 @@ class Example:
 def _build_ant_stacks(builder, stack_count):
     """Reuse the public ant stack with passive joints in every comparison arm."""
     # Defer the MuJoCo example's backend imports to the optional ant scene.
-    from newton.examples.mujoco import example_mujoco_sleeping as ants
-    from newton.solvers import SolverMuJoCo
+    from newton.examples.mujoco import example_mujoco_sleeping as ants  # noqa: PLC0415
+    from newton.solvers import SolverMuJoCo  # noqa: PLC0415
 
     if stack_count < 1:
         raise ValueError("stack-count must be positive")
