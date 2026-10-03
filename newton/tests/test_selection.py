@@ -2568,6 +2568,36 @@ def test_interleaved_shape_rows_of_grouped_objects(test, device):
             _check_shape_rows(test, model, view, device)
 
 
+def test_appended_shape_rows(test, device):
+    """Address shapes appended to each articulation after every articulation's original shapes."""
+    builder = newton.ModelBuilder()
+    bodies = []
+    for index in range(3):
+        body = builder.add_link(label=f"robot_{index}/body")
+        builder.add_articulation([builder.add_joint_free(child=body)], label=f"robot_{index}")
+        builder.add_shape_sphere(body, radius=0.1)
+        bodies.append(body)
+    # mesh approximation can append pieces after all original shapes
+    for body in bodies:
+        for _ in range(2):
+            builder.add_shape_sphere(body, radius=0.2)
+    expected_rows = np.array([[0, 3, 4], [1, 5, 6], [2, 7, 8]])
+    for world_count in (1, 2):
+        with test.subTest(world_count=world_count):
+            scene = newton.ModelBuilder()
+            for _ in range(world_count):
+                scene.add_world(builder)
+            model = scene.finalize(device=device)
+            view = ArticulationView(model, "robot_*", verbose=False)
+            rows = np.stack([expected_rows + world * builder.shape_count for world in range(world_count)])
+            assert_np_equal(_owned_shape_rows(model, view), rows)
+            _check_shape_rows(test, model, view, device)
+            single = ArticulationView(model, "robot_2", verbose=False)
+            assert_np_equal(
+                single.get_attribute("shape_margin", model).numpy(), model.shape_margin.numpy()[rows[:, 2:]]
+            )
+
+
 def test_interleaved_shape_rows_require_matching_owners(test, device):
     """Reject shape rows whose owning links differ, even though every row could be addressed."""
     model = _make_interleaved_robot_model(device, owner_swap=True)
@@ -2609,6 +2639,7 @@ class TestSelectionShapeRows(unittest.TestCase):
 for _test, _devices in (
     (test_interleaved_shape_rows_differ_between_worlds, devices),
     (test_interleaved_shape_rows_of_grouped_objects, devices),
+    (test_appended_shape_rows, devices),
     (test_interleaved_shape_rows_require_matching_owners, devices),
     (test_interleaved_shape_rows_capture_cold, get_cuda_test_devices()),
 ):
