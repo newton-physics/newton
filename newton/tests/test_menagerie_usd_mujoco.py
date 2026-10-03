@@ -1005,6 +1005,7 @@ ACTUATOR_SKIP_FIELDS: set[str] = {
     "actuator_trntype_body_adr",
     "actuator_actadr",
     "actuator_actnum",
+    "actuator_ctrladr",
     # Position/velocity-shortcut MjcActuator rows targeting single-DOF joints are
     # promoted to CtrlSource.JOINT_TARGET on import (matching MJCF behavior).
     # _init_actuators rebuilds the compiled MuJoCo actuators from joint_target_*,
