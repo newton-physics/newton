@@ -58,8 +58,7 @@ from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
     RigidContactHistory,
     RigidForceElementAdjacencyInfo,
-    _count_num_adjacent_joints,
-    _fill_adjacent_joints,
+    _build_body_joint_adjacency,
     accumulate_body_body_contacts_per_body,
     accumulate_body_particle_contacts_per_body,
     apply_body_truncation_ts,
@@ -98,6 +97,25 @@ from .vbd_coupling_kernels import (
 __all__ = ["SolverVBD"]
 
 _PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
+
+
+def _select_rigid_block_dim(launch_dim: int, device: wp.Device) -> int:
+    """Expose more blocks on small rigid launches, allowing sub-warp blocks.
+
+    Target as many blocks as SMs, with a four-thread minimum and a 256-thread
+    maximum. This empirical tradeoff does not guarantee occupancy.
+    """
+    if not device.is_cuda:
+        return 256
+
+    target_blocks = device.sm_count
+    block_dim = 4
+    while block_dim < 256:
+        candidate = 2 * block_dim
+        if (launch_dim + candidate - 1) // candidate < target_blocks:
+            break
+        block_dim = candidate
+    return block_dim
 
 
 def _is_tet_only_elasticity_model(model: Model) -> bool:
@@ -1146,19 +1164,20 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses
 
             # Adjacency and dimensions
-            self.rigid_adjacency = self._compute_rigid_force_element_adjacency(model).to(self.device)
+            joint_constraint_dim = self._init_joint_constraint_layout()
+            self.rigid_adjacency = self._compute_rigid_force_element_adjacency(model, joint_constraint_dim)
 
-            # Force accumulation arrays
-            self.body_torques = wp.zeros(model.body_count, dtype=wp.vec3, device=self.device)
-            self.body_forces = wp.zeros(model.body_count, dtype=wp.vec3, device=self.device)
+            # Pack two vec3 and three mat33 fields for one clear.
+            body_count = model.body_count
+            self._body_contact_scratch = wp.zeros((11, body_count, 3), dtype=float, device=self.device)
+            self.body_forces = self._body_contact_scratch[0].view(wp.vec3)
+            self.body_torques = self._body_contact_scratch[1].view(wp.vec3)
+            self.body_hessian_ll = self._body_contact_scratch[2:5].reshape((body_count, 3, 3)).view(wp.mat33)
+            self.body_hessian_al = self._body_contact_scratch[5:8].reshape((body_count, 3, 3)).view(wp.mat33)
+            self.body_hessian_aa = self._body_contact_scratch[8:11].reshape((body_count, 3, 3)).view(wp.mat33)
 
             # Persistent scratch for joint_f accumulation
             self._body_f_for_integration = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=self.device)
-
-            # Hessian blocks (6x6 block structure: angular-angular, angular-linear, linear-linear)
-            self.body_hessian_aa = wp.zeros(model.body_count, dtype=wp.mat33, device=self.device)
-            self.body_hessian_al = wp.zeros(model.body_count, dtype=wp.mat33, device=self.device)
-            self.body_hessian_ll = wp.zeros(model.body_count, dtype=wp.mat33, device=self.device)
 
             # Per-body contact lists (CSR-like: per-body counts + flat index array).
             # Tight: pre_alloc = 0 when the contact source is absent (no shapes / no particles).
@@ -1180,8 +1199,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
             self.body_particle_contact_overflow_max = wp.zeros(1, dtype=wp.int32, device=self.device)
 
-            # Joint constraint layout, legacy penalty state, and material data.
-            self._init_joint_constraint_layout()
+            # Joint penalty state and material data.
             (
                 self.joint_penalty_k,
                 self.joint_penalty_k_min,
@@ -1721,7 +1739,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         result = cpu.numpy() if hasattr(cpu, "numpy") else np.asarray(cpu)
         return result if dtype is None else result.astype(dtype, copy=False)
 
-    def _init_joint_constraint_layout(self) -> None:
+    def _init_joint_constraint_layout(self) -> np.ndarray:
         """Initialize VBD-owned joint constraint indexing.
 
         VBD indexes scalar constraint components for structural joint penalties,
@@ -1737,6 +1755,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         Drive and limit for each free DOF share one AVBD slot (mutually exclusive at runtime).
 
         Any other joint type will raise NotImplementedError.
+
+        Returns:
+            Host constraint dimensions for adjacency construction without a device round trip.
         """
         n_j = self.model.joint_count
         with wp.ScopedDevice("cpu"):
@@ -1783,6 +1804,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.joint_constraint_count = int(c)
             self.joint_constraint_dim = wp.array(dim_np, dtype=wp.int32, device=self.device)
             self.joint_constraint_start = wp.array(start_np, dtype=wp.int32, device=self.device)
+        return dim_np
 
     def _init_joint_penalty_k(self):
         """Build initial joint penalty state on CPU and upload to solver device.
@@ -2182,61 +2204,37 @@ class SolverVBD(SolverBase, CouplingInterface):
             raise ValueError("model.soft_mesh_adjacency is missing; finalize the model with ModelBuilder.")
         return self.model.soft_mesh_adjacency.init_vertex_adjacency(self.model.particle_count)
 
-    def _compute_rigid_force_element_adjacency(self, model):
-        """
-        Build CSR adjacency between rigid bodies and joints.
-
-        Returns an instance of RigidForceElementAdjacencyInfo with:
-          - body_adj_joints: flattened joint ids
-          - body_adj_joints_offsets: CSR offsets of size body_count + 1
-
-        Notes:
-            - Runs on CPU to avoid GPU atomics; kernels iterate serially over joints (dim=1).
-            - When there are no joints, offsets are an all-zero array of length body_count + 1.
-        """
+    def _compute_rigid_force_element_adjacency(self, model, joint_constraint_dim: np.ndarray):
+        """Build body-to-constraint CSR adjacency in ascending joint order."""
         adjacency = RigidForceElementAdjacencyInfo()
-
+        if self.joint_constraint_count == 0:
+            adjacency.body_adj_joints = wp.empty(0, dtype=wp.int32, device=self.device)
+            adjacency.body_adj_joints_offsets = wp.zeros(model.body_count + 1, dtype=wp.int32, device=self.device)
+            return adjacency
+        # FREE joints have no constraints; their applied forces are handled separately.
+        # Keep disabled constraints here because joint_enabled can change between steps.
+        constrained_joints = np.flatnonzero(joint_constraint_dim).astype(np.int32)
+        body_ids = np.column_stack((model.joint_parent.numpy(), model.joint_child.numpy()))[constrained_joints].ravel()
+        joint_ids = np.repeat(constrained_joints, 2)
+        valid = body_ids >= 0  # Exclude world endpoints.
+        body_ids, joint_ids = body_ids[valid], joint_ids[valid]
         with wp.ScopedDevice("cpu"):
-            # Build body-joint adjacency data (rigid-only)
-            if model.joint_count > 0:
-                joint_parent_cpu = model.joint_parent.to("cpu")
-                joint_child_cpu = model.joint_child.to("cpu")
-
-                num_body_adjacent_joints = wp.zeros(shape=(model.body_count,), dtype=wp.int32)
+            adjacency.body_adj_joints = wp.empty(len(joint_ids), dtype=wp.int32)
+            adjacency.body_adj_joints_offsets = wp.zeros(model.body_count + 1, dtype=wp.int32)
+            if len(joint_ids):
                 wp.launch(
-                    kernel=_count_num_adjacent_joints,
-                    inputs=[joint_parent_cpu, joint_child_cpu, num_body_adjacent_joints],
+                    _build_body_joint_adjacency,
                     dim=1,
-                    device="cpu",
-                )
-
-                num_body_adjacent_joints = num_body_adjacent_joints.numpy()
-                body_adjacent_joints_offsets = np.empty(shape=(model.body_count + 1,), dtype=wp.int32)
-                body_adjacent_joints_offsets[1:] = np.cumsum(num_body_adjacent_joints)[:]
-                body_adjacent_joints_offsets[0] = 0
-                adjacency.body_adj_joints_offsets = wp.array(body_adjacent_joints_offsets, dtype=wp.int32)
-
-                body_adjacent_joints_fill_count = wp.zeros(shape=(model.body_count,), dtype=wp.int32)
-                adjacency.body_adj_joints = wp.empty(shape=(num_body_adjacent_joints.sum(),), dtype=wp.int32)
-
-                wp.launch(
-                    kernel=_fill_adjacent_joints,
                     inputs=[
-                        joint_parent_cpu,
-                        joint_child_cpu,
+                        wp.array(body_ids, dtype=wp.int32),
+                        wp.array(joint_ids, dtype=wp.int32),
+                        wp.zeros(model.body_count, dtype=wp.int32),
                         adjacency.body_adj_joints_offsets,
-                        body_adjacent_joints_fill_count,
                         adjacency.body_adj_joints,
                     ],
-                    dim=1,
                     device="cpu",
                 )
-            else:
-                # No joints: create offset array of zeros (size body_count + 1) so indexing works
-                adjacency.body_adj_joints_offsets = wp.zeros(shape=(model.body_count + 1,), dtype=wp.int32)
-                adjacency.body_adj_joints = wp.empty(shape=(0,), dtype=wp.int32)
-
-        return adjacency
+        return adjacency.to(self.device)
 
     # =====================================================
     # Main Solver Methods
@@ -3461,6 +3459,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_inertia_q,
                 ],
                 dim=model.body_count,
+                block_dim=_select_rigid_block_dim(model.body_count, self.device),
                 device=self.device,
             )
 
@@ -3520,6 +3519,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.joint_drive_lambda,
                         self.joint_limit_lambda,
                     ],
+                    block_dim=_select_rigid_block_dim(model.joint_count, self.device),
                     device=self.device,
                 )
 
@@ -3555,6 +3555,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.joint_C_fric,
                     ],
                     dim=model.joint_count,
+                    block_dim=_select_rigid_block_dim(model.joint_count, self.device),
                     device=self.device,
                 )
 
@@ -3792,11 +3793,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             return
 
         # Zero out forces and hessians
-        self.body_torques.zero_()
-        self.body_forces.zero_()
-        self.body_hessian_aa.zero_()
-        self.body_hessian_al.zero_()
-        self.body_hessian_ll.zero_()
+        self._body_contact_scratch.zero_()
 
         body_color_groups = model.body_color_groups
 
@@ -3846,11 +3843,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.body_hessian_al,
                         self.body_hessian_aa,
                     ],
+                    block_dim=_select_rigid_block_dim(color_group.size * _NUM_CONTACT_THREADS_PER_BODY, self.device),
                     device=self.device,
                 )
 
             # Accumulate body-body (rigid-rigid) contact forces and Hessians on bodies (per-body, per-color)
-            if contacts is not None:
+            if contacts is not None and model.shape_count > 0:
                 wp.launch(
                     kernel=accumulate_body_body_contacts_per_body,
                     dim=color_group.size * _NUM_CONTACT_THREADS_PER_BODY,
@@ -3896,6 +3894,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.body_hessian_al,
                         self.body_hessian_aa,
                     ],
+                    block_dim=_select_rigid_block_dim(color_group.size * _NUM_CONTACT_THREADS_PER_BODY, self.device),
                     device=self.device,
                 )
 
@@ -3961,6 +3960,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     state_in.body_q,
                 ],
                 dim=color_group.size,
+                block_dim=_select_rigid_block_dim(color_group.size, self.device),
                 device=self.device,
             )
             # Truncate this color's pose updates before the next color accumulates
@@ -3978,7 +3978,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 dt,
             )
 
-        if contacts is not None and contacts.rigid_contact_max > 0:
+        if contacts is not None and contacts.rigid_contact_max > 0 and model.shape_count > 0:
             wp.launch(
                 kernel=update_duals_body_body_contacts,
                 dim=contacts.rigid_contact_max,
@@ -4035,7 +4035,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 device=self.device,
             )
 
-        if model.joint_count > 0:
+        if self.joint_constraint_count > 0:
             wp.launch(
                 kernel=update_duals_joint,
                 dim=model.joint_count,
@@ -4082,6 +4082,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.joint_drive_lambda,  # input/output
                     self.joint_limit_lambda,  # input/output
                 ],
+                block_dim=_select_rigid_block_dim(model.joint_count, self.device),
                 device=self.device,
             )
 
@@ -4270,6 +4271,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             ],
             outputs=[self.body_q_prev, state_out.body_qd, state_in.body_qd, state_out.body_q],
             dim=model.body_count,
+            block_dim=_select_rigid_block_dim(model.body_count, self.device),
             device=self.device,
         )
 
@@ -4298,6 +4300,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.joint_dkappa_prev,
                 ],
                 dim=model.joint_count,
+                block_dim=_select_rigid_block_dim(model.joint_count, self.device),
                 device=self.device,
             )
 

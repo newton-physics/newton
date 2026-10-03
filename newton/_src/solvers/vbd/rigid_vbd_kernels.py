@@ -3788,49 +3788,24 @@ def reset_rigid_state(
 
 
 @wp.kernel
-def _count_num_adjacent_joints(
-    joint_parent: wp.array[wp.int32],
-    joint_child: wp.array[wp.int32],
-    num_body_adjacent_joints: wp.array[wp.int32],
+def _build_body_joint_adjacency(
+    body_ids: wp.array[wp.int32],
+    joint_ids: wp.array[wp.int32],
+    counts: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    adjacent_joints: wp.array[wp.int32],
 ):
-    joint_count = joint_parent.shape[0]
-    for joint_id in range(joint_count):
-        parent_id = joint_parent[joint_id]
-        child_id = joint_child[joint_id]
-
-        # Skip world joints (parent/child == -1)
-        if parent_id >= 0:
-            num_body_adjacent_joints[parent_id] = num_body_adjacent_joints[parent_id] + 1
-        if child_id >= 0:
-            num_body_adjacent_joints[child_id] = num_body_adjacent_joints[child_id] + 1
-
-
-@wp.kernel
-def _fill_adjacent_joints(
-    joint_parent: wp.array[wp.int32],
-    joint_child: wp.array[wp.int32],
-    body_adjacent_joints_offsets: wp.array[wp.int32],
-    body_adjacent_joints_fill_count: wp.array[wp.int32],
-    body_adjacent_joints: wp.array[wp.int32],
-):
-    joint_count = joint_parent.shape[0]
-    for joint_id in range(joint_count):
-        parent_id = joint_parent[joint_id]
-        child_id = joint_child[joint_id]
-
-        # Add joint to parent body's adjacency list
-        if parent_id >= 0:
-            fill_count_parent = body_adjacent_joints_fill_count[parent_id]
-            buffer_offset_parent = body_adjacent_joints_offsets[parent_id]
-            body_adjacent_joints[buffer_offset_parent + fill_count_parent] = joint_id
-            body_adjacent_joints_fill_count[parent_id] = fill_count_parent + 1
-
-        # Add joint to child body's adjacency list
-        if child_id >= 0:
-            fill_count_child = body_adjacent_joints_fill_count[child_id]
-            buffer_offset_child = body_adjacent_joints_offsets[child_id]
-            body_adjacent_joints[buffer_offset_child + fill_count_child] = joint_id
-            body_adjacent_joints_fill_count[child_id] = fill_count_child + 1
+    # Build once on CPU to preserve joint order without atomics or sorting.
+    for edge in range(body_ids.shape[0]):
+        body = body_ids[edge]
+        counts[body] = counts[body] + 1
+    for body in range(counts.shape[0]):
+        offsets[body + 1] = offsets[body] + counts[body]
+        counts[body] = 0
+    for edge in range(body_ids.shape[0]):
+        body = body_ids[edge]
+        adjacent_joints[offsets[body] + counts[body]] = joint_ids[edge]
+        counts[body] = counts[body] + 1
 
 
 @wp.kernel
@@ -5209,6 +5184,8 @@ def create_accumulate_body_body_contacts_per_body():
         num_contacts = body_contact_counts[body_id]
         if num_contacts > body_contact_buffer_pre_alloc:
             num_contacts = body_contact_buffer_pre_alloc
+        if thread_id_within_body >= num_contacts:
+            return
 
         contact_count = rigid_contact_count[0]
 
@@ -5601,6 +5578,8 @@ def accumulate_body_particle_contacts_per_body(
     num_contacts = body_particle_contact_counts[body_id]
     if num_contacts > body_particle_contact_buffer_pre_alloc:
         num_contacts = body_particle_contact_buffer_pre_alloc
+    if thread_id_within_body >= num_contacts:
+        return
 
     max_contacts = body_particle_contact_count[0]  # single total soft-contact count
 
