@@ -99,8 +99,8 @@ def test_stable_scene_identity_match(test, device):
 
     This is the strongest possible invariant: each sorted contact maps to the
     same sorted position in the previous frame.  It verifies binary search,
-    position/normal threshold acceptance, sort permutation of match_index,
-    and the save-then-match round-trip through the sorter's scratch buffers.
+    position/normal threshold acceptance, matching on the sorted stream,
+    and the save-then-match round-trip through the matcher's owned history.
     """
     with wp.ScopedDevice(device):
         model, state = _build_simple_scene(device)
@@ -688,6 +688,87 @@ def test_box_on_plane_multiple_contacts(test, device):
         )
 
 
+def test_history_survives_sorter_scratch_reuse(test, device):
+    """Keep previous-frame history intact when sorter scratch is overwritten between frames.
+
+    The sorter's scratch is transient: any stage that runs between sorting
+    and matching may reuse it.  Matching must not depend on its contents.
+    """
+    with wp.ScopedDevice(device):
+        model, state = _build_simple_scene(device)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+        contacts = pipeline.contacts()
+
+        count1 = _collide_once(pipeline, state, contacts)
+        test.assertGreater(count1, 0)
+
+        sorter = pipeline._contact_sorter
+        sorter.scratch_pos_world.fill_(wp.vec3(1.0e3, -1.0e3, 1.0e3))
+        sorter.scratch_normal.fill_(wp.vec3(0.0, 0.0, -1.0))
+
+        count2 = _collide_once(pipeline, state, contacts)
+        test.assertEqual(count1, count2)
+        np.testing.assert_array_equal(
+            contacts.rigid_contact_match_index.numpy()[:count2],
+            np.arange(count2, dtype=np.int32),
+            err_msg="Overwriting sorter scratch must not break matching of an unchanged scene",
+        )
+
+
+def test_match_index_reset_without_matcher(test, device):
+    """Fill match_index with -1 when a non-matching pipeline writes a matching buffer."""
+    with wp.ScopedDevice(device):
+        model, state = _build_simple_scene(device)
+        matching = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+        contacts = matching.contacts()
+        _collide_once(matching, state, contacts)
+        count = _collide_once(matching, state, contacts)
+        test.assertTrue(np.all(contacts.rigid_contact_match_index.numpy()[:count] >= 0))
+
+        plain = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
+        count = _collide_once(plain, state, contacts)
+        test.assertGreater(count, 0)
+        test.assertEqual(contacts.contact_matching_mode, "disabled")
+        np.testing.assert_array_equal(
+            contacts.rigid_contact_match_index.numpy(),
+            np.full(contacts.rigid_contact_max, MATCH_NOT_FOUND, dtype=np.int32),
+            err_msg="A non-matching producer must not leave stale match indices",
+        )
+
+
+def test_prev_count_clamped_on_overflow(test, device):
+    """Clamp the saved previous-frame count to capacity when the contact buffer overflows.
+
+    The narrow phase keeps counting contacts it cannot store, so the raw
+    count can exceed capacity.  Saving it unclamped makes the next match
+    search past the end of the history buffers.
+    """
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        for i in range(6):
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.5 * i, 0.0, 0.1)))
+            builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device=device)
+        state = model.state()
+
+        capacity = 8
+        pipeline = newton.CollisionPipeline(
+            model, broad_phase="nxn", contact_matching="latest", rigid_contact_max=capacity
+        )
+        contacts = pipeline.contacts()
+        test.assertEqual(contacts.rigid_contact_max, capacity)
+
+        for _ in range(2):
+            raw_count = _collide_once(pipeline, state, contacts)
+            test.assertGreater(raw_count, capacity, "Scene must overflow the contact buffer")
+            test.assertEqual(pipeline._contact_matcher.prev_contact_count.numpy()[0], capacity)
+
+        match_idx = contacts.rigid_contact_match_index.numpy()
+        test.assertTrue(np.all(match_idx < capacity), f"Match indices must address stored rows: {match_idx}")
+        test.assertTrue(np.all(match_idx >= MATCH_BROKEN))
+
+
 def test_invalid_mode_raises(test, device):
     """Invalid contact_matching values must raise ValueError."""
     with wp.ScopedDevice(device):
@@ -1091,6 +1172,26 @@ add_function_test(
 )
 add_function_test(
     TestContactMatching, "test_box_on_plane_multiple_contacts", test_box_on_plane_multiple_contacts, devices=devices
+)
+add_function_test(
+    TestContactMatching,
+    "test_history_survives_sorter_scratch_reuse",
+    test_history_survives_sorter_scratch_reuse,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatching,
+    "test_match_index_reset_without_matcher",
+    test_match_index_reset_without_matcher,
+    devices=devices,
+)
+# The narrow phase prints an expected overflow warning.
+add_function_test(
+    TestContactMatching,
+    "test_prev_count_clamped_on_overflow",
+    test_prev_count_clamped_on_overflow,
+    devices=devices,
+    check_output=False,
 )
 add_function_test(TestContactMatching, "test_invalid_mode_raises", test_invalid_mode_raises, devices=devices)
 add_function_test(
