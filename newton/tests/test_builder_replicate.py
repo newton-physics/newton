@@ -182,7 +182,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
                         self.assert_builder_merge_state_equal(expected, actual)
 
     def test_copy_rotation_rotates_world_velocities(self):
-        """Yaw rotates world-frame position and twist; a pure translation does not change velocity."""
+        """Verify that yaw rotates world-frame position and twist and that a pure translation leaves velocity unchanged."""
 
         def make_source() -> ModelBuilder:
             builder = ModelBuilder()
