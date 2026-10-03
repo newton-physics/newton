@@ -793,7 +793,10 @@ def _svd_one_sided_jacobi_kernel(
     Generic over ``matrix``'s (and so ``u``/``s``/``v``'s) concrete element
     type -- Warp compiles one specialization per distinct matrix shape
     actually launched with, so this single kernel definition covers every
-    size, rather than needing a hand-written kernel per shape.
+    size, rather than needing a hand-written kernel per shape. Wide active
+    problems are decomposed in their transposed orientation and the singular
+    vectors swapped back. Only computed singular-vector columns are defined;
+    unused columns do not provide an orthonormal completion.
 
     ``Any`` here is broader than the real requirement: every array argument
     must hold a matrix-shaped element type (e.g. ``wp.mat33``), not an
@@ -806,7 +809,21 @@ def _svd_one_sided_jacobi_kernel(
     into that dispatch mechanism, so it isn't a usable substitute here.
     """
     idx = wp.tid()
-    u_local, s_local, v_local = _svd_one_sided_jacobi(matrix[idx], n_columns[idx], tol, max_sweeps)
+    a = matrix[idx]
+    at = wp.transpose(a)
+    row0 = type(a[0])()
+    col0 = type(at[0])()
+    if n_columns[idx] > len(col0):
+        # Sweep over the rows of wide matrices to avoid numerical null columns.
+        u_t, s_t, v_t = _svd_one_sided_jacobi(at, len(col0), tol, max_sweeps)
+        s_local = type(row0)()
+        for i in range(wp.min(len(row0), len(col0))):
+            s_local[i] = s_t[i]
+        u[idx] = v_t
+        s[idx] = s_local
+        v[idx] = u_t
+        return
+    u_local, s_local, v_local = _svd_one_sided_jacobi(a, n_columns[idx], tol, max_sweeps)
     u[idx] = u_local
     s[idx] = s_local
     v[idx] = v_local
