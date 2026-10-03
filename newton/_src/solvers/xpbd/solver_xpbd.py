@@ -410,6 +410,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 is skipped; particle-particle contacts and model constraints are still solved.
             dt: Time step size [s].
         """
+        self._require_unreduced_contacts(contacts)
         self._ensure_restitution_module_options()
         self._apply_module_options()
         requires_grad = state_in.requires_grad

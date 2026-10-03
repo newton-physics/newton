@@ -599,6 +599,12 @@ The table below shows MuJoCo attribute remapping examples, including both direct
    * - ``mjc:gap``
      - ``gap``
      - Direct mapping
+   * - ``mjc:stiffness`` on ``MjcJointAPI``
+     - ``spring_stiffness``
+     - Direct mapping
+   * - ``mjc:springref`` on ``MjcJointAPI``
+     - ``spring_ref``
+     - Direct for prismatic joints; angular values follow ``mjc:compiler:angle``
 
 **Example USD with remapped attributes:**
 

@@ -226,6 +226,7 @@ def _rnea_compensation_pass(
             scratch.body_q_com,
             model.joint_X_p,
             model.body_world,
+            model.body_disable_gravity,
             gravity,
         ],
         outputs=[

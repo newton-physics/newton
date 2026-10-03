@@ -1,0 +1,1 @@
+Reduce matrix-free FeatherPGS contact-solver work by skipping tangent reductions at zero friction load and bypassing inactive friction pairs with no carried impulse. Patch-wide normal loads and removal of previously accumulated friction impulses are preserved.

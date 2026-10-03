@@ -111,6 +111,17 @@ class RenderConfig:
     gaussians_max_num_hits: int = 20
     """Maximum Gaussian hits accumulated per ray."""
 
+    max_distance_from_camera_origin: bool = False
+    """Bound primary hits by distance from the camera origin instead of each ray origin.
+
+    When enabled, ``max_distance`` is the radius [m] of a sphere centered on the
+    camera transform's origin. Traversal accounts for displaced ray origins,
+    such as rays beginning on a near clipping plane. Rays starting outside the
+    far sphere are rejected. Ray directions must be
+    normalized, as for the other rendering modes. Defaults to False, preserving
+    the maximum distance measured from each ray's own origin.
+    """
+
 
 @dataclass(unsafe_hash=True)
 class ClearData:

@@ -2399,6 +2399,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             RuntimeError: If required rigid contact-matching data is unavailable, or contact-history storage would
                 need to be allocated or grown during graph capture.
         """
+        self._require_unreduced_contacts(contacts)
         self._apply_module_options()
         update_rigid = self._update_rigid_history
         self._update_rigid_history = True

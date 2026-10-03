@@ -1,0 +1,1 @@
+Stop sticky contact matching from replaying a stored witness after the body has rotated away from it, which placed the normal constraint a lever arm from the true contact and made rolling shapes creep.

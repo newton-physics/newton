@@ -1,0 +1,1 @@
+Remove `SolverFeatherPGS`'s `enable_mimic_constraints`, `enable_connect_constraints`, `enable_joint_springs`, and `enable_joint_passive_damping` switches, which only reproduced pre-feature behavior; the constraints, springs, and passive damping are always applied. Remove the constraints or zero the stiffness/damping in the model instead.

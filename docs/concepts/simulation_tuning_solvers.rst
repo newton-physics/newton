@@ -66,6 +66,16 @@ Contact geometry
    produce better force distribution for manipulation and non-convex geometry.
    See :ref:`Collisions`.
 
+Contact reduction
+   The boolean ``CollisionPipeline.reduce_contacts`` policy controls the
+   universally supported mesh/heightfield producer stage.  The optional
+   ``CollisionPipeline.ContactReductionConfig(body_pairs=True)`` postpass is a
+   different, solver-visible approximation intended for compound-body patches;
+   it is currently supported only by :class:`newton.solvers.SolverFeatherPGS`.
+   Keep it off unless measured end-to-end solver savings outweigh its fixed
+   collision cost and validate tipping- and yaw-sensitive behavior.  See
+   :ref:`Contact Reduction` for the stage and compatibility contracts.
+
 Contact material
    Shape material arrays such as :attr:`~Model.shape_material_mu`,
    :attr:`~Model.shape_material_mu_torsional`,

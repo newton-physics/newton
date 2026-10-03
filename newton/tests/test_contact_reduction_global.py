@@ -73,8 +73,8 @@ def get_winning_contacts(reducer: GlobalContactReducer) -> list[int]:
         for slot in range(values_per_key):
             val = values[slot * capacity + entry_idx]
             if val != 0:
-                contact_id = val & contact_id_mask
-                contact_ids.add(int(contact_id))
+                contact_id = int(val) & contact_id_mask
+                contact_ids.add(contact_id)
 
     return sorted(contact_ids)
 
@@ -1691,7 +1691,7 @@ def test_deterministic_identical_across_runs(test, device):
             for slot in range(reducer.values_per_key):
                 val = values[slot * capacity + entry_idx]
                 if val != 0:
-                    contact_id = int(val & ((1 << 20) - 1))
+                    contact_id = int(val) & ((1 << 20) - 1)
                     if contact_id not in seen_ids:
                         seen_ids.add(contact_id)
                         pd = pd_np[contact_id]

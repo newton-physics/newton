@@ -1,0 +1,1 @@
+Read `SolverFeatherPGS` drive position targets at `Model.joint_target_q_start`, so drives on joints after a free or ball joint track their own target under the default coordinate-shaped `joint_target_q` layout.

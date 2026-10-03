@@ -1,0 +1,1 @@
+Remove `SolverFeatherPGS(pgs_mode="dense")` in favor of `"matrix_free"` on CUDA or `"split"` on CPU. The dense path solved free-rigid contacts inside the dense Delassus system, where they exhausted the per-world row budget on piles, and offered nothing over `"split"`, which keeps the same articulated rows and routes free-rigid contacts through the matrix-free path.

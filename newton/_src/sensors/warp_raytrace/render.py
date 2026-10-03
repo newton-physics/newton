@@ -170,7 +170,20 @@ def create_kernel(
         if wp.static(state.num_gaussians > 0):
             camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
 
-        if wp.dot(ray_dir_world, ray_dir_world) <= 1.0e-12:
+        max_distance = wp.static(config.max_distance)
+        if wp.static(config.max_distance_from_camera_origin):
+            # Intersect the primary ray with the camera-centered far sphere.
+            # For a pinhole near-plane shift this subtracts the per-ray offset.
+            origin = camera_rays[camera_index, py, px, 0]
+            direction = camera_rays[camera_index, py, px, 1]
+            projection = wp.dot(origin, direction)
+            remaining_radius_sq = max_distance * max_distance - wp.dot(origin, origin)
+            discriminant = projection * projection + remaining_radius_sq
+            max_distance = 0.0
+            if discriminant > 0.0 and remaining_radius_sq >= 0.0:
+                max_distance = -projection + wp.sqrt(discriminant)
+
+        if wp.dot(ray_dir_world, ray_dir_world) <= 1.0e-12 or max_distance <= 0.0:
             write_clear_outputs(
                 out_index,
                 out_color,
@@ -191,7 +204,7 @@ def create_kernel(
             bvh_particles_id,
             bvh_particles_group_roots,
             world_index,
-            wp.static(config.max_distance),
+            max_distance,
             shape_enabled,
             shape_types,
             shape_sizes,

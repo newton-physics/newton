@@ -1,8 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
+import gc
 import re
 import unittest
+import weakref
 from unittest import mock
 
 import numpy as np
@@ -10,8 +13,10 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.utils.selection import FrequencyLayout
+from newton.actuators import Actuator, DrivePD
 from newton.selection import ArticulationView
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_cuda_test_devices, get_test_devices
 
 
 def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
@@ -28,6 +33,257 @@ def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
         dtype=np.float32,
     )
     return body_qd[body_idx, :3] - np.cross(body_qd[body_idx, 3:6], com_world)
+
+
+class TestSelectionCacheLifetime(unittest.TestCase):
+    def test_attribute_sources_release_with_view(self):
+        """Release abandoned attribute sources while another view remains usable."""
+        for layout in ("dense", "indexed", "sparse"):
+            with self.subTest(layout=layout):
+                live_model, live_view = self.make_view(layout)
+                live_model.joint_q.fill_(17.0)
+                live_buffer = live_view.get_dof_positions(live_model)
+                live_values = live_buffer.numpy().copy()
+
+                model, view = self.make_view(layout)
+                state, control = model.state(), model.control()
+                view.get_dof_positions(model)
+                view.get_dof_positions(state)
+                view.get_dof_forces(control)
+                refs = {
+                    name: weakref.ref(obj)
+                    for name, obj in (("view", view), ("model", model), ("state", state), ("control", control))
+                }
+                del model, view, state, control
+                gc.collect()
+
+                assert_np_equal(live_buffer.numpy(), live_values)
+                self.assertIs(live_view.get_dof_positions(live_model), live_buffer)
+                assert_np_equal(live_view.get_dof_positions(live_model).numpy(), live_values)
+                for name, ref in refs.items():
+                    with self.subTest(source=name):
+                        self.assertIsNone(ref(), f"Abandoned {name} retained for {layout}")
+
+    def test_actuator_sources_release_with_view(self):
+        """Release abandoned actuator mappings independently of a second live view."""
+        for layout in ("dense", "indexed", "sparse"):
+            with self.subTest(layout=layout):
+                live_model, live_view = self.make_view(layout)
+                live_actuator = self.make_actuator(live_model, 17.0)
+                live_buffer = live_view.get_actuator_parameter(live_actuator, live_actuator.drive, "kp")
+                live_values = live_buffer.numpy().copy()
+
+                model, view = self.make_view(layout)
+                actuator = self.make_actuator(model, 3.0)
+                values = view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy()
+                assert_np_equal(values, np.full(values.shape, 3.0))
+                refs = {
+                    name: weakref.ref(obj) for name, obj in (("view", view), ("model", model), ("actuator", actuator))
+                }
+                del model, view, actuator
+                gc.collect()
+
+                assert_np_equal(live_buffer.numpy(), live_values)
+                assert_np_equal(
+                    live_view.get_actuator_parameter(live_actuator, live_actuator.drive, "kp").numpy(), live_values
+                )
+                for name, ref in refs.items():
+                    with self.subTest(source=name):
+                        self.assertIsNone(ref(), f"Abandoned {name} retained for {layout}")
+
+    def test_attribute_sources_and_slices_remain_distinct(self):
+        """Keep model, state, control, root slices, and full selections independent."""
+        for layout in ("dense", "indexed", "sparse"):
+            with self.subTest(layout=layout):
+                model, view = self.make_view(layout)
+                states = [model.state(), model.state()]
+                controls = [model.control(), model.control()]
+                sources = [model, *states]
+                for value, source in enumerate(sources, 1):
+                    source.joint_q.fill_(float(value))
+                for value, control in enumerate(controls, 4):
+                    control.joint_f.fill_(float(value))
+                buffers = [view.get_dof_positions(source) for source in sources]
+                force_buffers = [view.get_dof_forces(control) for control in controls]
+                for value, (source, buffer) in enumerate(zip(sources, buffers, strict=True), 1):
+                    root = view.get_root_transforms(source)
+                    self.assertEqual(root.shape, (view.world_count, 1))
+                    assert_np_equal(root.numpy(), np.full((*root.shape, 7), value))
+                    assert_np_equal(buffer.numpy(), np.full(buffer.shape, value))
+                    self.assertIs(view.get_dof_positions(source), buffer)
+                    assert_np_equal(view.get_dof_positions(source).numpy(), buffer.numpy())
+                for value, (control, buffer) in enumerate(zip(controls, force_buffers, strict=True), 4):
+                    assert_np_equal(buffer.numpy(), np.full(buffer.shape, value))
+                    self.assertIs(view.get_dof_forces(control), buffer)
+                    assert_np_equal(view.get_dof_forces(control).numpy(), buffer.numpy())
+
+    def test_returned_array_owns_backing_allocation(self):
+        """Keep zero-copy data and gradient allocations alive beyond their view."""
+        for requires_grad in (False, True):
+            with self.subTest(requires_grad=requires_grad):
+                model, view = self.make_view("dense", requires_grad=requires_grad)
+                model.joint_q.fill_(5.0)
+                source_ref = weakref.ref(model.joint_q)
+                model_ref, view_ref = weakref.ref(model), weakref.ref(view)
+                buffer = view.get_dof_positions(model)
+                if requires_grad:
+                    model.joint_q.grad.fill_(7.0)
+                    grad_ref = weakref.ref(model.joint_q.grad)
+                    gradient = buffer.grad
+                del model, view
+                gc.collect()
+
+                self.assertIsNone(view_ref())
+                self.assertIsNone(model_ref())
+                self.assertIsNotNone(source_ref())
+                assert_np_equal(buffer.numpy(), np.full(buffer.shape, 5.0))
+                del buffer
+                gc.collect()
+                if requires_grad:
+                    self.assertIsNotNone(grad_ref())
+                    assert_np_equal(gradient.numpy(), np.full(gradient.shape, 7.0))
+                    del gradient
+                    gc.collect()
+                    self.assertIsNone(grad_ref())
+                self.assertIsNone(source_ref())
+
+    @staticmethod
+    def make_view(layout, requires_grad=False, device="cpu"):
+        """Build selections with regular, indexed, or irregular world layouts."""
+        robot = newton.ModelBuilder()
+        parent = robot.add_link(label="robot/root")
+        joints = [robot.add_joint_free(child=parent, label="robot/root_joint")]
+        for index in range(3):
+            child = robot.add_link(label=f"robot/link_{index}")
+            joints.append(robot.add_joint_revolute(parent=parent, child=child, label=f"robot/joint_{index}"))
+            parent = child
+        robot.add_articulation(joints, label="robot")
+        other = newton.ModelBuilder()
+        link = other.add_link(label="other/link")
+        other.add_articulation([other.add_joint_free(child=link)], label="other")
+        scene = newton.ModelBuilder()
+        worlds = (robot, other, robot, other, other, robot) if layout == "sparse" else (robot, robot)
+        for world in worlds:
+            scene.add_world(world)
+        model = scene.finalize(device=device, requires_grad=requires_grad)
+        selected = ["root_joint", "joint_0", "joint_2"] if layout == "indexed" else None
+        return model, ArticulationView(model, "robot", include_joints=selected, verbose=False)
+
+    @staticmethod
+    def make_actuator(model, value):
+        """Build an actuator covering every model DOF on the model's device."""
+        count = model.joint_dof_count
+        device = model.device
+        return Actuator(
+            indices=wp.array(np.arange(count), dtype=wp.uint32, device=device),
+            drive=DrivePD(kp=wp.full(count, value, device=device), kd=wp.zeros(count, device=device)),
+        )
+
+
+def test_view_holds_sources_and_actuators_weakly(test, device):
+    """Release states, controls, and actuators that are dropped while their view stays alive."""
+    for layout in ("dense", "sparse"):
+        with test.subTest(layout=layout):
+            model, view = TestSelectionCacheLifetime.make_view(layout, device=device)
+            state, control = model.state(), model.control()
+            actuator = TestSelectionCacheLifetime.make_actuator(model, 3.0)
+            view.get_dof_positions(state)
+            view.get_dof_forces(control)
+            view.get_actuator_parameter(actuator, actuator.drive, "kp")
+            refs = {
+                name: weakref.ref(obj) for name, obj in (("state", state), ("control", control), ("actuator", actuator))
+            }
+            del state, control, actuator
+            gc.collect()
+
+            for name, ref in refs.items():
+                test.assertIsNone(ref(), f"{name} retained by a live view ({layout})")
+            model.joint_q.fill_(2.0)
+            positions = view.get_dof_positions(model).numpy()
+            assert_np_equal(positions, np.full(positions.shape, 2.0))
+
+
+def test_returned_array_survives_allocation_reuse(test, device):
+    """Keep returned arrays and their gradients valid after their allocations would otherwise be reused."""
+    for layout, requires_grad in (("dense", False), ("dense", True), ("indexed", False), ("sparse", False)):
+        with test.subTest(layout=layout, requires_grad=requires_grad):
+            model, view = TestSelectionCacheLifetime.make_view(layout, requires_grad=requires_grad, device=device)
+            model.joint_q.fill_(5.0)
+            source_ref = weakref.ref(model.joint_q)
+            model_ref, view_ref = weakref.ref(model), weakref.ref(view)
+            buffer = view.get_dof_positions(model)
+            if requires_grad:
+                model.joint_q.grad.fill_(7.0)
+                gradient = view.get_dof_positions(model).grad
+            byte_count = model.joint_q.capacity
+            del model, view
+            gc.collect()
+
+            test.assertIsNone(view_ref())
+            test.assertIsNone(model_ref())
+            # reuse any freed allocation of the same size, so a dangling view would read 123
+            churn = [wp.full(byte_count // 4, 123.0, dtype=float, device=device) for _ in range(64)]
+            assert_np_equal(buffer.numpy(), np.full(buffer.shape, 5.0))
+            if requires_grad:
+                assert_np_equal(gradient.numpy(), np.full(gradient.shape, 7.0))
+                del gradient
+            if layout == "dense":
+                test.assertIsNotNone(source_ref(), "returned zero-copy array does not keep its source alive")
+            del buffer, churn
+            gc.collect()
+            test.assertIsNone(source_ref())
+
+
+def test_getters_follow_replaced_source_arrays(test, device):
+    """Read and write the current source arrays after they are replaced."""
+    for layout in ("dense", "indexed", "sparse"):
+        with test.subTest(layout=layout):
+            model, view = TestSelectionCacheLifetime.make_view(layout, device=device)
+            state, control = model.state(), model.control()
+            first = view.get_dof_positions(state).numpy()
+            view.get_root_transforms(state)
+            view.get_dof_forces(control)
+            old_q, old_f = state.joint_q, control.joint_f
+            old_q_values, old_f_values = old_q.numpy().copy(), old_f.numpy().copy()
+
+            state.joint_q = wp.full(old_q.shape, 4.0, dtype=old_q.dtype, device=device)
+            control.joint_f = wp.full(old_f.shape, 6.0, dtype=old_f.dtype, device=device)
+            q = view.get_dof_positions(state)
+            assert_np_equal(q.numpy(), np.full(first.shape, 4.0))
+            root = view.get_root_transforms(state).numpy()
+            assert_np_equal(root, np.full(root.shape, 4.0))
+            forces = view.get_dof_forces(control).numpy()
+            assert_np_equal(forces, np.full(forces.shape, 6.0))
+
+            view.set_dof_positions(state, np.full(q.shape, 9.0, dtype=np.float32))
+            view.set_dof_forces(control, np.full(forces.shape, 8.0, dtype=np.float32))
+            assert_np_equal(view.get_dof_positions(state).numpy(), np.full(q.shape, 9.0))
+            assert_np_equal(view.get_dof_forces(control).numpy(), np.full(forces.shape, 8.0))
+            # unselected coordinates (indexed joints, unselected worlds) keep the replacement's value
+            test.assertEqual(set(np.unique(state.joint_q.numpy())), {9.0} if layout == "dense" else {4.0, 9.0})
+            assert_np_equal(old_q.numpy(), old_q_values)
+            assert_np_equal(old_f.numpy(), old_f_values)
+
+
+def test_getters_follow_replaced_gradient(test, device):
+    """Bind the current gradient after a source array's gradient is replaced."""
+    model, view = TestSelectionCacheLifetime.make_view("dense", requires_grad=True, device=device)
+    old_grad = model.joint_q.grad
+    test.assertEqual(view.get_dof_positions(model).grad.ptr, old_grad.ptr)
+
+    model.joint_q.grad = wp.full_like(model.joint_q, 3.0)
+    gradient = view.get_dof_positions(model).grad
+    test.assertEqual(gradient.ptr, model.joint_q.grad.ptr)
+    assert_np_equal(gradient.numpy(), np.full(gradient.shape, 3.0))
+
+
+for _test in (
+    test_view_holds_sources_and_actuators_weakly,
+    test_returned_array_survives_allocation_reuse,
+    test_getters_follow_replaced_source_arrays,
+    test_getters_follow_replaced_gradient,
+):
+    add_function_test(TestSelectionCacheLifetime, _test.__name__, _test, devices=get_test_devices())
 
 
 class TestSelection(unittest.TestCase):
@@ -97,6 +353,81 @@ class TestSelection(unittest.TestCase):
         builder.add_body()
         model = builder.finalize()
         self.assertRaises(KeyError, ArticulationView, model, pattern="no_match")
+
+    def test_sparse_world_articulation_view(self):
+        """A view compacts matching heterogeneous worlds and gathers/scatters by absolute row."""
+
+        def make_world(label: str, link_count: int):
+            world = newton.ModelBuilder()
+            parent = world.add_link(label=f"{label}/root")
+            joints = [world.add_joint_free(child=parent, label=f"{label}/root_joint")]
+            for index in range(1, link_count):
+                child = world.add_link(label=f"{label}/link_{index}")
+                joints.append(
+                    world.add_joint_revolute(
+                        parent=parent,
+                        child=child,
+                        axis=wp.vec3(0.0, 0.0, 1.0),
+                        label=f"{label}/joint_{index}",
+                    )
+                )
+                parent = child
+            world.add_articulation(joints, label=label)
+            return world
+
+        robot_a = make_world("robot_a", 2)
+        robot_b = make_world("robot_b", 4)
+        scene = newton.ModelBuilder()
+        for world in (robot_a, robot_b, robot_a, robot_b, robot_b, robot_a):
+            scene.add_world(world)
+        model = scene.finalize(device="cpu")
+
+        view = ArticulationView(model, "robot_a", verbose=False)
+        self.assertEqual(view.count, 3)
+        self.assertEqual(view.world_count, 3)
+        self.assertEqual(view.count_per_world, 1)
+        self.assertTrue(view.is_sparse)
+        self.assertTrue(view.uses_explicit_model_indices)
+        assert_np_equal(view.world_ids.numpy(), [0, 2, 5])
+        assert_np_equal(view.articulation_ids.numpy(), [[0], [2], [5]])
+
+        q = np.arange(model.joint_coord_count, dtype=np.float32)
+        model.joint_q.assign(q)
+        dof_layout = view.frequency_layouts[newton.Model.AttributeFrequency.JOINT_COORD]
+        absolute_q_indices = dof_layout.get_model_indices().numpy()
+        actual = view.get_dof_positions(model).numpy()
+        expected = q[absolute_q_indices]
+        assert_np_equal(actual, expected)
+
+        # A compact world mask addresses view worlds, while writes land in the correct
+        # non-contiguous model rows and leave both the second match and other robot types alone.
+        replacement = np.full(actual.shape, -7.0, dtype=np.float32)
+        view.set_dof_positions(model, replacement, mask=[True, False, False])
+        updated_q = model.joint_q.numpy()
+        assert_np_equal(updated_q[absolute_q_indices[0]], replacement[0])
+        assert_np_equal(updated_q[absolute_q_indices[1]], expected[1])
+        untouched = np.ones(model.joint_coord_count, dtype=bool)
+        untouched[absolute_q_indices[0].reshape(-1)] = False
+        assert_np_equal(updated_q[untouched], q[untouched])
+
+        expected_model_mask = np.array([True, False, True, False, False, True])
+        assert_np_equal(view.get_model_articulation_mask().numpy(), expected_model_mask)
+
+        # Selecting unlike topology under one view remains illegal; heterogeneity is
+        # represented by separate sparse views, one per articulation type.
+        with self.assertRaisesRegex(ValueError, "layout is unavailable"):
+            ArticulationView(model, "robot_*", verbose=False)
+
+        # Alternating heterogeneous worlds are sparse by world ID but retain a regular
+        # entity-row stride. Keep this common case on the direct strided binding path.
+        regular_scene = newton.ModelBuilder()
+        for world in (robot_a, robot_b, robot_a, robot_b, robot_a):
+            regular_scene.add_world(world)
+        regular_model = regular_scene.finalize(device="cpu")
+        regular_view = ArticulationView(regular_model, "robot_a", verbose=False)
+        self.assertTrue(regular_view.is_sparse)
+        self.assertFalse(regular_view.uses_explicit_model_indices)
+        assert_np_equal(regular_view.world_ids.numpy(), [0, 2, 4])
 
     def test_unsorted_include_indices_rejected(self):
         builder = newton.ModelBuilder()
@@ -1439,6 +1770,418 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view_with_loop.joint_names, ["root_joint", "middle_joint", "tip_joint", "loop_joint"])
 
 
+def _make_robot_world(label: str, link_count: int):
+    """One floating-base chain articulation with ``link_count`` links (6 + link_count - 1 DOFs)."""
+    world = newton.ModelBuilder()
+    parent = world.add_link(label=f"{label}/root")
+    joints = [world.add_joint_free(child=parent, label=f"{label}/root_joint")]
+    for index in range(1, link_count):
+        child = world.add_link(label=f"{label}/link_{index}")
+        joints.append(
+            world.add_joint_revolute(
+                parent=parent,
+                child=child,
+                axis=wp.vec3(0.0, 0.0, 1.0),
+                label=f"{label}/joint_{index}",
+            )
+        )
+        parent = child
+    world.add_articulation(joints, label=label)
+    return world
+
+
+def _make_sparse_robot_model(layout: str, device):
+    """Worlds of a 7-DOF robot_a and a 9-DOF robot_b in a regular, irregular or dense order."""
+    robot_a = _make_robot_world("robot_a", 2)
+    robot_b = _make_robot_world("robot_b", 4)
+    if layout == "regular":
+        worlds = (robot_a, robot_b, robot_a, robot_b, robot_a)
+    elif layout == "irregular":
+        worlds = (robot_a, robot_b, robot_a, robot_b, robot_b, robot_a)
+    else:
+        worlds = (robot_a, robot_a, robot_a)
+    scene = newton.ModelBuilder()
+    for world in worlds:
+        scene.add_world(world)
+    return scene.finalize(device=device)
+
+
+def _articulation_dofs(model, articulation_ids):
+    """Absolute model DOF indices ``[world, dof]`` of single-articulation-per-world selections."""
+    articulation_start = model.articulation_start.numpy()
+    joint_qd_start = model.joint_qd_start.numpy()
+    rows = []
+    for articulation in articulation_ids:
+        first_joint = articulation_start[articulation]
+        end_joint = articulation_start[articulation + 1]
+        rows.append(list(range(joint_qd_start[first_joint], joint_qd_start[end_joint])))
+    return np.array(rows, dtype=np.int64)
+
+
+def _reversed_row_actuator(model, device):
+    """One actuator row per model DOF, listed in reverse global DOF order, with distinct gains.
+
+    Returns ``(actuator, kp, row_of_dof)``. The actuator row differs from the DOF index, so a DOF/row
+    mix-up is visible, and the rows of the last world come first, so the actuator does not own an
+    equal consecutive block of rows per world in world order.
+    """
+    dof_count = model.joint_dof_count
+    kp = np.arange(dof_count, dtype=np.float32) * 10.0 + 1.0
+    actuator = Actuator(
+        indices=wp.array(np.arange(dof_count)[::-1].copy(), dtype=wp.uint32, device=device),
+        drive=DrivePD(kp=wp.array(kp, device=device), kd=wp.zeros(dof_count, device=device)),
+    )
+    row_of_dof = np.empty(dof_count, dtype=np.int64)
+    row_of_dof[np.arange(dof_count)[::-1]] = np.arange(dof_count)
+    return actuator, kp, row_of_dof
+
+
+def _check_actuator_rows(test, device, cases):
+    for layout, expected_sparse, expected_explicit in cases:
+        with test.subTest(layout=layout):
+            model = _make_sparse_robot_model(layout, device)
+            view = ArticulationView(model, "robot_a", verbose=False)
+            test.assertEqual(view.is_sparse, expected_sparse)
+            test.assertEqual(view.uses_explicit_model_indices, expected_explicit)
+            articulation_ids = view.articulation_ids.numpy().reshape(-1)
+            selected_dofs = _articulation_dofs(model, articulation_ids)
+            test.assertEqual(selected_dofs.shape, (3, 7))
+
+            actuator, kp, row_of_dof = _reversed_row_actuator(model, device)
+            actual = view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy()
+            assert_np_equal(actual, kp[row_of_dof[selected_dofs]])
+
+            replacement = -(np.arange(actual.size, dtype=np.float32).reshape(actual.shape) + 1.0)
+            view.set_actuator_parameter(
+                actuator,
+                actuator.drive,
+                "kp",
+                replacement,
+                mask=wp.array([True, False, True], dtype=bool, device=device),
+            )
+            updated = actuator.drive.kp.numpy()
+            expected = kp.copy()
+            expected[row_of_dof[selected_dofs[0]]] = replacement[0]
+            expected[row_of_dof[selected_dofs[2]]] = replacement[2]
+            assert_np_equal(updated, expected)
+
+
+def test_sparse_world_actuator_parameters_use_selected_rows(test, device):
+    """Actuator gather/scatter through sparse views addresses the selected articulations' rows."""
+    _check_actuator_rows(test, device, (("regular", True, False), ("irregular", True, True)))
+
+
+def test_dense_view_reversed_actuator_order(test, device):
+    """A dense view reads the right rows when the actuator lists them in reverse global DOF order.
+
+    The view is not sparse, but the actuator does not own an equal, consecutive block of rows per
+    world in world order, so replicating the first world's pattern would address the wrong rows.
+    """
+    _check_actuator_rows(test, device, (("dense", False, False),))
+
+
+def test_sparse_world_partial_actuator_parameters(test, device):
+    """DOFs without an actuator read as zero and are never written through a sparse view."""
+    for layout in ("regular", "irregular"):
+        with test.subTest(layout=layout):
+            model = _make_sparse_robot_model(layout, device)
+            view = ArticulationView(model, "robot_a", verbose=False)
+            selected_dofs = _articulation_dofs(model, view.articulation_ids.numpy().reshape(-1))
+            # Actuate only the revolute DOFs of every articulation in the model (skip free roots).
+            joint_type = model.joint_type.numpy()
+            joint_qd_start = model.joint_qd_start.numpy()
+            actuated = [
+                int(joint_qd_start[j]) for j in range(model.joint_count) if joint_type[j] == newton.JointType.REVOLUTE
+            ]
+            kp = np.arange(len(actuated), dtype=np.float32) + 100.0
+            actuator = Actuator(
+                indices=wp.array(actuated, dtype=wp.uint32, device=device),
+                drive=DrivePD(kp=wp.array(kp, device=device), kd=wp.zeros(len(actuated), device=device)),
+            )
+            row_of_dof = {dof: row for row, dof in enumerate(actuated)}
+            expected = np.array(
+                [[kp[row_of_dof[d]] if d in row_of_dof else 0.0 for d in world] for world in selected_dofs],
+                dtype=np.float32,
+            )
+            assert_np_equal(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), expected)
+
+            view.set_actuator_parameter(actuator, actuator.drive, "kp", np.full(expected.shape, -1.0, np.float32))
+            updated = actuator.drive.kp.numpy()
+            written = {row_of_dof[d] for world in selected_dofs for d in world if d in row_of_dof}
+            for row, value in enumerate(updated):
+                test.assertEqual(value, -1.0 if row in written else kp[row])
+
+
+def test_sparse_world_root_transforms_and_velocities(test, device):
+    """Floating-base root access through sparse views gathers and scatters the selected roots."""
+    for layout in ("regular", "irregular"):
+        with test.subTest(layout=layout):
+            model = _make_sparse_robot_model(layout, device)
+            view = ArticulationView(model, "robot_a", verbose=False)
+            test.assertTrue(view.is_floating_base)
+            articulation_ids = view.articulation_ids.numpy().reshape(-1)
+            articulation_start = model.articulation_start.numpy()
+            root_joints = articulation_start[articulation_ids]
+            q_start = model.joint_q_start.numpy()[root_joints]
+            qd_start = model.joint_qd_start.numpy()[root_joints]
+
+            state = model.state()
+            q = np.arange(model.joint_coord_count, dtype=np.float32)
+            qd = np.arange(model.joint_dof_count, dtype=np.float32) + 0.5
+            state.joint_q.assign(q)
+            state.joint_qd.assign(qd)
+
+            transforms = view.get_root_transforms(state).numpy().reshape(3, 7)
+            velocities = view.get_root_velocities(state).numpy().reshape(3, 6)
+            assert_np_equal(transforms, np.stack([q[s : s + 7] for s in q_start]))
+            assert_np_equal(velocities, np.stack([qd[s : s + 6] for s in qd_start]))
+            # Repeated access reuses the cached index map.
+            assert_np_equal(view.get_root_transforms(state).numpy().reshape(3, 7), transforms)
+
+            new_transforms = np.tile(np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0], np.float32), (3, 1, 1))
+            new_velocities = np.full((3, 1, 6), -2.0, np.float32)
+            mask = wp.array([False, True, False], dtype=bool, device=device)
+            view.set_root_transforms(state, new_transforms, mask=mask)
+            view.set_root_velocities(state, new_velocities, mask=mask)
+            expected_q = q.copy()
+            expected_q[q_start[1] : q_start[1] + 7] = new_transforms[1, 0]
+            expected_qd = qd.copy()
+            expected_qd[qd_start[1] : qd_start[1] + 6] = new_velocities[1, 0]
+            assert_np_equal(state.joint_q.numpy(), expected_q)
+            assert_np_equal(state.joint_qd.numpy(), expected_qd)
+
+
+def test_actuator_mapping_built_once_and_cached(test, device):
+    """The first actuator-parameter access builds the DOF mapping; later gets and sets reuse it."""
+    for layout in ("regular", "irregular", "dense"):
+        with test.subTest(layout=layout):
+            model = _make_sparse_robot_model(layout, device)
+            view = ArticulationView(model, "robot_a", verbose=False)
+            actuator, kp, row_of_dof = _reversed_row_actuator(model, device)
+            selected_dofs = _articulation_dofs(model, view.articulation_ids.numpy().reshape(-1))
+            with mock.patch.object(
+                ArticulationView,
+                "_create_actuator_dof_mapping",
+                autospec=True,
+                side_effect=ArticulationView._create_actuator_dof_mapping,
+            ) as create:
+                cold = view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy()
+                test.assertEqual(create.call_count, 1)
+                mapping = view._actuator_dof_mapping_cache[actuator]
+                warm = view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy()
+                view.set_actuator_parameter(actuator, actuator.drive, "kp", cold)
+                view.get_actuator_parameter(actuator, actuator.drive, "kd")
+                test.assertEqual(create.call_count, 1)
+                test.assertIs(view._actuator_dof_mapping_cache[actuator], mapping)
+            assert_np_equal(cold, kp[row_of_dof[selected_dofs]])
+            assert_np_equal(warm, cold)
+
+
+def _world_major_actuator(model, device):
+    """One actuator row per model DOF, in global DOF order (world-major), with distinct gains."""
+    dof_count = model.joint_dof_count
+    kp = np.arange(dof_count, dtype=np.float32) * 10.0 + 1.0
+    actuator = Actuator(
+        indices=wp.array(np.arange(dof_count), dtype=wp.uint32, device=device),
+        drive=DrivePD(kp=wp.array(kp, device=device), kd=wp.zeros(dof_count, device=device)),
+    )
+    return actuator, kp, np.arange(dof_count, dtype=np.int64)
+
+
+@contextlib.contextmanager
+def _no_host_transfers():
+    """Fail on device-to-host readbacks and on arrays created from host data."""
+    array_init = wp.array.__init__
+
+    def init_without_host_data(self, data=None, *args, **kwargs):
+        if data is not None:
+            raise AssertionError("array created from host data during capture")
+        array_init(self, None, *args, **kwargs)
+
+    with (
+        mock.patch.object(wp.array, "numpy", side_effect=AssertionError("host readback during capture")),
+        mock.patch.object(wp.array, "__init__", init_without_host_data),
+    ):
+        yield
+
+
+def test_actuator_parameters_capture_cold(test, device):
+    """A first actuator access captures and replays: the mapping build runs on the device only.
+
+    Kernels are compiled with a separate view first, so the captured views start with an empty
+    mapping cache. Replays use the values present at launch time, and a second capture reuses
+    the cached mapping.
+    """
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("CUDA graph capture of allocations requires the mempool")
+    cases = (
+        ("dense", _world_major_actuator),
+        ("dense", _reversed_row_actuator),
+        ("regular", _reversed_row_actuator),
+        ("irregular", _reversed_row_actuator),
+    )
+    for layout, make_actuator in cases:
+        with test.subTest(layout=layout, actuator=make_actuator.__name__):
+            model = _make_sparse_robot_model(layout, device)
+            warm_view = ArticulationView(model, "robot_a", verbose=False)
+            warm_actuator = make_actuator(model, device)[0]
+            warm_view.set_actuator_parameter(warm_actuator, warm_actuator.drive, "kp", np.zeros((3, 7), np.float32))
+
+            view = ArticulationView(model, "robot_a", verbose=False)
+            actuator, kp, row_of_dof = make_actuator(model, device)
+            selected_dofs = _articulation_dofs(model, view.articulation_ids.numpy().reshape(-1))
+            test.assertEqual(len(view._actuator_dof_mapping_cache), 0)
+
+            gathered = wp.zeros((3, 7), dtype=float, device=device)
+            values = wp.zeros((3, 7), dtype=float, device=device)
+            mask = wp.array([False, True, False], dtype=bool, device=device)
+            for _ in range(2):  # cold capture, then a capture that reuses the cached mapping
+                with _no_host_transfers():
+                    with wp.ScopedCapture(device) as capture:
+                        view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=mask)
+                        wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
+                test.assertEqual(len(view._actuator_dof_mapping_cache), 1)
+                for replay in range(2):
+                    actuator.drive.kp.assign(kp)
+                    new_values = -(np.arange(21, dtype=np.float32).reshape(3, 7) + 1.0 + 100.0 * replay)
+                    values.assign(new_values)
+                    wp.capture_launch(capture.graph)
+                    expected_kp = kp.copy()
+                    expected_kp[row_of_dof[selected_dofs[1]]] = new_values[1]
+                    assert_np_equal(actuator.drive.kp.numpy(), expected_kp)
+                    assert_np_equal(gathered.numpy(), expected_kp[row_of_dof[selected_dofs]])
+
+
+def test_actuator_capture_without_mempool_raises(test, device):
+    """Without the memory pool, a cold access inside capture raises a clear error and caches nothing."""
+    model = _make_sparse_robot_model("dense", device)
+    view = ArticulationView(model, "robot_a", verbose=False)
+    actuator, kp, _row_of_dof = _world_major_actuator(model, device)
+    view.get_actuator_parameter(actuator, actuator.drive, "kd")  # compile kernels on another mapping
+    view._actuator_dof_mapping_cache.clear()
+    was_enabled = wp.is_mempool_enabled(device)
+    wp.set_mempool_enabled(device, False)
+    try:
+        with test.assertRaisesRegex(RuntimeError, "memory pool"):
+            with wp.ScopedCapture(device):
+                view.get_actuator_parameter(actuator, actuator.drive, "kp")
+    finally:
+        wp.set_mempool_enabled(device, was_enabled)
+    test.assertEqual(len(view._actuator_dof_mapping_cache), 0)
+    assert_np_equal(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), kp.reshape(3, 7))
+
+
+class _BorrowedActuatorView:
+    """A model-free view that borrows ``ArticulationView``'s actuator-parameter methods.
+
+    Downstream callers that build actuators without a :class:`~newton.Model` (for example IsaacLab's
+    PhysX-family actuator adapters) provide only the placement attributes those methods read, and
+    store ``device`` as the alias string they were given rather than a :class:`warp.Device`.
+    """
+
+    def __init__(self, world_count: int, dof_count: int, device: str):
+        self.world_count = world_count
+        self.count_per_world = 1
+        self.device = device
+        self.full_mask = wp.ones(world_count, dtype=wp.bool, device=device)
+        self._actuator_dof_mapping_cache = {}
+        self.frequency_layouts = {
+            newton.Model.AttributeFrequency.JOINT_DOF: FrequencyLayout(
+                offset=0,
+                stride_between_worlds=dof_count,
+                stride_within_worlds=dof_count,
+                value_count=dof_count,
+                indices=list(range(dof_count)),
+                device=device,
+            )
+        }
+
+    get_actuator_parameter = ArticulationView.get_actuator_parameter
+    set_actuator_parameter = ArticulationView.set_actuator_parameter
+    _get_actuator_dof_mapping = ArticulationView._get_actuator_dof_mapping
+    _create_actuator_dof_mapping = ArticulationView._create_actuator_dof_mapping
+    _resolve_world_mask = ArticulationView._resolve_world_mask
+
+
+def test_borrowed_view_with_device_alias(test, device):
+    """Borrowed actuator-parameter methods accept a view whose ``device`` is an alias string.
+
+    Covers eager get/set and, on CUDA, cold and warmed capture with replay.
+    """
+    alias = wp.get_device(device).alias
+    test.assertIsInstance(alias, str)
+    view = _BorrowedActuatorView(world_count=2, dof_count=3, device=alias)
+    kp = np.arange(1.0, 7.0, dtype=np.float32)
+    actuator = Actuator(
+        indices=wp.array(np.arange(6), dtype=wp.uint32, device=alias),
+        drive=DrivePD(kp=wp.array(kp, device=alias), kd=wp.zeros(6, device=alias)),
+    )
+
+    if wp.get_device(alias).is_cuda:
+        if not wp.is_mempool_enabled(alias):
+            test.skipTest("CUDA graph capture of allocations requires the mempool")
+        # Compile kernels on another view, then capture the target view's first access.
+        _BorrowedActuatorView(world_count=2, dof_count=3, device=alias).get_actuator_parameter(
+            actuator, actuator.drive, "kd"
+        )
+        cold = wp.zeros((2, 3), dtype=float, device=alias)
+        with _no_host_transfers():
+            with wp.ScopedCapture(alias) as capture:
+                wp.copy(cold, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
+        wp.capture_launch(capture.graph)
+        assert_np_equal(cold.numpy(), kp.reshape(2, 3))
+
+    assert_np_equal(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), kp.reshape(2, 3))
+    view.set_actuator_parameter(
+        actuator,
+        actuator.drive,
+        "kp",
+        np.array([[-1.0, -2.0, -3.0], [-4.0, -5.0, -6.0]], np.float32),
+        mask=wp.array([False, True], dtype=bool, device=alias),
+    )
+    expected = np.array([1.0, 2.0, 3.0, -4.0, -5.0, -6.0], np.float32)
+    assert_np_equal(actuator.drive.kp.numpy(), expected)
+
+    if not wp.get_device(alias).is_cuda:
+        return
+    # The calls above cached the mapping, so the same accesses capture and replay.
+    gathered = wp.zeros((2, 3), dtype=float, device=alias)
+    values = wp.zeros((2, 3), dtype=float, device=alias)
+    mask = wp.array([True, False], dtype=bool, device=alias)
+    with _no_host_transfers():
+        with wp.ScopedCapture(alias) as capture:
+            view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=mask)
+            wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
+    values.assign(np.array([[10.0, 20.0, 30.0], [0.0, 0.0, 0.0]], np.float32))
+    wp.capture_launch(capture.graph)
+    expected[:3] = (10.0, 20.0, 30.0)
+    assert_np_equal(actuator.drive.kp.numpy(), expected)
+    assert_np_equal(gathered.numpy(), expected.reshape(2, 3))
+
+
+class TestSelectionActuatorMapping(unittest.TestCase):
+    pass
+
+
+_devices = get_test_devices()
+_cuda_devices = get_cuda_test_devices()
+for _name, _func, _func_devices in (
+    (
+        "test_sparse_world_actuator_parameters_use_selected_rows",
+        test_sparse_world_actuator_parameters_use_selected_rows,
+        _devices,
+    ),
+    ("test_dense_view_reversed_actuator_order", test_dense_view_reversed_actuator_order, _devices),
+    ("test_sparse_world_partial_actuator_parameters", test_sparse_world_partial_actuator_parameters, _devices),
+    ("test_sparse_world_root_transforms_and_velocities", test_sparse_world_root_transforms_and_velocities, _devices),
+    ("test_actuator_mapping_built_once_and_cached", test_actuator_mapping_built_once_and_cached, _devices),
+    ("test_borrowed_view_with_device_alias", test_borrowed_view_with_device_alias, _devices),
+    ("test_actuator_parameters_capture_cold", test_actuator_parameters_capture_cold, _cuda_devices),
+    ("test_actuator_capture_without_mempool_raises", test_actuator_capture_without_mempool_raises, _cuda_devices),
+):
+    add_function_test(TestSelectionActuatorMapping, _name, _func, devices=_func_devices)
+
+
 class TestSelectionFixedTendons(unittest.TestCase):
     """Tests for fixed tendon support in ArticulationView."""
 
@@ -1751,6 +2494,182 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
         model = scene.finalize()
 
         assert_np_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), np.arange(6))
+
+
+# ========================================================================================
+# Shape rows interleaved with other shapes
+
+
+def _make_interleaved_robot_model(device, varied=True, owner_swap=False):
+    """Build three worlds of a two-link robot whose shapes interleave with another body's shape.
+
+    With ``varied``, the other body's shape sits at a different position between the robot's shapes
+    in world 1. With ``owner_swap``, world 1 also adds its robot shapes to the links in a different order.
+    """
+    scene = newton.ModelBuilder()
+    for world in range(3):
+        builder = newton.ModelBuilder()
+        root = builder.add_link(label="robot/root")
+        tip = builder.add_link(label="robot/tip")
+        other = builder.add_link(label="other/link")
+        builder.add_articulation(
+            [builder.add_joint_free(child=root), builder.add_joint_revolute(parent=root, child=tip)], label="robot"
+        )
+        builder.add_articulation([builder.add_joint_free(child=other)], label="other")
+        order = [root, other, tip, root, tip]
+        if varied and world == 1:
+            order = [tip, root, other, tip, root] if owner_swap else [root, tip, other, root, tip]
+        for body in order:
+            builder.add_shape_sphere(body, radius=0.1)
+        scene.add_world(builder)
+    return scene.finalize(device=device)
+
+
+def _make_interleaved_object_model(device, per_world):
+    """Build three free objects whose shape rows are (0, 2), (3, 4) and (6, 8), interleaved with another body's."""
+    scene = newton.ModelBuilder()
+    target = scene
+    for index in range(3):
+        if per_world:
+            target = newton.ModelBuilder()
+        obj = target.add_link(label=f"object_{index}/body")
+        other = target.add_link(label=f"other_{index}/body")
+        target.add_articulation([target.add_joint_free(child=obj)], label=f"object_{index}")
+        target.add_articulation([target.add_joint_free(child=other)], label=f"other_{index}")
+        for body in [obj, obj, other] if index == 1 else [obj, other, obj]:
+            target.add_shape_sphere(body, radius=0.1)
+        if per_world:
+            scene.add_world(target)
+    return scene.finalize(device=device)
+
+
+def _owned_shape_rows(model, view):
+    """Return each selected articulation's shape rows, ordered by ID, computed from the model topology."""
+    shape_body = model.shape_body.numpy()
+    starts, ends = model.articulation_start.numpy(), model.articulation_end.numpy()
+    children = model.joint_child.numpy()
+    rows = []
+    for articulation in view.articulation_ids.numpy().reshape(-1):
+        bodies = children[starts[articulation] : ends[articulation]]
+        rows.append(np.flatnonzero(np.isin(shape_body, bodies)))
+    return np.stack(rows).reshape(view.world_count, view.count_per_world, -1)
+
+
+def _check_shape_rows(test, model, view, device):
+    """Check gathered shape values and masked scatters against the topology's shape rows."""
+    rows = _owned_shape_rows(model, view)
+    layout = view.frequency_layouts[newton.Model.AttributeFrequency.SHAPE]
+    test.assertTrue(layout.uses_explicit_model_indices)
+    test.assertFalse(view.shapes_contiguous)
+    assert_np_equal(layout.get_model_indices().numpy(), rows)
+    assert_np_equal(layout.get_absolute_indices(view.world_count, view.count_per_world), rows)
+
+    margins = np.arange(model.shape_count, dtype=np.float32) + 1.0
+    model.shape_margin.assign(margins)
+    assert_np_equal(view.get_attribute("shape_margin", model).numpy(), margins[rows])
+
+    for mask in (
+        wp.array([index == 1 for index in range(view.world_count)], dtype=bool, device=device),
+        wp.array(
+            [
+                [(world * view.count_per_world + articulation) == 1 for articulation in range(view.count_per_world)]
+                for world in range(view.world_count)
+            ],
+            dtype=bool,
+            device=device,
+        ),
+    ):
+        with test.subTest(mask_ndim=mask.ndim):
+            model.shape_margin.assign(margins)
+            values = np.full(rows.shape, -1.0, dtype=np.float32)
+            view.set_attribute("shape_margin", model, values, mask=mask)
+            expected = margins.copy()
+            selected = mask.numpy()
+            if selected.ndim == 1:
+                selected = np.repeat(selected[:, None], view.count_per_world, axis=1)
+            expected[rows[selected].reshape(-1)] = -1.0
+            assert_np_equal(model.shape_margin.numpy(), expected)
+
+
+def test_interleaved_shape_rows_differ_between_worlds(test, device):
+    """Address robot shapes whose rows interleave differently with another body's shapes in each world."""
+    model = _make_interleaved_robot_model(device)
+    view = ArticulationView(model, "robot", verbose=False)
+    for frequency in ("JOINT", "JOINT_DOF", "JOINT_COORD", "BODY"):
+        layout = view.frequency_layouts[getattr(newton.Model.AttributeFrequency, frequency)]
+        test.assertFalse(layout.uses_explicit_model_indices, frequency)
+    test.assertEqual(view.shape_count, 4)
+    test.assertEqual(view.link_shapes, [[0, 2], [1, 3]])
+    assert_np_equal(_owned_shape_rows(model, view)[:, 0], np.array([[0, 2, 3, 4], [5, 6, 8, 9], [10, 12, 13, 14]]))
+    _check_shape_rows(test, model, view, device)
+
+    # joint coordinates stay a zero-copy view of the state despite the explicit shape rows
+    state = model.state()
+    coord_layout = view.frequency_layouts[newton.Model.AttributeFrequency.JOINT_COORD]
+    positions = view.get_dof_positions(state)
+    test.assertEqual(positions.ptr, state.joint_q.ptr + coord_layout.offset * state.joint_q.strides[0])
+
+    # uniform interleaving keeps a regular shape layout
+    uniform = ArticulationView(_make_interleaved_robot_model(device, varied=False), "robot", verbose=False)
+    test.assertFalse(uniform.frequency_layouts[newton.Model.AttributeFrequency.SHAPE].uses_explicit_model_indices)
+
+
+def test_interleaved_shape_rows_of_grouped_objects(test, device):
+    """Address free objects that own shape rows (0, 2), (3, 4) and (6, 8)."""
+    for per_world in (True, False):
+        with test.subTest(per_world=per_world):
+            model = _make_interleaved_object_model(device, per_world)
+            ids = [index for index, label in enumerate(model.articulation_label) if label.startswith("object_")]
+            view = ArticulationView(model, ids, verbose=False)
+            assert_np_equal(_owned_shape_rows(model, view).reshape(3, 2), np.array([[0, 2], [3, 4], [6, 8]]))
+            _check_shape_rows(test, model, view, device)
+
+
+def test_interleaved_shape_rows_require_matching_owners(test, device):
+    """Reject shape rows whose owning links differ, even though every row could be addressed."""
+    model = _make_interleaved_robot_model(device, owner_swap=True)
+    with test.assertRaisesRegex(ValueError, "SHAPE layout is unavailable"):
+        ArticulationView(model, "robot", verbose=False)
+    view = ArticulationView(model, "robot", verbose=False, allow_partial_layouts=True)
+    test.assertIsNone(view.shapes_contiguous)
+    test.assertEqual(view.get_dof_positions(model).shape, (3, 1, 8))
+    with test.assertRaises(AttributeError):
+        view.get_attribute("shape_margin", model)
+
+
+def test_interleaved_shape_rows_capture_cold(test, device):
+    """Gather and scatter explicit shape rows inside a cold CUDA graph capture."""
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("CUDA graph capture of allocations requires the mempool")
+    model = _make_interleaved_robot_model(device)
+    view = ArticulationView(model, "robot", verbose=False)
+    rows = _owned_shape_rows(model, view)
+    values = wp.full(rows.shape, -1.0, dtype=float, device=device)
+    margins = wp.zeros(rows.shape, dtype=float, device=device)
+    with wp.ScopedCapture(device) as capture:
+        wp.copy(margins, view.get_attribute("shape_margin", model))
+        view.set_attribute("shape_margin", model, values, mask=[False, True, False])
+    for offset in (1.0, 2.0):
+        source = np.arange(model.shape_count, dtype=np.float32) + offset
+        model.shape_margin.assign(source)
+        wp.capture_launch(capture.graph)
+        assert_np_equal(margins.numpy(), source[rows])
+        expected = source.copy()
+        expected[rows[1].reshape(-1)] = -1.0
+        assert_np_equal(model.shape_margin.numpy(), expected)
+
+
+class TestSelectionShapeRows(unittest.TestCase):
+    pass
+
+
+for _test, _devices in (
+    (test_interleaved_shape_rows_differ_between_worlds, get_test_devices()),
+    (test_interleaved_shape_rows_of_grouped_objects, get_test_devices()),
+    (test_interleaved_shape_rows_require_matching_owners, get_test_devices()),
+    (test_interleaved_shape_rows_capture_cold, get_cuda_test_devices()),
+):
+    add_function_test(TestSelectionShapeRows, _test.__name__, _test, devices=_devices)
 
 
 if __name__ == "__main__":

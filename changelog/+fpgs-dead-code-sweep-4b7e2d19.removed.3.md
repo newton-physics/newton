@@ -1,0 +1,1 @@
+Remove the `SolverFeatherPGS` kernel-selection parameters `cholesky_kernel`, `trisolve_kernel`, `hinv_jt_kernel`, `delassus_kernel`, `delassus_chunk_size`, and `small_dof_threshold`; kernels are selected automatically from articulation size and device shared memory. Stop passing them.

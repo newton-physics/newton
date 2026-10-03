@@ -179,6 +179,7 @@ class SolverStyle3D(SolverBase):
             contacts: :class:`newton.Contacts` used for collision response.
             dt: Time step in seconds.
         """
+        self._require_unreduced_contacts(contacts)
         # Model masses and flags may change between solver steps.
         wp.copy(self._particle_flags, self.model.particle_flags)
         if self.model.particle_count > 0:

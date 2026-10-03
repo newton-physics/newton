@@ -212,6 +212,20 @@ def main(argv=None):
         help="Set the test parallelism level (default is 'class')",
     )
     group_parallel.add_argument(
+        "--shard-count",
+        metavar="COUNT",
+        type=int,
+        default=1,
+        help="Split discovered test suites into COUNT deterministic shards (default is 1)",
+    )
+    group_parallel.add_argument(
+        "--shard-index",
+        metavar="INDEX",
+        type=int,
+        default=0,
+        help="Run shard INDEX when --shard-count is greater than 1 (default is 0)",
+    )
+    group_parallel.add_argument(
         "--disable-process-pooling",
         action="store_true",
         default=False,
@@ -271,6 +285,10 @@ def main(argv=None):
     args = parser.parse_args(args=argv)
     if args.parallel_timeout <= 0:
         parser.error("--parallel-timeout must be greater than 0")
+    if args.shard_count <= 0:
+        parser.error("--shard-count must be greater than 0")
+    if args.shard_index < 0 or args.shard_index >= args.shard_count:
+        parser.error("--shard-index must be in the range [0, --shard-count)")
     if args.deprecation_allowlist and not args.strict_warnings:
         parser.error("--deprecation-allowlist requires --strict-warnings")
     try:
@@ -328,6 +346,20 @@ def main(argv=None):
             test_suites = list(_iter_class_suites(discover_suite))
         else:  # args.level == 'module'
             test_suites = list(_iter_module_suites(discover_suite))
+
+        if args.shard_count > 1:
+            total_suites = len(test_suites)
+            test_suites = [
+                test_suite
+                for suite_index, test_suite in enumerate(test_suites)
+                if suite_index % args.shard_count == args.shard_index
+            ]
+            discover_suite = unittest.TestSuite(test_suites)
+            print(
+                f"Selected shard {args.shard_index}/{args.shard_count}: "
+                f"{len(test_suites)} of {total_suites} test suites",
+                file=sys.stderr,
+            )
 
         # Don't use more processes than test suites
         process_count = max(1, min(len(test_suites), process_count))

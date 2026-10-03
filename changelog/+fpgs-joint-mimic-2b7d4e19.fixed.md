@@ -1,0 +1,1 @@
+Build `SolverFeatherPGS` mimic rows from joint-owned mimics (`ModelBuilder.set_joint_mimic()`, `Model.joint_mimic_joint`), one row per follower coordinate, so USD and URDF mimic joints are enforced; deprecated `constraint_mimic_*` entries remain supported and take precedence for their follower joint, as in `SolverMuJoCo`.

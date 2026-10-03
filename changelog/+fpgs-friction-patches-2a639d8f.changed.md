@@ -1,0 +1,1 @@
+Enable FeatherPGS patch friction by default with correction strength 0.2. Set `friction_anchor_beta=0` to restore velocity-only point friction and the friction-row behavior of shared-anchor flags. Explicit point-contact algorithm selections remain supported and warn when the new gain is omitted.

@@ -14,12 +14,14 @@ import warp.examples
 import newton
 from newton import GeoType
 from newton._src.geometry import create_mesh_terrain
+from newton._src.geometry.broad_phase_nxn import BroadPhaseAllPairs
 from newton._src.geometry.flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
 from newton._src.geometry.kernels import (
     create_soft_contacts,
     mesh_sdf,
     resolve_mesh_sign_method,
 )
+from newton._src.geometry.narrow_phase import NarrowPhase
 from newton._src.geometry.sdf_texture import TextureSDFData
 from newton._src.geometry.soft_contacts_sdf import (
     SDF_EDGE_ITERS,
@@ -34,7 +36,10 @@ from newton._src.geometry.soft_contacts_sdf import (
     optimize_face_sdf,
 )
 from newton._src.sim.collide import (
+    _CONVEX_PAIR_MAX_CONTACTS,
     _GENERIC_CONVEX_PAIR_LOOKUP,
+    _HYDRO_PAIR_MAX_CONTACTS,
+    _MESH_PAIR_MAX_CONTACTS,
     _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD,
     CollisionPipeline,
     _build_soft_edge_rigid_contact_pairs,
@@ -2241,6 +2246,145 @@ class TestContactCountEstimator(unittest.TestCase):
 
         estimate = _estimate_rigid_contact_max(model)
         self.assertEqual(estimate, 1500)
+
+    # ------------------------------------------------------------------
+    # Pair-aware estimator tests (builder-based scenes, CPU)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cube_mesh(hs: float = 0.1) -> newton.Mesh:
+        vertices = np.array(
+            [
+                [-hs, -hs, -hs],
+                [hs, -hs, -hs],
+                [hs, hs, -hs],
+                [-hs, hs, -hs],
+                [-hs, -hs, hs],
+                [hs, -hs, hs],
+                [hs, hs, hs],
+                [-hs, hs, hs],
+            ],
+            dtype=np.float32,
+        )
+        # fmt: off
+        indices = np.array(
+            [
+                0, 3, 2, 0, 2, 1,  # -z
+                4, 5, 6, 4, 6, 7,  # +z
+                0, 1, 5, 0, 5, 4,  # -y
+                2, 3, 7, 2, 7, 6,  # +y
+                0, 4, 7, 0, 7, 3,  # -x
+                1, 2, 6, 1, 6, 5,  # +x
+            ],
+            dtype=np.int32,
+        )
+        # fmt: on
+        return newton.Mesh(vertices, indices)
+
+    @classmethod
+    def _build_multi_world_scene(
+        cls, num_worlds: int, boxes_per_world: int, mesh_per_world: bool = False
+    ) -> newton.Model:
+        """Global ground plane + ``num_worlds`` worlds of free-body boxes (and optionally one colliding mesh)."""
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        for _ in range(num_worlds):
+            builder.begin_world()
+            for i in range(boxes_per_world):
+                b = builder.add_body(xform=wp.transform(wp.vec3(0.5 * float(i), 0.0, 0.5), wp.quat_identity()))
+                builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
+            if mesh_per_world:
+                b = builder.add_body(xform=wp.transform(wp.vec3(-1.0, 0.0, 0.5), wp.quat_identity()))
+                builder.add_shape_mesh(body=b, mesh=cls._cube_mesh())
+            builder.end_world()
+        return builder.finalize(device="cpu")
+
+    @classmethod
+    def _build_box_scene(cls, num_boxes: int, mesh_mode: str | None = None) -> newton.Model:
+        """Ground plane + ``num_boxes`` free-body boxes, optionally plus a mesh shape.
+
+        mesh_mode:
+            None         -- no mesh shape
+            "colliding"  -- mesh shape that participates in collision
+            "visual"     -- mesh shape with has_shape_collision=False (render-only)
+        """
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        for i in range(num_boxes):
+            b = builder.add_body(xform=wp.transform(wp.vec3(0.5 * float(i), 0.0, 0.5), wp.quat_identity()))
+            builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
+        if mesh_mode is not None:
+            cfg = None
+            if mesh_mode == "visual":
+                cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False)
+            b = builder.add_body(xform=wp.transform(wp.vec3(-1.0, 0.0, 0.5), wp.quat_identity()))
+            builder.add_shape_mesh(body=b, mesh=cls._cube_mesh(), cfg=cfg)
+        return builder.finalize(device="cpu")
+
+    def test_pair_aware_sum_of_budgets(self):
+        """For sparse multi-world scenes the estimate is the exact per-pair budget sum."""
+        model = self._build_multi_world_scene(num_worlds=100, boxes_per_world=2)
+        # Per world: 1 box-box + 2 plane-box pairs = 3 pairs, all convex.
+        self.assertEqual(model.shape_contact_pair_count, 300)
+        # Locality cap (plane pairs full + 200 boxes * 20 neighbors * 5 // 2)
+        # is far larger, so the provable pair sum binds.
+        self.assertEqual(_estimate_rigid_contact_max(model), 300 * _CONVEX_PAIR_MAX_CONTACTS)
+
+    def test_pair_aware_mesh_pair_budget(self):
+        """Mesh-involved pairs are budgeted with the contact-reduction per-pair cap."""
+        model = self._build_multi_world_scene(num_worlds=50, boxes_per_world=2, mesh_per_world=True)
+        # Per world: 1 box-box + 2 plane-box (convex) + 2 mesh-box + 1 plane-mesh (mesh) = 6 pairs.
+        self.assertEqual(model.shape_contact_pair_count, 300)
+        expected = 50 * (3 * _CONVEX_PAIR_MAX_CONTACTS + 3 * _MESH_PAIR_MAX_CONTACTS)
+        self.assertEqual(_estimate_rigid_contact_max(model), expected)
+
+    def test_locality_cap_binds_for_dense_single_world(self):
+        """Dense single-world pair graphs are capped by the spatial-locality estimate."""
+        model = self._build_box_scene(num_boxes=25)
+        # Pair sum: C(25,2)=300 box-box + 25 plane-box = 325 pairs * 5 = 1625.
+        self.assertEqual(model.shape_contact_pair_count, 325)
+        # Locality cap: plane pairs keep their budget (25 * 5) and the 25 boxes
+        # are budgeted for 20 simultaneous neighbors each (halved per pair):
+        # 125 + 25 * 5 * 20 // 2 = 1375 < 1625, so the cap binds.
+        plane_term = 25 * _CONVEX_PAIR_MAX_CONTACTS
+        locality = 25 * _CONVEX_PAIR_MAX_CONTACTS * 20 // 2
+        self.assertEqual(_estimate_rigid_contact_max(model), plane_term + locality)
+
+    def test_visual_mesh_does_not_inflate_estimate(self):
+        """A non-colliding (visual-only) mesh shape must not change the estimate."""
+        model_plain = self._build_box_scene(num_boxes=25)
+        model_visual = self._build_box_scene(num_boxes=25, mesh_mode="visual")
+        # The visual mesh adds a shape but no contact pairs.
+        self.assertEqual(model_visual.shape_count, model_plain.shape_count + 1)
+        self.assertEqual(model_visual.shape_contact_pair_count, model_plain.shape_contact_pair_count)
+        self.assertEqual(
+            _estimate_rigid_contact_max(model_visual),
+            _estimate_rigid_contact_max(model_plain),
+        )
+
+    def test_hydroelastic_pair_budget(self):
+        """Hydro-hydro pairs get the anchor-augmented per-pair budget."""
+        model = self._build_multi_world_scene(num_worlds=50, boxes_per_world=2)
+        flags = model.shape_flags.numpy()
+        flags |= int(ShapeFlags.HYDROELASTIC)
+        model.shape_flags = wp.array(flags, dtype=wp.int32, device=model.device)
+        # All 150 pairs become hydro-hydro: budgeted at MAX_CONTACTS_PER_PAIR
+        # plus one anchor contact per normal bin; the locality cap (which also
+        # uses the hydro budget per shape) stays larger, so the sum binds.
+        self.assertEqual(_estimate_rigid_contact_max(model), 150 * _HYDRO_PAIR_MAX_CONTACTS)
+
+    def test_explicit_rigid_contact_max_override_wins(self):
+        """An explicit model.rigid_contact_max (>0) bypasses the estimator."""
+        model = self._build_box_scene(num_boxes=4)
+        model.rigid_contact_max = 777777
+        pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+        self.assertEqual(pipeline.rigid_contact_max, 777777)
+
+    def test_minimum_allocation_floor(self):
+        """Small pair sums are floored at the 1000-contact minimum allocation."""
+        model = self._build_box_scene(num_boxes=2)
+        # 2 boxes + plane: 3 pairs * 5 = 15 -> floored to 1000.
+        self.assertEqual(_estimate_rigid_contact_max(model), 1000)
 
 
 class TestShapePairsMaxScaling(unittest.TestCase):

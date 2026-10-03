@@ -1,0 +1,1 @@
+`CollisionPipeline` now binds the model's per-shape voxel-resolution table to a narrow phase supplied through expert construction that has none, instead of leaving the mesh contact kernels to index an empty array; a table that is supplied must match the model's shape count and device.

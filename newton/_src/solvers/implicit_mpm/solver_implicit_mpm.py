@@ -1915,6 +1915,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             contacts: Contact information (unused; collisions are handled internally).
             dt: Time step duration [s].
         """
+        self._require_unreduced_contacts(contacts)
         model = self.model
 
         with wp.ScopedDevice(model.device):
