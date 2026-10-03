@@ -511,7 +511,9 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
 
         for device in devices:
             with self.subTest(device=device):
-                conflicting = "cpu" if wp.get_device(device).is_cuda else ("cuda:0" if wp.is_cuda_available() else "cpu")
+                conflicting = (
+                    "cpu" if wp.get_device(device).is_cuda else ("cuda:0" if wp.is_cuda_available() else "cpu")
+                )
                 bsm = BlockSparseMatrices(
                     nzb_dtype=BlockDType(shape=(1,), dtype=wp.float32),
                     device=device,
