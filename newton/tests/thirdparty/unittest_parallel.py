@@ -212,6 +212,23 @@ def main(argv=None):
         help="Set the test parallelism level (default is 'class')",
     )
     group_parallel.add_argument(
+        "--shard-count",
+        metavar="COUNT",
+        type=int,
+        default=1,
+        help="Split the discovered test suites into COUNT deterministic shards (default is 1). "
+        "Shards are disjoint and complete only when every shard runs the same revision with the same "
+        "filters and discovery options (--start-directory, --pattern, -k, --level), dependencies, "
+        "and visible devices, which determine the device-specific tests that are registered",
+    )  # NVIDIA Modification
+    group_parallel.add_argument(
+        "--shard-index",
+        metavar="INDEX",
+        type=int,
+        default=0,
+        help="Run only shard INDEX, in [0, COUNT), of the --shard-count shards (default is 0)",
+    )  # NVIDIA Modification
+    group_parallel.add_argument(
         "--disable-process-pooling",
         action="store_true",
         default=False,
@@ -271,6 +288,10 @@ def main(argv=None):
     args = parser.parse_args(args=argv)
     if args.parallel_timeout <= 0:
         parser.error("--parallel-timeout must be greater than 0")
+    if args.shard_count <= 0:
+        parser.error("--shard-count must be greater than 0")
+    if not 0 <= args.shard_index < args.shard_count:
+        parser.error("--shard-index must be in the range [0, --shard-count)")
     if args.deprecation_allowlist and not args.strict_warnings:
         parser.error("--deprecation-allowlist requires --strict-warnings")
     try:
@@ -328,6 +349,17 @@ def main(argv=None):
             test_suites = list(_iter_class_suites(discover_suite))
         else:  # args.level == 'module'
             test_suites = list(_iter_module_suites(discover_suite))
+
+        if args.shard_count > 1:  # NVIDIA Modification
+            total_suite_count = len(test_suites)
+            test_suites = _select_shard(test_suites, args.shard_count, args.shard_index)
+            # The serial fallback runs discover_suite directly, so restrict it to the shard too.
+            discover_suite = unittest.TestSuite(test_suites)
+            print(
+                f"Selected shard {args.shard_index} of {args.shard_count}: "
+                f"{len(test_suites)} of {total_suite_count} test suites",
+                file=sys.stderr,
+            )
 
         # Don't use more processes than test suites
         process_count = max(1, min(len(test_suites), process_count))
@@ -455,7 +487,8 @@ def main(argv=None):
         print(file=sys.stderr)
         print(f"{'OK' if is_success else 'FAILED'}{' (' + ', '.join(infos) + ')' if infos else ''}", file=sys.stderr)
 
-        if test_records and args.junit_report_xml:
+        # NVIDIA Modification: an empty shard still writes a report, so each shard job produces one
+        if args.junit_report_xml and (test_records or (args.shard_count > 1 and not test_suites)):
             # NVIDIA modification to report results in Junit XML format
             write_junit_results(
                 args.junit_report_xml,
@@ -566,6 +599,16 @@ def _coverage(args, temp_dir):
 
 
 # Iterate module-level test suites - all top-level test suites returned from TestLoader.discover
+def _select_shard(test_suites, shard_count, shard_index):  # NVIDIA Modification
+    """Return every ``shard_count``-th suite, starting at ``shard_index``.
+
+    Discovery order is deterministic, so the shards of one discovered suite list
+    are disjoint, their union is the full list, and repeated runs select the
+    same suites.
+    """
+    return test_suites[shard_index::shard_count]
+
+
 def _iter_module_suites(test_suite):
     for module_suite in test_suite:
         if module_suite.countTestCases():
