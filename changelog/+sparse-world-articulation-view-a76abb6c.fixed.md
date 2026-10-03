@@ -1,0 +1,1 @@
+Fix `ArticulationView.get_actuator_parameter()` and `ArticulationView.set_actuator_parameter()` addressing the wrong actuator entries when the actuator does not list its entries as equal per-world blocks in world order. The mapping is built by absolute DOF identity with device kernels only, so a first access can still be captured in a CUDA graph.
