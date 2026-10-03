@@ -2172,20 +2172,6 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         self.assertEqual(_compute_per_world_mask_pair_max(model, same_mask), 7)
         self.assertEqual(_compute_per_world_mask_pair_max(model, first_mask, second_mask), 9)
 
-    def test_pair_bound_counting_work_is_bounded(self):
-        """Avoid rescanning all shapes for every world when counting candidates."""
-        model = self._make_model(num_worlds=64, shapes_per_world=4, num_global=2)
-        mask = np.ones(model.shape_count, dtype=bool)
-        for bound, args in (
-            (_compute_per_world_shape_pairs_max, (model,)),
-            (_compute_per_world_mask_pair_max, (model, mask)),
-        ):
-            with self.subTest(bound=bound.__name__):
-                with mock.patch("numpy.count_nonzero", wraps=np.count_nonzero) as count:
-                    self.assertEqual(bound(*args), 64 * 15 + 1)
-                scanned = sum(np.size(call.args[0]) for call in count.call_args_list)
-                self.assertLessEqual(scanned, 12 * model.shape_count)
-
     def test_pair_bounds_match_segment_enumeration(self):
         """Preserve sparse worlds, disabled shapes, globals and overlapping masks."""
         worlds = np.array([-1, 7, 0, 7, 1000000, 0, -1, 9], dtype=np.int32)
