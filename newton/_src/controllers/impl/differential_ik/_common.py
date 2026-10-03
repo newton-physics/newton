@@ -632,19 +632,7 @@ def _integrate_position_kernel(
 
 
 @wp.func
-def _unit_roundoff(x: wp.float32):
-    """Unit roundoff of ``float32``, half its machine epsilon."""
-    return wp.float32(5.9604645e-08)  # 2**-24
-
-
-@wp.func
-def _unit_roundoff(x: wp.float64):
-    """Unit roundoff of ``float64``, half its machine epsilon."""
-    return wp.float64(1.1102230246251565e-16)  # 2**-53
-
-
-@wp.func
-def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
+def _svd_one_sided_jacobi_columns(A: Any, n_columns: int, tol: Any, max_sweeps: int):
     """One-sided (Hestenes) Jacobi SVD of a small (possibly non-square) matrix, ``A = U @ diag(S) @ Vᵀ``.
 
     Correct and simple, not the fastest: intended for small matrices (at
@@ -668,7 +656,7 @@ def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
     to contribute nothing. Padding is not a safety requirement here the way
     it is for ``symmetric_eigenvalues_qr``: an all-zero padding column has
     zero norm, which this function's own convergence check already treats
-    as trivially converged (see ``negligible_sq`` below), so it would
+    as trivially converged (see ``denominator > zero`` below), so it would
     still terminate cleanly with ``n_columns`` left at ``A``'s full column count.
 
     Args:
@@ -710,16 +698,6 @@ def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
     col0 = type(at[0])()  # length m (row count of A, column count of At)
     vt = wp.identity(n=type(row0).length, dtype=A.dtype)
 
-    # Rotations preserve the Frobenius norm, so a column whose norm is below the rounding error of
-    # ``A`` itself is numerically zero, and every pair involving it counts as converged. A matrix with
-    # more columns than rows always ends with such a column; without this, its rounding-level
-    # correlations never drop below ``tol`` and every call runs all ``max_sweeps`` sweeps.
-    frobenius_sq = zero
-    for i in range(n_columns):
-        frobenius_sq += wp.dot(at[i], at[i])
-    roundoff = _unit_roundoff(zero)
-    negligible_sq = roundoff * roundoff * frobenius_sq
-
     sweeps = int(0)
     for _sweep in range(max_sweeps):
         sweeps += 1
@@ -731,8 +709,8 @@ def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
                 alpha = wp.dot(col_i, col_i)
                 beta = wp.dot(col_j, col_j)
                 gamma = wp.dot(col_i, col_j)
-                significant = wp.min(alpha, beta) > negligible_sq
-                ratio = wp.where(significant, wp.abs(gamma) / wp.sqrt(alpha * beta), zero)
+                denominator = wp.sqrt(alpha * beta)
+                ratio = wp.where(denominator > zero, wp.abs(gamma) / denominator, zero)
                 max_off_diagonal_ratio = wp.max(max_off_diagonal_ratio, ratio)
                 if ratio > tol:
                     # Golub & Van Loan's robust symmetric Jacobi rotation,
@@ -800,6 +778,31 @@ def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
         ut[i] = wp.where(sigma > A.dtype(1.0e-12), at[i] / sigma, ut[i] * zero)
 
     return wp.transpose(ut), s_vec, wp.transpose(vt), sweeps
+
+
+@wp.func
+def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
+    """Decompose ``A`` by sweeping over the smaller of its active dimensions.
+
+    Return ``(U, S, V, sweeps)`` with the same shapes as
+    :func:`_svd_one_sided_jacobi_columns`. Only singular-vector columns
+    corresponding to nonzero singular values are defined; unused columns
+    do not form an orthonormal completion. Columns of ``A`` beyond
+    ``n_columns`` must be zero-padded.
+    """
+    at = wp.transpose(A)
+    row0 = type(A[0])()
+    col0 = type(at[0])()
+    if wp.static(len(row0) > len(col0)):
+        if n_columns > len(col0):
+            # Wide matrices cannot have mutually orthogonal nonzero columns.
+            # Sweep over A's rows instead, avoiding rounding-level null columns.
+            u_t, s_t, v_t, sweeps = _svd_one_sided_jacobi_columns(at, len(col0), tol, max_sweeps)
+            s = type(A[0])()
+            for i in range(len(col0)):
+                s[i] = s_t[i]
+            return v_t, s, u_t, sweeps
+    return _svd_one_sided_jacobi_columns(A, n_columns, tol, max_sweeps)
 
 
 @wp.kernel

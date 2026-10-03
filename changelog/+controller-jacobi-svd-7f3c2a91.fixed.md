@@ -1,1 +1,1 @@
-Fix the one-sided Jacobi SVD in the differential IK controllers running every sweep for Jacobians with more columns than rows, such as redundant arms. It now converges in a few sweeps, making every method except `DifferentialIKMethod.TRANSPOSE` about 4x faster.
+Improve differential IK performance for redundant arms by decomposing wide Jacobians in their transposed orientation, without discarding small singular directions.

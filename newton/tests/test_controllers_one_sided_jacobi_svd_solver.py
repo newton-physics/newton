@@ -174,23 +174,80 @@ def test_svd_one_sided_jacobi_converges_for_more_columns_than_rows(test: unittes
     call ran all ``max_sweeps`` sweeps.
     """
     rng = np.random.default_rng(42)
-    a_np = rng.normal(size=(256, 6, 7)).astype(np.float32)
-    matrix = wp.array3d(a_np, dtype=wp.float32, device=device).view(wp.types.matrix(shape=(6, 7), dtype=wp.float32))
-    n_columns = wp.full(256, 7, dtype=wp.int32, device=device)
-    sweeps = wp.zeros(256, dtype=wp.int32, device=device)
-    wp.launch(
-        _svd_sweep_count_kernel,
-        dim=256,
-        inputs=[matrix, n_columns, _JACOBI_SVD_TOL, _JACOBI_SVD_MAX_SWEEPS],
-        outputs=[sweeps],
-        device=device,
-    )
-    test.assertLessEqual(int(sweeps.numpy().max()), 10)
+    for m, n in [(6, 7), (3, 7), (6, 24)]:
+        with test.subTest(shape=(m, n)):
+            a_np = rng.normal(size=(32, m, n)).astype(np.float32)
+            matrix = wp.array3d(a_np, dtype=wp.float32, device=device).view(
+                wp.types.matrix(shape=(m, n), dtype=wp.float32)
+            )
+            n_columns = wp.full(32, n, dtype=wp.int32, device=device)
+            sweeps = wp.zeros(32, dtype=wp.int32, device=device)
+            wp.launch(
+                _svd_sweep_count_kernel,
+                dim=32,
+                inputs=[matrix, n_columns, _JACOBI_SVD_TOL, _JACOBI_SVD_MAX_SWEEPS],
+                outputs=[sweeps],
+                device=device,
+            )
+            test.assertLessEqual(int(sweeps.numpy().max()), 10)
 
-    u, s, v = _run_svd(a_np, [7] * 256, device, tol=float(_JACOBI_SVD_TOL))
-    reconstruction = np.einsum("bij,bj,bkj->bik", u, s[:, :6], v[:, :, :6])
-    np.testing.assert_allclose(reconstruction, a_np, atol=1e-4)
-    np.testing.assert_allclose(s[:, :6], np.linalg.svd(a_np.astype(np.float64), compute_uv=False), atol=1e-4)
+            u, s, v = _run_svd(a_np, [n] * 32, device, tol=float(_JACOBI_SVD_TOL))
+            reconstruction = np.einsum("bij,bj,bkj->bik", u, s[:, :m], v[:, :, :m])
+            np.testing.assert_allclose(reconstruction, a_np, atol=1e-4)
+            np.testing.assert_allclose(s[:, :m], np.linalg.svd(a_np.astype(np.float64), compute_uv=False), rtol=1e-5)
+            np.testing.assert_array_equal(s[:, m:], 0.0)
+            np.testing.assert_allclose(np.swapaxes(u, 1, 2) @ u, np.broadcast_to(np.eye(m), (32, m, m)), atol=1e-5)
+            v_active = v[:, :, :m]
+            np.testing.assert_allclose(
+                np.swapaxes(v_active, 1, 2) @ v_active, np.broadcast_to(np.eye(m), (32, m, m)), atol=1e-5
+            )
+
+
+def test_svd_one_sided_jacobi_preserves_mixed_scale_singular_directions(test: unittest.TestCase, device):
+    """Verify correlated small columns retain accurate singular values and orthogonal vectors.
+
+    A norm-based convergence cutoff can return a valid reconstruction while
+    corrupting the small singular value and the computed singular vectors.
+    """
+    for m, n in [(2, 2), (3, 2), (2, 3)]:
+        with test.subTest(shape=(m, n)):
+            a_np = np.zeros((m, n), dtype=np.float32)
+            a_np[:2, :2] = [[1.0e4, 1.0e-4], [0.0, 1.0e-4]]
+            u, s, v = _run_svd(a_np[None], [n], device, tol=float(_JACOBI_SVD_TOL))
+            expected_s = np.linalg.svd(a_np.astype(np.float64), compute_uv=False)
+            np.testing.assert_allclose(s[0, :2], expected_s, rtol=1e-5)
+            u_active, v_active = u[0, :, :2], v[0, :, :2]
+            np.testing.assert_allclose(u_active.T @ u_active, np.eye(2), atol=1e-5)
+            np.testing.assert_allclose(v_active.T @ v_active, np.eye(2), atol=1e-5)
+            error = np.zeros(m)
+            error[1] = 1.0
+            # Damping keeps the solve well-conditioned at this 1e8 scale
+            # ratio; a zero-damping residual would amplify float32 errors.
+            damping = 1.0e-2
+            gains = s[0, :2] / (s[0, :2] ** 2 + damping**2)
+            qd = v_active @ (gains * (u_active.T @ error))
+            u_ref, s_ref, vt_ref = np.linalg.svd(a_np.astype(np.float64), full_matrices=False)
+            gains_ref = s_ref / (s_ref**2 + damping**2)
+            qd_ref = vt_ref.T @ (gains_ref * (u_ref.T @ error))
+            np.testing.assert_allclose(qd, qd_ref, rtol=1e-5, atol=1e-7)
+
+
+def test_svd_one_sided_jacobi_handles_heterogeneous_wide_buffers(test: unittest.TestCase, device):
+    """Verify wide, square and tall active problems share a zero-padded wide buffer."""
+    rng = np.random.default_rng(43)
+    counts = [7, 3, 2, 0]
+    a_np = rng.normal(size=(len(counts), 3, 7)).astype(np.float32)
+    for a, count in zip(a_np, counts, strict=True):
+        a[:, count:] = 0.0
+    u, s, v = _run_svd(a_np, counts, device, tol=float(_JACOBI_SVD_TOL))
+    for i, count in enumerate(counts):
+        with test.subTest(n_columns=count):
+            rank = min(3, count)
+            expected_s = np.linalg.svd(a_np[i, :, :count].astype(np.float64), compute_uv=False)
+            np.testing.assert_allclose(s[i, :rank], expected_s, rtol=1e-5)
+            np.testing.assert_array_equal(s[i, rank:], 0.0)
+            reconstruction = (u[i, :, :rank] * s[i, :rank]) @ v[i, :, :rank].T
+            np.testing.assert_allclose(reconstruction, a_np[i], atol=1e-5)
 
 
 def test_svd_one_sided_jacobi_batch_has_no_cross_talk_with_heterogeneous_n_columns(test: unittest.TestCase, device):
@@ -342,6 +399,19 @@ add_function_test(
     test_svd_one_sided_jacobi_converges_for_more_columns_than_rows,
     devices=devices,
 )
+add_function_test(
+    TestOneSidedJacobiSvdSolver,
+    "test_svd_one_sided_jacobi_preserves_mixed_scale_singular_directions",
+    test_svd_one_sided_jacobi_preserves_mixed_scale_singular_directions,
+    devices=devices,
+)
+add_function_test(
+    TestOneSidedJacobiSvdSolver,
+    "test_svd_one_sided_jacobi_handles_heterogeneous_wide_buffers",
+    test_svd_one_sided_jacobi_handles_heterogeneous_wide_buffers,
+    devices=devices,
+)
+
 add_function_test(
     TestOneSidedJacobiSvdSolver,
     "test_svd_one_sided_jacobi_batch_has_no_cross_talk_with_heterogeneous_n_columns",
