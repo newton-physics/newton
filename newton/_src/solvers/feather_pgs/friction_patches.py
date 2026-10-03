@@ -5,10 +5,10 @@
 
 Normal contacts are never reduced here. Each compatible region selects up to two
 friction locations, with an equal share of the region's total normal impulse.
-Locations lie on the footprint's principal axis through its centroid, at the
-members' axial extremes, avoiding a diagonal friction couple on symmetric narrow
-footprints. Isotropic footprints retain a canonical farthest pair because they
-have no unique axis.
+Locations sit at the footprint's axial extremes along its principal axis, with
+the transverse offset and height of the members near each end, avoiding a
+diagonal friction couple on symmetric narrow footprints. Isotropic footprints
+retain a canonical farthest pair because they have no unique axis.
 Regions require matching friction materials, nearly aligned normals, nearby
 contact planes, and connected shape bounding spheres on each body. The latter
 is a conservative test across convex seams, not an exact surface-connectivity
@@ -482,6 +482,12 @@ def _flood_native(
 _FLOOD_MIN_CONTACTS = 32
 """Body pairs with more contacts than this grow their regions on a warp; smaller pairs in ``_build``."""
 
+_SUPPORT_EDGE_FRACTION = wp.constant(0.05)
+"""Fraction of a footprint's principal extent that groups members into each end's support edge.
+
+An empirical endpoint band: it sets which members give an anchor its transverse offset and height, while the axial
+position always comes from the footprint's extreme."""
+
 
 @wp.kernel(enable_backward=False)
 def _list_flood_pairs(
@@ -709,10 +715,9 @@ def _build(
         location0 = frame.center[first]
         location1 = frame.center[second]
         if anchors == 2 and carry_only == 0:
-            # Use the footprint's principal extent on its principal line through
-            # the centroid. Picking opposite corners of a narrow rectangle
-            # introduces an artificial diagonal friction couple even when the
-            # footprint is symmetric.
+            # Use the footprint's principal extent and its support edges. Picking
+            # opposite corners of a narrow rectangle introduces an artificial
+            # diagonal friction couple even when the footprint is symmetric.
             origin = location0
             t0, t1 = contact_tangent_basis(frame.normal[seed])
             # Accumulate moments in double precision: contact-order roundoff
@@ -765,17 +770,45 @@ def _build(
                         if projection > high:
                             high = projection
                             second = c
-                # Project the axial extremes onto the principal line through the
-                # centroid instead of averaging the members near each end. Any
-                # grouping tolerance fails for some misalignment: a slight shear
-                # spreads an edge's projections, keeps one corner per edge and
-                # restores the diagonal couple. The projection selects no members,
-                # so anchors move continuously with the contacts and stay on a
-                # symmetric footprint's axis of symmetry.
+                # Each anchor takes its axial position from the footprint's
+                # extreme, so it spans the full extent, and its transverse offset
+                # and height from the mean of the members near that end. A slight
+                # shear moves an end mean by O(shear) rather than to a corner. Each
+                # end keeps its own height: a rolling body's slip at an anchor
+                # grows with the anchor's height error, so level anchors under
+                # ends that touch at different heights would steer it.
                 mean = sum_center / member_count
                 centroid = wp.vec3(float(mean[0]), float(mean[1]), float(mean[2]))
                 location0 = centroid + wp.dot(frame.center[first] - centroid, axis) * axis
                 location1 = centroid + wp.dot(frame.center[second] - centroid, axis) * axis
+                normal = frame.normal[seed]
+                across = wp.cross(normal, axis)
+                across = wp.normalize(across - axis * wp.dot(across, axis))
+                sum0 = wp.vec3d(0.0)
+                sum1 = wp.vec3d(0.0)
+                count0 = int(0)
+                count1 = int(0)
+                edge_tolerance = wp.max(1.0e-5 * frame.radius[seed], _SUPPORT_EDGE_FRACTION * (high - low))
+                for j in range(member_start, member_stop):
+                    c = frame.members[j]
+                    if frame.eligible[c] != 0:
+                        point = frame.center[c]
+                        projection = wp.dot(point - origin, axis)
+                        precise_point = wp.vec3d(wp.float64(point[0]), wp.float64(point[1]), wp.float64(point[2]))
+                        if projection <= low + edge_tolerance:
+                            sum0 += precise_point
+                            count0 += 1
+                        if projection >= high - edge_tolerance:
+                            sum1 += precise_point
+                            count1 += 1
+                mean0 = sum0 / wp.float64(count0)
+                mean1 = sum1 / wp.float64(count1)
+                end0 = wp.vec3(float(mean0[0]), float(mean0[1]), float(mean0[2]))
+                end1 = wp.vec3(float(mean1[0]), float(mean1[1]), float(mean1[2]))
+                location0 = location0 + wp.dot(end0 - centroid, across) * across
+                location1 = location1 + wp.dot(end1 - centroid, across) * across
+                location0 = location0 + wp.dot(end0 - centroid, normal) * normal
+                location1 = location1 + wp.dot(end1 - centroid, normal) * normal
         for aidx in range(anchors):
             c = first
             if aidx == 1:
