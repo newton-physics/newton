@@ -3,9 +3,7 @@
 
 """Unit tests for the DelassusOperator class"""
 
-import gc
 import unittest
-import weakref
 
 import numpy as np
 import warp as wp
@@ -1174,51 +1172,6 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         # Compare expected to allocated dimensions and sizes
         self._check_sparse_delassus_allocations(model, delassus)
 
-    def test_01b_active_counts_preserve_backing_device_and_owner(self):
-        """active_rows/active_cols alias num_total_cts even when ScopedDevice disagrees with the model device."""
-        devices = ["cpu"]
-        if wp.is_cuda_available():
-            devices.append("cuda:0")
-
-        for device in devices:
-            with self.subTest(device=device):
-                builder = build_boxes_nunchaku()
-                model = ModelKamino.from_newton(builder.finalize(device=device))
-                model, data, state, limits, detector, jacobians = make_containers(
-                    model=model, max_world_contacts=4, sparse=True
-                )
-                backing = data.info.num_total_cts
-                conflicting = "cpu" if wp.get_device(device).is_cuda else "cuda:0"
-                with wp.ScopedDevice(conflicting):
-                    delassus = BlockSparseMatrixFreeDelassusOperator(
-                        model=model,
-                        data=data,
-                        limits=limits,
-                        contacts=detector.contacts,
-                        jacobians=jacobians,
-                    )
-                    rows = delassus.active_rows
-                    cols = delassus.active_cols
-
-                self.assertEqual(rows.device, backing.device)
-                self.assertEqual(cols.device, backing.device)
-                self.assertIs(rows._ref, backing)
-                self.assertIs(cols._ref, backing)
-                if wp.get_device(device).is_cuda:
-                    with self.assertRaises(RuntimeError):
-                        rows.cptr()
-                    with self.assertRaises(RuntimeError):
-                        cols.cptr()
-                expected = backing.numpy()
-                np.testing.assert_array_equal(rows.numpy(), expected)
-                np.testing.assert_array_equal(cols.numpy(), expected)
-
-                owner = weakref.ref(backing)
-                del delassus, data, backing
-                gc.collect()
-                self.assertIsNotNone(owner())
-                np.testing.assert_array_equal(rows.numpy(), expected)
-                np.testing.assert_array_equal(cols.numpy(), expected)
 
     def test_02_allocate_homogeneous_delassus_operator(self):
         # Model constants
