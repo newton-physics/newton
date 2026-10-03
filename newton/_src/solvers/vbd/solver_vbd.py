@@ -200,7 +200,9 @@ class SolverVBD(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
           for REVOLUTE, PRISMATIC, and D6 joints.
         - Angular winding is retained for REVOLUTE joints and D6 joints with
-          exactly one angular DOF.
+          exactly one angular DOF. Tracking requires less than ``pi`` radians
+          of relative rotation per solver step, including prediction and
+          solver corrections.
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,

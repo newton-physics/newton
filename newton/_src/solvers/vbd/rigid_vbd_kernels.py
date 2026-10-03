@@ -4370,6 +4370,7 @@ def step_joint_C0_lambda_rho(
         kappa = compute_kappa(X_wp.q, X_wc.q, X_wp_rest.q, X_wc_rest.q)
         angle = wp.dot(kappa, wp.normalize(joint_axis[dof])) + joint_rest_angle[dof]
         reference = joint_angle_prev[dof]
+        # Re-anchor winding after construction or reset instead of retaining old turns.
         if _world_selected(joint_world[j], pose_rebaseline_mask):
             reference = joint_rest_angle[dof]
         joint_angle_prev[dof] = _unwrap_hinge_angle(angle, reference)
