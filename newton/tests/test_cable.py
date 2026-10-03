@@ -3794,15 +3794,16 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
     test.assertGreater(dot, 0.999, msg=f"Default quaternion does not align +Z with edge direction (dot={dot:.6f})")
 
 
-def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device):
-    """Omitting body_frame_origin should warn while preserving the legacy start-node frame."""
+def _cable_rod_origin_matches_start_impl(test: unittest.TestCase, device):
+    """Preserve explicitly selected start-node body frames without a warning."""
     builder = newton.ModelBuilder()
 
     num_elements = 2
     segment_length = 0.2
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
-    with test.assertWarnsRegex(DeprecationWarning, "body_frame_origin"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
         rod_bodies, rod_joints = _add_prepared_rod(
             builder,
             points,
@@ -3810,6 +3811,7 @@ def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device
             radius=0.01,
             bend_stiffness=1.0,
             label="ut_cable_start_origin",
+            body_frame_origin="start",
         )
 
     builder.color()
@@ -3839,23 +3841,24 @@ def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device
     np.testing.assert_allclose(joint_X_c[rod_joints[0], :3], np.zeros(3), atol=1.0e-6)
 
 
-def _cable_rod_origin_matches_com_impl(test: unittest.TestCase, device):
-    """Verify rods support opt-in COM-centered body frames."""
+def _cable_rod_default_origin_matches_com_impl(test: unittest.TestCase, device):
+    """Build COM-centered body frames without a warning when body_frame_origin is omitted."""
     builder = newton.ModelBuilder()
 
     num_elements = 2
     segment_length = 0.2
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
-    rod_bodies, rod_joints = _add_prepared_rod(
-        builder,
-        points,
-        quaternions=edge_q,
-        radius=0.01,
-        bend_stiffness=1.0,
-        label="ut_cable_com_origin",
-        body_frame_origin="com",
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        rod_bodies, rod_joints = _add_prepared_rod(
+            builder,
+            points,
+            quaternions=edge_q,
+            radius=0.01,
+            bend_stiffness=1.0,
+            label="ut_cable_com_origin",
+        )
 
     builder.color()
     model = builder.finalize(device=device)
@@ -5523,6 +5526,7 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
             "add_rod: twist_stiffness must be finite and >= 0",
         ),
         (graph, {"body_frame_origin": "invalid"}, "add_rod: body_frame_origin"),
+        (graph, {"body_frame_origin": None}, "add_rod: body_frame_origin"),
         (graph, {"radius": 0.2, "body_frame_origin": "com"}, "add_rod: radius must be None"),
     )
     for rod, kwargs, message in invalid_calls:
@@ -5824,8 +5828,9 @@ def _rod_builder_deprecates_raw_geometry_forms(test, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", DeprecationWarning)
-        bodies, joints = builder.add_rod_graph(points, edges, body_frame_origin="com")
+        bodies, joints = builder.add_rod_graph(points, edges)
     test.assertEqual((len(bodies), len(joints)), (2, 1))
+    np.testing.assert_array_equal([builder.body_com[body] for body in bodies], np.zeros((2, 3)))
     test.assertEqual(len(caught), 1)
     test.assertIn("add_rod_graph()", str(caught[0].message))
     test.assertIn("add_rod(rod=...)", str(caught[0].message))
@@ -7205,14 +7210,14 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_rod_default_origin_matches_start",
-    _cable_rod_default_origin_matches_start_impl,
+    "test_cable_rod_origin_matches_start",
+    _cable_rod_origin_matches_start_impl,
     devices=devices,
 )
 add_function_test(
     TestCable,
-    "test_cable_rod_origin_matches_com",
-    _cable_rod_origin_matches_com_impl,
+    "test_cable_rod_default_origin_matches_com",
+    _cable_rod_default_origin_matches_com_impl,
     devices=devices,
 )
 add_function_test(
