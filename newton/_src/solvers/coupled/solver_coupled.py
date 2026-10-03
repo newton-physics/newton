@@ -2169,11 +2169,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 selecting which worlds to reset. The final entry selects global
                 entities whose world is ``-1``. If ``None``, all local and
                 global entities are reset.
-
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling
                 which state quantities sub-solvers should reset. If ``None``,
                 all state quantities are reset.
@@ -2779,6 +2774,18 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 ],
                 device=self.model.device,
             )
+            if contacts.rigid_contact_surface_velocity is not None:
+                wp.launch(
+                    _copy_filtered_rigid_contact_surface_velocity_kernel,
+                    dim=contacts.rigid_contact_max,
+                    inputs=[
+                        self._entry_rigid_contact_update[entry.name],
+                        rigid_src_to_dst,
+                        contacts.rigid_contact_surface_velocity,
+                        filtered.rigid_contact_surface_velocity,
+                    ],
+                    device=self.model.device,
+                )
             if contacts.rigid_contact_stiffness is not None and filtered.rigid_contact_stiffness is not None:
                 wp.launch(
                     _copy_filtered_rigid_contact_properties_kernel,
@@ -2875,6 +2882,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 per_contact_shape_properties=contacts.per_contact_shape_properties,
                 requested_attributes=requested,
                 contact_matching=contacts.rigid_contact_match_index is not None,
+                rigid_contact_surface_velocity=contacts.rigid_contact_surface_velocity is not None,
             )
             self._entry_contact_buffers[entry.name] = filtered
             self._entry_contact_sources[entry.name] = contacts
@@ -2928,6 +2936,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             and filtered.per_contact_shape_properties == contacts.per_contact_shape_properties
             and (filtered.force is not None) == (contacts.force is not None)
             and (filtered.rigid_contact_match_index is not None) == (contacts.rigid_contact_match_index is not None)
+            and (filtered.rigid_contact_surface_velocity is None) == (contacts.rigid_contact_surface_velocity is None)
         )
 
     def _refresh_model_view_overrides(self, flags: int) -> None:
@@ -3583,6 +3592,22 @@ def _filter_rigid_contacts_global_shape_ids_kernel(
     dst_margin0[dst_id] = src_margin0[contact_id]
     dst_margin1[dst_id] = src_margin1[contact_id]
     dst_tids[dst_id] = src_tids[contact_id]
+
+
+@wp.kernel(enable_backward=False)
+def _copy_filtered_rigid_contact_surface_velocity_kernel(
+    update_filter: wp.array[wp.int32],
+    src_to_dst: wp.array[wp.int32],
+    src_surface_velocity: wp.array[wp.vec3],
+    dst_surface_velocity: wp.array[wp.vec3],
+):
+    if update_filter[0] == 0:
+        return
+
+    src_id = wp.tid()
+    dst_id = src_to_dst[src_id]
+    if dst_id >= 0:
+        dst_surface_velocity[dst_id] = src_surface_velocity[src_id]
 
 
 @wp.kernel(enable_backward=False)

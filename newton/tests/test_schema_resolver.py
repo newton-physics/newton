@@ -36,7 +36,8 @@ import math
 import unittest
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
+from unittest import mock
 
 import warp as wp
 
@@ -47,6 +48,7 @@ from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.usd import (
     PrimType,
+    SchemaResolver,
     SchemaResolverMjc,
     SchemaResolverNewton,
     SchemaResolverPhysx,
@@ -242,6 +244,72 @@ class TestSchemaResolver(unittest.TestCase):
             self.assertGreater(
                 len(articulation_prims), 0, "Should find physxArticulation:enabledSelfCollisions attributes"
             )
+
+    def test_collect_authored_attributes(self):
+        """Preserve authored-value and namespace semantics while collecting sparse attributes."""
+
+        class Resolver(SchemaResolver):
+            name = "solver"
+            extra_attr_namespaces: ClassVar[list[str]] = ["extra", "nested:prefix:"]
+            mapping: ClassVar = {
+                PrimType.SHAPE: {
+                    "radius": SchemaResolver.SchemaAttribute("radius"),
+                    "mapped": SchemaResolver.SchemaAttribute("outside:mapped"),
+                    "sampled": SchemaResolver.SchemaAttribute("outside:sampled"),
+                    "derived": SchemaResolver.SchemaAttribute(
+                        "unused", attribute_names=("outside:left", "outside:right")
+                    ),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        source = UsdGeom.Sphere.Define(stage, "/Source").GetPrim()
+        values = {
+            "solver:value": 1.0,
+            "solver:nested:value": 2.0,
+            "solverOther:value": 3.0,
+            "solver": 4.0,
+            "extra:value": 5.0,
+            "nested:prefix:value": 6.0,
+            "outside:mapped": 7.0,
+            "outside:left": 8.0,
+            "outside:right": 9.0,
+        }
+        for name, value in values.items():
+            source.CreateAttribute(name, Sdf.ValueTypeNames.Float).Set(value)
+        source.CreateAttribute("solver:blocked", Sdf.ValueTypeNames.Float).Block()
+        source.CreateAttribute("solver:metadata", Sdf.ValueTypeNames.Float).SetDocumentation("No value")
+        source.CreateAttribute("solver:sampled", Sdf.ValueTypeNames.Float).Set(10.0, 1.0)
+        source.CreateAttribute("outside:sampled", Sdf.ValueTypeNames.Float).Set(11.0, 1.0)
+        source.CreateRelationship("solver:relationship").SetTargets(["/Source"])
+        instance = stage.DefinePrim("/Instance")
+        instance.GetReferences().AddInternalReference("/Source")
+        resolver = Resolver()
+        expected = {name: values[name] for name in values if name not in ("solverOther:value", "solver")}
+        expected["solver:sampled"] = None
+        self.assertEqual(resolver.collect_prim_attrs(instance), expected)
+        self.assertEqual(resolver.collect_prim_attrs(None), {})
+
+        # A subsequent query must observe stage edits, not retain a prim-value cache.
+        source.GetAttribute("solver:value").Set(12.0)
+        expected["solver:value"] = 12.0
+        self.assertEqual(resolver.collect_prim_attrs(instance), expected)
+
+    def test_collect_sparse_attributes_avoids_missing_name_probes(self):
+        """Bound USD attribute lookups by authored data rather than the schema's possible names."""
+
+        class Resolver(SchemaResolver):
+            name = "solver"
+            mapping: ClassVar = {
+                PrimType.SHAPE: {f"key_{i}": SchemaResolver.SchemaAttribute(f"outside:value_{i}") for i in range(1000)}
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        prim = stage.DefinePrim("/Shape")
+        prim.CreateAttribute("outside:value_3", Sdf.ValueTypeNames.Float).Set(3.0)
+        counted_prim = mock.Mock(wraps=prim)
+        self.assertEqual(Resolver().collect_prim_attrs(counted_prim), {"outside:value_3": 3.0})
+        self.assertLessEqual(counted_prim.GetAttribute.call_count, len(prim.GetAuthoredAttributes()))
 
     def test_schema_resolvers(self):
         """
@@ -793,6 +861,7 @@ class TestSchemaResolver(unittest.TestCase):
         to validate that joint positions and velocities are correctly initialized during
         model building. Tests revolute joint state initialization with degree-to-radian
         conversion and confirms expected values match the authored USD content.
+        Angular joint-state positions and velocities are authored in degrees and degrees per second.
         """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -847,6 +916,7 @@ class TestSchemaResolver(unittest.TestCase):
                 actual_vel = joint_qd[qd_start]
 
                 expected_pos_deg, expected_vel = expected_joint_values[joint_label]
+                expected_vel = math.radians(expected_vel)
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 self.assertAlmostEqual(
@@ -875,6 +945,7 @@ class TestSchemaResolver(unittest.TestCase):
         to validate D6 joint state initialization. Tests multi-DOF joint handling, per-axis
         state initialization, and validates both D6 joints (multiple rotational DOFs) and
         revolute joints (single DOF) are correctly initialized from authored Newton attributes.
+        Angular joint-state positions and velocities are authored in degrees and degrees per second.
         """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -935,6 +1006,7 @@ class TestSchemaResolver(unittest.TestCase):
                 # Validate each DOF against expected values
                 for dof_idx in range(min(dof_count, len(expected_values))):
                     expected_pos_deg, expected_vel = expected_values[dof_idx]
+                    expected_vel = math.radians(expected_vel)
                     expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                     actual_pos = joint_q[q_start + dof_idx]
@@ -965,6 +1037,7 @@ class TestSchemaResolver(unittest.TestCase):
             joint_type = joint_types[i]
             if joint_type == 1 and i in expected_revolute_joints:  # JointType.REVOLUTE
                 expected_pos_deg, expected_vel = expected_revolute_joints[i]
+                expected_vel = math.radians(expected_vel)
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 q_start = int(joint_q_start[i])
@@ -996,6 +1069,8 @@ class TestSchemaResolver(unittest.TestCase):
         1. DOF indices correctly map to the actual DOF axes that were added
         2. Missing initial values don't cause index shifts for subsequent axes
         3. Only axes that were actually added as DOFs are processed
+
+        Angular joint-state positions and velocities are authored in degrees and degrees per second.
         """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -1087,6 +1162,7 @@ class TestSchemaResolver(unittest.TestCase):
             # Validate each DOF maps to the correct expected value
             for dof_idx in range(dof_count):
                 expected_pos_deg, expected_vel = expected_values[dof_idx]
+                expected_vel = math.radians(expected_vel)
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 actual_pos = joint_q[q_start + dof_idx]

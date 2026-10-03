@@ -103,9 +103,9 @@ class TestModelBuilderReplicate(unittest.TestCase):
         # Uneven group sizes exercise the balancing in the merge combine.
         builder.set_coloring([[0], [1, 2, 3]])
 
-        builder._record_cable_group("cable", (root, child + 1), (root_joint, child_joint + 1))
-        builder._record_cloth_group("cloth", (0, 3), (0, 1), (0, 1))
-        builder._record_soft_group("soft", (0, 4), (0, 1))
+        builder._record_curve_deformable_object("cable", (root, child + 1), (root_joint, child_joint + 1))
+        builder._record_surface_deformable_object("cloth", (0, 3), (0, 1), (0, 1))
+        builder._record_volume_deformable_object("soft", (0, 4), (0, 1))
         return builder
 
     @staticmethod
@@ -809,17 +809,18 @@ class TestModelBuilderReplicate(unittest.TestCase):
             np.testing.assert_array_equal(actual.joint_target_q.numpy(), expected.joint_target_q.numpy())
 
     def test_array_backed_joint_validation_returns_early_when_all_joints_are_articulated(self):
-        """Return before reading joint topology when every joint belongs to an articulation."""
+        """Skip orphan-joint validation and keep topology array-backed when every joint is articulated."""
         scene = ModelBuilder()
         scene.replicate(self._make_source(), 2)
+        array_backed_names = set(scene._array_backed_attributes)
+        self.assertTrue({"body_q", "joint_articulation", "joint_child", "joint_parent"}.issubset(array_backed_names))
 
-        with mock.patch.object(
-            ModelBuilder, "joint_parent", new_callable=mock.PropertyMock, create=True
-        ) as joint_parent:
-            joint_parent.side_effect = AssertionError("unexpected general joint validation")
+        with mock.patch("newton._src.sim.builder.np.isin") as isin:
+            isin.side_effect = AssertionError("unexpected orphan-joint validation")
             scene._validate_joints()
 
-        joint_parent.assert_not_called()
+        isin.assert_not_called()
+        self.assertEqual(set(scene._array_backed_attributes), array_backed_names)
 
     def test_array_backed_joint_validation_still_rejects_orphan_joints(self):
         """Run general joint validation when an array-backed articulation entry is negative."""
