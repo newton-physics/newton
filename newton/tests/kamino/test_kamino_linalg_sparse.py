@@ -790,7 +790,7 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
         return bsm, kept
 
     def test_03_scalar_sparse_blocks_match_vec1_and_mat11(self):
-        """Scalar blocks must codegen and match logical vec1 and 1x1 blocks.
+        """Verify scalar blocks compile and match logical vec1 and 1x1 blocks.
 
         Covers forward and transpose matvec/gemv in flattened and per-matrix layouts,
         plus the A^T A diagonal generator.
