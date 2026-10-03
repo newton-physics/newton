@@ -6493,6 +6493,52 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         required_shapes = tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes
         mesh_export_cache: dict[tuple[int, tuple[float, float, float]], tuple[np.ndarray, np.ndarray, int, bool]] = {}
 
+        hfield_asset_names: dict[tuple, str] = {}
+        hfield_source_keys: dict[int, tuple] = {}
+        shape_hfield_names: dict[int, str] = {}
+
+        def add_hfield_asset(shape: int) -> str:
+            """Register the MuJoCo heightfield of a Newton heightfield shape, sharing equal ones."""
+            hfield_src = model.shape_source[shape]
+            # Key by current contents, not hash(): in-place edits of Heightfield.data
+            # keep its cached hash. Worlds often share one source, so key each once.
+            source_key = hfield_source_keys.get(id(hfield_src))
+            if source_key is None:
+                source_key = (
+                    hfield_src.nrow,
+                    hfield_src.ncol,
+                    float(hfield_src.hx),
+                    float(hfield_src.hy),
+                    float(hfield_src.min_z),
+                    float(hfield_src.max_z),
+                    hfield_src.data.tobytes(),
+                )
+                hfield_source_keys[id(hfield_src)] = source_key
+            hfield_scale = shape_size[shape]
+            key = (source_key, tuple(float(s) for s in hfield_scale))
+            hfield_name = hfield_asset_names.get(key)
+            if hfield_name is None:
+                # Convert Newton heightfield to MuJoCo format
+                # MuJoCo size: (size_x, size_y, size_z, size_base) — all must be positive
+                # Our data is normalized [0,1], height range = max_z - min_z
+                # We set size_base to eps (MuJoCo requires positive) and shift the
+                # geom origin by min_z so the lowest point is at the right Z. The
+                # shape's scale applies to hx, hy, min_z, and max_z alike.
+                eps = 1e-4
+                mj_size_z = max((hfield_src.max_z - hfield_src.min_z) * hfield_scale[2], eps)
+                mj_size = (hfield_src.hx * hfield_scale[0], hfield_src.hy * hfield_scale[1], mj_size_z, eps)
+                hfield_name = f"{model.shape_label[shape].replace('/', '_')}_{shape}"
+                spec.add_hfield(
+                    name=hfield_name,
+                    nrow=hfield_src.nrow,
+                    ncol=hfield_src.ncol,
+                    size=mj_size,
+                    userdata=hfield_src.data.flatten(),
+                )
+                hfield_asset_names[key] = hfield_name
+            shape_hfield_names[shape] = hfield_name
+            return hfield_name
+
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
             shapes = model.body_shapes.get(newton_body_id)
@@ -6561,32 +6607,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             print(f"Warning: Heightfield shape {shape} has no source data, skipping")
                         continue
 
-                    # Convert Newton heightfield to MuJoCo format
-                    # MuJoCo size: (size_x, size_y, size_z, size_base) — all must be positive
-                    # Our data is normalized [0,1], height range = max_z - min_z
-                    # We set size_base to eps (MuJoCo requires positive) and shift the
-                    # geom origin by min_z so the lowest point is at the right Z. The
-                    # shape's scale applies to hx, hy, min_z, and max_z alike.
-                    eps = 1e-4
-                    hfield_scale = shape_size[shape]
-                    mj_size_z = max((hfield_src.max_z - hfield_src.min_z) * hfield_scale[2], eps)
-                    mj_size = (hfield_src.hx * hfield_scale[0], hfield_src.hy * hfield_scale[1], mj_size_z, eps)
-                    elevation_data = hfield_src.data.flatten()
-
-                    hfield_name = f"{model.shape_label[shape].replace('/', '_')}_{shape}"
-                    spec.add_hfield(
-                        name=hfield_name,
-                        nrow=hfield_src.nrow,
-                        ncol=hfield_src.ncol,
-                        size=mj_size,
-                        userdata=elevation_data,
-                    )
-
-                    geom_params["hfieldname"] = hfield_name
+                    geom_params["hfieldname"] = add_hfield_asset(shape)
 
                     # Shift geom origin so data=0 maps to min_z, along the
                     # heightfield's own z axis. update_geom_properties_kernel
                     # re-applies the same shift whenever geom poses are synced.
+                    hfield_scale = shape_size[shape]
                     tf = tf * wp.transform(wp.vec3(0.0, 0.0, hfield_src.min_z * hfield_scale[2]), wp.quat_identity())
                 elif stype == GeoType.CONE:
                     size = shape_size[shape]
@@ -7699,6 +7725,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             and actuator.biasprm[2] > 0.0
         ]
 
+        # MuJoCo Warp runs every world from this template; native MuJoCo steps only the template world.
+        separate_mjw_worlds = separate_worlds and model.world_count > 1 and not self.use_mujoco_cpu
+        if separate_mjw_worlds:
+            # The template's geoms reference its own heightfields. Register the other worlds'
+            # heightfields too, so _init_per_world_hfields can give each world its own terrain.
+            other_worlds = (shape_world >= 0) & (shape_world != first_world)
+            for shape in np.flatnonzero((shape_type == GeoType.HFIELD) & other_worlds):
+                if model.shape_source[shape] is not None:
+                    add_hfield_asset(int(shape))
+
         self.mj_model = spec.compile()
         # Keep the compiled qM layout, but restore the physical COM and derived constants.
         for body_id, body, body_ipos in full_inertia_bodies:
@@ -8201,6 +8237,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     )
                 self._set_mujoco_warp_module_options()
                 self._prepare_generated_kernels()
+
+            if separate_mjw_worlds:
+                self._init_per_world_hfields(shape_hfield_names)
+                if self._use_mujoco_contacts and not disable_contacts:
+                    self._validate_per_world_cones()
 
             # expand per-world solver option fields (model fields are batched by put_model)
             self._expand_option_fields(self.mjw_model, nworld)
@@ -9964,6 +10005,78 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     f"Equality constraint types mismatch at position {c}: world 0 has type {types[0]}, "
                     f"but other worlds have types {types[1:].tolist()}."
                 )
+
+    def _init_per_world_hfields(self, shape_hfield_names: dict[int, str]) -> None:
+        """Point each world's heightfield geoms at that world's own heightfield.
+
+        The MuJoCo model is compiled from the template world, so its heightfield geoms
+        reference the template's heightfields. MuJoCo Warp looks up ``geom_dataid`` and
+        the broadphase bounds per world, so worlds whose heightfields differ get their
+        own asset, registered in :meth:`_convert_to_mjc`, and the bounds MuJoCo
+        compiles for a geom using it.
+
+        Args:
+            shape_hfield_names: MuJoCo heightfield asset name of each Newton heightfield shape.
+        """
+        mujoco = self._mujoco
+        geoms = np.flatnonzero(self.mj_model.geom_type == mujoco.mjtGeom.mjGEOM_HFIELD)
+        shape_hfield = np.full(self.model.shape_count, -1, dtype=np.int32)
+        for shape, name in shape_hfield_names.items():
+            shape_hfield[shape] = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_HFIELD, name)
+        hfields = shape_hfield[self.mjc_geom_to_newton_shape.numpy()[:, geoms]]
+        if np.all(hfields == hfields[:1]):
+            return
+
+        # MuJoCo bounds a heightfield geom by the box [-x, x] x [-y, y] x [-bottom, top]
+        # and the sphere around it (mjCGeom::ComputeAABB and mjCGeom::GetRBound).
+        x, y, top, bottom = np.moveaxis(self.mj_model.hfield_size[hfields], -1, 0)
+        nworld = hfields.shape[0]
+
+        def per_world(array: wp.array) -> np.ndarray:
+            values = array.numpy()
+            return np.broadcast_to(values, (nworld, *values.shape[1:])).copy()
+
+        dataid = per_world(self.mjw_model.geom_dataid)
+        aabb = per_world(self.mjw_model.geom_aabb)
+        rbound = per_world(self.mjw_model.geom_rbound)
+        dataid[:, geoms] = hfields
+        aabb[:, geoms, 0] = np.stack((np.zeros_like(x), np.zeros_like(y), 0.5 * (top - bottom)), axis=-1)
+        aabb[:, geoms, 1] = np.stack((x, y, 0.5 * (top + bottom)), axis=-1)
+        rbound[:, geoms] = np.sqrt(x**2 + y**2 + np.maximum(top, bottom) ** 2)
+        for name, values in (("geom_dataid", dataid), ("geom_aabb", aabb), ("geom_rbound", rbound)):
+            array = getattr(self.mjw_model, name)
+            setattr(self.mjw_model, name, wp.array(values, dtype=array.dtype, device=array.device))
+
+    def _validate_per_world_cones(self) -> None:
+        """Reject cones that differ across worlds when MuJoCo generates their contacts.
+
+        Cones are exported as meshes built from the template world. MuJoCo compiles no
+        collision data for meshes that no geom references, so other worlds cannot be
+        given their own cone, and they would silently collide against the template's.
+
+        Raises:
+            ValueError: If corresponding cones that MuJoCo may collide differ in radius or half-height.
+        """
+        geom_shapes = self.mjc_geom_to_newton_shape.numpy()
+        geoms = np.flatnonzero(geom_shapes[0] >= 0)
+        geoms = geoms[self.model.shape_type.numpy()[geom_shapes[0, geoms]] == GeoType.CONE]
+        # Keep cones in a geom pair MuJoCo Warp may collide. Its nxn_pairid is -2 for pairs
+        # that masks, same or parent-child bodies, or exclusions skip, and >= 0 for explicit pairs.
+        pairs = self.mjw_model.nxn_geom_pair_filtered.numpy()
+        geoms = geoms[np.isin(geoms, pairs[self.mjw_model.nxn_pairid_filtered.numpy()[:, 0] > -2])]
+        # A cone's mesh is built from its radius and half-height, the first two scale components.
+        sizes = self.model.shape_scale.numpy()[geom_shapes[:, geoms], :2]
+        mismatches = np.any(sizes != sizes[:1], axis=2)
+        if np.any(mismatches):
+            world, column = np.argwhere(mismatches)[0]
+            (radius, half_height), (expected_radius, expected_half_height) = sizes[world, column], sizes[0, column]
+            raise ValueError(
+                "SolverMuJoCo with use_mujoco_contacts=True requires corresponding cones to match across worlds. "
+                f"Cone {self.model.shape_label[geom_shapes[world, geoms[column]]]!r} in world {world} has "
+                f"radius={radius:g}, half_height={half_height:g}, but world 0 has "
+                f"radius={expected_radius:g}, half_height={expected_half_height:g}. "
+                "Use use_mujoco_contacts=False to collide per-world cones with Newton's collision pipeline."
+            )
 
     def render_mujoco_viewer(
         self,
