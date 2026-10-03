@@ -606,7 +606,9 @@ class TestSensorCamera(unittest.TestCase):
                             world_indices=worlds,
                             albedo_image=albedo,
                             render_config=SensorCamera.RenderConfig(
-                                enable_textures=textures, output_color_space=color_space
+                                enable_textures=textures,
+                                output_color_space=color_space,
+                                enable_backface_culling=False,
                             ),
                         )
                         np.testing.assert_allclose(self._unpack_rgb(albedo), expected * 255.0, atol=2)
@@ -622,7 +624,14 @@ class TestSensorCamera(unittest.TestCase):
             color = camera.create_color_image_output(4, 2, 1)
             hdr = camera.create_hdr_color_image_output(4, 2, 1)
             with self.subTest(device=device, output="depth-only"):
-                camera.update(state, poses, rays, world_indices=worlds, depth_image=depth)
+                camera.update(
+                    state,
+                    poses,
+                    rays,
+                    world_indices=worlds,
+                    depth_image=depth,
+                    render_config=SensorCamera.RenderConfig(enable_backface_culling=False),
+                )
                 np.testing.assert_allclose(depth.numpy(), 2.0, atol=1e-5)
 
             for light_direction in (-1.0, 1.0):
@@ -637,7 +646,9 @@ class TestSensorCamera(unittest.TestCase):
                         normal_image=normal,
                         color_image=color,
                         hdr_color_image=hdr,
-                        render_config=SensorCamera.RenderConfig(enable_ambient_lighting=False),
+                        render_config=SensorCamera.RenderConfig(
+                            enable_ambient_lighting=False, enable_backface_culling=False
+                        ),
                     )
                     np.testing.assert_allclose(self._unpack_rgb(albedo), expected * 255.0, atol=2)
                     expected_normals = np.zeros((4, 1, 2, 3), dtype=np.float32)
@@ -651,6 +662,31 @@ class TestSensorCamera(unittest.TestCase):
                         np.apply_along_axis(newton.utils.color_srgb_to_linear, -1, expected) * lit,
                         atol=1e-5,
                     )
+
+    def test_cloth_respects_backface_culling(self) -> None:
+        """Honor default and explicit culling settings in both triangle intersection paths."""
+        for device in get_test_devices():
+            model, camera, rays, poses, worlds, _ = self._cloth_color_scene(device)
+            state = model.state()
+            depth = camera.create_depth_image_output(4, 2, 1)
+            normal = camera.create_normal_image_output(4, 2, 1)
+            for render_normals in (False, True):
+                for culling in (None, False, True):
+                    with self.subTest(device=device, render_normals=render_normals, culling=culling):
+                        config = None if culling is None else SensorCamera.RenderConfig(enable_backface_culling=culling)
+                        camera.update(
+                            state,
+                            poses,
+                            rays,
+                            world_indices=worlds,
+                            depth_image=depth,
+                            normal_image=normal if render_normals else None,
+                            render_config=config,
+                        )
+                        expected_depth = np.full((4, 1, 2), 2.0)
+                        if culling is not False:
+                            expected_depth[2:] = 0.0
+                        np.testing.assert_allclose(depth.numpy(), expected_depth, atol=1e-5)
 
     def test_texture_projection_modes_texture_uvless_shapes(self) -> None:
         """Verify cubic and triplanar projection texture UV-less shapes and differ.

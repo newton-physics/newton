@@ -98,9 +98,9 @@ class RenderConfig:
     """
 
     enable_backface_culling: bool = True
-    """Cull back-facing triangles of rigid mesh shapes.
+    """Cull back-facing triangles of rigid meshes and deformable surfaces.
 
-    Deformable triangle surfaces are always visible from both sides, with
+    When disabled, deformable triangle surfaces render from both sides with
     normals oriented toward the camera.
     """
 

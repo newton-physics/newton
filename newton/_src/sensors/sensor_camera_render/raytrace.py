@@ -252,18 +252,17 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
                 if group_root < 0:
                     continue
 
-                # Deformable triangle meshes (cloth) are open surfaces: intersect both sides and
-                # shade the side facing the camera.
                 hit_distance, hit_normal, bary_u, bary_v, face_idx = raycast.ray_intersect_mesh(
                     ray_origin_world,
                     ray_dir_world,
                     wp.vec3f(1.0),
                     triangle_mesh_id,
-                    False,
+                    wp.static(config.enable_backface_culling),
                     closest_hit.distance,
                     group_root,
                 )
                 if hit_distance >= 0.0:
+                    # Shade the visible side when backface culling is disabled.
                     if wp.dot(hit_normal, ray_dir_world) > 0.0:
                         hit_normal = -hit_normal
                     closest_hit.distance = hit_distance
@@ -503,7 +502,7 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
                     ray_dir_world,
                     wp.vec3f(1.0),
                     triangle_mesh_id,
-                    False,  # open cloth surfaces are visible from both sides
+                    wp.static(config.enable_backface_culling),
                     closest_hit.distance,
                     group_root,
                 )
