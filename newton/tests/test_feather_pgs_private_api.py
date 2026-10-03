@@ -29,7 +29,7 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         solver_path = _PACKAGE_DIR / "solver_feather_pgs.py"
-        cls.solver_module = ast.parse(solver_path.read_text())
+        cls.solver_module = ast.parse(solver_path.read_text(encoding="utf-8"))
         cls.top_level_functions = {
             node.name: node for node in cls.solver_module.body if isinstance(node, ast.FunctionDef)
         }
@@ -83,7 +83,7 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
         pattern = re.compile(r"\bos\.(environ|getenv)\b|FEATHER_PGS_|IL_NEWTON")
         for path in sorted(_PACKAGE_DIR.glob("*.py")):
             with self.subTest(file=path.name):
-                self.assertIsNone(pattern.search(path.read_text()))
+                self.assertIsNone(pattern.search(path.read_text(encoding="utf-8")))
 
     def test_prescribed_response_is_not_a_public_execution_knob(self):
         """Select the kinematic-body response internally, not through a constructor option."""
