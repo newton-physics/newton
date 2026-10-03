@@ -79,7 +79,7 @@ from ..kinematics.jacobians import ColMajorSparseConstraintJacobians, DenseSyste
 from ..kinematics.limits import LimitsKamino
 from ..linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, LinearSolverType
 from ..linalg.linear import IterativeSolver
-from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices, _alias_ptr
+from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ..linalg.sparse_operator import BlockSparseLinearOperators
 
 ###
@@ -1457,11 +1457,8 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                 device=self._device,
             )
 
-        active_counts = self._data.info.num_total_cts
-        assert active_counts.ptr is not None
-        active_shape = (self._model.size.num_worlds,)
-        self._active_rows = _alias_ptr(active_counts, ptr=active_counts.ptr, dtype=wp.int32, shape=active_shape)
-        self._active_cols = _alias_ptr(active_counts, ptr=active_counts.ptr, dtype=wp.int32, shape=active_shape)
+        self._active_rows = self._data.info.num_total_cts
+        self._active_cols = self._data.info.num_total_cts
 
         # Initialize temporary memory
         self._vec_temp_body_space = wp.empty(
