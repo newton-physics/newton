@@ -632,7 +632,7 @@ def _integrate_position_kernel(
 
 
 @wp.func
-def _svd_one_sided_jacobi_columns(A: Any, n_columns: int, tol: Any, max_sweeps: int):
+def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
     """One-sided (Hestenes) Jacobi SVD of a small (possibly non-square) matrix, ``A = U @ diag(S) @ Vᵀ``.
 
     Correct and simple, not the fastest: intended for small matrices (at
@@ -676,7 +676,7 @@ def _svd_one_sided_jacobi_columns(A: Any, n_columns: int, tol: Any, max_sweeps: 
             expected well before this for any well-scaled small matrix.
 
     Returns:
-        ``(U, S, V, sweeps)`` such that ``A = U @ diag(S) @ Vᵀ`` over the leftmost
+        ``(U, S, V)`` such that ``A = U @ diag(S) @ Vᵀ`` over the leftmost
         ``n_columns`` columns, ``U`` (``m x m``)/``V`` (``n x n``) orthonormal
         there, ``S`` (length ``n``) sorted descending over its first
         ``min(n_columns, m)`` entries. A singular value at or below numerical
@@ -684,8 +684,7 @@ def _svd_one_sided_jacobi_columns(A: Any, n_columns: int, tol: Any, max_sweeps: 
         direction is well-defined there. Every row/column at or beyond
         ``n_columns`` (in ``V``) or ``min(n_columns, m)`` (in ``U``/``S``) is left
         untouched, at whatever ``A`` itself (for ``U``) or the identity
-        (for ``V``) already had there. ``sweeps`` is the number of sweeps
-        performed, at most ``max_sweeps``.
+        (for ``V``) already had there.
     """
     zero = A.dtype(0.0)
     one = A.dtype(1.0)
@@ -698,9 +697,7 @@ def _svd_one_sided_jacobi_columns(A: Any, n_columns: int, tol: Any, max_sweeps: 
     col0 = type(at[0])()  # length m (row count of A, column count of At)
     vt = wp.identity(n=type(row0).length, dtype=A.dtype)
 
-    sweeps = int(0)
     for _sweep in range(max_sweeps):
-        sweeps += 1
         max_off_diagonal_ratio = zero
         for i in range(n_columns - 1):
             for j in range(i + 1, n_columns):
@@ -777,32 +774,7 @@ def _svd_one_sided_jacobi_columns(A: Any, n_columns: int, tol: Any, max_sweeps: 
         s_vec[i] = sigma
         ut[i] = wp.where(sigma > A.dtype(1.0e-12), at[i] / sigma, ut[i] * zero)
 
-    return wp.transpose(ut), s_vec, wp.transpose(vt), sweeps
-
-
-@wp.func
-def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
-    """Decompose ``A`` by sweeping over the smaller of its active dimensions.
-
-    Return ``(U, S, V, sweeps)`` with the same shapes as
-    :func:`_svd_one_sided_jacobi_columns`. Only singular-vector columns
-    corresponding to nonzero singular values are defined; unused columns
-    do not form an orthonormal completion. Columns of ``A`` beyond
-    ``n_columns`` must be zero-padded.
-    """
-    at = wp.transpose(A)
-    row0 = type(A[0])()
-    col0 = type(at[0])()
-    if wp.static(len(row0) > len(col0)):
-        if n_columns > len(col0):
-            # Wide matrices cannot have mutually orthogonal nonzero columns.
-            # Sweep over A's rows instead, avoiding rounding-level null columns.
-            u_t, s_t, v_t, sweeps = _svd_one_sided_jacobi_columns(at, len(col0), tol, max_sweeps)
-            s = type(A[0])()
-            for i in range(len(col0)):
-                s[i] = s_t[i]
-            return v_t, s, u_t, sweeps
-    return _svd_one_sided_jacobi_columns(A, n_columns, tol, max_sweeps)
+    return wp.transpose(ut), s_vec, wp.transpose(vt)
 
 
 @wp.kernel
@@ -821,7 +793,10 @@ def _svd_one_sided_jacobi_kernel(
     Generic over ``matrix``'s (and so ``u``/``s``/``v``'s) concrete element
     type -- Warp compiles one specialization per distinct matrix shape
     actually launched with, so this single kernel definition covers every
-    size, rather than needing a hand-written kernel per shape.
+    size, rather than needing a hand-written kernel per shape. Wide active
+    problems are decomposed in their transposed orientation and the singular
+    vectors swapped back. Only computed singular-vector columns are defined;
+    unused columns do not provide an orthonormal completion.
 
     ``Any`` here is broader than the real requirement: every array argument
     must hold a matrix-shaped element type (e.g. ``wp.mat33``), not an
@@ -834,7 +809,21 @@ def _svd_one_sided_jacobi_kernel(
     into that dispatch mechanism, so it isn't a usable substitute here.
     """
     idx = wp.tid()
-    u_local, s_local, v_local, _sweeps = _svd_one_sided_jacobi(matrix[idx], n_columns[idx], tol, max_sweeps)
+    a = matrix[idx]
+    at = wp.transpose(a)
+    row0 = type(a[0])()
+    col0 = type(at[0])()
+    if n_columns[idx] > len(col0):
+        # Sweep over the rows of wide matrices to avoid numerical null columns.
+        u_t, s_t, v_t = _svd_one_sided_jacobi(at, len(col0), tol, max_sweeps)
+        s_local = type(row0)()
+        for i in range(wp.min(len(row0), len(col0))):
+            s_local[i] = s_t[i]
+        u[idx] = v_t
+        s[idx] = s_local
+        v[idx] = u_t
+        return
+    u_local, s_local, v_local = _svd_one_sided_jacobi(a, n_columns[idx], tol, max_sweeps)
     u[idx] = u_local
     s[idx] = s_local
     v[idx] = v_local
