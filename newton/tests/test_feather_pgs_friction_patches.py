@@ -188,6 +188,43 @@ class TestFrictionPatchHistory(unittest.TestCase):
                 np.testing.assert_allclose(locations[:, 0], 0.0, atol=1.0e-7)
                 np.testing.assert_allclose(locations[:, 1], [-0.025, 0.025], rtol=0.0, atol=1.0e-6)
 
+    def test_narrow_patch_anchors_keep_each_end_height(self):
+        """Anchor each end of a narrow footprint at the height of its own support edge."""
+        devices = ["cpu"] + (["cuda:0"] if wp.is_cuda_available() else [])
+        # A faceted wheel bouncing on one cap touches at different heights at the
+        # two ends. Level anchors there see opposite slip at the ends of a rolling
+        # wheel, and the friction answers with a yaw kick.
+        footprints = {
+            "two_levels": ([[x, -0.025, 0.0] for x in (-0.0145, 0.0, 0.0145)] + [[0.0, 0.025, 0.001]], [0.0, 0.001]),
+            "three_levels": ([[-0.05, 0.0, 0.0], [0.0, 0.0, 0.0], [0.05, 0.0, 0.003]], [0.0, 0.003]),
+        }
+        for device in devices:
+            for name, (members, heights) in footprints.items():
+                with self.subTest(device=device, footprint=name):
+                    points = np.asarray(members, dtype=np.float32)
+                    _, _, _, patches = _patch_fixture(points, device=device)
+                    locations = patches.view.point_a.numpy()[patches.view.weight.numpy() > 0.0]
+                    self.assertEqual(len(locations), 2)
+                    axis = points[-1] - points[0]
+                    locations = locations[np.argsort(locations @ axis)]
+                    np.testing.assert_allclose(locations[:, 2], heights, rtol=0.0, atol=1.0e-7)
+
+    def test_thin_triangle_anchor_span_varies_continuously(self):
+        """Keep the anchor span continuous as a triangle thins into a collinear footprint."""
+        devices = ["cpu"] + (["cuda:0"] if wp.is_cuda_available() else [])
+        heights = np.linspace(1.0e-6, 4.0e-6, 41)
+        for device in devices:
+            with self.subTest(device=device):
+                spans = []
+                for height in heights:
+                    points = np.array([[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0], [0.0, height, 0.0]], dtype=np.float32)
+                    _, _, _, patches = _patch_fixture(points, device=device)
+                    locations = patches.view.point_a.numpy()[patches.view.weight.numpy() > 0.0]
+                    self.assertEqual(len(locations), 2)
+                    spans.append(np.ptp(locations[:, 0]))
+                # A switch between two anchor constructions near collinearity would jump by tens of mm.
+                self.assertLess(np.abs(np.diff(spans)).max(), 2.0e-3)
+
     def test_pose_increment_preserves_fixed_pivots_and_no_slip_rolling(self):
         """Distinguish rigid rotation from slip without querying the collision shape."""
         device = "cuda:0" if wp.is_cuda_available() else "cpu"
