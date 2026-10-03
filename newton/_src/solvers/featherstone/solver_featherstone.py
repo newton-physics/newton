@@ -204,14 +204,15 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 self.eval_inertia_matrix_cholesky_kernel = create_inertia_matrix_cholesky_kernel(
                     int(self.joint_count), int(self.dof_count)
                 )
+                tile_kernel = self.eval_inertia_matrix_cholesky_kernel
             else:
                 self.eval_inertia_matrix_kernel = create_inertia_matrix_kernel(
                     int(self.joint_count), int(self.dof_count)
                 )
+                tile_kernel = self.eval_inertia_matrix_kernel
 
-            # ensure matrix is reloaded since otherwise an unload can happen during graph capture
-            # todo: should not be necessary?
-            wp.load_module(device=wp.get_device())
+            # Ensure the generated tile-kernel module is loaded before graph capture.
+            wp.load_module(module=tile_kernel.module, device=model.device)
 
     def _update_kinematic_state(self):
         """Recompute cached solver flags and effective joint armature."""
