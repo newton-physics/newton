@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import weakref
 from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any
@@ -789,8 +790,9 @@ class ArticulationView:
     ):
         self.model = model
         self.device = model.device
-        self._attribute_array_cache = {}
-        self._actuator_dof_mapping_cache = {}
+        # Per-view caches. Sources and actuators are held weakly, so the view does not keep them alive.
+        self._attribute_array_cache = weakref.WeakKeyDictionary()
+        self._actuator_dof_mapping_cache = weakref.WeakKeyDictionary()
 
         if verbose is None:
             verbose = wp.config.log_level <= wp.LOG_DEBUG
@@ -1258,18 +1260,10 @@ class ArticulationView:
     # ========================================================================================
     # Generic attribute API
 
-    def _get_attribute_array(
-        self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
-    ):
-        key = (name, source, _slice, layout)
-        if key not in self._attribute_array_cache:
-            self._attribute_array_cache[key] = self._create_attribute_array(name, source, _slice, layout)
-        return self._attribute_array_cache[key]
-
-    def _create_attribute_array(
-        self, name: str, source: Model | State | Control, _slice: Slice | int | None, layout=None
-    ):
-        # get the attribute (handle namespaced attributes like "mujoco.tendon_stiffness")
+    @staticmethod
+    def _resolve_attribute(name: str, source: Model | State | Control) -> tuple[wp.array, str]:
+        """Return the array currently stored on ``source`` under ``name`` and its frequency name."""
+        # handle namespaced attributes like "mujoco.tendon_stiffness"
         # Note: the user-facing API uses dots (e.g., "mujoco.tendon_stiffness")
         # but internally attributes are stored with colons (e.g., "mujoco:tendon_stiffness")
         if "." in name:
@@ -1283,6 +1277,39 @@ class ArticulationView:
             attrib = getattr(source, name)
             frequency_name = name
         assert isinstance(attrib, wp.array)
+        return attrib, frequency_name
+
+    def _get_attribute_array(
+        self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
+    ):
+        """Return the cached reshaped array of ``source.<name>``, rebuilding it if the source array changed.
+
+        Entries are keyed weakly on ``source``, so they are dropped with the source and with the view.
+        An entry is reused only while ``source.<name>`` and its gradient are the arrays it was built from.
+        """
+        source_array, _ = self._resolve_attribute(name, source)
+        source_grad = source_array.grad if source_array.requires_grad else None
+        # native slices are unhashable before Python 3.12
+        slice_key = (_slice.start, _slice.stop, _slice.step) if isinstance(_slice, slice) else _slice
+        key = (name, slice_key, layout)
+        try:
+            entries = self._attribute_array_cache.get(source)
+            if entries is None:
+                entries = self._attribute_array_cache[source] = {}
+        except TypeError:
+            # the source cannot be weakly referenced; build an uncached array
+            return self._create_attribute_array(name, source, _slice, layout)
+        entry = entries.get(key)
+        if entry is not None and entry[1] is source_array and entry[2] is source_grad:
+            return entry[0]
+        attrib = self._create_attribute_array(name, source, _slice, layout)
+        entries[key] = (attrib, source_array, source_grad)
+        return attrib
+
+    def _create_attribute_array(
+        self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
+    ):
+        attrib, frequency_name = self._resolve_attribute(name, source)
 
         # get frequency info
         frequency = self.model.get_attribute_frequency(frequency_name)
@@ -1975,9 +2002,22 @@ class ArticulationView:
     # Actuator parameter access
 
     def _get_actuator_dof_mapping(self, actuator: Actuator):
-        if actuator not in self._actuator_dof_mapping_cache:
-            self._actuator_dof_mapping_cache[actuator] = self._create_actuator_dof_mapping(actuator)
-        return self._actuator_dof_mapping_cache[actuator]
+        """Return the cached DOF mapping for ``actuator``, built on first use.
+
+        The cache belongs to the view and holds actuators weakly.
+        """
+        # views that borrow the actuator methods may not define the cache
+        cache = getattr(self, "_actuator_dof_mapping_cache", None)
+        if cache is None:
+            cache = self._actuator_dof_mapping_cache = weakref.WeakKeyDictionary()
+        try:
+            mapping = cache.get(actuator)
+        except TypeError:
+            # the actuator cannot be weakly referenced; build an uncached mapping
+            return self._create_actuator_dof_mapping(actuator)
+        if mapping is None:
+            mapping = cache[actuator] = self._create_actuator_dof_mapping(actuator)
+        return mapping
 
     def _create_actuator_dof_mapping(self, actuator: Actuator):
         """
