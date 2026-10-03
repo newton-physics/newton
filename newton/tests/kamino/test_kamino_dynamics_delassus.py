@@ -1172,7 +1172,6 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         # Compare expected to allocated dimensions and sizes
         self._check_sparse_delassus_allocations(model, delassus)
 
-
     def test_02_allocate_homogeneous_delassus_operator(self):
         # Model constants
         num_worlds = 3
