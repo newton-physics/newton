@@ -318,6 +318,12 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
     Every port, of any dtype, may be bound either to a plain array or to an
     indexed view of a simulation-sized array.
 
+    The controller reads input ports and overwrites output ports. Plain arrays
+    are read and written directly; indexed views use gather/scatter buffers.
+    Output ports must not overlap any input port or other output port in
+    memory, including through views. Overlap is not validated and may produce
+    incorrect results.
+
     Array shapes and devices are validated on each direct call to
     :meth:`step`, but not when a captured graph is replayed, since the
     checks run in Python at capture time only.
@@ -702,9 +708,8 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 controlled_robot_count, dtype=wp.spatial_vector, device=self._device, requires_grad=requires_grad
             )
 
-        # Every port is copied into one of these before any kernel runs, so
-        # graph replay always reads through stable buffers regardless of
-        # what array object the caller binds between steps.
+        # Indexed input views are gathered into these buffers; plain arrays
+        # are read directly.
         self._pose_buf = _pose_buf()
         self._twist_buf = _twist_buf()
         self._operational_frame_buf: wp.array[wp.transform] | None = (
