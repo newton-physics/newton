@@ -6493,14 +6493,29 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         required_shapes = tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes
         mesh_export_cache: dict[tuple[int, tuple[float, float, float]], tuple[np.ndarray, np.ndarray, int, bool]] = {}
 
-        hfield_asset_names: dict[tuple[int, tuple[float, ...]], str] = {}
+        hfield_asset_names: dict[tuple, str] = {}
+        hfield_source_keys: dict[int, tuple] = {}
         shape_hfield_names: dict[int, str] = {}
 
         def add_hfield_asset(shape: int) -> str:
             """Register the MuJoCo heightfield of a Newton heightfield shape, sharing equal ones."""
             hfield_src = model.shape_source[shape]
+            # Key by current contents, not hash(): in-place edits of Heightfield.data
+            # keep its cached hash. Worlds often share one source, so key each once.
+            source_key = hfield_source_keys.get(id(hfield_src))
+            if source_key is None:
+                source_key = (
+                    hfield_src.nrow,
+                    hfield_src.ncol,
+                    float(hfield_src.hx),
+                    float(hfield_src.hy),
+                    float(hfield_src.min_z),
+                    float(hfield_src.max_z),
+                    hfield_src.data.tobytes(),
+                )
+                hfield_source_keys[id(hfield_src)] = source_key
             hfield_scale = shape_size[shape]
-            key = (hash(hfield_src), tuple(float(s) for s in hfield_scale))
+            key = (source_key, tuple(float(s) for s in hfield_scale))
             hfield_name = hfield_asset_names.get(key)
             if hfield_name is None:
                 # Convert Newton heightfield to MuJoCo format

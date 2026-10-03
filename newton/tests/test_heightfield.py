@@ -530,6 +530,26 @@ class TestHeightfield(unittest.TestCase):
         self.assertEqual(solver.mjw_model.geom_dataid.shape[0], 1)
         self.assertEqual(solver.mjw_model.geom_aabb.shape[0], 1)
 
+    def test_solver_mujoco_hfield_per_world_after_in_place_edit(self):
+        """Collide each world against its heightfield's current data after an in-place edit keeps its cached hash."""
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo not installed")
+
+        heightfields = [
+            Heightfield(data=np.zeros((5, 5), dtype=np.float32), nrow=5, ncol=5, hx=0.5, hy=0.5, min_z=0.0, max_z=0.3)
+            for _ in range(2)
+        ]
+        starts = [(0.0, 0.0, 0.42)] * 2
+        # finalize() caches each heightfield's hash while both terrains are flat.
+        self._per_world_hfield_model(heightfields, starts)
+        # Raise world 0's center to 0.3 m in place, which keeps the cached hash.
+        heightfields[0].data[1:-1, 1:-1] = 1.0
+        model = self._per_world_hfield_model(heightfields, starts)
+
+        np.testing.assert_allclose(self._sphere_heights(model, steps=400), [0.35, 0.05], atol=0.01)
+
     def test_heightfield_always_static(self):
         """Test that heightfields are always static (zero mass, zero inertia)."""
         nrow, ncol = 10, 10
