@@ -457,7 +457,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 | :sup:`8` FeatherPGS rejects models with disabled joints or mimic relationships instead of ignoring them.
 | :sup:`9` FeatherPGS enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
-| :sup:`10` FeatherPGS clamps the joint drive force to the effort limit.
+| :sup:`10` FeatherPGS clamps only the explicit joint drive force to the effort limit; the implicit stiffness and damping response is unbounded, so under a large external load the drive reaction can exceed the limit.
 | :sup:`11` FeatherPGS enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True``.
 
 

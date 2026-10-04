@@ -644,10 +644,11 @@ class SolverFeatherPGS(SolverBase):
     - Joints: PRISMATIC, REVOLUTE, BALL, FIXED, D6 and root FREE / DISTANCE joints.
     - Joint drives: :attr:`~newton.Model.joint_target_ke` and
       :attr:`~newton.Model.joint_target_kd` on PRISMATIC, REVOLUTE and D6 DOFs are
-      integrated implicitly by folding ``dt * kd + dt^2 * ke`` into the mass matrix;
-      the drive force is clamped to :attr:`~newton.Model.joint_effort_limit`.
-      :attr:`~newton.Model.joint_armature` and :attr:`~newton.Model.joint_damping` are
-      applied.
+      integrated implicitly by folding ``dt * kd + dt^2 * ke`` into the mass matrix.
+      Only the explicit drive force is clamped to :attr:`~newton.Model.joint_effort_limit`;
+      the implicit stiffness and damping response is unbounded, so under a large external
+      load the drive reaction can exceed the limit. :attr:`~newton.Model.joint_armature`
+      and :attr:`~newton.Model.joint_damping` are applied.
     - Joint limits: with ``enable_joint_limits=True``, every finite
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
@@ -823,6 +824,10 @@ class SolverFeatherPGS(SolverBase):
         warn_constraint_overflow: bool = True,
     ):
         """Create a FeatherPGS solver for a finalized CUDA model.
+
+        The options below configure this solver instance at runtime; they are not model or USD
+        attributes. Per-body physical parameters are model attributes, see
+        :meth:`register_custom_attributes`.
 
         Args:
             model: Model to simulate. It must be finalized on a CUDA device.
