@@ -1891,6 +1891,7 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
                 joint_limit_ke,
                 joint_limit_kd,
                 joint_rest_angle,
+                joint_rest_angle,
                 drive_limit_support,
                 1.0 / 60.0,
             ],
@@ -1987,6 +1988,7 @@ def _rod_soft_dual_slots_clear_preserved_lambda(test, device):
                 joint_limit_upper,
                 joint_limit_ke,
                 joint_limit_kd,
+                joint_rest_angle,
                 joint_rest_angle,
                 drive_limit_support,
                 1.0 / 60.0,
@@ -4916,6 +4918,113 @@ def _rigid_constraint_adjacency(test, device):
                         np.testing.assert_allclose(state_out.body_qd.numpy()[:, 0], [-dt, dt, 0.0, 0.0], rtol=1.0e-6)
 
 
+def _build_rigid_hinge_winding_model(device, **dof_kwargs):
+    """Build equivalent revolute and one-axis-D6 hinges in one model."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    inertia = wp.mat33(np.eye(3))
+
+    revolute_body = builder.add_link(mass=1.0, inertia=inertia)
+    revolute_joint = builder.add_joint_revolute(parent=-1, child=revolute_body, axis=newton.Axis.Z, **dof_kwargs)
+    builder.add_articulation([revolute_joint])
+
+    JointDofConfig = newton.ModelBuilder.JointDofConfig
+    d6_body = builder.add_link(mass=1.0, inertia=inertia)
+    d6_joint = builder.add_joint_d6(
+        parent=-1,
+        child=d6_body,
+        linear_axes=[JointDofConfig.create_unlimited(newton.Axis.X)],
+        angular_axes=[JointDofConfig(axis=newton.Axis.Z, **dof_kwargs)],
+    )
+    builder.add_articulation([d6_joint])
+    builder.color()
+    model = builder.finalize(device=device)
+
+    joint_indices = np.array([revolute_joint, d6_joint], dtype=np.int32)
+    linear_counts = model.joint_dof_dim.numpy()[joint_indices, 0]
+    target_indices = model.joint_target_q_start.numpy()[joint_indices] + linear_counts
+    dof_indices = model.joint_qd_start.numpy()[joint_indices] + linear_counts
+    return model, target_indices, dof_indices
+
+
+def _accumulate_body_z_angles(state, angles):
+    """Accumulate continuous Z angles from body quaternion samples."""
+    rotations = state.body_q.numpy()[:, 3:]
+    samples = 2.0 * np.arctan2(rotations[:, 2], rotations[:, 3])
+    delta = samples - angles
+    return angles + np.arctan2(np.sin(delta), np.cos(delta))
+
+
+def _step_rigid_pair(solver, state_in, state_out, control, dt):
+    """Advance two steps while keeping the first State as the final output."""
+    solver.step(state_in, state_out, control, None, dt)
+    solver.step(state_out, state_in, control, None, dt)
+
+
+def _rigid_hinge_multiturn_drive(test, device):
+    """Verify scalar hinge drives retain winding across pi and captured resets."""
+    model, target_indices, _ = _build_rigid_hinge_winding_model(device, target_ke=100.0, target_kd=20.0)
+    dt = 0.02
+
+    for compliant_alm in (True, False) if device.is_cpu else (True,):
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=compliant_alm, iterations=10)
+        state_in, state_out = model.state(), model.state()
+        control = model.control()
+        target_values = np.zeros(control.joint_target_q.shape[0], dtype=np.float32)
+
+        graph = None
+        if device.is_cuda:
+            with wp.ScopedCapture(device=device) as capture:
+                _step_rigid_pair(solver, state_in, state_out, control, dt)
+            graph = capture.graph
+
+        targets = (-2.0 * math.pi, 2.0 * math.pi) if compliant_alm else (-2.0 * math.pi,)
+        for target in targets:
+            solver.reset(state_in)
+            angles = np.zeros(model.body_count)
+            for frame in range(75):
+                target_values[target_indices] = target * min((frame + 1) * 2.0 * dt / 2.0, 1.0)
+                control.joint_target_q.assign(target_values)
+                if graph is None:
+                    _step_rigid_pair(solver, state_in, state_out, control, dt)
+                else:
+                    wp.capture_launch(graph)
+                angles = _accumulate_body_z_angles(state_in, angles)
+
+            np.testing.assert_allclose(angles, target, rtol=0.0, atol=2.0e-3, err_msg=f"{compliant_alm=}")
+
+
+def _rigid_hinge_multiturn_limits(test, device):
+    """Verify scalar hinge limits beyond pi hold torque in both directions."""
+    model, _, dof_indices = _build_rigid_hinge_winding_model(
+        device,
+        limit_lower=-4.0,
+        limit_upper=4.0,
+        limit_ke=1.0e4,
+        limit_kd=200.0,
+    )
+
+    for compliant_alm in (True, False) if device.is_cpu else (True,):
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=compliant_alm, iterations=10)
+        state_in, state_out = model.state(), model.state()
+        control = model.control()
+        joint_forces = np.zeros(control.joint_f.shape[0], dtype=np.float32)
+
+        torques = (-1.0, 1.0) if compliant_alm else (-1.0,)
+        for torque in torques:
+            solver.reset(state_in)
+            joint_forces[dof_indices] = torque
+            control.joint_f.assign(joint_forces)
+            angles = np.zeros(model.body_count)
+            for _ in range(150):
+                solver.step(state_in, state_out, control, None, 0.02)
+                state_in, state_out = state_out, state_in
+                angles = _accumulate_body_z_angles(state_in, angles)
+
+            expected = math.copysign(4.0, torque)
+            np.testing.assert_allclose(angles, expected, rtol=0.0, atol=2.0e-3, err_msg=f"{compliant_alm=}")
+            test.assertLess(np.max(np.abs(state_in.body_qd.numpy()[:, 5])), 1.0e-2)
+
+
 class TestSolverVBD(unittest.TestCase):
     def test_contact_kernel_modules_follow_deterministic_mode(self):
         """Apply VBD deterministic options to rigid contact kernels."""
@@ -4951,6 +5060,8 @@ class TestSolverVBD(unittest.TestCase):
 
 add_function_test(TestSolverVBD, "test_rigid_constraint_adjacency", _rigid_constraint_adjacency, devices=devices)
 
+add_function_test(TestSolverVBD, "test_rigid_hinge_multiturn_drive", _rigid_hinge_multiturn_drive, devices=devices)
+add_function_test(TestSolverVBD, "test_rigid_hinge_multiturn_limits", _rigid_hinge_multiturn_limits, devices=devices)
 add_function_test(
     TestSolverVBD,
     "test_body_body_contact_lists_skip_static_kinematic",
