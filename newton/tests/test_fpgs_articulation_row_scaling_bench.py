@@ -38,8 +38,7 @@ def _load_row_scaling_module():
 
 
 def _require_cuda(reason: str):
-    wp.init()
-    if not wp.get_device("cuda:0").is_cuda:
+    if not wp.is_cuda_available():
         raise unittest.SkipTest(reason)
 
 
