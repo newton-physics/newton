@@ -326,6 +326,66 @@ def test_spring_attribute_changes_reach_captured_graphs(test, device):
     test.assertAlmostEqual(float(solver.joint_tau.numpy()[0]), 4.0 * (0.5 - 0.25), places=5)
 
 
+def _slider_model(device):
+    """A unit-mass slider without gravity or damping, whose joint torque is the spring torque alone."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    SolverFeatherPGS.register_custom_attributes(builder)
+    link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    joint = builder.add_joint_prismatic(
+        -1,
+        link,
+        axis=newton.Axis.X,
+        damping=0.0,
+        armature=0.0,
+        custom_attributes=dict(zip(SPRING_KEYS, (2.0, 0.5, 0.1), strict=True)),
+    )
+    builder.add_articulation([joint])
+    return builder.finalize(device=device)
+
+
+def _check_spring_edits_match_fresh_solver(test, device, replace: bool):
+    """Edit spring arrays after a step, notify, and compare the next eager or captured step to a fresh solver."""
+    edits = {"dof_passive_stiffness": 4.0, "dof_springref": 0.9, "dof_ref": 0.15}
+    for fields in [(name,) for name in edits] + [tuple(edits)]:
+        for capture in (False, True):
+            with test.subTest(fields=fields, capture=capture):
+                model = _slider_model(device)
+                solver = SolverFeatherPGS(model)
+                state_0, state_1 = model.state(), model.state()
+                state_0.joint_q.fill_(0.2)
+                control = model.control()
+                solver.step(state_0, state_1, control, None, DT)
+                if capture:
+                    with wp.ScopedCapture(device=device) as graph:
+                        solver.step(state_0, state_1, control, None, DT)
+                for name in fields:
+                    if replace:
+                        setattr(model.mujoco, name, wp.array([edits[name]], dtype=wp.float32, device=device))
+                    else:
+                        getattr(model.mujoco, name).assign([edits[name]])
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+                if capture:
+                    wp.capture_launch(graph.graph)
+                else:
+                    solver.step(state_0, state_1, control, None, DT)
+
+                fresh = SolverFeatherPGS(model)
+                fresh_out = model.state()
+                fresh.step(state_0, fresh_out, control, None, DT)
+                np.testing.assert_allclose(solver.joint_tau.numpy(), fresh.joint_tau.numpy(), atol=1.0e-6)
+                np.testing.assert_allclose(state_1.joint_qd.numpy(), fresh_out.joint_qd.numpy(), atol=1.0e-6)
+
+
+def test_replaced_spring_arrays_match_fresh_solver(test, device):
+    """Read spring arrays replaced on the model at the next JOINT_DOF_PROPERTIES notify."""
+    _check_spring_edits_match_fresh_solver(test, device, replace=True)
+
+
+def test_assigned_spring_arrays_match_fresh_solver(test, device):
+    """Read spring arrays modified in place at the next JOINT_DOF_PROPERTIES notify."""
+    _check_spring_edits_match_fresh_solver(test, device, replace=False)
+
+
 def test_registration_matches_mujoco_definitions(test, device):
     """Register the spring attributes standalone with SolverMuJoCo's names, units and importer conversions."""
     fpgs = newton.ModelBuilder()
@@ -364,6 +424,8 @@ for _name, _func in (
     ("test_d6_springs_warn_and_are_ignored", test_d6_springs_warn_and_are_ignored),
     ("test_models_without_springs_do_not_warn", test_models_without_springs_do_not_warn),
     ("test_spring_attribute_changes_reach_captured_graphs", test_spring_attribute_changes_reach_captured_graphs),
+    ("test_replaced_spring_arrays_match_fresh_solver", test_replaced_spring_arrays_match_fresh_solver),
+    ("test_assigned_spring_arrays_match_fresh_solver", test_assigned_spring_arrays_match_fresh_solver),
 ):
     add_function_test(TestFeatherPGSSprings, _name, _func, devices=devices)
 add_function_test(

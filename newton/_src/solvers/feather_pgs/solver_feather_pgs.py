@@ -1325,19 +1325,17 @@ class SolverFeatherPGS(SolverBase):
         zeros = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         damping = model.joint_damping
         self._passive_joint_damping = damping if damping is not None else zeros
-        mujoco = getattr(model, "mujoco", None)
-        self._spring_stiffness_source = getattr(mujoco, "dof_passive_stiffness", None)
-        if self._spring_stiffness_source is None or not model.joint_dof_count:
+        stiffness = getattr(getattr(model, "mujoco", None), "dof_passive_stiffness", None)
+        self._spring_dof_supported = None
+        if stiffness is None or not model.joint_dof_count:
             self._passive_spring_stiffness = zeros
             self._passive_spring_ref = zeros
             return
-        self._spring_springref_source = getattr(mujoco, "dof_springref", None)
-        self._spring_ref_source = getattr(mujoco, "dof_ref", None)
 
         joint_type = model.joint_type.numpy()
         dof_joint = np.repeat(np.arange(model.joint_count), np.diff(model.joint_qd_start.numpy()))
         supported = np.isin(joint_type[dof_joint], _SPRING_JOINT_TYPES)
-        unsupported = (self._spring_stiffness_source.numpy() != 0.0) & ~supported
+        unsupported = (stiffness.numpy() != 0.0) & ~supported
         if np.any(unsupported):
             names = ", ".join(sorted({JointType(int(t)).name for t in joint_type[dof_joint[unsupported]]}))
             warnings.warn(
@@ -1352,19 +1350,22 @@ class SolverFeatherPGS(SolverBase):
         self._refresh_passive_springs()
 
     def _refresh_passive_springs(self) -> None:
-        """Recompute the explicit spring stiffness and rest coordinate in place."""
-        if self._spring_stiffness_source is None or not self.model.joint_dof_count:
+        """Resolve the model's current spring arrays into the solver's fixed spring buffers."""
+        if self._spring_dof_supported is None:
             return
-        springref = self._spring_springref_source
-        ref = self._spring_ref_source
+        # Re-read the model arrays, which users may replace between refreshes.
+        mujoco = self.model.mujoco
+        stiffness = mujoco.dof_passive_stiffness
+        springref = getattr(mujoco, "dof_springref", None)
+        ref = getattr(mujoco, "dof_ref", None)
         wp.launch(
             resolve_passive_joint_springs,
             dim=self.model.joint_dof_count,
             inputs=[
                 self._spring_dof_supported,
-                self._spring_stiffness_source,
-                springref if springref is not None else self._spring_stiffness_source,
-                ref if ref is not None else self._spring_stiffness_source,
+                stiffness,
+                springref if springref is not None else stiffness,
+                ref if ref is not None else stiffness,
                 int(springref is not None),
                 int(ref is not None),
             ],
