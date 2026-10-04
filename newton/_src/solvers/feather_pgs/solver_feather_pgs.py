@@ -4115,7 +4115,7 @@ class SolverFeatherPGS(SolverBase):
         if has_velocity_limit_rows and joint_velocity_limit_arr is None:
             has_velocity_limit_rows = False
         if not (has_drive_rows or has_position_limit_rows or has_velocity_limit_rows):
-            return 0
+            return int(np.max(per_world))  # mimic/connect rows only
 
         joint_target_ke = joint_target_ke_arr.numpy() if has_drive_rows else None
         joint_target_kd = joint_target_kd_arr.numpy() if has_drive_rows else None

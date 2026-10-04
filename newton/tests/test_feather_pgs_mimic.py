@@ -235,6 +235,44 @@ class TestFeatherPGSMimic(unittest.TestCase):
         # The undriven follower swings free under gravity; it must NOT sit at the leader angle.
         self.assertNotAlmostEqual(q[1], q[0], delta=0.02)
 
+    def test_mimic_only_rows_size_propagation_dense_capacity(self):
+        """Verify mimic rows alone reserve propagation dense capacity when there are no limit or drive rows."""
+        mimic_count = 20
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        joints = []
+        parent = -1
+        for i in range(mimic_count + 1):
+            link = builder.add_link(xform=wp.transform(wp.vec3(0.2 * (i + 1), 0.0, 0.5), wp.quat_identity()))
+            builder.add_shape_box(link, hx=0.1, hy=0.02, hz=0.02)
+            joints.append(
+                builder.add_joint_revolute(
+                    parent=parent,
+                    child=link,
+                    axis=wp.vec3(0.0, 0.0, 1.0),
+                    parent_xform=wp.transform(
+                        wp.vec3(0.2, 0.0, 0.0) if parent >= 0 else wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()
+                    ),
+                    child_xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0), wp.quat_identity()),
+                )
+            )
+            parent = link
+        builder.add_articulation(joints)
+        for follower in joints[1:]:
+            builder.set_joint_mimic(follower, joints[0], coeffs=(0.0, 1.0))
+        scene = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        scene.replicate(builder, world_count=2)  # per-world row counts exclude the global world
+        solver = newton.solvers.SolverFeatherPGS(
+            scene.finalize(),
+            pgs_mode="matrix_free",
+            articulated_contact_response="propagation",
+            propagation_same_articulation_rows=True,
+            dense_max_constraints=64,
+            enable_joint_limits=False,
+        )
+        self.assertEqual(solver._mimic_count, 2 * mimic_count)
+        self.assertGreaterEqual(solver._dense_internal_max_rows, mimic_count)
+        self.assertGreaterEqual(solver.dense_max_constraints, mimic_count)
+
 
 if __name__ == "__main__":
     unittest.main()
