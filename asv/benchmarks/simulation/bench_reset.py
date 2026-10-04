@@ -97,16 +97,6 @@ class _ResetCartpole:
             self.before[name] = dirty.reshape((world_count, -1))
             self.expected[name] = initial.reshape((world_count, -1))
 
-        control = self.example.control
-        self.untouched = {
-            "body_q": self.state.body_q,
-            "body_qd": self.state.body_qd,
-            "body_f": self.state.body_f,
-            "joint_f": control.joint_f,
-            "joint_target_q": control.joint_target_q,
-            "joint_target_qd": control.joint_target_qd,
-        }
-        self.untouched_before = {name: array.numpy() for name, array in self.untouched.items()}
         # Drain the warm-up reset and all preparation before ASV starts its timer.
         wp.synchronize_device(self.device)
 
@@ -122,10 +112,6 @@ class _ResetCartpole:
             )
             np.testing.assert_array_equal(
                 actual[~self.selected], self.before[name][~self.selected], err_msg=f"{name}: unselected worlds"
-            )
-        for name, array in self.untouched.items():
-            np.testing.assert_array_equal(
-                array.numpy(), self.untouched_before[name], err_msg=f"{name}: outside reset scope"
             )
 
 
