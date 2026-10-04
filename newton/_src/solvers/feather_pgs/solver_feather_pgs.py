@@ -866,9 +866,9 @@ class SolverFeatherPGS(SolverBase):
     Otherwise, and for free bodies, dense factors are used. Both give the same dynamics up
     to floating-point rounding. The selection follows the model's structure only; it is not
     a performance prediction. Sparse factors take longer to set up and, depending on the
-    articulation and the number of worlds, can run a few percent slower than dense factors;
-    large batches of branched articulations tend to benefit. ``parallel_tree=True`` additionally traverses the
-    independent branches of each tree in parallel.
+    articulation and the number of worlds, can run faster or markedly slower than dense
+    factors. ``parallel_tree=True`` additionally traverses the independent branches of each
+    tree in parallel.
 
     Constraint rows are stored per world with fixed capacities (``dense_max_constraints``
     for rows of articulated bodies, ``mf_max_constraints`` for free-body contacts). Rows
