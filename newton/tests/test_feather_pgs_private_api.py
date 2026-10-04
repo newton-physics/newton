@@ -25,7 +25,7 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         solver_path = Path(__file__).parents[1] / "_src" / "solvers" / "feather_pgs" / "solver_feather_pgs.py"
-        cls.solver_module = ast.parse(solver_path.read_text())
+        cls.solver_module = ast.parse(solver_path.read_text(encoding="utf-8"))
         cls.top_level_functions = {
             node.name: node for node in cls.solver_module.body if isinstance(node, ast.FunctionDef)
         }
