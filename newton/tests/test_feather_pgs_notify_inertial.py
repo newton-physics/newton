@@ -282,6 +282,56 @@ def test_assigned_joint_damping_matches_fresh_solver(test, device):
     _check_damping_edit_matches_fresh_solver(test, device, replace=False)
 
 
+def _check_friction_edit_matches_fresh_solver(test, device, replace: bool):
+    """Edit shape friction after a step, notify, and compare the next eager or captured step to a fresh solver."""
+    for capture in (False, True):
+        with test.subTest(capture=capture):
+            builder = newton.ModelBuilder()
+            builder.default_shape_cfg.mu = 0.0
+            builder.add_ground_plane()
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+            model = builder.finalize(device=device)
+            solver = SolverFeatherPGS(model)
+            state_0, state_1 = model.state(), model.state()
+            state_0.joint_qd.assign([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            pipeline.collide(state_0, contacts)
+            control = model.control()
+            solver.step(state_0, state_1, control, contacts, DT)
+            if capture:
+                with wp.ScopedCapture(device=device) as graph:
+                    solver.step(state_0, state_1, control, contacts, DT)
+            mu = np.full(model.shape_count, 1.0, dtype=np.float32)
+            if replace:
+                model.shape_material_mu = wp.array(mu, dtype=wp.float32, device=device)
+            else:
+                model.shape_material_mu.assign(mu)
+            solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+            if capture:
+                wp.capture_launch(graph.graph)
+            else:
+                solver.step(state_0, state_1, control, contacts, DT)
+
+            fresh = SolverFeatherPGS(model)
+            fresh_out = model.state()
+            fresh.step(state_0, fresh_out, control, contacts, DT)
+            test.assertLess(float(fresh_out.joint_qd.numpy()[0]), 0.95)
+            np.testing.assert_allclose(state_1.joint_qd.numpy(), fresh_out.joint_qd.numpy(), atol=1.0e-5)
+
+
+def test_replaced_shape_friction_matches_fresh_solver(test, device):
+    """Read a friction array replaced on the model at the next SHAPE_PROPERTIES notify."""
+    _check_friction_edit_matches_fresh_solver(test, device, replace=True)
+
+
+def test_assigned_shape_friction_matches_fresh_solver(test, device):
+    """Read friction modified in place at the next SHAPE_PROPERTIES notify."""
+    _check_friction_edit_matches_fresh_solver(test, device, replace=False)
+
+
 class TestFeatherPGSNotifyInertial(unittest.TestCase):
     pass
 
@@ -297,6 +347,8 @@ for _name in (
     "test_joint_frame_change_with_notify_matches_freshly_built_solver",
     "test_replaced_joint_damping_matches_fresh_solver",
     "test_assigned_joint_damping_matches_fresh_solver",
+    "test_replaced_shape_friction_matches_fresh_solver",
+    "test_assigned_shape_friction_matches_fresh_solver",
 ):
     add_function_test(TestFeatherPGSNotifyInertial, _name, globals()[_name], devices=devices)
 

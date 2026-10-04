@@ -1025,10 +1025,15 @@ class SolverFeatherPGS(SolverBase):
         self._row_dropped_dense = self._row_dropped_all[0]
         self._row_dropped_mf = self._row_dropped_all[1]
 
-        if model.shape_material_mu is not None:
-            self.shape_material_mu = model.shape_material_mu
-        else:
-            self.shape_material_mu = wp.zeros((1,), dtype=wp.float32, device=model.device)
+        self.shape_material_mu = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
+        self._refresh_shape_material_mu()
+
+    def _refresh_shape_material_mu(self) -> None:
+        """Copy the model's current friction coefficients into the solver's fixed buffer."""
+        # Users may replace model.shape_material_mu; captured graphs keep this buffer's address.
+        mu = self.model.shape_material_mu
+        if mu is not None and self.model.shape_count:
+            wp.copy(self.shape_material_mu, mu, count=self.model.shape_count)
 
     def _update_kinematic_state(self) -> None:
         """Refresh cached kinematic flags and effective joint armature."""
@@ -1077,8 +1082,9 @@ class SolverFeatherPGS(SolverBase):
         Joint (frames), joint DOF (armature, drive gains), body (kinematic flags) and
         inertial changes request a mass-matrix refresh of every articulation on the next
         step, independent of ``update_mass_matrix_interval``. Body flags (kinematic
-        membership) and joint DOF properties (armature, damping) are re-read. Other model data,
-        such as gravity, limits and shape properties, is read every step. A kinematic free
+        membership), joint DOF properties (armature, damping) and shape friction
+        coefficients are re-read. Other model data, such as gravity, limits and shape
+        transforms, is read every step. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
         equality rows: enabling one that is not converted to a Newton loop joint or mimic
@@ -1096,6 +1102,8 @@ class SolverFeatherPGS(SolverBase):
             self._mass_update_requested.fill_(1)
         if flags & ModelFlags.JOINT_DOF_PROPERTIES:
             self._refresh_passive_joint_damping()
+        if flags & ModelFlags.SHAPE_PROPERTIES:
+            self._refresh_shape_material_mu()
         if flags & ModelFlags.JOINT_PROPERTIES:
             # Joint frames move the bodies the mass matrix is built from.
             self._mass_update_requested.fill_(1)
