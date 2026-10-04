@@ -1184,10 +1184,15 @@ class SolverFeatherPGS(SolverBase):
             self.shape_material_mu = model.shape_material_mu
         else:
             self.shape_material_mu = wp.zeros((1,), dtype=wp.float32, device=model.device)
-        if model.shape_material_restitution is not None:
-            self.shape_material_restitution = model.shape_material_restitution
-        else:
-            self.shape_material_restitution = wp.zeros((1,), dtype=wp.float32, device=model.device)
+        self.shape_material_restitution = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
+        self._refresh_shape_material_restitution()
+
+    def _refresh_shape_material_restitution(self) -> None:
+        """Copy the model's current restitution coefficients into the solver's fixed buffer."""
+        # Users may replace model.shape_material_restitution; captured graphs keep this buffer's address.
+        restitution = self.model.shape_material_restitution
+        if restitution is not None and self.model.shape_count:
+            wp.copy(self.shape_material_restitution, restitution, count=self.model.shape_count)
 
     def _update_kinematic_state(self) -> None:
         """Refresh cached kinematic flags and effective joint armature."""
@@ -1236,8 +1241,9 @@ class SolverFeatherPGS(SolverBase):
         Joint (frames), joint DOF (armature, drive gains), body (kinematic flags) and
         inertial changes request a mass-matrix refresh of every articulation on the next
         step, independent of ``update_mass_matrix_interval``. Body flags (kinematic
-        membership) and joint DOF properties (armature) are re-read. Other model data,
-        such as gravity, limits and shape properties, is read every step. A kinematic free
+        membership), joint DOF properties (armature) and shape restitution coefficients
+        are re-read. Other model data, such as gravity, limits and shape transforms, is
+        read every step. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
         equality rows: enabling one that is not converted to a Newton loop joint or mimic
@@ -1279,6 +1285,8 @@ class SolverFeatherPGS(SolverBase):
                 device=self.model.device,
             )
             self._mass_update_requested.fill_(1)
+        if flags & ModelFlags.SHAPE_PROPERTIES:
+            self._refresh_shape_material_restitution()
         if self._friction_anchors_enabled and flags & ModelFlags.SHAPE_PROPERTIES:
             self._friction_patches.update_geometry(self.model)
         if flags & (
