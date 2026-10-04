@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise contact-torsion lifecycle and row-storage safety across steps."""
 
+import itertools
 import unittest
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton import GeoType
 from newton._src.solvers.feather_pgs.contact_torsion import _contact_groups
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_TORSION
@@ -89,6 +91,51 @@ def test_torsion_respects_relaxation(test, device):
     np.testing.assert_allclose(spin, 0.5, atol=1e-4)
 
 
+def test_torsion_keeps_joint_velocity_limits(test, device):
+    """Let joint velocity limits have the last word over the spin rows of each sweep."""
+    limit = 0.1
+    passes = ((1, 0), (4, 0), (1, 2))
+    preparations = ("host", "device", "graph")
+    for (iterations, velocity_iterations), preparation, radius in itertools.product(passes, preparations, (0.0, 1.0)):
+        with test.subTest(
+            iterations=iterations, velocity_iterations=velocity_iterations, preparation=preparation, radius=radius
+        ):
+            _, solver, model, initial, contacts = fixture(
+                radius,
+                device=device,
+                center_only=True,
+                spin=0.0,
+                pgs_iterations=iterations,
+                pgs_velocity_iterations=velocity_iterations,
+                contact_torsion_device=preparation != "host",
+            )
+            limits = np.full(model.joint_dof_count, np.inf, dtype=np.float32)
+            limits[5] = limit
+            model.joint_velocity_limit.assign(limits)
+            # Only the second pad spins, so any DOF 5 motion is transferred through the contact.
+            velocity = initial.joint_qd.numpy()
+            velocity[5], velocity[11] = 0.0, 10.0
+            initial.joint_qd.assign(velocity)
+            newton.eval_fk(model, initial.joint_q, initial.joint_qd, initial)
+            output = model.state()
+            if preparation == "graph":
+                solver.prepare_contact_torsion_capture(initial, output)
+                with wp.ScopedCapture(device=model.device) as capture:
+                    solver.step(initial, output, model.control(), contacts, 0.0025)
+                wp.capture_launch(capture.graph)
+                solver.validate_contact_torsion()
+            else:
+                solver.step(initial, output, model.control(), contacts, 0.0025)
+            count = int(solver.constraint_count.numpy()[0])
+            spin_rows = np.count_nonzero(solver.row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_TORSION)
+            test.assertEqual(spin_rows, int(radius > 0.0))
+            qd = output.joint_qd.numpy()
+            test.assertLessEqual(abs(float(qd[5])), limit * (1.0 + 1e-5))
+            if radius > 0.0:
+                # The spin row still resists the relative spin.
+                test.assertLess(float(qd[11]), 9.0)
+
+
 def test_contact_row_loss_fails_without_diagnostics(test, device):
     """Detect rolled-back dropped contacts even with the overflow warning off."""
     baseline, *_ = fixture(0.0, device=device, center_only=True)
@@ -127,6 +174,7 @@ for _fn in (
     test_normal_parent_metadata_is_preserved,
     test_torsion_uses_cfm_floor,
     test_torsion_respects_relaxation,
+    test_torsion_keeps_joint_velocity_limits,
     test_contact_row_loss_fails_without_diagnostics,
     test_selected_unsupported_shape_fails_at_construction,
     test_hydro_contact_input_is_rejected,

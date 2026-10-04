@@ -4550,10 +4550,10 @@ def _get_pgs_solve_mf_gs_kernel(
        the world velocity, software-pipelined one row ahead;
     2. the free-body contact and friction rows: lanes 0-5 handle body A and lanes 6-11
        body B;
-    3. the dense joint velocity-limit rows and the free-body velocity-limit rows, so
-       velocity limits have the last word in each iteration;
-    4. with ``contact_torsion``, the contact torsion rows, which the dense pass skips
-       (``contact_torsion.torque_sweep_source``).
+    3. with ``contact_torsion``, the contact torsion rows, which the dense pass skips
+       (``contact_torsion.torque_sweep_source``);
+    4. the dense joint velocity-limit rows and the free-body velocity-limit rows, so
+       velocity limits have the last word in each iteration.
 
     Friction rows follow their normal row and solve the two tangent impulses together on
     the Coulomb disk of the current normal impulse (``FRICTION_PAIR_CUDA``). A
@@ -4873,6 +4873,7 @@ def _get_pgs_solve_mf_gs_kernel(
             __syncwarp();
         }}
 
+{torsion_sweep}
         // Velocity limits last: dense joint velocity limits, then free-body velocity limits.
 {dense_velocity_limit_pass}
         for (int i = mf_contact_end; i < m_mf; i++) {{
@@ -4897,7 +4898,6 @@ def _get_pgs_solve_mf_gs_kernel(
             }}
             __syncwarp();
         }}
-{torsion_sweep}
 
         // An exactly stationary sweep is a fixed point; later sweeps are redundant.
         if (__ballot_sync(MASK, iteration_changed != 0) == 0u) break;
