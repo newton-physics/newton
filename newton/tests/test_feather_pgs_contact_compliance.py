@@ -327,6 +327,40 @@ def test_shape_restitution_is_rejected(test, device):
     test.assertTrue(np.isfinite(trace).all())
 
 
+def test_runtime_shape_restitution_is_rejected(test, device):
+    """Reject a positive restitution assigned after construction once a shape notification publishes it."""
+    for replace in (False, True):
+        with test.subTest(replace=replace), wp.ScopedDevice(device):
+            _, _, solver, _ = run_fixture(device=device, articulated=True, enabled=True, steps=1)
+            model = solver.model
+            pipeline = newton.CollisionPipeline(model, rigid_contact_max=32)
+            contacts = pipeline.contacts()
+            for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+                setattr(contacts, name, wp.full(32, 3000.0, dtype=float))
+            states = [model.state(), model.state()]
+            newton.eval_fk(model, model.joint_q, model.joint_qd, states[0])
+
+            def step(states=states, pipeline=pipeline, contacts=contacts, solver=solver):
+                pipeline.collide(states[0], contacts)
+                solver.step(states[0], states[1], None, contacts, 0.005)
+                states.reverse()
+
+            restitution = np.full(model.shape_count, 0.5, dtype=np.float32)
+            if replace:
+                model.shape_material_restitution = wp.array(restitution, dtype=float)
+            else:
+                model.shape_material_restitution.assign(restitution)
+            # The solver reads its own restitution buffer, which only a notification refreshes.
+            step()
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+            with test.assertRaisesRegex(ValueError, "contact_compliance requires zero shape restitution"):
+                step()
+            model.shape_material_restitution.zero_()
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+            step()
+            test.assertTrue(np.isfinite(states[0].body_q.numpy()).all())
+
+
 class TestContactComplianceIntegration(unittest.TestCase):
     """Gate the experimental compliance against the dense and free-body contact rows."""
 
@@ -344,6 +378,7 @@ for _fn in (
     test_omitted_friction_anchor_beta_keeps_patches_without_compliance,
     test_explicit_patch_compliance_conflict_fails_before_step,
     test_shape_restitution_is_rejected,
+    test_runtime_shape_restitution_is_rejected,
 ):
     add_function_test(TestContactComplianceIntegration, _fn.__name__, _fn, devices=devices)
 
