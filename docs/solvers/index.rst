@@ -345,7 +345,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
    * - :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper`
      - |yes|
-     - |yes|
+     - |yes| :sup:`9`
      - |yes| :sup:`2`
      - |yes|
      - |yes|
@@ -353,7 +353,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
    * - :attr:`~newton.Model.joint_limit_ke` / :attr:`~newton.Model.joint_limit_kd`
      - |yes|
-     - |no| :sup:`9`
+     - |no|
      - |yes| :sup:`2`
      - |no|
      - |yes|

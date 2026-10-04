@@ -78,7 +78,6 @@ def test_overflow_warning_is_printed_once(test, device):
     state_in, state_out = model.state(), model.state()
     pipeline.collide(state_in, contacts)
     solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
-    wp.synchronize_device(device)
     np.testing.assert_array_equal(solver._row_overflow_warning_emitted.numpy(), [0, 1, 0])
 
 

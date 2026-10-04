@@ -84,7 +84,6 @@ def test_tiled_response_diagonal_matches_dense_reference(test, device):
         outputs=[world_diag],
         device=device,
     )
-    wp.synchronize_device(device)
 
     response_ref = np.zeros_like(jacobian_np)
     group_diag_ref = np.zeros((num_articulations, max_constraints), dtype=np.float32)
