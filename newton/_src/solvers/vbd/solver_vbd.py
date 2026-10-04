@@ -198,6 +198,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         - :attr:`~newton.Model.joint_limit_lower`/:attr:`~newton.Model.joint_limit_upper` and
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
           for REVOLUTE, PRISMATIC, and D6 joints.
+        - Angular winding is retained for REVOLUTE joints and D6 joints with
+          exactly one angular DOF. Tracking requires less than ``pi`` radians
+          of relative rotation per solver step, including prediction and
+          solver corrections.
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
@@ -1176,6 +1180,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             ) = self._init_joint_penalty_k()
             self._init_structural_k()
             self.joint_rest_angle = self._init_joint_rest_angle()
+            self.joint_angle_prev = wp.clone(self.joint_rest_angle)
 
             # Body-body contact state (pre-allocated in __init__ when possible, resized on first step otherwise).
             self.body_body_contact_penalty_k = wp.zeros(0, dtype=float, device=self.device)
@@ -2082,6 +2087,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         ``theta_abs = theta + joint_rest_angle[dof_idx]`` converts rest-relative
         ``theta`` back to absolute coordinates for drive/limit comparison.
 
+        REVOLUTE joints and D6 joints with exactly one angular DOF additionally
+        select the equivalent absolute angle nearest ``joint_angle_prev``.
+        Multi-angular-axis D6 joints retain the principal projected coordinates.
+
         Only angular DOFs of REVOLUTE and D6 joints need nonzero entries. Linear DOFs
         (PRISMATIC, D6 linear) use absolute geometric measurements (``d_along``) and
         are unaffected - their entries are left at 0.
@@ -2445,6 +2454,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         is zeroed immediately. Pose and enabled-rod friction history (curvature,
         stress, and increment) are rebaselined together from the next :meth:`step`
         input pose, after any intervening state edits or forward kinematics.
+        REVOLUTE and one-axis-D6 winding re-anchors to the pose-equivalent angle
+        nearest the authored rest coordinate; a pose alone cannot restore an
+        independently intended multi-turn coordinate.
         Selected-world contact warm-start is cold-started when fresh rigid contacts
         are next processed. Internal rigid history is reset regardless of *flags*.
         When an external solver integrates the bodies, reset performs no rigid
@@ -3467,6 +3479,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     dim=model.joint_count,
                     inputs=[
                         model.joint_type,
+                        model.joint_world,
                         model.joint_enabled,
                         model.joint_parent,
                         model.joint_child,
@@ -3477,8 +3490,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                         model.joint_dof_dim,
                         self.joint_rod_rest_kb_local,
                         self.joint_rod_rest_twist,
+                        state_in.body_q,
                         self.body_q_prev,
                         model.body_q,
+                        self.joint_rest_angle,
+                        self._rigid_pose_rebaseline_mask,
                         self.joint_constraint_start,
                         self.joint_constraint_dim,
                         self.joint_is_hard,
@@ -3507,6 +3523,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.joint_drive_limit_support,
                         self.joint_drive_lambda,
                         self.joint_limit_lambda,
+                        self.joint_angle_prev,
                     ],
                     device=self.device,
                 )
@@ -3939,6 +3956,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.rigid_compliant_alm,
                     model.joint_dof_dim,
                     self.joint_rest_angle,
+                    self.joint_angle_prev,
                     self.body_forces,
                     self.body_torques,
                     self.body_hessian_ll,
@@ -4062,6 +4080,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.joint_limit_ke,
                     model.joint_limit_kd,
                     self.joint_rest_angle,
+                    self.joint_angle_prev,
                     self.joint_drive_limit_support,
                     dt,
                     self.joint_penalty_k,  # input/output
