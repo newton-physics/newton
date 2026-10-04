@@ -163,7 +163,13 @@ class TestFeatherPGSColoredScheduling(unittest.TestCase):
         model_ref, _ = _heap(nx=4, ny=4, nz=2)
         model_ref.rigid_contact_max = 8192
         solver = newton.solvers.SolverFeatherPGS(
-            model_ref, pgs_mode="matrix_free", articulated_contact_response="immediate", pgs_iterations=6
+            model_ref,
+            pgs_mode="matrix_free",
+            articulated_contact_response="immediate",
+            pgs_iterations=6,
+            mf_max_constraints=8192,
+            dense_max_constraints=64,
+            row_watermark=True,
         )
         pipeline = newton.CollisionPipeline(model_ref, rigid_contact_max=8192)
         contacts = pipeline.contacts()
@@ -175,6 +181,8 @@ class TestFeatherPGSColoredScheduling(unittest.TestCase):
             solver.step(s0, s1, control, contacts, 1.0 / 240.0)
             s0, s1 = s1, s0
 
+        # An undersized reference drops rows in atomic order, which makes it nondeterministic.
+        self.assertEqual(solver.constraint_row_watermarks()["mf_dropped_contact_rows_high_water"], 0)
         a = colored.body_q.numpy()[:, :3]
         b = s0.body_q.numpy()[:, :3]
         self.assertTrue(np.isfinite(b).all())
