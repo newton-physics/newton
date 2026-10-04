@@ -3,6 +3,7 @@
 
 """Connect (loop-closure) rows of SolverFeatherPGS."""
 
+import functools
 import inspect
 import unittest
 import warnings
@@ -307,7 +308,9 @@ def test_connect_survives_foreign_joint_between_tree_and_loop(test, device):
 def test_unsupported_loop_joints_are_rejected(test, device):
     """Non-BALL loop joints and closures between two dynamic articulations raise."""
     b = _build_four_bar()
-    b.add_joint_fixed(parent=1, child=2)
+    _expect_one_warning(
+        test, UserWarning, "another joint already connects these bodies", lambda: b.add_joint_fixed(parent=1, child=2)
+    )
     with test.assertRaisesRegex(NotImplementedError, "only BALL loop-closing joints"):
         SolverFeatherPGS(b.finalize(device=device))
 
@@ -591,7 +594,16 @@ def test_imported_connect_equality_is_enforced(test, device):
     """
     for convert in (True, False):
         b = newton.ModelBuilder()
-        b.add_mjcf(mjcf, convert_mjc_equality_constraints=convert)
+        if convert:
+            # The converted CONNECT becomes a BALL loop joint parallel to the hinge.
+            _expect_one_warning(
+                test,
+                UserWarning,
+                "another joint already connects these bodies",
+                functools.partial(b.add_mjcf, mjcf, convert_mjc_equality_constraints=True),
+            )
+        else:
+            b.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
         model = b.finalize(device=device)
         test.assertEqual(model.mujoco.equality_constraint_count, 1)
         if not convert:
@@ -606,6 +618,17 @@ def test_imported_connect_equality_is_enforced(test, device):
             state_0, state_1 = state_1, state_0
         # The closure at the free end holds the hinge against gravity.
         test.assertLess(abs(float(state_0.joint_q.numpy()[0])), 1.0e-2)
+
+
+def _expect_one_warning(test, category, pattern, call):
+    """Return ``call()``, requiring it to emit exactly one warning, of ``category`` and matching ``pattern``."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = call()
+    test.assertEqual(len(caught), 1, [f"{w.category.__name__}: {w.message}" for w in caught])
+    test.assertIs(caught[0].category, category)
+    test.assertRegex(str(caught[0].message), pattern)
+    return result
 
 
 class TestFeatherPGSConnect(unittest.TestCase):
