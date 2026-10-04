@@ -14,6 +14,7 @@ from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 _DT = 0.01
+_UNSOLVABLE_GLOBAL_WARNING = r"global \(world -1\) articulations \[\d+\] .* cannot be solved"
 
 
 def _floor_model(device, floor: str, box_x=(-2.0, 2.0), box_z=0.999, kinematic_world0=False):
@@ -149,15 +150,27 @@ def _jointed_kinematic_floor_model(device):
 
 
 def _construct(test, model, expect_warning, **kwargs):
-    """Construct the solver and check whether it warns about unsolvable global contacts."""
+    """Construct the solver, requiring exactly the unsolvable-global-contact warning or no warning."""
+    if expect_warning:
+        return _expect_one_warning(
+            test, UserWarning, _UNSOLVABLE_GLOBAL_WARNING, lambda: SolverFeatherPGS(model, **kwargs)
+        )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         solver = SolverFeatherPGS(model, **kwargs)
-    messages = [str(w.message) for w in caught if "cannot be solved" in str(w.message)]
-    test.assertEqual(len(messages), 1 if expect_warning else 0, msg=messages)
-    if expect_warning:
-        test.assertIn("global (world -1) articulations", messages[0])
+    test.assertEqual(len(caught), 0, [f"{w.category.__name__}: {w.message}" for w in caught])
     return solver
+
+
+def _expect_one_warning(test, category, pattern, call):
+    """Return ``call()``, requiring it to emit exactly one warning, of ``category`` and matching ``pattern``."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = call()
+    test.assertEqual(len(caught), 1, [f"{w.category.__name__}: {w.message}" for w in caught])
+    test.assertIs(caught[0].category, category)
+    test.assertRegex(str(caught[0].message), pattern)
+    return result
 
 
 def test_jointed_global_kinematic_flags_other_world_contacts(test, device):
@@ -240,7 +253,7 @@ def test_dynamic_global_body_flags_other_world_contacts(test, device):
     # World 0's box against the same body is solved in world 0.
     model = _floor_model(device, "dynamic")
     _lift_box(model, 1)
-    solver = SolverFeatherPGS(model, warn_constraint_overflow=False)
+    solver = _construct(test, model, True, warn_constraint_overflow=False)
     v, contacts = _step_once(model, solver)
     count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertGreater(count, 0)
@@ -281,7 +294,7 @@ def _place(model, state, z):
 def test_global_overflow_has_its_own_reset_slot(test, device):
     """Global row loss latches the global entry; each reset-mask entry clears only its own status."""
     model = _global_overflow_model(device)
-    solver = SolverFeatherPGS(model, mf_max_constraints=3, warn_constraint_overflow=False)
+    solver = _construct(test, model, True, mf_max_constraints=3, warn_constraint_overflow=False)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state, output = model.state(), model.state()
@@ -363,7 +376,8 @@ def _few_articulation_models(device):
 
 def _check_global_slot_reset(test, device, model, z_contact, z_free):
     entries = model.world_count + 1
-    solver = SolverFeatherPGS(model, mf_max_constraints=3, warn_constraint_overflow=False)
+    # A dynamic global box can only meet another world's body when there are several worlds.
+    solver = _construct(test, model, model.world_count > 1, mf_max_constraints=3, warn_constraint_overflow=False)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state, output = model.state(), model.state()
