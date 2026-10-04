@@ -199,7 +199,9 @@ def _run_stage1(solver, state, following):
 def _check_graph_publication(test, model):
     """Publish body state eagerly and by CUDA graph replay into poisoned buffers."""
     device = model.device
-    solvers = [_solver(model, enabled=value) for value in (False, True)]
+    # Hold every finite limit row: these checks cover traversal, not row capacity.
+    rows = 2 * model.joint_dof_count
+    solvers = [_solver(model, enabled=value, dense_max_constraints=rows) for value in (False, True)]
     eager = []
     for solver in solvers:
         state = model.state()

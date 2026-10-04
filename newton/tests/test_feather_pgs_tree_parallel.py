@@ -242,7 +242,9 @@ def test_backward_torques_with_live_forces_and_passive_terms(test, device):
             model.joint_damping.assign(damping)
             model.joint_target_ke.assign(np.linspace(0.0, 4.0, model.joint_dof_count, dtype=np.float32))
             model.joint_target_kd.assign(np.linspace(0.5, 0.0, model.joint_dof_count, dtype=np.float32))
-            solvers = [_solver(model, enabled=value, velocity_limits=velocity_limits) for value in (False, True)]
+            # Hold every finite limit row: these checks cover traversal, not row capacity.
+            options = {"velocity_limits": velocity_limits, "dense_max_constraints": 2 * model.joint_dof_count}
+            solvers = [_solver(model, enabled=value, **options) for value in (False, True)]
             states = [model.state() for _ in solvers]
             following = [model.state() for _ in solvers]
             controls = [model.control() for _ in solvers]
@@ -280,7 +282,9 @@ def test_stage1_matches_serial_with_velocity_prescale(test, device):
         with test.subTest(velocity_limits=velocity_limits):
             model = _build_fingers(device, ragged=True)
             model.joint_velocity_limit.fill_(0.05)
-            solvers = [_solver(model, enabled=value, velocity_limits=velocity_limits) for value in (False, True)]
+            # Hold every finite limit row: these checks cover traversal, not row capacity.
+            options = {"velocity_limits": velocity_limits, "dense_max_constraints": 2 * model.joint_dof_count}
+            solvers = [_solver(model, enabled=value, **options) for value in (False, True)]
             states = [model.state() for _ in solvers]
             outputs = [model.state() for _ in solvers]
             for solver, state in zip(solvers, states, strict=True):
