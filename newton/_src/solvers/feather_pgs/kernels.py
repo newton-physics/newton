@@ -2129,10 +2129,11 @@ def populate_connect_J_for_size(
 # =============================================================================
 # Fold the bilateral rows B of an articulation into the response of its other rows
 # (a Schur complement): with Y_B = H^-1 J_B^T and S = J_B Y_B (+ regularization),
-# every other row's response becomes Y'_i = Y_i - Y_B S^-1 (J_B Y_i), so J_B Y'_i = 0
-# and sweep impulses preserve the closures. The corrected row diagonals follow from
-# the unchanged J Y diagonal pass. The predictor velocity is projected once
-# (J_B v + b_B = 0), which replaces the Baumgarte work of the eliminated rows.
+# every other row's response becomes Y'_i = Y_i - Y_B S^-1 (J_B Y_i), so J_B Y'_i is
+# only a regularization residual and sweep impulses nearly preserve the closures. The
+# corrected row diagonals follow from the unchanged J Y diagonal pass. The predictor
+# velocity is projected once (J_B v + b_B ~ 0, up to the same residual), which replaces
+# the Baumgarte work of the eliminated rows.
 
 PREELIM_MAX_ROWS = 8
 """Per-articulation capacity of the pre-eliminated bilateral block, for example one

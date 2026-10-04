@@ -175,7 +175,7 @@ def _run_four_bar(device, steps: int = 720, crank_target: float = 0.6, pgs_itera
 
     Runs at a low iteration count on purpose: with iterative connect rows the anchor gap
     is limited by convergence (about 0.5 mm at 2 iterations), while pre-elimination
-    enforces the closure independently of the sweep budget.
+    keeps it small at the same budget.
     """
     model = _build_four_bar().finalize(device=device)
     solver = SolverFeatherPGS(model, pgs_iterations=pgs_iterations, pgs_beta=0.1, **solver_kwargs)
@@ -375,7 +375,7 @@ def test_mechanism_behavior_preserved(test, device):
 
 
 def test_rows_remain_allocated(test, device):
-    """Eliminated rows keep their dense slots; they are neutralized, not removed."""
+    """Eliminated rows keep their dense slots and stay in the sweep."""
     solver, _, _, _ = _run_four_bar(device, steps=60, enable_bilateral_preelimination=True)
     counts = solver.constraint_count.numpy()
     rows = solver.row_type.numpy()

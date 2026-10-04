@@ -11,7 +11,7 @@ import numpy as np
 import warp as wp
 
 from ...core.reset import reset_world_selected
-from ...core.types import override
+from ...core.types import Vec3, override
 from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk
@@ -1637,8 +1637,8 @@ class SolverFeatherPGS(SolverBase):
     def set_loop_joint_enabled(self, joint: int, enabled: bool) -> None:
         """Enable or release the connect rows of a loop-closing BALL joint.
 
-        The closure keeps its rows allocated, so toggling takes effect on the next
-        :meth:`step` without recapturing a CUDA graph. Call it outside graph capture.
+        Rows are reserved into fixed buffers every step, so toggling takes effect on the
+        next :meth:`step` without recapturing a CUDA graph. Call it outside graph capture.
 
         Args:
             joint: Model joint index of a loop-closing BALL joint.
@@ -1648,7 +1648,7 @@ class SolverFeatherPGS(SolverBase):
         self._connect_enabled_np[index] = 1 if enabled else 0
         self._connect_enabled.assign(self._connect_enabled_np)
 
-    def set_loop_joint_anchors(self, joint: int, parent_anchor, child_anchor) -> None:
+    def set_loop_joint_anchors(self, joint: int, parent_anchor: Vec3, child_anchor: Vec3) -> None:
         """Move the anchors of a loop-closing BALL joint.
 
         Use it, for example, to attach a body to a prescribed carrier at the relative pose
@@ -1890,7 +1890,7 @@ class SolverFeatherPGS(SolverBase):
             )
 
     def _stage5_project_bilateral_velocity(self) -> None:
-        """Enforce ``J_B v = -b_B`` once, right after the solve velocity is seeded with the predictor."""
+        """Project the predictor velocity once toward ``J_B v = -b_B``, up to the regularization residual."""
         for size in self.size_groups:
             wp.launch(
                 preelim_project_velocity_for_size,
