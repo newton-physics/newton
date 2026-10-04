@@ -1077,7 +1077,7 @@ class SolverFeatherPGS(SolverBase):
         Joint (frames), joint DOF (armature, drive gains), body (kinematic flags) and
         inertial changes request a mass-matrix refresh of every articulation on the next
         step, independent of ``update_mass_matrix_interval``. Body flags (kinematic
-        membership) and joint DOF properties (armature) are re-read. Other model data,
+        membership) and joint DOF properties (armature, damping) are re-read. Other model data,
         such as gravity, limits and shape properties, is read every step. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
@@ -1094,6 +1094,8 @@ class SolverFeatherPGS(SolverBase):
             self._update_kinematic_state()
             self._scatter_armature_to_groups()
             self._mass_update_requested.fill_(1)
+        if flags & ModelFlags.JOINT_DOF_PROPERTIES:
+            self._refresh_passive_joint_damping()
         if flags & ModelFlags.JOINT_PROPERTIES:
             # Joint frames move the bodies the mass matrix is built from.
             self._mass_update_requested.fill_(1)
@@ -1287,8 +1289,15 @@ class SolverFeatherPGS(SolverBase):
         # Passive springs are not part of this solver; the inverse-dynamics kernel takes zeros.
         self._passive_spring_stiffness = zeros
         self._passive_spring_ref = zeros
-        damping = model.joint_damping
-        self._passive_joint_damping = damping if damping is not None else zeros
+        self._passive_joint_damping = wp.zeros_like(zeros)
+        self._refresh_passive_joint_damping()
+
+    def _refresh_passive_joint_damping(self) -> None:
+        """Copy the model's current joint damping into the solver's fixed damping buffer."""
+        # Users may replace model.joint_damping; captured graphs keep this buffer's address.
+        damping = self.model.joint_damping
+        if damping is not None and self.model.joint_dof_count:
+            wp.copy(self._passive_joint_damping, damping, count=self.model.joint_dof_count)
 
     def _compute_articulation_indices(self, model):
         # calculate total size and offsets of Jacobian and mass matrices for entire system

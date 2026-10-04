@@ -237,6 +237,51 @@ def test_joint_frame_change_with_notify_matches_freshly_built_solver(test, devic
             np.testing.assert_allclose(np.asarray(history), reference, rtol=0.0, atol=1.0e-5)
 
 
+def _check_damping_edit_matches_fresh_solver(test, device, replace: bool):
+    """Edit joint damping after a step, notify, and compare the next eager or captured step to a fresh solver."""
+    for capture in (False, True):
+        with test.subTest(capture=capture):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joint = builder.add_joint_prismatic(-1, link, axis=newton.Axis.X, damping=1.0, armature=0.0)
+            builder.add_articulation([joint])
+            model = builder.finalize(device=device)
+            solver = SolverFeatherPGS(model, update_mass_matrix_interval=100)
+            state_0, state_1 = model.state(), model.state()
+            state_0.joint_qd.fill_(1.0)
+            control = model.control()
+            solver.step(state_0, state_1, control, None, 0.01)
+            if capture:
+                with wp.ScopedCapture(device=device) as graph:
+                    solver.step(state_0, state_1, control, None, 0.01)
+            if replace:
+                model.joint_damping = wp.array([3.0], dtype=wp.float32, device=device)
+            else:
+                model.joint_damping.assign([3.0])
+            solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+            if capture:
+                wp.capture_launch(graph.graph)
+            else:
+                solver.step(state_0, state_1, control, None, 0.01)
+
+            fresh = SolverFeatherPGS(model, update_mass_matrix_interval=100)
+            fresh_out = model.state()
+            fresh.step(state_0, fresh_out, control, None, 0.01)
+            np.testing.assert_allclose(fresh.joint_tau.numpy(), [-3.0], atol=1.0e-6)
+            np.testing.assert_allclose(solver.joint_tau.numpy(), fresh.joint_tau.numpy(), atol=1.0e-6)
+            np.testing.assert_allclose(state_1.joint_qd.numpy(), fresh_out.joint_qd.numpy(), atol=1.0e-6)
+
+
+def test_replaced_joint_damping_matches_fresh_solver(test, device):
+    """Read a joint damping array replaced on the model at the next JOINT_DOF_PROPERTIES notify."""
+    _check_damping_edit_matches_fresh_solver(test, device, replace=True)
+
+
+def test_assigned_joint_damping_matches_fresh_solver(test, device):
+    """Read joint damping modified in place at the next JOINT_DOF_PROPERTIES notify."""
+    _check_damping_edit_matches_fresh_solver(test, device, replace=False)
+
+
 class TestFeatherPGSNotifyInertial(unittest.TestCase):
     pass
 
@@ -250,6 +295,8 @@ for _name in (
     "test_com_change_with_notify_matches_freshly_built_solver",
     "test_kinematic_flag_change_is_picked_up",
     "test_joint_frame_change_with_notify_matches_freshly_built_solver",
+    "test_replaced_joint_damping_matches_fresh_solver",
+    "test_assigned_joint_damping_matches_fresh_solver",
 ):
     add_function_test(TestFeatherPGSNotifyInertial, _name, globals()[_name], devices=devices)
 
