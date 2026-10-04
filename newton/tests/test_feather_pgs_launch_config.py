@@ -3,7 +3,9 @@
 
 """Construction, option validation and kernel selection of SolverFeatherPGS."""
 
+import functools
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -121,7 +123,12 @@ def test_unsupported_model_features_raise(test, device):
     leader = mimic.add_joint_revolute(-1, links[0], axis=newton.Axis.Y)
     follower = mimic.add_joint_revolute(links[0], links[1], axis=newton.Axis.Y)
     mimic.add_articulation([leader, follower])
-    mimic.add_constraint_mimic(follower, leader, coef1=1.0)
+    _expect_one_warning(
+        test,
+        DeprecationWarning,
+        r"add_constraint_mimic\(\) is deprecated",
+        functools.partial(mimic.add_constraint_mimic, follower, leader, coef1=1.0),
+    )
     with test.assertRaisesRegex(NotImplementedError, "mimic"):
         SolverFeatherPGS(mimic.finalize(device=device))
 
@@ -244,7 +251,12 @@ def test_unconverted_equality_constraints_raise(test, device):
     """
     for convert, message in ((True, "loop-closing"), (False, "equality")):
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf, convert_mjc_equality_constraints=convert)
+        add_mjcf = functools.partial(builder.add_mjcf, mjcf, convert_mjc_equality_constraints=convert)
+        if convert:
+            # The converted loop joint parallels the hinge, which the builder warns about.
+            _expect_one_warning(test, UserWarning, r"Adding a BALL joint .* another joint already connects", add_mjcf)
+        else:
+            add_mjcf()
         imported = builder.finalize(device=device)
         test.assertEqual(imported.mujoco.equality_constraint_count, 1)
         with test.assertRaisesRegex(NotImplementedError, message):
@@ -375,6 +387,17 @@ def test_enabling_equality_constraint_at_runtime_raises(test, device):
         solver.notify_model_changed(newton.ModelFlags.ALL)
     model.mujoco.equality_constraint_enabled.assign(np.array([False]))
     solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
+
+
+def _expect_one_warning(test, category, pattern, call):
+    """Return ``call()``, requiring it to emit exactly one warning, of ``category`` and matching ``pattern``."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = call()
+    test.assertEqual(len(caught), 1, [f"{w.category.__name__}: {w.message}" for w in caught])
+    test.assertIs(caught[0].category, category)
+    test.assertRegex(str(caught[0].message), pattern)
+    return result
 
 
 class TestFeatherPGSLaunchConfig(unittest.TestCase):
