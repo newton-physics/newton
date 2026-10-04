@@ -32,6 +32,7 @@ from .kernels import (
     allocate_rigid_velocity_limit_slots,
     allocate_world_contact_slots,
     apply_augmented_mass_diagonal_grouped,
+    apply_free_root_angular_damping,
     apply_free_root_transport_to_predictor,
     apply_free_root_velocity_corrections,
     apply_mf_warmstart_impulses,
@@ -2519,6 +2520,22 @@ class SolverFeatherPGS(SolverBase):
                 outputs=[self.v_out, state_aug.joint_qdd],
                 device=model.device,
             )
+            if self._free_root_joint_count:
+                # The integrator damped the position-solve velocity; damp the published one alike.
+                wp.launch(
+                    apply_free_root_angular_damping,
+                    dim=self._free_root_joint_count,
+                    inputs=[
+                        self._free_root_joint_indices,
+                        model.joint_qd_start,
+                        self._kinematic_joint_mask,
+                        model.joint_child,
+                        self.rigid_body_angular_damping,
+                        dt,
+                    ],
+                    outputs=[self.v_out],
+                    device=model.device,
+                )
             wp.copy(state_out.joint_qd, self.v_out)
         else:
             self._integrate(state_in, state_aug, state_out, dt, self.v_out)

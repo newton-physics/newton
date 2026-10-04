@@ -1499,6 +1499,26 @@ def remove_free_root_transport_from_qdd(
 
 
 @wp.kernel
+def apply_free_root_angular_damping(
+    free_root_joint_indices: wp.array[int],
+    joint_qd_start: wp.array[int],
+    kinematic_joint_mask: wp.array[int],
+    joint_child: wp.array[int],
+    body_angular_damping: wp.array[float],
+    dt: float,
+    joint_qd: wp.array[float],
+):
+    """Scale each active free root's angular velocity by the decay ``jcalc_integrate`` applies."""
+    root_index = wp.tid()
+    d = _active_free_root_dof_start(free_root_joint_indices, joint_qd_start, kinematic_joint_mask, root_index)
+    if d < 0:
+        return
+    scale = 1.0 - body_angular_damping[joint_child[free_root_joint_indices[root_index]]] * dt
+    for i in range(3, 6):
+        joint_qd[d + i] = joint_qd[d + i] * scale
+
+
+@wp.kernel
 def integrate_generalized_joints(
     joint_type: wp.array[int],
     joint_parent: wp.array[int],

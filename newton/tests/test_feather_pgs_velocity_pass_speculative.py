@@ -15,6 +15,7 @@ No restitution is involved anywhere here: this is ordinary free fall with
 ``pgs_velocity_iterations`` enabled.
 """
 
+import itertools
 import unittest
 import warnings
 
@@ -416,6 +417,41 @@ def test_warm_start_with_velocity_iterations_is_supported(test, device):
     test.assertEqual(routes, {PATH_MATRIX_FREE})
 
 
+def test_velocity_iterations_keep_angular_damping(test, device):
+    """Apply the same root angular damping to the published velocity for every iteration count."""
+    dt = 0.01
+    spin = 10.0
+    for contact, damping, iterations in itertools.product((False, True), (0.0, 0.05, 2.0), (0, 1, 4)):
+        label = f"contact={contact} damping={damping} iterations={iterations}"
+        with test.subTest(label):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81 if contact else 0.0))
+            inertia = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+            xform = wp.transform(wp.vec3(0.0, 0.0, RADIUS), wp.quat_identity())
+            body = builder.add_body(xform=xform, mass=1.0, inertia=inertia, lock_inertia=True)
+            if contact:
+                # Frictionless contact through the centre leaves the spin to damping alone.
+                cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.0)
+                builder.add_shape_sphere(body, radius=RADIUS, cfg=cfg)
+                builder.add_ground_plane(cfg=cfg)
+            model = builder.finalize(device=device)
+            solver = newton.solvers.SolverFeatherPGS(model, pgs_velocity_iterations=iterations)
+            solver.rigid_body_angular_damping.fill_(damping)
+            state_in, state_out = model.state(), model.state()
+            state_in.joint_qd.assign(np.array([0.0, 0.0, 0.0, 0.0, 0.0, spin], dtype=np.float32))
+            newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+            contacts = None
+            if contact:
+                pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+                contacts = pipeline.contacts()
+                pipeline.collide(state_in, contacts)
+                test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0, f"{label}: no contact")
+            solver.step(state_in, state_out, model.control(), contacts, dt)
+
+            expected = spin * (1.0 - damping * dt)
+            test.assertAlmostEqual(float(state_out.joint_qd.numpy()[5]), expected, delta=1.0e-5, msg=label)
+            test.assertAlmostEqual(float(state_out.body_qd.numpy()[body][5]), expected, delta=1.0e-5, msg=label)
+
+
 devices = get_selected_cuda_test_devices()
 
 
@@ -433,6 +469,7 @@ for _fn in (
     test_light_body_crossing_uses_end_gap_not_impulse_scale,
     test_multiworld_end_gap_uses_each_world_position_velocity,
     test_warm_start_with_velocity_iterations_is_supported,
+    test_velocity_iterations_keep_angular_damping,
 ):
     add_function_test(TestFeatherPGSVelocityPassSpeculative, _fn.__name__, _fn, devices=devices)
 
