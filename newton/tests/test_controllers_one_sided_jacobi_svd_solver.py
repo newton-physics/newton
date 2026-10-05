@@ -156,17 +156,17 @@ def test_svd_one_sided_jacobi_handles_more_columns_than_rows(test: unittest.Test
 def test_svd_one_sided_jacobi_batch_has_no_cross_talk_with_heterogeneous_n_columns(test: unittest.TestCase, device):
     """Verify two matrices in one batched launch, with different n_columns, match solving each independently.
 
-    Robot 1's last three columns are zero-padding (n_columns=2), robot 0's
-    is a genuine 3x5 problem (n_columns=5): mixing different active sizes in one
-    launch must not let one batch element's data leak into another's.
+    Both wide (n_columns=4) and tall (n_columns=2) active problems must
+    ignore nonzero padding and match their independently solved, zero-padded
+    references.
     """
     rng = np.random.default_rng(31)
     a0 = rng.normal(size=(3, 5)).astype(np.float32)
     a1 = rng.normal(size=(3, 5)).astype(np.float32)
+    u_batch, s_batch, v_batch = _run_svd(np.stack([a0, a1]), [4, 2], device)
+    a0[:, 4:] = 0.0
     a1[:, 2:] = 0.0
-
-    u_batch, s_batch, v_batch = _run_svd(np.stack([a0, a1]), [5, 2], device)
-    u0, s0, v0 = _run_svd(a0[None], [5], device)
+    u0, s0, v0 = _run_svd(a0[None], [4], device)
     u1, s1, v1 = _run_svd(a1[None], [2], device)
 
     np.testing.assert_allclose(s_batch[0], s0[0], atol=1e-5)
