@@ -2813,6 +2813,12 @@ def _zero_force_hessian():
 
 
 @wp.func
+def _unwrap_hinge_angle(angle: float, reference: float) -> float:
+    """Select the equivalent hinge angle nearest its previous-step value."""
+    return angle + 2.0 * wp.pi * wp.round((reference - angle) / (2.0 * wp.pi))
+
+
+@wp.func
 def evaluate_joint_force_hessian(
     body_index: int,
     joint_index: int,
@@ -2860,6 +2866,7 @@ def evaluate_joint_force_hessian(
     joint_compliant_alm: int,
     joint_dof_dim: wp.array2d[int],
     joint_rest_angle: wp.array[float],
+    joint_angle_prev: wp.array[float],
     dt: float,
 ):
     """Compute VBD joint force and Hessian contributions for one body.
@@ -3306,7 +3313,7 @@ def evaluate_joint_force_hessian(
                 kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
             theta = wp.dot(kappa, a)
-            theta_abs = theta + joint_rest_angle[dof_idx]
+            theta_abs = _unwrap_hinge_angle(theta + joint_rest_angle[dof_idx], joint_angle_prev[dof_idx])
             omega_p = quat_velocity(q_wp, q_wp_prev, dt)
             omega_c = quat_velocity(q_wc, q_wc_prev, dt)
             dkappa_dt = compute_kappa_dot(J_world, omega_p, omega_c)
@@ -3650,6 +3657,8 @@ def evaluate_joint_force_hessian(
                         a = wp.normalize(joint_axis[dof_idx])
                         theta = wp.dot(kappa, a)
                         theta_abs = theta + joint_rest_angle[dof_idx]
+                        if ang_count == 1:
+                            theta_abs = _unwrap_hinge_angle(theta_abs, joint_angle_prev[dof_idx])
                         dtheta_dt = wp.dot(dkappa_dt, a)
 
                         f_scalar, H_scalar = _eval_joint_axis_drive_limit(
@@ -4277,6 +4286,7 @@ def init_rod_rest_bend_twist(
 @wp.kernel
 def step_joint_C0_lambda_rho(
     joint_type: wp.array[int],
+    joint_world: wp.array[int],
     joint_enabled: wp.array[bool],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -4287,8 +4297,11 @@ def step_joint_C0_lambda_rho(
     joint_dof_dim: wp.array2d[int],
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
+    body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
     body_q_rest: wp.array[wp.transform],
+    joint_rest_angle: wp.array[float],
+    pose_rebaseline_mask: wp.array[wp.bool],
     joint_constraint_start: wp.array[wp.int32],
     joint_constraint_dim: wp.array[wp.int32],
     joint_is_hard: wp.array[wp.int32],
@@ -4315,10 +4328,13 @@ def step_joint_C0_lambda_rho(
     joint_drive_limit_support: wp.array[float],
     joint_drive_lambda: wp.array[float],
     joint_limit_lambda: wp.array[float],
+    joint_angle_prev: wp.array[float],
 ):
     """Once-per-step joint setup before the iteration loop (dim = joint_count).
 
-    Sole owner of all per-step joint maintenance:
+    Sole owner of hinge-angle history and all per-step joint maintenance:
+      0. revolute and one-axis-D6 winding history (enabled or not; reset-selected
+         worlds re-anchor to the rest coordinate);
       1. penalty-k decay (runs even for disabled joints);
       2. compliant-ALM auto-``rho`` refresh for structural rows;
       3. directional support + multiplier retention for drive/limit rows;
@@ -4333,6 +4349,31 @@ def step_joint_C0_lambda_rho(
     c_dim = int(joint_constraint_dim[j])
     child = joint_child[j]
     parent = joint_parent[j]
+
+    # body_q already holds the forward prediction for dynamic bodies, so use
+    # body_q_prev there. Kinematic bodies are not integrated and may be caller-moved.
+    jt = joint_type[j]
+    ang_count = joint_dof_dim[j, 1]
+    if (jt == JointType.REVOLUTE or (jt == JointType.D6 and ang_count == 1)) and child >= 0:
+        X_wp = joint_X_p[j]
+        X_wp_rest = X_wp
+        if parent >= 0:
+            parent_pose = body_q_prev[parent] if body_inv_mass[parent] > 0.0 else body_q[parent]
+            X_wp = parent_pose * X_wp
+            X_wp_rest = body_q_rest[parent] * X_wp_rest
+        child_pose = body_q_prev[child] if body_inv_mass[child] > 0.0 else body_q[child]
+        X_wc = child_pose * joint_X_c[j]
+        X_wc_rest = body_q_rest[child] * joint_X_c[j]
+        dof = joint_qd_start[j]
+        if jt == JointType.D6:
+            dof = dof + joint_dof_dim[j, 0]
+        kappa = compute_kappa(X_wp.q, X_wc.q, X_wp_rest.q, X_wc_rest.q)
+        angle = wp.dot(kappa, wp.normalize(joint_axis[dof])) + joint_rest_angle[dof]
+        reference = joint_angle_prev[dof]
+        # Re-anchor winding after construction or reset instead of retaining old turns.
+        if _world_selected(joint_world[j], pose_rebaseline_mask):
+            reference = joint_rest_angle[dof]
+        joint_angle_prev[dof] = _unwrap_hinge_angle(angle, reference)
 
     # 1. Penalty-k decay runs unconditionally (even for disabled joints).
     for s in range(c_dim):
@@ -5768,6 +5809,7 @@ def solve_rigid_body(
     joint_compliant_alm: int,
     joint_dof_dim: wp.array2d[int],
     joint_rest_angle: wp.array[float],
+    joint_angle_prev: wp.array[float],
     external_forces: wp.array[wp.vec3],
     external_torques: wp.array[wp.vec3],
     # Preaccumulated rigid-contact Hessian contributions
@@ -5942,6 +5984,7 @@ def solve_rigid_body(
             joint_compliant_alm,
             joint_dof_dim,
             joint_rest_angle,
+            joint_angle_prev,
             dt,
         )
 
@@ -6025,6 +6068,7 @@ def update_duals_joint(
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
     joint_rest_angle: wp.array[float],
+    joint_angle_prev: wp.array[float],
     joint_drive_limit_support: wp.array[float],
     dt: float,
     # Input/output
@@ -6313,7 +6357,7 @@ def update_duals_joint(
 
         if has_drive or has_limits:
             a = wp.normalize(joint_axis[qd_start])
-            theta_abs = wp.dot(kappa, a) + joint_rest_angle[dof_idx]
+            theta_abs = _unwrap_hinge_angle(wp.dot(kappa, a) + joint_rest_angle[dof_idx], joint_angle_prev[dof_idx])
             q_wp_prev = wp.transform_get_rotation(X_wp_prev)
             q_wc_prev = wp.transform_get_rotation(X_wc_prev)
             omega_p = quat_velocity(q_wp, q_wp_prev, dt)
@@ -6564,9 +6608,12 @@ def update_duals_joint(
 
                 if has_drive or has_limits:
                     a_dl = wp.normalize(joint_axis[dof_idx])
+                    theta_abs = wp.dot(kappa, a_dl) + joint_rest_angle[dof_idx]
+                    if ang_count == 1:
+                        theta_abs = _unwrap_hinge_angle(theta_abs, joint_angle_prev[dof_idx])
                     _update_joint_axis_drive_limit_state(
                         axis_dl,
-                        wp.dot(kappa, a_dl) + joint_rest_angle[dof_idx],
+                        theta_abs,
                         wp.dot(dkappa_dt, a_dl),
                         has_drive,
                         has_limits,
