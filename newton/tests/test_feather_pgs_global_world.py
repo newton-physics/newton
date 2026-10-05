@@ -99,7 +99,7 @@ class TestFeatherPGSGlobalWorld(unittest.TestCase):
         """Without prescribed-response elision, other worlds' contacts with a global kinematic body are flagged."""
         device = wp.get_device()
         model = _floor_model(device, "kinematic")
-        solver = SolverFeatherPGS(model, pgs_mode="split", warn_constraint_overflow=False)
+        solver = _construct(self, model, True, pgs_mode="split", warn_constraint_overflow=False)
         _, contacts = _step_once(model, solver)
         count = int(contacts.rigid_contact_count.numpy()[0])
         paths = solver.contact_path.numpy()[:count]
@@ -120,7 +120,7 @@ class TestFeatherPGSGlobalWorld(unittest.TestCase):
                 joint_q = model.joint_q.numpy()
                 joint_q[2] += 3.0  # lift world 0's box out of contact
                 model.joint_q.assign(joint_q)
-                solver = SolverFeatherPGS(model, pgs_mode=mode, warn_constraint_overflow=False)
+                solver = _construct(self, model, True, pgs_mode=mode, warn_constraint_overflow=False)
                 _, contacts = _step_once(model, solver)
                 count = int(contacts.rigid_contact_count.numpy()[0])
                 self.assertGreater(count, 0)
