@@ -37,6 +37,9 @@ _KERNEL_FACTORIES = (
     "_get_propagation_tree_body_response_revolute_kernel",
     "_get_propagate_tree_impulses_revolute_kernel",
     "_get_refresh_propagation_tree_body_qd_warp_kernel",
+    "_get_mark_independent_sparse_contact_candidates_kernel",
+    "_get_build_independent_sparse_contact_groups_kernel",
+    "_get_pgs_solve_sparse_diagonal_kernel",
 )
 
 
