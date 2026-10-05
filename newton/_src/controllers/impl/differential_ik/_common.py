@@ -814,6 +814,9 @@ def _svd_one_sided_jacobi_kernel(
     row0 = type(a[0])()
     col0 = type(at[0])()
     if n_columns[idx] > len(col0):
+        # Ignore unused input columns, which are rows after transposition.
+        for j in range(n_columns[idx], len(row0)):
+            at[j] = col0
         # Sweep over the rows of wide matrices to avoid numerical null columns.
         u_t, s_t, v_t = _svd_one_sided_jacobi(at, len(col0), tol, max_sweeps)
         s_local = type(row0)()

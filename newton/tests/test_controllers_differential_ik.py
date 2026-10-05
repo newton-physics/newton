@@ -1558,6 +1558,38 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
             np.testing.assert_allclose(qd[offset : offset + n], expected, atol=1e-3)
             offset += n
 
+    def test_unused_columns_do_not_change_joint_velocity(self):
+        """Ignore unused Jacobian columns in a heterogeneous batch of redundant robots."""
+        for device in devices:
+            with self.subTest(device=str(device)):
+                ctrl = ControllerDifferentialIKModelFree(
+                    controlled_dofs_per_robot=_dofs_arr([7, 8], device),
+                    axis_weight=wp.spatial_vector(1, 1, 1, 1, 1, 1),
+                    bandwidth=1.0,
+                    damping=None,
+                    ik_method=DifferentialIKMethod.PSEUDO_INVERSE,
+                    device=device,
+                )
+                inputs, outputs = ctrl.input(), ctrl.output()
+                inputs.joint_q = wp.zeros(15, dtype=wp.float32, device=device)
+                inputs.tool_pose_world = _identity_transform(2, device)
+                inputs.desired_tool_pose_world = wp.array(
+                    [wp.transform(p=wp.vec3(1, 0, 0), q=wp.quat_identity())] * 2,
+                    dtype=wp.transform,
+                    device=device,
+                )
+                jacobian = np.zeros((2, 6, 8), dtype=np.float32)
+                jacobian[:, :, :6] = np.eye(6, dtype=np.float32)
+                # Robot 0 has only seven joints; its eighth column must be ignored.
+                jacobian[0, 0, 7] = 1.0
+                inputs.jacobian_tool_world = wp.array3d(jacobian, dtype=wp.float32, device=device)
+
+                ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+                expected = np.zeros(15, dtype=np.float32)
+                expected[[0, 7]] = 1.0  # First joint of each robot.
+                np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-6)
+
     def test_live_bandwidth_port(self):
         """bandwidth=None reads inputs.bandwidth each step instead of a baked value."""
         device = wp.get_device()
