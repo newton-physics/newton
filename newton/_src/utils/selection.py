@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import functools
 import re
 from fnmatch import fnmatch
 from types import NoneType
@@ -790,6 +789,8 @@ class ArticulationView:
     ):
         self.model = model
         self.device = model.device
+        self._attribute_array_cache = {}
+        self._actuator_dof_mapping_cache = {}
 
         if verbose is None:
             verbose = wp.config.log_level <= wp.LOG_DEBUG
@@ -1257,9 +1258,16 @@ class ArticulationView:
     # ========================================================================================
     # Generic attribute API
 
-    @functools.lru_cache(maxsize=None)  # noqa
     def _get_attribute_array(
         self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
+    ):
+        key = (name, source, _slice, layout)
+        if key not in self._attribute_array_cache:
+            self._attribute_array_cache[key] = self._create_attribute_array(name, source, _slice, layout)
+        return self._attribute_array_cache[key]
+
+    def _create_attribute_array(
+        self, name: str, source: Model | State | Control, _slice: Slice | int | None, layout=None
     ):
         # get the attribute (handle namespaced attributes like "mujoco.tendon_stiffness")
         # Note: the user-facing API uses dots (e.g., "mujoco.tendon_stiffness")
@@ -1337,6 +1345,7 @@ class ArticulationView:
             return result
 
         # construct reshaped attribute array, preserving grad connectivity
+        source_array = attrib
         source_grad = attrib.grad if attrib.requires_grad else None
         grad_view = None
         if source_grad is not None:
@@ -1354,6 +1363,7 @@ class ArticulationView:
                 device=source_grad.device,
                 copy=False,
             )
+            grad_view._ref = source_grad
 
         attrib = wp.array(
             ptr=int(attrib.ptr) + layout.offset * value_stride,
@@ -1364,6 +1374,7 @@ class ArticulationView:
             copy=False,
             grad=grad_view,
         )
+        attrib._ref = source_array
 
         # apply selection (slices or indices)
         pre_indexed = attrib
@@ -1963,8 +1974,12 @@ class ArticulationView:
     # ========================================================================================
     # Actuator parameter access
 
-    @functools.cache  # noqa: B019 - cache is tied to view lifetime
     def _get_actuator_dof_mapping(self, actuator: Actuator):
+        if actuator not in self._actuator_dof_mapping_cache:
+            self._actuator_dof_mapping_cache[actuator] = self._create_actuator_dof_mapping(actuator)
+        return self._actuator_dof_mapping_cache[actuator]
+
+    def _create_actuator_dof_mapping(self, actuator: Actuator):
         """
         Build mapping from view DOF positions to actuator parameter indices.
 

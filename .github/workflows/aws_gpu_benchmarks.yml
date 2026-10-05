@@ -2,14 +2,16 @@ name: GPU Benchmarks on AWS EC2 (Reusable)
 
 # This is a reusable workflow that uses machulav/ec2-github-runner to run GPU benchmarks.
 # Called by:
-#   - pr_target_aws_gpu.yml (for pull requests)
+#   - pr_target_aws_gpu_benchmarks.yml (for pull requests)
+#   - scheduled_nightly.yml (dispatch on main: quick run per GPU type that fills its Warp kernel cache)
 
 # Workflow configuration variables
 env:
   AWS_REGION: us-east-2
   # Prefer the validated US capacity order before Asia-Pacific fallback.
   AWS_REGION_CANDIDATES: ${{ inputs.region-candidates || 'us-east-1 us-east-2 us-west-2 ap-northeast-1 ap-northeast-2' }}
-  AWS_INSTANCE_TYPE: g7e.2xlarge
+  AWS_INSTANCE_TYPE: ${{ inputs.instance-type || 'g7e.2xlarge' }}
+  AWS_FALLBACK_INSTANCE_TYPE: ${{ inputs.fallback-instance-type }}
   AWS_VOLUME_SIZE: 92
   AWS_VOLUME_TYPE: gp3
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
@@ -34,6 +36,11 @@ on:
         required: false
         type: string
         default: ''
+      fallback-instance-type:
+        description: 'EC2 instance type to use when g7e.2xlarge cannot launch; empty disables fallback'
+        required: false
+        type: string
+        default: 'g6e.2xlarge'
       trigger-category:
         description: 'Normalized workflow trigger category'
         required: true
@@ -41,6 +48,27 @@ on:
     secrets:
       GH_PERSONAL_ACCESS_TOKEN:
         required: true
+  workflow_dispatch:
+    inputs:
+      instance-type:
+        description: 'EC2 instance type'
+        required: false
+        type: string
+        default: 'g7e.2xlarge'
+      # No fallback by default: each nightly cache fill targets one GPU architecture.
+      fallback-instance-type:
+        description: 'EC2 instance type to use when instance-type cannot launch; empty disables fallback'
+        required: false
+        type: string
+        default: ''
+      trigger-category:
+        description: 'Normalized workflow trigger category'
+        required: false
+        type: choice
+        options:
+          - manual
+          - scheduled-nightly
+        default: 'manual'
 
 jobs:
   start-runner:
@@ -72,39 +100,25 @@ jobs:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
 
-      - name: Discover AWS runner networking
-        id: discover-runner-config
-        run: python scripts/ci/discover_aws_runner_config.py
-
       - name: Start EC2 runner
         id: start-ec2-runner
-        uses: machulav/ec2-github-runner@343a1b2ae682e681c3cec9a235d882da17ff04ef  # v2.6.1
+        uses: ./.github/actions/start-aws-gpu-runner
         with:
-          mode: start
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
-          ec2-volume-size: ${{ env.AWS_VOLUME_SIZE }}
-          ec2-volume-type: ${{ env.AWS_VOLUME_TYPE }}
-          availability-zones-config: ${{ steps.discover-runner-config.outputs.availability-zones-config }}
-          pre-runner-script: |
-            if [ -d /opt/dlami/nvme ]; then
-              mkdir -p /opt/dlami/nvme/actions-runner/_work
-              mkdir -p /opt/dlami/nvme/actions-runner/.local
-              mkdir -p /opt/dlami/nvme/actions-runner/.cache
-              ln -s /opt/dlami/nvme/actions-runner/_work /actions-runner/_work
-              ln -s /opt/dlami/nvme/actions-runner/.local /actions-runner/.local
-              ln -s /opt/dlami/nvme/actions-runner/.cache /actions-runner/.cache
-            fi
-          aws-resource-tags: >
-            [
-              {"Key": "Name", "Value": "ec2-github-runner"},
-              {"Key": "created-by", "Value": "github-actions-newton-role"},
-              {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"},
-              {"Key": "Newton-Trigger", "Value": ${{ toJSON(inputs['trigger-category']) }}},
-              {"Key": "Newton-Workload", "Value": "gpu-benchmarks"},
-              {"Key": "GitHub-Run-ID", "Value": "${{ github.run_id }}"},
-              {"Key": "GitHub-Run-Attempt", "Value": "${{ github.run_attempt }}"}
-            ]
+          instance-type: ${{ env.AWS_INSTANCE_TYPE }}
+          fallback-instance-type: ${{ env.AWS_FALLBACK_INSTANCE_TYPE }}
+          region-candidates: ${{ env.AWS_REGION_CANDIDATES }}
+          resource-tag: ${{ env.AWS_RUNNER_RESOURCE_TAG }}
+          volume-size: ${{ env.AWS_VOLUME_SIZE }}
+          volume-type: ${{ env.AWS_VOLUME_TYPE }}
+          workload: gpu-benchmarks
+          trigger-category: ${{ inputs.trigger-category }}
+
+      - name: Require a registered runner
+        if: steps.start-ec2-runner.outputs.ready != 'true'
+        run: |
+          echo "::error::Could not start an EC2 runner; see the Start EC2 runner step for details."
+          exit 1
 
   gpu-benchmarks:
     name: Run GPU Benchmarks on AWS EC2
@@ -144,7 +158,31 @@ jobs:
       - name: Set up ASV environment
         run: uvx asv machine --yes
 
+      - name: Detect GPU architecture
+        id: gpu-arch
+        run: |
+          nvidia-smi --query-gpu=name,compute_cap --format=csv | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "sm=sm$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.')" >> "$GITHUB_OUTPUT"
+
+      # PR runs (pull_request_target) can only read the cache; the nightly
+      # dispatch on main saves it. Warp kernel binaries are
+      # architecture-specific, so each GPU type keeps its own cache.
+      - name: Restore Warp kernel cache
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: /actions-runner/.cache/warp
+          key: warp-kernels-bench-gpu-${{ steps.gpu-arch.outputs.sm }}-${{ hashFiles('asv.conf.json', 'uv.lock', 'newton/**/*.py', 'asv/**/*.py') }}
+          restore-keys: |
+            warp-kernels-bench-gpu-${{ steps.gpu-arch.outputs.sm }}-
+
+      - name: Compile benchmark kernels
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          NEWTON_ASV_PR_GATE: "1"
+        run: uv run --no-project asv/run_pr_benchmarks.py --quick ${{ github.sha }}
+
       - name: Run Benchmarks
+        if: github.event_name != 'workflow_dispatch'
         env:
           # Keep resolution 128 in the shared benchmark for nightly ASV collection.
           NEWTON_ASV_PR_GATE: "1"
