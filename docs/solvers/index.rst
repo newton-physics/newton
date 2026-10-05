@@ -443,7 +443,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
    * - Mimic joints
      - |yes| :sup:`3`
-     - |no| :sup:`8`
+     - |yes| :sup:`12`
      - |yes| :sup:`4`
      - |yes| :sup:`5`
      - |yes| :sup:`6`
@@ -455,10 +455,11 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 | :sup:`5` XPBD and VBD enforce joint-owned mimic relationships through coupled maximal-coordinate corrections. Both apply one mimic correction per solver iteration.
 | :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
-| :sup:`8` FeatherPGS rejects models with disabled joints or mimic relationships instead of ignoring them.
+| :sup:`8` FeatherPGS rejects models with disabled articulation joints instead of ignoring them; a disabled loop-closing joint starts as a released closure.
 | :sup:`9` FeatherPGS enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
 | :sup:`10` FeatherPGS clamps the explicit joint drive force to the effort limit. With the default ``drive_mode="augmented"`` the implicit stiffness and damping response is unbounded, so under a large external load the drive reaction can exceed the limit; the PGS drive rows of ``drive_mode="physx_pgs"`` bound the complete reaction.
 | :sup:`11` FeatherPGS enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True`` and ``pgs_mode="matrix_free"``. With ``drive_mode="physx_pgs"``, driven DOFs are clamped at the end of every solver iteration instead of using velocity-limit rows (``fuse_joint_velocity_limits``).
+| :sup:`12` With ``pgs_mode="matrix_free"``, FeatherPGS enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints. The default ``pgs_mode="split"`` rejects mimic relationships and loop-closing joints.
 
 
 

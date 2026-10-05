@@ -3,9 +3,7 @@
 
 """Construction, option validation and kernel selection of SolverFeatherPGS."""
 
-import functools
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
@@ -162,16 +160,13 @@ def test_constructor_validates_options(test, device):
 def test_unsupported_model_features_raise(test, device):
     """Reject model features the solver would otherwise silently ignore."""
     mimic = newton.ModelBuilder()
-    links = [mimic.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(2)]
-    leader = mimic.add_joint_revolute(-1, links[0], axis=newton.Axis.Y)
-    follower = mimic.add_joint_revolute(links[0], links[1], axis=newton.Axis.Y)
-    mimic.add_articulation([leader, follower])
-    _expect_one_warning(
-        test,
-        DeprecationWarning,
-        r"add_constraint_mimic\(\) is deprecated",
-        functools.partial(mimic.add_constraint_mimic, follower, leader, coef1=1.0),
-    )
+    links = [mimic.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(3)]
+    root = mimic.add_joint_revolute(-1, links[0], axis=newton.Axis.Y)
+    leader = mimic.add_joint_ball(links[0], links[1])
+    follower = mimic.add_joint_ball(links[1], links[2])
+    mimic.add_articulation([root, leader, follower])
+    # Quaternion-coordinate mimics have no componentwise row.
+    mimic.set_joint_mimic(follower, leader)
     with test.assertRaisesRegex(NotImplementedError, "mimic"):
         SolverFeatherPGS(mimic.finalize(device=device))
 
@@ -284,7 +279,7 @@ def test_unconverted_equality_constraints_raise(test, device):
             SolverFeatherPGS(_build_box_with_equality(device, enabled=True, target_kind=target_kind, target=7))
 
     # Imported equalities are converted to Newton loop joints by default; those rows are
-    # judged through the loop joint, which this solver rejects separately.
+    # enforced through the loop joint (see test_feather_pgs_connect). Unconverted, they raise.
     mjcf = """
     <mujoco>
       <worldbody>
@@ -296,18 +291,12 @@ def test_unconverted_equality_constraints_raise(test, device):
       <equality><connect body1="link" anchor="0.1 0 0"/></equality>
     </mujoco>
     """
-    for convert, message in ((True, "loop-closing"), (False, "equality")):
-        builder = newton.ModelBuilder()
-        add_mjcf = functools.partial(builder.add_mjcf, mjcf, convert_mjc_equality_constraints=convert)
-        if convert:
-            # The converted loop joint parallels the hinge, which the builder warns about.
-            _expect_one_warning(test, UserWarning, r"Adding a BALL joint .* another joint already connects", add_mjcf)
-        else:
-            add_mjcf()
-        imported = builder.finalize(device=device)
-        test.assertEqual(imported.mujoco.equality_constraint_count, 1)
-        with test.assertRaisesRegex(NotImplementedError, message):
-            SolverFeatherPGS(imported)
+    builder = newton.ModelBuilder()
+    builder.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
+    imported = builder.finalize(device=device)
+    test.assertEqual(imported.mujoco.equality_constraint_count, 1)
+    with test.assertRaisesRegex(NotImplementedError, "equality"):
+        SolverFeatherPGS(imported)
 
     # A disabled row constructs and has no effect.
     model = _build_box_with_equality(device, enabled=False)
@@ -386,7 +375,7 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
                 SolverFeatherPGS(build_pendulum_with_connect(eq_type, joint_kind, False))
 
     # A JOINT row linking a mimic between other joints is likewise unenforced; the importer's
-    # own projection is judged through its mimic constraint.
+    # own projection is enforced through its mimic constraint.
     mjcf = """
     <mujoco>
       <worldbody>
@@ -406,7 +395,7 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
       <equality><joint joint1="jb" joint2="ja"/></equality>
     </mujoco>
     """
-    for swap, message in ((False, "mimic constraints"), (True, "equality")):
+    for swap in (False, True):
         with test.subTest(mimic_joints_swapped=swap):
             builder = newton.ModelBuilder()
             builder.add_mjcf(mjcf)
@@ -417,8 +406,11 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
                 joint1 = model.constraint_mimic_joint1.numpy()
                 model.constraint_mimic_joint0.assign(joint1)
                 model.constraint_mimic_joint1.assign(joint0)
-            with test.assertRaisesRegex(NotImplementedError, message):
-                SolverFeatherPGS(model)
+            if swap:
+                with test.assertRaisesRegex(NotImplementedError, "equality"):
+                    SolverFeatherPGS(model, pgs_mode="matrix_free")
+            else:
+                SolverFeatherPGS(model, pgs_mode="matrix_free")
 
 
 def test_enabling_equality_constraint_at_runtime_raises(test, device):
@@ -548,17 +540,6 @@ def test_non_default_tile_threads_compiles_and_steps(test, device):
         state_0, state_1 = state_1, state_0
     test.assertTrue(np.isfinite(state_0.joint_q.numpy()).all())
     test.assertTrue(np.isfinite(state_0.joint_qd.numpy()).all())
-
-
-def _expect_one_warning(test, category, pattern, call):
-    """Return ``call()``, requiring it to emit exactly one warning, of ``category`` and matching ``pattern``."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        result = call()
-    test.assertEqual(len(caught), 1, [f"{w.category.__name__}: {w.message}" for w in caught])
-    test.assertIs(caught[0].category, category)
-    test.assertRegex(str(caught[0].message), pattern)
-    return result
 
 
 class TestFeatherPGSLaunchConfig(unittest.TestCase):

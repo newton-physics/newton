@@ -228,11 +228,13 @@ repository examples spend tuning effort, not a shared solver API.
        ``velocity_limit_activation_fraction``,
        ``dense_max_constraints``, ``mf_max_constraints``,
        ``warn_constraint_overflow``, ``drive_mode``,
-       ``fuse_joint_velocity_limits``.
+       ``fuse_joint_velocity_limits``, ``enable_bilateral_preelimination``,
+       ``bilateral_preelimination_include_mimics``.
      - Experimental. The default ``pgs_mode="split"`` runs on CPU and CUDA and
        stores a dense ``dense_max_constraints`` squared Delassus matrix per world;
        ``pgs_mode="matrix_free"`` requires CUDA and is needed for joint velocity
-       limits and ``drive_mode="physx_pgs"``. Joint limits are enforced only with
+       limits, ``drive_mode="physx_pgs"``, mimic joints and loop-closing joints.
+       Joint limits are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``pgs_iterations`` reduce residual penetration and
@@ -252,7 +254,13 @@ repository examples spend tuning effort, not a shared solver API.
        damping and free-body velocity bounds are model attributes registered by
        ``register_custom_attributes()``, which also registers the MuJoCo joint
        spring attributes (``stiffness``, ``springref`` and ``ref``) that FeatherPGS
-       applies to PRISMATIC and REVOLUTE joints.
+       applies to PRISMATIC and REVOLUTE joints. Mimic joints and loop-closing BALL
+       joints are bilateral rows that converge with ``pgs_iterations`` like the
+       other rows; ``enable_bilateral_preelimination`` eliminates them before
+       the sweep with a regularized Schur complement, which keeps closed chains
+       nearly closed at low iteration counts. The regularization leaves a small
+       residual (it is not exact elimination), and an unsupported articulation
+       disables elimination for the whole solver with a warning.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.
