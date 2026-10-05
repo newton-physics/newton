@@ -212,6 +212,47 @@ def test_diagonal_mass_rows_match_dense_and_sparse_factors(test, device):
             test.assertGreater(float(np.abs(unarmed[5][1] - runs[0][5][1]).max()), 1.0e-6)
 
 
+def test_sleeping_diagonal_dynamics_skip_is_exact(test, device):
+    """Skip the diagonal-mass dynamics of sleeping stars without changing any published state.
+
+    Two solvers differ only in whether sleeping islands skip their dynamics; over a sleep, a
+    force wake and a resettle, every state array stays bitwise equal.
+    """
+    runs = []
+    for skip in (False, True):
+        model = _build_fixed_base_star_model(device, num_branches=3, ground=True)
+        solver = SolverFeatherPGS(
+            model, pgs_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, dense_max_constraints=64
+        )
+        test.assertTrue(solver._execution_plan.use_diagonal_mass(3))
+        solver.sleeping.skip_dynamics = skip
+        pipeline = newton.CollisionPipeline(model)
+        runs.append([solver, pipeline, pipeline.contacts(), model.state(), model.state(), model.control()])
+    slept = woke = False
+    for step in range(500):
+        for run in runs:
+            solver, pipeline, contacts, state, out, control = run
+            state.clear_forces()
+            if 300 <= step < 306:
+                forces = state.body_f.numpy()
+                forces[1, 2] = 50.0
+                state.body_f.assign(forces)
+            pipeline.collide(state, contacts)
+            solver.step(state, out, control, contacts, 1.0 / 120.0)
+            run[3], run[4] = out, state
+        for field in ("body_q", "body_qd", "joint_q", "joint_qd"):
+            np.testing.assert_array_equal(
+                getattr(runs[0][3], field).numpy(), getattr(runs[1][3], field).numpy(), err_msg=f"{step}: {field}"
+            )
+        awake = runs[1][0].sleeping.art_awake.numpy()
+        slept |= step < 300 and not awake.any()
+        woke |= 300 <= step < 306 and bool(awake[0])
+    test.assertTrue(slept, "the diagonal-mass articulations never slept")
+    test.assertTrue(woke, "the external force did not wake the first articulation")
+    for run in runs:
+        run[0].check_constraint_capacity()
+
+
 class TestFeatherPGSDiagonalMass(unittest.TestCase):
     pass
 
@@ -230,6 +271,7 @@ for _name, _func in (
         "test_diagonal_mass_rows_match_dense_and_sparse_factors",
         test_diagonal_mass_rows_match_dense_and_sparse_factors,
     ),
+    ("test_sleeping_diagonal_dynamics_skip_is_exact", test_sleeping_diagonal_dynamics_skip_is_exact),
 ):
     add_function_test(TestFeatherPGSDiagonalMass, _name, _func, devices=devices)
 

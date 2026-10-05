@@ -352,6 +352,40 @@ def test_contact_trajectory_matches_serial(test, device):
         )
 
 
+def _run_split_fingers(device, parallel_tree):
+    model = _build_fingers(device, articulations=2, ragged=True)
+    solver = SolverFeatherPGS(model, pgs_mode="split", parallel_tree=parallel_tree)
+    state, next_state = model.state(), model.state()
+    control = model.control()
+    for _ in range(10):
+        solver.step(state, next_state, control, None, 1.0 / 240.0)
+        state, next_state = next_state, state
+    solver.check_constraint_capacity()
+    return solver, state.body_q.numpy(), state.body_qd.numpy()
+
+
+class TestFeatherPGSSplitCpuTree(unittest.TestCase):
+    def test_branched_split_cpu_keeps_serial_passes(self):
+        """Run branched split trees on CPU with the serial traversal and scalar composite inertia.
+
+        A requested parallel traversal falls back to the serial one bitwise, and the CPU trajectory
+        matches the CUDA split solve, whose cooperative kernels do not run on CPU.
+        """
+        serial = _run_split_fingers("cpu", False)
+        parallel = _run_split_fingers("cpu", True)
+        for solver in (serial[0], parallel[0]):
+            self.assertIsNone(solver._tree_plan)
+            self.assertIsNone(solver._composite_inertia_warp_kernel)
+            self.assertGreater(solver._composite_articulation_count, 0)
+        for cpu, fallback in zip(serial[1:], parallel[1:], strict=True):
+            self.assertTrue(np.isfinite(cpu).all())
+            np.testing.assert_array_equal(cpu, fallback)
+        if wp.is_cuda_available():
+            cuda = _run_split_fingers("cuda:0", False)
+            for cpu, gpu in zip(serial[1:], cuda[1:], strict=True):
+                np.testing.assert_allclose(cpu, gpu, rtol=1.0e-4, atol=1.0e-4)
+
+
 class TestFeatherPGSTreeExecution(unittest.TestCase):
     pass
 

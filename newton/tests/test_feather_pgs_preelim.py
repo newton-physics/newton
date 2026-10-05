@@ -12,7 +12,11 @@ import warp as wp
 
 import newton
 from newton._src.solvers.feather_pgs import kernels as feather_pgs_kernels
-from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_CONNECT, PGS_CONSTRAINT_TYPE_MIMIC
+from newton._src.solvers.feather_pgs.kernels import (
+    PGS_CONSTRAINT_TYPE_CONNECT,
+    PGS_CONSTRAINT_TYPE_CONTACT,
+    PGS_CONSTRAINT_TYPE_MIMIC,
+)
 from newton.solvers import SolverFeatherPGS
 from newton.tests.test_feather_pgs_connect import _build_carried_load, _build_four_bar, _loop_anchor_gap
 from newton.tests.test_feather_pgs_mimic import _build_two_revolute_chain
@@ -458,6 +462,57 @@ def test_preelimination_capture_matches_eager(test, device):
     test.assertLess(_loop_anchor_gap(model, c0), 2.0e-5)
 
 
+def _run_loaded_four_bar(device, pgs_warmstart):
+    """Rest a 1 kg box on an eliminated four-bar's coupler; return the solver, worst gap and carried impulse."""
+    builder = _build_four_bar()
+    box = builder.add_body(xform=wp.transform(wp.vec3(0.2, 0.0, 0.4705), wp.quat_identity()))
+    builder.add_shape_box(box, hx=0.05, hy=0.05, hz=0.05)
+    model = builder.finalize(device=device)
+    solver = SolverFeatherPGS(
+        model,
+        pgs_mode="matrix_free",
+        pgs_iterations=1,
+        pgs_beta=0.1,
+        dense_max_constraints=64,
+        friction_anchor_beta=0.0,
+        enable_bilateral_preelimination=True,
+        pgs_warmstart=pgs_warmstart,
+    )
+    pipeline = newton.CollisionPipeline(model, contact_matching="latest")
+    contacts = pipeline.contacts()
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    gap_max = carried = 0.0
+    for step in range(240):
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, DT)
+        state_0, state_1 = state_1, state_0
+        if step >= 20:
+            gap_max = max(gap_max, _loop_anchor_gap(model, state_0))
+        if pgs_warmstart:
+            history = solver._ws_prev_impulses.numpy()[0]
+            contact_rows = solver._ws_prev_row_type.numpy()[0] == PGS_CONSTRAINT_TYPE_CONTACT
+            carried = max(carried, float(np.abs(history[contact_rows]).max(initial=0.0)))
+    return solver, model, state_0, box, gap_max, carried
+
+
+def test_warmstart_with_preelimination_holds_a_loaded_closure(test, device):
+    """Warm start a contact that loads an eliminated closure; the closure stays tight and the box rests.
+
+    The carried contact impulse is installed into the velocity before the bilateral projection,
+    so it cannot reopen the closure.
+    """
+    solver, model, state, box, gap_warm, carried = _run_loaded_four_bar(device, pgs_warmstart=True)
+    _, _, _, _, gap_cold, _ = _run_loaded_four_bar(device, pgs_warmstart=False)
+    test.assertTrue(solver._preelim_active)
+    # The carried contact history is the box's weight impulse, m g dt.
+    weight_impulse = float(model.body_mass.numpy()[box]) * 9.81 * DT
+    test.assertAlmostEqual(carried, weight_impulse, delta=0.2 * weight_impulse)
+    test.assertLess(gap_warm, 1.0e-6)
+    test.assertLessEqual(gap_warm, gap_cold)
+    test.assertAlmostEqual(float(state.body_q.numpy()[box, 2]), 0.47, delta=1.0e-3)
+
+
 # -- Other solve paths (propagation is cumulative: it needs the propagation responses) --
 
 
@@ -508,6 +563,7 @@ for _name in (
     "test_rows_remain_allocated",
     "test_prescribed_parent_closure_warns_and_falls_back",
     "test_preelimination_capture_matches_eager",
+    "test_warmstart_with_preelimination_holds_a_loaded_closure",
 ):
     add_function_test(TestFeatherPGSPreelimination, _name, globals()[_name], devices=cuda_devices)
 add_function_test(
