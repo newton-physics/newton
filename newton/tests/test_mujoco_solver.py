@@ -2794,6 +2794,103 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     )
 
 
+class TestImportedMocapBodies(unittest.TestCase):
+    XML = """
+    <mujoco model="mocap_runtime">
+        <option gravity="0 0 0" timestep="0.005" integrator="Euler"/>
+        <worldbody>
+            <body name="target" mocap="true"><geom type="sphere" size="0.05" contype="0" conaffinity="0"/></body>
+            <body name="other" mocap="true" pos="1 0 0"><geom type="sphere" size="0.05" contype="0" conaffinity="0"/></body>
+            <body name="payload"><freejoint/><geom type="sphere" size="0.05" contype="0" conaffinity="0"/></body>
+        </worldbody>
+        <equality><weld body1="target" body2="payload" relpose="0 0 0 1 0 0 0"/></equality>
+    </mujoco>
+    """
+
+    def test_imported_mocap_pose_updates_are_world_local(self):
+        """Update imported mocap anchors without moving other targets or worlds."""
+        configurations = [("cpu", True, 1), ("cpu", False, 2)]
+        if wp.get_cuda_device_count():
+            configurations.append((wp.get_cuda_device(0), False, 2))
+        for device, use_mujoco_cpu, world_count in configurations:
+            with self.subTest(device=device, use_mujoco_cpu=use_mujoco_cpu), wp.ScopedDevice(device):
+                template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                template.add_mjcf(self.XML, collapse_fixed_joints=True, convert_mjc_equality_constraints=False)
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                builder.replicate(template, world_count)
+                model = builder.finalize(device=device)
+                self.assertEqual(int(model.body_flags.numpy()[0]), int(BodyFlags.KINEMATIC))
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                initial_pos = solver.mjw_data.mocap_pos.numpy().copy()
+                target = model.body_label.index("mocap_runtime/worldbody/target")
+                target_joint = int(np.where(model.joint_child.numpy() == target)[0][0])
+                child_anchors = model.joint_X_c.numpy()
+                parent_anchors = model.joint_X_p.numpy()
+                rotation = wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.3)
+                desired_pose = wp.transform(wp.vec3(0.2, -0.1, 0.3), rotation)
+                child_anchor = wp.transform(wp.vec3(0.03, 0.02, 0.01), wp.quat_from_axis_angle(wp.vec3(1, 0, 0), 0.2))
+                child_anchors[target_joint] = child_anchor
+                parent_anchors[target_joint] = desired_pose * child_anchor
+                model.joint_X_c.assign(child_anchors)
+                model.joint_X_p.assign(parent_anchors)
+                solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+                state_0, state_1 = model.state(), model.state()
+                solver.step(state_0, state_1, model.control(), None, 0.005)
+
+                mocap_joint_map = solver.mjc_mocap_to_newton_jnt.numpy()
+                mocap_idx = int(np.where(mocap_joint_map[0] == target_joint)[0][0])
+                expected_pos = initial_pos.copy()
+                expected_pos[0, mocap_idx] = desired_pose.p
+                np.testing.assert_allclose(solver.mjw_data.mocap_pos.numpy(), expected_pos, atol=1e-6)
+                if use_mujoco_cpu:
+                    np.testing.assert_allclose(solver.mj_data.mocap_pos, expected_pos[0], atol=1e-6)
+                expected_quat = [rotation.w, rotation.x, rotation.y, rotation.z]
+                np.testing.assert_allclose(solver.mjw_data.mocap_quat.numpy()[0, mocap_idx], expected_quat, atol=1e-6)
+                np.testing.assert_allclose(state_1.body_q.numpy()[target, :3], desired_pose.p, atol=1e-6)
+
+    def test_imported_mocap_weld_matches_native(self):
+        """Match native MuJoCo when an imported mocap target drives a welded payload."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        configurations = [("cpu", True), ("cpu", False)]
+        if wp.get_cuda_device_count():
+            configurations.append((wp.get_cuda_device(0), False))
+        for device, use_mujoco_cpu in configurations:
+            with self.subTest(device=device, use_mujoco_cpu=use_mujoco_cpu), wp.ScopedDevice(device):
+                native_model = mujoco.MjModel.from_xml_string(self.XML)
+                native_data = mujoco.MjData(native_model)
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                builder.add_mjcf(self.XML, collapse_fixed_joints=True, convert_mjc_equality_constraints=False)
+                model = builder.finalize(device=device)
+                target = model.body_label.index("mocap_runtime/worldbody/target")
+                self.assertEqual(int(model.body_flags.numpy()[target]), int(BodyFlags.KINEMATIC))
+                payload = model.body_label.index("mocap_runtime/worldbody/payload")
+                target_joint = int(np.where(model.joint_child.numpy() == target)[0][0])
+                solver = SolverMuJoCo(
+                    model,
+                    use_mujoco_cpu=use_mujoco_cpu,
+                    disable_contacts=True,
+                    integrator=int(native_model.opt.integrator),
+                )
+                anchors = model.joint_X_p.numpy()
+                anchors[target_joint, :3] = [0.1, 0.0, 0.0]
+                model.joint_X_p.assign(anchors)
+                solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+                native_target = mujoco.mj_name2id(native_model, mujoco.mjtObj.mjOBJ_BODY, "target")
+                native_payload = mujoco.mj_name2id(native_model, mujoco.mjtObj.mjOBJ_BODY, "payload")
+                native_data.mocap_pos[native_model.body_mocapid[native_target]] = [0.1, 0.0, 0.0]
+                state_0, state_1 = model.state(), model.state()
+                control = model.control()
+                for _ in range(40):
+                    mujoco.mj_step(native_model, native_data)
+                    solver.step(state_0, state_1, control, None, native_model.opt.timestep)
+                    state_0, state_1 = state_1, state_0
+                mujoco.mj_forward(native_model, native_data)
+                np.testing.assert_allclose(
+                    state_0.body_q.numpy()[payload, :3], native_data.xpos[native_payload], atol=2e-5, rtol=1e-4
+                )
+                self.assertGreater(float(state_0.body_q.numpy()[payload, 0]), 0.09)
+
+
 class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
     def test_large_graph_skips_before_pair_enumeration(self):
         """Skip large mask graphs before enumerating every shape pair."""

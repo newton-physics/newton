@@ -4977,6 +4977,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         need_solref_update = need_const_0
 
         if self.use_mujoco_cpu:
+            if flags & ModelFlags.JOINT_PROPERTIES:
+                self.mj_data.mocap_pos[:] = self.mjw_data.mocap_pos.numpy()[0]
+                self.mj_data.mocap_quat[:] = self.mjw_data.mocap_quat.numpy()[0]
             if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
                 self.mj_model.body_ipos[:] = self.mjw_model.body_ipos.numpy()[0]
                 self.mj_model.body_mass[:] = self.mjw_model.body_mass.numpy()[0]

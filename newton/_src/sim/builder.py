@@ -4514,6 +4514,11 @@ class ModelBuilder:
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
         MuJoCo-specific custom attributes are registered on the builder automatically.
 
+        Authored ``mocap="true"`` bodies become kinematic world-fixed roots.
+        These bodies must have no authored joints, must attach to the world, and
+        cannot use ``floating=True`` or ``base_joint`` overrides. Their root
+        joints are preserved when ``collapse_fixed_joints=True``.
+
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform: The transform to apply to the imported mechanism.
@@ -6859,7 +6864,9 @@ class ModelBuilder:
                         f"{child_lbl} is listed in joints_to_keep and this fixed joint will be preserved"
                     )
                 # Warn if the child_body of skipped joint has zero or negative mass
-                if body_data[child_body]["mass"] <= 0:
+                if body_data[child_body]["mass"] <= 0 and not (
+                    body_data[child_body]["flags"] & int(BodyFlags.KINEMATIC)
+                ):
                     warnings.warn(
                         f"Skipped joint {joint['label']} has a child {child_lbl} with zero or negative mass ({body_data[child_body]['mass']}). "
                         f"This may cause unexpected behavior.",

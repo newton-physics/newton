@@ -61,6 +61,124 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 """
 
 
+class TestImportMjcfMocap(unittest.TestCase):
+    def test_mocap_preserves_pose_and_kinematic_flag(self):
+        """Import mocap roots as kinematic bodies with transformed poses."""
+        xml = """
+        <mujoco model="mocap">
+            <worldbody>
+                <body name="target" mocap="true" pos="1 2 3" quat="0.70710678 0 0 0.70710678">
+                    <geom type="sphere" size="0.1"/>
+                </body>
+                <body name="fixed"><geom type="sphere" size="0.1"/></body>
+                <body name="moving"><freejoint/><geom type="sphere" size="0.1"/></body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        xform = wp.transform(wp.vec3(0.5, -0.5, 1.0), wp.quat_identity())
+        builder.add_mjcf(xml, scale=2.0, xform=xform)
+        target = builder.body_label.index("mocap/worldbody/target")
+        np.testing.assert_allclose(builder.body_q[target].p, [2.5, 3.5, 7.0], atol=1e-6)
+        np.testing.assert_allclose(builder.body_q[target].q, [0, 0, 2**-0.5, 2**-0.5], atol=1e-6)
+        self.assertEqual(builder.body_flags[target], int(newton.BodyFlags.KINEMATIC))
+        self.assertEqual(builder.body_flags[1:], [int(newton.BodyFlags.DYNAMIC)] * 2)
+        self.assertEqual(builder.joint_type[0], newton.JointType.FIXED)
+        self.assertEqual(builder.joint_parent[0], -1)
+
+    def test_mocap_up_axis_conversion(self):
+        """Apply the same up-axis conversion to mocap and ordinary bodies."""
+        xml = '<mujoco><worldbody><body name="target" mocap="true" pos="1 2 3"/><body name="fixed" pos="1 2 3"/></worldbody></mujoco>'
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_mjcf(xml, up_axis=newton.Axis.Y)
+        np.testing.assert_allclose(builder.body_q[0], builder.body_q[1])
+        np.testing.assert_allclose(builder.body_q[0].p, [1, -3, 2], atol=1e-6)
+
+    def test_mocap_survives_fixed_joint_collapse(self):
+        """Keep movable mocap roots while collapsing ordinary fixed bodies."""
+        xml = """
+        <mujoco><worldbody>
+            <body name="target" mocap="true" pos="1 2 3"><geom type="sphere" size="0.1"/></body>
+            <body name="fixed"><geom type="sphere" size="0.1"/></body>
+        </worldbody></mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml, collapse_fixed_joints=True)
+        self.assertEqual(builder.body_label, ["worldbody/target"])
+        self.assertEqual(builder.body_flags, [int(newton.BodyFlags.KINEMATIC)])
+        self.assertEqual(builder.joint_type, [newton.JointType.FIXED])
+        np.testing.assert_allclose(builder.body_q[0].p, [1, 2, 3])
+        self.assertEqual(builder.shape_body, [0, -1])
+
+    def test_repeated_import_preserves_existing_mocap(self):
+        """Keep previously imported mocap roots when a later import collapses fixed joints."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf('<mujoco><worldbody><body name="target" mocap="true"/></worldbody></mujoco>')
+        builder.add_mjcf(
+            '<mujoco><worldbody><body name="fixed"><geom size="0.1"/></body></worldbody></mujoco>',
+            collapse_fixed_joints=True,
+        )
+        self.assertEqual(builder.body_count, 1)
+        self.assertEqual(builder.body_flags, [int(newton.BodyFlags.KINEMATIC)])
+
+    def test_massless_mocap_survives_collapse(self):
+        """Preserve jointless massless mocap targets without spurious mass warnings."""
+        xml = (
+            '<mujoco><worldbody><body name="target" mocap="true"><site name="target_site"/></body></worldbody></mujoco>'
+        )
+        for options in ({"collapse_fixed_joints": True}, {"collapse_massless_fixed_root": True}):
+            with self.subTest(options=options), warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(xml, **options)
+                self.assertEqual(builder.body_flags, [int(newton.BodyFlags.KINEMATIC)])
+                self.assertEqual(builder.body_count, 1)
+                self.assertFalse(any("zero or negative mass" in str(w.message) for w in caught))
+
+    def test_mocap_rejects_invalid_layout_and_overrides(self):
+        """Reject mocap bodies with joints, non-world parents, or root overrides."""
+        cases = [
+            ('<body name="target" mocap="true"><joint/></body>', {}),
+            ('<body name="target" mocap="true"><freejoint/></body>', {}),
+            ('<body name="parent"><body name="target" mocap="true"/></body>', {}),
+            ('<body name="target" mocap="true"/>', {"floating": True}),
+            ('<body name="target" mocap="true"/>', {"base_joint": {"joint_type": newton.JointType.FIXED}}),
+            ('<body name="target" mocap="true"/>', {"parent_body": 0}),
+        ]
+        for body_xml, options in cases:
+            with self.subTest(body_xml=body_xml, options=options):
+                builder = newton.ModelBuilder()
+                if "parent_body" in options:
+                    parent = builder.add_link(label="parent")
+                    builder.add_articulation([builder.add_joint_fixed(parent=-1, child=parent)])
+                with self.assertRaisesRegex(ValueError, "[Mm]ocap.*target"):
+                    builder.add_mjcf(f"<mujoco><worldbody>{body_xml}</worldbody></mujoco>", **options)
+
+    def test_mocap_false_and_fixed_override(self):
+        """Respect false mocap flags and allow an explicitly fixed root."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            '<mujoco><worldbody><body name="target" mocap="true"/><body name="fixed" mocap="false"/></worldbody></mujoco>',
+            floating=False,
+        )
+        self.assertEqual(builder.body_flags, [int(newton.BodyFlags.KINEMATIC), int(newton.BodyFlags.DYNAMIC)])
+
+    def test_mocap_frames_and_dynamic_children(self):
+        """Preserve frame offsets and ordinary dynamic descendants of mocap roots."""
+        xml = """
+        <mujoco><worldbody><frame pos="1 0 0">
+            <body name="target" mocap="true" pos="0 2 0">
+                <geom type="sphere" size="0.1"/>
+                <body name="child"><joint type="hinge"/><geom type="sphere" size="0.1"/></body>
+            </body>
+        </frame></worldbody></mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml)
+        self.assertEqual(builder.body_flags, [int(newton.BodyFlags.KINEMATIC), int(newton.BodyFlags.DYNAMIC)])
+        np.testing.assert_allclose(builder.body_q[0].p, [1, 2, 0])
+
+
 class TestImportMjcfBasic(unittest.TestCase):
     def test_geom_rgba_preserves_opacity(self):
         """Preserve authored MJCF geometry opacity."""

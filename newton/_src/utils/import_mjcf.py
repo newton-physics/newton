@@ -18,7 +18,7 @@ from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
-from ..sim import JointTargetMode, JointType, ModelBuilder
+from ..sim import BodyFlags, JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
@@ -222,6 +222,11 @@ def parse_mjcf(
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
     MuJoCo-specific custom attributes are registered on the builder automatically.
+
+    Authored ``mocap="true"`` bodies are imported as kinematic world-fixed roots.
+    They must be jointless children of the world body and cannot use ``floating=True``,
+    ``base_joint``, or a non-world ``parent_body``. Their root joints are retained
+    when ``collapse_fixed_joints=True``.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
@@ -1893,6 +1898,12 @@ def parse_mjcf(
         body_name = sanitize_name(body_name)
         has_inertial_definition = body.find("inertial") is not None
         has_joint_definition = body.find("joint") is not None or body.find("freejoint") is not None
+        is_mocap = body_attrib.get("mocap", "false") == "true"
+        if is_mocap:
+            if not is_mjcf_root or parent != -1 or has_joint_definition:
+                raise ValueError(f"Mocap body '{body_name}' must be a jointless child of the world body.")
+            if floating is True or base_joint is not None:
+                raise ValueError(f"Mocap body '{body_name}' cannot use floating=True or a base_joint override.")
         if (
             inertia_from_geom == "false"
             and not ignore_inertial_definitions
@@ -2110,6 +2121,7 @@ def parse_mjcf(
         body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
         link = builder.add_link(
             xform=world_xform,  # Use the composed world transform
+            is_kinematic=is_mocap,
             label=body_label_path,
             custom_attributes=body_custom_attributes,
         )
@@ -2269,6 +2281,9 @@ def parse_mjcf(
                 # Map raw MJCF joint names to Newton joint index for tendon/actuator resolution
                 for jn in joint_name:
                     joint_name_to_idx[jn] = joint_idx
+
+        if is_mocap:
+            mocap_root_joints.append(joint_indices[-1])
 
         # -----------------
         # add shapes (using shared helper for visual/collider partitioning)
@@ -2694,6 +2709,14 @@ def parse_mjcf(
     collider_shapes = []
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
+    # A later import may collapse joints across the entire existing builder.
+    mocap_root_joints = [
+        joint
+        for joint, child in enumerate(builder.joint_child)
+        if builder.joint_type[joint] == JointType.FIXED
+        and builder.joint_parent[joint] == -1
+        and builder.body_flags[child] & int(BodyFlags.KINEMATIC)
+    ]
     root_body_boundaries = []  # (start_idx, body_name) for each root body under <worldbody>
     # Mapping from individual MJCF joint name to (qd_start, dof_count) for actuator resolution
     # This allows actuators to target specific DOFs when multiple MJCF joints are combined into one Newton joint
@@ -3587,6 +3610,6 @@ def parse_mjcf(
             )
 
     if collapse_fixed_joints:
-        builder.collapse_fixed_joints()
+        builder.collapse_fixed_joints(joints_to_keep=mocap_root_joints)
     elif collapse_massless_fixed_root:
         collapse_massless_fixed_root_joints(builder, joint_indices)
