@@ -3149,7 +3149,7 @@ class ModelBuilder:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         if self._deprecated_joint_twist_lower is None:
             self._deprecated_joint_twist_lower = []
         return self._deprecated_joint_twist_lower
@@ -3157,7 +3157,7 @@ class ModelBuilder:
     @joint_twist_lower.setter
     def joint_twist_lower(self, value: list[float]) -> None:
         # stacklevel skips ModelBuilder.__setattr__ to report the caller.
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
         self._deprecated_joint_twist_lower = value
 
     @property
@@ -3167,7 +3167,7 @@ class ModelBuilder:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         if self._deprecated_joint_twist_upper is None:
             self._deprecated_joint_twist_upper = []
         return self._deprecated_joint_twist_upper
@@ -3175,7 +3175,7 @@ class ModelBuilder:
     @joint_twist_upper.setter
     def joint_twist_upper(self, value: list[float]) -> None:
         # stacklevel skips ModelBuilder.__setattr__ to report the caller.
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
         self._deprecated_joint_twist_upper = value
 
     def _project_target_q_to_dof(self) -> list[float] | np.ndarray:

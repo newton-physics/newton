@@ -1464,12 +1464,12 @@ class Model:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF :attr:`joint_limit_lower` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._deprecated_joint_twist_lower
 
     @joint_twist_lower.setter
     def joint_twist_lower(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._deprecated_joint_twist_lower = value
 
     @property
@@ -1479,12 +1479,12 @@ class Model:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF :attr:`joint_limit_upper` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._deprecated_joint_twist_upper
 
     @joint_twist_upper.setter
     def joint_twist_upper(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._deprecated_joint_twist_upper = value
 
     @property

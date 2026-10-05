@@ -128,7 +128,7 @@ class SensorTiledCamera:
             load_textures: Load texture data from the model. Set to ``False``
                 to skip texture loading when textures are not needed.
         """
-        warnings.warn(_TILED_CAMERA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_TILED_CAMERA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
 
         self.model = model
 
