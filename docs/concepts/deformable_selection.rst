@@ -57,7 +57,7 @@ without applying a selection pattern:
 Like ``model.articulation_label`` and ``model.articulation_world``, these arrays
 describe recorded objects before selection. They include global objects and
 objects in uneven worlds. A view contains only its matches, ordered by world.
-Its destination indices refer to that selection, not the model inventory.
+Its rows refer to that selection, not the model inventory.
 
 Read and reset state
 --------------------
@@ -106,52 +106,38 @@ initial arrays, not states that were already created.
 Update selected deformable objects
 ----------------------------------
 
-``deformable_object_indices`` says **which selected deformable objects to change**.
-``source_indices`` says **which input rows to read**. For a view containing at
-least three cloths, reset only cloths 2 and 0 from their saved rows:
+A Boolean ``mask`` chooses which selected deformable objects to update.
+Values always contain one row per object in view order. For a view containing
+three cloths, reset only cloths 0 and 2 from their saved rows:
 
 .. code-block:: python
 
-    surfaces.set_particle_positions(
-        state,
-        positions_default,
-        deformable_object_indices=[2, 0],
-        source_indices=[2, 0],
-    )
-    surfaces.set_particle_velocities(
-        state,
-        velocities_default,
-        deformable_object_indices=[2, 0],
-        source_indices=[2, 0],
-    )
+    mask_cloths = wp.array([True, False, True], dtype=bool, device=model.device)
+    surfaces.set_particle_positions(state, positions_default, mask=mask_cloths)
+    surfaces.set_particle_velocities(state, velocities_default, mask=mask_cloths)
 
-The two lists need not match. With destinations ``[2, 0]`` and source rows
-``[0, 2]``, the setter copies saved row 0 to cloth 2 and saved row 2 to cloth 0.
-Without ``source_indices``, values contain one compact row per destination.
-Omitting ``deformable_object_indices`` writes every selected deformable object.
-Unselected deformable objects are untouched.
+The middle cloth is untouched. ``mask=None`` updates the whole selection;
+an all-false mask changes nothing. Values must still have their full shape.
+A mask entry refers to a selected object, not a model-global ID or a particle.
+It corresponds to a world only when exactly one object is selected in every
+real model world. The next section explains how to look up objects by world.
 
-Destination indices are positions in this view, not model-global IDs. They
-coincide with world IDs only when exactly one deformable object is selected in
-every world. The next section explains how to look up objects by world.
+Host Boolean sequences are accepted outside capture. Numeric lists are not masks.
+Device masks must have shape ``(count,)``, Boolean dtype, and the view's device.
+Strided masks are supported. Setters do not modify their masks or input values.
 
-Host selectors must contain genuine integers. Destination indices must be in
-range and unique; source rows may repeat. Device selectors must be one-dimensional
-``int32`` arrays on the model device. Out-of-range device indices are ignored.
-For duplicate device destinations, the last input row wins. If that row has an
-invalid source index, the destination is left unchanged.
+Construct views and warm up operations before CUDA graph capture. Preallocate
+independent values and masks. Setters allocate no temporary arrays with device
+inputs, including when those inputs require gradients. Host values and masks
+raise ``RuntimeError`` during capture. Getters that reuse staging buffers can
+also be captured after their first call. Mask and value contents can change
+between inference replays without rebuilding the graph.
 
-Construct views and warm up the operations before CUDA graph capture. Preallocate
-independent input values and device selectors. The indexed setters and getters
-that reuse staging buffers can then be captured and replayed. A later replay may
-use changed values or indices without a host copy.
-
-Indexed setters preserve gradients to the input values when recorded with
-``wp.Tape``. If the values or target array requires gradients, each device-indexed
-write allocates an integer buffer with one entry per selected deformable object.
-This keeps later writes from changing the earlier write's backward calculation.
-Ordinary writes reuse the view's buffer. Keep input values and selectors unchanged
-until backward execution, and use separate state buffers for successive steps.
+Masked setters preserve gradients to the input values when recorded with
+``wp.Tape``. Keep values and masks unchanged until backward completes.
+Use separate masks for different selections on the same tape, and separate
+state buffers for successive steps. No per-call mask snapshot is created.
+For a captured forward/backward graph, change inputs only between complete replays.
 
 Deformable objects and worlds
 -----------------------------
@@ -303,10 +289,9 @@ The method style is similar, but the layouts serve different needs:
   in the model arrays. Deformable views use one flat row per selected deformable
   object. This allows uneven world counts and irregular spacing without padding.
   Batched reads still require equal counts of the requested element kind.
-* Articulation setters use Boolean masks with full-sized input arrays. Deformable
-  setters use destination indices and compact input rows, with optional source
-  indices for reading from a larger buffer. This supports partial resets without
-  requiring a full-sized array for each write.
+* Both views use Boolean masks with full-sized input arrays. Deformable masks
+  have one entry per selected object, including when worlds have different
+  object counts. A small reset still requires a full-view value buffer.
 * :meth:`~newton.selection.ArticulationView.get_attribute` is a generic entry
   point. The deformable views start with state getters, setters, and element
   ranges. Generic attribute access remains a follow-up, not a limitation of
@@ -314,7 +299,7 @@ The method style is similar, but the layouts serve different needs:
 
 For example, these calls reset velocities in world 1 of a three-world model.
 ``robot_velocities`` has the full shape returned by ``get_dof_velocities()``.
-``cable_velocities`` has one compact row for each destination cable:
+``cable_velocities`` also has the full shape returned by its getter:
 
 .. code-block:: python
 
@@ -329,19 +314,17 @@ For example, these calls reset velocities in world 1 of a three-world model.
     robots.eval_fk(state, mask=world_mask)
 
     start, end = cables.deformable_object_ranges()[world_id]
-    destination_objects = wp.array(
-        list(range(start, end)), dtype=wp.int32, device=model.device
+    mask_cables = wp.array(
+        [start <= i < end for i in range(cables.count)],
+        dtype=bool,
+        device=model.device,
     )
     cable_velocities = wp.zeros(
-        (end - start, cables.bodies_per_deformable_object),
+        cables.get_body_velocities(state).shape,
         dtype=wp.spatial_vector,
         device=model.device,
     )
-    cables.set_body_velocities(
-        state,
-        cable_velocities,
-        deformable_object_indices=destination_objects,
-    )
+    cables.set_body_velocities(state, cable_velocities, mask=mask_cables)
 
 The robot call writes joint velocities; forward kinematics updates its links.
 The cable call writes segment velocities directly. These are different state

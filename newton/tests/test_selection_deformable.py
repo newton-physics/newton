@@ -47,7 +47,7 @@ class TestDeformableFamilyViews(unittest.TestCase):
             view.ranges("particle")
 
     def test_particle_views_filter_shared_labels_and_isolate_writes(self):
-        """Write only the requested family and deformable object with independent source rows."""
+        """Write only the masked deformable object in the requested family."""
         builder = newton.ModelBuilder()
         _add_test_cable(builder, label="object")
         _add_test_cloth(builder, label="object")
@@ -72,7 +72,7 @@ class TestDeformableFamilyViews(unittest.TestCase):
                     expected = getattr(state, attribute).numpy().copy()
                     values = wp.array(np.full((2, 4, 3), 7.0, dtype=np.float32), dtype=wp.vec3, device="cpu")
 
-                    setter(state, values, deformable_object_indices=[1], source_indices=[0])
+                    setter(state, values, mask=[False, True])
 
                     start, end = ranges[1]
                     expected[start:end] = 7.0

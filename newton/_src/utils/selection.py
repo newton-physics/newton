@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import functools
-import operator
 import re
 from fnmatch import fnmatch
 from types import NoneType
@@ -2133,37 +2132,16 @@ def _gather_object_vec3_kernel(
 
 
 @wp.kernel
-def _mark_last_object_row_kernel(
-    object_indices: wp.array[wp.int32],
-    object_count: int,
-    last_rows: wp.array[wp.int32],
-):
-    row = wp.tid()
-    object_index = object_indices[row]
-    if object_index >= 0 and object_index < object_count:
-        wp.atomic_max(last_rows, object_index, row)
-
-
-@wp.kernel
 def _scatter_object_vec3_kernel(
     values: wp.array2d[wp.vec3],
     starts: wp.array[wp.int32],
-    object_indices: wp.array[wp.int32],
-    source_indices: wp.array[wp.int32],
-    last_rows: wp.array[wp.int32],
-    deduplicate: bool,
+    mask: wp.array[wp.bool],
     dst: wp.array[wp.vec3],
 ):
     i, j = wp.tid()
-    object_index = object_indices[i]
-    if object_index < 0 or object_index >= starts.shape[0]:
+    if mask and not mask[i]:
         return
-    if deduplicate and last_rows[object_index] != i:
-        return
-    source = source_indices[i] if source_indices else i
-    if source < 0 or source >= values.shape[0]:
-        return
-    dst[starts[object_index] + j] = values[source, j]
+    dst[starts[i] + j] = values[i, j]
 
 
 @wp.kernel
@@ -2180,22 +2158,13 @@ def _gather_object_transform_kernel(
 def _scatter_object_transform_kernel(
     values: wp.array2d[wp.transform],
     starts: wp.array[wp.int32],
-    object_indices: wp.array[wp.int32],
-    source_indices: wp.array[wp.int32],
-    last_rows: wp.array[wp.int32],
-    deduplicate: bool,
+    mask: wp.array[wp.bool],
     dst: wp.array[wp.transform],
 ):
     i, j = wp.tid()
-    object_index = object_indices[i]
-    if object_index < 0 or object_index >= starts.shape[0]:
+    if mask and not mask[i]:
         return
-    if deduplicate and last_rows[object_index] != i:
-        return
-    source = source_indices[i] if source_indices else i
-    if source < 0 or source >= values.shape[0]:
-        return
-    dst[starts[object_index] + j] = values[source, j]
+    dst[starts[i] + j] = values[i, j]
 
 
 @wp.kernel
@@ -2212,22 +2181,13 @@ def _gather_object_spatial_kernel(
 def _scatter_object_spatial_kernel(
     values: wp.array2d[wp.spatial_vector],
     starts: wp.array[wp.int32],
-    object_indices: wp.array[wp.int32],
-    source_indices: wp.array[wp.int32],
-    last_rows: wp.array[wp.int32],
-    deduplicate: bool,
+    mask: wp.array[wp.bool],
     dst: wp.array[wp.spatial_vector],
 ):
     i, j = wp.tid()
-    object_index = object_indices[i]
-    if object_index < 0 or object_index >= starts.shape[0]:
+    if mask and not mask[i]:
         return
-    if deduplicate and last_rows[object_index] != i:
-        return
-    source = source_indices[i] if source_indices else i
-    if source < 0 or source >= values.shape[0]:
-        return
-    dst[starts[object_index] + j] = values[source, j]
+    dst[starts[i] + j] = values[i, j]
 
 
 class _DeformableViewBase:
@@ -2305,8 +2265,6 @@ class _DeformableViewBase:
         """World index of each selected deformable object, shape ``(count,)``."""
 
         # Element ranges are always available; only rectangular operations require homogeneity.
-        self._all_objects: wp.array[wp.int32] | None = None  # lazy identity indices for full-selection writes
-        self._last_object_rows: wp.array[wp.int32] = wp.empty(self.count, dtype=wp.int32, device=self.device)
         self._ranges: dict[str, list[tuple[int, int]]] = {}
         self._starts: dict[str, wp.array[wp.int32]] = {}
         self._counts: dict[str, int | None] = {}
@@ -2504,48 +2462,23 @@ class _DeformableViewBase:
         wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
         return out
 
-    def _resolve_deformable_object_indices(
-        self,
-        deformable_object_indices: Any,
-    ) -> wp.array[wp.int32]:
-        if deformable_object_indices is None:
-            if self._all_objects is None:
-                self._all_objects = wp.array(list(range(self.count)), dtype=wp.int32, device=self.device)
-            return self._all_objects
-        return self._resolve_indices(
-            deformable_object_indices, "deformable_object_indices", self.count, reject_duplicates=True
-        )
-
-    def _resolve_indices(
-        self,
-        indices: Any,
-        argument_name: str,
-        upper_bound: int,
-        *,
-        reject_duplicates: bool,
-    ) -> wp.array[wp.int32]:
-        if isinstance(indices, wp.array):
-            # Kernel-side checks keep this graph-safe without a host copy.
-            if indices.ndim != 1:
-                raise ValueError(f"Expected {argument_name} to be one-dimensional, got {indices.ndim} dimensions")
-            if indices.dtype is not wp.int32:
-                raise ValueError(f"Expected {argument_name} dtype int32, got {indices.dtype.__name__}")
-            if indices.device != self.device:
-                raise ValueError(f"Expected {argument_name} on device {self.device}, got {indices.device}")
-            return indices
-        idx = []
-        for value in indices:
-            if isinstance(value, (bool, np.bool_)):
-                raise TypeError(f"{argument_name} entries must be integers, got {value!r}")
-            try:
-                idx.append(operator.index(value))
-            except TypeError as error:
-                raise TypeError(f"{argument_name} entries must be integers, got {value!r}") from error
-        if any(i < 0 or i >= upper_bound for i in idx):
-            raise ValueError(f"{argument_name} entries must be in [0, {upper_bound}), got {idx}")
-        if reject_duplicates and len(set(idx)) != len(idx):
-            raise ValueError(f"{argument_name} contains duplicate entries: {idx}")
-        return wp.array(idx, dtype=wp.int32, device=self.device)
+    def _resolve_mask(self, mask: Any) -> wp.array[wp.bool] | None:
+        if mask is None:
+            return None
+        if not isinstance(mask, wp.array):
+            if self.device.is_capturing:
+                raise RuntimeError("Create mask as a Warp array on the view's device before CUDA capture")
+            mask = np.asarray(mask)
+            if mask.dtype != np.bool_:
+                raise ValueError("Expected Boolean mask")
+            mask = wp.array(mask, dtype=wp.bool, device=self.device)
+        if mask.dtype is not wp.bool:
+            raise ValueError(f"Expected Boolean mask, got dtype {mask.dtype}")
+        if mask.shape != (self.count,):
+            raise ValueError(f"Expected mask shape ({self.count},), got {mask.shape}")
+        if mask.device != self.device:
+            raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
+        return mask
 
     def _scatter(
         self,
@@ -2554,44 +2487,24 @@ class _DeformableViewBase:
         kernel: Any,
         dst: wp.array[Any],
         dtype: Any,
-        deformable_object_indices: Any = None,
-        source_indices: Any = None,
+        mask: Any = None,
     ) -> None:
         count = self._element_count(kind)
-        device_indices = isinstance(deformable_object_indices, wp.array)
-        objects = self._resolve_deformable_object_indices(deformable_object_indices)
-        rows = objects.shape[0]
+        if self.device.is_capturing and not isinstance(values, wp.array):
+            raise RuntimeError("Create values as a Warp array on the view's device before CUDA capture")
+        mask = self._resolve_mask(mask)
+        expected_shape = (self.count, count)
         if not isinstance(values, wp.array):
-            value_rows = rows if source_indices is None else len(values)
-            values = wp.array(values, dtype=dtype, shape=(value_rows, count), device=self.device, copy=False)
-        expected_shape = (rows, count)
-        if source_indices is None:
-            if values.shape != expected_shape:
-                raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
-            sources = None
-        else:
-            if values.ndim != 2 or values.shape[1] != count:
-                raise ValueError(f"Expected values shape (rows, {count}), got {values.shape}")
-            sources = self._resolve_indices(
-                source_indices,
-                "source_indices",
-                values.shape[0],
-                reject_duplicates=False,
-            )
-            if sources.shape[0] != rows:
-                raise ValueError(
-                    f"Expected source_indices length {rows} to match deformable_object_indices, got {sources.shape[0]}"
-                )
-        # Validate Warp inputs eagerly so a mismatch reads as a contract error, not a
-        # kernel-launch failure.
+            values = wp.array(values, dtype=dtype, shape=expected_shape, device=self.device)
+        if values.shape != expected_shape:
+            raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
         if values.dtype is not dtype:
             raise ValueError(f"Expected values dtype {dtype.__name__}, got {values.dtype.__name__}")
         if values.device != self.device:
             raise ValueError(f"Expected values on device {self.device}, got {values.device}")
-        if rows and count and values.size and dst.size:
-            # A remapped write can destroy a later source row. Check byte spans,
-            # not just pointers, so sliced/strided aliases are caught without a
-            # device readback or an implicit allocation during graph capture.
+        if self.count and count and values.size and dst.size:
+            # Strided getters may alias the target even when their pointers differ.
+            # Reject overlap without a device readback or a hidden copy.
             def byte_bounds(array):
                 offsets = [(size - 1) * stride for size, stride in zip(array.shape, array.strides, strict=True)]
                 return (
@@ -2603,31 +2516,11 @@ class _DeformableViewBase:
             dst_start, dst_end = byte_bounds(dst)
             if values_start < dst_end and dst_start < values_end:
                 raise ValueError("values must not overlap the target state array; use wp.clone() to copy them first")
-        last_rows = self._last_object_rows
-        if device_indices:
-            # Backward execution needs each write's original duplicate winners.
-            # The tape retains this buffer; ordinary writes can reuse scratch.
-            if values.requires_grad or dst.requires_grad:
-                last_rows = wp.empty_like(last_rows)
-            last_rows.fill_(-1)
-            wp.launch(
-                _mark_last_object_row_kernel,
-                dim=rows,
-                inputs=[objects, self.count, last_rows],
-                device=self.device,
-            )
         wp.launch(
             kernel,
-            dim=(rows, count),
-            inputs=[
-                values,
-                self._starts[kind],
-                objects,
-                sources,
-                last_rows,
-                device_indices,
-                dst,
-            ],
+            dim=(self.count, count),
+            inputs=[values, self._starts[kind], mask],
+            outputs=[dst],
             device=self.device,
         )
 
@@ -2663,42 +2556,30 @@ class _DeformableParticleView(_DeformableViewBase):
         target: Model | State,
         values: Any,
         *,
-        deformable_object_indices: Any = None,
-        source_indices: Any = None,
+        mask: Any = None,
     ) -> None:
-        """Write particle positions [m] from ``(value_rows, particles_per_deformable_object)`` values.
+        """Write particle positions for the masked deformable objects.
 
-        ``deformable_object_indices`` selects destination deformable objects. ``source_indices`` optionally
-        selects one row in ``values`` per destination; otherwise ``values`` must
-        contain one compact row per destination. Other deformable objects are untouched.
+        Values stay in view order, including rows that are masked off. Keep
+        values and masks unchanged until backward completes when using a tape.
+        Preallocated device inputs require no temporary arrays during capture.
 
         Args:
             target: Model initial state or simulation state to update.
-            values: Particle positions [m] with shape
-                ``(value_rows, particles_per_deformable_object)``. Must not share
-                storage with the target positions; use ``wp.clone()`` to copy a live getter result.
-            deformable_object_indices: Optional flat deformable object rows. Host entries must be integers;
-                device entries must be a one-dimensional ``int32`` array on the model
-                device.
-            source_indices: Optional rows to read from ``values``, one per destination
-                deformable object. Uses compact rows in order when omitted.
+            values: Particle positions [m], shape
+                ``(count, particles_per_deformable_object)``. Must not share storage
+                with the target array; clone live getter results before writing.
+            mask: Boolean array of shape ``(count,)`` on the view's device, or
+                a host Boolean sequence outside capture. True updates that
+                selected deformable object. None updates the whole selection.
 
         Raises:
-            AttributeError: If the selected deformable objects do not all record particles.
-            TypeError: If a host selector entry is not an integer.
-            ValueError: If deformable object sizes, value shape/dtype/device, selector bounds,
-                destination uniqueness, or source/destination alignment are invalid,
-                or if values overlap the target array.
+            AttributeError: If the selected objects do not record particles.
+            ValueError: If element counts, value shape/dtype/device, mask, or
+                non-overlap requirements are not satisfied.
+            RuntimeError: If host values or a host mask are passed during CUDA capture.
         """
-        self._scatter(
-            "particle",
-            values,
-            _scatter_object_vec3_kernel,
-            target.particle_q,
-            wp.vec3,
-            deformable_object_indices,
-            source_indices,
-        )
+        self._scatter("particle", values, _scatter_object_vec3_kernel, target.particle_q, wp.vec3, mask)
 
     def get_particle_velocities(
         self,
@@ -2723,42 +2604,30 @@ class _DeformableParticleView(_DeformableViewBase):
         target: Model | State,
         values: Any,
         *,
-        deformable_object_indices: Any = None,
-        source_indices: Any = None,
+        mask: Any = None,
     ) -> None:
-        """Write particle velocities [m/s] from ``(value_rows, particles_per_deformable_object)`` values.
+        """Write particle velocities for the masked deformable objects.
 
-        ``deformable_object_indices`` selects destination deformable objects. ``source_indices`` optionally
-        selects one row in ``values`` per destination; otherwise ``values`` must
-        contain one compact row per destination. Other deformable objects are untouched.
+        Values stay in view order, including rows that are masked off. Keep
+        values and masks unchanged until backward completes when using a tape.
+        Preallocated device inputs require no temporary arrays during capture.
 
         Args:
             target: Model initial state or simulation state to update.
-            values: Particle velocities [m/s] with shape
-                ``(value_rows, particles_per_deformable_object)``. Must not share
-                storage with the target velocities; use ``wp.clone()`` to copy a live getter result.
-            deformable_object_indices: Optional flat deformable object rows. Host entries must be integers;
-                device entries must be a one-dimensional ``int32`` array on the model
-                device.
-            source_indices: Optional rows to read from ``values``, one per destination
-                deformable object. Uses compact rows in order when omitted.
+            values: Particle velocities [m/s], shape
+                ``(count, particles_per_deformable_object)``. Must not share storage
+                with the target array; clone live getter results before writing.
+            mask: Boolean array of shape ``(count,)`` on the view's device, or
+                a host Boolean sequence outside capture. True updates that
+                selected deformable object. None updates the whole selection.
 
         Raises:
-            AttributeError: If the selected deformable objects do not all record particles.
-            TypeError: If a host selector entry is not an integer.
-            ValueError: If deformable object sizes, value shape/dtype/device, selector bounds,
-                destination uniqueness, or source/destination alignment are invalid,
-                or if values overlap the target array.
+            AttributeError: If the selected objects do not record particles.
+            ValueError: If element counts, value shape/dtype/device, mask, or
+                non-overlap requirements are not satisfied.
+            RuntimeError: If host values or a host mask are passed during CUDA capture.
         """
-        self._scatter(
-            "particle",
-            values,
-            _scatter_object_vec3_kernel,
-            target.particle_qd,
-            wp.vec3,
-            deformable_object_indices,
-            source_indices,
-        )
+        self._scatter("particle", values, _scatter_object_vec3_kernel, target.particle_qd, wp.vec3, mask)
 
 
 class _DeformableRigidBodyView(_DeformableViewBase):
@@ -2795,43 +2664,30 @@ class _DeformableRigidBodyView(_DeformableViewBase):
         target: Model | State,
         values: Any,
         *,
-        deformable_object_indices: Any = None,
-        source_indices: Any = None,
+        mask: Any = None,
     ) -> None:
-        """Write segment transforms from ``(value_rows, bodies_per_deformable_object)`` values.
+        """Write segment transforms for the masked deformable objects.
 
-        Each transform contains a world-space translation [m] and a unitless
-        quaternion. ``deformable_object_indices`` selects destination deformable objects. ``source_indices``
-        optionally selects one row in ``values`` per destination; otherwise
-        ``values`` must contain one compact row per destination.
+        Values stay in view order, including rows that are masked off. Keep
+        values and masks unchanged until backward completes when using a tape.
+        Preallocated device inputs require no temporary arrays during capture.
 
         Args:
             target: Model initial state or simulation state to update.
-            values: Segment transforms with shape ``(value_rows, bodies_per_deformable_object)``;
-                translations are in meters and quaternions are unitless. Must not share
-                storage with the target transforms; use ``wp.clone()`` to copy a live getter result.
-            deformable_object_indices: Optional flat deformable object rows. Host entries must be integers;
-                device entries must be a one-dimensional ``int32`` array on the model
-                device.
-            source_indices: Optional rows to read from ``values``, one per destination
-                deformable object. Uses compact rows in order when omitted.
+            values: Segment transforms with world-space translation [m] and a unitless quaternion, shape
+                ``(count, bodies_per_deformable_object)``. Must not share storage
+                with the target array; clone live getter results before writing.
+            mask: Boolean array of shape ``(count,)`` on the view's device, or
+                a host Boolean sequence outside capture. True updates that
+                selected deformable object. None updates the whole selection.
 
         Raises:
-            AttributeError: If the selected deformable objects do not all record bodies.
-            TypeError: If a host selector entry is not an integer.
-            ValueError: If deformable object sizes, value shape/dtype/device, selector bounds,
-                destination uniqueness, or source/destination alignment are invalid,
-                or if values overlap the target array.
+            AttributeError: If the selected objects do not record bodies.
+            ValueError: If element counts, value shape/dtype/device, mask, or
+                non-overlap requirements are not satisfied.
+            RuntimeError: If host values or a host mask are passed during CUDA capture.
         """
-        self._scatter(
-            "body",
-            values,
-            _scatter_object_transform_kernel,
-            target.body_q,
-            wp.transform,
-            deformable_object_indices,
-            source_indices,
-        )
+        self._scatter("body", values, _scatter_object_transform_kernel, target.body_q, wp.transform, mask)
 
     def get_body_velocities(
         self,
@@ -2859,44 +2715,30 @@ class _DeformableRigidBodyView(_DeformableViewBase):
         target: Model | State,
         values: Any,
         *,
-        deformable_object_indices: Any = None,
-        source_indices: Any = None,
+        mask: Any = None,
     ) -> None:
-        """Write segment velocities from ``(value_rows, bodies_per_deformable_object)`` values.
+        """Write segment velocities for the masked deformable objects.
 
-        Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
-        followed by angular velocity [rad/s]. ``deformable_object_indices`` selects destination
-        deformable objects. ``source_indices`` optionally selects one row in ``values`` per
-        destination; otherwise ``values`` must contain one compact row per destination.
+        Values stay in view order, including rows that are masked off. Keep
+        values and masks unchanged until backward completes when using a tape.
+        Preallocated device inputs require no temporary arrays during capture.
 
         Args:
             target: Model initial state or simulation state to update.
-            values: Segment velocities with shape ``(value_rows, bodies_per_deformable_object)``;
-                linear components are in meters per second and angular components are
-                in radians per second. Must not share storage with the target velocities;
-                use ``wp.clone()`` to copy a live getter result.
-            deformable_object_indices: Optional flat deformable object rows. Host entries must be integers;
-                device entries must be a one-dimensional ``int32`` array on the model
-                device.
-            source_indices: Optional rows to read from ``values``, one per destination
-                deformable object. Uses compact rows in order when omitted.
+            values: Segment velocities in (v_com_world, omega_world) order [m/s, rad/s], shape
+                ``(count, bodies_per_deformable_object)``. Must not share storage
+                with the target array; clone live getter results before writing.
+            mask: Boolean array of shape ``(count,)`` on the view's device, or
+                a host Boolean sequence outside capture. True updates that
+                selected deformable object. None updates the whole selection.
 
         Raises:
-            AttributeError: If the selected deformable objects do not all record bodies.
-            TypeError: If a host selector entry is not an integer.
-            ValueError: If deformable object sizes, value shape/dtype/device, selector bounds,
-                destination uniqueness, or source/destination alignment are invalid,
-                or if values overlap the target array.
+            AttributeError: If the selected objects do not record bodies.
+            ValueError: If element counts, value shape/dtype/device, mask, or
+                non-overlap requirements are not satisfied.
+            RuntimeError: If host values or a host mask are passed during CUDA capture.
         """
-        self._scatter(
-            "body",
-            values,
-            _scatter_object_spatial_kernel,
-            target.body_qd,
-            wp.spatial_vector,
-            deformable_object_indices,
-            source_indices,
-        )
+        self._scatter("body", values, _scatter_object_spatial_kernel, target.body_qd, wp.spatial_vector, mask)
 
 
 class DeformableCurveView(_DeformableRigidBodyView):
@@ -2915,7 +2757,7 @@ class DeformableCurveView(_DeformableRigidBodyView):
     ``joints_to_keep`` when complete curve access is needed.
 
     See :ref:`deformable-selection` for world layout, getter-result lifetime,
-    indexed writes, and CUDA graph capture.
+    masked writes, and CUDA graph capture.
 
     Args:
         model: Model containing the finalized deformable objects.
@@ -2946,7 +2788,7 @@ class DeformableSurfaceView(_DeformableParticleView):
     excluded from the selection.
 
     See :ref:`deformable-selection` for world layout, getter-result lifetime,
-    indexed writes, and CUDA graph capture.
+    masked writes, and CUDA graph capture.
 
     Args:
         model: Model containing the finalized deformable objects.
@@ -2977,7 +2819,7 @@ class DeformableVolumeView(_DeformableParticleView):
     supported. Matching curves and surfaces are excluded from the selection.
 
     See :ref:`deformable-selection` for world layout, getter-result lifetime,
-    indexed writes, and CUDA graph capture.
+    masked writes, and CUDA graph capture.
 
     Args:
         model: Model containing the finalized deformable objects.
