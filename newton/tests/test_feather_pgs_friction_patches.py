@@ -114,7 +114,7 @@ def _patch_fixture(
 
 class TestFrictionPatchHistory(unittest.TestCase):
     def test_support_edge_centers_ignore_contact_order(self):
-        """Keep identical edge centers when contact ordering changes at rest."""
+        """Keep the same edge centers when contact ordering changes at rest."""
         device = "cuda:0" if wp.is_cuda_available() else "cpu"
         points = np.array(
             [[x, y, 0.0] for x in np.linspace(-0.001, 0.001, 128) for y in (-0.05, 0.05)], dtype=np.float32
@@ -126,7 +126,8 @@ class TestFrictionPatchHistory(unittest.TestCase):
                 _, _, _, patches = _patch_fixture(points[order], device=device)
                 locations = patches.view.point_a.numpy()[patches.view.weight.numpy() > 0.0]
                 locations = locations[np.argsort(locations[:, 1])]
-                np.testing.assert_array_equal(locations, expected)
+                # Summation order perturbs the principal axis only by roundoff.
+                np.testing.assert_allclose(locations, expected, rtol=0.0, atol=1.0e-12)
 
     def test_narrow_patch_preserves_footprint_reflection_symmetry(self):
         """Avoid a diagonal friction couple on a symmetric narrow contact footprint."""
@@ -142,6 +143,87 @@ class TestFrictionPatchHistory(unittest.TestCase):
                 self.assertEqual(len(locations), 2)
                 np.testing.assert_allclose(locations @ across, 0.0, atol=1.0e-7)
                 np.testing.assert_allclose(np.sort(locations @ axis), [-0.025, 0.025], atol=1.0e-7)
+
+    def test_sheared_narrow_patch_keeps_anchors_at_its_support_edges(self):
+        """Keep both anchors near the support-edge centers when a slight shear tilts the principal axis."""
+        device = "cuda:0" if wp.is_cuda_available() else "cpu"
+        # A faceted wheel's line contact: three points across each cap edge, one cap
+        # offset slightly along the edges. The principal axis then deviates from the
+        # caps' normal, and keeping only each edge's extreme point anchors opposite
+        # corners, a diagonal couple that steers a symmetric wheel. Anchors on the
+        # principal line through the centroid move only in proportion to the shear.
+        across_offsets = (-0.0145, 0.0, 0.0145)
+        for angle in (0.0, 0.37):
+            axis = np.array([np.sin(angle), np.cos(angle), 0.0])
+            across = np.array([np.cos(angle), -np.sin(angle), 0.0])
+            for shear in (1.0e-6, 1.0e-5, -1.0e-4, 1.0e-3):
+                points = [x * across - 0.025 * axis for x in across_offsets]
+                points += [(x + shear) * across + 0.025 * axis for x in across_offsets]
+                with self.subTest(angle=angle, shear=shear):
+                    _, _, _, patches = _patch_fixture(points, device=device)
+                    active = patches.view.weight.numpy() > 0.0
+                    locations = patches.view.point_a.numpy()[active]
+                    self.assertEqual(len(locations), 2)
+                    locations = locations[np.argsort(locations @ axis)]
+                    tolerance = abs(shear) + 1.0e-7
+                    np.testing.assert_allclose(locations @ axis, [-0.025, 0.025], rtol=0.0, atol=tolerance)
+                    np.testing.assert_allclose(locations @ across, [0.0, shear], rtol=0.0, atol=tolerance)
+
+    def test_aligned_narrow_patch_anchors_span_the_full_footprint(self):
+        """Anchor aligned narrow footprints at their axial extremes, including near-extreme samples."""
+        device = "cuda:0" if wp.is_cuda_available() else "cpu"
+        theta = np.linspace(0.0, 2.0 * np.pi, 32, endpoint=False)
+        footprints = {
+            # Edge samples just inside each end must not pull the anchors inward.
+            "intermediate_edge_samples": [[x, y, 0.0] for x in (-0.001, 0.001) for y in (-0.025, -0.023, 0.023, 0.025)],
+            "sampled_ellipse": np.stack([0.019 * np.cos(theta), 0.025 * np.sin(theta), np.zeros_like(theta)], axis=1),
+        }
+        for name, points in footprints.items():
+            with self.subTest(footprint=name):
+                _, _, _, patches = _patch_fixture(np.asarray(points, dtype=np.float32), device=device)
+                active = patches.view.weight.numpy() > 0.0
+                locations = patches.view.point_a.numpy()[active]
+                self.assertEqual(len(locations), 2)
+                locations = locations[np.argsort(locations[:, 1])]
+                np.testing.assert_allclose(locations[:, 0], 0.0, atol=1.0e-7)
+                np.testing.assert_allclose(locations[:, 1], [-0.025, 0.025], rtol=0.0, atol=1.0e-6)
+
+    def test_narrow_patch_anchors_keep_each_end_height(self):
+        """Anchor each end of a narrow footprint at the height of its own support edge."""
+        devices = ["cpu"] + (["cuda:0"] if wp.is_cuda_available() else [])
+        # A faceted wheel bouncing on one cap touches at different heights at the
+        # two ends. Level anchors there see opposite slip at the ends of a rolling
+        # wheel, and the friction answers with a yaw kick.
+        footprints = {
+            "two_levels": ([[x, -0.025, 0.0] for x in (-0.0145, 0.0, 0.0145)] + [[0.0, 0.025, 0.001]], [0.0, 0.001]),
+            "three_levels": ([[-0.05, 0.0, 0.0], [0.0, 0.0, 0.0], [0.05, 0.0, 0.003]], [0.0, 0.003]),
+        }
+        for device in devices:
+            for name, (members, heights) in footprints.items():
+                with self.subTest(device=device, footprint=name):
+                    points = np.asarray(members, dtype=np.float32)
+                    _, _, _, patches = _patch_fixture(points, device=device)
+                    locations = patches.view.point_a.numpy()[patches.view.weight.numpy() > 0.0]
+                    self.assertEqual(len(locations), 2)
+                    axis = points[-1] - points[0]
+                    locations = locations[np.argsort(locations @ axis)]
+                    np.testing.assert_allclose(locations[:, 2], heights, rtol=0.0, atol=1.0e-7)
+
+    def test_thin_triangle_anchor_span_varies_continuously(self):
+        """Keep the anchor span continuous as a triangle thins into a collinear footprint."""
+        devices = ["cpu"] + (["cuda:0"] if wp.is_cuda_available() else [])
+        heights = np.linspace(1.0e-6, 4.0e-6, 41)
+        for device in devices:
+            with self.subTest(device=device):
+                spans = []
+                for height in heights:
+                    points = np.array([[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0], [0.0, height, 0.0]], dtype=np.float32)
+                    _, _, _, patches = _patch_fixture(points, device=device)
+                    locations = patches.view.point_a.numpy()[patches.view.weight.numpy() > 0.0]
+                    self.assertEqual(len(locations), 2)
+                    spans.append(np.ptp(locations[:, 0]))
+                # A switch between two anchor constructions near collinearity would jump by tens of mm.
+                self.assertLess(np.abs(np.diff(spans)).max(), 2.0e-3)
 
     def test_pose_increment_preserves_fixed_pivots_and_no_slip_rolling(self):
         """Distinguish rigid rotation from slip without querying the collision shape."""
@@ -685,7 +767,8 @@ def _run_rolling(geometry, device, *, friction_anchor_beta=None, segments=64, hz
         solver.step(s0, s1, control, contacts, 1.0 / hz)
         s0, s1 = s1, s0
         if step >= 3 * hz // 4:
-            final_velocity.append(s0.body_qd.numpy()[0])
+            # CPU arrays expose their buffer; copy before the states swap.
+            final_velocity.append(s0.body_qd.numpy()[0].copy())
     pose, velocity = s0.body_q.numpy()[0], s0.body_qd.numpy()[0]
     return pose, velocity, np.mean(final_velocity, axis=0)
 
