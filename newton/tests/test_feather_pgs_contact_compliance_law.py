@@ -41,6 +41,8 @@ def test_unsupported_solver_modes_rejected(test, device):
         ("pgs_contact_regularization", 0.01),
         ("pgs_warmstart", True),
         ("pgs_iterations", 0),
+        ("contact_shared_anchor", True),
+        ("contact_friction_shared_anchor", True),
     ):
         with test.assertRaisesRegex(ValueError, key):
             SolverFeatherPGS(model, pgs_mode="matrix_free", contact_compliance=True, **{key: value})

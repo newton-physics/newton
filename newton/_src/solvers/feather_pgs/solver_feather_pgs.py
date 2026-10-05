@@ -1574,7 +1574,7 @@ class SolverFeatherPGS(SolverBase):
                 damping term is dropped while the gap is open. Requires point friction
                 (``None`` or ``0`` for ``friction_anchor_beta``; ``None`` warns), positive
                 ``pgs_iterations``, no warm start, no velocity-only iterations, no contact
-                regularization and zero shape restitution. The contacts must carry the
+                regularization, no shared anchors and zero shape restitution. The contacts must carry the
                 hydroelastic material arrays. Each step synchronizes the row metadata with the
                 host, so the option rejects CUDA graph capture and is not a performance path.
                 Contacts the allocator excludes on purpose are counted in
@@ -1653,6 +1653,8 @@ class SolverFeatherPGS(SolverBase):
                     "pgs_velocity_iterations": int(pgs_velocity_iterations),
                     "pgs_warmstart": bool(pgs_warmstart),
                     "pgs_contact_regularization": float(pgs_contact_regularization),
+                    "contact_shared_anchor": bool(contact_shared_anchor),
+                    "contact_friction_shared_anchor": bool(contact_friction_shared_anchor),
                 }
             )
         if friction_anchor_beta is None:
