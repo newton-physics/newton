@@ -2,13 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise contact-torsion lifecycle and row-storage safety across steps."""
 
+import itertools
 import unittest
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton import GeoType
 from newton._src.solvers.feather_pgs.contact_torsion import _contact_groups
+from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_JOINT_TARGET, PGS_CONSTRAINT_TYPE_TORSION
 from newton.solvers import SolverFeatherPGS
 from newton.tests.test_feather_pgs_contact_torsion import fixture
 
@@ -78,6 +81,127 @@ class TestContactTorsionRegressions(unittest.TestCase):
         spin = np.abs(result["v_out"].reshape(2, 6)[:, 5])
         np.testing.assert_allclose(spin, 0.5, atol=1e-4)
 
+    def test_torsion_keeps_joint_velocity_limits(self):
+        """Let joint velocity limits have the last word over the spin rows of each sweep."""
+        for (iterations, velocity_iterations), preparation, radius in _VELOCITY_LIMIT_CASES:
+            with self.subTest(
+                iterations=iterations, velocity_iterations=velocity_iterations, preparation=preparation, radius=radius
+            ):
+                _, solver, model, initial, contacts = fixture(
+                    radius,
+                    center_only=True,
+                    spin=0.0,
+                    pgs_iterations=iterations,
+                    pgs_velocity_iterations=velocity_iterations,
+                    contact_torsion_device=preparation != "host",
+                )
+                limits = np.full(model.joint_dof_count, np.inf, dtype=np.float32)
+                limits[5] = _VELOCITY_LIMIT
+                model.joint_velocity_limit.assign(limits)
+                qd = _step_spinning_pad(solver, model, initial, contacts, preparation)
+                self.assertEqual(_row_count(solver, PGS_CONSTRAINT_TYPE_TORSION), int(radius > 0.0))
+                self.assertLessEqual(abs(float(qd[5])), _VELOCITY_LIMIT * (1.0 + 1e-5))
+                if radius > 0.0:
+                    # The spin row still resists the relative spin.
+                    self.assertLess(float(qd[11]), 9.0)
+
+    def test_torsion_keeps_fused_drive_velocity_limits(self):
+        """Let the fused drive-row velocity clamp have the last word over the spin rows of each sweep."""
+        dofs = 12
+        limits = np.full(dofs, np.inf, dtype=np.float32)
+        limits[5] = _VELOCITY_LIMIT
+        damping = np.zeros(dofs, dtype=np.float32)
+        damping[5] = 1.0e-3
+        for (iterations, velocity_iterations), preparation, radius in _VELOCITY_LIMIT_CASES:
+            with self.subTest(
+                iterations=iterations, velocity_iterations=velocity_iterations, preparation=preparation, radius=radius
+            ):
+                _, solver, model, initial, contacts = fixture(
+                    radius,
+                    center_only=True,
+                    spin=0.0,
+                    model_arrays={"joint_velocity_limit": limits, "joint_target_kd": damping},
+                    drive_mode="physx_pgs",
+                    fuse_joint_velocity_limits=True,
+                    pgs_iterations=iterations,
+                    pgs_velocity_iterations=velocity_iterations,
+                    contact_torsion_device=preparation != "host",
+                )
+                self.assertTrue(solver.fuse_joint_velocity_limits)
+                qd = _step_spinning_pad(solver, model, initial, contacts, preparation)
+                self.assertEqual(_row_count(solver, PGS_CONSTRAINT_TYPE_JOINT_TARGET), 1)
+                self.assertEqual(_row_count(solver, PGS_CONSTRAINT_TYPE_TORSION), int(radius > 0.0))
+                self.assertLessEqual(abs(float(qd[5])), _VELOCITY_LIMIT * (1.0 + 1e-5))
+                if radius > 0.0:
+                    self.assertLess(float(qd[11]), 9.0)
+
+    def test_torsion_keeps_free_body_velocity_limits(self):
+        """Let the free-body velocity-limit rows have the last word over a mixed contact's spin row."""
+        for (iterations, velocity_iterations), preparation, radius in _VELOCITY_LIMIT_CASES:
+            with self.subTest(
+                iterations=iterations, velocity_iterations=velocity_iterations, preparation=preparation, radius=radius
+            ):
+                # A spinning articulated pad presses on a resting free body whose spin is limited.
+                builder = newton.ModelBuilder(gravity=(0, 0, 0))
+                SolverFeatherPGS.register_custom_attributes(builder)
+                inertia = wp.mat33(np.diag([0.00012, 0.00012, 0.00008]).astype(np.float32))
+                shape = newton.ModelBuilder.ShapeConfig(density=0, mu=0.5, restitution=0.0)
+                pose = wp.transform(wp.vec3(0, 0, -0.025), wp.quat_identity())
+                pad = builder.add_link(xform=pose, mass=0.3, inertia=inertia)
+                axes = [newton.ModelBuilder.JointDofConfig(axis=wp.vec3(*a)) for a in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+                builder.add_articulation(
+                    [builder.add_joint_d6(-1, pad, parent_xform=pose, linear_axes=axes, angular_axes=axes)]
+                )
+                builder.add_shape_box(pad, hx=0.02, hy=0.015, hz=0.025, cfg=shape)
+                free = builder.add_body(
+                    xform=wp.transform(wp.vec3(0, 0, 0.025), wp.quat_identity()),
+                    mass=0.3,
+                    inertia=inertia,
+                    custom_attributes={"rigid_body_max_angular_velocity": _VELOCITY_LIMIT},
+                )
+                builder.add_shape_box(free, hx=0.02, hy=0.015, hz=0.025, cfg=shape)
+                model = builder.finalize(device="cuda:0")
+                initial = model.state()
+                initial.joint_qd.assign(np.array([0, 0, 0.1, 0, 0, 10.0, 0, 0, -0.1, 0, 0, 0], np.float32))
+                newton.eval_fk(model, initial.joint_q, initial.joint_qd, initial)
+                pipeline = newton.CollisionPipeline(
+                    model, contact_matching="latest", reduce_contacts=False, broad_phase="nxn", rigid_contact_max=64
+                )
+                contacts = pipeline.contacts()
+                pipeline.collide(initial, contacts)
+                # One central witness: any free-body spin comes from the spin row.
+                poses = initial.body_q.numpy()
+                for side in (0, 1):
+                    name = f"rigid_contact_point{side}"
+                    body = model.shape_body.numpy()[getattr(contacts, f"rigid_contact_shape{side}").numpy()[0]]
+                    points = getattr(contacts, name).numpy()
+                    points[0] = -poses[body, :3]
+                    getattr(contacts, name).assign(points)
+                contacts.rigid_contact_count.assign(np.array([1], np.int32))
+                solver = SolverFeatherPGS(
+                    model,
+                    pgs_mode="matrix_free",
+                    articulated_contact_response="immediate",
+                    friction_anchor_beta=0.0,
+                    pgs_iterations=iterations,
+                    pgs_velocity_iterations=velocity_iterations,
+                    pgs_beta=0.05,
+                    pgs_cfm=0,
+                    pgs_contact_regularization=0,
+                    pgs_warmstart=False,
+                    angular_damping=0,
+                    dense_max_constraints=64,
+                    mf_max_constraints=16,
+                    contact_torsion_radius=radius,
+                    contact_torsion_device=preparation != "host",
+                )
+                qd = _step(solver, model, initial, contacts, preparation)
+                self.assertEqual(_row_count(solver, PGS_CONSTRAINT_TYPE_TORSION), int(radius > 0.0))
+                self.assertGreater(int(solver.mf_constraint_count.numpy()[0]), 0)
+                self.assertLessEqual(abs(float(qd[11])), _VELOCITY_LIMIT * (1.0 + 1e-5))
+                if radius > 0.0:
+                    self.assertLess(float(qd[5]), 9.0)
+
     def test_contact_row_loss_fails_without_diagnostics(self):
         """Detect rolled-back dropped contacts even with optional telemetry off."""
         baseline, *_ = fixture(0.0, center_only=True)
@@ -102,6 +226,38 @@ class TestContactTorsionRegressions(unittest.TestCase):
         contacts.rigid_contact_stiffness = wp.ones(contacts.rigid_contact_max, device=model.device)
         with self.assertRaisesRegex(ValueError, "hydroelastic"):
             solver.step(initial, model.state(), model.control(), contacts, 0.0025)
+
+
+_VELOCITY_LIMIT = 0.1
+_VELOCITY_LIMIT_CASES = tuple(itertools.product(((1, 0), (4, 0), (1, 2)), ("host", "device", "graph"), (0.0, 1.0)))
+
+
+def _step_spinning_pad(solver, model, initial, contacts, preparation):
+    """Spin only the second pad, so any DOF 5 motion is transferred through the contact."""
+    velocity = initial.joint_qd.numpy()
+    velocity[5], velocity[11] = 0.0, 10.0
+    initial.joint_qd.assign(velocity)
+    newton.eval_fk(model, initial.joint_q, initial.joint_qd, initial)
+    return _step(solver, model, initial, contacts, preparation)
+
+
+def _step(solver, model, initial, contacts, preparation):
+    """Step once with host, device or graph-captured torsion preparation and return joint_qd."""
+    output = model.state()
+    if preparation == "graph":
+        solver.prepare_contact_torsion_capture(initial, output)
+        with wp.ScopedCapture(device=model.device) as capture:
+            solver.step(initial, output, model.control(), contacts, 0.0025)
+        wp.capture_launch(capture.graph)
+        solver.validate_contact_torsion()
+    else:
+        solver.step(initial, output, model.control(), contacts, 0.0025)
+    return output.joint_qd.numpy()
+
+
+def _row_count(solver, row_type):
+    count = int(solver.constraint_count.numpy()[0])
+    return int(np.count_nonzero(solver.row_type.numpy()[0, :count] == row_type))
 
 
 if __name__ == "__main__":

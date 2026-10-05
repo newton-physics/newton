@@ -35,9 +35,13 @@ def fixture(
     restitution=0.0,
     dt=0.0025,
     row_limit=None,
+    model_arrays=None,
     **solver_overrides,
 ):
-    """Solve two equal articulated rectangular pads touching face to face."""
+    """Solve two equal articulated rectangular pads touching face to face.
+
+    ``model_arrays`` maps model attribute names to values assigned before the solver is built.
+    """
     b = newton.ModelBuilder(gravity=(0, 0, 0))
     for side in (-1, 1):
         pose = wp.transform(wp.vec3(0, 0, side * (0.025 + separation / 2)), wp.quat_identity())
@@ -55,6 +59,8 @@ def fixture(
             cfg=newton.ModelBuilder.ShapeConfig(density=0, mu=mu, restitution=restitution),
         )
     model = b.finalize(device="cuda:0")
+    for name, values in (model_arrays or {}).items():
+        getattr(model, name).assign(values)
     a, z = model.state(), model.state()
     a.joint_qd.assign(np.array([sliding, 0, closing, 0, 0, spin, -sliding, 0, -closing, 0, 0, -spin], np.float32))
     newton.eval_fk(model, a.joint_q, a.joint_qd, a)

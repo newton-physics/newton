@@ -24087,6 +24087,9 @@ def _get_pgs_solve_mf_gs_kernel(
 
     Phase 1 (dense): warp-parallel dot/update over D DOFs using J_world/Y_world.
     Phase 2 (MF): lanes 0-5 handle body_a, lanes 6-11 handle body_b (6 DOFs each).
+    Phase 3 (``contact_torsion``): the contact torsion rows, which phase 1 skips.
+    Phase 4: the dense joint velocity-limit rows, the fused drive velocity clamp,
+    and the MF rigid velocity-limit rows, so velocity limits have the last word.
 
     A world stops early after an exactly stationary sweep. Since neither its
     impulses nor velocities changed, every later sweep would repeat the same
@@ -25483,10 +25486,11 @@ def _get_pgs_solve_mf_gs_kernel(
         }}
         }}
 
+        {torsion_sweep}
         // ── Final velocity-limit phase ──
         // Default/interleaved solves skip row_type=4 above and visit both
         // dense articulated limits and MF rigid limits here, after all
-        // drive/contact/friction/position-limit rows. Split schedules use
+        // drive/contact/friction/torsion/position-limit rows. Split schedules use
         // row_phase 2/5 as their explicit final velocity-limit pass.
 {dense_velocity_limit_phase}
 {fused_drive_vel_limit_phase}
@@ -25538,7 +25542,6 @@ def _get_pgs_solve_mf_gs_kernel(
             }}
         }}
 
-        {torsion_sweep}
         // Friction rows may intentionally remain inactive until a later
         // iteration. Once they are active, an exactly stationary full sweep
         // is a fixed point, so subsequent sweeps are redundant.
