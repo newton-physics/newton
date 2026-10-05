@@ -338,19 +338,41 @@ def _build_convex_support_acceleration(source: Mesh) -> tuple[np.ndarray, np.nda
     return lut, offsets, np.asarray(neighbors, dtype=np.int32)
 
 
-def _build_joint_ancestor(joint_parent: Sequence[int], joint_child: Sequence[int]) -> np.ndarray:
+def _build_joint_ancestor(
+    joint_parent: Sequence[int], joint_child: Sequence[int], joint_articulation: Sequence[int]
+) -> np.ndarray:
     joint_parents = np.asarray(joint_parent, dtype=np.int32)
     joint_children = np.asarray(joint_child, dtype=np.int32)
+    joint_articulations = np.asarray(joint_articulation, dtype=np.int32)
     joint_indices = np.arange(len(joint_parents), dtype=np.int32)
     max_child = int(np.max(joint_children, initial=-1))
 
     body_joint = np.full(max_child + 1, -1, dtype=np.int32)
     valid_child = joint_children >= 0
     body_joint[joint_children[valid_child]] = joint_indices[valid_child]
+    # Prefer articulation tree joints over loop closures, regardless of creation order.
+    tree_joint = valid_child & (joint_articulations >= 0)
+    body_joint[joint_children[tree_joint]] = joint_indices[tree_joint]
 
     parent_joint = np.full(len(joint_parents), -1, dtype=np.int32)
     has_parent = (joint_parents >= 0) & (joint_parents <= max_child)
     parent_joint[has_parent] = body_joint[joint_parents[has_parent]]
+
+    # Articulated ancestry must stay within its own tree and stop at external roots.
+    # Include articulation IDs because a body may be a child in multiple articulations.
+    articulated = joint_articulations >= 0
+    parent_joint[articulated] = -1
+    tree_indices = joint_indices[tree_joint]
+    if len(tree_indices):
+        body_stride = max_child + 1
+        child_keys = joint_articulations[tree_indices].astype(np.int64) * body_stride + joint_children[tree_indices]
+        order = np.argsort(child_keys, kind="stable")
+        sorted_keys = child_keys[order]
+        candidates = joint_indices[articulated & has_parent]
+        parent_keys = joint_articulations[candidates].astype(np.int64) * body_stride + joint_parents[candidates]
+        positions = np.searchsorted(sorted_keys, parent_keys, side="right") - 1
+        found = (positions >= 0) & (sorted_keys[np.maximum(positions, 0)] == parent_keys)
+        parent_joint[candidates[found]] = tree_indices[order[positions[found]]]
     return parent_joint
 
 
@@ -6632,6 +6654,7 @@ class ModelBuilder:
             record is retained only if all of its segment bodies and joints survive.
             Otherwise the incomplete record is omitted with a warning. Pass the relevant
             fixed joint through ``joints_to_keep`` to preserve the complete curve.
+            Curve-removal warnings are emitted after collapse completes.
         """
         joints_to_keep = set(joints_to_keep or ())
 
@@ -7077,6 +7100,7 @@ class ModelBuilder:
         # range would misrepresent the original curve topology.
         curve_records = []
         curve_remap = {}
+        incomplete_curve_labels = []
         for curve_index, (label, world, body_start, body_end, joint_start, joint_end) in enumerate(
             zip(
                 self.curve_label,
@@ -7100,13 +7124,7 @@ class ModelBuilder:
                 not new_joints or all(joint == new_joints[0] + offset for offset, joint in enumerate(new_joints))
             )
             if not old_bodies or not bodies_complete or not joints_complete:
-                warnings.warn(
-                    f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because one or more "
-                    "of its segment bodies or joints were removed; pass the relevant fixed joint through "
-                    "joints_to_keep to preserve the complete deformable object.",
-                    UserWarning,
-                    stacklevel=2,
-                )
+                incomplete_curve_labels.append(label)
                 continue
 
             if new_joints:
@@ -7459,6 +7477,16 @@ class ModelBuilder:
                 self.joint_children[p] = [(c, i)]
             else:
                 self.joint_children[p].append((c, i))
+
+        # Warning filters may raise, so finish rebuilding all references before emitting these.
+        for label in incomplete_curve_labels:
+            warnings.warn(
+                f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because one or more "
+                "of its segment bodies or joints were removed; pass the relevant fixed joint through "
+                "joints_to_keep to preserve the complete deformable object.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         return {
             "body_remap": body_remap,
@@ -14022,7 +14050,7 @@ class ModelBuilder:
             m.joint_label = self.joint_label
             m.joint_world = wp.array(self.joint_world, dtype=wp.int32)
             # compute joint ancestors
-            parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np)
+            parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np, joint_articulation_np)
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
             m.joint_articulation = wp.array(joint_articulation_np, dtype=wp.int32)
             m.joint_mimic_joint = wp.array(self.joint_mimic_joint, dtype=wp.int32)

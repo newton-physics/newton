@@ -1694,6 +1694,30 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
 </mujoco>
 """
 
+    def test_partial_layout_preserves_builtin_access_with_unequal_actuator_counts(self):
+        """Keep uniform joint data available when custom row counts differ."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.ACTUATOR_MJCF)
+        builder.add_mjcf(
+            self.ACTUATOR_MJCF.replace('model="actuated"', 'model="unactuated"').replace(
+                '<motor name="drive" joint="hinge"/>', ""
+            )
+        )
+        model = builder.finalize()
+        control = model.control()
+
+        with self.assertRaisesRegex(ValueError, "different row counts for custom frequency 'mujoco:actuator'"):
+            ArticulationView(model, "*actuated")
+
+        view = ArticulationView(model, "*actuated", allow_partial_layouts=True)
+        self.assertEqual(view.get_attribute("joint_type", model).shape, (1, 2, 1))
+        self.assertIsNone(view.custom_frequency_counts["mujoco:actuator"])
+        self.assertIsNone(view.custom_frequency_labels["mujoco:actuator"])
+        with self.assertRaises(AttributeError):
+            view.get_attribute("mujoco.ctrl", control)
+        with self.assertRaises(AttributeError):
+            view.set_attribute("mujoco.ctrl", control, wp.zeros((1, 2, 1)))
+
     def test_actuator_frequency_uses_declared_articulation_owner(self):
         """Expose MuJoCo actuator controls through their declared owner metadata."""
         robot = newton.ModelBuilder()

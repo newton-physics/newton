@@ -211,7 +211,8 @@ repository examples spend tuning effort, not a shared solver API.
        motion budget.
        ``rigid_soft_dat_use_interval_arithmetic`` (Stage-2 prefix certification)
        is experimental; the default path already relies on the module's interval
-       derivative bound.
+       derivative bound. See
+       :ref:`Tuning VBD` for the VBD-specific tuning page.
    * - :class:`~newton.solvers.SolverFeatherstone`
      - ``angular_damping``, ``friction_smoothing``,
        ``update_mass_matrix_interval``, ``use_tile_gemm``, ``fuse_cholesky``.

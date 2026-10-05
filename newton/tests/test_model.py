@@ -3425,7 +3425,8 @@ class TestModelJoints(unittest.TestCase):
         builder.add_articulation([joint_a], label="articulation_a")
 
         # ``shared`` is a child in both articulations, so ``joint_b_child`` stays within articulation B.
-        builder.finalize(device="cpu")
+        model = builder.finalize(device="cpu")
+        np.testing.assert_array_equal(model.joint_ancestor.numpy(), [-1, joint_b_root, joint_b_shared, -1])
 
         child_c = builder.add_link(label="child_c")
         joint_c = builder.add_joint_revolute(parent=shared, child=child_c, label="joint_c")

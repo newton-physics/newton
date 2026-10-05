@@ -449,7 +449,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # biasprm[2]; M_eff is joint-space inertia which differs when inertia representation
     # differs. Backfilled instead.
     "actuator_biasprm",
-    "actuator_lengthrange",  # Derived from joint ranges, computed by set_length_range
     "stat",  # meaninertia derived from invweight0
     # Meshes: Newton / trimesh may create a different number of meshes (nmesh differs),
     # so ALL per-mesh fields have incompatible shapes. Skip everything mesh-related.

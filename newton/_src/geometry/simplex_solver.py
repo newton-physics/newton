@@ -151,7 +151,9 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         normal = wp.cross(u, w)
 
         t = wp.length_sq(normal)
-        degenerate = t < EPSILON
+        # Squared area has units of length^4; use a scale-relative squared-sine
+        # test to retain small, well-shaped faces and reject zero-length edges.
+        degenerate = t <= EPSILON * wp.length_sq(u) * wp.length_sq(w)
         # Guard division by zero in degenerate cases
         denom = t
         if degenerate:
@@ -337,7 +339,8 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             extend: Contact offset extension (sum of contact offsets)
             data_provider: Support mapping data provider
             MAX_ITER: Maximum number of GJK iterations (default: 30)
-            COLLIDE_EPSILON: Convergence threshold for distance computation (default: 1e-4)
+            COLLIDE_EPSILON: Relative duality-gap tolerance, also used as an absolute distance
+                threshold [m] for overlap and duplicate vertices (default: 1e-4).
 
         Returns:
             Tuple of:
@@ -390,7 +393,9 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             # Use BtoA directly (Minkowski difference)
             w_v = w.BtoA
             delta_dist = wp.dot(v, v - w_v)
-            if delta_dist <= 0.0 or delta_dist * delta_dist < (COLLIDE_EPSILON * COLLIDE_EPSILON * dist_sq):
+            # Compare the gap relative to squared distance; an absolute cutoff is too loose at small gaps.
+            # An empty simplex cannot supply surface witnesses, even when the center offset passes this test.
+            if simplex_usage_mask != wp.uint32(0) and (delta_dist <= 0.0 or delta_dist < COLLIDE_EPSILON * dist_sq):
                 break
 
             # Check for duplicate vertex (numerical stalling)

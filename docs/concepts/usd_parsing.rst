@@ -349,9 +349,9 @@ deformable object axis as ``(count, elements_per_deformable_object)`` arrays. Th
 filter, so a broad pattern still selects only that family.
 ``deformable_object_ranges()`` returns selected deformable-object ranges by world, including empty worlds.
 ``deformable_object_boundaries`` stores the same ranges as a device-side boundaries array, and
-``world_ids`` identifies the world of every deformable object. Setters use ``deformable_object_indices`` to select flat
-destination rows and optional ``source_indices`` to select rows from the supplied values. When
-exactly one deformable object matches in each world, the flat deformable object indices coincide with model world IDs.
+``world_ids`` identifies the world of every deformable object. Setters take a Boolean mask
+with one entry per selected deformable object and a full buffer of values in view order.
+A mask entry corresponds to a world only when exactly one object is selected in every real model world.
 Getters follow :class:`~newton.selection.ArticulationView`: regular layouts return
 zero-copy views, while irregular layouts reuse an internally owned contiguous result after the
 first call and can be replayed in a CUDA graph. The view also exposes raw per-deformable-object ranges
@@ -419,8 +419,8 @@ ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
     # Post-finalize selection by label pattern:
     cable = newton.selection.DeformableCurveView(model, "/World/Cable")
     ((body_start, body_end),) = cable.ranges("body")
-    # With one matching cable per world, flat deformable object indices equal model world IDs.
-    cable.set_body_velocities(state, reset_velocities, deformable_object_indices=environment_ids)
+    # Reset every selected cable from a full-view value buffer.
+    cable.set_body_velocities(state, reset_velocities)
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
 ``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to validated import metadata,

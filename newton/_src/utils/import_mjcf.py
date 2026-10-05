@@ -1951,10 +1951,14 @@ def parse_mjcf(
                 freejoint_tags[0].attrib, builder_custom_attr_joint, parsing_mode="mjcf"
             )
         else:
-            # DOF index relative to the joint being created (multiple MJCF joints in a body are combined into one Newton joint)
-            current_dof_index = 0
-            # Track MJCF joint names and their DOF offsets within the combined Newton joint
-            mjcf_joint_dof_offsets: list[tuple[str, int]] = []
+            # Multiple MJCF joints in a body are combined into one Newton joint whose DOFs
+            # are ordered linear-first, independent of MJCF declaration order. Per-DOF
+            # custom attributes are therefore collected per motion type (parallel to
+            # linear_axes/angular_axes) and only assigned DOF indices after the loop.
+            linear_dof_attrs: list[dict[str, Any]] = []
+            angular_dof_attrs: list[dict[str, Any]] = []
+            # MJCF joint name -> (is_linear, index into linear_dof_attrs/angular_dof_attrs)
+            mjcf_joint_dof_slots: list[tuple[str, bool, int]] = []
             # frictionloss for a native <joint type="ball"/>; captured in the ball branch
             # and read by the add_joint_ball call. Default 0.0 matches MJCF.
             ball_friction = 0.0
@@ -1986,36 +1990,23 @@ def parse_mjcf(
                         parsing_mode="mjcf",
                         context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                     )
-                    # ball joint has 3 DOFs; replicate attribute value across all of them
-                    for key, value in dof_attr.items():
-                        if key not in dof_custom_attributes:
-                            dof_custom_attributes[key] = {}
-                        for dof_offset in range(3):
-                            dof_custom_attributes[key][current_dof_index + dof_offset] = value
                     if has_solreflimit_mode:
                         # The raw vec2 cannot distinguish authored
                         # solreflimit="0 0" from the "not authored" sentinel.
                         # Track whether MJCF provided a raw value or merely
                         # inherited MuJoCo's implicit default.
-                        solreflimit_mode = imported_joint_solreflimit_mode(joint_attrib)
-                        dof_custom_attributes.setdefault(solreflimit_mode_key, {})
-                        for dof_offset in range(3):
-                            dof_custom_attributes[solreflimit_mode_key][current_dof_index + dof_offset] = (
-                                solreflimit_mode
-                            )
+                        dof_attr[solreflimit_mode_key] = imported_joint_solreflimit_mode(joint_attrib)
                     if has_solreflimit_gain_baseline:
-                        gain_baseline = wp.vec2(default_joint_limit_ke, default_joint_limit_kd)
-                        dof_custom_attributes.setdefault(solreflimit_gain_baseline_key, {})
-                        for dof_offset in range(3):
-                            dof_custom_attributes[solreflimit_gain_baseline_key][current_dof_index + dof_offset] = (
-                                gain_baseline
-                            )
+                        dof_attr[solreflimit_gain_baseline_key] = wp.vec2(
+                            default_joint_limit_ke, default_joint_limit_kd
+                        )
+                    # ball joint has 3 angular DOFs; replicate attribute values across all of them
+                    mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs)))
+                    angular_dof_attrs.extend(dof_attr for _ in range(3))
                     # Lift frictionloss and damping into the builder's per-DOF arrays
                     # so they reach the MuJoCo spec on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
                     ball_damping = parse_float(joint_attrib, "damping", default_joint_damping)
-                    mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
-                    current_dof_index += 3
                     break
                 is_angular = joint_type_str == "hinge"
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 1.0))
@@ -2078,23 +2069,13 @@ def parse_mjcf(
                     effort_limit=effort_limit,
                     actuator_mode=JointTargetMode.NONE,  # Will be set by parse_actuators
                 )
-                if is_angular:
-                    angular_axes.append(ax)
-                else:
-                    linear_axes.append(ax)
-
+                # Only store custom attribute values that were explicitly specified in the source.
                 dof_attr = parse_custom_attributes(
                     joint_attrib,
                     builder_custom_attr_dof,
                     parsing_mode="mjcf",
                     context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                 )
-                # assemble custom attributes for each DOF (dict mapping DOF index to value)
-                # Only store values that were explicitly specified in the source.
-                for key, value in dof_attr.items():
-                    if key not in dof_custom_attributes:
-                        dof_custom_attributes[key] = {}
-                    dof_custom_attributes[key][current_dof_index] = value
                 if has_solreflimit_mode:
                     # The mode keeps native MJCF semantics separate from
                     # Newton-authored force-space ``joint_limit_ke``/``kd``:
@@ -2102,16 +2083,29 @@ def parse_mjcf(
                     # unauthored limit starts from MuJoCo's implicit default
                     # and only switches to Newton scaling after the generic
                     # gains are edited.
-                    solreflimit_mode = imported_joint_solreflimit_mode(joint_attrib)
-                    dof_custom_attributes.setdefault(solreflimit_mode_key, {})[current_dof_index] = solreflimit_mode
+                    dof_attr[solreflimit_mode_key] = imported_joint_solreflimit_mode(joint_attrib)
                 if has_solreflimit_gain_baseline:
-                    dof_custom_attributes.setdefault(solreflimit_gain_baseline_key, {})[current_dof_index] = wp.vec2(
-                        limit_ke, limit_kd
-                    )
+                    dof_attr[solreflimit_gain_baseline_key] = wp.vec2(limit_ke, limit_kd)
 
-                # Track this MJCF joint's name and DOF offset within the combined Newton joint
-                mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
-                current_dof_index += 1
+                # Keep each DOF's attributes next to its axis so both share Newton's DOF order.
+                if is_angular:
+                    mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs)))
+                    angular_axes.append(ax)
+                    angular_dof_attrs.append(dof_attr)
+                else:
+                    mjcf_joint_dof_slots.append((joint_name[-1], True, len(linear_dof_attrs)))
+                    linear_axes.append(ax)
+                    linear_dof_attrs.append(dof_attr)
+
+            # Assign DOF indices in Newton's order: all linear DOFs, then all angular DOFs.
+            for dof_index, dof_attr in enumerate(linear_dof_attrs + angular_dof_attrs):
+                for key, value in dof_attr.items():
+                    dof_custom_attributes.setdefault(key, {})[dof_index] = value
+            num_linear_dofs = len(linear_dof_attrs)
+            mjcf_joint_dof_offsets = [
+                (name, slot if is_linear_slot else num_linear_dofs + slot)
+                for name, is_linear_slot, slot in mjcf_joint_dof_slots
+            ]
 
         body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
         link = builder.add_link(

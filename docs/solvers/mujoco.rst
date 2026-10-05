@@ -155,8 +155,13 @@ Geometry types
      - MuJoCo has no cone primitive, so Newton tessellates the cone into a
        32-segment mesh at conversion time. Collision uses that convex
        polyhedral approximation. Changing :attr:`~newton.Model.shape_scale`
-       after construction raises ``ValueError``; recreate the solver to resize
-       the cone.
+       after construction is unsupported; recreate the solver to resize the
+       cone. Eager shape-property notifications validate cone scales and raise
+       ``ValueError`` on changes. This host-side check is skipped during CUDA
+       graph capture and replay: keep cone scales fixed, and call
+       :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` with
+       :attr:`~newton.ModelFlags.SHAPE_PROPERTIES` outside capture to validate
+       any preceding edits.
    * - :attr:`~newton.GeoType.GAUSSIAN`
      - *unsupported*
      - Not present in the MuJoCo geom-type map.
@@ -232,6 +237,20 @@ implicit MJCF default. This extra flag is needed because the two-component
 ``solreflimit`` value alone cannot distinguish an unauthored value from an
 authored native value such as ``solreflimit="0 0"`` or USD
 ``mjc:solreflimit = [0, 0]``.
+
+Authored raw ``solreflimit`` values are validated during solver construction
+and eager :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` notifications on
+both backends. CUDA graph capture skips this host validation and leaves it
+pending until the next eager solref update. Graph replay does not validate
+values; call :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` with
+``JOINT_DOF_PROPERTIES`` outside capture after reassigning raw values to
+check them.
+
+On the MuJoCo Warp backend, runtime joint- and tendon-limit updates are
+stored in ``solver.mjw_model.jnt_solref``, ``tendon_solref_lim``, and
+``tendon_range`` per world. The corresponding arrays in the host template
+``solver.mj_model`` are not updated; inspect the Warp arrays for current
+values. The MuJoCo CPU backend keeps the host arrays synchronized.
 
 .. note::
 
