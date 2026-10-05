@@ -1883,8 +1883,29 @@ class SolverFeatherPGS(SolverBase):
             raise ValueError("hinv_jt_kernel must be one of ['auto', 'par_row', 'tiled']")
         if self.delassus_kernel not in ("tiled", "par_row_col", "auto"):
             raise ValueError("delassus_kernel must be one of ['auto', 'par_row_col', 'tiled']")
-        if self.pgs_kernel not in ("tiled", "loop", "auto"):
-            raise ValueError("pgs_kernel must be one of ['auto', 'loop', 'tiled']")
+        if self.pgs_kernel not in ("tiled", "loop", "auto", "tiled_contact", "streaming"):
+            raise ValueError("pgs_kernel must be one of ['auto', 'loop', 'streaming', 'tiled', 'tiled_contact']")
+        self._pgs_chunk_size = int(self._kernel_overrides.get("pgs_chunk_size", 1))
+        if self._pgs_chunk_size < 1:
+            raise ValueError("pgs_chunk_size must be positive")
+        self._tile_threads = int(self._kernel_overrides.get("tile_threads", _TILE_THREADS))
+        if self._tile_threads not in (32, 64, 128, 256):
+            raise ValueError("tile_threads must be one of (32, 64, 128, 256)")
+        self._serial_kernel_block_dim = int(
+            self._kernel_overrides.get("serial_kernel_block_dim", _SERIAL_KERNEL_BLOCK_DIM)
+        )
+        if self._serial_kernel_block_dim <= 0 or self._serial_kernel_block_dim % 32:
+            raise ValueError("serial_kernel_block_dim must be a positive multiple of 32")
+        if pgs_mode == "matrix_free":
+            # The dense Gauss-Seidel kernels belong to the split solve.
+            self.pgs_kernel = "loop"
+        elif self.pgs_kernel in ("tiled_contact", "streaming") and (
+            self.enable_joint_limits or np.isfinite(self.contact_friction_gap_threshold)
+        ):
+            # These kernels solve whole contacts (one normal and two friction rows) only.
+            raise ValueError(
+                f"pgs_kernel={self.pgs_kernel!r} solves contact rows only; it rejects joint-limit and normal-only rows"
+            )
         if not model.device.is_cuda:
             # The tiled and native kernels are CUDA-only; CPU runs the scalar Warp kernels.
             self.cholesky_kernel = "loop"
@@ -1953,7 +1974,7 @@ class SolverFeatherPGS(SolverBase):
             cholesky_kernel=self.cholesky_kernel,
             hinv_jt_kernel=self.hinv_jt_kernel,
             small_dof_threshold=self.small_dof_threshold,
-            tile_threads=_TILE_THREADS,
+            tile_threads=self._tile_threads,
             diagonal_mass_sizes=self._diagonal_mass_sizes,
         )
         split = self.pgs_mode == "split"
@@ -4014,12 +4035,12 @@ class SolverFeatherPGS(SolverBase):
             # Sparse and diagonal mass matrices need no dense factorization, solve or response kernels.
             dense = size != self._sparse_mass_matrix_size and not self._execution_plan.use_diagonal_mass(size)
             self._cholesky_kernels_by_size[size] = (
-                _get_cholesky_kernel(size, device_arch, _TILE_THREADS)
+                _get_cholesky_kernel(size, device_arch, self._tile_threads)
                 if dense and self._execution_plan.use_tiled_cholesky(size)
                 else None
             )
             self._triangular_solve_kernels_by_size[size] = (
-                _get_triangular_solve_kernel(size, device_arch, _TILE_THREADS) if dense else None
+                _get_triangular_solve_kernel(size, device_arch, self._tile_threads) if dense else None
             )
             hinv_jt_chunk_size = self._execution_plan.hinv_jt_chunk_size(size) if dense else None
             if hinv_jt_chunk_size is None:
@@ -4034,7 +4055,7 @@ class SolverFeatherPGS(SolverBase):
                     size,
                     self.dense_max_constraints,
                     device_arch,
-                    _TILE_THREADS,
+                    self._tile_threads,
                     constraint_chunk_size=hinv_jt_chunk_size,
                     write_world=self._hinv_jt_writes_world,
                     write_group=self._hinv_jt_tiled_writes_group,
@@ -4045,7 +4066,7 @@ class SolverFeatherPGS(SolverBase):
                     size,
                     self.dense_max_constraints,
                     device_arch,
-                    _TILE_THREADS,
+                    self._tile_threads,
                     constraint_chunk_size=hinv_jt_chunk_size,
                     write_world=self._hinv_jt_writes_world,
                     write_group=self._hinv_jt_tiled_writes_group,
@@ -4108,7 +4129,7 @@ class SolverFeatherPGS(SolverBase):
             and all(self._execution_plan.use_fused_hinv_jt(size) for size in self.size_groups)
         )
         self._hinv_jt_fused_kernels_by_size = {
-            size: _get_hinv_jt_fused_kernel(size, max_constraints, device_arch, _TILE_THREADS)
+            size: _get_hinv_jt_fused_kernel(size, max_constraints, device_arch, self._tile_threads)
             for size in (self.size_groups if self._split_fused_response else ())
         }
         self._delassus_kernels_by_size = {}
@@ -4122,10 +4143,25 @@ class SolverFeatherPGS(SolverBase):
         self._pgs_solve_tiled_row_kernel = (
             _get_pgs_solve_tiled_row_kernel(max_constraints, device_arch)
             if is_cuda
-            and self.pgs_kernel != "loop"
+            and self.pgs_kernel in ("auto", "tiled")
             and _estimate_tiled_row_shared_memory(max_constraints) <= _STATIC_SHARED_MEMORY_BYTES
             else None
         )
+        # Contact-only kernels: whole contacts as 3x3 blocks, selected only through _kernel_overrides.
+        self._pgs_solve_contact_kernel = None
+        if is_cuda and self.pgs_kernel in ("tiled_contact", "streaming"):
+            required = _estimate_contact_pgs_shared_memory(max_constraints, self.pgs_kernel, self._pgs_chunk_size)
+            if required > _STATIC_SHARED_MEMORY_BYTES:
+                raise ValueError(
+                    f"pgs_kernel={self.pgs_kernel!r} needs {required} bytes of shared memory at "
+                    f"dense_max_constraints={max_constraints}"
+                )
+        if is_cuda and self.pgs_kernel == "tiled_contact":
+            self._pgs_solve_contact_kernel = _get_pgs_solve_tiled_contact_kernel(max_constraints, device_arch)
+        elif is_cuda and self.pgs_kernel == "streaming":
+            self._pgs_solve_contact_kernel = _get_pgs_solve_streaming_kernel(
+                max_constraints, device_arch, pgs_chunk_size=self._pgs_chunk_size
+            )
         mf_rows = self.mf_body_a.shape[1]
         mf_bodies = self.mf_body_dof_start.shape[1]
         self._pgs_solve_mf_kernel = (
@@ -4974,7 +5010,7 @@ class SolverFeatherPGS(SolverBase):
                         self.pgs_cfm,
                     ],
                     outputs=[self.C, self.diag, self.Y_by_size[size]],
-                    block_dim=_TILE_THREADS,
+                    block_dim=self._tile_threads,
                     device=model.device,
                 )
         else:
@@ -5150,6 +5186,23 @@ class SolverFeatherPGS(SolverBase):
             self.row_parent,
             self.row_mu,
         ]
+        if self._pgs_solve_contact_kernel is not None:
+            wp.launch_tiled(
+                self._pgs_solve_contact_kernel,
+                dim=[self.world_count],
+                inputs=[
+                    self.constraint_count,
+                    self.C,
+                    self.rhs,
+                    self.impulses,
+                    iterations,
+                    self.pgs_omega,
+                    self.row_mu,
+                ],
+                block_dim=32,
+                device=self.model.device,
+            )
+            return
         if self._pgs_solve_tiled_row_kernel is not None:
             wp.launch_tiled(
                 self._pgs_solve_tiled_row_kernel,
@@ -5534,7 +5587,7 @@ class SolverFeatherPGS(SolverBase):
                         self._dynamics_art_active,
                     ],
                     outputs=[self.aug_row_counts, self.aug_row_dof_index, self.aug_row_K, state_aug.joint_tau],
-                    block_dim=_SERIAL_KERNEL_BLOCK_DIM,
+                    block_dim=self._serial_kernel_block_dim,
                     device=model.device,
                 )
         elif self.drive_mode == "augmented" and self.articulation_max_dofs > 0:
@@ -5562,7 +5615,7 @@ class SolverFeatherPGS(SolverBase):
                     self.aug_row_K,
                     state_aug.joint_tau,
                 ],
-                block_dim=_SERIAL_KERNEL_BLOCK_DIM,
+                block_dim=self._serial_kernel_block_dim,
                 device=model.device,
             )
         else:
@@ -5571,7 +5624,7 @@ class SolverFeatherPGS(SolverBase):
                 dim=model.articulation_count,
                 inputs=[*common_inputs, *tau_inputs, self._dynamics_art_active],
                 outputs=[state_aug.body_ft_s, state_aug.joint_tau],
-                block_dim=_SERIAL_KERNEL_BLOCK_DIM,
+                block_dim=self._serial_kernel_block_dim,
                 device=model.device,
             )
         if state_out.body_parent_f is not None:
@@ -5807,7 +5860,7 @@ class SolverFeatherPGS(SolverBase):
             dim=[self.n_arts_by_size[size]],
             inputs=[self.H_by_size[size], self.R_by_size[size], self.group_to_art[size], self.mass_update_mask],
             outputs=[self.L_by_size[size]],
-            block_dim=_TILE_THREADS,
+            block_dim=self._tile_threads,
             device=self.model.device,
         )
 
@@ -5868,7 +5921,7 @@ class SolverFeatherPGS(SolverBase):
                 self._dynamics_art_active,
             ],
             outputs=[self.qdd_by_size[size]],
-            block_dim=_TILE_THREADS,
+            block_dim=self._tile_threads,
             device=model.device,
         )
         wp.launch(
@@ -6735,7 +6788,7 @@ class SolverFeatherPGS(SolverBase):
                 self.constraint_count,
             ],
             outputs=outputs,
-            block_dim=_TILE_THREADS,
+            block_dim=self._tile_threads,
             device=self.model.device,
         )
 
@@ -8912,6 +8965,17 @@ def _estimate_tiled_row_shared_memory(max_constraints: int) -> int:
     return 4 * (max_constraints * (max_constraints + 1) // 2 + 6 * max_constraints)
 
 
+def _estimate_contact_pgs_shared_memory(max_constraints: int, kernel: str, chunk_size: int) -> int:
+    """Estimate the static shared memory of a contact-only Gauss-Seidel kernel [B]."""
+    contacts = max_constraints // 3
+    floats = 2 * 3 * contacts + contacts + 9 * contacts
+    if kernel == "tiled_contact":
+        floats += 9 * contacts * (contacts + 1) // 2
+    else:
+        floats += 9 * chunk_size * contacts
+    return 4 * floats
+
+
 def _estimate_mf_solve_shared_memory(mf_max_constraints: int, max_mf_bodies: int) -> int:
     """Estimate the shared memory of the split-mode free-body Gauss-Seidel kernel [B]."""
     return 4 * (7 * max_mf_bodies + mf_max_constraints)
@@ -9292,6 +9356,524 @@ def _get_pgs_solve_tiled_row_kernel(max_constraints: int, device_arch: str) -> "
     pgs_solve_tiled_template.__name__ = f"pgs_solve_tiled_row_{max_constraints}"
     pgs_solve_tiled_template.__qualname__ = f"pgs_solve_tiled_row_{max_constraints}"
     return wp.kernel(enable_backward=False, module="unique")(pgs_solve_tiled_template)
+
+
+@cache
+def _get_pgs_solve_tiled_contact_kernel(max_constraints: int, device_arch: str) -> "wp.Kernel":
+    """Build the contact-only Gauss-Seidel kernel of the dense Delassus system in 3x3 blocks.
+
+    Stores only the LOWER triangle of block Delassus matrix.
+    Each contact is a 3-vector (normal, tangent1, tangent2).
+    Reduces serial depth from M to M/3.
+
+    TILE_M can be any value (power of 2 recommended for other kernels).
+    Runtime m must be divisible by 3.
+    """
+    TILE_M = max_constraints
+    # Max contacts we can handle (rounded down)
+    NUM_CONTACTS_MAX = TILE_M // 3
+    # Actual max constraints we'll process (may be < TILE_M)
+    TILE_M_USABLE = NUM_CONTACTS_MAX * 3
+
+    # Lower triangle of block matrix (sized for max)
+    NUM_BLOCKS_TRI = NUM_CONTACTS_MAX * (NUM_CONTACTS_MAX + 1) // 2
+    BLOCK_TRI_FLOATS = NUM_BLOCKS_TRI * 9
+
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+    const int TILE_M = {TILE_M};
+    const int TILE_M_USABLE = {TILE_M_USABLE};
+    const int NUM_CONTACTS_MAX = {NUM_CONTACTS_MAX};
+    const int BLOCK_TRI_FLOATS = {BLOCK_TRI_FLOATS};
+    const unsigned MASK = 0xFFFFFFFF;
+
+    int lane = threadIdx.x;
+
+    int m = world_constraint_count.data[world];
+    if (m == 0) return;
+
+    // Clamp m to usable range and ensure divisible by 3
+    if (m > TILE_M_USABLE) m = TILE_M_USABLE;
+    int num_contacts = m / 3;
+
+    // Shared memory (sized for max)
+    __shared__ float s_Dtri[BLOCK_TRI_FLOATS];
+    __shared__ float s_Dinv[NUM_CONTACTS_MAX * 9];
+    __shared__ float s_lam[TILE_M_USABLE];
+    __shared__ float s_rhs[TILE_M_USABLE];
+    __shared__ float s_mu[NUM_CONTACTS_MAX];
+
+    int off1 = world * TILE_M;
+    int off2 = world * TILE_M * TILE_M;
+
+    // ============ LOAD PHASE ============
+
+    // Load lambda and rhs
+    for (int i = lane; i < TILE_M_USABLE; i += 32) {{
+        if (i < m) {{
+            s_lam[i] = world_impulses.data[off1 + i];
+            s_rhs[i] = world_rhs.data[off1 + i];
+        }} else {{
+            s_lam[i] = 0.0f;
+            s_rhs[i] = 0.0f;
+        }}
+    }}
+
+    // Load mu (one per contact, stored on tangent1 row)
+    for (int c = lane; c < NUM_CONTACTS_MAX; c += 32) {{
+        if (c < num_contacts) {{
+            s_mu[c] = world_row_mu.data[off1 + c * 3 + 1];
+        }}
+    }}
+
+    // Load lower triangle of block Delassus
+    for (int c = 0; c < num_contacts; c++) {{
+        int base_block = (c * (c + 1)) >> 1;
+        int floats_in_row = (c + 1) * 9;
+
+        for (int f = lane; f < floats_in_row; f += 32) {{
+            int j = f / 9;
+            int k = f % 9;
+            int lr = k / 3;
+            int lc = k % 3;
+            int gr = c * 3 + lr;
+            int gc = j * 3 + lc;
+            s_Dtri[(base_block + j) * 9 + k] = world_C.data[off2 + gr * TILE_M + gc];
+        }}
+    }}
+    __syncwarp();
+
+    // Compute diagonal block inverses
+    for (int c = lane; c < num_contacts; c += 32) {{
+        int diag_block_idx = ((c * (c + 1)) >> 1) + c;
+        const float* D = &s_Dtri[diag_block_idx * 9];
+        float* Dinv = &s_Dinv[c * 9];
+
+        float det = D[0] * (D[4] * D[8] - D[5] * D[7])
+                - D[1] * (D[3] * D[8] - D[5] * D[6])
+                + D[2] * (D[3] * D[7] - D[4] * D[6]);
+
+        float inv_det = 1.0f / det;
+
+        Dinv[0] = (D[4] * D[8] - D[5] * D[7]) * inv_det;
+        Dinv[1] = (D[2] * D[7] - D[1] * D[8]) * inv_det;
+        Dinv[2] = (D[1] * D[5] - D[2] * D[4]) * inv_det;
+        Dinv[3] = (D[5] * D[6] - D[3] * D[8]) * inv_det;
+        Dinv[4] = (D[0] * D[8] - D[2] * D[6]) * inv_det;
+        Dinv[5] = (D[2] * D[3] - D[0] * D[5]) * inv_det;
+        Dinv[6] = (D[3] * D[7] - D[4] * D[6]) * inv_det;
+        Dinv[7] = (D[1] * D[6] - D[0] * D[7]) * inv_det;
+        Dinv[8] = (D[0] * D[4] - D[1] * D[3]) * inv_det;
+    }}
+    __syncwarp();
+
+    // ============ ITERATION PHASE ============
+
+    for (int iter = 0; iter < iterations; iter++) {{
+        for (int c = 0; c < num_contacts; c++) {{
+            float sum0 = 0.0f, sum1 = 0.0f, sum2 = 0.0f;
+
+            for (int j = lane; j < num_contacts; j += 32) {{
+                float l0 = s_lam[j * 3 + 0];
+                float l1 = s_lam[j * 3 + 1];
+                float l2 = s_lam[j * 3 + 2];
+
+                int block_off;
+                bool transpose;
+                if (j <= c) {{
+                    block_off = (((c * (c + 1)) >> 1) + j) * 9;
+                    transpose = false;
+                }} else {{
+                    block_off = (((j * (j + 1)) >> 1) + c) * 9;
+                    transpose = true;
+                }}
+
+                const float* B = &s_Dtri[block_off];
+
+                if (!transpose) {{
+                    sum0 += B[0] * l0 + B[1] * l1 + B[2] * l2;
+                    sum1 += B[3] * l0 + B[4] * l1 + B[5] * l2;
+                    sum2 += B[6] * l0 + B[7] * l1 + B[8] * l2;
+                }} else {{
+                    sum0 += B[0] * l0 + B[3] * l1 + B[6] * l2;
+                    sum1 += B[1] * l0 + B[4] * l1 + B[7] * l2;
+                    sum2 += B[2] * l0 + B[5] * l1 + B[8] * l2;
+                }}
+            }}
+
+            // Warp reduce
+            sum0 += __shfl_down_sync(MASK, sum0, 16);
+            sum1 += __shfl_down_sync(MASK, sum1, 16);
+            sum2 += __shfl_down_sync(MASK, sum2, 16);
+            sum0 += __shfl_down_sync(MASK, sum0, 8);
+            sum1 += __shfl_down_sync(MASK, sum1, 8);
+            sum2 += __shfl_down_sync(MASK, sum2, 8);
+            sum0 += __shfl_down_sync(MASK, sum0, 4);
+            sum1 += __shfl_down_sync(MASK, sum1, 4);
+            sum2 += __shfl_down_sync(MASK, sum2, 4);
+            sum0 += __shfl_down_sync(MASK, sum0, 2);
+            sum1 += __shfl_down_sync(MASK, sum1, 2);
+            sum2 += __shfl_down_sync(MASK, sum2, 2);
+            sum0 += __shfl_down_sync(MASK, sum0, 1);
+            sum1 += __shfl_down_sync(MASK, sum1, 1);
+            sum2 += __shfl_down_sync(MASK, sum2, 1);
+
+            if (lane == 0) {{
+                // Corrected sign: -(rhs + D*lambda)
+                float res0 = -(s_rhs[c * 3 + 0] + sum0);
+                float res1 = -(s_rhs[c * 3 + 1] + sum1);
+                float res2 = -(s_rhs[c * 3 + 2] + sum2);
+
+                const float* Dinv = &s_Dinv[c * 9];
+                float d0 = Dinv[0] * res0 + Dinv[1] * res1 + Dinv[2] * res2;
+                float d1 = Dinv[3] * res0 + Dinv[4] * res1 + Dinv[5] * res2;
+                float d2 = Dinv[6] * res0 + Dinv[7] * res1 + Dinv[8] * res2;
+
+                float new_n  = s_lam[c * 3 + 0] + omega * d0;
+                float new_t1 = s_lam[c * 3 + 1] + omega * d1;
+                float new_t2 = s_lam[c * 3 + 2] + omega * d2;
+
+                // Friction cone projection
+                new_n = fmaxf(new_n, 0.0f);
+
+                float mu = s_mu[c];
+                float radius = mu * new_n;
+
+                if (radius <= 0.0f) {{
+                    new_t1 = 0.0f;
+                    new_t2 = 0.0f;
+                }} else {{
+                    float t_mag_sq = new_t1 * new_t1 + new_t2 * new_t2;
+                    if (t_mag_sq > radius * radius) {{
+                        float scale = radius * rsqrtf(t_mag_sq);
+                        new_t1 *= scale;
+                        new_t2 *= scale;
+                    }}
+                }}
+
+                s_lam[c * 3 + 0] = new_n;
+                s_lam[c * 3 + 1] = new_t1;
+                s_lam[c * 3 + 2] = new_t2;
+            }}
+            __syncwarp();
+        }}
+    }}
+
+    // ============ STORE PHASE ============
+
+    for (int i = lane; i < TILE_M_USABLE; i += 32) {{
+        if (i < m) {{
+            world_impulses.data[off1 + i] = s_lam[i];
+        }}
+    }}
+#endif
+"""
+
+    @wp.func_native(snippet)
+    def pgs_solve_contact_native(
+        world: int,
+        world_constraint_count: wp.array[int],
+        world_C: wp.array3d[float],
+        world_rhs: wp.array2d[float],
+        world_impulses: wp.array2d[float],
+        iterations: int,
+        omega: float,
+        world_row_mu: wp.array2d[float],
+    ): ...
+
+    def pgs_solve_tiled_contact_template(
+        world_constraint_count: wp.array[int],
+        world_C: wp.array3d[float],
+        world_rhs: wp.array2d[float],
+        world_impulses: wp.array2d[float],
+        iterations: int,
+        omega: float,
+        world_row_mu: wp.array2d[float],
+    ):
+        world, _lane = wp.tid()
+        pgs_solve_contact_native(
+            world,
+            world_constraint_count,
+            world_C,
+            world_rhs,
+            world_impulses,
+            iterations,
+            omega,
+            world_row_mu,
+        )
+
+    pgs_solve_tiled_contact_template.__name__ = f"pgs_solve_tiled_contact_{max_constraints}"
+    pgs_solve_tiled_contact_template.__qualname__ = f"pgs_solve_tiled_contact_{max_constraints}"
+    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_tiled_contact_template)
+
+
+@cache
+def _get_pgs_solve_streaming_kernel(max_constraints: int, device_arch: str, pgs_chunk_size: int = 1) -> "wp.Kernel":
+    """Streaming contact-wise PGS kernel that streams block-rows from global memory.
+
+    Unlike tiled_contact which loads the entire Delassus matrix into shared memory,
+    this kernel keeps only lambda and auxiliaries in shared memory and streams
+    block-rows of C on demand. This enables handling much larger constraint counts
+    (hundreds of contacts) at the cost of increased global memory bandwidth.
+
+    When pgs_chunk_size > 1, multiple block-rows are preloaded into shared memory
+    at once, reducing the number of global memory round-trips per PGS iteration.
+
+    Algorithm:
+    - Load lambda, rhs, mu, and compute diagonal block inverses once
+    - For each PGS iteration:
+        - For each chunk of pgs_chunk_size contacts:
+            - Preload pgs_chunk_size block-rows of C into shared memory
+            - For each contact c in the chunk:
+                - Compute block-row dot product with lambda (warp-parallel)
+                - Update lambda[c] with friction cone projection (lane 0)
+    - Store final lambda back to global memory
+    """
+    TILE_M = max_constraints
+    NUM_CONTACTS_MAX = TILE_M // 3
+    TILE_M_USABLE = NUM_CONTACTS_MAX * 3
+    PGS_CHUNK = pgs_chunk_size
+
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+    const int TILE_M = {TILE_M};
+    const int TILE_M_USABLE = {TILE_M_USABLE};
+    const int NUM_CONTACTS_MAX = {NUM_CONTACTS_MAX};
+    const int PGS_CHUNK = {PGS_CHUNK};
+    const unsigned MASK = 0xFFFFFFFF;
+
+    int lane = threadIdx.x;
+
+    int m = world_constraint_count.data[world];
+    if (m == 0) return;
+
+    // Clamp m to usable range and ensure divisible by 3
+    if (m > TILE_M_USABLE) m = TILE_M_USABLE;
+    int num_contacts = m / 3;
+
+    // ═══════════════════════════════════════════════════════════════
+    // SHARED MEMORY: lambda, rhs, mu, diagonal inverses, and
+    // block-row buffer for PGS_CHUNK contacts at a time
+    // ═══════════════════════════════════════════════════════════════
+    __shared__ float s_lam[{TILE_M_USABLE}];
+    __shared__ float s_rhs[{TILE_M_USABLE}];
+    __shared__ float s_mu[{NUM_CONTACTS_MAX}];
+    __shared__ float s_Dinv[{NUM_CONTACTS_MAX} * 9];
+    __shared__ float s_block_rows[{PGS_CHUNK} * {NUM_CONTACTS_MAX} * 9];
+
+    int off1 = world * TILE_M;
+    int off2 = world * TILE_M * TILE_M;
+
+    // ═══════════════════════════════════════════════════════════════
+    // LOAD PHASE: Load persistent data into shared memory
+    // ═══════════════════════════════════════════════════════════════
+
+    // Load lambda and rhs (coalesced)
+    for (int i = lane; i < TILE_M_USABLE; i += 32) {{
+        if (i < m) {{
+            s_lam[i] = world_impulses.data[off1 + i];
+            s_rhs[i] = world_rhs.data[off1 + i];
+        }} else {{
+            s_lam[i] = 0.0f;
+            s_rhs[i] = 0.0f;
+        }}
+    }}
+
+    // Load mu (one per contact, stored on tangent1 row)
+    for (int c = lane; c < NUM_CONTACTS_MAX; c += 32) {{
+        if (c < num_contacts) {{
+            s_mu[c] = world_row_mu.data[off1 + c * 3 + 1];
+        }}
+    }}
+    __syncwarp();
+
+    // Compute diagonal block inverses (each thread handles one contact)
+    for (int c = lane; c < num_contacts; c += 32) {{
+        // Load diagonal block D[c,c] from global memory
+        int diag_row = c * 3;
+        float D[9];
+        for (int k = 0; k < 9; k++) {{
+            int lr = k / 3;
+            int lc = k % 3;
+            D[k] = world_C.data[off2 + (diag_row + lr) * TILE_M + (diag_row + lc)];
+        }}
+
+        // Compute 3x3 inverse
+        float det = D[0] * (D[4] * D[8] - D[5] * D[7])
+                  - D[1] * (D[3] * D[8] - D[5] * D[6])
+                  + D[2] * (D[3] * D[7] - D[4] * D[6]);
+
+        float inv_det = 1.0f / det;
+        float* Dinv = &s_Dinv[c * 9];
+
+        Dinv[0] = (D[4] * D[8] - D[5] * D[7]) * inv_det;
+        Dinv[1] = (D[2] * D[7] - D[1] * D[8]) * inv_det;
+        Dinv[2] = (D[1] * D[5] - D[2] * D[4]) * inv_det;
+        Dinv[3] = (D[5] * D[6] - D[3] * D[8]) * inv_det;
+        Dinv[4] = (D[0] * D[8] - D[2] * D[6]) * inv_det;
+        Dinv[5] = (D[2] * D[3] - D[0] * D[5]) * inv_det;
+        Dinv[6] = (D[3] * D[7] - D[4] * D[6]) * inv_det;
+        Dinv[7] = (D[1] * D[6] - D[0] * D[7]) * inv_det;
+        Dinv[8] = (D[0] * D[4] - D[1] * D[3]) * inv_det;
+    }}
+    __syncwarp();
+
+    // ═══════════════════════════════════════════════════════════════
+    // ITERATION PHASE: Stream block-rows in chunks and solve
+    // ═══════════════════════════════════════════════════════════════
+
+    for (int iter = 0; iter < iterations; iter++) {{
+        for (int chunk_start = 0; chunk_start < num_contacts; chunk_start += PGS_CHUNK) {{
+            int chunk_end = min(chunk_start + PGS_CHUNK, num_contacts);
+            int chunk_len = chunk_end - chunk_start;
+
+            // ─────────────────────────────────────────────────────────
+            // STREAM: Preload chunk_len block-rows of Delassus matrix
+            // ─────────────────────────────────────────────────────────
+            for (int ci = 0; ci < chunk_len; ci++) {{
+                int c = chunk_start + ci;
+                int c_row = c * 3;
+                float* row_base = &s_block_rows[ci * NUM_CONTACTS_MAX * 9];
+                for (int j = lane; j < num_contacts; j += 32) {{
+                    int j_col = j * 3;
+                    float* dst = &row_base[j * 9];
+                    for (int k = 0; k < 9; k++) {{
+                        int lr = k / 3;
+                        int lc = k % 3;
+                        dst[k] = world_C.data[off2 + (c_row + lr) * TILE_M + (j_col + lc)];
+                    }}
+                }}
+            }}
+            __syncwarp();
+
+            // ─────────────────────────────────────────────────────────
+            // SOLVE: Process each contact in the chunk sequentially
+            // ─────────────────────────────────────────────────────────
+            for (int ci = 0; ci < chunk_len; ci++) {{
+                int c = chunk_start + ci;
+                const float* row_base = &s_block_rows[ci * NUM_CONTACTS_MAX * 9];
+
+                // Block-row dot product sum_j C[c,j] * lambda[j]
+                float sum0 = 0.0f, sum1 = 0.0f, sum2 = 0.0f;
+
+                for (int j = lane; j < num_contacts; j += 32) {{
+                    float l0 = s_lam[j * 3 + 0];
+                    float l1 = s_lam[j * 3 + 1];
+                    float l2 = s_lam[j * 3 + 2];
+
+                    const float* B = &row_base[j * 9];
+
+                    sum0 += B[0] * l0 + B[1] * l1 + B[2] * l2;
+                    sum1 += B[3] * l0 + B[4] * l1 + B[5] * l2;
+                    sum2 += B[6] * l0 + B[7] * l1 + B[8] * l2;
+                }}
+
+                // Warp reduce
+                sum0 += __shfl_down_sync(MASK, sum0, 16);
+                sum1 += __shfl_down_sync(MASK, sum1, 16);
+                sum2 += __shfl_down_sync(MASK, sum2, 16);
+                sum0 += __shfl_down_sync(MASK, sum0, 8);
+                sum1 += __shfl_down_sync(MASK, sum1, 8);
+                sum2 += __shfl_down_sync(MASK, sum2, 8);
+                sum0 += __shfl_down_sync(MASK, sum0, 4);
+                sum1 += __shfl_down_sync(MASK, sum1, 4);
+                sum2 += __shfl_down_sync(MASK, sum2, 4);
+                sum0 += __shfl_down_sync(MASK, sum0, 2);
+                sum1 += __shfl_down_sync(MASK, sum1, 2);
+                sum2 += __shfl_down_sync(MASK, sum2, 2);
+                sum0 += __shfl_down_sync(MASK, sum0, 1);
+                sum1 += __shfl_down_sync(MASK, sum1, 1);
+                sum2 += __shfl_down_sync(MASK, sum2, 1);
+
+                // Update: Solve and project (lane 0 only)
+                if (lane == 0) {{
+                    float res0 = -(s_rhs[c * 3 + 0] + sum0);
+                    float res1 = -(s_rhs[c * 3 + 1] + sum1);
+                    float res2 = -(s_rhs[c * 3 + 2] + sum2);
+
+                    const float* Dinv = &s_Dinv[c * 9];
+                    float d0 = Dinv[0] * res0 + Dinv[1] * res1 + Dinv[2] * res2;
+                    float d1 = Dinv[3] * res0 + Dinv[4] * res1 + Dinv[5] * res2;
+                    float d2 = Dinv[6] * res0 + Dinv[7] * res1 + Dinv[8] * res2;
+
+                    float new_n  = s_lam[c * 3 + 0] + omega * d0;
+                    float new_t1 = s_lam[c * 3 + 1] + omega * d1;
+                    float new_t2 = s_lam[c * 3 + 2] + omega * d2;
+
+                    // Friction cone projection
+                    new_n = fmaxf(new_n, 0.0f);
+
+                    float mu = s_mu[c];
+                    float radius = mu * new_n;
+
+                    if (radius <= 0.0f) {{
+                        new_t1 = 0.0f;
+                        new_t2 = 0.0f;
+                    }} else {{
+                        float t_mag_sq = new_t1 * new_t1 + new_t2 * new_t2;
+                        if (t_mag_sq > radius * radius) {{
+                            float scale = radius * rsqrtf(t_mag_sq);
+                            new_t1 *= scale;
+                            new_t2 *= scale;
+                        }}
+                    }}
+
+                    s_lam[c * 3 + 0] = new_n;
+                    s_lam[c * 3 + 1] = new_t1;
+                    s_lam[c * 3 + 2] = new_t2;
+                }}
+                __syncwarp();
+            }}
+        }}
+    }}
+
+    // ═══════════════════════════════════════════════════════════════
+    // STORE PHASE: Write final lambda back to global memory
+    // ═══════════════════════════════════════════════════════════════
+    for (int i = lane; i < TILE_M_USABLE; i += 32) {{
+        if (i < m) {{
+            world_impulses.data[off1 + i] = s_lam[i];
+        }}
+    }}
+#endif
+"""
+
+    @wp.func_native(snippet)
+    def pgs_solve_streaming_native(
+        world: int,
+        world_constraint_count: wp.array[int],
+        world_C: wp.array3d[float],
+        world_rhs: wp.array2d[float],
+        world_impulses: wp.array2d[float],
+        iterations: int,
+        omega: float,
+        world_row_mu: wp.array2d[float],
+    ): ...
+
+    def pgs_solve_streaming_template(
+        world_constraint_count: wp.array[int],
+        world_C: wp.array3d[float],
+        world_rhs: wp.array2d[float],
+        world_impulses: wp.array2d[float],
+        iterations: int,
+        omega: float,
+        world_row_mu: wp.array2d[float],
+    ):
+        world, _lane = wp.tid()
+        pgs_solve_streaming_native(
+            world,
+            world_constraint_count,
+            world_C,
+            world_rhs,
+            world_impulses,
+            iterations,
+            omega,
+            world_row_mu,
+        )
+
+    pgs_solve_streaming_template.__name__ = f"pgs_solve_streaming_{max_constraints}_chunk{pgs_chunk_size}"
+    pgs_solve_streaming_template.__qualname__ = f"pgs_solve_streaming_{max_constraints}_chunk{pgs_chunk_size}"
+    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_streaming_template)
 
 
 @cache
