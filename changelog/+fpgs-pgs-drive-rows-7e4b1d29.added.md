@@ -1,1 +1,0 @@
-Add `drive_mode="physx_pgs"` to `newton.solvers.SolverFeatherPGS`, which solves joint drives as projected Gauss-Seidel rows with the PhysX articulation force-drive update together with contacts and limits, and `fuse_joint_velocity_limits`, which enforces the velocity limits of driven DOFs with an end-of-iteration clamp instead of velocity-limit rows.

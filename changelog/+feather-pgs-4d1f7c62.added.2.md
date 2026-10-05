@@ -1,0 +1,1 @@
+Apply passive joint springs in `SolverFeatherPGS` from the MuJoCo spring attributes (`mujoco:dof_passive_stiffness`, `mujoco:dof_springref`, `mujoco:dof_ref`) on PRISMATIC and REVOLUTE joints, with the rest coordinate `springref - ref`; `SolverFeatherPGS.register_custom_attributes()` registers these attributes, and springs on D6 and BALL joints are ignored with a warning.
