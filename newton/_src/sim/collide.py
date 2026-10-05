@@ -908,8 +908,13 @@ def _compute_generic_convex_pair_stats(
     broad_phase_mode: str,
     shape_pairs_filtered: wp.array[wp.vec2i] | None,
     candidate_pair_work_estimate: int,
+    shape_pairs_host: np.ndarray | None = None,
 ) -> tuple[bool, int]:
-    """Determine whether generic convex pairs exist and estimate their work."""
+    """Determine whether generic convex pairs exist and estimate their work.
+
+    ``shape_pairs_host`` is an optional ``(N, 2)`` host copy of
+    ``shape_pairs_filtered`` that spares another device-to-host read.
+    """
     shape_types_array = getattr(model, "shape_type", None)
     if shape_types_array is None:
         return True, candidate_pair_work_estimate
@@ -918,7 +923,10 @@ def _compute_generic_convex_pair_stats(
     if broad_phase_mode == "explicit":
         if shape_pairs_filtered is None:
             return True, candidate_pair_work_estimate
-        explicit_pairs = shape_pairs_filtered.numpy().reshape(-1, 2)
+        if shape_pairs_host is not None:
+            explicit_pairs = shape_pairs_host
+        else:
+            explicit_pairs = shape_pairs_filtered.numpy().reshape(-1, 2)
         if len(explicit_pairs) == 0:
             return False, 0
         pair_types = shape_types[explicit_pairs]
@@ -1624,6 +1632,8 @@ class CollisionPipeline:
             mesh_sdf_identity_scale_only = False
             max_mesh_mesh_pairs = self.shape_pairs_max
             max_mesh_plane_pairs = self.shape_pairs_max
+            # Host copy of the explicit pair list, read at most once during setup.
+            explicit_pairs_host = None
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
                 colliding_mask = _shape_collide_mask(model, len(shape_types))
@@ -1672,6 +1682,10 @@ class CollisionPipeline:
                             for shape_idx in np.flatnonzero(mesh_sdf_shapes)
                         )
                 if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
+                    explicit_pairs_host = self.shape_pairs_filtered.numpy().reshape(-1, 2)
+                    # The explicit list is authoritative: a listed mesh reaches the mesh
+                    # midphase even with shape collision disabled.
+                    has_meshes = has_meshes or bool(np.any(shape_types[explicit_pairs_host] == int(GeoType.MESH)))
                     # Explicit pair types are fixed at pipeline construction, including
                     # intentional cross-world pairs, so size only the stages they can reach.
                     # Both stages require a mesh or planar SDF, even in heightfield scenes.
@@ -1679,9 +1693,8 @@ class CollisionPipeline:
                         max_mesh_mesh_pairs = 0
                         max_mesh_plane_pairs = 0
                     else:
-                        explicit_pairs = self.shape_pairs_filtered.numpy().reshape(-1, 2)
-                        shape_a = explicit_pairs[:, 0]
-                        shape_b = explicit_pairs[:, 1]
+                        shape_a = explicit_pairs_host[:, 0]
+                        shape_b = explicit_pairs_host[:, 1]
                         box_mask = colliding_mask & (shape_types == int(GeoType.BOX))
                         mesh_mesh_routes = (
                             (mesh_mask[shape_a] & mesh_mask[shape_b])
@@ -1729,6 +1742,7 @@ class CollisionPipeline:
                 broad_phase_mode=self.broad_phase_mode,
                 shape_pairs_filtered=self.shape_pairs_filtered,
                 candidate_pair_work_estimate=candidate_pair_work_estimate,
+                shape_pairs_host=explicit_pairs_host,
             )
             split_pair_count_threshold = (
                 _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD

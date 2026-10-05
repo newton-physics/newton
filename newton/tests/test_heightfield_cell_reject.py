@@ -272,6 +272,43 @@ def test_mixed_mesh_route(test, device):
                 _assert_geometry_equal(test, a, b)
 
 
+def test_explicit_mesh_pair_route(test, device):
+    """Route a listed mesh pair through the tiled midphase even with shape collision disabled."""
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(margin=0.01, gap=0.01)
+    terrain = newton.Heightfield(data=np.zeros((5, 5), dtype=np.float32), nrow=5, ncol=5, hx=0.5, hy=0.5)
+    builder.add_shape_heightfield(
+        heightfield=terrain, xform=wp.transform((10.0, 0.0, 0.0), wp.quat_identity()), cfg=cfg
+    )
+    terrain_body = builder.add_body(xform=wp.transform((10.0, 0.0, 0.05), wp.quat_identity()))
+    terrain_sphere = builder.add_shape_sphere(terrain_body, radius=0.1, cfg=cfg)
+    mesh = newton.Mesh(
+        vertices=np.array([[-0.5, -0.5, 0.0], [0.5, -0.5, 0.0], [0.0, 0.5, 0.0]], dtype=np.float32),
+        indices=np.array([0, 1, 2], dtype=np.int32),
+    )
+    mesh_cfg = builder.ShapeConfig(margin=0.01, gap=0.01, has_shape_collision=False)
+    mesh_shape = builder.add_shape_mesh(-1, mesh=mesh, cfg=mesh_cfg)
+    mesh_body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()))
+    mesh_sphere = builder.add_shape_sphere(mesh_body, radius=0.1, cfg=cfg)
+    model = builder.finalize(device=device)
+    for pairs, packed in (([[0, terrain_sphere]], True), ([[0, terrain_sphere], [mesh_shape, mesh_sphere]], False)):
+        with test.subTest(pairs=pairs):
+            pipeline = newton.CollisionPipeline(
+                model,
+                broad_phase="explicit",
+                shape_pairs_filtered=wp.array(pairs, dtype=wp.vec2i, device=device),
+                reduce_contacts=False,
+            )
+            # Check the route before launching: a mesh pair in the packed kernel reads out of bounds.
+            test.assertEqual(pipeline.narrow_phase._heightfield_packed_pairs, packed)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            shapes = np.stack((contacts.rigid_contact_shape0.numpy(), contacts.rigid_contact_shape1.numpy()))[:, :count]
+            test.assertTrue(np.any(shapes == terrain_sphere))
+            test.assertEqual(bool(np.any(shapes == mesh_sphere)), not packed)
+
+
 def test_near_below_transformed_and_scaled(test, device):
     """Keep margin contacts, downward prisms, scaled terrain and reversed endpoints."""
     for z, rotation, reverse, scale in (
@@ -449,6 +486,7 @@ for _test in (
     test_upstream_default_call_contract,
     test_packed_and_tiled_rejection,
     test_mixed_mesh_route,
+    test_explicit_mesh_pair_route,
     test_near_below_transformed_and_scaled,
     test_primitive_contact_geometry,
     test_speculative_search_gap,
