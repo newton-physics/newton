@@ -40,10 +40,9 @@ Inherited Platform Support
 
 Newton's baseline operating system, CUDA toolkit, NVIDIA driver, and
 GPU architecture compatibility depends on the installed Warp wheel. The
-`Warp 1.18 compatibility page
-<https://nvidia.github.io/warp/v1.18/user_guide/compatibility.html>`__
-and the corresponding page for each installed Warp version are the source of
-truth for:
+`Warp compatibility page
+<https://nvidia.github.io/warp/stable/user_guide/compatibility.html>`__
+is the source of truth for:
 
 * Supported operating systems and their runtime requirements (e.g.,
   GLIBC versions on Linux).

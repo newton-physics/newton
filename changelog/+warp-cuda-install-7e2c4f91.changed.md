@@ -1,1 +1,1 @@
-Install Newton with `warp-lang==1.17.0` on CUDA 12 systems; fresh installs may select Warp 1.18, whose default CUDA wheel requires an R580 driver and Turing GPU.
+Fresh Newton 1.7 installs select Warp 1.18, whose standard wheel requires an R580-series or newer NVIDIA driver for GPU acceleration. On older drivers, install Newton with `warp-lang==1.17.0`.
