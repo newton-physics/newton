@@ -63,6 +63,12 @@ class Example:
             ignore_inertial_definitions=True,  # Use geometry-based inertia for stability
         )
 
+        # Preserve the drive damping used before URDF damping became passive damping.
+        for joint_idx, label in enumerate(quadruped.joint_label):
+            if label.endswith(("_HFE", "_KFE")):
+                dof = quadruped.joint_qd_start[joint_idx]
+                quadruped.joint_target_kd[dof] = 0.0
+
         # apply additional inertia to the bodies for better stability
         body_armature = 0.01
         for body in range(quadruped.body_count):
@@ -135,7 +141,7 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda and not wp.config.verify_cuda:
+        if (wp.get_device().is_cuda or self.solver_type != "kamino") and not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph

@@ -1005,6 +1005,7 @@ ACTUATOR_SKIP_FIELDS: set[str] = {
     "actuator_trntype_body_adr",
     "actuator_actadr",
     "actuator_actnum",
+    "actuator_ctrladr",
     # Position/velocity-shortcut MjcActuator rows targeting single-DOF joints are
     # promoted to CtrlSource.JOINT_TARGET on import (matching MJCF behavior).
     # _init_actuators rebuilds the compiled MuJoCo actuators from joint_target_*,
@@ -1329,9 +1330,6 @@ class TestMenagerieUSD(TestMenagerieBase):
         # Derived from mass matrix; differs when backfill_model=False because
         # Newton re-diagonalizes inertia. Compared indirectly via simulation equivalence.
         "actuator_acc0",
-        # Derived from joint ranges via set_length_range; Newton recomputes this
-        # during notify_model_changed but the native model does not.
-        "actuator_lengthrange",
     }
 
     # Per-joint fields the USD parser doesn't populate to match native MJCF, but
