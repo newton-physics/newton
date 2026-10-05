@@ -1171,6 +1171,13 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                     f"would be ignored."
                 )
 
+        if isinstance(dt, wp.array):
+            _validate_array(array=dt, name="dt", dtype=wp.float32, shape=(1,), device=self._device)
+            dt_buf = dt
+        else:
+            self._dt_buf.fill_(float(dt))
+            dt_buf = self._dt_buf
+
         # Plain-array ports are read in place; only views are gathered into the internal buffers.
         sources: dict[str, wp.array] = {}
         for port, name, buf, shape, dtype in bindings:
@@ -1448,13 +1455,6 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 outputs=[joint_qd_target],
                 device=self._device,
             )
-
-        if isinstance(dt, wp.array):
-            _validate_array(array=dt, name="dt", dtype=wp.float32, shape=(1,), device=self._device)
-            dt_buf = dt
-        else:
-            self._dt_buf.fill_(float(dt))
-            dt_buf = self._dt_buf
 
         wp.launch(
             _integrate_position_kernel,
