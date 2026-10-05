@@ -245,18 +245,19 @@ def _bam_friction_budget_kernel(
     friction_base: float,
     load_friction_motor: float,
     load_friction_external: float,
-    viscous: float,
     frictionloss: wp.array2d[float],
-    damping: wp.array2d[float],
 ):
-    """BAM's friction budget, written in the solver's DOF order."""
+    """BAM's Coulomb friction budget, written in the solver's DOF order.
+
+    Only this term depends on the load; BAM's viscous term is a fitted constant
+    and is set once rather than per step.
+    """
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
     if newton_dof < 0:
         return
     gearbox = wp.abs(reaction[newton_dof] * load_friction_external - motor_torque[newton_dof] * load_friction_motor)
     frictionloss[world, mjc_dof] = friction_base + gearbox
-    damping[world, mjc_dof] = viscous
 
 
 def _delay_inputs(target_pos, target_vel, indices, feedforward=None):
@@ -2008,8 +2009,9 @@ def Xform "World"
         3. the reaction follows from ``M(q) qdd + C(q, qd) qd + g(q) - tau_motor``
            plus the bias term, via :func:`newton.eval_inverse_dynamics_passive` and
            :func:`newton.eval_inverse_dynamics_force`.
-        4. the budget ``frictionloss = base + |reaction*k_ext - motor*k_motor|`` is
-           written into the solver's arrays.
+        4. the Coulomb budget ``frictionloss = base + |reaction*k_ext - motor*k_motor|``
+           is written into the solver's array. BAM's viscous term is a fitted
+           constant and is set once, outside the loop.
         5. the solver applies it by clipping the stopping torque.
 
         The friction coefficients here are illustrative; a real set comes from a
@@ -2020,7 +2022,7 @@ def Xform "World"
         def build() -> newton.Model:
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
             link = builder.add_link(com=wp.vec3(0.5, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
-            joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Y)
+            joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Y, damping=viscous)
             builder.add_articulation([joint])
             builder.add_actuator(DriveBAM, index=0, kp=3.0, kt=1.2, resistance=1.0, vin=12.0, max_pwm=1.0)
             return builder.finalize()
@@ -2040,8 +2042,17 @@ def Xform "World"
             total_force = wp.zeros(n, dtype=wp.float32, device=device)
             joint_qdd = wp.zeros(n, dtype=wp.float32, device=device)
             reaction = wp.zeros(n, dtype=wp.float32, device=device)
+            # Workaround: writing the solver's own array instead of Model.joint_friction,
+            # because today the only route to it is notify_model_changed with
+            # JOINT_DOF_PROPERTIES, which re-syncs the whole model (~1060 us per step
+            # against ~3 us here) and raises during CUDA graph capture. This one line is
+            # what makes the loop MuJoCo-specific.
+            # PR #4380 adds ModelFlags.JOINT_DOF_FORCE_PROPERTIES, which publishes
+            # friction and damping alone: measured 76 us per step and capture-safe. Once
+            # it lands, replace this with Model.joint_friction plus that flag and drop
+            # the mjc_dof_to_newton_dof remapping, since Model.joint_friction is already
+            # in Newton DOF order.
             frictionloss = solver.mjw_model.dof_frictionloss
-            damping = solver.mjw_model.dof_damping
 
             for _ in range(steps):
                 # 1. the drive writes the motor torque into control.joint_f
@@ -2095,9 +2106,8 @@ def Xform "World"
                         friction_base,
                         k_motor,
                         k_external,
-                        viscous,
                     ],
-                    outputs=[frictionloss, damping],
+                    outputs=[frictionloss],
                     device=device,
                 )
 
