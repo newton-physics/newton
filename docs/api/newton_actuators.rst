@@ -43,7 +43,6 @@ construction.
    InputProcessorBacklash
    InputProcessorBase
    InputProcessorDelay
-   InputProcessorRandomDelay
    JointSpaceResponse
    SchemaNames
 

@@ -14,7 +14,7 @@ from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .drives import DriveBAM, DriveBase, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
-from .input_processors import InputProcessorBacklash, InputProcessorBase, InputProcessorRandomDelay
+from .input_processors import InputProcessorBacklash, InputProcessorBase
 from .input_processors.input_processor_delay import InputProcessorDelay
 from .utils import load_metadata
 
@@ -276,7 +276,6 @@ class SchemaNames:
 
     DELAY = "NewtonActuatorDelayAPI"
     BACKLASH = "NewtonActuatorBacklashAPI"
-    RANDOM_DELAY = "NewtonActuatorRandomDelayAPI"
 
 
 _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
@@ -289,7 +288,6 @@ _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
     SchemaNames.POSITION_BASED_CLAMPING: _SchemaEntry(ClampingPositionBased, ComponentKind.CLAMPING),
     SchemaNames.DELAY: _SchemaEntry(InputProcessorDelay, ComponentKind.INPUT_PROCESSOR),
     SchemaNames.BACKLASH: _SchemaEntry(InputProcessorBacklash, ComponentKind.INPUT_PROCESSOR),
-    SchemaNames.RANDOM_DELAY: _SchemaEntry(InputProcessorRandomDelay, ComponentKind.INPUT_PROCESSOR),
 }
 
 

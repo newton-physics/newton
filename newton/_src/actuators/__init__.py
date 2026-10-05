@@ -9,7 +9,6 @@ from .input_processors import (
     InputProcessorBacklash,
     InputProcessorBase,
     InputProcessorDelay,
-    InputProcessorRandomDelay,
 )
 from .joint_space_response import JointSpaceResponse
 from .usd_parser import ActuatorParsed, ComponentKind, SchemaNames, parse_actuator_prim, register_actuator_component
@@ -32,7 +31,6 @@ __all__ = [
     "InputProcessorBacklash",
     "InputProcessorBase",
     "InputProcessorDelay",
-    "InputProcessorRandomDelay",
     "JointSpaceResponse",
     "SchemaNames",
     "parse_actuator_prim",

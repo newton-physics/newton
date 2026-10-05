@@ -37,7 +37,6 @@ An actuator is composed from three building blocks, applied in this order:
    Actuator
    ├── InputProcessor[]  (optional: transform state and command inputs)
    │   ├── InputProcessorDelay       (delays command inputs by N actuator timesteps)
-   │   ├── InputProcessorRandomDelay (delays command inputs by a randomly redrawn lag)
    │   └── InputProcessorBacklash   (reads position on the link side of a backlash joint)
    ├── Drive      (control law that computes raw effort)
    └── Clamping[]  (clamps raw effort based on motor-limit modeling)
@@ -56,12 +55,6 @@ An actuator is composed from three building blocks, applied in this order:
    when the buffer is empty or a DOF has ``delay_steps == 0``, the current
    command inputs are used directly.  When underfilled, the lag is clamped
    to the available history so the oldest available entry is returned.
-
-   :class:`InputProcessorRandomDelay` draws the lag of each DOF at random
-   from ``[min_delay, max_delay]`` and redraws it during the episode, every
-   ``update_period`` steps and with a ``hold_probability`` of keeping it.
-   DOFs that name the same ``lag_joint`` share one lag, e.g. all servos of
-   one robot.  Each reset starts a new random stream.
 
    :class:`InputProcessorBacklash` models an encoder on the link side of a
    backlash joint.  The backlash itself is a passive joint with a small
@@ -437,8 +430,6 @@ Input processors
 ^^^^^^^^^^^^^^^^
 
 * :class:`InputProcessorDelay` — circular-buffer delay for control targets (stateful).
-* :class:`InputProcessorRandomDelay` — delay with a randomly redrawn lag
-  (stateful).
 * :class:`InputProcessorBacklash` — position and velocity on the link side of
   a backlash joint (stateless).  :meth:`~newton.ModelBuilder.add_actuator`
   takes the backlash joint as a joint index or joint label in

@@ -5,7 +5,6 @@
 
 import dataclasses
 import importlib.util
-import itertools
 import json
 import math
 import os
@@ -41,7 +40,6 @@ from newton.actuators import (
     InputProcessorBacklash,
     InputProcessorBase,
     InputProcessorDelay,
-    InputProcessorRandomDelay,
     JointSpaceResponse,
     parse_actuator_prim,
 )
@@ -1676,24 +1674,23 @@ class TestInputProcessors(unittest.TestCase):
         np.testing.assert_array_equal(control.joint_f.numpy()[[1, 3]], [0.0, 0.0])
 
     @unittest.skipUnless(HAS_USD, "pxr not installed")
-    def test_bam_backlash_random_delay_from_usd(self):
-        """BAM servos with a shared random delay and backlash on some joints, loaded from USD.
+    def test_bam_backlash_delay_from_usd(self):
+        """BAM servos with a command delay and backlash on some joints, loaded from USD.
 
         A passive ``passive_<servo>_backlash`` hinge sits in series with the
         knee servo, and the knee drive reads ``q_servo + q_backlash``. The
         ankle and toe servos have no backlash hinge and read ``q_servo``.
 
         All servo prims have ``NewtonBAMControlAPI``, the registered
-        ``NewtonMaxEffortClampingAPI`` and ``NewtonActuatorRandomDelayAPI``;
+        ``NewtonMaxEffortClampingAPI`` and ``NewtonActuatorDelayAPI``;
         only the knee prim has ``NewtonActuatorBacklashAPI``. The BAM and
         processor tokens have no registered USD schema, so they must be found
         next to the registered clamping schema.
 
         The knee becomes one actuator and the ankle and toe another, without a
-        per-joint mask and without ``SHARED_PARAMS`` on the drive. All name the
-        knee as ``lagJoint``, so they draw one lag per robot although they are
-        in different actuators with different slot layouts. Joint velocities
-        are zero.
+        per-joint mask and without ``SHARED_PARAMS`` on the drive. All share the
+        same fixed lag although they are in different actuators with different
+        slot layouts. Joint velocities are zero.
         """
 
         bam_attrs = """
@@ -1703,9 +1700,7 @@ class TestInputProcessors(unittest.TestCase):
             float newton:vin = 5.0
             float newton:maxPwm = 0.9
             float newton:maxEffort = 0.8
-            int newton:minDelay = 1
-            int newton:maxDelay = 3
-            rel newton:lagJoint = </World/Robot/left_knee>
+            int newton:delaySteps = 2
 """
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(
@@ -1771,7 +1766,7 @@ def Xform "World"
             prepend apiSchemas = [
                 "NewtonBAMControlAPI",
                 "NewtonMaxEffortClampingAPI",
-                "NewtonActuatorRandomDelayAPI",
+                "NewtonActuatorDelayAPI",
                 "NewtonActuatorBacklashAPI",
             ]
         )
@@ -1780,13 +1775,13 @@ def Xform "World"
             rel newton:backlashJoint = </World/Robot/passive_left_knee_backlash>
         }}
         def NewtonActuator "left_ankle_actuator" (
-            prepend apiSchemas = ["NewtonBAMControlAPI", "NewtonMaxEffortClampingAPI", "NewtonActuatorRandomDelayAPI"]
+            prepend apiSchemas = ["NewtonBAMControlAPI", "NewtonMaxEffortClampingAPI", "NewtonActuatorDelayAPI"]
         )
         {{
             rel newton:targets = [</World/Robot/left_ankle>]{bam_attrs}
         }}
         def NewtonActuator "left_toe_actuator" (
-            prepend apiSchemas = ["NewtonBAMControlAPI", "NewtonMaxEffortClampingAPI", "NewtonActuatorRandomDelayAPI"]
+            prepend apiSchemas = ["NewtonBAMControlAPI", "NewtonMaxEffortClampingAPI", "NewtonActuatorDelayAPI"]
         )
         {{
             rel newton:targets = [</World/Robot/left_toe>]{bam_attrs}
@@ -1830,7 +1825,7 @@ def Xform "World"
 
         targets = [0.1, -0.3, 0.6, -0.5, 0.9, -0.1, 0.4, -0.6]
         states = [(actuator, actuator.state(), actuator.state()) for actuator in model.actuators]
-        seen_lags = set()
+        lag = 2
         for step, target in enumerate(targets):
             control.joint_target_q.fill_(target)
             control.joint_f.zero_()
@@ -1840,17 +1835,14 @@ def Xform "World"
             effort = control.joint_f.numpy()
             np.testing.assert_array_equal(effort[backlashes], [0.0, 0.0])
             for world in range(2):
-                lags = {}
                 for servo, dofs in servos.items():
-                    candidates = {
-                        lag: bam_effort(targets[max(step - lag, 0)], measured[servo][world]) for lag in (1, 2, 3)
-                    }
-                    lags[servo] = {lag for lag, e in candidates.items() if abs(e - effort[dofs[world]]) < 1e-5}
-                shared = lags["knee"] & lags["ankle"] & lags["toe"]
-                self.assertTrue(shared, f"step {step} world {world}: lags per servo {lags}")
-                if step >= 3 and len(shared) == 1:
-                    seen_lags |= shared
-        self.assertGreater(len(seen_lags), 1)
+                    expected = bam_effort(targets[max(step - lag, 0)], measured[servo][world])
+                    self.assertAlmostEqual(
+                        float(effort[dofs[world]]),
+                        expected,
+                        places=5,
+                        msg=f"step {step} world {world} servo {servo}: lag {lag} not applied",
+                    )
 
     def test_bam_battery_shared_across_actuator_groups(self):
         """Servos in different actuator groups sag one shared battery.
@@ -1918,50 +1910,6 @@ def Xform "World"
             drawn = sum(np.abs(kt * current[servo]) for servo in duty)
         sagged = np.array(sagged[1:])
         self.assertTrue(np.any(sagged > min_voltage) and np.any(sagged < min_voltage))
-
-    def test_random_delay_redraw_period_and_reset(self):
-        """The lag holds between redraws, every ``update_period`` steps, and a reset starts a new sequence.
-
-        A unit-gain PD drive at zero position outputs the delayed target, and
-        each step's target is unique, so the effort reveals the lag.
-        """
-        period, max_delay, steps = 3, 6, 30
-        builder = newton.ModelBuilder()
-        link = builder.add_link()
-        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
-        builder.add_articulation([joint])
-        builder.add_actuator(
-            DrivePD,
-            index=0,
-            kp=1.0,
-            kd=0.0,
-            input_processors=[(InputProcessorRandomDelay, {"max_delay": max_delay, "update_period": period})],
-        )
-        model = builder.finalize()
-        actuator = model.actuators[0]
-        state, control = model.state(), model.control()
-        s0, s1 = actuator.state(), actuator.state()
-
-        def episode() -> list[int]:
-            nonlocal s0, s1
-            lags = []
-            for step in range(steps):
-                control.joint_target_q.fill_(float(step))
-                control.joint_f.zero_()
-                actuator.step(state, control, s0, s1, dt=0.01)
-                s0, s1 = s1, s0
-                lags.append(step - round(float(control.joint_f.numpy()[0])))
-            return lags[max_delay:]
-
-        first = episode()
-        changes = [i for i in range(1, len(first)) if first[i] != first[i - 1]]
-        self.assertGreater(len(changes), 1)
-        self.assertTrue(all((b - a) % period == 0 for a, b in itertools.pairwise(changes)), first)
-        self.assertTrue(all(0 <= lag <= max_delay for lag in first))
-
-        s0.reset()
-        s1.reset()
-        self.assertNotEqual(episode(), first)
 
     def test_bam_current_and_pwm_limits(self):
         """DriveBAM limits the duty cycle by the firmware current limit, then by ``max_pwm``."""
