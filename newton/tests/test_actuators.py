@@ -210,6 +210,55 @@ def _build_lstm_onnx(
 
 # Regularize the fixtures' idealized point masses without changing their
 # effective dynamics from the inertia that validation previously synthesized.
+
+
+@wp.kernel
+def _finite_difference_qdd_kernel(
+    qd_before: wp.array[float],
+    qd_after: wp.array[float],
+    inv_dt: float,
+    qdd: wp.array[float],
+):
+    """Joint acceleration across the step, for the manipulator equation."""
+    i = wp.tid()
+    qdd[i] = (qd_after[i] - qd_before[i]) * inv_dt
+
+
+@wp.kernel
+def _joint_reaction_kernel(
+    total_force: wp.array[float],
+    motor_torque: wp.array[float],
+    gravity_force: wp.array[float],
+    coriolis_force: wp.array[float],
+    reaction: wp.array[float],
+):
+    """``M qdd + C qd + g - tau_motor + bias``: the load MuJoCo reports as bias + constraint."""
+    i = wp.tid()
+    reaction[i] = total_force[i] - motor_torque[i] + gravity_force[i] + coriolis_force[i]
+
+
+@wp.kernel
+def _bam_friction_budget_kernel(
+    mjc_dof_to_newton_dof: wp.array2d[wp.int32],
+    motor_torque: wp.array[float],
+    reaction: wp.array[float],
+    friction_base: float,
+    load_friction_motor: float,
+    load_friction_external: float,
+    viscous: float,
+    frictionloss: wp.array2d[float],
+    damping: wp.array2d[float],
+):
+    """BAM's friction budget, written in the solver's DOF order."""
+    world, mjc_dof = wp.tid()
+    newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
+    if newton_dof < 0:
+        return
+    gearbox = wp.abs(reaction[newton_dof] * load_friction_external - motor_torque[newton_dof] * load_friction_motor)
+    frictionloss[world, mjc_dof] = friction_base + gearbox
+    damping[world, mjc_dof] = viscous
+
+
 _POINT_MASS_INERTIA = wp.mat33(1.0e-6, 0.0, 0.0, 0.0, 1.0e-6, 0.0, 0.0, 0.0, 1.0e-6)
 
 
@@ -1927,6 +1976,136 @@ def Xform "World"
         expected = kt * (vin * duty - kt * qd) / resistance
         np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-5)
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), kt * 1.0, places=5)
+
+    @unittest.skipUnless(hasattr(newton.solvers, "SolverMuJoCo"), "SolverMuJoCo not installed")
+    def test_bam_load_dependent_friction_loop(self):
+        """BAM's load-dependent gearbox friction, driven from caller-owned code.
+
+        BAM's friction grows with the torque the gearbox transmits, so it needs the
+        joint reaction. That reaction is recovered here from the manipulator
+        equation rather than from solver internals. Per step:
+
+        1. :meth:`Actuator.step` writes the motor torque into ``control.joint_f``.
+        2. the solver integrates.
+        3. the reaction follows from ``M(q) qdd + C(q, qd) qd + g(q) - tau_motor``
+           plus the bias term, via :func:`newton.eval_inverse_dynamics_passive` and
+           :func:`newton.eval_inverse_dynamics_force`.
+        4. the budget ``frictionloss = base + |reaction*k_ext - motor*k_motor|`` is
+           written into the solver's arrays.
+        5. the solver applies it by clipping the stopping torque.
+
+        The friction coefficients here are illustrative; a real set comes from a
+        BAM identification run.
+        """
+        dt, target, friction_base, viscous = 1.0 / 240.0, 0.9, 0.05, 0.02
+
+        def build() -> newton.Model:
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+            link = builder.add_link(com=wp.vec3(0.5, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
+            joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Y)
+            builder.add_articulation([joint])
+            builder.add_actuator(DriveBAM, index=0, kp=3.0, kt=1.2, resistance=1.0, vin=12.0, max_pwm=1.0)
+            return builder.finalize()
+
+        def run(load_dependent: bool, steps: int):
+            model = build()
+            solver = newton.solvers.SolverMuJoCo(model)
+            actuator = model.actuators[0]
+            state_0, state_1, control = model.state(), model.state(), model.control()
+            n, device = model.joint_dof_count, model.device
+            k_motor = 0.08 if load_dependent else 0.0
+            k_external = 0.30 if load_dependent else 0.0
+
+            mass_matrix = wp.zeros((model.articulation_count, n, n), dtype=wp.float32, device=device)
+            gravity_force = wp.zeros(n, dtype=wp.float32, device=device)
+            coriolis_force = wp.zeros(n, dtype=wp.float32, device=device)
+            total_force = wp.zeros(n, dtype=wp.float32, device=device)
+            joint_qdd = wp.zeros(n, dtype=wp.float32, device=device)
+            reaction = wp.zeros(n, dtype=wp.float32, device=device)
+            frictionloss = solver.mjw_model.dof_frictionloss
+            damping = solver.mjw_model.dof_damping
+
+            for _ in range(steps):
+                # 1. the drive writes the motor torque into control.joint_f
+                control.joint_target_q.fill_(target)
+                control.joint_f.zero_()
+                actuator.step(state_0, control, dt=dt)
+
+                # 2. integrate; the solver writes state_1 and leaves control alone
+                solver.step(state_0, state_1, control, None, dt)
+
+                # 3. recover the joint reaction from the manipulator equation
+                wp.launch(
+                    _finite_difference_qdd_kernel,
+                    dim=n,
+                    inputs=[state_0.joint_qd, state_1.joint_qd, float(1.0 / dt)],
+                    outputs=[joint_qdd],
+                    device=device,
+                )
+                newton.eval_inverse_dynamics_passive(
+                    model,
+                    state_0,
+                    mass_matrix=mass_matrix,
+                    gravity_force=gravity_force,
+                    coriolis_force=coriolis_force,
+                )
+                newton.eval_inverse_dynamics_force(
+                    model,
+                    state_0,
+                    mass_matrix=mass_matrix,
+                    joint_qdd=joint_qdd,
+                    coriolis_force=coriolis_force,
+                    gravity_force=gravity_force,
+                    joint_f=total_force,
+                )
+                wp.launch(
+                    _joint_reaction_kernel,
+                    dim=n,
+                    inputs=[total_force, control.joint_f, gravity_force, coriolis_force],
+                    outputs=[reaction],
+                    device=device,
+                )
+
+                # 4. turn it into BAM's friction budget, in the solver's DOF order
+                wp.launch(
+                    _bam_friction_budget_kernel,
+                    dim=frictionloss.shape,
+                    inputs=[
+                        solver.mjc_dof_to_newton_dof,
+                        control.joint_f,
+                        reaction,
+                        friction_base,
+                        k_motor,
+                        k_external,
+                        viscous,
+                    ],
+                    outputs=[frictionloss, damping],
+                    device=device,
+                )
+
+                # 5. the solver applies it on the next step; swap states
+                state_0, state_1 = state_1, state_0
+
+            wp.synchronize_device(device)
+            return reaction, control.joint_f, frictionloss
+
+        *_, base_frictionloss = run(load_dependent=False, steps=400)
+        reaction_arr, motor_arr, load_frictionloss = run(load_dependent=True, steps=400)
+
+        base_budget = float(base_frictionloss.numpy()[0, 0])
+        reaction = float(reaction_arr.numpy()[0])
+        motor = float(motor_arr.numpy()[0])
+        load_budget = float(load_frictionloss.numpy()[0, 0])
+
+        # Holding the arm against gravity means the gearbox transmits the gravity
+        # torque, which at this pose is a few newton-metres.
+        self.assertLess(reaction, -1.0, "the gearbox should be carrying the gravity load")
+
+        # Without the load terms the budget is the constant base; with them it grows
+        # with the transmitted load. This is the quantity the solver consumes.
+        self.assertAlmostEqual(base_budget, friction_base, places=6)
+        self.assertGreater(load_budget, base_budget + 0.1)
+        self.assertAlmostEqual(load_budget, friction_base + abs(reaction * 0.30 - motor * 0.08), places=5)
 
     def test_deprecated_delay_arguments_match_input_processor(self):
         """Deprecated delay arguments warn and delay targets exactly like the Delay input processor."""

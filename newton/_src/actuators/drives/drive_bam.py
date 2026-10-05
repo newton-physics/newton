@@ -129,6 +129,10 @@ class DriveBAM(DriveBase):
             max_pwm: Largest duty cycle magnitude. Shape ``(N,)``.
             max_current: Firmware current limit [A]; 0 disables it. Shape
                 ``(N,)``. ``None`` disables it.
+
+        Raises:
+            ValueError: An array shape does not match *kp*, or *kt* or
+                *resistance* is not positive.
         """
         n = kp.shape
         self.kp = kp
@@ -147,6 +151,10 @@ class DriveBAM(DriveBase):
             shape = getattr(self, name).shape
             if shape != n:
                 raise ValueError(f"{name} shape {shape} must match kp shape {n}")
+        for name in ("kt", "resistance"):
+            values = getattr(self, name).numpy()
+            if values.size and values.min() <= 0.0:
+                raise ValueError(f"{name} must be positive, got {values.min()}")
 
     def is_stateful(self) -> bool:
         return False

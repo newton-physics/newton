@@ -44,6 +44,14 @@ class Battery:
         V = \\max\\big(V_{\\text{nominal}} - g_{\\text{sag}} \\sum |\\tau_{\\text{motor}}|,\\;
         V_{\\min}\\big)
 
+    The voltage of one step is computed from the torque drawn in the previous
+    one, so the supply and the drives form an explicit feedback loop. It settles
+    only while ``sag_gain * sum(kt**2 / resistance) < 1`` over the drives sharing
+    the battery; above that the voltage oscillates between :attr:`min_voltage`
+    and :attr:`nominal_voltage` instead of converging. The clamp bounds that
+    oscillation but does not damp it, so an unstable setting still produces
+    plausible-looking voltages.
+
     Pass the battery to :meth:`Actuator.step <newton.actuators.Actuator.step>`.
     A drive that uses a battery (e.g. :class:`~newton.actuators.DriveBAM`)
     reads :attr:`voltage` and adds the magnitude of its motor torque to
@@ -79,11 +87,20 @@ class Battery:
             sag_gain: Voltage drop per unit of total motor torque [V/(N·m)].
                 Shape ``(B,)``.
             min_voltage: Lower bound of the sagged voltage [V]. Shape ``(B,)``.
+
+        Raises:
+            ValueError: An array shape does not match *nominal_voltage*, or a
+                *dof_battery* entry is outside ``[-1, B)``.
         """
         shape = nominal_voltage.shape
         for name, array in (("sag_gain", sag_gain), ("min_voltage", min_voltage)):
             if array.shape != shape:
                 raise ValueError(f"{name} shape {array.shape} must match nominal_voltage shape {shape}")
+        indices = dof_battery.numpy()
+        if indices.size and (indices.min() < -1 or indices.max() >= shape[0]):
+            raise ValueError(
+                f"dof_battery entries must be -1 or in [0, {shape[0]}), got [{indices.min()}, {indices.max()}]"
+            )
         device = nominal_voltage.device
         self.dof_battery = dof_battery
         """Battery index of each DOF, ``-1`` for none, shape (joint_dof_count,)."""
