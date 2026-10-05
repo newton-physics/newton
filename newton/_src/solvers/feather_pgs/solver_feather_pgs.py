@@ -88,6 +88,7 @@ from .kernels import (
     compute_world_contact_bias,
     compute_world_contact_velocity_bias,
     copy_free_rigid_propagation_body_response,
+    count_propagation_coupled_bodies,
     crba_fill_par_dof,
     delassus_par_row_col,
     diag_from_JY_par_art,
@@ -3638,6 +3639,7 @@ class SolverFeatherPGS(SolverBase):
             self.body_to_articulation = None
             self.body_has_response_dofs = None
             self.body_response_dof_mask = None
+            self._body_coupling_group_host = None
             return
 
         joint_child = model.joint_child.numpy()
@@ -3666,6 +3668,8 @@ class SolverFeatherPGS(SolverBase):
         body_has_response_dofs = np.zeros(model.body_count, dtype=np.int32)
         body_response_dof_mask = np.zeros(model.body_count, dtype=np.uint32)
         body_single_response_dof = np.full(model.body_count, -1, dtype=np.int32)
+        # Bodies have a nonzero cross response iff they share their topmost moving ancestor joint.
+        body_coupling_group = np.arange(model.body_count, dtype=np.int32)
         for body, joint in enumerate(body_to_joint):
             articulation = body_to_articulation[body]
             if joint < 0 or articulation < 0:
@@ -3688,6 +3692,7 @@ class SolverFeatherPGS(SolverBase):
                 overlap_end = min(joint_dof_end, response_end)
                 if overlap_start < overlap_end:
                     body_has_response_dofs[body] = 1
+                    body_coupling_group[body] = joint_child[ancestor_joint]
                     for global_dof in range(overlap_start, overlap_end):
                         response_dofs.append(global_dof)
                         local_dof = global_dof - response_start
@@ -3702,6 +3707,7 @@ class SolverFeatherPGS(SolverBase):
         self.body_to_articulation = wp.array(body_to_articulation, dtype=wp.int32, device=device)
         self.body_has_response_dofs = wp.array(body_has_response_dofs, dtype=wp.int32, device=device)
         self.body_response_dof_mask = wp.array(body_response_dof_mask, dtype=wp.uint32, device=device)
+        self._body_coupling_group_host = body_coupling_group
 
     def _classify_free_rigid_bodies(self, model):
         """Materialize free-rigid execution metadata from the model plan."""
@@ -7416,6 +7422,12 @@ class SolverFeatherPGS(SolverBase):
         self.propagation_body_com_rel = wp.zeros((bodies, 3), dtype=wp.float32, device=device)
         self.propagation_body_seen = wp.zeros((bodies,), dtype=wp.int32, device=device)
         self.propagation_body_local_slot = wp.zeros((bodies,), dtype=wp.int32, device=device)
+        coupling_group = self._body_coupling_group_host
+        if coupling_group is None:
+            coupling_group = np.arange(bodies, dtype=np.int32)
+        self.propagation_body_coupling_group = wp.array(coupling_group, dtype=wp.int32, device=device)
+        self.propagation_body_split_seen = wp.zeros((bodies,), dtype=wp.int32, device=device)
+        self.propagation_coupling_group_body_count = wp.zeros((bodies,), dtype=wp.int32, device=device)
         # Articulated-body factorization and scratch of the tree passes.
         self.propagation_joint_S_flat = wp.zeros((dofs, 6), dtype=wp.float32, device=device)
         self.propagation_tree_Ia = wp.zeros((bodies, 6, 6), dtype=wp.float32, device=device)
@@ -7796,6 +7808,21 @@ class SolverFeatherPGS(SolverBase):
                 device=model.device,
             )
         self._propagation_refresh_twists(force=True)
+        self.propagation_body_split_seen.zero_()
+        self.propagation_coupling_group_body_count.zero_()
+        wp.launch(
+            count_propagation_coupled_bodies,
+            dim=self.world_count * self.propagation_max_constraints,
+            inputs=[
+                self.propagation_constraint_count,
+                self.propagation_body_a,
+                self.propagation_body_b,
+                self.propagation_max_constraints,
+                self.propagation_body_coupling_group,
+            ],
+            outputs=[self.propagation_body_split_seen, self.propagation_coupling_group_body_count],
+            device=model.device,
+        )
         wp.launch(
             compute_propagation_effective_mass_and_rhs,
             dim=self.world_count * self.propagation_max_constraints,
@@ -7806,6 +7833,8 @@ class SolverFeatherPGS(SolverBase):
                 self.propagation_J_a,
                 self.propagation_J_b,
                 self.propagation_body_response,
+                self.propagation_body_coupling_group,
+                self.propagation_coupling_group_body_count,
                 self.propagation_phi,
                 self.propagation_row_type,
                 self.propagation_target_velocity,

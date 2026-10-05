@@ -106,9 +106,9 @@ def _step(model, solver, steps=1, dt=1.0 / 240.0):
 
 
 def test_contact_effective_mass_matches_dense_response(test, device):
-    """Give each propagation row the effective mass ``J H^-1 J^T`` of its dense immediate row.
+    """Give each propagation row the effective mass ``J H^-1 J^T`` of its dense immediate row, mass-split.
 
-    Covers the native 0/1-DOF and free-root tree kernels, the generic kernels and
+    The response of a body is scaled by the row-bearing bodies of its coupling group. Covers the native 0/1-DOF and free-root tree kernels, the generic kernels and
     multi-DOF (ball) joints. The rows of contacts between an articulated body and the
     ground are compared at the same state, before any solve.
     """
@@ -147,11 +147,14 @@ def test_contact_effective_mass_matches_dense_response(test, device):
             world = solver.contact_world.numpy()[:count]
             dense_diag = reference.diag.numpy()
             eff_mass_inv = solver.propagation_eff_mass_inv.numpy()
+            # Each compared row has the ground on one side.
+            row_body = np.maximum(solver.propagation_body_a.numpy(), solver.propagation_body_b.numpy())
+            split = solver.propagation_coupling_group_body_count.numpy()[solver.propagation_body_coupling_group.numpy()]
             checked = 0
             # Contacts between links of one articulation stay dense in both responses.
             for c in np.flatnonzero((ref_path == DENSE_PATH) & (ref_slot >= 0) & (path == PROPAGATION_PATH)):
                 for row in range(3):
-                    expected = float(dense_diag[world[c], ref_slot[c] + row])
+                    expected = float(dense_diag[world[c], ref_slot[c] + row]) * split[row_body[world[c], slot[c] + row]]
                     got = 1.0 / float(eff_mass_inv[world[c], slot[c] + row])
                     test.assertAlmostEqual(got, expected, delta=2.0e-4 * expected)
                     checked += 1
@@ -275,7 +278,11 @@ def test_global_kinematic_floor_moves_articulated_bodies(test, device):
             for floor, floor_velocity in (("static", 0.0), ("kinematic", 0.0), ("kinematic", 0.5)):
                 model = _chains_on_global_floor(device, floor)
                 solver = SolverFeatherPGS(
-                    model, dense_max_constraints=64, friction_anchor_beta=0.0, articulated_contact_response=response
+                    model,
+                    pgs_iterations=50,
+                    dense_max_constraints=64,
+                    friction_anchor_beta=0.0,
+                    articulated_contact_response=response,
                 )
                 state_0, state_1 = model.state(), model.state()
                 joint_qd = state_0.joint_qd.numpy()

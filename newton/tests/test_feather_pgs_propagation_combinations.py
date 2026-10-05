@@ -95,7 +95,7 @@ CASES = {
     "point friction": {},
     "friction patches": {"friction_anchor_beta": 0.2},
     "regularization": {"pgs_contact_regularization": 0.05},
-    "velocity iterations": {"pgs_velocity_iterations": 4},
+    "velocity iterations": {"pgs_velocity_iterations": 300},
     "drive rows": {"drive_mode": "physx_pgs"},
     "drive rows and velocity limits": {
         "drive_mode": "physx_pgs",
