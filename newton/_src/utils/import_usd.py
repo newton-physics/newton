@@ -1617,6 +1617,7 @@ def parse_usd(
         stage=stage,
         root_prim=root_prim,
         resolver=R,
+        material_specs=material_specs,
         collect_schema_attrs=collect_schema_attrs,
         deformable_read=deformable_read,
         get_prim_world_mat=_get_prim_world_mat,

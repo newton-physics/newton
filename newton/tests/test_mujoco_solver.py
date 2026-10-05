@@ -5209,8 +5209,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         )
 
     def test_fast_path_buffers_eagerly_allocated(self):
-        """The fast-path tracking buffers must be allocated in ``__init__``,
-        not lazily inside :meth:`_convert_contacts_to_mjwarp`.
+        """Verify persistent contact buffers and mappings are initialized in ``__init__``.
 
         Regression (PR #2678 bisect, "Fix 2"): lazy ``wp.full(...)`` allocation
         on the first step often runs while a CUDA graph is being captured.  The
@@ -5261,6 +5260,13 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         self.assertEqual(solver._contact_tid_to_cid.device, model.device)
         self.assertTrue(np.all(solver._contact_tid_to_cid.numpy() == -1))
 
+        self.assertIsNotNone(solver.newton_shape_to_mjc_geom)
+        fwd = solver.mjc_geom_to_newton_shape.numpy()
+        inv = solver.newton_shape_to_mjc_geom.numpy()
+        for geom, shape in enumerate(fwd[0]):
+            if shape >= 0:
+                self.assertEqual(inv[shape], geom)
+
         # Calling _invalidate_contact_fast_path() before any step must succeed
         # cleanly — this is the exact path that previously hit stale captured
         # memory when the buffers were still None / lazily allocated.
@@ -5272,6 +5278,45 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         # repro path from the bug report.
         solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
         wp.synchronize()  # surface any async device errors
+
+    def test_recapture_after_discarded_capture(self):
+        """Replay a replacement graph after discarding the first capture without replay."""
+        device = self.model.device
+        if not device.is_cuda or not wp.is_mempool_enabled(device):
+            self.skipTest("CUDA graph capture requires a CUDA device with the memory pool enabled.")
+
+        model = self._build_grounded_spheres(1)
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        state_in, state_out = model.state(), model.state()
+        control = model.control()
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        def simulate():
+            nonlocal state_in, state_out
+            # Two steps keep input/output buffers identical between captures and replays.
+            for _ in range(2):
+                state_in.clear_forces()
+                pipeline.collide(state_in, contacts)
+                solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+                state_in, state_out = state_out, state_in
+
+        with wp.ScopedCapture(device=device) as capture:
+            simulate()
+        del capture
+
+        with wp.ScopedCapture(device=device) as capture:
+            simulate()
+        for _ in range(3):
+            wp.capture_launch(capture.graph)
+
+        self.assertTrue(np.isfinite(state_in.body_q.numpy()).all())
+        self.assertTrue(np.isfinite(state_in.body_qd.numpy()).all())
 
     def test_ephemeral_contacts_wrapper_keeps_fast_path_armed(self):
         """A new ``Contacts`` wrapper that shares the same underlying
