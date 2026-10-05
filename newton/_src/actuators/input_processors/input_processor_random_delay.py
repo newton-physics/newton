@@ -11,6 +11,8 @@ import warp as wp
 
 from .base import InputProcessorBase
 
+_SHARED_STATE_FIELDS = ("lag_keys", "update_period", "episode")
+
 
 @wp.func
 def _lag_stream(episode_seed: wp.int32, key: wp.uint32) -> wp.uint32:
@@ -18,33 +20,94 @@ def _lag_stream(episode_seed: wp.int32, key: wp.uint32) -> wp.uint32:
 
 
 @wp.kernel
+def _random_delay_buffer_state_kernel(
+    target_pos_global: wp.array[float],
+    target_vel_global: wp.array[float],
+    feedforward_global: wp.array[float],
+    pos_indices: wp.array[wp.uint32],
+    vel_indices: wp.array[wp.uint32],
+    buf_depth: int,
+    current_buffer_pos: wp.array2d[float],
+    current_buffer_vel: wp.array2d[float],
+    current_buffer_act: wp.array2d[float],
+    current_num_pushes: wp.array[wp.int32],
+    current_write_idx: wp.array[wp.int32],
+    current_step_count: wp.array[wp.int32],
+    current_phase: wp.array[wp.int32],
+    current_seed: wp.array[wp.int32],
+    drawn_lag: wp.array[wp.int32],
+    next_buffer_pos: wp.array2d[float],
+    next_buffer_vel: wp.array2d[float],
+    next_buffer_act: wp.array2d[float],
+    next_num_pushes: wp.array[wp.int32],
+    next_write_idx: wp.array[wp.int32],
+    next_lag: wp.array[wp.int32],
+    next_step_count: wp.array[wp.int32],
+    next_phase: wp.array[wp.int32],
+    next_seed: wp.array[wp.int32],
+):
+    """Update delay circular buffer: copy previous entry, write new entry, advance write pointer."""
+    i = wp.tid()
+    pos_idx = pos_indices[i]
+    vel_idx = vel_indices[i]
+
+    copy_idx = current_write_idx[0]
+    write_idx = (copy_idx + 1) % buf_depth
+
+    next_buffer_pos[copy_idx, i] = current_buffer_pos[copy_idx, i]
+    next_buffer_vel[copy_idx, i] = current_buffer_vel[copy_idx, i]
+    next_buffer_act[copy_idx, i] = current_buffer_act[copy_idx, i]
+
+    next_buffer_pos[write_idx, i] = target_pos_global[pos_idx]
+    next_buffer_vel[write_idx, i] = target_vel_global[vel_idx]
+
+    act = float(0.0)
+    if feedforward_global:
+        act = feedforward_global[vel_idx]
+    next_buffer_act[write_idx, i] = act
+
+    next_num_pushes[i] = wp.min(current_num_pushes[i] + 1, buf_depth)
+
+    next_lag[i] = drawn_lag[i]
+    next_step_count[i] = current_step_count[i] + 1
+    next_phase[i] = current_phase[i]
+    next_seed[i] = current_seed[i]
+
+    if i == 0:
+        next_write_idx[0] = write_idx
+
+
+@wp.kernel
 def _random_delay_read_kernel(
-    target_pos: wp.array[float],
-    target_vel: wp.array[float],
-    feedforward: wp.array[float],
-    target_pos_indices: wp.array[wp.uint32],
-    target_vel_indices: wp.array[wp.uint32],
-    lag_keys: wp.array[wp.uint32],
     min_delay: wp.array[wp.int32],
     max_delay: wp.array[wp.int32],
     hold_probability: wp.array[float],
     update_period: wp.array[wp.int32],
+    lag_keys: wp.array[wp.uint32],
+    num_pushes: wp.array[wp.int32],
+    write_idx_arr: wp.array[wp.int32],
+    buf_depth: int,
     buffer_pos: wp.array2d[float],
     buffer_vel: wp.array2d[float],
     buffer_act: wp.array2d[float],
-    num_pushes: wp.array[wp.int32],
     lag: wp.array[wp.int32],
     step_count: wp.array[wp.int32],
     phase: wp.array[wp.int32],
     seed: wp.array[wp.int32],
+    current_pos: wp.array[float],
+    current_vel: wp.array[float],
+    current_act: wp.array[float],
+    pos_indices: wp.array[wp.uint32],
+    vel_indices: wp.array[wp.uint32],
     out_pos: wp.array[float],
     out_vel: wp.array[float],
     out_act: wp.array[float],
     out_lag: wp.array[wp.int32],
 ):
+    """Draw the lag of this step, then read the delayed command inputs at that lag."""
     i = wp.tid()
     step = step_count[i]
-    current_lag = wp.max(lag[i], min_delay[i])
+    drawn = wp.max(lag[i], min_delay[i])
     if max_delay[i] > 0:
         draw = step == 0 or update_period[i] == 0
         if not draw:
@@ -54,100 +117,62 @@ def _random_delay_read_kernel(
         if draw and step > 0 and hold_probability[i] > 0.0:
             draw = wp.randf(rng) >= hold_probability[i]
         if draw:
-            current_lag = wp.randi(rng, min_delay[i], max_delay[i] + 1)
-    out_lag[i] = current_lag
+            drawn = wp.randi(rng, min_delay[i], max_delay[i] + 1)
+    out_lag[i] = drawn
 
-    act = float(0.0)
-    if feedforward:
-        act = feedforward[target_vel_indices[i]]
     n = num_pushes[i]
-    if current_lag == 0 or n == 0:
-        out_pos[i] = target_pos[target_pos_indices[i]]
-        out_vel[i] = target_vel[target_vel_indices[i]]
+    if n == 0 or drawn == 0:
+        pos_idx = pos_indices[i]
+        vel_idx = vel_indices[i]
+        out_pos[i] = current_pos[pos_idx]
+        out_vel[i] = current_vel[vel_idx]
+        act = float(0.0)
+        if current_act:
+            act = current_act[vel_idx]
         out_act[i] = act
     else:
-        row = wp.min(current_lag - 1, n - 1)
-        out_pos[i] = buffer_pos[row, i]
-        out_vel[i] = buffer_vel[row, i]
-        out_act[i] = buffer_act[row, i]
+        write_idx = write_idx_arr[0]
+        offset = wp.min(drawn - 1, n - 1)
+        read_idx = (write_idx - offset + buf_depth) % buf_depth
+        out_pos[i] = buffer_pos[read_idx, i]
+        out_vel[i] = buffer_vel[read_idx, i]
+        out_act[i] = buffer_act[read_idx, i]
 
 
 @wp.kernel
-def _random_delay_push_kernel(
-    target_pos: wp.array[float],
-    target_vel: wp.array[float],
-    feedforward: wp.array[float],
-    target_pos_indices: wp.array[wp.uint32],
-    target_vel_indices: wp.array[wp.uint32],
-    buf_depth: int,
-    buffer_pos: wp.array2d[float],
-    buffer_vel: wp.array2d[float],
-    buffer_act: wp.array2d[float],
-    num_pushes: wp.array[wp.int32],
-    step_count: wp.array[wp.int32],
-    phase: wp.array[wp.int32],
-    seed: wp.array[wp.int32],
-    drawn_lag: wp.array[wp.int32],
-    next_buffer_pos: wp.array2d[float],
-    next_buffer_vel: wp.array2d[float],
-    next_buffer_act: wp.array2d[float],
-    next_num_pushes: wp.array[wp.int32],
-    next_lag: wp.array[wp.int32],
-    next_step_count: wp.array[wp.int32],
-    next_phase: wp.array[wp.int32],
-    next_seed: wp.array[wp.int32],
-):
-    i = wp.tid()
-    for row in range(buf_depth - 1, 0, -1):
-        next_buffer_pos[row, i] = buffer_pos[row - 1, i]
-        next_buffer_vel[row, i] = buffer_vel[row - 1, i]
-        next_buffer_act[row, i] = buffer_act[row - 1, i]
-    next_buffer_pos[0, i] = target_pos[target_pos_indices[i]]
-    next_buffer_vel[0, i] = target_vel[target_vel_indices[i]]
-    act = float(0.0)
-    if feedforward:
-        act = feedforward[target_vel_indices[i]]
-    next_buffer_act[0, i] = act
-    next_num_pushes[i] = wp.min(num_pushes[i] + 1, buf_depth)
-    next_lag[i] = drawn_lag[i]
-    next_step_count[i] = step_count[i] + 1
-    next_phase[i] = phase[i]
-    next_seed[i] = seed[i]
-
-
-@wp.kernel
-def _advance_episode_kernel(episode: wp.array[wp.int32]):
-    episode[0] = episode[0] + 1
-
-
-@wp.kernel
-def _random_delay_reset_kernel(
+def _random_delay_masked_reset_kernel(
     mask: wp.array[wp.bool],
+    rows: int,
+    buf_pos: wp.array2d[float],
+    buf_vel: wp.array2d[float],
+    buf_act: wp.array2d[float],
+    num_pushes: wp.array[wp.int32],
+    advance: int,
     base_seed: int,
     episode: wp.array[wp.int32],
     lag_keys: wp.array[wp.uint32],
     update_period: wp.array[wp.int32],
-    buffer_pos: wp.array2d[float],
-    buffer_vel: wp.array2d[float],
-    buffer_act: wp.array2d[float],
-    num_pushes: wp.array[wp.int32],
     lag: wp.array[wp.int32],
     step_count: wp.array[wp.int32],
     phase: wp.array[wp.int32],
     seed: wp.array[wp.int32],
 ):
+    """Zero all buffer columns and push count where mask is True, and start a new random stream."""
     i = wp.tid()
     if mask:
         if not mask[i]:
             return
-    for row in range(buffer_pos.shape[0]):
-        buffer_pos[row, i] = 0.0
-        buffer_vel[row, i] = 0.0
-        buffer_act[row, i] = 0.0
+    for r in range(rows):
+        buf_pos[r, i] = 0.0
+        buf_vel[r, i] = 0.0
+        buf_act[r, i] = 0.0
     num_pushes[i] = 0
+
+    if advance == 1:
+        episode[i] = episode[i] + 1
     lag[i] = 0
     step_count[i] = 0
-    episode_seed = wp.int32(wp.randi(wp.rand_init(base_seed, episode[0])))
+    episode_seed = wp.int32(wp.randi(wp.rand_init(base_seed, episode[i])))
     seed[i] = episode_seed
     phase[i] = 0
     if update_period[i] > 0:
@@ -171,10 +196,10 @@ class InputProcessorRandomDelay(InputProcessorBase):
     servos of one robot on one communication bus.  Through
     :meth:`~newton.ModelBuilder.add_actuator`, each DOF names its own joint by
     default and draws independently.  Each :meth:`State.reset` call starts a
-    new random stream; DOFs of different actuators that share a
-    ``lag_joint`` stay in step only if their states are reset the same
-    number of times.  When fewer commands than the lag have been seen, the oldest one
-    is returned; with no history or a lag of 0, the current command is used.
+    new random stream for the DOFs it resets; DOFs that share a ``lag_joint``
+    stay in step only if they are reset the same number of times.  When fewer
+    commands than the lag have been seen, the oldest one is returned; with no
+    history or a lag of 0, the current command is used.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"seed"}
@@ -182,16 +207,18 @@ class InputProcessorRandomDelay(InputProcessorBase):
 
     @dataclass
     class State(InputProcessorBase.State):
-        """Command history and lag state."""
+        """Circular buffer state for delayed targets, and the lag draw state."""
 
         buffer_pos: wp.array2d[float] | None = None
-        """Past target positions [m or rad], newest first, shape (buf_depth, N)."""
+        """Delayed target positions [m or rad], shape (buf_depth, N)."""
         buffer_vel: wp.array2d[float] | None = None
-        """Past target velocities [m/s or rad/s], newest first, shape (buf_depth, N)."""
+        """Delayed target velocities [m/s or rad/s], shape (buf_depth, N)."""
         buffer_act: wp.array2d[float] | None = None
-        """Past feedforward inputs [N or N·m], newest first, shape (buf_depth, N)."""
+        """Delayed feedforward inputs [N or N·m], shape (buf_depth, N)."""
         num_pushes: wp.array[wp.int32] | None = None
-        """Per-DOF count of stored commands since the last reset, shape (N,)."""
+        """Per-DOF count of writes since last reset, shape (N,)."""
+        write_idx: wp.array[wp.int32] | None = None
+        """Current write position in the circular buffer, shape (1,). Device-side for graph capture."""
         lag: wp.array[wp.int32] | None = None
         """Lag used on the previous step [actuator timesteps], shape (N,)."""
         step_count: wp.array[wp.int32] | None = None
@@ -205,7 +232,7 @@ class InputProcessorRandomDelay(InputProcessorBase):
         update_period: wp.array[wp.int32] | None = None
         """Shared with the processor: redraw period of each DOF, shape (N,)."""
         episode: wp.array[wp.int32] | None = None
-        """Shared with the processor: number of resets applied, shape (1,)."""
+        """Shared with the processor: number of resets applied to each DOF, shape (N,)."""
         base_seed: int = 0
         """Seed the episode seeds are derived from."""
 
@@ -219,7 +246,7 @@ class InputProcessorRandomDelay(InputProcessorBase):
                 other: State to copy from, with matching array shapes.
             """
             for field in fields(self):
-                if field.name in ("lag_keys", "update_period", "episode"):
+                if field.name in _SHARED_STATE_FIELDS:
                     continue
                 value = getattr(other, field.name)
                 if isinstance(value, wp.array):
@@ -228,36 +255,39 @@ class InputProcessorRandomDelay(InputProcessorBase):
                     setattr(self, field.name, value)
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
-            """Clear the history and start a new random stream.
+            """Clear the history of the reset DOFs and start a new random stream for them.
 
             Args:
-                mask: Boolean mask of length N. ``True`` entries are reset.
-                    ``None`` resets all.
+                mask: Boolean mask of length N. ``True`` entries have their
+                    buffer columns zeroed, push count reset and lag stream
+                    advanced. ``None`` resets all.
             """
-            device = self.lag.device
-            wp.launch(_advance_episode_kernel, dim=1, inputs=[self.episode], device=device)
-            self._launch_reset(mask)
+            self._launch_reset(mask, advance=True)
+            if mask is None:
+                self.write_idx.fill_(self.buffer_pos.shape[0] - 1)
 
-        def _launch_reset(self, mask: wp.array[wp.bool] | None) -> None:
+        def _launch_reset(self, mask: wp.array[wp.bool] | None, advance: bool) -> None:
             wp.launch(
-                _random_delay_reset_kernel,
-                dim=len(self.lag),
+                _random_delay_masked_reset_kernel,
+                dim=self.buffer_pos.shape[1],
                 inputs=[
                     mask,
-                    self.base_seed,
-                    self.episode,
-                    self.lag_keys,
-                    self.update_period,
+                    self.buffer_pos.shape[0],
                     self.buffer_pos,
                     self.buffer_vel,
                     self.buffer_act,
                     self.num_pushes,
+                    int(advance),
+                    self.base_seed,
+                    self.episode,
+                    self.lag_keys,
+                    self.update_period,
                     self.lag,
                     self.step_count,
                     self.phase,
                     self.seed,
                 ],
-                device=self.lag.device,
+                device=self.buffer_pos.device,
             )
 
     @classmethod
@@ -344,11 +374,11 @@ class InputProcessorRandomDelay(InputProcessorBase):
         self.seed = int(seed)
         """Seed of the random lag and phase draws."""
         self.buf_depth = max(int(np.max(max_delay.numpy())) if n > 0 else 0, 1)
-        """History depth (largest ``max_delay``, at least 1)."""
-        self._episode = wp.zeros(1, dtype=wp.int32, device=device)
-        self._requires_grad = False
-        self._num_actuators = 0
+        """Circular-buffer depth (equals the largest ``max_delay``, at least 1)."""
+        self._episode = wp.zeros(n, dtype=wp.int32, device=device)
+        self._num_actuators: int = 0
         self._device: wp.Device | None = None
+        self._requires_grad: bool = False
         self._out_pos: wp.array[float] | None = None
         self._out_vel: wp.array[float] | None = None
         self._out_act: wp.array[float] | None = None
@@ -356,6 +386,13 @@ class InputProcessorRandomDelay(InputProcessorBase):
         self._sequential_indices: wp.array[wp.uint32] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int, requires_grad: bool = False) -> None:
+        """Called by :class:`Actuator` after construction.
+
+        Args:
+            device: Warp device to use.
+            num_actuators: Number of actuators (DOFs).
+            requires_grad: Allocate output arrays with gradient support.
+        """
         self._device = device
         self._num_actuators = num_actuators
         self._requires_grad = requires_grad
@@ -369,13 +406,23 @@ class InputProcessorRandomDelay(InputProcessorBase):
         return True
 
     def state(self, num_actuators: int, device: wp.Device) -> InputProcessorRandomDelay.State:
-        shape = (self.buf_depth, num_actuators)
+        """Create a new delay state with zeroed circular buffers and a drawn lag stream.
+
+        Args:
+            num_actuators: Number of actuators (buffer width N).
+            device: Warp device for buffer allocation.
+
+        Returns:
+            Freshly allocated :class:`InputProcessorRandomDelay.State`.
+        """
         rg = self._requires_grad
+        shape = (self.buf_depth, num_actuators)
         state = InputProcessorRandomDelay.State(
             buffer_pos=wp.zeros(shape, dtype=wp.float32, device=device, requires_grad=rg),
             buffer_vel=wp.zeros(shape, dtype=wp.float32, device=device, requires_grad=rg),
             buffer_act=wp.zeros(shape, dtype=wp.float32, device=device, requires_grad=rg),
             num_pushes=wp.zeros(num_actuators, dtype=wp.int32, device=device),
+            write_idx=wp.full(1, self.buf_depth - 1, dtype=wp.int32, device=device),
             lag=wp.zeros(num_actuators, dtype=wp.int32, device=device),
             step_count=wp.zeros(num_actuators, dtype=wp.int32, device=device),
             phase=wp.zeros(num_actuators, dtype=wp.int32, device=device),
@@ -385,43 +432,95 @@ class InputProcessorRandomDelay(InputProcessorBase):
             episode=self._episode,
             base_seed=self.seed,
         )
-        state._launch_reset(None)
+        state._launch_reset(None, advance=False)
         return state
 
-    def process(
-        self, inputs: InputProcessorBase.Inputs, state: InputProcessorRandomDelay.State, dt: float | None
-    ) -> InputProcessorBase.Inputs:
+    def get_delayed_targets(
+        self,
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        feedforward: wp.array[float] | None,
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        current_state: InputProcessorRandomDelay.State,
+    ) -> tuple[wp.array[float], wp.array[float], wp.array[float]]:
+        """Draw the lag of this step and read the delayed command inputs at that lag.
+
+        The drawn lag is kept for :meth:`update_state`, which stores it in the
+        next state.  It is clamped to available history (per-DOF
+        ``num_pushes``).  When the buffer is empty, falls back to the current
+        command inputs; when underfilled, the lag is clamped to the oldest
+        available entry.
+
+        Args:
+            target_pos: Current target positions [m or rad].
+            target_vel: Current target velocities [m/s or rad/s].
+            feedforward: Feedforward control input [N or N·m] (may be ``None``).
+            pos_indices: Indices into *target_pos* for each DOF.
+            vel_indices: Indices into *target_vel* and *feedforward* for each DOF.
+            current_state: InputProcessorRandomDelay state to read from.
+
+        Returns:
+            ``(delayed_pos, delayed_vel, delayed_feedforward)``.  When
+            *feedforward* is ``None``, *delayed_feedforward* is all zeros.
+        """
         wp.launch(
-            _random_delay_read_kernel,
+            kernel=_random_delay_read_kernel,
             dim=self._num_actuators,
             inputs=[
-                inputs.target_pos,
-                inputs.target_vel,
-                inputs.feedforward,
-                inputs.target_pos_indices,
-                inputs.target_vel_indices,
-                self.lag_joint_indices,
                 self.min_delay,
                 self.max_delay,
                 self.hold_probability,
                 self.update_period,
-                state.buffer_pos,
-                state.buffer_vel,
-                state.buffer_act,
-                state.num_pushes,
-                state.lag,
-                state.step_count,
-                state.phase,
-                state.seed,
+                self.lag_joint_indices,
+                current_state.num_pushes,
+                current_state.write_idx,
+                self.buf_depth,
+                current_state.buffer_pos,
+                current_state.buffer_vel,
+                current_state.buffer_act,
+                current_state.lag,
+                current_state.step_count,
+                current_state.phase,
+                current_state.seed,
+                target_pos,
+                target_vel,
+                feedforward,
+                pos_indices,
+                vel_indices,
             ],
             outputs=[self._out_pos, self._out_vel, self._out_act, self._drawn_lag],
             device=self._device,
         )
+        return (self._out_pos, self._out_vel, self._out_act)
+
+    def process(
+        self, inputs: InputProcessorBase.Inputs, state: InputProcessorRandomDelay.State, dt: float | None
+    ) -> InputProcessorBase.Inputs:
+        """Replace the command inputs with their delayed values.
+
+        Args:
+            inputs: Actuator inputs.
+            state: InputProcessorRandomDelay state to read from.
+            dt: Timestep [s] (unused).
+
+        Returns:
+            *inputs* with delayed ``target_pos``, ``target_vel`` and
+            ``feedforward``.
+        """
+        target_pos, target_vel, feedforward = self.get_delayed_targets(
+            inputs.target_pos,
+            inputs.target_vel,
+            inputs.feedforward,
+            inputs.target_pos_indices,
+            inputs.target_vel_indices,
+            state,
+        )
         return replace(
             inputs,
-            target_pos=self._out_pos,
-            target_vel=self._out_vel,
-            feedforward=self._out_act,
+            target_pos=target_pos,
+            target_vel=target_vel,
+            feedforward=feedforward,
             target_pos_indices=self._sequential_indices,
             target_vel_indices=self._sequential_indices,
         )
@@ -432,20 +531,62 @@ class InputProcessorRandomDelay(InputProcessorBase):
         current_state: InputProcessorRandomDelay.State,
         next_state: InputProcessorRandomDelay.State,
     ) -> None:
+        """Push the current command inputs into the buffer.
+
+        Args:
+            inputs: the inputs this delay received in :meth:`process`.
+            current_state: delay state to read from.
+            next_state: delay state to write into.
+        """
+        self._push_targets(
+            inputs.target_pos,
+            inputs.target_vel,
+            inputs.feedforward,
+            inputs.target_pos_indices,
+            inputs.target_vel_indices,
+            current_state,
+            next_state,
+        )
+
+    def _push_targets(
+        self,
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        feedforward: wp.array[float] | None,
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        current_state: InputProcessorRandomDelay.State,
+        next_state: InputProcessorRandomDelay.State,
+    ) -> None:
+        """Write command inputs into the buffer and advance the write pointer.
+
+        Args:
+            target_pos: Current target positions [m or rad].
+            target_vel: Current target velocities [m/s or rad/s].
+            feedforward: Current feedforward input [N or N·m] (may be ``None``).
+            pos_indices: Indices into *target_pos* for each DOF.
+            vel_indices: Indices into *target_vel* and *feedforward* for each DOF.
+            current_state: InputProcessorRandomDelay state to read from.
+            next_state: InputProcessorRandomDelay state to write into.
+        """
+        if next_state is None:
+            return
+
         wp.launch(
-            _random_delay_push_kernel,
+            kernel=_random_delay_buffer_state_kernel,
             dim=self._num_actuators,
             inputs=[
-                inputs.target_pos,
-                inputs.target_vel,
-                inputs.feedforward,
-                inputs.target_pos_indices,
-                inputs.target_vel_indices,
+                target_pos,
+                target_vel,
+                feedforward,
+                pos_indices,
+                vel_indices,
                 self.buf_depth,
                 current_state.buffer_pos,
                 current_state.buffer_vel,
                 current_state.buffer_act,
                 current_state.num_pushes,
+                current_state.write_idx,
                 current_state.step_count,
                 current_state.phase,
                 current_state.seed,
@@ -456,6 +597,7 @@ class InputProcessorRandomDelay(InputProcessorBase):
                 next_state.buffer_vel,
                 next_state.buffer_act,
                 next_state.num_pushes,
+                next_state.write_idx,
                 next_state.lag,
                 next_state.step_count,
                 next_state.phase,

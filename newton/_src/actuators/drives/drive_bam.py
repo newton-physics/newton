@@ -71,8 +71,11 @@ class DriveBAM(DriveBase):
 
     where :math:`d` is the PWM duty cycle and :math:`V` the supply voltage.
     For a BAM fit, :math:`k_p` is the firmware gain times the fit's error
-    gain. When ``max_current`` is positive, the firmware also limits the duty
-    cycle so that :math:`|I|` stays below it. Target velocity and
+    gain. When ``max_current`` is positive, the firmware narrows the duty cycle
+    towards the current limit before the ``max_pwm`` clamp. The ``max_pwm``
+    clamp is applied last, so at high velocity the back-EMF term can still
+    drive :math:`|I|` above ``max_current``; this matches the BAM reference
+    firmware. Target velocity and
     feedforward are ignored: the modelled firmware has no torque input.
 
     The supply voltage is ``vin``. When a :class:`~newton.actuators.Battery`

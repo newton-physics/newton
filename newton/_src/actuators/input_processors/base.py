@@ -133,6 +133,10 @@ class InputProcessorBase:
         """Return True if this processor maintains internal state."""
         return False
 
+    def is_graphable(self) -> bool:
+        """Return True if :meth:`process` and :meth:`update_state` can be captured in a CUDA graph."""
+        return True
+
     def state(self, num_actuators: int, device: wp.Device) -> InputProcessorBase.State | None:
         """Create and return a new state object, or None if stateless."""
         return None
