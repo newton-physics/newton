@@ -763,8 +763,8 @@ Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gi
 
 **Logging images:**
 
-Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including batched/tiled
-outputs from :class:`~newton.sensors.SensorTiledCamera`) in
+Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including per-view
+outputs from :class:`~newton.sensors.SensorCamera`) in
 :class:`~newton.viewer.ViewerGL`. By default, non-headless :class:`~newton.viewer.ViewerGL`
 shows logged images as dockable windows. Pass ``fullscreen=True`` to draw the image
 as the main viewer surface for the current frame instead of the 3D scene. Accepted
@@ -774,7 +774,7 @@ shapes are ``(H, W)``, ``(H, W, C)``, ``(N, H, W)``, and ``(N, H, W, C)`` with
 
 .. testcode:: viewer-log-image
 
-    from newton.sensors import SensorTiledCamera
+    from newton.sensors import SensorCamera
 
     builder = newton.ModelBuilder()
     builder.add_body(mass=1.0)
@@ -789,15 +789,14 @@ shapes are ``(H, W)``, ``(H, W, C)``, ``(N, H, W)``, and ``(N, H, W, C)`` with
     heatmap = depth_image / max(depth_image.max(), 1e-6)
     viewer.log_image("heatmap", heatmap)
 
-    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
-    # output once and reuse it every frame; the RGBA conversion is a
-    # zero-copy view.
-    sensor = SensorTiledCamera(model=model)
-    W, H, camera_count = 16, 16, 1
-    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
-    # ... in a real pipeline, sensor.update(...) fills color_image each frame.
-    rgba = sensor.utils.to_rgba_from_color(color_image)
-    viewer.log_image("tiled_camera", rgba)
+    # Per-view color images from a camera sensor. Allocate the sensor output
+    # once and reuse it every frame; the RGBA conversion is a zero-copy view.
+    camera = SensorCamera(model)
+    view_count, width, height = 1, 16, 16
+    color_image = camera.create_color_image_output(view_count, width, height)
+    # ... in a real pipeline, camera.update(...) fills color_image each frame.
+    rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
+    viewer.log_image("camera", rgba)
 
 For a 3D input, a last-axis of 1, 3, or 4 is interpreted as channel count
 for a single ``(H, W, C)`` image; otherwise the array is interpreted as a
@@ -809,7 +808,7 @@ frame capture where the image should replace the 3D scene:
 
 .. code-block:: python
 
-    from newton.sensors import SensorTiledCamera
+    from newton.sensors import SensorCamera
 
     builder = newton.ModelBuilder()
     builder.add_body(mass=1.0)
@@ -818,15 +817,14 @@ frame capture where the image should replace the 3D scene:
     viewer = newton.viewer.ViewerNull()
     viewer.set_model(model)
 
-    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
-    # output once and reuse it every frame; the RGBA conversion is a
-    # zero-copy view.
-    sensor = SensorTiledCamera(model=model)
-    W, H, camera_count = 16, 16, 1
-    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
-    # ... in a real pipeline, sensor.update(...) fills color_image each frame.
-    rgba = sensor.utils.to_rgba_from_color(color_image)
-    viewer.log_image("tiled_camera", rgba, fullscreen=True)
+    # Per-view color images from a camera sensor. Allocate the sensor output
+    # once and reuse it every frame; the RGBA conversion is a zero-copy view.
+    camera = SensorCamera(model)
+    view_count, width, height = 1, 16, 16
+    color_image = camera.create_color_image_output(view_count, width, height)
+    # ... in a real pipeline, camera.update(...) fills color_image each frame.
+    rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
+    viewer.log_image("camera", rgba, fullscreen=True)
 
 The ``fullscreen=True`` selection is per-frame: call
 :meth:`~newton.viewer.ViewerBase.log_image` with ``fullscreen=True`` after
