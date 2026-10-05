@@ -123,7 +123,8 @@ def test_contact_effective_mass_matches_dense_response(test, device):
         with test.subTest(scene=kind, tree_kernel=tree_kernel):
             model = _scene(device, kind)
             # Point friction: the propagation rows have no friction patches.
-            reference = SolverFeatherPGS(model, pgs_iterations=0, dense_max_constraints=96, friction_anchor_beta=0.0)
+            # An articulation-local solve writes its rows' diagonals when it runs, so iterate once.
+            reference = SolverFeatherPGS(model, pgs_iterations=1, dense_max_constraints=96, friction_anchor_beta=0.0)
             _, contacts = _step(model, reference)
             count = int(contacts.rigid_contact_count.numpy()[0])
             SolverFeatherPGS._kernel_overrides = {"propagation_tree_kernel": tree_kernel}
