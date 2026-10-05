@@ -27,7 +27,7 @@ from warp.fem.linalg import symmetric_eigenvalues_qr
 
 from ...core.types import mat36f, mat66f, vec6f
 from ..padmm.math import project_to_coulomb_cone
-from .system_kernels import apply_body_weight
+from .system_kernels import apply_body_weight, normalize_symmetric_matrix
 
 ###
 # Module interface
@@ -582,13 +582,9 @@ def prepare_spatial_contact(delassus: mat66f, friction: wp.vec3f):
         for j in range(5):
             if scaling[i + 1] > 0.0 and scaling[j + 1] > 0.0:
                 schur[i, j] = scaling[i + 1] * delassus[i + 1, j + 1] * scaling[j + 1] - coupling[i] * coupling[j] / a
-    spectral_scale = float(0.0)
-    for i in range(5):
-        for j in range(5):
-            spectral_scale = wp.max(spectral_scale, wp.abs(schur[i, j]))
+    schur, spectral_scale = normalize_symmetric_matrix(schur, 5)
     if not wp.isfinite(spectral_scale) or spectral_scale <= 0.0:
         return eigenvectors, eigenvalues, False
-    schur = schur / spectral_scale
     # Padding inactive rows by an uncoupled identity leaves the active solve
     # unchanged: the inactive right-hand side and coupling are identically zero.
     for i in range(5):

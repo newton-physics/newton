@@ -11,6 +11,8 @@ matrix layout. The consensus body weights use the body mass matrix
 
 from __future__ import annotations
 
+from typing import Any
+
 import warp as wp
 from warp.fem.linalg import symmetric_eigenvalues_qr
 
@@ -29,6 +31,7 @@ __all__ = [
     "_compute_body_weights_and_add",
     "apply_body_weight",
     "compute_body_explicit_wrench",
+    "normalize_symmetric_matrix",
     "unpack_body_solution",
 ]
 
@@ -46,6 +49,15 @@ wp.set_module_options({"enable_backward": False})
 
 _EIGENVALUE_TOLERANCE = 1.0e-7
 """Relative off-diagonal tolerance of the QR eigenvalues of the normalized body blocks."""
+
+_EIGENVALUE_FLUSH_FRACTION = 1.0e-10
+"""Magnitude, relative to the largest entry, at or below which symmetric matrices flush their entries to zero
+before a QR eigenvalue solve.
+
+The Householder reflections of :func:`warp.fem.linalg.symmetric_eigenvalues_qr` square the matrix
+entries. Flushing the entries far below the matrix scale keeps these squares in the normal float32
+range, where the reflections stay finite.
+"""
 
 
 ###
@@ -105,6 +117,34 @@ def _symmetrize_mat33(value: wp.mat33f) -> wp.mat33f:
 @wp.func
 def _symmetrize_mat66(value: mat66f) -> mat66f:
     return 0.5 * (value + wp.transpose(value))
+
+
+@wp.func
+def normalize_symmetric_matrix(matrix: Any, size: wp.int32):
+    """Scale a symmetric float32 matrix to a unit max norm and flush its entries far below that norm to zero.
+
+    The normalized matrix suits :func:`warp.fem.linalg.symmetric_eigenvalues_qr`, whose eigenvalues
+    multiplied by the scale are those of ``matrix``; see :data:`_EIGENVALUE_FLUSH_FRACTION`.
+
+    Args:
+        matrix: Symmetric ``size x size`` float32 matrix.
+        size: Dimension of ``matrix``.
+
+    Returns:
+        The normalized matrix and its max-norm scale. A zero or non-finite scale returns ``matrix`` itself.
+    """
+    scale = wp.float32(0.0)
+    for row in range(size):
+        for col in range(size):
+            scale = wp.max(scale, wp.abs(matrix[row, col]))
+    if not wp.isfinite(scale) or scale <= 0.0:
+        return matrix, scale
+    normalized = matrix / scale
+    for row in range(size):
+        for col in range(size):
+            if wp.abs(normalized[row, col]) <= _EIGENVALUE_FLUSH_FRACTION:
+                normalized[row, col] = 0.0
+    return normalized, scale
 
 
 @wp.func
@@ -187,9 +227,9 @@ def _compute_body_weight_mass_proportional(
             inverse_sqrt_spatial_mass[row + 3, col + 3] = inverse_sqrt_inertia[row, col]
 
     normalized_smooth = inverse_sqrt_spatial_mass @ symmetric_smooth @ inverse_sqrt_spatial_mass
-    normalized_smooth = _symmetrize_mat66(normalized_smooth)
+    normalized_smooth, smooth_scale = normalize_symmetric_matrix(_symmetrize_mat66(normalized_smooth), 6)
     eigenvalues, _eigenvectors = symmetric_eigenvalues_qr(normalized_smooth, _EIGENVALUE_TOLERANCE)
-    eta = wp.min(eigenvalues)
+    eta = smooth_scale * wp.min(eigenvalues)
     if not wp.isfinite(eta):
         return mat66f(0.0), mat66f(0.0)
     if eta < eta_floor:
