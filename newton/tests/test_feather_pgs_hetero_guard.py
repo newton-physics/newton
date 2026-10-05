@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 def _make_chain_world(n_links: int) -> newton.ModelBuilder:
@@ -48,8 +48,8 @@ def _build_model(world_link_counts: list[int], device) -> newton.Model:
     return scene.finalize(device=device)
 
 
-def _final_joint_q(model, steps=60):
-    solver = SolverFeatherPGS(model, dense_max_constraints=64)
+def _final_joint_q(model, steps=60, pgs_mode="matrix_free"):
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, dense_max_constraints=64)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
@@ -63,21 +63,36 @@ def _final_joint_q(model, steps=60):
 
 def test_hetero_matrix_free_constructs(test, device):
     """Construct on worlds whose DOF counts differ."""
-    solver = SolverFeatherPGS(_build_model([1, 3, 1, 3], device))
+    solver = SolverFeatherPGS(_build_model([1, 3, 1, 3], device), pgs_mode="matrix_free")
     np.testing.assert_array_equal(solver.world_dof_count.numpy(), [1, 3, 1, 3])
 
 
 def test_homogeneous_matrix_free_constructs(test, device):
     """Construct on worlds with identical DOF counts."""
-    solver = SolverFeatherPGS(_build_model([3, 3, 3, 3], device))
+    solver = SolverFeatherPGS(_build_model([3, 3, 3, 3], device), pgs_mode="matrix_free")
     np.testing.assert_array_equal(solver.world_dof_count.numpy(), [3, 3, 3, 3])
 
 
-def test_hetero_worlds_match_isolated_worlds(test, device):
+def test_hetero_split_constructs(test, device):
+    """Construct the split solve on worlds whose DOF counts differ."""
+    solver = SolverFeatherPGS(_build_model([1, 3, 1, 3], device), pgs_mode="split")
+    test.assertEqual(solver.pgs_mode, "split")
+    test.assertEqual(solver.size_groups, [3, 1])
+    test.assertEqual(solver.C.shape, (4, solver.dense_max_constraints, solver.dense_max_constraints))
+
+
+def test_homogeneous_split_constructs(test, device):
+    """Construct the split solve on worlds with identical DOF counts."""
+    solver = SolverFeatherPGS(_build_model([3, 3, 3, 3], device), pgs_mode="split")
+    test.assertEqual(solver.pgs_mode, "split")
+    test.assertEqual(solver.size_groups, [3])
+
+
+def test_hetero_worlds_match_isolated_worlds(test, device, pgs_mode="matrix_free"):
     """Simulate each world of a heterogeneous model exactly as it simulates alone."""
-    combined = _final_joint_q(_build_model([1, 3], device))
-    single = _final_joint_q(_build_model([1], device))
-    triple = _final_joint_q(_build_model([3], device))
+    combined = _final_joint_q(_build_model([1, 3], device), pgs_mode=pgs_mode)
+    single = _final_joint_q(_build_model([1], device), pgs_mode=pgs_mode)
+    triple = _final_joint_q(_build_model([3], device), pgs_mode=pgs_mode)
     np.testing.assert_allclose(combined, np.concatenate([single, triple]), rtol=0.0, atol=1.0e-5)
 
 
@@ -100,6 +115,23 @@ add_function_test(
     "test_hetero_worlds_match_isolated_worlds",
     test_hetero_worlds_match_isolated_worlds,
     devices=devices,
+)
+split_devices = get_test_devices()
+add_function_test(
+    TestFeatherPGSHeteroGuard, "test_hetero_split_constructs", test_hetero_split_constructs, devices=split_devices
+)
+add_function_test(
+    TestFeatherPGSHeteroGuard,
+    "test_homogeneous_split_constructs",
+    test_homogeneous_split_constructs,
+    devices=split_devices,
+)
+add_function_test(
+    TestFeatherPGSHeteroGuard,
+    "test_hetero_worlds_match_isolated_worlds_split",
+    test_hetero_worlds_match_isolated_worlds,
+    devices=split_devices,
+    pgs_mode="split",
 )
 
 

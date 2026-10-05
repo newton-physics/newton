@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 def _floating_base_arm():
@@ -32,11 +32,11 @@ def _floating_base_arm():
     return builder.finalize(), hinge
 
 
-def test_floating_base_drive_reads_its_own_target(test, device):
+def test_floating_base_drive_reads_its_own_target(test, device, pgs_mode="matrix_free"):
     """Read the target of a revolute drive after a free joint at joint_target_q_start, not its DOF index."""
     with wp.ScopedDevice(device):
         model, hinge = _floating_base_arm()
-        solver = newton.solvers.SolverFeatherPGS(model, pgs_iterations=16)
+        solver = newton.solvers.SolverFeatherPGS(model, pgs_mode=pgs_mode, pgs_iterations=16)
         state_0, state_1 = model.state(), model.state()
         control = model.control()
         targets = control.joint_target_q.numpy()
@@ -58,6 +58,13 @@ add_function_test(
     "test_floating_base_drive_reads_its_own_target",
     test_floating_base_drive_reads_its_own_target,
     devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestFeatherPGSTargetLayout,
+    "test_floating_base_drive_reads_its_own_target_split",
+    test_floating_base_drive_reads_its_own_target,
+    devices=get_test_devices(),
+    pgs_mode="split",
 )
 
 

@@ -13,7 +13,7 @@ import warp as wp
 import newton
 from newton import ModelFlags
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DT = 1.0 / 60.0
 INITIAL_JOINT_Q = 0.3
@@ -62,13 +62,13 @@ def _run_trajectory(model, solver, num_steps):
     return np.stack(history)
 
 
-def test_stepped_solver_releases_resources_without_cyclic_gc(test, device):
+def test_stepped_solver_releases_resources_without_cyclic_gc(test, device, pgs_mode="matrix_free"):
     """Release a stepped solver without relying on the cyclic garbage collector."""
     gc_enabled = gc.isenabled()
     gc.disable()
     try:
         model = _build_model(device)
-        solver = SolverFeatherPGS(model)
+        solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
         reference = weakref.ref(solver)
         solver.step(model.state(), model.state(), model.control(), None, DT)
         del solver
@@ -78,7 +78,7 @@ def test_stepped_solver_releases_resources_without_cyclic_gc(test, device):
             gc.enable()
 
 
-def test_step_refreshes_body_pose_after_generalized_coordinate_update(test, device):
+def test_step_refreshes_body_pose_after_generalized_coordinate_update(test, device, pgs_mode="matrix_free"):
     """Derive body poses from joint_q in step, so a direct joint_q write needs no caller-side FK."""
     outputs = {}
     for caller_refreshes_fk in (False, True):
@@ -91,7 +91,7 @@ def test_step_refreshes_body_pose_after_generalized_coordinate_update(test, devi
         stale_body_q = state_0.body_q.numpy().copy()
         if caller_refreshes_fk:
             newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-        SolverFeatherPGS(model).step(state_0, state_1, model.control(), None, DT)
+        SolverFeatherPGS(model, pgs_mode=pgs_mode).step(state_0, state_1, model.control(), None, DT)
         outputs[caller_refreshes_fk] = {
             "joint_q": state_1.joint_q.numpy().copy(),
             "joint_qd": state_1.joint_qd.numpy().copy(),
@@ -103,10 +103,10 @@ def test_step_refreshes_body_pose_after_generalized_coordinate_update(test, devi
         np.testing.assert_allclose(outputs[False][key], outputs[True][key], rtol=0.0, atol=1.0e-6)
 
 
-def test_step_refreshes_reused_state_after_joint_q_write(test, device):
+def test_step_refreshes_reused_state_after_joint_q_write(test, device, pgs_mode="matrix_free"):
     """Pick up a joint_q write into a state the solver produced on the previous step."""
     model = _build_model(device)
-    solver = SolverFeatherPGS(model)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     solver.step(state_0, state_1, control, None, DT)
@@ -120,15 +120,17 @@ def test_step_refreshes_reused_state_after_joint_q_write(test, device):
     reference_state.joint_q.assign(state_1.joint_q)
     reference_state.joint_qd.assign(state_1.joint_qd)
     reference_out = reference_model.state()
-    SolverFeatherPGS(reference_model).step(reference_state, reference_out, reference_model.control(), None, DT)
+    SolverFeatherPGS(reference_model, pgs_mode=pgs_mode).step(
+        reference_state, reference_out, reference_model.control(), None, DT
+    )
     np.testing.assert_allclose(state_0.joint_q.numpy(), reference_out.joint_q.numpy(), rtol=0.0, atol=1.0e-6)
     np.testing.assert_allclose(state_0.body_q.numpy(), reference_out.body_q.numpy(), rtol=0.0, atol=1.0e-6)
 
 
-def test_notify_refreshes_baked_com_and_inertia_buffers(test, device):
+def test_notify_refreshes_baked_com_and_inertia_buffers(test, device, pgs_mode="matrix_free"):
     """Re-derive the solver's COM and inertia buffers on BODY_INERTIAL_PROPERTIES."""
     model = _build_model(device)
-    solver = SolverFeatherPGS(model)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
     stale_X_com = solver.body_X_com.numpy().copy()
     stale_I_m = solver.body_I_m.numpy().copy()
 
@@ -148,16 +150,16 @@ def test_notify_refreshes_baked_com_and_inertia_buffers(test, device):
     test.assertEqual(solver._mass_update_requested.numpy()[0], 1)
 
 
-def test_com_change_with_notify_matches_freshly_built_solver(test, device):
+def test_com_change_with_notify_matches_freshly_built_solver(test, device, pgs_mode="matrix_free"):
     """Reproduce a freshly built solver's dynamics after a mid-run COM change and notification."""
     pre_steps, post_steps = 30, 60
     reference_model = _build_model(device, com=NEW_COM)
-    reference = _run_trajectory(reference_model, SolverFeatherPGS(reference_model), post_steps)
+    reference = _run_trajectory(reference_model, SolverFeatherPGS(reference_model, pgs_mode=pgs_mode), post_steps)
 
     histories = {}
     for notify in (True, False):
         model = _build_model(device)
-        solver = SolverFeatherPGS(model)
+        solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
         _run_trajectory(model, solver, pre_steps)
         body_com = model.body_com.numpy()
         body_com[0] = NEW_COM
@@ -171,10 +173,10 @@ def test_com_change_with_notify_matches_freshly_built_solver(test, device):
     test.assertGreater(stale_drift, 1.0e-2, "a solver that was not notified should diverge")
 
 
-def test_kinematic_flag_change_is_picked_up(test, device):
+def test_kinematic_flag_change_is_picked_up(test, device, pgs_mode="matrix_free"):
     """Hold a body still once it is flagged kinematic and the solver is notified."""
     model = _build_model(device, com=NEW_COM)
-    solver = SolverFeatherPGS(model)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
     control = model.control()
@@ -194,19 +196,19 @@ def _shift_child_frame(model):
     model.joint_X_c.assign(joint_X_c)
 
 
-def test_joint_frame_change_with_notify_matches_freshly_built_solver(test, device):
+def test_joint_frame_change_with_notify_matches_freshly_built_solver(test, device, pgs_mode="matrix_free"):
     """Refresh cached mass factors on JOINT_PROPERTIES, eagerly and under graph replay."""
     interval = 100
     reference_model = _build_model(device)
     _shift_child_frame(reference_model)
     reference = _run_trajectory(
-        reference_model, SolverFeatherPGS(reference_model, update_mass_matrix_interval=interval), 5
+        reference_model, SolverFeatherPGS(reference_model, pgs_mode=pgs_mode, update_mass_matrix_interval=interval), 5
     )
 
-    for capture in (False, True):
+    for capture in (False, True) if wp.get_device(device).is_cuda else (False,):
         with test.subTest(capture=capture):
             model = _build_model(device)
-            solver = SolverFeatherPGS(model, update_mass_matrix_interval=interval)
+            solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, update_mass_matrix_interval=interval)
             state_0, state_1 = model.state(), model.state()
             newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
             control = model.control()
@@ -351,6 +353,9 @@ for _name in (
     "test_assigned_shape_friction_matches_fresh_solver",
 ):
     add_function_test(TestFeatherPGSNotifyInertial, _name, globals()[_name], devices=devices)
+    add_function_test(
+        TestFeatherPGSNotifyInertial, f"{_name}_split", globals()[_name], devices=get_test_devices(), pgs_mode="split"
+    )
 
 
 if __name__ == "__main__":

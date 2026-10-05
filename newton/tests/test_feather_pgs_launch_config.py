@@ -14,13 +14,17 @@ import newton
 from newton._src.solvers.feather_pgs import kernels as feather_pgs_kernels
 from newton._src.solvers.feather_pgs.solver_feather_pgs import (
     _DENSE_META_MAX_PARENT,
+    _STATIC_SHARED_MEMORY_BYTES,
     _estimate_cholesky_shared_memory,
+    _estimate_mf_solve_shared_memory,
+    _estimate_tiled_row_shared_memory,
     _FeatherPGSExecutionPlan,
+    _select_delassus_chunk_size,
     _select_hinv_jt_chunk_size,
     _use_resident_mfgs_metadata,
 )
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 def _build_chain_model(device, num_links=3, num_worlds=2, *, with_free_body=False):
@@ -56,6 +60,42 @@ def _build_chain_model(device, num_links=3, num_worlds=2, *, with_free_body=Fals
     return main.finalize(device=device)
 
 
+def _build_limited_chain_on_ground(device, num_links, num_worlds=2, *, with_free_body=False):
+    """A hanging chain of driven, limited capsule links above the ground, optionally with a falling box."""
+    world = newton.ModelBuilder()
+    world.add_ground_plane()
+    joints = []
+    parent = -1
+    top = 0.3 * num_links + 0.2
+    for i in range(num_links):
+        link = world.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, top - 0.3 * i), wp.quat_identity()))
+        world.add_shape_capsule(link, radius=0.04, half_height=0.12)
+        joints.append(
+            world.add_joint_revolute(
+                parent,
+                link,
+                axis=wp.vec3(0.0, 1.0, 0.0),
+                parent_xform=wp.transform(
+                    wp.vec3(0.0, 0.0, top + 0.15) if parent < 0 else wp.vec3(0.0, 0.0, -0.15), wp.quat_identity()
+                ),
+                child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()),
+                limit_lower=-0.6,
+                limit_upper=0.6,
+                target_ke=200.0,
+                target_kd=5.0,
+                target_pos=0.3,
+            )
+        )
+        parent = link
+    world.add_articulation(joints)
+    if with_free_body:
+        body = world.add_body(xform=wp.transform(wp.vec3(0.3, 0.0, 0.3), wp.quat_rpy(0.2, 0.1, 0.3)))
+        world.add_shape_box(body, hx=0.1, hy=0.08, hz=0.06)
+    builder = newton.ModelBuilder()
+    builder.replicate(world, num_worlds)
+    return builder.finalize(device=device)
+
+
 def _build_heterogeneous_world_model(device):
     free_template = newton.ModelBuilder()
     free_body = free_template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -76,6 +116,7 @@ def _build_heterogeneous_world_model(device):
 def test_defaults(test, device):
     """Keep the documented constructor defaults."""
     solver = SolverFeatherPGS(_build_chain_model(device, num_links=2, num_worlds=1))
+    test.assertEqual(solver.pgs_mode, "split")
     test.assertEqual(solver.pgs_iterations, 12)
     test.assertAlmostEqual(solver.pgs_beta, 0.2)
     test.assertAlmostEqual(solver.pgs_cfm, 1.0e-6)
@@ -109,9 +150,11 @@ def test_constructor_validates_options(test, device):
     for kwargs, message in invalid:
         with test.subTest(**kwargs):
             with test.assertRaisesRegex(ValueError, message):
-                SolverFeatherPGS(model, **kwargs)
+                SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs)
     test.assertEqual(
-        SolverFeatherPGS(model, velocity_limit_activation_fraction=float("inf")).velocity_limit_activation_fraction,
+        SolverFeatherPGS(
+            model, pgs_mode="matrix_free", velocity_limit_activation_fraction=float("inf")
+        ).velocity_limit_activation_fraction,
         float("inf"),
     )
 
@@ -149,8 +192,8 @@ def test_unsupported_model_features_raise(test, device):
 def test_default_kernel_selection_is_cached(test, device):
     """Resolve identical solver shapes to the same cached kernel objects."""
     model = _build_chain_model(device)
-    first = SolverFeatherPGS(model)
-    second = SolverFeatherPGS(model)
+    first = SolverFeatherPGS(model, pgs_mode="matrix_free")
+    second = SolverFeatherPGS(model, pgs_mode="matrix_free")
     for attr in ("_cholesky_kernels_by_size", "_triangular_solve_kernels_by_size", "_hinv_jt_kernels_by_size"):
         first_kernels = getattr(first, attr)
         second_kernels = getattr(second, attr)
@@ -162,7 +205,7 @@ def test_default_kernel_selection_is_cached(test, device):
 
 def test_compact_world_dof_mapping_pads_heterogeneous_worlds(test, device):
     """Pad the per-world response DOF map of worlds with fewer DOFs."""
-    solver = SolverFeatherPGS(_build_heterogeneous_world_model(device))
+    solver = SolverFeatherPGS(_build_heterogeneous_world_model(device), pgs_mode="matrix_free")
     test.assertEqual(solver.max_world_dofs, 6)
     np.testing.assert_array_equal(solver.world_dof_count.numpy(), np.array((6, 1), dtype=np.int32))
     indices = solver.world_dof_indices.numpy()
@@ -173,9 +216,13 @@ def test_compact_world_dof_mapping_pads_heterogeneous_worlds(test, device):
 
 def test_diagonal_fusion_requires_nonaliased_world_response(test, device):
     """Compute the row diagonal in H^-1 J^T only when it writes separate world storage."""
-    aliased = SolverFeatherPGS(_build_chain_model(device, num_links=23, num_worlds=1), dense_max_constraints=192)
+    aliased = SolverFeatherPGS(
+        _build_chain_model(device, num_links=23, num_worlds=1), pgs_mode="matrix_free", dense_max_constraints=192
+    )
     direct = SolverFeatherPGS(
-        _build_chain_model(device, num_links=23, num_worlds=1, with_free_body=True), dense_max_constraints=192
+        _build_chain_model(device, num_links=23, num_worlds=1, with_free_body=True),
+        pgs_mode="matrix_free",
+        dense_max_constraints=192,
     )
     test.assertTrue(aliased._jy_world_aliased)
     test.assertFalse(aliased._hinv_jt_writes_world)
@@ -192,7 +239,7 @@ def test_tiled_and_loop_kernels_step_identically(test, device):
         for overrides in ({}, {"cholesky_kernel": "loop", "trisolve_kernel": "loop", "hinv_jt_kernel": "par_row"}):
             SolverFeatherPGS._kernel_overrides = overrides
             model = _build_chain_model(device, num_links=14, num_worlds=2)
-            solver = SolverFeatherPGS(model, dense_max_constraints=64)
+            solver = SolverFeatherPGS(model, pgs_mode="matrix_free", dense_max_constraints=64)
             if not overrides:
                 test.assertTrue(solver._execution_plan.use_tiled_cholesky(14))
                 test.assertTrue(solver._execution_plan.use_tiled_hinv_jt(14))
@@ -389,6 +436,118 @@ def test_enabling_equality_constraint_at_runtime_raises(test, device):
     solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
 
 
+def test_joint_limit_solver_compatibility_validation(test, device):
+    """Reject the options the split solve cannot honor and unknown solve modes."""
+    model = _build_chain_model(device, num_links=2, num_worlds=1)
+    with test.assertRaisesRegex(NotImplementedError, "requires pgs_mode='matrix_free'"):
+        SolverFeatherPGS(model, pgs_mode="split", enable_joint_velocity_limits=True)
+    with test.assertRaisesRegex(ValueError, "pgs_mode"):
+        SolverFeatherPGS(model, pgs_mode="dense")
+
+
+def test_split_defaults(test, device):
+    """Keep the documented defaults in split mode and allocate its Delassus storage."""
+    solver = SolverFeatherPGS(_build_chain_model(device, num_links=2, num_worlds=2), pgs_mode="split")
+    test.assertEqual(solver.pgs_mode, "split")
+    test.assertEqual(solver.pgs_iterations, 12)
+    test.assertEqual(solver.dense_max_constraints, 32)
+    test.assertEqual(solver.C.shape, (2, 32, 32))
+    test.assertFalse(solver._jy_world_aliased)
+    test.assertFalse(solver._hinv_jt_writes_world)
+
+
+def test_split_kernel_selection(test, device):
+    """Select the native split-mode kernels on CUDA and the scalar Warp kernels on CPU."""
+    is_cuda = wp.get_device(device).is_cuda
+    # One 14-DOF chain per world: tiled H^-1 J^T, fused with the Delassus assembly on CUDA.
+    single = SolverFeatherPGS(_build_chain_model(device, num_links=14, num_worlds=2), pgs_mode="split")
+    test.assertEqual(single._split_fused_response, is_cuda)
+    test.assertEqual(single._pgs_solve_tiled_row_kernel is not None, is_cuda)
+    test.assertIsNone(single._pgs_solve_mf_kernel)
+    # A free body next to the chain: two solved articulations per world, so no fusion.
+    mixed = SolverFeatherPGS(
+        _build_chain_model(device, num_links=14, num_worlds=2, with_free_body=True), pgs_mode="split"
+    )
+    test.assertTrue(mixed._has_mixed_contacts)
+    test.assertFalse(mixed._split_fused_response)
+    test.assertEqual(mixed._max_free_bodies_per_world, 1)
+    for size, kernel in mixed._delassus_kernels_by_size.items():
+        test.assertEqual(kernel is not None, is_cuda, f"Delassus kernel of size {size}")
+    test.assertEqual(mixed._pgs_solve_mf_kernel is not None, is_cuda)
+    if not is_cuda:
+        test.assertEqual(
+            (mixed.cholesky_kernel, mixed.trisolve_kernel, mixed.hinv_jt_kernel, mixed.pgs_kernel),
+            ("loop", "loop", "par_row", "loop"),
+        )
+
+
+def test_split_kernel_selection_is_cached(test, device):
+    """Resolve identical split-mode solver shapes to the same cached kernel objects."""
+    model = _build_chain_model(device, num_links=14, num_worlds=2, with_free_body=True)
+    first = SolverFeatherPGS(model, pgs_mode="split")
+    second = SolverFeatherPGS(model, pgs_mode="split")
+    test.assertEqual(first._delassus_kernels_by_size.keys(), second._delassus_kernels_by_size.keys())
+    for size, kernel in first._delassus_kernels_by_size.items():
+        test.assertIs(kernel, second._delassus_kernels_by_size[size])
+    test.assertIs(first._pgs_solve_tiled_row_kernel, second._pgs_solve_tiled_row_kernel)
+    test.assertIs(first._pgs_solve_mf_kernel, second._pgs_solve_mf_kernel)
+
+
+def test_split_native_and_scalar_kernels_step_identically(test, device):
+    """Match the native split-mode kernels and the scalar Warp kernels of the CPU path on CUDA."""
+    scalar = {
+        "cholesky_kernel": "loop",
+        "trisolve_kernel": "loop",
+        "hinv_jt_kernel": "par_row",
+        "delassus_kernel": "par_row_col",
+        "pgs_kernel": "loop",
+    }
+    for with_free_body in (False, True):
+        trajectories = []
+        for overrides in ({}, scalar):
+            SolverFeatherPGS._kernel_overrides = overrides
+            try:
+                model = _build_limited_chain_on_ground(device, 14, with_free_body=with_free_body)
+                solver = SolverFeatherPGS(model, pgs_mode="split", enable_joint_limits=True, dense_max_constraints=64)
+            finally:
+                SolverFeatherPGS._kernel_overrides = {}
+            if not overrides:
+                test.assertIsNotNone(solver._pgs_solve_tiled_row_kernel)
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            state_0, state_1 = model.state(), model.state()
+            control = model.control()
+            for _ in range(120):
+                pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+                state_0, state_1 = state_1, state_0
+            solver.check_constraint_capacity()
+            test.assertGreater(int(solver.constraint_count.numpy().max()), 0)
+            trajectories.append(state_0.joint_q.numpy().copy())
+        with test.subTest(with_free_body=with_free_body):
+            np.testing.assert_allclose(trajectories[0], trajectories[1], rtol=0.0, atol=1.0e-4)
+
+
+def test_non_default_tile_threads_compiles_and_steps(test, device):
+    """Step a forced tiled split solve whose row capacity is too large to fuse the Delassus assembly."""
+    model = _build_chain_model(device)
+    forced = {"cholesky_kernel": "tiled", "trisolve_kernel": "tiled", "hinv_jt_kernel": "tiled", "pgs_kernel": "loop"}
+    SolverFeatherPGS._kernel_overrides = forced
+    try:
+        solver = SolverFeatherPGS(model, pgs_mode="split", dense_max_constraints=384)
+    finally:
+        SolverFeatherPGS._kernel_overrides = {}
+    test.assertTrue(all(solver._execution_plan.use_tiled_hinv_jt(size) for size in solver.size_groups))
+    test.assertFalse(any(solver._execution_plan.use_fused_hinv_jt(size) for size in solver.size_groups))
+    test.assertFalse(solver._split_fused_response)
+    test.assertIsNone(solver._pgs_solve_tiled_row_kernel)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    for _ in range(5):
+        solver.step(state_0, state_1, control, None, 1.0 / 600.0)
+        state_0, state_1 = state_1, state_0
+    test.assertTrue(np.isfinite(state_0.joint_q.numpy()).all())
+    test.assertTrue(np.isfinite(state_0.joint_qd.numpy()).all())
 def _expect_one_warning(test, category, pattern, call):
     """Return ``call()``, requiring it to emit exactly one warning, of ``category`` and matching ``pattern``."""
     with warnings.catch_warnings(record=True) as caught:
@@ -402,10 +561,37 @@ def _expect_one_warning(test, category, pattern, call):
 
 class TestFeatherPGSLaunchConfig(unittest.TestCase):
     def test_cpu_construction_raises(self):
-        """Reject construction on a CPU device with a clear error."""
+        """Construct the default split solve on CPU and reject the CUDA-only matrix-free solve there."""
         model = _build_chain_model("cpu", num_links=2, num_worlds=1)
-        with self.assertRaisesRegex(NotImplementedError, "requires a CUDA device"):
-            SolverFeatherPGS(model)
+        self.assertEqual(SolverFeatherPGS(model).pgs_mode, "split")
+        with self.assertRaisesRegex(NotImplementedError, "requires a CUDA device; use pgs_mode='split' on CPU"):
+            SolverFeatherPGS(model, pgs_mode="matrix_free")
+
+    def test_hinv_fusion_requires_full_working_set_to_fit(self):
+        """Fuse H^-1 J^T with the Delassus assembly only when the whole row set and its Delassus tile fit."""
+        plan_args = {
+            "max_shared_memory": 101376,
+            "cholesky_kernel": "auto",
+            "hinv_jt_kernel": "auto",
+            "small_dof_threshold": 12,
+            "tile_threads": 64,
+        }
+        fitting = _FeatherPGSExecutionPlan.build([23], max_constraints=64, **plan_args)
+        oversized = _FeatherPGSExecutionPlan.build([23], max_constraints=384, **plan_args)
+        self.assertTrue(fitting.use_fused_hinv_jt(23))
+        self.assertTrue(oversized.use_tiled_hinv_jt(23))
+        self.assertFalse(oversized.use_fused_hinv_jt(23))
+
+    def test_split_kernels_respect_shared_memory(self):
+        """Stage Delassus rows in chunks that fit, and fall back when a native solve does not fit."""
+        self.assertEqual(_select_delassus_chunk_size(14, 32), 32)
+        self.assertEqual(_select_delassus_chunk_size(100, 384), 56)
+        self.assertEqual(_select_delassus_chunk_size(30, 384), 64)
+        self.assertIsNone(_select_delassus_chunk_size(6000, 32))
+        self.assertLessEqual(_estimate_tiled_row_shared_memory(128), _STATIC_SHARED_MEMORY_BYTES)
+        self.assertGreater(_estimate_tiled_row_shared_memory(160), _STATIC_SHARED_MEMORY_BYTES)
+        self.assertLessEqual(_estimate_mf_solve_shared_memory(512, 64), _STATIC_SHARED_MEMORY_BYTES)
+        self.assertGreater(_estimate_mf_solve_shared_memory(512, 2000), _STATIC_SHARED_MEMORY_BYTES)
 
     def test_launch_geometry_kernels_use_dedicated_modules(self):
         """Keep custom-block-dimension kernels out of the general module."""
@@ -518,6 +704,24 @@ for _name, _func in (
     ("test_enabling_equality_constraint_at_runtime_raises", test_enabling_equality_constraint_at_runtime_raises),
 ):
     add_function_test(TestFeatherPGSLaunchConfig, _name, _func, devices=devices)
+split_devices = get_test_devices()
+for _name, _func, _devices in (
+    (
+        "test_joint_limit_solver_compatibility_validation",
+        test_joint_limit_solver_compatibility_validation,
+        split_devices,
+    ),
+    ("test_split_defaults", test_split_defaults, split_devices),
+    ("test_split_kernel_selection", test_split_kernel_selection, split_devices),
+    ("test_split_kernel_selection_is_cached", test_split_kernel_selection_is_cached, split_devices),
+    (
+        "test_split_native_and_scalar_kernels_step_identically",
+        test_split_native_and_scalar_kernels_step_identically,
+        devices,
+    ),
+    ("test_non_default_tile_threads_compiles_and_steps", test_non_default_tile_threads_compiles_and_steps, devices),
+):
+    add_function_test(TestFeatherPGSLaunchConfig, _name, _func, devices=_devices)
 
 
 if __name__ == "__main__":

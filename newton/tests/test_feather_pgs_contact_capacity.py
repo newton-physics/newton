@@ -11,7 +11,7 @@ import warp as wp
 import newton
 from newton._src.solvers.feather_pgs.kernels import allocate_world_contact_slots
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 _UNBOUNDED = 2**31 - 1
 
@@ -63,20 +63,20 @@ def test_allocator_rejects_incomplete_contact_frame(test, device):
     test.assertEqual(int(world_slot_counter.numpy()[0]), 0)
 
 
-def test_step_rejects_contacts_larger_than_scratch(test, device):
+def test_step_rejects_contacts_larger_than_scratch(test, device, pgs_mode="matrix_free"):
     """Reject a contact buffer larger than the solver's contact scratch before it is read."""
     builder = newton.ModelBuilder()
     body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     builder.add_articulation([builder.add_joint_free(parent=-1, child=body)])
     model = builder.finalize(device=device)
     model.rigid_contact_max = 1
-    solver = SolverFeatherPGS(model)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
     contacts = newton.Contacts(rigid_contact_max=2, soft_contact_max=0, device=model.device)
     with test.assertRaisesRegex(ValueError, "contact capacity"):
         solver.step(model.state(), model.state(), model.control(), contacts, 1.0 / 60.0)
 
 
-def test_overflowed_contact_count_invalidates_every_world(test, device):
+def test_overflowed_contact_count_invalidates_every_world(test, device, pgs_mode="matrix_free"):
     """Flag every world when the narrow phase reports more contacts than the buffer holds."""
     template = newton.ModelBuilder()
     body = template.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
@@ -85,7 +85,7 @@ def test_overflowed_contact_count_invalidates_every_world(test, device):
     builder.replicate(template, 2, spacing=(1.0, 0.0, 0.0))
     builder.add_ground_plane()
     model = builder.finalize(device=device)
-    solver = SolverFeatherPGS(model)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_in, state_out = model.state(), model.state()
@@ -105,7 +105,7 @@ add_function_test(
     TestFeatherPGSContactCapacity,
     "test_allocator_rejects_incomplete_contact_frame",
     test_allocator_rejects_incomplete_contact_frame,
-    devices=devices,
+    devices=get_test_devices(),
 )
 add_function_test(
     TestFeatherPGSContactCapacity,
@@ -119,6 +119,14 @@ add_function_test(
     test_overflowed_contact_count_invalidates_every_world,
     devices=devices,
 )
+split_devices = get_test_devices()
+for _name in (
+    "test_step_rejects_contacts_larger_than_scratch",
+    "test_overflowed_contact_count_invalidates_every_world",
+):
+    add_function_test(
+        TestFeatherPGSContactCapacity, f"{_name}_split", globals()[_name], devices=split_devices, pgs_mode="split"
+    )
 
 
 if __name__ == "__main__":

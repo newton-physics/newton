@@ -29,7 +29,7 @@ from newton._src.solvers.feather_pgs.kernels import (
     update_qdd_from_velocity,
 )
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DT = 1.0 / 200.0
 STEPS = 80
@@ -81,7 +81,7 @@ def _build_slider(device):
     return _undamped(builder.finalize(device=device))
 
 
-def _slide_heights(model, omega_y):
+def _slide_heights(model, omega_y, pgs_mode="matrix_free"):
     """Slide the sphere at ``SLIDE_VX`` while spinning at ``omega_y``; return heights and peak contacts."""
     state_0, state_1 = model.state(), model.state()
     joint_qd = state_0.joint_qd.numpy()
@@ -90,7 +90,7 @@ def _slide_heights(model, omega_y):
     state_0.joint_qd.assign(joint_qd)
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
-    solver = SolverFeatherPGS(model)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
     contacts = pipeline.contacts()
     control = model.control()
@@ -118,15 +118,15 @@ def _world_com(model, state):
     return np.asarray(q[0:3]) + np.asarray(wp.quat_rotate(rot, wp.vec3(*com_local)))
 
 
-def test_frictionless_slide_is_spin_invariant(test, device):
+def test_frictionless_slide_is_spin_invariant(test, device, pgs_mode="matrix_free"):
     """Keep a frictionless sliding sphere's height trajectory independent of its spin.
 
     Without friction the spin exerts no force. A predictor missing the ``omega x v`` term feeds
     the normal rows a phantom vertical velocity of ``dt * omega_y * vx`` (0.2 m/s here) and the
     heights diverge by millimetres within the run.
     """
-    still, contacts_still = _slide_heights(_build_slider(device), 0.0)
-    spinning, contacts_spin = _slide_heights(_build_slider(device), OMEGA_Y)
+    still, contacts_still = _slide_heights(_build_slider(device), 0.0, pgs_mode)
+    spinning, contacts_spin = _slide_heights(_build_slider(device), OMEGA_Y, pgs_mode)
     test.assertGreater(min(contacts_still, contacts_spin), 0, "no contacts were generated")
     for label, heights in (("still", still), ("spinning", spinning)):
         test.assertLess(float(np.abs(heights - RADIUS).max()), 2e-3, f"{label} run left the ground support band")
@@ -134,7 +134,7 @@ def test_frictionless_slide_is_spin_invariant(test, device):
     test.assertLess(divergence, 1e-4, f"spin changed a frictionless slide by {divergence} m")
 
 
-def test_anchored_spinner_com_stays_put(test, device):
+def test_anchored_spinner_com_stays_put(test, device, pgs_mode="matrix_free"):
     """Keep the center of mass of a force-free spinner with an offset joint anchor in place.
 
     The free joint's coordinate tracks the child anchor frame, offset from the center of mass by
@@ -162,7 +162,7 @@ def test_anchored_spinner_com_stays_put(test, device):
             state_0.joint_qd.assign(joint_qd)
             newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
             start = _world_com(model, state_0)
-            solver = SolverFeatherPGS(model)
+            solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
             drift = 0.0
             for _ in range(STEPS):
                 solver.step(state_0, state_1, model.control(), None, DT)
@@ -221,10 +221,10 @@ def test_integrator_transport_identities(test, device):
     np.testing.assert_allclose(out[9:12], (0.0, 0.0, 3.0), atol=1e-7)
 
 
-def test_predictor_and_qdd_transport_identities(test, device):
+def test_predictor_and_qdd_transport_identities(test, device, pgs_mode="matrix_free"):
     """Apply the transport term in the predictor and remove it in the solved-velocity conversion."""
     model = _build_slider(device)
-    solver = SolverFeatherPGS(model)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
     test.assertEqual(solver._free_root_joint_count, 1)
     state_in, state_out = model.state(), model.state()
     state_aug = solver._prepare_augmented_state(state_in)
@@ -284,7 +284,7 @@ def test_predictor_and_qdd_transport_identities(test, device):
     np.testing.assert_allclose(state_out.joint_qd.numpy(), v_out_np, rtol=1e-6, atol=1e-6)
 
 
-def test_compact_root_metadata_includes_standalone_joint(test, device):
+def test_compact_root_metadata_includes_standalone_joint(test, device, pgs_mode="matrix_free"):
     """Keep every world-rooted free joint, but no descendant, in the compact root launch."""
     builder = _new_builder(gravity=(0.0, 0.0, 0.0))
     inertia = wp.mat33(0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01)
@@ -295,13 +295,13 @@ def test_compact_root_metadata_includes_standalone_joint(test, device):
     nested = builder.add_joint_free(child, parent=root_a)
     joint_b = builder.add_joint_free(root_b)
     builder.add_articulation([joint_a, nested])
-    solver = SolverFeatherPGS(builder.finalize(device=device))
+    solver = SolverFeatherPGS(builder.finalize(device=device), pgs_mode=pgs_mode)
     np.testing.assert_array_equal(solver._free_root_joint_indices.numpy(), (joint_a, joint_b))
 
 
-def test_captured_step_matches_uncaptured(test, device):
+def test_captured_step_matches_uncaptured(test, device, pgs_mode="matrix_free"):
     """Reproduce the eager trajectory by replaying a captured collide-and-step graph."""
-    heights_ref, _ = _slide_heights(_build_slider(device), OMEGA_Y)
+    heights_ref, _ = _slide_heights(_build_slider(device), OMEGA_Y, pgs_mode)
 
     model = _build_slider(device)
     state_0, state_1 = model.state(), model.state()
@@ -310,7 +310,7 @@ def test_captured_step_matches_uncaptured(test, device):
     joint_qd[3:6] = (0.0, OMEGA_Y, 0.0)
     state_0.joint_qd.assign(joint_qd)
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    solver = SolverFeatherPGS(model)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
     contacts = pipeline.contacts()
     control = model.control()
@@ -348,6 +348,25 @@ for _name, _func in (
     ("test_captured_step_matches_uncaptured", test_captured_step_matches_uncaptured),
 ):
     add_function_test(TestFeatherPgsFreeRootPredictor, _name, _func, devices=devices)
+for _name, _func, _devices in (
+    ("test_frictionless_slide_is_spin_invariant", test_frictionless_slide_is_spin_invariant, get_test_devices()),
+    ("test_anchored_spinner_com_stays_put", test_anchored_spinner_com_stays_put, get_test_devices()),
+    ("test_predictor_and_qdd_transport_identities", test_predictor_and_qdd_transport_identities, get_test_devices()),
+    (
+        "test_compact_root_metadata_includes_standalone_joint",
+        test_compact_root_metadata_includes_standalone_joint,
+        get_test_devices(),
+    ),
+    ("test_captured_step_matches_uncaptured", test_captured_step_matches_uncaptured, devices),
+):
+    add_function_test(TestFeatherPgsFreeRootPredictor, f"{_name}_split", _func, devices=_devices, pgs_mode="split")
+# The integrator kernel is mode-independent; also check it on CPU.
+add_function_test(
+    TestFeatherPgsFreeRootPredictor,
+    "test_integrator_transport_identities",
+    test_integrator_transport_identities,
+    devices=[d for d in get_test_devices() if d.is_cpu],
+)
 
 
 if __name__ == "__main__":

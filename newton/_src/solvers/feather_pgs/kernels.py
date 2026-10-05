@@ -10,7 +10,7 @@ from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
 )
-from .friction import contact_tangent_basis
+from .friction import contact_tangent_basis, friction_pair_candidate
 
 PGS_CONSTRAINT_TYPE_CONTACT = 0
 PGS_CONSTRAINT_TYPE_FRICTION = 2
@@ -3958,3 +3958,444 @@ def scatter_qdd_from_groups(
     dof_start = articulation_dof_start[art]
     for i in range(n_dofs):
         joint_qdd[dof_start + i] = qdd_group[idx, i, 0]
+
+
+# =============================================================================
+# Split-Mode Kernels (dense Delassus solve and standalone free-body solve)
+# =============================================================================
+# Split mode assembles the dense rows of each world into a Delassus matrix
+# ``C = J H^-1 J^T`` and solves them in impulse space, then solves the free-body
+# rows against the resulting velocity. These Warp kernels run on every device and
+# are the CPU implementation; CUDA selects native one-warp-per-world variants built
+# in ``solver_feather_pgs.py`` when they fit shared memory.
+
+
+@wp.kernel
+def build_joint_limit_rows(
+    articulation_dof_start: wp.array[int],
+    art_to_world: wp.array[int],
+    group_to_art: wp.array[int],
+    limit_q_index: wp.array[int],
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
+    joint_q: wp.array[float],
+    activation_gap: float,
+    max_constraints: int,
+    n_dofs: int,
+    # outputs
+    world_slot_counter: wp.array[int],
+    J_group: wp.array3d[float],
+    world_row_type: wp.array2d[int],
+    world_row_parent: wp.array2d[int],
+    world_row_mu: wp.array2d[float],
+    world_phi: wp.array2d[float],
+    world_target_velocity: wp.array2d[float],
+):
+    """Allocate and fill the active joint-limit rows of one articulation per thread.
+
+    Visits the lower and then the upper bound of each limited DOF in DOF order, the
+    candidate order of the one-warp-per-articulation CUDA builder.
+    """
+    group_idx = wp.tid()
+    art = group_to_art[group_idx]
+    world = art_to_world[art]
+    dof_start = articulation_dof_start[art]
+    for local_dof in range(n_dofs):
+        dof = dof_start + local_dof
+        q_index = limit_q_index[dof]
+        if q_index < 0:
+            continue
+        q = joint_q[q_index]
+        for side in range(2):
+            bound = joint_limit_lower[dof]
+            phi = q - bound
+            active = wp.isfinite(bound) and q <= bound + activation_gap
+            sign = 1.0
+            if side == 1:
+                bound = joint_limit_upper[dof]
+                phi = bound - q
+                active = wp.isfinite(bound) and q >= bound - activation_gap
+                sign = -1.0
+            if not active:
+                continue
+            slot = wp.atomic_add(world_slot_counter, world, 1)
+            if slot >= max_constraints:
+                continue
+            J_group[group_idx, slot, local_dof] = sign
+            world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_JOINT_LIMIT
+            world_row_parent[world, slot] = -1
+            world_row_mu[world, slot] = 0.0
+            world_phi[world, slot] = phi
+            world_target_velocity[world, slot] = 0.0
+
+
+@wp.kernel
+def delassus_par_row_col(
+    J_group: wp.array3d[float],
+    Y_group: wp.array3d[float],
+    group_to_art: wp.array[int],
+    art_to_world: wp.array[int],
+    world_constraint_count: wp.array[int],
+    n_dofs: int,
+    max_constraints: int,
+    n_arts: int,
+    # outputs
+    world_C: wp.array3d[float],
+    world_diag: wp.array2d[float],
+):
+    """Accumulate one size group's Delassus contribution ``C += J Y^T``, one entry per thread.
+
+    Launched over ``n_arts * max_constraints * max_constraints`` threads. The diagonal is
+    accumulated separately so the constraint force mixing can be added to it alone.
+    """
+    tid = wp.tid()
+    j = tid % max_constraints
+    i = (tid // max_constraints) % max_constraints
+    idx = tid // (max_constraints * max_constraints)
+    if idx >= n_arts:
+        return
+    art = group_to_art[idx]
+    world = art_to_world[art]
+    n_constraints = world_constraint_count[world]
+    if i >= n_constraints or j >= n_constraints:
+        return
+    val = float(0.0)
+    for k in range(n_dofs):
+        val += J_group[idx, i, k] * Y_group[idx, j, k]
+    if val != 0.0:
+        wp.atomic_add(world_C, world, i, j, val)
+        if i == j:
+            wp.atomic_add(world_diag, world, i, val)
+
+
+@wp.kernel
+def rhs_accum_world_par_art(
+    world_constraint_count: wp.array[int],
+    art_to_world: wp.array[int],
+    art_dof_start: wp.array[int],
+    velocity: wp.array[float],
+    group_to_art: wp.array[int],
+    J_group: wp.array3d[float],
+    n_dofs: int,
+    # outputs
+    world_rhs: wp.array2d[float],
+):
+    """Add one size group's ``J v`` to the dense right-hand side, one articulation per thread."""
+    idx = wp.tid()
+    art = group_to_art[idx]
+    world = art_to_world[art]
+    n_constraints = world_constraint_count[world]
+    dof_start = art_dof_start[art]
+    for c in range(n_constraints):
+        jv = float(0.0)
+        for d in range(n_dofs):
+            jv += J_group[idx, c, d] * velocity[dof_start + d]
+        wp.atomic_add(world_rhs, world, c, jv)
+
+
+@wp.kernel
+def pgs_solve_loop(
+    world_constraint_count: wp.array[int],
+    world_diag: wp.array2d[float],
+    world_C: wp.array3d[float],
+    world_rhs: wp.array2d[float],
+    iterations: int,
+    omega: float,
+    world_row_type: wp.array2d[int],
+    world_row_parent: wp.array2d[int],
+    world_row_mu: wp.array2d[float],
+    # in/out
+    world_impulses: wp.array2d[float],
+):
+    """Projected Gauss-Seidel on the dense Delassus system of one world per thread.
+
+    The residual of row ``i`` is ``rhs_i + sum_j C_ij lambda_j``. Contact and joint-limit
+    rows are unilateral; the first friction row of a contact solves both tangents on the
+    Coulomb disk of the current normal impulse (:func:`friction_pair_candidate`).
+    """
+    world = wp.tid()
+    m = world_constraint_count[world]
+    if m == 0:
+        return
+    for _it in range(iterations):
+        for i in range(m):
+            row_type = world_row_type[world, i]
+            if row_type == PGS_CONSTRAINT_TYPE_FRICTION and i != world_row_parent[world, i] + 1:
+                continue
+
+            w = world_rhs[world, i]
+            for j in range(m):
+                w += world_C[world, i, j] * world_impulses[world, j]
+
+            denom = world_diag[world, i]
+            if denom <= 0.0 and row_type != PGS_CONSTRAINT_TYPE_FRICTION:
+                continue
+
+            if row_type == PGS_CONSTRAINT_TYPE_FRICTION:
+                parent_idx = world_row_parent[world, i]
+                radius = wp.max(world_row_mu[world, i] * world_impulses[world, parent_idx], 0.0)
+                if radius <= 0.0:
+                    world_impulses[world, i] = 0.0
+                    world_impulses[world, i + 1] = 0.0
+                    continue
+                sib = parent_idx + 2
+                sibling_residual = world_rhs[world, sib]
+                for j in range(m):
+                    sibling_residual += world_C[world, sib, j] * world_impulses[world, j]
+                trial = friction_pair_candidate(
+                    denom,
+                    world_C[world, i, sib],
+                    world_diag[world, sib],
+                    wp.vec2(w, sibling_residual),
+                    wp.vec2(world_impulses[world, i], world_impulses[world, sib]),
+                    radius,
+                    omega,
+                )
+                magnitude = wp.length(trial)
+                if magnitude > radius:
+                    trial *= radius / magnitude
+                world_impulses[world, i] = trial[0]
+                world_impulses[world, sib] = trial[1]
+            else:
+                delta = -w / denom
+                new_impulse = world_impulses[world, i] + omega * delta
+                if new_impulse < 0.0:
+                    new_impulse = 0.0
+                world_impulses[world, i] = new_impulse
+
+
+@wp.kernel
+def apply_impulses_world_par_dof(
+    group_to_art: wp.array[int],
+    art_to_world: wp.array[int],
+    art_dof_start: wp.array[int],
+    n_dofs: int,
+    n_arts: int,
+    world_constraint_count: wp.array[int],
+    Y_group: wp.array3d[float],
+    world_impulses: wp.array2d[float],
+    v_hat: wp.array[float],
+    # outputs
+    v_out: wp.array[float],
+):
+    """Write ``v_out = v_hat + Y lambda`` for one size group, one (articulation, DOF) per thread."""
+    tid = wp.tid()
+    local_dof = tid % n_dofs
+    idx = tid // n_dofs
+    if idx >= n_arts:
+        return
+    art = group_to_art[idx]
+    world = art_to_world[art]
+    delta_v = float(0.0)
+    for c in range(world_constraint_count[world]):
+        delta_v += Y_group[idx, c, local_dof] * world_impulses[world, c]
+    global_dof = art_dof_start[art] + local_dof
+    v_out[global_dof] = v_hat[global_dof] + delta_v
+
+
+@wp.kernel
+def build_mf_body_map(
+    mf_constraint_count: wp.array[int],
+    mf_body_a: wp.array2d[int],
+    mf_body_b: wp.array2d[int],
+    body_to_articulation: wp.array[int],
+    art_dof_start: wp.array[int],
+    max_mf_bodies: int,
+    # outputs
+    mf_body_dof_start: wp.array2d[int],
+    mf_body_count: wp.array[int],
+    mf_local_body_a: wp.array2d[int],
+    mf_local_body_b: wp.array2d[int],
+):
+    """Map the bodies of each world's free-body rows to a compact local table.
+
+    ``max_mf_bodies`` is at least the number of responding free bodies of any world, so
+    every row body receives a local index.
+    """
+    world = wp.tid()
+    n_bodies = int(0)
+    for i in range(mf_constraint_count[world]):
+        for side in range(2):
+            body = mf_body_a[world, i]
+            if side == 1:
+                body = mf_body_b[world, i]
+            local = int(-1)
+            if body >= 0:
+                dof_start = art_dof_start[body_to_articulation[body]]
+                for b in range(n_bodies):
+                    if mf_body_dof_start[world, b] == dof_start:
+                        local = b
+                        break
+                if local < 0 and n_bodies < max_mf_bodies:
+                    local = n_bodies
+                    mf_body_dof_start[world, n_bodies] = dof_start
+                    n_bodies += 1
+            if side == 0:
+                mf_local_body_a[world, i] = local
+            else:
+                mf_local_body_b[world, i] = local
+    mf_body_count[world] = n_bodies
+
+
+@wp.func
+def _mf_row_velocity(
+    world: int,
+    row: int,
+    mf_J_a: wp.array3d[float],
+    mf_J_b: wp.array3d[float],
+    dof_a: int,
+    dof_b: int,
+    v_out: wp.array[float],
+):
+    jv = float(0.0)
+    if dof_a >= 0:
+        for k in range(6):
+            jv += mf_J_a[world, row, k] * v_out[dof_a + k]
+    if dof_b >= 0:
+        for k in range(6):
+            jv += mf_J_b[world, row, k] * v_out[dof_b + k]
+    return jv
+
+
+@wp.func
+def _mf_apply_impulse(
+    world: int,
+    row: int,
+    mf_MiJt_a: wp.array3d[float],
+    mf_MiJt_b: wp.array3d[float],
+    dof_a: int,
+    dof_b: int,
+    delta_impulse: float,
+    v_out: wp.array[float],
+):
+    for k in range(6):
+        if dof_a >= 0:
+            v_out[dof_a + k] = v_out[dof_a + k] + mf_MiJt_a[world, row, k] * delta_impulse
+        if dof_b >= 0:
+            v_out[dof_b + k] = v_out[dof_b + k] + mf_MiJt_b[world, row, k] * delta_impulse
+
+
+@wp.kernel
+def pgs_solve_mf_loop(
+    mf_constraint_count: wp.array[int],
+    mf_body_a: wp.array2d[int],
+    mf_body_b: wp.array2d[int],
+    mf_MiJt_a: wp.array3d[float],
+    mf_MiJt_b: wp.array3d[float],
+    mf_J_a: wp.array3d[float],
+    mf_J_b: wp.array3d[float],
+    mf_eff_mass_inv: wp.array2d[float],
+    mf_rhs: wp.array2d[float],
+    mf_row_type: wp.array2d[int],
+    mf_row_parent: wp.array2d[int],
+    mf_row_mu: wp.array2d[float],
+    body_to_articulation: wp.array[int],
+    art_dof_start: wp.array[int],
+    iterations: int,
+    omega: float,
+    # in/out
+    mf_impulses: wp.array2d[float],
+    v_out: wp.array[float],
+):
+    """Projected Gauss-Seidel on the free-body rows of one world per thread.
+
+    ``J v`` is recomputed from ``v_out`` for every row and each impulse change is applied
+    immediately through ``M^-1 J^T``. Rows are laid out as ``[contacts and friction]
+    [velocity limits]``, so the velocity limits have the last word in each sweep; they
+    are stateless and apply only the impulse needed for the current overshoot.
+    """
+    world = wp.tid()
+    m = mf_constraint_count[world]
+    for _it in range(iterations):
+        for i in range(m):
+            row_type = mf_row_type[world, i]
+            parent_idx = mf_row_parent[world, i]
+            if row_type == PGS_CONSTRAINT_TYPE_FRICTION and i != parent_idx + 1:
+                continue
+            eff_inv = mf_eff_mass_inv[world, i]
+            if eff_inv <= 0.0 and row_type != PGS_CONSTRAINT_TYPE_FRICTION:
+                continue
+
+            ba = mf_body_a[world, i]
+            bb = mf_body_b[world, i]
+            dof_a = int(-1)
+            dof_b = int(-1)
+            if ba >= 0:
+                dof_a = art_dof_start[body_to_articulation[ba]]
+            if bb >= 0:
+                dof_b = art_dof_start[body_to_articulation[bb]]
+
+            residual = _mf_row_velocity(world, i, mf_J_a, mf_J_b, dof_a, dof_b, v_out) + mf_rhs[world, i]
+            old_impulse = mf_impulses[world, i]
+            delta = -residual * eff_inv
+            new_impulse = old_impulse + omega * delta
+            delta_impulse = float(0.0)
+            if row_type == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT:
+                new_impulse = float(0.0)
+                if residual < 0.0:
+                    new_impulse = delta
+                delta_impulse = new_impulse
+            elif row_type == PGS_CONSTRAINT_TYPE_FRICTION:
+                sib = parent_idx + 2
+                radius = wp.max(mf_row_mu[world, i] * mf_impulses[world, parent_idx], 0.0)
+                pair_residual = wp.vec2(mf_rhs[world, i], mf_rhs[world, sib])
+                cross = float(0.0)
+                for k in range(6):
+                    if dof_a >= 0:
+                        pair_residual[0] += mf_J_a[world, i, k] * v_out[dof_a + k]
+                        pair_residual[1] += mf_J_a[world, sib, k] * v_out[dof_a + k]
+                        cross += mf_J_a[world, i, k] * mf_MiJt_a[world, sib, k]
+                    if dof_b >= 0:
+                        pair_residual[0] += mf_J_b[world, i, k] * v_out[dof_b + k]
+                        pair_residual[1] += mf_J_b[world, sib, k] * v_out[dof_b + k]
+                        cross += mf_J_b[world, i, k] * mf_MiJt_b[world, sib, k]
+                first_diag = float(0.0)
+                if eff_inv > 0.0:
+                    first_diag = 1.0 / eff_inv
+                sibling_inv = mf_eff_mass_inv[world, sib]
+                sibling_diag = float(0.0)
+                if sibling_inv > 0.0:
+                    sibling_diag = 1.0 / sibling_inv
+                trial = friction_pair_candidate(
+                    first_diag,
+                    cross,
+                    sibling_diag,
+                    pair_residual,
+                    wp.vec2(old_impulse, mf_impulses[world, sib]),
+                    radius,
+                    omega,
+                )
+                magnitude = wp.length(trial)
+                if magnitude > radius:
+                    trial *= radius / magnitude
+                sibling_delta = trial[1] - mf_impulses[world, sib]
+                mf_impulses[world, sib] = trial[1]
+                _mf_apply_impulse(world, sib, mf_MiJt_a, mf_MiJt_b, dof_a, dof_b, sibling_delta, v_out)
+                new_impulse = trial[0]
+                delta_impulse = new_impulse - old_impulse
+            else:
+                if new_impulse < 0.0:
+                    new_impulse = 0.0
+                delta_impulse = new_impulse - old_impulse
+            mf_impulses[world, i] = new_impulse
+            _mf_apply_impulse(world, i, mf_MiJt_a, mf_MiJt_b, dof_a, dof_b, delta_impulse, v_out)
+
+
+@wp.kernel
+def vector_add_inplace(a: wp.array[float], b: wp.array[float]):
+    """Add ``b`` to ``a`` element-wise."""
+    i = wp.tid()
+    a[i] = a[i] + b[i]
+
+
+@wp.kernel
+def compute_delta_and_accumulate(
+    v_out: wp.array[float],
+    v_snap: wp.array[float],
+    v_accum: wp.array[float],
+):
+    """Accumulate ``delta = v_out - v_snap`` into ``v_accum`` and store ``delta`` in ``v_snap``."""
+    i = wp.tid()
+    delta = v_out[i] - v_snap[i]
+    v_accum[i] = v_accum[i] + delta
+    v_snap[i] = delta
