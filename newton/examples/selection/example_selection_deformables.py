@@ -129,25 +129,26 @@ class Example:
         self.surface_particle_ranges = self.surface.ranges("particle")
         self.volume_particle_ranges = self.volume.ranges("particle")
 
-        # The exact-label view has one primary cloth per world, so its flat deformable object
-        # indices coincide with model world IDs.
+        # Only exact-label views with one object in each world can use world IDs directly.
+        for view in (self.surface, self.curve, self.volume):
+            if view.worlds != list(range(self.world_count)):
+                raise ValueError("Expected one selected deformable object in every world")
+
+        # Full buffers keep view order. Masks select the rows to restore.
         positions_primary_default = self.surface.get_particle_positions(self.model).numpy()
         velocities_primary_default = self.surface.get_particle_velocities(self.model).numpy()
-        deformable_object_indices_primary_host = np.arange(0, self.world_count, 2, dtype=np.int32)
-        positions_primary_reset = positions_primary_default[deformable_object_indices_primary_host].copy()
+        indices_primary = np.arange(0, self.world_count, 2, dtype=np.int32)
+        positions_primary_reset = positions_primary_default.copy()
         positions_primary_reset[:, :, 2] += 0.25
-        self.deformable_object_indices_primary = wp.array(
-            deformable_object_indices_primary_host,
-            dtype=wp.int32,
-            device=self.model.device,
-        )
+        self.mask_primary = wp.zeros(self.surface.count, dtype=wp.bool, device=self.model.device)
+        self.surface.set_mask_from_indices(self.mask_primary, indices_primary)
         self.positions_primary_reset = wp.array(
             positions_primary_reset,
             dtype=wp.vec3,
             device=self.model.device,
         )
         self.velocities_primary_reset = wp.array(
-            velocities_primary_default[deformable_object_indices_primary_host],
+            velocities_primary_default,
             dtype=wp.vec3,
             device=self.model.device,
         )
@@ -156,63 +157,54 @@ class Example:
         # secondary cloths in odd worlds, so they use flat deformable object indices.
         positions_surface_default = self.surfaces.get_particle_positions(self.model).numpy()
         velocities_surface_default = self.surfaces.get_particle_velocities(self.model).numpy()
-        deformable_object_indices_secondary_host = np.arange(3, 2 * self.world_count, 4, dtype=np.int32)
-        positions_secondary_reset = positions_surface_default[deformable_object_indices_secondary_host].copy()
+        indices_secondary = np.arange(3, 2 * self.world_count, 4, dtype=np.int32)
+        positions_secondary_reset = positions_surface_default.copy()
         positions_secondary_reset[:, :, 0] += 0.15
-        self.deformable_object_indices_secondary = wp.array(
-            deformable_object_indices_secondary_host,
-            dtype=wp.int32,
-            device=self.model.device,
-        )
+        self.mask_secondary = wp.zeros(self.surfaces.count, dtype=wp.bool, device=self.model.device)
+        self.surfaces.set_mask_from_indices(self.mask_secondary, indices_secondary)
         self.positions_secondary_reset = wp.array(
             positions_secondary_reset,
             dtype=wp.vec3,
             device=self.model.device,
         )
         self.velocities_secondary_reset = wp.array(
-            velocities_surface_default[deformable_object_indices_secondary_host],
+            velocities_surface_default,
             dtype=wp.vec3,
             device=self.model.device,
         )
 
         # Even-world cables return to their authored segment poses and velocities.
-        deformable_object_indices_cable_host = np.arange(0, self.world_count, 2, dtype=np.int32)
+        indices_cable = np.arange(0, self.world_count, 2, dtype=np.int32)
         transforms_cable_default = self.curve.get_body_transforms(self.model).numpy()
         velocities_cable_default = self.curve.get_body_velocities(self.model).numpy()
-        self.deformable_object_indices_cable = wp.array(
-            deformable_object_indices_cable_host,
-            dtype=wp.int32,
-            device=self.model.device,
-        )
+        self.mask_cable = wp.zeros(self.curve.count, dtype=wp.bool, device=self.model.device)
+        self.curve.set_mask_from_indices(self.mask_cable, indices_cable)
         self.transforms_cable_reset = wp.array(
-            transforms_cable_default[deformable_object_indices_cable_host],
+            transforms_cable_default,
             dtype=wp.transform,
             device=self.model.device,
         )
         self.velocities_cable_reset = wp.array(
-            velocities_cable_default[deformable_object_indices_cable_host],
+            velocities_cable_default,
             dtype=wp.spatial_vector,
             device=self.model.device,
         )
 
         # Odd-world soft cubes restart half a meter above their authored positions.
-        deformable_object_indices_volume_host = np.arange(1, self.world_count, 2, dtype=np.int32)
+        indices_volume = np.arange(1, self.world_count, 2, dtype=np.int32)
         positions_volume_default = self.volume.get_particle_positions(self.model).numpy()
         velocities_volume_default = self.volume.get_particle_velocities(self.model).numpy()
-        positions_volume_reset = positions_volume_default[deformable_object_indices_volume_host].copy()
+        positions_volume_reset = positions_volume_default.copy()
         positions_volume_reset[:, :, 2] += 0.5
-        self.deformable_object_indices_volume = wp.array(
-            deformable_object_indices_volume_host,
-            dtype=wp.int32,
-            device=self.model.device,
-        )
+        self.mask_volume = wp.zeros(self.volume.count, dtype=wp.bool, device=self.model.device)
+        self.volume.set_mask_from_indices(self.mask_volume, indices_volume)
         self.positions_volume_reset = wp.array(
             positions_volume_reset,
             dtype=wp.vec3,
             device=self.model.device,
         )
         self.velocities_volume_reset = wp.array(
-            velocities_volume_default[deformable_object_indices_volume_host],
+            velocities_volume_default,
             dtype=wp.vec3,
             device=self.model.device,
         )
@@ -225,14 +217,14 @@ class Example:
         wp.capture_launch(self.reset_graph)
 
         positions_primary_expected = positions_primary_default.copy()
-        positions_primary_expected[deformable_object_indices_primary_host] = positions_primary_reset
+        positions_primary_expected[indices_primary] = positions_primary_reset[indices_primary]
         positions_surface_expected = positions_surface_default.copy()
-        positions_surface_expected[2 * deformable_object_indices_primary_host] = positions_primary_reset
-        positions_surface_expected[deformable_object_indices_secondary_host] = positions_secondary_reset
+        positions_surface_expected[2 * indices_primary] = positions_primary_reset[indices_primary]
+        positions_surface_expected[indices_secondary] = positions_secondary_reset[indices_secondary]
         positions_volume_expected = positions_volume_default.copy()
-        positions_volume_expected[deformable_object_indices_volume_host] = positions_volume_reset
+        positions_volume_expected[indices_volume] = positions_volume_reset[indices_volume]
 
-        # Comparing complete views also proves that indexed writes leave every
+        # Comparing complete views also proves that masked writes leave every
         # unselected deformable object unchanged.
         self.initial_reset_valid = True
         for state in (self.state_0, self.state_1):
@@ -263,42 +255,42 @@ class Example:
             self.surface.set_particle_positions(
                 state,
                 self.positions_primary_reset,
-                deformable_object_indices=self.deformable_object_indices_primary,
+                mask=self.mask_primary,
             )
             self.surface.set_particle_velocities(
                 state,
                 self.velocities_primary_reset,
-                deformable_object_indices=self.deformable_object_indices_primary,
+                mask=self.mask_primary,
             )
             self.surfaces.set_particle_positions(
                 state,
                 self.positions_secondary_reset,
-                deformable_object_indices=self.deformable_object_indices_secondary,
+                mask=self.mask_secondary,
             )
             self.surfaces.set_particle_velocities(
                 state,
                 self.velocities_secondary_reset,
-                deformable_object_indices=self.deformable_object_indices_secondary,
+                mask=self.mask_secondary,
             )
             self.curve.set_body_transforms(
                 state,
                 self.transforms_cable_reset,
-                deformable_object_indices=self.deformable_object_indices_cable,
+                mask=self.mask_cable,
             )
             self.curve.set_body_velocities(
                 state,
                 self.velocities_cable_reset,
-                deformable_object_indices=self.deformable_object_indices_cable,
+                mask=self.mask_cable,
             )
             self.volume.set_particle_positions(
                 state,
                 self.positions_volume_reset,
-                deformable_object_indices=self.deformable_object_indices_volume,
+                mask=self.mask_volume,
             )
             self.volume.set_particle_velocities(
                 state,
                 self.velocities_volume_reset,
-                deformable_object_indices=self.deformable_object_indices_volume,
+                mask=self.mask_volume,
             )
 
     def simulate(self) -> None:
@@ -325,7 +317,7 @@ class Example:
 
     def test_final(self) -> None:
         if not self.initial_reset_valid:
-            raise ValueError("Indexed deformable resets did not update the selected rows")
+            raise ValueError("Masked deformable resets did not update the selected rows")
 
         expected_deformable_object_boundaries = np.arange(0, 2 * self.world_count + 1, 2, dtype=np.int32)
         expected_world_ids = np.repeat(np.arange(self.world_count, dtype=np.int32), 2)
