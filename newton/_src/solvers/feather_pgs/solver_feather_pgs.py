@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import functools
 import math
 import re
 import warnings
@@ -1301,6 +1302,7 @@ class SolverFeatherPGS(SolverBase):
         pgs_contact_regularization: float = 0.0,
         pgs_velocity_iterations: int = 0,
         pgs_velocity_drive_mode: Literal["freeze", "active"] = "freeze",
+        pgs_schedule: Literal["interleaved", "contact_then_internal", "physx_grasp"] = "interleaved",
         pgs_warmstart: bool = False,
         pgs_warmstart_decay: float = 1.0,
         restitution_velocity_threshold: float = 0.5,
@@ -1480,6 +1482,17 @@ class SolverFeatherPGS(SolverBase):
                 velocity-only iterations: ``"freeze"`` keeps the drive impulses of the
                 position solve, ``"active"`` keeps solving the drive rows. Implicit
                 (mass-matrix) drives have no rows, so the option has no effect for them.
+            pgs_schedule: Row order of the matrix-free sweeps (``pgs_mode="matrix_free"`` only).
+                ``"interleaved"`` sweeps every row family in each iteration: the dense rows,
+                the free-body contact rows, then the velocity limits. ``"contact_then_internal"``
+                runs every iteration of the contact rows first, then every iteration of the
+                internal rows (drive, mimic, connect and joint-limit rows) and the velocity
+                limits. ``"physx_grasp"`` approximates the order PhysX uses for grasping: each
+                iteration solves the internal rows, then the contact rows, then the velocity
+                limits, each in a launch of its own; the propagation responses use this order
+                with ``"interleaved"`` as well. Contact torsion and contact compliance require
+                ``"interleaved"``, ``"propagation-fused"`` rejects ``"contact_then_internal"``,
+                and the sparse mass factors are selected only with ``"interleaved"``.
             pgs_warmstart: Start each step (``pgs_mode="matrix_free"`` only) from the previous
                 step's contact impulses, matched
                 by contact identity through :attr:`~newton.Contacts.rigid_contact_match_index`,
@@ -1764,6 +1777,11 @@ class SolverFeatherPGS(SolverBase):
         if pgs_velocity_drive_mode not in ("freeze", "active"):
             raise ValueError(f"pgs_velocity_drive_mode must be 'freeze' or 'active', got {pgs_velocity_drive_mode!r}")
         self.pgs_velocity_drive_mode = pgs_velocity_drive_mode
+        if pgs_schedule not in ("interleaved", "contact_then_internal", "physx_grasp"):
+            raise ValueError(
+                f"pgs_schedule must be 'interleaved', 'contact_then_internal' or 'physx_grasp', got {pgs_schedule!r}"
+            )
+        self.pgs_schedule = pgs_schedule
         self.pgs_warmstart = bool(pgs_warmstart)
         self.pgs_warmstart_decay = _finite_non_negative("pgs_warmstart_decay", pgs_warmstart_decay)
         self.restitution_velocity_threshold = _finite_non_negative(
@@ -1806,11 +1824,31 @@ class SolverFeatherPGS(SolverBase):
                     ("contact_torsion_radius > 0", self._contact_torsion_enabled),
                     ("contact_compliance=True", self.contact_compliance),
                     ("enable_sleeping=True", bool(enable_sleeping)),
+                    (f"pgs_schedule={self.pgs_schedule!r}", self.pgs_schedule != "interleaved"),
                 )
                 if requested
             ]
             if unsupported:
                 raise NotImplementedError(f"{', '.join(unsupported)} requires pgs_mode='matrix_free'")
+        if self.pgs_schedule != "interleaved":
+            incompatible = [
+                name
+                for name, requested in (
+                    ("contact_torsion_radius > 0", self._contact_torsion_enabled),
+                    ("contact_compliance=True", self.contact_compliance),
+                )
+                if requested
+            ]
+            if incompatible:
+                raise NotImplementedError(
+                    f"{', '.join(incompatible)} requires pgs_schedule='interleaved', got {self.pgs_schedule!r}"
+                )
+        if self.pgs_schedule == "contact_then_internal" and articulated_contact_response == "propagation-fused":
+            # The fused kernel sweeps internal, contact, propagation and velocity-limit rows in every iteration.
+            raise NotImplementedError(
+                "articulated_contact_response='propagation-fused' does not support "
+                "pgs_schedule='contact_then_internal'; use 'propagation' for that schedule"
+            )
         if articulated_contact_response not in ("immediate", "propagation", "propagation-fused"):
             raise ValueError(
                 "articulated_contact_response must be 'immediate', 'propagation' or 'propagation-fused', "
@@ -3355,8 +3393,8 @@ class SolverFeatherPGS(SolverBase):
             return
         if _model_has_bilateral_constraints(model):
             return
-        # The sparse rows and sweep exist only in the matrix-free solve, without drive rows.
-        if self.pgs_mode != "matrix_free" or self._has_drive_rows:
+        # The sparse rows and sweep exist only in the interleaved matrix-free solve, without drive rows.
+        if self.pgs_mode != "matrix_free" or self._has_drive_rows or self.pgs_schedule != "interleaved":
             return
         if self.enable_joint_velocity_limits or self.pgs_iterations <= 0 or not self.size_groups:
             return
@@ -4108,7 +4146,7 @@ class SolverFeatherPGS(SolverBase):
                 has_drive_rows=self._has_drive_rows,
                 fuse_vel_limits=self.fuse_joint_velocity_limits,
                 contact_torsion=self._contact_torsion_enabled,
-                row_phases=self._propagation_active,
+                row_phases=self._propagation_active or self.pgs_schedule != "interleaved",
             )
 
     def _init_split_kernels(self, model):
@@ -4244,21 +4282,40 @@ class SolverFeatherPGS(SolverBase):
             return
         if iterations <= 0 or self._pgs_solve_mf_gs_kernel is None:
             return
-        wp.launch_tiled(
-            self._pgs_solve_mf_gs_kernel,
-            dim=[self.world_count],
-            inputs=[
-                *self._mf_gs_inputs(rhs),
-                int(iterations),
-                self.pgs_omega,
-                int(regularize),
-                int(freeze_drive_rows),
-                0,
-            ],
-            outputs=[self.v_out],
-            block_dim=32,
-            device=self.model.device,
+        launch = functools.partial(
+            self._launch_mf_gs_phase, rhs=rhs, regularize=regularize, freeze_drive_rows=freeze_drive_rows
         )
+        if self.pgs_schedule == "contact_then_internal":
+            launch(1, iterations)
+            launch(2, iterations)
+        elif self.pgs_schedule == "physx_grasp":
+            has_internal_rows, has_velocity_limits = self._internal_row_phases()
+            for _ in range(iterations):
+                if has_internal_rows:
+                    launch(3, 1)
+                launch(4, 1)
+                if has_velocity_limits:
+                    launch(5, 1)
+        else:
+            launch(0, iterations)
+
+    def _internal_row_phases(self) -> tuple[bool, bool]:
+        """Return whether internal rows and velocity limits can exist (the phases with work)."""
+        has_internal_rows = bool(
+            self._has_drive_rows
+            or (self.enable_joint_limits and self._joint_limit_sizes)
+            or self._mimic_count
+            or self._connect_count
+        )
+        has_velocity_limits = bool(
+            (
+                self.enable_joint_velocity_limits
+                or self.fuse_joint_velocity_limits
+                or (self._has_rigid_body_velocity_limits and self._has_free_rigid_bodies)
+            )
+            and not np.isinf(self.velocity_limit_activation_fraction)
+        )
+        return has_internal_rows, has_velocity_limits
 
     def _launch_sparse_pgs_solve(self) -> None:
         """Sweep the rows in factor coordinates, then decode the velocity change of every world."""
@@ -7604,12 +7661,27 @@ class SolverFeatherPGS(SolverBase):
                 device=model.device,
             )
 
-    def _launch_mf_gs_phase(self, row_phase: int) -> None:
-        """Run one matrix-free sweep restricted to one dense/free-body row family."""
+    def _launch_mf_gs_phase(
+        self,
+        row_phase: int,
+        iterations: int = 1,
+        *,
+        rhs: wp.array | None = None,
+        regularize: bool = False,
+        freeze_drive_rows: bool = False,
+    ) -> None:
+        """Run matrix-free sweeps restricted to the row families of ``row_phase`` (0 for all)."""
         wp.launch_tiled(
             self._pgs_solve_mf_gs_kernel,
             dim=[self.world_count],
-            inputs=[*self._mf_gs_inputs(self.rhs), 1, self.pgs_omega, 0, 0, row_phase],
+            inputs=[
+                *self._mf_gs_inputs(self.rhs if rhs is None else rhs),
+                int(iterations),
+                self.pgs_omega,
+                int(regularize),
+                int(freeze_drive_rows),
+                int(row_phase),
+            ],
             outputs=[self.v_out],
             block_dim=32,
             device=self.model.device,
@@ -7620,7 +7692,9 @@ class SolverFeatherPGS(SolverBase):
 
         Each iteration solves the dense joint-limit rows, the dense and free-body contact
         rows, the propagation rows followed by the tree propagation of their impulses, and
-        last the velocity-limit rows.
+        last the velocity-limit rows. With ``pgs_schedule="contact_then_internal"`` the
+        iterations solve the contact and propagation rows only, and the joint-limit and
+        velocity-limit rows follow in their own iterations.
         """
         if self.pgs_iterations <= 0:
             return
@@ -7697,10 +7771,13 @@ class SolverFeatherPGS(SolverBase):
             )
             return
 
-        refresh_forced = self._propagation_has_limit_rows or self._propagation_has_velocity_limit_rows
+        contact_then_internal = self.pgs_schedule == "contact_then_internal"
+        refresh_forced = (
+            contact_then_internal or self._propagation_has_limit_rows or self._propagation_has_velocity_limit_rows
+        )
         wpb = _PROPAGATION_WORLDS_PER_BLOCK
         for _ in range(self.pgs_iterations):
-            if self._propagation_has_limit_rows:
+            if self._propagation_has_limit_rows and not contact_then_internal:
                 self._launch_mf_gs_phase(3)
             self._launch_mf_gs_phase(4)
             self._propagation_refresh_twists(force=refresh_forced)
@@ -7732,8 +7809,10 @@ class SolverFeatherPGS(SolverBase):
                 device=model.device,
             )
             self._propagation_propagate_impulses()
-            if self._propagation_has_velocity_limit_rows:
+            if self._propagation_has_velocity_limit_rows and not contact_then_internal:
                 self._launch_mf_gs_phase(5)
+        if contact_then_internal and (self._propagation_has_limit_rows or self._propagation_has_velocity_limit_rows):
+            self._launch_mf_gs_phase(2, self.pgs_iterations)
 
 
 @cache
@@ -8307,10 +8386,13 @@ def _get_pgs_solve_mf_gs_kernel(
     per-row metadata does as well; larger shapes stream it from global memory to keep
     occupancy.
 
-    With ``row_phases`` the launch argument ``row_phase`` restricts a sweep to one row
-    family, so a propagation solve can interleave its own rows: ``3`` the dense
-    joint-limit rows, ``4`` the dense and free-body contact rows, ``5`` the velocity-limit
-    rows. ``0`` (the only value without ``row_phases``) sweeps every family.
+    With ``row_phases`` the launch argument ``row_phase`` restricts a sweep to some row
+    families, for the PGS schedules and so a propagation solve can interleave its own rows:
+    ``1`` and ``4`` the contact rows (dense and free-body contact, friction and torsion
+    rows), ``2`` the internal rows (drive, mimic, connect and joint-limit rows) and the
+    velocity limits, ``3`` the internal rows without the velocity limits, ``5`` the
+    velocity limits (velocity-limit rows and the fused clamp). ``0`` (the only value
+    without ``row_phases``) sweeps every family.
 
     Args:
         max_constraints: Dense row capacity ``M_D`` per world.
@@ -8445,23 +8527,29 @@ def _get_pgs_solve_mf_gs_kernel(
     torsion_sweep = torque_sweep_source(D) if contact_torsion else ""
 
     if row_phases:
-        limit_type = int(PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
-        phase_bounds = """    if (row_phase == 3) {
+        phase_bounds = """    if (row_phase == 1 || row_phase == 4) {
+        internal_rows = 0;
+        velocity_limit_pass = 0;
+    } else if (row_phase == 2 || row_phase == 3) {
+        contact_rows = 0;
         mf_main_end = 0;
-        velocity_limit_pass = 0;
-    } else if (row_phase == 4) {
-        velocity_limit_pass = 0;
+        if (row_phase == 3) velocity_limit_pass = 0;
     } else if (row_phase == 5) {
         dense_main_end = 0;
         mf_main_end = 0;
+        contact_rows = 0;
     }"""
+        contact_type = int(PGS_CONSTRAINT_TYPE_CONTACT)
+        friction_type = int(PGS_CONSTRAINT_TYPE_FRICTION)
         dense_phase_filter = (
-            f"            if (row_phase == 3 ? row_type != {limit_type} : (row_phase == 4 && row_type == {limit_type})) "
-            "continue;"
+            f"            if ((row_type == {contact_type} || row_type == {friction_type}) ? contact_rows == 0 "
+            ": internal_rows == 0) continue;"
         )
     else:
         phase_bounds = ""
         dense_phase_filter = ""
+    if torsion_sweep:
+        torsion_sweep = f"        if (contact_rows) {{\n{torsion_sweep}\n        }}"
 
     snippet = f"""
 #if defined(__CUDA_ARCH__)
@@ -8480,6 +8568,8 @@ def _get_pgs_solve_mf_gs_kernel(
     int dense_main_end = m_dense;
     int mf_main_end = mf_contact_end;
     int velocity_limit_pass = 1;
+    int contact_rows = 1;
+    int internal_rows = 1;
 {phase_bounds}
 
     int dof_map_base = world * {D};
