@@ -2984,7 +2984,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD):
                 return True
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
-            if frequency == model_frequency.JOINT_DOF or attribute.name == "joint_target_q":
+            if frequency == model_frequency.JOINT_DOF or attribute.name in ("joint_target_q", "joint_rest_q"):
                 return True
         if flags & int(ModelFlags.SHAPE_PROPERTIES):
             if frequency == model_frequency.SHAPE or "pair_" in attribute.name:
@@ -3010,6 +3010,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     def notify_model_changed(self, flags: int) -> None:
         """Forward model change notifications to all sub-solvers."""
+        super().notify_model_changed(flags)
         self._refresh_model_view_overrides(flags)
         for entry in self._entries.values():
             entry.solver.notify_model_changed(flags)

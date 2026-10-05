@@ -5674,8 +5674,6 @@ class ModelBuilder:
         damping: float | None = None,
         stiffness: float | None = None,
         rest_q: float | None = None,
-        target_pos: float | None = None,
-        target_vel: float | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -5689,6 +5687,8 @@ class ModelBuilder:
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
+        target_pos: float | None = None,
+        target_vel: float | None = None,
         **kwargs,
     ) -> int:
         """Adds a revolute (hinge) joint to the model. It has one degree of freedom.
@@ -5701,15 +5701,13 @@ class ModelBuilder:
             axis: The axis of rotation in the joint parent anchor frame, which is
                 the parent body's local frame transformed by `parent_xform`. It can be a :class:`JointDofConfig` object
                 whose settings will be used instead of the other arguments.
-            target_q: The target position of the joint.
-            target_qd: The target velocity of the joint.
+            target_q: The target position of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.target_q`` is used.
+            target_qd: The target velocity of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.target_qd`` is used.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
-            stiffness: Passive spring stiffness [N/m or N·m/rad]. Defaults to the joint configuration.
-            rest_q: Spring rest coordinate [m or rad], which may lie outside joint limits.
-            target_pos: Deprecated alias for target_q.
-            target_vel: Deprecated alias for target_qd.
             damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
+            stiffness: Passive spring stiffness [N·m/rad]. If None, the default value from ``ModelBuilder.default_joint_cfg.stiffness`` is used.
+            rest_q: Spring rest coordinate [rad], which may lie outside joint limits. If None, the default value from ``ModelBuilder.default_joint_cfg.rest_q`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
@@ -5722,6 +5720,8 @@ class ModelBuilder:
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
+            target_pos: Deprecated since 1.7; use ``target_q``.
+            target_vel: Deprecated since 1.7; use ``target_qd``.
 
         Returns:
             The index of the added joint.
@@ -5783,8 +5783,6 @@ class ModelBuilder:
         damping: float | None = None,
         stiffness: float | None = None,
         rest_q: float | None = None,
-        target_pos: float | None = None,
-        target_vel: float | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -5798,6 +5796,8 @@ class ModelBuilder:
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
+        target_pos: float | None = None,
+        target_vel: float | None = None,
     ) -> int:
         """Adds a prismatic (sliding) joint to the model. It has one degree of freedom.
 
@@ -5809,15 +5809,13 @@ class ModelBuilder:
             axis: The axis of translation in the joint parent anchor frame, which is
                 the parent body's local frame transformed by `parent_xform`. It can be a :class:`JointDofConfig` object
                 whose settings will be used instead of the other arguments.
-            target_q: The target position of the joint.
-            target_qd: The target velocity of the joint.
+            target_q: The target position of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.target_q`` is used.
+            target_qd: The target velocity of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.target_qd`` is used.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
-            stiffness: Passive spring stiffness [N/m or N·m/rad]. Defaults to the joint configuration.
-            rest_q: Spring rest coordinate [m or rad], which may lie outside joint limits.
-            target_pos: Deprecated alias for target_q.
-            target_vel: Deprecated alias for target_qd.
             damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
+            stiffness: Passive spring stiffness [N/m]. If None, the default value from ``ModelBuilder.default_joint_cfg.stiffness`` is used.
+            rest_q: Spring rest coordinate [m], which may lie outside joint limits. If None, the default value from ``ModelBuilder.default_joint_cfg.rest_q`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
@@ -5830,6 +5828,8 @@ class ModelBuilder:
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
+            target_pos: Deprecated since 1.7; use ``target_q``.
+            target_vel: Deprecated since 1.7; use ``target_qd``.
 
         Returns:
             The index of the added joint.
@@ -5901,8 +5901,8 @@ class ModelBuilder:
             child_xform: The transform from the child body frame to the joint child anchor frame.
             armature: Artificial inertia added around the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
             friction: Friction coefficient for the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
-            stiffness: Isotropic passive angular spring stiffness [N·m/rad], supported by SolverMuJoCo.
             damping: Passive angular velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on all three BALL joint angular DOFs. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
+            stiffness: Isotropic passive angular spring stiffness [N·m/rad], supported by SolverMuJoCo. If None, the default value from ``ModelBuilder.default_joint_cfg.stiffness`` is used.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
@@ -5911,6 +5911,14 @@ class ModelBuilder:
 
         Returns:
             The index of the added joint.
+
+        .. note::
+            The spring rest orientation defaults to the identity quaternion. After adding the joint,
+            set its four ``joint_rest_q`` entries in xyzw order using
+            ``builder.joint_rest_q[builder.joint_q_start[joint]:builder.joint_q_start[joint] + 4]``.
+            The scalar ``default_joint_cfg.rest_q`` does not apply to ball joints.
+            To edit the rest orientation after finalization, update :attr:`Model.joint_rest_q`
+            and notify the solver with :attr:`ModelFlags.JOINT_DOF_PROPERTIES`.
 
         .. note:: Target position and velocity control for ball joints is currently only supported in :class:`newton.solvers.SolverMuJoCo`.
 

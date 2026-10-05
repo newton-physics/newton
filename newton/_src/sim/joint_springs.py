@@ -63,7 +63,12 @@ class _MuJoCoSpringNamespace(Model.AttributeNamespace):
 
     @dof_passive_stiffness.setter
     def dof_passive_stiffness(self, value) -> None:
-        self.dof_passive_stiffness.assign(value)
+        warnings.warn(
+            "mujoco.dof_passive_stiffness is deprecated in Newton 1.7; use Model.joint_stiffness instead.",
+            DeprecationWarning,
+            stacklevel=3,  # Skip AttributeNamespace.__setattr__ as well as this setter.
+        )
+        self._model.joint_stiffness.assign(value)
 
     @property
     def dof_springref(self) -> wp.array:
@@ -78,7 +83,14 @@ class _MuJoCoSpringNamespace(Model.AttributeNamespace):
 
     @dof_springref.setter
     def dof_springref(self, value) -> None:
-        self.dof_springref.assign(value)
+        warnings.warn(
+            "mujoco.dof_springref is deprecated in Newton 1.7; use Model.joint_rest_q in Newton coordinates "
+            "(springref - ref), and notify the solver after editing legacy spring references.",
+            DeprecationWarning,
+            stacklevel=3,  # Skip AttributeNamespace.__setattr__ as well as this setter.
+        )
+        self._sync()
+        self._springref.assign(value)
 
     def _sync(self) -> None:
         model = self._model

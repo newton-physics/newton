@@ -2139,14 +2139,14 @@ def parse_mjcf(
                     joint_type = JointType.REVOLUTE
                 elif convert_3d_hinge_to_ball_joints and len(angular_axes) == 3:
                     joint_type = JointType.BALL
-                    if any(axis.rest_q != 0.0 for axis in angular_axes):
+                    if any(axis.stiffness != 0.0 and axis.rest_q != 0.0 for axis in angular_axes):
                         warnings.warn(
                             "Converting three hinges to a ball joint uses an identity spring rest orientation; "
                             "set convert_3d_hinge_to_ball_joints=False to preserve scalar spring rest coordinates.",
                             stacklevel=2,
                         )
-                        for axis in angular_axes:
-                            axis.rest_q = 0.0
+                    for axis in angular_axes:
+                        axis.rest_q = 0.0
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = JointType.PRISMATIC
 
