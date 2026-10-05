@@ -4096,7 +4096,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.body_free_qd_start: wp.array[wp.int32] | None = None
         """Per-body mapping to the free-joint qd_start index (or -1 if not free)."""
 
-        # --- Conditional/lazy mappings ---
+        # --- Conditional mappings ---
         self.newton_shape_to_mjc_geom: wp.array[wp.int32] | None = None
         """Inverse mapping from Newton shape index to MuJoCo geom index. Only created when use_mujoco_contacts=False. Shape [nshape], dtype int32."""
 
@@ -4284,6 +4284,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 skip_visual_only_geoms=skip_visual_only_geoms,
             )
         if not use_mujoco_cpu and not use_mujoco_contacts:
+            # Persistent mappings must be initialized outside step(), which may
+            # first run inside a CUDA graph that is discarded without replay.
+            self._create_inverse_shape_mapping()
             self._contact_tid_to_cid = wp.full(self.mjw_data.naconmax, -1, dtype=wp.int32, device=self.device)
         self._initial_model_sync = False
         self.update_data_interval = update_data_interval
@@ -4748,10 +4751,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
-        # Ensure the inverse shape mapping exists (lazy creation)
-        if self.newton_shape_to_mjc_geom is None:
-            self._create_inverse_shape_mapping()
-
         # The kernel only produces valid output for tid < naconmax (the full
         # path clamps count and rejects cid >= naconmax).  Launching more
         # threads than naconmax wastes GPU resources, so cap the grid size.
@@ -5122,10 +5121,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     def _create_inverse_shape_mapping(self):
-        """
-        Create the inverse shape mapping (Newton shape -> MuJoCo [world, geom]).
-        This is lazily created only when use_mujoco_contacts=False.
-        """
+        """Create the Newton shape to MuJoCo geom mapping for external contacts."""
         nworld = self.mjc_geom_to_newton_shape.shape[0]
         ngeom = self.mjc_geom_to_newton_shape.shape[1]
 
@@ -6684,10 +6680,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     # MuJoCo size: (size_x, size_y, size_z, size_base) — all must be positive
                     # Our data is normalized [0,1], height range = max_z - min_z
                     # We set size_base to eps (MuJoCo requires positive) and shift the
-                    # geom origin by min_z so the lowest point is at the right world Z.
+                    # geom origin by min_z so the lowest point is at the right Z. The
+                    # shape's scale applies to hx, hy, min_z, and max_z alike.
                     eps = 1e-4
-                    mj_size_z = max(hfield_src.max_z - hfield_src.min_z, eps)
-                    mj_size = (hfield_src.hx, hfield_src.hy, mj_size_z, eps)
+                    hfield_scale = shape_size[shape]
+                    mj_size_z = max((hfield_src.max_z - hfield_src.min_z) * hfield_scale[2], eps)
+                    mj_size = (hfield_src.hx * hfield_scale[0], hfield_src.hy * hfield_scale[1], mj_size_z, eps)
                     elevation_data = hfield_src.data.flatten()
 
                     hfield_name = f"{model.shape_label[shape].replace('/', '_')}_{shape}"
@@ -6701,11 +6699,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
                     geom_params["hfieldname"] = hfield_name
 
-                    # Shift geom origin so data=0 maps to min_z in world space
-                    tf = wp.transform(
-                        wp.vec3(tf.p[0], tf.p[1], tf.p[2] + hfield_src.min_z),
-                        tf.q,
-                    )
+                    # Shift geom origin so data=0 maps to min_z, along the
+                    # heightfield's own z axis. update_geom_properties_kernel
+                    # re-applies the same shift whenever geom poses are synced.
+                    tf = tf * wp.transform(wp.vec3(0.0, 0.0, hfield_src.min_z * hfield_scale[2]), wp.quat_identity())
                 elif stype == GeoType.CONE:
                     size = shape_size[shape]
                     mesh_src = Mesh.create_cone(
@@ -7890,12 +7887,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if heterogeneous_geoms:
                 self._initialize_mesh_assets(spec, mesh_assets, shape_mesh_names, geom_shape_mapping)
 
+            # Scaled min_z per Newton shape (zero for non-heightfields): MuJoCo
+            # heightfield elevations start at the geom origin, so syncing geom
+            # poses from shape transforms must shift each heightfield by it.
+            # Baked with the construction-time scale, like hfield_size, so the
+            # two always agree and syncing needs no host read of shape_scale.
+            shape_scale_np = model.shape_scale.numpy()
+            shape_hfield_offset_np = np.zeros(model.shape_count, dtype=np.float32)
+            for shape_idx in np.flatnonzero(shape_type == GeoType.HFIELD):
+                hfield_src = model.shape_source[shape_idx]
+                if hfield_src is not None:
+                    shape_hfield_offset_np[shape_idx] = hfield_src.min_z * shape_scale_np[shape_idx][2]
+            self._shape_hfield_offset = wp.array(shape_hfield_offset_np, dtype=wp.float32, device=model.device)
+
             converted_shapes = np.unique(geom_shape_mapping[geom_shape_mapping >= 0])
             compiled_types = (
                 (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.CONE) if heterogeneous_geoms else (GeoType.CONE,)
             )
             self._compiled_mesh_shape_indices = converted_shapes[np.isin(shape_type[converted_shapes], compiled_types)]
-            self._compiled_mesh_shape_scales = model.shape_scale.numpy()[self._compiled_mesh_shape_indices].copy()
+            self._compiled_mesh_shape_scales = shape_scale_np[self._compiled_mesh_shape_indices].copy()
 
             # Create mjc_body_to_newton: MuJoCo[world, body] -> Newton body
             # body_mapping is {newton_body_id: mjc_body_id}, we need to invert it
@@ -9236,9 +9246,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjc_geom_to_newton_shape,
                 self.mjw_model.geom_type,
                 self._mujoco.mjtGeom.mjGEOM_MESH,
+                self._mujoco.mjtGeom.mjGEOM_HFIELD,
                 self.mjw_model.geom_dataid,
                 self.mjw_model.mesh_pos,
                 self.mjw_model.mesh_quat,
+                self._shape_hfield_offset,
                 self.model.shape_material_mu_torsional,
                 self.model.shape_material_mu_rolling,
                 shape_geom_solimp,
