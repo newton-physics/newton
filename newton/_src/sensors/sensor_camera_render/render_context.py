@@ -540,10 +540,8 @@ class RenderContext:
                         if pixels is None:
                             raise ValueError(f"Failed to load texture: {shape.texture}")
 
-                        # Normalize texture to ensure a consistent channel layout and dtype
+                        # Normalize texture to a uint8 array with 3 or 4 channels
                         pixels = normalize_texture(pixels, require_channels=True)
-                        if pixels.dtype != np.uint8:
-                            pixels = pixels.astype(np.uint8, copy=False)
                         if pixels.shape[2] == 3:
                             # In-memory RGB (and expanded grayscale) images are opaque; textures have 4 channels.
                             alpha = np.full((*pixels.shape[:2], 1), 255, dtype=np.uint8)
