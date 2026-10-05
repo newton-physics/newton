@@ -50,6 +50,20 @@ _KINEMATICS_KERNEL_MODULE = wp.Module(f"{__name__}.kinematics")
 _INVERSE_DYNAMICS_KERNEL_MODULE = wp.Module(f"{__name__}.inverse_dynamics")
 _MASS_DYNAMICS_KERNEL_MODULE = wp.Module(f"{__name__}.mass_dynamics")
 
+# Owner of a world's dense and free-body rows in the matrix-free solve: the general
+# world sweep, or one of the articulation-local solves (one articulation, one
+# articulation with a free body, or that pair together with its free-body rows).
+PGS_LOCAL_SOLVE_OWNER_GENERAL = 0
+PGS_LOCAL_SOLVE_OWNER_SINGLE = 1
+PGS_LOCAL_SOLVE_OWNER_PAIR = 2
+PGS_LOCAL_SOLVE_OWNER_PAIR_RESIDUAL = 3
+
+
+@wp.kernel
+def local_solve_launch_gate():
+    """Create a minimal graph dependency ahead of the bulk local solves."""
+    pass
+
 
 @wp.kernel
 def compute_spatial_inertia(
@@ -5161,6 +5175,7 @@ def gather_JY_to_world(
 @wp.kernel
 def diag_from_JY_world(
     world_constraint_count: wp.array[int],
+    local_solve_owner: wp.array[int],
     world_dof_count: wp.array[int],
     J_world: wp.array3d[float],
     Y_world: wp.array3d[float],
@@ -5173,6 +5188,9 @@ def diag_from_JY_world(
     row = tid % max_constraints
     world = tid // max_constraints
     if row >= world_constraint_count[world]:
+        return
+    # Local owners compute their response diagonals in their fused solve.
+    if local_solve_owner[world] != PGS_LOCAL_SOLVE_OWNER_GENERAL:
         return
 
     value = float(0.0)
@@ -8215,3 +8233,192 @@ def apply_sparse_diagonal_contact_restitution(
     relative_incident -= target_vel
     if contact_restitution_fires(world_phi[world, row], relative_incident, dt, restitution_velocity_threshold):
         world_rhs[world, row] = -target_vel + restitution * relative_incident
+
+
+@wp.kernel
+def hinv_jt_par_row_contact_fallback(
+    L_group: wp.array3d[float],
+    J_group: wp.array3d[float],
+    group_to_art: wp.array[int],
+    art_to_world: wp.array[int],
+    articulation_world_dof_offset: wp.array[int],
+    world_constraint_count: wp.array[int],
+    local_solve_owner: wp.array[int],
+    world_row_restitution: wp.array2d[float],
+    n_dofs: int,
+    n_arts: int,
+    write_world: int,
+    Y_group: wp.array3d[float],
+    J_world: wp.array3d[float],
+    Y_world: wp.array3d[float],
+):
+    """Compute ``Y = H^-1 J^T`` only for worlds that the general sweep solves, one warp per articulation."""
+    tid = wp.tid()
+    group_index = tid // 32
+    lane = tid % 32
+    if group_index >= n_arts:
+        return
+
+    art = group_to_art[group_index]
+    world = art_to_world[art]
+    constraint_count = world_constraint_count[world]
+    if local_solve_owner[world] != PGS_LOCAL_SOLVE_OWNER_GENERAL:
+        # Local owners build their response in their fused solve. Only impact rows need a
+        # world Jacobian, for the restitution target pass.
+        if write_world != 0:
+            dof_offset = articulation_world_dof_offset[art]
+            constraint = lane
+            while constraint < constraint_count:
+                if world_row_restitution[world, constraint] > 0.0:
+                    for i in range(n_dofs):
+                        J_world[world, constraint, dof_offset + i] = J_group[group_index, constraint, i]
+                constraint += 32
+        return
+
+    constraint = lane
+    while constraint < constraint_count:
+        for i in range(n_dofs):
+            value = J_group[group_index, constraint, i]
+            for k in range(i):
+                value -= L_group[group_index, i, k] * Y_group[group_index, constraint, k]
+
+            diagonal = L_group[group_index, i, i]
+            if diagonal != 0.0:
+                Y_group[group_index, constraint, i] = value / diagonal
+            else:
+                Y_group[group_index, constraint, i] = 0.0
+
+        for reverse in range(n_dofs):
+            i = n_dofs - 1 - reverse
+            value = Y_group[group_index, constraint, i]
+            for k in range(i + 1, n_dofs):
+                value -= L_group[group_index, k, i] * Y_group[group_index, constraint, k]
+
+            diagonal = L_group[group_index, i, i]
+            if diagonal != 0.0:
+                Y_group[group_index, constraint, i] = value / diagonal
+            else:
+                Y_group[group_index, constraint, i] = 0.0
+
+        if write_world != 0:
+            dof_offset = articulation_world_dof_offset[art]
+            for i in range(n_dofs):
+                J_world[world, constraint, dof_offset + i] = J_group[group_index, constraint, i]
+                Y_world[world, constraint, dof_offset + i] = Y_group[group_index, constraint, i]
+        constraint += 32
+
+
+@wp.kernel
+def classify_local_solve_worlds(
+    world_constraint_count: wp.array[int],
+    world_row_type: wp.array2d[int],
+    mf_constraint_count: wp.array[int],
+    mf_body_a: wp.array2d[int],
+    mf_body_b: wp.array2d[int],
+    mf_row_type: wp.array2d[int],
+    body_to_articulation: wp.array[int],
+    articulation_dof_count: wp.array[int],
+    local_primary_articulation: wp.array[int],
+    local_pair_articulation: wp.array[int],
+    local_residual_pair_articulation: wp.array[int],
+    local_max_constraints: int,
+    local_residual_max_constraints: int,
+    local_residual_mf_max_constraints: int,
+    # outputs
+    local_solve_owner: wp.array[int],
+    general_world_count: wp.array[int],
+    general_worlds: wp.array[int],
+):
+    """Assign each world's solver owner and compact the worlds left to the general sweep.
+
+    A world whose dense rows are all internal (no contact rows) and fit the articulation's
+    DOF count goes to the single-articulation solve; a world whose articulation also touches
+    its one free body goes to the pair solve; the residual pair solve also takes that free
+    body's own contact rows. Every other world with rows stays with the general sweep.
+    """
+    world = wp.tid()
+    row_count = world_constraint_count[world]
+    mf_count = mf_constraint_count[world]
+    primary_articulation = local_primary_articulation[world]
+    pair_articulation = local_pair_articulation[world]
+    residual_pair_articulation = local_residual_pair_articulation[world]
+    # A world without contact rows solves internal rows only.
+    contact_rows = int(0)
+    for row in range(row_count):
+        row_type = world_row_type[world, row]
+        if row_type == PGS_CONSTRAINT_TYPE_CONTACT or row_type == PGS_CONSTRAINT_TYPE_FRICTION:
+            contact_rows += 1
+    single_phase = contact_rows == 0
+
+    local_mf = mf_count > 0 and mf_count <= local_residual_mf_max_constraints and residual_pair_articulation >= 0
+    mf_row = int(0)
+    while mf_row < mf_count and local_mf:
+        body_a = mf_body_a[world, mf_row]
+        body_b = mf_body_b[world, mf_row]
+        if body_a >= 0 and body_to_articulation[body_a] != residual_pair_articulation:
+            local_mf = False
+        if body_b >= 0 and body_to_articulation[body_b] != residual_pair_articulation:
+            local_mf = False
+        # The residual loop does not implement the free-body velocity-limit law.
+        if mf_row_type[world, mf_row] == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT:
+            local_mf = False
+        mf_row += 1
+
+    owner = PGS_LOCAL_SOLVE_OWNER_GENERAL
+    single_row_capacity = int(0)
+    if primary_articulation >= 0:
+        single_row_capacity = wp.min(local_max_constraints, articulation_dof_count[primary_articulation])
+    if row_count > 0 and mf_count == 0:
+        if single_phase and row_count <= single_row_capacity:
+            owner = PGS_LOCAL_SOLVE_OWNER_SINGLE
+        elif not single_phase and row_count <= local_max_constraints and pair_articulation >= 0:
+            owner = PGS_LOCAL_SOLVE_OWNER_PAIR
+    if owner == PGS_LOCAL_SOLVE_OWNER_GENERAL and (
+        row_count > 0
+        and row_count <= local_residual_max_constraints
+        and residual_pair_articulation >= 0
+        and ((mf_count == 0 and not single_phase) or local_mf)
+    ):
+        owner = PGS_LOCAL_SOLVE_OWNER_PAIR_RESIDUAL
+    local_solve_owner[world] = owner
+    if owner == PGS_LOCAL_SOLVE_OWNER_GENERAL and (row_count > 0 or mf_count > 0):
+        general_index = wp.atomic_add(general_world_count, 0, 1)
+        general_worlds[general_index] = world
+
+
+@wp.kernel
+def compact_local_pair_candidates(
+    candidate_articulations: wp.array[int],
+    candidate_secondary_articulations: wp.array[int],
+    articulation_world: wp.array[int],
+    local_solve_owner: wp.array[int],
+    expected_owner: int,
+    # outputs
+    active_count: wp.array[int],
+    active_articulations: wp.array[int],
+    active_secondary_articulations: wp.array[int],
+):
+    """Compact the pair candidates whose world selected the given local owner."""
+    candidate = wp.tid()
+    articulation = candidate_articulations[candidate]
+    world = articulation_world[articulation]
+    if local_solve_owner[world] == expected_owner:
+        active_index = wp.atomic_add(active_count, 0, 1)
+        active_articulations[active_index] = articulation
+        active_secondary_articulations[active_index] = candidate_secondary_articulations[candidate]
+
+
+@wp.kernel
+def clear_local_solve_diag(
+    world_constraint_count: wp.array[int],
+    local_solve_owner: wp.array[int],
+    max_constraints: int,
+    # output
+    world_diag: wp.array2d[float],
+):
+    """Discard stale response diagonals of locally owned worlds."""
+    tid = wp.tid()
+    row = tid % max_constraints
+    world = tid // max_constraints
+    if local_solve_owner[world] != PGS_LOCAL_SOLVE_OWNER_GENERAL and row < world_constraint_count[world]:
+        world_diag[world, row] = 0.0

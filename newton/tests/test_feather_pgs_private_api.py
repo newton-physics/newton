@@ -18,6 +18,7 @@ _PACKAGE_DIR = Path(__file__).parents[1] / "_src" / "solvers" / "feather_pgs"
 _KERNEL_FACTORIES = (
     "_get_pack_mf_meta_kernel",
     "_get_pgs_solve_mf_gs_kernel",
+    "_get_pgs_solve_local_owned_kernel",
     "_get_cholesky_kernel",
     "_get_crba_cholesky_kernel",
     "_get_crba_cholesky_warp_kernel",
