@@ -30,29 +30,47 @@ Minimum Requirements
    * - OS
      - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
      - macOS has no GPU acceleration
-   * - NVIDIA GPU
-     - Compute capability 5.2+ (Maxwell)
-     - With Warp 1.17; see the current default below
-   * - NVIDIA Driver
-     - 545 or newer (CUDA 12)
-     - With Warp 1.17; 550 or newer (CUDA 12.4) recommended for best performance
-   * - CUDA
-     - 12, 13
-     - No local CUDA Toolkit required; `Warp <https://github.com/NVIDIA/warp>`__ bundles the CUDA components it needs. See :ref:`cuda-compatibility`.
 
-A fresh install may select Warp 1.18, whose standard CUDA 13.4 wheel needs an
-R580-series driver and a Turing (``sm_75``) GPU. For older drivers or GPUs,
-install the CUDA 12.9 based Warp 1.17 wheel with
-``python -m pip install "newton" "warp-lang==1.17.0"``.
+GPU requirements depend on the installed `Warp
+<https://nvidia.github.io/warp/stable/user_guide/compatibility.html>`__ wheel:
+
+.. list-table::
+   :widths: 20 25 25 30
+   :header-rows: 1
+
+   * - Warp wheel
+     - NVIDIA GPU
+     - NVIDIA driver
+     - CUDA support
+   * - 1.18 (fresh installs)
+     - Compute capability 7.5+ (Turing)
+     - R580 or newer
+     - Standard wheel uses CUDA 13.4
+   * - 1.17
+     - Compute capability 5.2+ (Maxwell) on x86-64; see the ARM64 limitation below
+     - 545 or newer
+     - Standard wheel uses CUDA 12.9
+
+Newton 1.7 deprecates CUDA 12 GPU support, while retaining it with a Warp
+wheel built with CUDA 12 throughout the 1.7 release line. To use the standard
+Warp 1.17 wheel on an R545–R579 driver or an older supported GPU, install both
+packages in one request::
+
+    python -m pip install "newton" "warp-lang==1.17.0"
+
+Keep the Warp pin in your application's requirements or constraints file for
+later installs. A local CUDA Toolkit is not needed for standard Warp wheels.
+See :ref:`cuda-compatibility` for version-specific notes.
 
 Platform-Specific Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Linux aarch64 (ARM64)**
 
-Warp 1.17's CUDA 12.9 wheel omits ``sm_52``, ``sm_60``, ``sm_61``, and
-``sm_70`` targets on Linux ARM64. These GPUs need a Warp build made with an
-earlier CUDA 12 toolkit; see `Warp's CUDA 12.9 ARM64 limitation
+The standard Warp 1.17 wheel omits ``sm_52``, ``sm_60``, ``sm_61``, and
+``sm_70`` targets on Linux ARM64. The installation command above does not
+enable these GPUs. They need a Warp wheel built with an earlier CUDA 12
+toolkit; see `Warp's CUDA 12.9 ARM64 limitation
 <https://nvidia.github.io/warp/v1.17/user_guide/installation.html#cuda-12-9-limitation-on-linux-arm-platforms>`__.
 
 On ARM64 Linux, the ``importers`` extra requires GLIBC 2.35 or newer because

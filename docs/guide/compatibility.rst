@@ -30,7 +30,7 @@ Newton releases are tested on the following configurations:
    * - Dependencies
      - Latest known-good versions are pinned in the release branch's ``uv.lock``
    * - CUDA
-     - 12, 13
+     - 13; CUDA 12 GPU support is deprecated in Newton 1.7
 
 For the minimum requirements to install Newton, see
 :ref:`system-requirements` in the installation guide.
@@ -71,10 +71,14 @@ CUDA Compatibility
      - Required for reliable CUDA graph capture
    * - 12.4+
      - Recommended for best performance
-   * - 12.9
-     - The Warp 1.17 wheel uses CUDA 12.9. Newton documents driver 545 or
-       newer; Warp supports compute capability 5.2 or newer, with a Linux ARM64
-       architecture limitation described in :ref:`system-requirements`.
+   * - 12
+     - Deprecated in Newton 1.7. CUDA 12 GPU acceleration requires a Warp
+       wheel built with CUDA 12. The standard Warp 1.17 wheel uses CUDA 12.9;
+       Newton documents driver 545 or newer. GPU architecture support depends
+       on the wheel; see :ref:`system-requirements` for the Linux ARM64
+       limitation. CUDA 12 support remains available throughout the 1.7
+       release line under Newton's :ref:`deprecation-policy`; no removal
+       release has been announced.
    * - 13.4
      - The standard Warp 1.18 wheel uses CUDA 13.4 and requires an R580-series
        or newer driver and a GPU with compute capability 7.5 or newer
