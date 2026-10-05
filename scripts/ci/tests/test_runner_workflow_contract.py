@@ -129,6 +129,15 @@ class TestRunnerWorkflowContract(unittest.TestCase):
         for output in ("label", "ec2-instance-id", "region", "instance-type", "ready"):
             self.assertIn(f"    value: ${{{{ steps.select.outputs.{output} }}}}\n", action)
 
+    def test_empty_fallback_input_disables_fallback(self):
+        """Pass the fallback input through unchanged so an empty value disables fallback."""
+        for path in WORKLOADS:
+            workflow = (ROOT / path).read_text(encoding="utf-8")
+            if "      fallback-instance-type:\n" not in workflow:
+                continue
+            with self.subTest(path=path):
+                self.assertIn("  AWS_FALLBACK_INSTANCE_TYPE: ${{ inputs.fallback-instance-type }}\n", workflow)
+
     def test_trigger_category_is_json_encoded(self):
         """Preserve arbitrary trigger-category strings in resource tag JSON."""
         trigger_category = 'manual "quoted"\ncategory'

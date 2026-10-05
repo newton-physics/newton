@@ -1,7 +1,7 @@
 name: Start AWS GPU runner
 description: >-
   Launch an ephemeral EC2 GitHub runner, falling back to a second instance type
-  when the primary type has no capacity in any candidate availability zone.
+  when the primary type cannot launch in any candidate availability zone.
   Requires a repository checkout and configured AWS credentials.
 
 inputs:
@@ -100,7 +100,7 @@ runs:
           ]
 
     # Fall back only when the primary never launched; a launched instance that
-    # failed to register is a runner problem, not a capacity problem.
+    # failed to register would not be fixed by another instance type.
     - name: Discover networking for ${{ inputs.fallback-instance-type }}
       id: discover-fallback
       if: inputs.fallback-instance-type != '' && steps.start-primary.outputs.ec2-instance-id == ''
@@ -150,6 +150,7 @@ runs:
       shell: bash
       env:
         PRIMARY_TYPE: ${{ inputs.instance-type }}
+        PRIMARY_DISCOVER_OUTCOME: ${{ steps.discover-primary.outcome }}
         PRIMARY_OUTCOME: ${{ steps.start-primary.outcome }}
         PRIMARY_LABEL: ${{ steps.start-primary.outputs.label }}
         PRIMARY_ID: ${{ steps.start-primary.outputs.ec2-instance-id }}
@@ -164,7 +165,14 @@ runs:
           type=$PRIMARY_TYPE outcome=$PRIMARY_OUTCOME label=$PRIMARY_LABEL id=$PRIMARY_ID region=$PRIMARY_REGION
         elif [ -n "$FALLBACK_ID" ]; then
           type=$FALLBACK_TYPE outcome=$FALLBACK_OUTCOME label=$FALLBACK_LABEL id=$FALLBACK_ID region=$FALLBACK_REGION
-          echo "::warning::No $PRIMARY_TYPE capacity; running on fallback instance type $FALLBACK_TYPE."
+          # Fallback triggers on any primary failure, not just capacity, so
+          # point at the step whose error annotation has the cause.
+          if [ "$PRIMARY_DISCOVER_OUTCOME" != success ]; then
+            failed_step="Discover networking for $PRIMARY_TYPE"
+          else
+            failed_step="Start $PRIMARY_TYPE runner"
+          fi
+          echo "::warning::$PRIMARY_TYPE did not launch; running on fallback instance type $FALLBACK_TYPE. See the error from step '$failed_step' for the cause."
         else
           type= outcome=failure label= id= region=
         fi

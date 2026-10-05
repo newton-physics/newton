@@ -13,7 +13,8 @@ env:
   # Prefer the validated US capacity order before Asia-Pacific fallback.
   AWS_REGION_CANDIDATES: ${{ inputs.region-candidates || 'us-east-1 us-east-2 us-west-2 ap-northeast-1 ap-northeast-2' }}
   AWS_INSTANCE_TYPE: ${{ inputs.instance-type || 'g7e.2xlarge' }}
-  AWS_FALLBACK_INSTANCE_TYPE: ${{ inputs.fallback-instance-type || 'g6e.2xlarge' }}
+  # No `|| default` here: an explicitly empty input must disable fallback.
+  AWS_FALLBACK_INSTANCE_TYPE: ${{ inputs.fallback-instance-type }}
   AWS_VOLUME_SIZE: ${{ inputs.volume-size || '92' }}
   AWS_VOLUME_TYPE: gp3
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
@@ -34,7 +35,7 @@ on:
         type: string
         default: 'g7e.2xlarge'
       fallback-instance-type:
-        description: 'EC2 instance type to use when instance-type has no capacity'
+        description: 'EC2 instance type to use when instance-type cannot launch; empty disables fallback'
         required: false
         type: string
         default: 'g6e.2xlarge'
@@ -65,7 +66,7 @@ on:
         type: string
         default: 'g7e.2xlarge'
       fallback-instance-type:
-        description: 'EC2 instance type to use when instance-type has no capacity'
+        description: 'EC2 instance type to use when instance-type cannot launch; empty disables fallback'
         required: false
         type: string
         default: 'g6e.2xlarge'

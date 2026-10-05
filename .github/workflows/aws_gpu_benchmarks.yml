@@ -37,7 +37,7 @@ on:
         type: string
         default: ''
       fallback-instance-type:
-        description: 'EC2 instance type to use when g7e.2xlarge has no capacity'
+        description: 'EC2 instance type to use when g7e.2xlarge cannot launch; empty disables fallback'
         required: false
         type: string
         default: 'g6e.2xlarge'
@@ -57,7 +57,7 @@ on:
         default: 'g7e.2xlarge'
       # No fallback by default: each nightly cache fill targets one GPU architecture.
       fallback-instance-type:
-        description: 'EC2 instance type to use when instance-type has no capacity; empty disables fallback'
+        description: 'EC2 instance type to use when instance-type cannot launch; empty disables fallback'
         required: false
         type: string
         default: ''
