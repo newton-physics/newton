@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from functools import cache
 
 import warp as wp
 
@@ -9,6 +10,7 @@ from ...sim import BodyFlags, JointType
 from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
+    eval_single_articulation_fk,
 )
 from .friction import contact_tangent_basis, friction_pair_candidate
 
@@ -1034,6 +1036,260 @@ def eval_rigid_fk_id(
         cached_child = child
 
 
+@wp.func_native("""
+#if defined(__CUDA_ARCH__)
+    __syncwarp();
+#endif
+""")
+def _tree_warp_sync():
+    """Order dependent tree levels within one complete CUDA warp."""
+
+
+@cache
+def _get_tree_fk_kernel(lanes: int, mode: str):
+    """Build a cooperative traversal of independent tree branches.
+
+    Each articulation is assigned ``lanes`` threads of a warp. Its branches are
+    grouped into levels; the branches of one level run in parallel and levels are
+    separated by a warp barrier. The per-joint mathematics is the serial kernels'.
+
+    ``mode`` ``"id"`` evaluates poses and the inverse-dynamics bias with the
+    :func:`eval_rigid_fk_id` signature after the six schedule arguments;
+    ``"public"`` publishes ``body_q`` / ``body_qd`` like :func:`newton.eval_fk`.
+    Launch complete 32-thread warps.
+    """
+    if lanes not in (1, 2, 4, 8, 16, 32):
+        raise ValueError("Tree traversal lanes must be a power of two between 1 and 32")
+    if mode not in ("id", "public"):
+        raise ValueError(f"Unknown tree traversal mode: {mode}")
+    module = wp.Module(f"{__name__}.tree_fk_{mode}_{lanes}")
+
+    if mode == "public":
+
+        @wp.kernel(module=module, enable_backward=False)
+        def tree_fk_public(
+            group_count: int,
+            max_levels: int,
+            art_indices: wp.array[int],
+            level_offsets: wp.array2d[int],
+            segment_offsets: wp.array[int],
+            segment_joints: wp.array[int],
+            joint_articulation: wp.array[int],
+            joint_q: wp.array[float],
+            joint_qd: wp.array[float],
+            joint_q_start: wp.array[int],
+            joint_qd_start: wp.array[int],
+            joint_type: wp.array[int],
+            joint_parent: wp.array[int],
+            joint_child: wp.array[int],
+            joint_X_p: wp.array[wp.transform],
+            joint_X_c: wp.array[wp.transform],
+            joint_axis: wp.array[wp.vec3],
+            joint_dof_dim: wp.array2d[int],
+            body_com: wp.array[wp.vec3],
+            body_flags: wp.array[wp.int32],
+            body_flag_filter: int,
+            body_q: wp.array[wp.transform],
+            body_qd: wp.array[wp.spatial_vector],
+        ):
+            block, lane = wp.tid()
+            group = block * (32 // lanes) + lane // lanes
+            local = lane % lanes
+            active = group < group_count
+            for level in range(max_levels):
+                if active:
+                    segment = level_offsets[group, level] + local
+                    end = level_offsets[group, level + 1]
+                    while segment < end:
+                        for entry in range(segment_offsets[segment], segment_offsets[segment + 1]):
+                            joint = segment_joints[entry]
+                            eval_single_articulation_fk(
+                                joint,
+                                joint + 1,
+                                joint_articulation,
+                                joint_q,
+                                joint_qd,
+                                joint_q_start,
+                                joint_qd_start,
+                                joint_type,
+                                joint_parent,
+                                joint_child,
+                                joint_X_p,
+                                joint_X_c,
+                                joint_axis,
+                                joint_dof_dim,
+                                body_com,
+                                body_flags,
+                                body_flag_filter,
+                                body_q,
+                                body_qd,
+                            )
+                        segment += lanes
+                # Inactive groups still participate in every full-warp barrier.
+                if wp.static(lanes > 1):
+                    _tree_warp_sync()
+
+        return tree_fk_public
+
+    @wp.kernel(module=module, enable_backward=False)
+    def tree_fk_id(
+        group_count: int,
+        max_levels: int,
+        art_indices: wp.array[int],
+        level_offsets: wp.array2d[int],
+        segment_offsets: wp.array[int],
+        segment_joints: wp.array[int],
+        articulation_start: wp.array[int],
+        articulation_joint_end: wp.array[int],
+        joint_type: wp.array[int],
+        joint_parent: wp.array[int],
+        joint_child: wp.array[int],
+        joint_q_start: wp.array[int],
+        joint_qd_start: wp.array[int],
+        joint_q: wp.array[float],
+        joint_qd: wp.array[float],
+        joint_X_p: wp.array[wp.transform],
+        joint_X_c: wp.array[wp.transform],
+        body_X_com: wp.array[wp.transform],
+        joint_axis: wp.array[wp.vec3],
+        joint_dof_dim: wp.array2d[int],
+        body_com: wp.array[wp.vec3],
+        body_mass: wp.array[float],
+        body_inertia: wp.array[wp.mat33],
+        is_free_rigid: wp.array[int],
+        materialize_all_body_inertia: int,
+        materialize_body_inertia_terms: int,
+        body_world: wp.array[int],
+        gravity: wp.array[wp.vec3],
+        body_q: wp.array[wp.transform],
+        body_q_com: wp.array[wp.transform],
+        articulation_origin: wp.array[wp.vec3],
+        joint_S_s: wp.array[wp.spatial_vector],
+        body_I_s: wp.array[wp.spatial_matrix],
+        body_inertia_terms: wp.array2d[float],
+        body_v_s: wp.array[wp.spatial_vector],
+        body_f_s: wp.array[wp.spatial_vector],
+        body_a_s: wp.array[wp.spatial_vector],
+    ):
+        block, lane = wp.tid()
+        group = block * (32 // lanes) + lane // lanes
+        local = lane % lanes
+        active = group < group_count
+        articulation = int(0)
+        if active:
+            articulation = art_indices[group]
+
+        # The first root joint defines the articulation's frame origin, as in the serial kernel.
+        seed_joint = int(-1)
+        if active:
+            start = articulation_start[articulation]
+            if start < articulation_joint_end[articulation]:
+                seed_joint = start
+            if local == 0:
+                origin = wp.vec3()
+                if seed_joint >= 0:
+                    compute_link_transform(
+                        seed_joint,
+                        joint_type,
+                        joint_parent,
+                        joint_child,
+                        joint_q_start,
+                        joint_qd_start,
+                        joint_q,
+                        joint_X_p,
+                        joint_X_c,
+                        body_X_com,
+                        joint_axis,
+                        joint_dof_dim,
+                        body_q,
+                        body_q_com,
+                    )
+                    root_body = joint_child[seed_joint]
+                    if root_body >= 0:
+                        origin = wp.transform_point(body_q[root_body], body_com[root_body])
+                articulation_origin[articulation] = origin
+        if wp.static(lanes > 1):
+            _tree_warp_sync()
+
+        origin = wp.vec3()
+        write_body_inertia = materialize_all_body_inertia
+        if active:
+            origin = articulation_origin[articulation]
+            if is_free_rigid[articulation] != 0:
+                write_body_inertia = 1
+
+        # A joint needs only its parent's pose and motion and the articulation origin, so
+        # one pass evaluates both, carrying the parent motion along each unary chain.
+        for level in range(max_levels):
+            if active:
+                segment = level_offsets[group, level] + local
+                end = level_offsets[group, level + 1]
+                while segment < end:
+                    begin = segment_offsets[segment]
+                    finish = segment_offsets[segment + 1]
+                    parent = joint_parent[segment_joints[begin]]
+                    parent_v_s = wp.spatial_vector()
+                    parent_a_s = wp.spatial_vector()
+                    if parent >= 0:
+                        parent_v_s = body_v_s[parent]
+                        parent_a_s = body_a_s[parent]
+                    for entry in range(begin, finish):
+                        joint = segment_joints[entry]
+                        parent = joint_parent[joint]
+                        child = joint_child[joint]
+                        if joint != seed_joint:
+                            compute_link_transform(
+                                joint,
+                                joint_type,
+                                joint_parent,
+                                joint_child,
+                                joint_q_start,
+                                joint_qd_start,
+                                joint_q,
+                                joint_X_p,
+                                joint_X_c,
+                                body_X_com,
+                                joint_axis,
+                                joint_dof_dim,
+                                body_q,
+                                body_q_com,
+                            )
+                        gravity_s = gravity[body_world[child]]
+                        parent_v_s, parent_a_s = compute_link_velocity(
+                            joint,
+                            parent,
+                            child,
+                            parent_v_s,
+                            parent_a_s,
+                            origin,
+                            gravity_s,
+                            joint_type,
+                            joint_qd_start,
+                            joint_qd,
+                            joint_axis,
+                            joint_dof_dim,
+                            body_mass,
+                            body_inertia,
+                            write_body_inertia,
+                            materialize_body_inertia_terms,
+                            body_q,
+                            body_q_com,
+                            joint_X_p,
+                            joint_S_s,
+                            body_I_s,
+                            body_inertia_terms,
+                            body_v_s,
+                            body_f_s,
+                            body_a_s,
+                        )
+                    segment += lanes
+            # Inactive groups still participate in every full-warp barrier.
+            if wp.static(lanes > 1):
+                _tree_warp_sync()
+
+    return tree_fk_id
+
+
 @wp.kernel
 def refresh_masked_body_inertia(
     articulation_joint_end: wp.array[int],
@@ -1236,6 +1492,106 @@ def eval_rigid_tau(
         body_ft_s,
         tau,
     )
+
+
+@cache
+def _get_tree_tau_kernel(lanes: int):
+    """Build the cooperative backward pass of :func:`eval_rigid_tau` over independent branches.
+
+    Branch wrenches are reduced without atomics; the immediate children of a branch are
+    summed in descending joint order, the order of the serial pass.
+    """
+    if lanes not in (1, 2, 4, 8, 16, 32):
+        raise ValueError("Tree traversal lanes must be a power of two between 1 and 32")
+    module = wp.Module(f"{__name__}.tree_tau_{lanes}")
+
+    @wp.kernel(module=module, enable_backward=False)
+    def tree_tau(
+        group_count: int,
+        max_levels: int,
+        art_indices: wp.array[int],
+        level_offsets: wp.array2d[int],
+        segment_offsets: wp.array[int],
+        segment_joints: wp.array[int],
+        child_offsets: wp.array[int],
+        child_segments: wp.array[int],
+        joint_type: wp.array[int],
+        joint_child: wp.array[int],
+        joint_articulation: wp.array[int],
+        joint_qd_start: wp.array[int],
+        joint_q_start: wp.array[int],
+        joint_dof_dim: wp.array2d[int],
+        joint_f: wp.array[float],
+        joint_q: wp.array[float],
+        joint_qd: wp.array[float],
+        joint_spring_stiffness: wp.array[float],
+        joint_spring_ref: wp.array[float],
+        joint_damping: wp.array[float],
+        joint_S_s: wp.array[wp.spatial_vector],
+        body_fb_s: wp.array[wp.spatial_vector],
+        body_f_ext: wp.array[wp.spatial_vector],
+        body_flags: wp.array[wp.int32],
+        body_q: wp.array[wp.transform],
+        body_com: wp.array[wp.vec3],
+        articulation_origin: wp.array[wp.vec3],
+        body_ft_s: wp.array[wp.spatial_vector],
+        tau: wp.array[float],
+        segment_net: wp.array[wp.spatial_vector],
+    ):
+        block, lane = wp.tid()
+        group = block * (32 // lanes) + lane // lanes
+        local = lane % lanes
+        active = group < group_count
+        for reverse_level in range(max_levels):
+            level = max_levels - reverse_level - 1
+            if active:
+                segment = level_offsets[group, level] + local
+                end = level_offsets[group, level + 1]
+                while segment < end:
+                    begin = segment_offsets[segment]
+                    finish = segment_offsets[segment + 1]
+                    tail_body = joint_child[segment_joints[finish - 1]]
+                    f_t_s = body_ft_s[tail_body]
+                    for entry in range(child_offsets[segment], child_offsets[segment + 1]):
+                        f_t_s = f_t_s + segment_net[child_segments[entry]]
+                    f_s = wp.spatial_vector()
+                    for offset in range(finish - begin):
+                        joint = segment_joints[finish - offset - 1]
+                        child = joint_child[joint]
+                        if offset > 0:
+                            f_t_s = body_ft_s[child] + f_s
+                        body_ft_s[child] = f_t_s
+                        articulation = joint_articulation[joint]
+                        origin = wp.vec3()
+                        if articulation >= 0:
+                            origin = articulation_origin[articulation]
+                        f_s = _compute_body_net_wrench(
+                            child, f_t_s, origin, body_fb_s, body_f_ext, body_flags, body_q, body_com
+                        )
+                        jcalc_tau(
+                            joint_type[joint],
+                            joint_S_s,
+                            joint_f,
+                            joint_q,
+                            joint_qd,
+                            joint_spring_stiffness,
+                            joint_spring_ref,
+                            joint_damping,
+                            joint_q_start[joint],
+                            joint_qd_start[joint],
+                            joint_dof_dim[joint, 0],
+                            joint_dof_dim[joint, 1],
+                            f_s,
+                            0,
+                            tau,
+                        )
+                    segment_net[segment] = f_s
+                    segment += lanes
+            # Inactive groups still participate in every full-warp barrier.
+            if wp.static(lanes > 1):
+                _tree_warp_sync()
+
+    return tree_tau
 
 
 @wp.kernel(module=_MASS_DYNAMICS_KERNEL_MODULE)
@@ -1743,6 +2099,56 @@ def prepare_articulation_augmented_drives(
                 break
 
     row_counts[articulation] = slot
+
+
+@wp.kernel(module=_INVERSE_DYNAMICS_KERNEL_MODULE)
+def eval_augmented_drives(
+    articulation_start: wp.array[int],
+    articulation_H_rows: wp.array[int],
+    joint_type: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
+    joint_target_pos: wp.array[float],
+    joint_target_q_start: wp.array[int],
+    joint_target_vel: wp.array[float],
+    joint_effort_limit: wp.array[float],
+    max_dofs: int,
+    dt: float,
+    row_counts: wp.array[int],
+    row_dof_index: wp.array[int],
+    row_K: wp.array[float],
+    tau: wp.array[float],
+):
+    """Add the augmented drives to an already accumulated ``tau``, one thread per articulation."""
+    prepare_articulation_augmented_drives(
+        wp.tid(),
+        articulation_start,
+        articulation_H_rows,
+        joint_type,
+        joint_qd_start,
+        joint_q_start,
+        joint_dof_dim,
+        joint_q,
+        joint_qd,
+        joint_target_ke,
+        joint_target_kd,
+        joint_target_pos,
+        joint_target_q_start,
+        joint_target_vel,
+        joint_effort_limit,
+        max_dofs,
+        dt,
+        0,
+        row_counts,
+        row_dof_index,
+        row_K,
+        tau,
+    )
 
 
 @wp.kernel(module=_INVERSE_DYNAMICS_KERNEL_MODULE)
@@ -3609,6 +4015,66 @@ def apply_augmented_mass_diagonal_grouped(
             continue
 
         H_group[idx, local, local] += K
+
+
+@wp.kernel
+def scatter_augmented_drive_dof_K(
+    group_to_art: wp.array[int],
+    articulation_dof_start: wp.array[int],
+    n_dofs: int,
+    max_dofs: int,
+    mass_update_mask: wp.array[int],
+    row_counts: wp.array[int],
+    row_dof_index: wp.array[int],
+    row_K: wp.array[float],
+    # outputs
+    dof_K: wp.array[float],
+):
+    """Write each DOF's implicit drive term ``dt * kd + dt^2 * ke`` for a mass refresh.
+
+    The DOF-indexed form of :func:`apply_augmented_mass_diagonal_grouped`, consumed by the
+    sparse mass factors, which assemble the mass matrix without dense storage.
+    """
+    idx = wp.tid()
+    articulation = group_to_art[idx]
+    if mass_update_mask[articulation] == 0:
+        return
+    dof_start = articulation_dof_start[articulation]
+    for local in range(n_dofs):
+        dof_K[dof_start + local] = 0.0
+    for i in range(row_counts[articulation]):
+        row_index = articulation * max_dofs + i
+        dof = row_dof_index[row_index]
+        local = dof - dof_start
+        K = row_K[row_index]
+        if local >= 0 and local < n_dofs and K > 0.0:
+            dof_K[dof] = K
+
+
+@wp.kernel
+def invert_lower_factor_grouped(
+    group_to_art: wp.array[int],
+    mass_update_mask: wp.array[int],
+    n_dofs: int,
+    L_group: wp.array3d[float],
+    # outputs
+    Linv_group: wp.array3d[float],
+):
+    """Invert each refreshed lower Cholesky factor of a size group by forward substitution."""
+    idx = wp.tid()
+    if mass_update_mask[group_to_art[idx]] == 0:
+        return
+    for col in range(n_dofs):
+        for row in range(n_dofs):
+            if row < col:
+                Linv_group[idx, row, col] = 0.0
+                continue
+            value = float(0.0)
+            if row == col:
+                value = 1.0
+            for k in range(col, row):
+                value -= L_group[idx, row, k] * Linv_group[idx, k, col]
+            Linv_group[idx, row, col] = value / L_group[idx, row, row]
 
 
 @wp.kernel

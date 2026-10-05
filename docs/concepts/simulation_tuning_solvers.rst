@@ -229,7 +229,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``dense_max_constraints``, ``mf_max_constraints``,
        ``warn_constraint_overflow``, ``drive_mode``,
        ``fuse_joint_velocity_limits``, ``enable_bilateral_preelimination``,
-       ``bilateral_preelimination_include_mimics``.
+       ``bilateral_preelimination_include_mimics``, ``parallel_tree``.
      - Experimental. The default ``pgs_mode="split"`` runs on CPU and CUDA and
        stores a dense ``dense_max_constraints`` squared Delassus matrix per world;
        ``pgs_mode="matrix_free"`` requires CUDA and is needed for joint velocity
@@ -260,7 +260,13 @@ repository examples spend tuning effort, not a shared solver API.
        the sweep with a regularized Schur complement, which keeps closed chains
        nearly closed at low iteration counts. The regularization leaves a small
        residual (it is not exact elimination), and an unsupported articulation
-       disables elimination for the whole solver with a warning.
+       disables elimination for the whole solver with a warning. In the
+       matrix-free solve, branched articulations of one shared
+       topology select sparse mass factors automatically from the model's
+       structure, not from a performance estimate (depending on the topology
+       and the world count they can be faster or markedly slower);
+       ``parallel_tree`` traverses independent tree branches in parallel and is
+       worth measuring on broad trees such as hands.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.
