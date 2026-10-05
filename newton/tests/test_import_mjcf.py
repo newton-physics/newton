@@ -10881,6 +10881,26 @@ class TestImportMjcfSensors(unittest.TestCase):
         )
         self.assertEqual(model.mujoco.sensor_label[3], "other/angular")
 
+    def test_unnamed_sensors_avoid_authored_name_collisions(self):
+        """Keep unnamed sensors without overwriting or rejecting authored names."""
+        cases = (
+            ('<gyro site="s"/><gyro name="gyro_0" site="s"/>', ["gyro_0_1", "gyro_0"]),
+            ('<gyro name="gyro_1" site="s"/><gyro site="s"/>', ["gyro_1", "gyro_1_1"]),
+            (
+                '<gyro site="s"/><gyro name="gyro_0" site="s"/><gyro name="gyro_0_1" site="s"/>',
+                ["gyro_0_2", "gyro_0", "gyro_0_1"],
+            ),
+        )
+        for declarations, expected_labels in cases:
+            with self.subTest(declarations=declarations):
+                xml = f'<mujoco><worldbody><site name="s"/></worldbody><sensor>{declarations}</sensor></mujoco>'
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(xml, parse_sensors=True)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.mujoco.sensor_label, expected_labels)
+                self.assertEqual(model.mujoco.sensor_type, ["gyro"] * len(expected_labels))
+                np.testing.assert_array_equal(model.mujoco.sensor_site.numpy(), [0] * len(expected_labels))
+
     def test_invalid_references_and_names(self):
         """Reject ambiguous names and invalid site references."""
         for xml, message in (

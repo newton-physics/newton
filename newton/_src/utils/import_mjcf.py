@@ -3607,13 +3607,25 @@ def parse_mjcf(
             if len(declared_sites) != len(set(declared_sites)):
                 raise ValueError("Duplicate site name in MJCF sensor source")
             declared_site_keys = set(declared_sites)
-            sensor_names = set()
             sensors = [sensor for section in sensor_sections for sensor in section]
+            sensor_names = set()
+            for sensor in sensors:
+                name = sensor.attrib.get("name")
+                if name:
+                    if name in sensor_names:
+                        raise ValueError(f"Duplicate sensor name '{name}'")
+                    sensor_names.add(name)
             for sensor_index, sensor in enumerate(sensors):
-                name = sensor.attrib.get("name") or f"{sensor.tag}_{sensor_index}"
-                if name in sensor_names:
-                    raise ValueError(f"Duplicate sensor name '{name}'")
-                sensor_names.add(name)
+                name = sensor.attrib.get("name")
+                if not name:
+                    # Reserve authored names before selecting names for anonymous declarations.
+                    base_name = f"{sensor.tag}_{sensor_index}"
+                    name = base_name
+                    suffix = 1
+                    while name in sensor_names:
+                        name = f"{base_name}_{suffix}"
+                        suffix += 1
+                    sensor_names.add(name)
                 if sensor.tag not in ("gyro", "accelerometer"):
                     warnings.warn(f"Unsupported MJCF sensor '{sensor.tag}'; skipping '{name}'", stacklevel=2)
                     continue

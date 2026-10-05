@@ -900,10 +900,11 @@ other direction, MuJoCo has several modeling concepts that are not
 imported when loading an MJCF or USD asset into Newton, and that
 :class:`~newton.solvers.SolverMuJoCo` does not reconstruct during conversion:
 
-- **Sensors** (``<sensor>`` — force/torque, IMU, gyro, accelerometer,
-  rangefinder, touch, camera-based, …). Newton has its own sensor
-  pipeline (:doc:`/concepts/sensors`) that is independent of the MuJoCo
-  solver.
+- **Runtime sensor computation** (``<sensor>`` — force/torque, IMU, gyro,
+  accelerometer, rangefinder, touch, camera-based, …). Gyro and accelerometer
+  declarations can be imported as opt-in :ref:`mujoco-sensor-metadata`, but
+  this does not enable MuJoCo sensor computation. Newton has its own sensor
+  pipeline (:doc:`/concepts/sensors`) that is independent of the MuJoCo solver.
 - **Cameras and lights** declared in MJCF/USD. Newton uses its own viewer
   and lighting pipeline; camera/light primitives in the source asset are
   ignored.
@@ -1042,6 +1043,8 @@ API and subject to change.
   Newton built-in property mapping.
 
 
+.. _mujoco-sensor-metadata:
+
 MJCF sensor metadata
 --------------------
 
@@ -1065,7 +1068,8 @@ Each supported declaration contributes one row, in source order:
    * - Attribute
      - Meaning
    * - ``sensor_label``
-     - Model-prefixed name; unnamed sensors use ``<tag>_<source index>``.
+     - Model-prefixed name; unnamed sensors use ``<tag>_<source index>``
+       with a numeric suffix when needed to avoid name collisions.
    * - ``sensor_type``
      - Original MJCF tag (``gyro`` or ``accelerometer``).
    * - ``sensor_site``
