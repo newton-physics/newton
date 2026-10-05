@@ -364,7 +364,8 @@ def main(argv=None):
 
         if args.shard_count > 1:  # NVIDIA Modification
             total_suite_count = len(test_suites)
-            test_suites = _select_shard(test_suites, args.shard_count, args.shard_index)
+            # Round-robin over the deterministic discovery order: shards are disjoint and complete.
+            test_suites = test_suites[args.shard_index :: args.shard_count]
             # The serial fallback runs discover_suite directly, so restrict it to the shard too.
             discover_suite = unittest.TestSuite(test_suites)
             print(
@@ -510,8 +511,7 @@ def main(argv=None):
         print(file=sys.stderr)
         print(f"{'OK' if is_success else 'FAILED'}{' (' + ', '.join(infos) + ')' if infos else ''}", file=sys.stderr)
 
-        # NVIDIA Modification: an empty shard still writes a report, so each shard job produces one
-        if args.junit_report_xml and (test_records or (args.shard_count > 1 and not test_suites)):
+        if args.junit_report_xml:
             # NVIDIA modification to report results in Junit XML format
             write_junit_results(
                 args.junit_report_xml,
@@ -622,16 +622,6 @@ def _coverage(args, temp_dir):
 
 
 # Iterate module-level test suites - all top-level test suites returned from TestLoader.discover
-def _select_shard(test_suites, shard_count, shard_index):  # NVIDIA Modification
-    """Return every ``shard_count``-th suite, starting at ``shard_index``.
-
-    Discovery order is deterministic, so the shards of one discovered suite list
-    are disjoint, their union is the full list, and repeated runs select the
-    same suites.
-    """
-    return test_suites[shard_index::shard_count]
-
-
 def _iter_module_suites(test_suite):
     for module_suite in test_suite:
         if module_suite.countTestCases():
