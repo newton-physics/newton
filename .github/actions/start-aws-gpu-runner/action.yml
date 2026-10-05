@@ -51,8 +51,9 @@ outputs:
     description: "'true' when the runner launched and registered"
     value: ${{ steps.select.outputs.ready }}
 
-# Every fallible step uses continue-on-error so the select step always runs and
-# the outputs needed to stop a launched instance are always set.
+# Fallible steps use continue-on-error and the select step uses always(), so the
+# outputs needed to stop a launched instance are set even on failure or
+# cancellation.
 runs:
   using: composite
   steps:
@@ -145,6 +146,7 @@ runs:
 
     - name: Select launched runner
       id: select
+      if: always()
       shell: bash
       env:
         PRIMARY_TYPE: ${{ inputs.instance-type }}

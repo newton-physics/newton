@@ -120,6 +120,15 @@ class TestRunnerWorkflowContract(unittest.TestCase):
         for expected_tag in expected_tags:
             self.assertIn(expected_tag, blocks[0])
 
+    def test_runner_action_reports_instance_on_cancellation(self):
+        """Set the instance ID output even when the run is cancelled after launch."""
+        action = START_RUNNER_ACTION.read_text(encoding="utf-8")
+        start = action.index("    - name: Select launched runner\n")
+        step = action[start : action.index("      run: |\n", start)]
+        self.assertIn("      if: always()\n", step)
+        for output in ("label", "ec2-instance-id", "region", "instance-type", "ready"):
+            self.assertIn(f"    value: ${{{{ steps.select.outputs.{output} }}}}\n", action)
+
     def test_trigger_category_is_json_encoded(self):
         """Preserve arbitrary trigger-category strings in resource tag JSON."""
         trigger_category = 'manual "quoted"\ncategory'
