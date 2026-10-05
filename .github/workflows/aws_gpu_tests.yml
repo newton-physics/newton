@@ -179,6 +179,27 @@ jobs:
           COVERAGE_CORE: "sysmon"
         run: uv run --extra dev --extra torch-cu13 -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
+      - name: Test ViewerRTX with OVRTX 0.5
+        run: >
+          uv run --extra dev
+          --with ovrtx==0.5.0.377615
+          --with ovstage==0.2.0.377349
+          -m newton.tests
+          -k test_viewer_rtx
+          --strict-warnings
+          --no-cache-clear
+
+      - name: Smoke test ViewerRTX rendering with OVRTX 0.5
+        run: >
+          uv run --extra dev
+          --with ovrtx==0.5.0.377615
+          --with ovstage==0.2.0.377349
+          python -W error::DeprecationWarning
+          -m newton.examples basic_viewer
+          --viewer rtx
+          --headless
+          --num-frames 2
+
       - name: Check disk space (post-test)
         if: always()
         run: df -h
