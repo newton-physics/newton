@@ -233,13 +233,15 @@ repository examples spend tuning effort, not a shared solver API.
        ``pgs_contact_regularization``, ``pgs_velocity_iterations``,
        ``pgs_warmstart``, ``restitution_velocity_threshold``,
        ``contact_speculative_scale``, ``contact_gap_gate``,
-       ``contact_torsion_radius``, ``contact_torsion_device``, ``parallel_tree``.
+       ``contact_torsion_radius``, ``contact_torsion_device``,
+       ``contact_compliance``, ``parallel_tree``.
      - Experimental. The default ``pgs_mode="split"`` runs on CPU and CUDA and
        stores a dense ``dense_max_constraints`` squared Delassus matrix per world;
        ``pgs_mode="matrix_free"`` requires CUDA and is needed for joint velocity
        limits, ``drive_mode="physx_pgs"``, mimic joints, loop-closing joints,
        friction patches, contact regularization, velocity-only iterations, warm
-       start, restitution and contact torsion. Joint limits are enforced only with
+       start, restitution, contact torsion and contact compliance. Joint limits
+       are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``pgs_iterations`` reduce residual penetration and
@@ -261,6 +263,9 @@ repository examples spend tuning effort, not a shared solver API.
        the radius is an explicit footprint assumption (``2 R / 3`` for a
        uniformly loaded disk of radius ``R``). ``contact_torsion_device``
        prepares these rows on the device, which CUDA graph capture requires.
+       The experimental ``contact_compliance`` option solves hydroelastic
+       contacts with positive stiffness as implicit spring-dampers instead; it
+       uses point friction and does not support CUDA graph capture.
        Joint drives are integrated implicitly by default, which keeps large
        drive gains stable at ordinary ``dt``; ``drive_mode="physx_pgs"`` solves
        them as PGS rows together with contacts and limits instead, and each

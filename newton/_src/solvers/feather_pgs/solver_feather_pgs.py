@@ -18,6 +18,7 @@ from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk
 from ..solver import SolverBase
+from . import contact_compliance as _contact_compliance
 from .contact_torsion import (
     configure_contact_torsion,
     prepare_torsion_rows,
@@ -1025,10 +1026,11 @@ class SolverFeatherPGS(SolverBase):
       regularization, warm start from the previous step's impulses, velocity-only
       iterations and gap gates for speculative contacts are configured on the
       constructor. Experimental, default-off contact torsion (``contact_torsion_radius``)
-      adds a load-bounded spin-friction row per contact group. Friction patches,
-      restitution, regularization, warm start, velocity-only iterations and contact torsion
-      need ``pgs_mode="matrix_free"``; the split solve uses point friction. Contact
-      compliance is not applied.
+      adds a load-bounded spin-friction row per contact group, and experimental implicit
+      compliance of hydroelastic contacts is opt-in (``contact_compliance``). Friction
+      patches, restitution, regularization, warm start, velocity-only iterations, contact
+      torsion and contact compliance need ``pgs_mode="matrix_free"``; the split solve uses
+      point friction.
     - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds.
     - CUDA graph capture of :meth:`step` and :meth:`reset`.
 
@@ -1057,7 +1059,7 @@ class SolverFeatherPGS(SolverBase):
     64 DOFs, joint velocity-limit rows are disabled, the model has no mimic or loop-closing
     joints, drives are augmented and contacts use hard point friction
     (``friction_anchor_beta=0``, no warm start, regularization, velocity-only iterations,
-    friction gap threshold, restitution or contact torsion): the mass matrix is assembled and factored in
+    friction gap threshold, restitution, contact torsion or compliance): the mass matrix is assembled and factored in
     the fill-free pattern of the kinematic tree, and constraint rows keep only the DOFs
     that support them.
     Otherwise, and for free bodies, dense factors are used. Both give the same dynamics up
@@ -1263,6 +1265,7 @@ class SolverFeatherPGS(SolverBase):
         contact_torsion_shape_indices: tuple[int, ...] | None = None,
         contact_torsion_shape_patterns: tuple[str, ...] | None = None,
         contact_torsion_device: bool = False,
+        contact_compliance: bool = False,
     ):
         """Create a FeatherPGS solver for a finalized model.
 
@@ -1381,8 +1384,9 @@ class SolverFeatherPGS(SolverBase):
                 slower, so measure the full step before enabling it.
             friction_anchor_beta: Position-correction gain of persistent friction patches;
                 ``0`` selects point friction. ``None`` selects ``0.2`` with
-                ``pgs_mode="matrix_free"`` and point friction with ``pgs_mode="split"``, which
-                has no friction patches. With a positive gain, the contacts of a body
+                ``pgs_mode="matrix_free"``, and point friction with ``pgs_mode="split"``,
+                which has no friction patches, or when ``contact_compliance`` is enabled.
+                With a positive gain, the contacts of a body
                 pair whose normals, contact planes and friction coefficients agree and whose
                 shapes touch form a region. Each region's friction acts at up to two anchors
                 along its principal extent, which share the region's total normal impulse;
@@ -1490,7 +1494,58 @@ class SolverFeatherPGS(SolverBase):
                 batch before using the results. Grouping runs serially per world with
                 worst-case quadratic cost in the contacts of a world. No effect without a
                 positive ``contact_torsion_radius``.
+            contact_compliance: Experimental: solve contacts that carry a positive
+                :attr:`~newton.Contacts.rigid_contact_stiffness` [N/m] with an implicit
+                unilateral spring-damper law instead of the rigid normal law. The material
+                comes from the contacts (per-shape hydroelastic stiffness, the contact damping
+                [N s/m], zero staying zero, and the friction weight, applied once to the pair
+                friction); contacts with zero stiffness stay rigid. A compliant row's force is
+                ``max(0, -k phi_next - c u_next)``, solved by updating its residual
+                ``u + k phi / (dt k + c) + lambda / (dt (dt k + c))`` after every sweep; the
+                damping term is dropped while the gap is open. Requires point friction
+                (``None`` or ``0`` for ``friction_anchor_beta``; ``None`` warns), positive
+                ``pgs_iterations``, no warm start, no velocity-only iterations, no contact
+                regularization and zero shape restitution. The contacts must carry the
+                hydroelastic material arrays. Each step synchronizes the row metadata with the
+                host, so the option rejects CUDA graph capture and is not a performance path.
+                Contacts the allocator excludes on purpose are counted in
+                ``compliance_skipped_contact_count`` and compliant contacts in
+                ``compliance_contact_count``; a compliant contact lost to a row capacity
+                raises, even with ``warn_constraint_overflow`` off. This option may change
+                without the normal deprecation period.
         """
+        if contact_compliance:
+            # Reject unsupported combinations before any allocation.
+            _contact_compliance.validate_configuration(
+                {
+                    "pgs_iterations": int(pgs_iterations),
+                    "pgs_velocity_iterations": int(pgs_velocity_iterations),
+                    "pgs_warmstart": bool(pgs_warmstart),
+                    "pgs_contact_regularization": float(pgs_contact_regularization),
+                }
+            )
+        if friction_anchor_beta is None:
+            if contact_compliance:
+                friction_anchor_beta = 0.0
+                warnings.warn(
+                    "The contact_compliance material law uses point friction; it does not support "
+                    "persistent friction patches. Set friction_anchor_beta=0 to select point friction "
+                    "without this warning.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            else:
+                # The split solve has no friction patches.
+                friction_anchor_beta = 0.2 if pgs_mode == "matrix_free" else 0.0
+        elif contact_compliance and float(friction_anchor_beta) > 0.0:
+            raise ValueError("contact_compliance is not validated with friction_anchor_beta > 0")
+        self.contact_compliance = bool(contact_compliance)
+        self.compliance_contact_count = 0
+        """Compliant contacts consumed by the last step (``contact_compliance`` only)."""
+        self.compliance_skipped_contact_count = 0
+        """Positive-stiffness contacts the row allocator excluded in the last step (``contact_compliance`` only)."""
+        self._compliant_contacts = None
+        self._compliant_prepared = False
         super().__init__(model)
         if pgs_mode not in ("matrix_free", "split"):
             raise ValueError(f"pgs_mode must be 'matrix_free' or 'split', got {pgs_mode!r}")
@@ -1550,9 +1605,6 @@ class SolverFeatherPGS(SolverBase):
         )
         self.enable_bilateral_preelimination = bool(enable_bilateral_preelimination)
         self.bilateral_preelimination_include_mimics = bool(bilateral_preelimination_include_mimics)
-        if friction_anchor_beta is None:
-            # The split solve has no friction patches.
-            friction_anchor_beta = 0.2 if pgs_mode == "matrix_free" else 0.0
         self.friction_anchor_beta = _finite_non_negative("friction_anchor_beta", friction_anchor_beta)
         self._friction_anchors_enabled = self.friction_anchor_beta > 0.0
         self.pgs_contact_regularization = _finite_non_negative("pgs_contact_regularization", pgs_contact_regularization)
@@ -1600,6 +1652,7 @@ class SolverFeatherPGS(SolverBase):
                     ("pgs_velocity_iterations > 0", self.pgs_velocity_iterations > 0),
                     ("pgs_warmstart=True", self.pgs_warmstart),
                     ("contact_torsion_radius > 0", self._contact_torsion_enabled),
+                    ("contact_compliance=True", self.contact_compliance),
                 )
                 if requested
             ]
@@ -2033,6 +2086,8 @@ class SolverFeatherPGS(SolverBase):
             flags: Unused; the solver's history is cleared regardless of the state flags.
         """
         del flags
+        if self.contact_compliance:
+            _contact_compliance.clear(self)
         world_mask = self._normalize_reset_world_mask(world_mask)
         if self.world_count == 0:
             return
@@ -3042,11 +3097,12 @@ class SolverFeatherPGS(SolverBase):
 
         They solve hard point-friction contacts (one normal and two tangent rows per
         contact) without restitution, so friction patches, warm start, regularization,
-        velocity-only iterations, normal-only contacts, restitution and contact torsion keep
-        the dense path.
+        velocity-only iterations, normal-only contacts, restitution, contact torsion and
+        contact compliance keep the dense path.
         """
         if (
             self._contact_torsion_enabled
+            or self.contact_compliance
             or self._friction_anchors_enabled
             or self.pgs_warmstart
             or self._regularization_enabled
@@ -4060,6 +4116,9 @@ class SolverFeatherPGS(SolverBase):
         Returns:
             ``state_out``.
         """
+        if self.contact_compliance:
+            # Reject unsupported state before any stage can launch work.
+            _contact_compliance.validate_step(self)
         if contacts is not None and contacts.rigid_contact_max > self._max_contacts_alloc:
             raise ValueError(
                 "FeatherPGS contact capacity mismatch: received "
@@ -4625,8 +4684,11 @@ class SolverFeatherPGS(SolverBase):
         if self._preelim_active:
             # After the warm-start installs, so a carried contact impulse cannot reopen the projection.
             self._stage5_project_bilateral_velocity()
-        self._pack_mf_meta(self.mf_rhs)
-        self._launch_pgs_solve(self.rhs, self.pgs_iterations, regularize=self._regularization_enabled)
+        if self.contact_compliance:
+            _contact_compliance.solve(self, iterations=self.pgs_iterations)
+        else:
+            self._pack_mf_meta(self.mf_rhs)
+            self._launch_pgs_solve(self.rhs, self.pgs_iterations, regularize=self._regularization_enabled)
 
     def _solve_split(self, state_aug: State, dt: float) -> None:
         """Assemble and solve the dense Delassus systems, then the free-body rows, into ``v_out``.
@@ -5724,6 +5786,8 @@ class SolverFeatherPGS(SolverBase):
         friction][free-body velocity limits]``. Rows past a capacity are dropped, counted and
         latched into :attr:`constraint_overflow`.
         """
+        if self.contact_compliance:
+            _contact_compliance.start_step(self, contacts, dt)
         model = self.model
         max_constraints = self.dense_max_constraints
         mf_active = self._has_free_rigid_bodies
