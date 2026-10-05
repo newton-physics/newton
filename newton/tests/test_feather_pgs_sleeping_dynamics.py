@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.test_feather_pgs_sleeping_production import _PROFILE
+from newton.tests.test_feather_pgs_sleeping_production import _solver
 
 _FIELDS = ("body_q", "body_qd", "joint_q", "joint_qd")
 
@@ -37,7 +37,7 @@ class TestSleepingDynamicsSkip(unittest.TestCase):
                 self._compare(interval=interval, velocity_limits=True, graph=True)
 
     def _compare(self, *, interval, velocity_limits, graph, **options):
-        runs = [_Run(skip, interval, velocity_limits, graph, options) for skip in (False, True)]
+        runs = [_Run(self, skip, interval, velocity_limits, graph, options) for skip in (False, True)]
         self.assertTrue(runs[1].solver._sleep_skips_dynamics)
         self.assertFalse(runs[0].solver._sleep_skips_dynamics)
         slept = woke = False
@@ -59,20 +59,18 @@ class TestSleepingDynamicsSkip(unittest.TestCase):
 
 
 class _Run:
-    def __init__(self, skip, interval, velocity_limits, graph, options):
+    def __init__(self, test, skip, interval, velocity_limits, graph, options):
         self.model = _scene()
         self.pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=512)
         options = dict(options)
         overrides = options.pop("kernel_overrides", {})
         with mock.patch.object(newton.solvers.SolverFeatherPGS, "_kernel_overrides", overrides):
-            self.solver = newton.solvers.SolverFeatherPGS(
+            self.solver = _solver(
+                test,
                 self.model,
-                **{
-                    **_PROFILE,
-                    "update_mass_matrix_interval": interval,
-                    "enable_joint_velocity_limits": velocity_limits,
-                    **options,
-                },
+                update_mass_matrix_interval=interval,
+                enable_joint_velocity_limits=velocity_limits,
+                **options,
             )
         self.solver.sleeping.skip_dynamics = skip
         self.states = [self.model.state(), self.model.state()]
@@ -149,7 +147,7 @@ def _scene():
         )
         parent = link
     builder.add_articulation(joints)
-    builder.add_constraint_mimic(joint0=joints[3], joint1=joints[2])
+    builder.set_joint_mimic(joints[3], joints[2])
     builder.joint_velocity_limit[:] = [5.0] * len(builder.joint_velocity_limit)
     return builder.finalize(device="cuda:0")
 

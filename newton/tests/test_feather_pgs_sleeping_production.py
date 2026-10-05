@@ -3,7 +3,9 @@
 
 """Exercise sleeping with persistent friction anchors, device torsion and mimic constraints."""
 
+import functools
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -34,7 +36,7 @@ _PROFILE = {
 class TestSleepingProductionProfile(unittest.TestCase):
     def test_anchored_torsion_articulations_sleep_and_wake(self):
         """Drop every row of a settled scene and restore anchored torsion rows on a force wake."""
-        model, pipeline, solver, states, control = _articulations()
+        model, pipeline, solver, states, control = _articulations(self)
         _advance(pipeline, solver, states, control, 5)
         awake_rows = int(solver.constraint_count.numpy()[0])
         awake_torsion = _torsion_rows(solver)
@@ -65,7 +67,7 @@ class TestSleepingProductionProfile(unittest.TestCase):
 
     def test_graph_replay_validates_torsion(self):
         """Sleep and wake inside a captured graph with mandatory torsion validation."""
-        model, pipeline, solver, states, control = _articulations()
+        model, pipeline, solver, states, control = _articulations(self)
         contacts = pipeline.contacts()
         _advance(pipeline, solver, states, control, 2, contacts=contacts)
         solver.prepare_contact_torsion_capture(states[0], states[1])
@@ -87,7 +89,7 @@ class TestSleepingProductionProfile(unittest.TestCase):
 
     def test_masked_reset_wakes_only_selected_worlds(self):
         """Wake only the worlds a masked reset selects, including none for an empty mask."""
-        model, pipeline, solver, states = _two_world_boxes()
+        model, pipeline, solver, states = _two_world_boxes(self)
         _advance(pipeline, solver, states, model.control(), 400)
         np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
         for mask, expected in (([False, False], [0, 0]), ([True, False], [1, 0])):
@@ -98,7 +100,7 @@ class TestSleepingProductionProfile(unittest.TestCase):
 
     def test_property_notification_wakes_only_changed_islands(self):
         """Wake the island whose mass changed, and nothing for a notification without a change."""
-        model, pipeline, solver, states = _two_world_boxes()
+        model, pipeline, solver, states = _two_world_boxes(self)
         _advance(pipeline, solver, states, model.control(), 400)
         np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
         solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
@@ -122,7 +124,7 @@ class TestSleepingProductionProfile(unittest.TestCase):
     def _check_carry(self, tiles):
         trajectories, flood_pairs = [], []
         for carry in (False, True):
-            model, pipeline, solver, states, control = _articulations(tiles=tiles)
+            model, pipeline, solver, states, control = _articulations(self, tiles=tiles)
             solver.sleeping.carry_frozen_patches = carry
             contacts = pipeline.contacts()
             frozen = 0
@@ -156,7 +158,7 @@ class TestSleepingProductionProfile(unittest.TestCase):
 
     def test_successive_notifications_keep_every_wake(self):
         """A second notification before the next step keeps the first notification's wake."""
-        model, pipeline, solver, states = _two_world_boxes()
+        model, pipeline, solver, states = _two_world_boxes(self)
         _advance(pipeline, solver, states, model.control(), 400)
         np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
         mass = model.body_mass.numpy()
@@ -172,7 +174,7 @@ class TestSleepingProductionProfile(unittest.TestCase):
 
     def test_replaced_property_array_wakes_its_island(self):
         """A model array replaced rather than assigned in place still wakes the island it changed."""
-        model, pipeline, solver, states = _two_world_boxes()
+        model, pipeline, solver, states = _two_world_boxes(self)
         _advance(pipeline, solver, states, model.control(), 400)
         np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
         com = model.body_com.numpy()
@@ -184,7 +186,7 @@ class TestSleepingProductionProfile(unittest.TestCase):
 
     def test_resized_property_array_is_rejected(self):
         """A model array replaced with a different entity count cannot be diffed and raises."""
-        model, pipeline, solver, states = _two_world_boxes()
+        model, pipeline, solver, states = _two_world_boxes(self)
         _advance(pipeline, solver, states, model.control(), 1)
         model.body_mass = wp.zeros(model.body_count + 1, dtype=float, device=model.device)
         with self.assertRaisesRegex(ValueError, "body_mass"):
@@ -205,7 +207,7 @@ class TestSleepingProductionProfile(unittest.TestCase):
         model = builder.finalize(device="cuda:0")
         self.assertEqual(model.body_count, model.joint_count)
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
-        solver = newton.solvers.SolverFeatherPGS(model, **_PROFILE)
+        solver = _solver(self, model)
         states = [model.state(), model.state()]
         np.testing.assert_array_equal(solver.body_to_articulation.numpy(), [1, 0])
         _advance(pipeline, solver, states, model.control(), 400)
@@ -233,7 +235,7 @@ class TestSleepingProductionProfile(unittest.TestCase):
         builder.replicate(box, 2)
         model = builder.finalize(device="cuda:0")
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
-        solver = newton.solvers.SolverFeatherPGS(model, **_PROFILE)
+        solver = _solver(self, model)
         states = [model.state(), model.state()]
         _advance(pipeline, solver, states, model.control(), 400)
         np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
@@ -246,34 +248,46 @@ class TestSleepingProductionProfile(unittest.TestCase):
 
     def test_mimic_articulation_stays_awake(self):
         """Keep an articulation with mimic rows awake while an independent box sleeps."""
-        builder = newton.ModelBuilder()
-        builder.add_ground_plane()
-        base = builder.add_link(xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()))
-        builder.add_shape_box(base, hx=0.2, hy=0.1, hz=0.05)
-        joints = [builder.add_joint_free(child=base)]
-        for side in (-1.0, 1.0):
-            finger = builder.add_link(xform=wp.transform((side * 0.15, 0.0, 0.15), wp.quat_identity()))
-            builder.add_shape_box(finger, hx=0.02, hy=0.02, hz=0.05)
-            joints.append(
-                builder.add_joint_revolute(
-                    parent=base, child=finger, parent_xform=wp.transform((side * 0.15, 0.0, 0.1), wp.quat_identity())
-                )
-            )
-        builder.add_articulation(joints)
-        builder.add_constraint_mimic(joint0=joints[2], joint1=joints[1])
-        box = builder.add_body(xform=wp.transform((2.0, 0.0, 0.1), wp.quat_identity()))
-        builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1)
-        model = builder.finalize(device="cuda:0")
-        solver = newton.solvers.SolverFeatherPGS(model, **{**_PROFILE, "contact_torsion_radius": 0.0})
-        self.assertGreater(solver._mimic_count, 0)
-        pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
-        _advance(pipeline, solver, [model.state(), model.state()], model.control(), 400)
-        awake = solver.sleeping.art_awake.numpy()
-        self.assertEqual(int(awake[solver.body_to_articulation.numpy()[base]]), 1)
-        self.assertEqual(int(awake[solver.body_to_articulation.numpy()[box]]), 0)
+        for legacy in (False, True):
+            with self.subTest(legacy_constraint_mimic=legacy):
+                builder = newton.ModelBuilder()
+                builder.add_ground_plane()
+                base = builder.add_link(xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()))
+                builder.add_shape_box(base, hx=0.2, hy=0.1, hz=0.05)
+                joints = [builder.add_joint_free(child=base)]
+                for side in (-1.0, 1.0):
+                    finger = builder.add_link(xform=wp.transform((side * 0.15, 0.0, 0.15), wp.quat_identity()))
+                    builder.add_shape_box(finger, hx=0.02, hy=0.02, hz=0.05)
+                    joints.append(
+                        builder.add_joint_revolute(
+                            parent=base,
+                            child=finger,
+                            parent_xform=wp.transform((side * 0.15, 0.0, 0.1), wp.quat_identity()),
+                        )
+                    )
+                builder.add_articulation(joints)
+                if legacy:
+                    _expect_one_warning(
+                        self,
+                        DeprecationWarning,
+                        r"add_constraint_mimic\(\) is deprecated",
+                        functools.partial(builder.add_constraint_mimic, joint0=joints[2], joint1=joints[1]),
+                    )
+                else:
+                    builder.set_joint_mimic(joints[2], joints[1])
+                box = builder.add_body(xform=wp.transform((2.0, 0.0, 0.1), wp.quat_identity()))
+                builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1)
+                model = builder.finalize(device="cuda:0")
+                solver = _solver(self, model, contact_torsion_radius=0.0)
+                self.assertGreater(solver._mimic_count, 0)
+                pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
+                _advance(pipeline, solver, [model.state(), model.state()], model.control(), 400)
+                awake = solver.sleeping.art_awake.numpy()
+                self.assertEqual(int(awake[solver.body_to_articulation.numpy()[base]]), 1)
+                self.assertEqual(int(awake[solver.body_to_articulation.numpy()[box]]), 0)
 
 
-def _articulations(tiles=False):
+def _articulations(test, tiles=False):
     """Two undriven two-link articulations resting on the ground, which route contacts to dense rows.
 
     With ``tiles``, each base is a grid of small boxes so its ground pair exceeds the warp-flood threshold.
@@ -301,11 +315,11 @@ def _articulations(tiles=False):
     model = builder.finalize(device="cuda:0")
     # Deterministic contact order, as in production, so A/B trajectories compare bitwise.
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=512, deterministic=True)
-    solver = newton.solvers.SolverFeatherPGS(model, **_PROFILE)
+    solver = _solver(test, model)
     return model, pipeline, solver, [model.state(), model.state()], model.control()
 
 
-def _two_world_boxes():
+def _two_world_boxes(test):
     box = newton.ModelBuilder()
     body = box.add_body(xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
     box.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -314,8 +328,29 @@ def _two_world_boxes():
     builder.replicate(box, 2)
     model = builder.finalize(device="cuda:0")
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
-    solver = newton.solvers.SolverFeatherPGS(model, **_PROFILE)
+    solver = _solver(test, model)
     return model, pipeline, solver, [model.state(), model.state()]
+
+
+def _solver(test, model, **overrides):
+    """Construct the profile solver, which warns that patch friction keeps shared anchors on normal rows only."""
+    return _expect_one_warning(
+        test,
+        UserWarning,
+        "contact_shared_anchor still applies to normal rows",
+        lambda: newton.solvers.SolverFeatherPGS(model, **{**_PROFILE, **overrides}),
+    )
+
+
+def _expect_one_warning(test, category, pattern, call):
+    """Return ``call()``, requiring it to emit exactly one warning, of ``category`` and matching ``pattern``."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = call()
+    test.assertEqual(len(caught), 1, [f"{w.category.__name__}: {w.message}" for w in caught])
+    test.assertIs(caught[0].category, category)
+    test.assertRegex(str(caught[0].message), pattern)
+    return result
 
 
 def _torsion_rows(solver):
