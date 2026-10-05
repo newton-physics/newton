@@ -3590,13 +3590,13 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         model.test.namespace_marker = "parent"
 
         self.assertEqual(
-            model._attribute_reference_frequency("test:linkage_body0"),
+            model._attribute_spec("test:linkage_body0").references,
             newton.Model.AttributeFrequency.BODY,
         )
         linkage_spec = model._attribute_spec("test:linkage_bodies")
         self.assertEqual(linkage_spec.frequency, "test:linkage")
         self.assertEqual(linkage_spec.references, newton.Model.AttributeFrequency.BODY)
-        self.assertEqual(model._attribute_reference_frequency("test:link_entity"), "test:entity")
+        self.assertEqual(model._attribute_spec("test:link_entity").references, "test:entity")
         self.assertEqual(
             model.attribute_assignment.get("test:linkage_body0", newton.Model.AttributeAssignment.MODEL),
             newton.Model.AttributeAssignment.MODEL,
@@ -3609,9 +3609,9 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
             ("tri_materials", newton.Model.AttributeFrequency.TRIANGLE),
         ):
             with self.subTest(core_attribute=name):
-                self.assertEqual(model._resolve_attribute_frequency(name), frequency)
+                self.assertEqual(model.get_attribute_frequency(name), frequency)
         self.assertEqual(
-            model._resolve_attribute_frequency("joint_q"),
+            model.get_attribute_frequency("joint_q"),
             newton.Model.AttributeFrequency.JOINT_COORD,
         )
 

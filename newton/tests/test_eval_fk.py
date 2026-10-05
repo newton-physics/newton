@@ -355,7 +355,7 @@ def test_empty_model(test, device):
 def test_loop_closing_joint(test, device):
     """Evaluate a loop-closing joint after asserting its parallel-joint warning."""
     model = _build_loop_model(test, device)
-    assert_np_equal(model.joint_ancestor.numpy(), np.array([-1, 2, 1], dtype=np.int32))
+    assert_np_equal(model.joint_ancestor.numpy(), np.array([-1, 0, 1], dtype=np.int32))
     assert_np_equal(model._fk_articulation_level_start.numpy(), np.array([0, 2], dtype=np.int32))
     assert_np_equal(model._fk_level_joint_start.numpy(), np.array([0, 1, 2], dtype=np.int32))
     assert_np_equal(model._fk_level_parent_pos.numpy(), np.array([-1, 0], dtype=np.int32))
