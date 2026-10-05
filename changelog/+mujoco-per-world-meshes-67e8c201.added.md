@@ -1,1 +1,1 @@
-Support different mesh assets and convex-hull counts across compatible worlds in `SolverMuJoCo`, with both native MuJoCo Warp and Newton-generated contacts.
+Support different mesh assets and convex-hull counts across compatible worlds in `SolverMuJoCo`. Differing hull counts with native MuJoCo Warp contacts require a `mujoco_warp` build containing google-deepmind/mujoco_warp#1689; Newton-generated contacts work with the 3.14.0 release.
