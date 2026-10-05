@@ -275,6 +275,95 @@ def test_jacobian_simple_pendulum(test, device):
     test.assertNotEqual(J_np[0, 11, 1], 0.0)  # Second link, angular z, second dof
 
 
+def test_jacobian_loop_joint_ancestry(test, device):
+    """Keep loop closures out of tree ancestry regardless of joint creation order."""
+    for loop_first in (False, True):
+        for loop_child in (0, 1):
+            with test.subTest(loop_first=loop_first, loop_child=loop_child):
+                builder = newton.ModelBuilder()
+                bodies = [builder.add_link(mass=1.0) for _ in range(4)]
+                for body in bodies:
+                    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+
+                if loop_first:
+                    loop_joint = builder.add_joint_ball(parent=bodies[-1], child=bodies[loop_child])
+
+                axes = (newton.Axis.X, newton.Axis.Y, newton.Axis.Z, newton.Axis.X)
+                tree_joints = [
+                    builder.add_joint_prismatic(parent=-1 if i == 0 else bodies[i - 1], child=body, axis=axes[i])
+                    for i, body in enumerate(bodies)
+                ]
+                builder.add_articulation(tree_joints)
+
+                if not loop_first:
+                    loop_joint = builder.add_joint_ball(parent=bodies[-1], child=bodies[loop_child])
+
+                model = builder.finalize(device=device)
+                ancestors = np.full(model.joint_count, -1, dtype=np.int32)
+                ancestors[tree_joints[1:]] = tree_joints[:-1]
+                ancestors[loop_joint] = tree_joints[-1]
+                # Check topology before launching a kernel that would hang on an ancestor cycle.
+                np.testing.assert_array_equal(model.joint_ancestor.numpy(), ancestors)
+
+                state = model.state()
+                dofs = model.joint_qd_start.numpy()[tree_joints]
+                qd = state.joint_qd.numpy()
+                qd[:] = 9.0
+                qd[dofs] = [0.3, -0.4, 0.5, -0.6]
+                state.joint_qd.assign(qd)
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+                expected = np.zeros((24, 4), dtype=np.float32)
+                for link in range(4):
+                    for joint in range(link + 1):
+                        expected[6 * link + joint % 3, joint] = 1.0
+
+                jacobian = newton.eval_jacobian(model, state).numpy()
+                np.testing.assert_allclose(jacobian, expected[None], atol=1.0e-6)
+                np.testing.assert_allclose(expected @ qd[dofs], state.body_qd.numpy().reshape(-1), atol=1.0e-6)
+
+
+def test_jacobian_loop_joint_external_root(test, device):
+    """Terminate articulated ancestry at an external root despite an incoming closure."""
+    for loop_first in (False, True):
+        with test.subTest(loop_first=loop_first):
+            builder = newton.ModelBuilder()
+            bodies = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(3)]
+            if loop_first:
+                loop_joint = builder.add_joint_ball(parent=bodies[2], child=bodies[0])
+            tree_joints = [
+                builder.add_joint_prismatic(parent=bodies[0], child=bodies[1], axis=newton.Axis.X),
+                builder.add_joint_prismatic(parent=bodies[1], child=bodies[2], axis=newton.Axis.Y),
+            ]
+            builder.add_articulation(tree_joints)
+            if not loop_first:
+                loop_joint = builder.add_joint_ball(parent=bodies[2], child=bodies[0])
+
+            model = builder.finalize(device=device)
+            ancestors = np.full(model.joint_count, -1, dtype=np.int32)
+            ancestors[tree_joints[1]] = tree_joints[0]
+            ancestors[loop_joint] = tree_joints[1]
+            # Reject cycles before launching the ancestry traversal kernel.
+            np.testing.assert_array_equal(model.joint_ancestor.numpy(), ancestors)
+
+            state = model.state()
+            dofs = model.joint_qd_start.numpy()[tree_joints]
+            qd = state.joint_qd.numpy()
+            qd[:] = 9.0
+            qd[dofs] = [0.3, -0.4]
+            state.joint_qd.assign(qd)
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+            expected = np.zeros((12, 2), dtype=np.float32)
+            expected[[0, 6], 0] = 1.0
+            expected[7, 1] = 1.0
+            jacobian = newton.eval_jacobian(model, state).numpy()
+            np.testing.assert_allclose(jacobian, expected[None], atol=1.0e-6)
+            np.testing.assert_allclose(
+                jacobian[0] @ qd[dofs], state.body_qd.numpy()[bodies[1:]].reshape(-1), atol=1.0e-6
+            )
+
+
 def test_jacobian_numerical_verification(test, device):
     """Verify Jacobian shape and basic properties."""
     builder = newton.ModelBuilder()
@@ -957,6 +1046,15 @@ devices = get_test_devices()
 
 add_function_test(
     TestJacobianMassMatrix, "test_jacobian_simple_pendulum", test_jacobian_simple_pendulum, devices=devices
+)
+add_function_test(
+    TestJacobianMassMatrix, "test_jacobian_loop_joint_ancestry", test_jacobian_loop_joint_ancestry, devices=devices
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_jacobian_loop_joint_external_root",
+    test_jacobian_loop_joint_external_root,
+    devices=devices,
 )
 add_function_test(
     TestJacobianMassMatrix,

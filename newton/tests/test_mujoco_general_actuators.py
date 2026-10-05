@@ -937,6 +937,25 @@ MJCF_SITE_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 </mujoco>
 """
 
+MJCF_DAMPER_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_damper_actuator">
+    <option gravity="0 0 0"/>
+    <default>
+        <damper ctrlrange="0 2"/>
+    </default>
+    <worldbody>
+        <body name="body">
+            <joint name="hinge"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <damper name="drive" joint="hinge" kv="4"/>
+    </actuator>
+</mujoco>
+"""
+
+
 MJCF_MUSCLE_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_muscle_actuator">
     <option gravity="0 0 0" timestep="0.01"/>
@@ -1007,23 +1026,72 @@ MJCF_SITE_ACTUATOR_WITH_REFSITE = """<?xml version="1.0" encoding="utf-8"?>
 """
 
 
+class TestMuJoCoDamperActuators(unittest.TestCase):
+    """Tests for controllable damper actuator shortcuts."""
+
+    def test_damper_actuator_parsed_from_mjcf(self):
+        """Expand inherited damper parameters into actuator metadata."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_DAMPER_ACTUATOR, ctrl_direct=True)
+        model = builder.finalize()
+
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
+        np.testing.assert_array_equal(model.mujoco.actuator_gaintype.numpy(), [1])
+        np.testing.assert_array_equal(model.mujoco.actuator_biastype.numpy(), [0])
+        np.testing.assert_allclose(model.mujoco.actuator_gainprm.numpy()[0, :3], [0.0, 0.0, -4.0])
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy(), [[0.0, 2.0]])
+
+    def test_damper_actuator_matches_native_mujoco(self):
+        """Match native MuJoCo damping force at nonzero velocity."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(MJCF_DAMPER_ACTUATOR)
+        native_data = mujoco.MjData(native_model)
+
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_DAMPER_ACTUATOR, ctrl_direct=True)
+        solver = SolverMuJoCo(builder.finalize(), iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.nu, 1)
+        np.testing.assert_allclose(solver.mj_model.actuator_gainprm, native_model.actuator_gainprm)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, native_model.actuator_ctrlrange)
+
+        native_data.qvel[:] = 3.0
+        solver.mj_data.qvel[:] = 3.0
+        native_data.ctrl[:] = 0.5
+        solver.mj_data.ctrl[:] = 0.5
+        mujoco.mj_forward(native_model, native_data)
+        mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, atol=1.0e-7)
+        np.testing.assert_allclose(native_data.qfrc_actuator, [-6.0], atol=1.0e-7)
+
+
 class TestMuJoCoMuscleActuators(unittest.TestCase):
     """Tests for muscle actuator shortcuts."""
 
-    def test_authored_lengthrange_survives_warp_model_update(self):
-        """Keep an imported muscle range when Warp refreshes actuator ranges."""
+    def test_authored_lengthrange_survives_model_update(self):
+        """Keep compiled muscle and motor ranges through runtime property updates."""
         mjcf = MJCF_MUSCLE_ACTUATOR.replace('axis="1 0 0"/>', 'axis="1 0 0" range="-1 1"/>').replace(
             "</actuator>", '<motor name="motor" joint="slide"/></actuator>'
         )
-        builder = ModelBuilder()
-        builder.add_mjcf(mjcf, ctrl_direct=True)
-        solver = SolverMuJoCo(builder.finalize(device="cpu"), iterations=1, disable_contacts=True)
-        # MuJoCo Warp 3.11 does not copy this compiled field at construction.
-        solver.mjw_model.actuator_lengthrange.assign([[[0.5, 1.5], [0.0, 0.0]]])
+        expected = [[0.5, 1.5], [0.0, 0.0]]
+        for use_mujoco_cpu in (True, False):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = ModelBuilder()
+                builder.add_mjcf(mjcf, ctrl_direct=True)
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                np.testing.assert_allclose(solver.mj_model.actuator_lengthrange, expected)
+                np.testing.assert_allclose(solver.mjw_model.actuator_lengthrange.numpy()[0], expected)
 
-        solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+                gear = model.mujoco.actuator_gear.numpy()
+                gear[1, 0] = 2.0
+                model.mujoco.actuator_gear.assign(gear)
+                solver.notify_model_changed(ModelFlags.ALL)
 
-        np.testing.assert_allclose(solver.mjw_model.actuator_lengthrange.numpy()[0], [[0.5, 1.5], [-1.0, 1.0]])
+                np.testing.assert_allclose(solver.mjw_model.actuator_gear.numpy()[0, 1, 0], 2.0)
+                np.testing.assert_allclose(solver.mj_model.actuator_lengthrange, expected)
+                np.testing.assert_allclose(solver.mjw_model.actuator_lengthrange.numpy()[0], expected)
 
     def test_muscle_actuator_parsed_from_mjcf(self):
         """Expand inherited muscle parameters into actuator metadata."""
@@ -1043,35 +1111,57 @@ class TestMuJoCoMuscleActuators(unittest.TestCase):
         np.testing.assert_allclose(model.mujoco.actuator_lengthrange.numpy(), [[0.5, 1.5]])
 
     def test_muscle_actuator_matches_native_mujoco(self):
-        """Match native MuJoCo muscle activation and force."""
+        """Match native muscle activation, force and motion through SolverMuJoCo.step."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
-        native_model = mujoco.MjModel.from_xml_string(MJCF_MUSCLE_ACTUATOR)
-        native_data = mujoco.MjData(native_model)
+        configurations = [("cpu", True), ("cpu", False)]
+        if wp.is_cuda_available():
+            configurations.append(("cuda:0", False))
+        for device, use_mujoco_cpu in configurations:
+            with self.subTest(device=device, use_mujoco_cpu=use_mujoco_cpu):
+                native_model = mujoco.MjModel.from_xml_string(MJCF_MUSCLE_ACTUATOR)
+                native_data = mujoco.MjData(native_model)
+                native_data.qpos[:] = 1.0
+                builder = ModelBuilder()
+                builder.add_mjcf(MJCF_MUSCLE_ACTUATOR, ctrl_direct=True)
+                model = builder.finalize(device=device)
+                model.joint_q.assign([1.0])
+                solver = SolverMuJoCo(
+                    model,
+                    use_mujoco_cpu=use_mujoco_cpu,
+                    integrator=int(native_model.opt.integrator),
+                    disable_contacts=True,
+                )
 
-        builder = ModelBuilder()
-        builder.add_mjcf(MJCF_MUSCLE_ACTUATOR, ctrl_direct=True)
-        solver = SolverMuJoCo(builder.finalize(), iterations=1, disable_contacts=True)
-
-        self.assertEqual(solver.mj_model.nu, 1)
-        self.assertEqual(solver.mj_model.na, 1)
-        np.testing.assert_allclose(solver.mj_model.actuator_dynprm, native_model.actuator_dynprm)
-        np.testing.assert_allclose(solver.mj_model.actuator_gainprm, native_model.actuator_gainprm)
-        np.testing.assert_allclose(solver.mj_model.actuator_biasprm, native_model.actuator_biasprm)
-
-        solver.mj_model.opt.timestep = native_model.opt.timestep
-        solver.mj_model.opt.integrator = native_model.opt.integrator
-        solver.mj_model.opt.gravity[:] = native_model.opt.gravity
-        native_data.qpos[:] = 1.0
-        solver.mj_data.qpos[:] = 1.0
-        native_data.ctrl[:] = 0.5
-        solver.mj_data.ctrl[:] = 0.5
-        for _ in range(5):
-            mujoco.mj_step(native_model, native_data)
-            mujoco.mj_step(solver.mj_model, solver.mj_data)
-
-        np.testing.assert_allclose(solver.mj_data.act, native_data.act, atol=1.0e-8)
-        np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, atol=1.0e-7)
-        np.testing.assert_allclose(solver.mj_data.qpos, native_data.qpos, atol=1.0e-7)
+                self.assertEqual(solver.mj_model.nu, 1)
+                self.assertEqual(solver.mj_model.na, 1)
+                np.testing.assert_allclose(solver.mj_model.actuator_dynprm, native_model.actuator_dynprm)
+                np.testing.assert_allclose(solver.mj_model.actuator_gainprm, native_model.actuator_gainprm)
+                np.testing.assert_allclose(solver.mj_model.actuator_biasprm, native_model.actuator_biasprm)
+                np.testing.assert_allclose(solver.mj_model.actuator_lengthrange, native_model.actuator_lengthrange)
+                state_0, state_1 = model.state(), model.state()
+                control = model.control()
+                max_force = 0.0
+                for step in range(40):
+                    activation = 0.5 if step < 20 else 0.0
+                    native_data.ctrl[:] = activation
+                    control.mujoco.ctrl.fill_(activation)
+                    mujoco.mj_step(native_model, native_data)
+                    solver.step(state_0, state_1, control, None, native_model.opt.timestep)
+                    state_0, state_1 = state_1, state_0
+                    if use_mujoco_cpu:
+                        actual_act = solver.mj_data.act
+                        actual_force = solver.mj_data.actuator_force
+                    else:
+                        actual_act = solver.mjw_data.act.numpy()[0]
+                        actual_force = solver.mjw_data.actuator_force.numpy()[0]
+                    np.testing.assert_allclose(actual_act, native_data.act, rtol=1e-5, atol=1e-7)
+                    np.testing.assert_allclose(actual_force, native_data.actuator_force, rtol=1e-5, atol=1e-6)
+                    np.testing.assert_allclose(state_0.joint_q.numpy(), native_data.qpos, rtol=1e-5, atol=1e-6)
+                    max_force = max(max_force, float(np.max(np.abs(native_data.actuator_force))))
+                    if step == 19:
+                        peak_activation = float(native_data.act[0])
+                self.assertGreater(max_force, 0.1)
+                self.assertLess(native_data.act[0], peak_activation)
 
     def test_muscle_actuator_preserves_native_defaults(self):
         """Match native MuJoCo default muscle parameters."""

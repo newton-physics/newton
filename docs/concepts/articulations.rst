@@ -713,6 +713,41 @@ Construct a view by matching articulation keys with a pattern and optional filte
 Use views to read/write batched state slices (joint positions/velocities, root transforms,
 link transforms) without manual index bookkeeping.
 
+Selections with structural differences
+""""""""""""""""""""""""""""""""""""""
+
+By default, every match must have the same joint, link, and shape layout. If some
+kinds of data differ, pass ``allow_partial_layouts=True`` to retain access to the
+layouts that still match:
+
+.. code-block:: python
+
+    view = newton.selection.ArticulationView(
+        model,
+        pattern="robot*",
+        allow_partial_layouts=True,
+    )
+
+    try:
+        shape_margin = view.get_attribute("shape_margin", model)
+    except AttributeError:
+        shape_margin = None
+
+Joint, coordinate, DOF, link, and shape layouts are checked independently. Both
+reads and writes raise ``AttributeError`` for an unavailable layout.
+A layout may contain gaps, but every match must have the same selected count and
+relative model positions and ownership (DOF/coordinate to joint and shape to link),
+and the matches' start indices must be uniformly strided within and between worlds.
+
+Joint and link filters use the first match as their template. A filter selects the
+template position in every match: if another articulation inserts a link or joint
+before that position, it may select a different label. Link filters retain all
+shapes attached to each selected link; display and collision shapes are not
+distinguished. Counts and names are ``None`` only when counts differ. Relationship
+metadata such as ``joint_dof_counts`` and ``link_shapes`` is available only when both
+participating layouts are available. Custom frequencies with articulation ownership
+follow the same partial-layout behavior.
+
 Move articulations in world space
 """""""""""""""""""""""""""""""""
 
