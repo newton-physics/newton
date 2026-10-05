@@ -144,12 +144,14 @@ class TestRunnerWorkflowContract(unittest.TestCase):
         scheduled = (ROOT / ".github/workflows/scheduled_nightly.yml").read_text(encoding="utf-8")
         for called_workflow in SCHEDULED_CALLERS:
             with self.subTest(path=".github/workflows/scheduled_nightly.yml", workflow=called_workflow):
-                dispatch = next(
+                dispatches = [
                     line
                     for line in scheduled.splitlines()
                     if f"dispatch_workflow_and_wait.py {called_workflow}" in line
-                )
-                self.assertIn('-f "inputs[trigger-category]=scheduled-nightly"', dispatch)
+                ]
+                self.assertTrue(dispatches)
+                for dispatch in dispatches:
+                    self.assertIn('-f "inputs[trigger-category]=scheduled-nightly"', dispatch)
 
 
 if __name__ == "__main__":

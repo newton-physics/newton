@@ -3,15 +3,15 @@ name: GPU Benchmarks on AWS EC2 (Reusable)
 # This is a reusable workflow that uses machulav/ec2-github-runner to run GPU benchmarks.
 # Called by:
 #   - pr_target_aws_gpu_benchmarks.yml (for pull requests)
-#   - scheduled_nightly.yml (dispatch on main: quick run that fills the Warp kernel cache)
+#   - scheduled_nightly.yml (dispatch on main: quick run per GPU type that fills its Warp kernel cache)
 
 # Workflow configuration variables
 env:
   AWS_REGION: us-east-2
   # Prefer the validated US capacity order before Asia-Pacific fallback.
   AWS_REGION_CANDIDATES: ${{ inputs.region-candidates || 'us-east-1 us-east-2 us-west-2 ap-northeast-1 ap-northeast-2' }}
-  AWS_INSTANCE_TYPE: g7e.2xlarge
-  AWS_FALLBACK_INSTANCE_TYPE: g6e.2xlarge
+  AWS_INSTANCE_TYPE: ${{ inputs.instance-type || 'g7e.2xlarge' }}
+  AWS_FALLBACK_INSTANCE_TYPE: ${{ inputs.fallback-instance-type }}
   AWS_VOLUME_SIZE: 92
   AWS_VOLUME_TYPE: gp3
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
@@ -36,6 +36,11 @@ on:
         required: false
         type: string
         default: ''
+      fallback-instance-type:
+        description: 'EC2 instance type to use when g7e.2xlarge has no capacity'
+        required: false
+        type: string
+        default: 'g6e.2xlarge'
       trigger-category:
         description: 'Normalized workflow trigger category'
         required: true
@@ -45,6 +50,17 @@ on:
         required: true
   workflow_dispatch:
     inputs:
+      instance-type:
+        description: 'EC2 instance type'
+        required: false
+        type: string
+        default: 'g7e.2xlarge'
+      # No fallback by default: each nightly cache fill targets one GPU architecture.
+      fallback-instance-type:
+        description: 'EC2 instance type to use when instance-type has no capacity; empty disables fallback'
+        required: false
+        type: string
+        default: ''
       trigger-category:
         description: 'Normalized workflow trigger category'
         required: false
