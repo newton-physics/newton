@@ -482,6 +482,8 @@ def test_save_resets_next_frame_report_flags(test, device):
             sorted_normal=contacts.rigid_contact_normal,
             body_q=state.body_q,
             shape_body=model.shape_body,
+            buffer_id=matcher.buffer_id(contacts),
+            contact_generation=contacts.contact_generation,
             device=device,
         )
         np.testing.assert_array_equal(matcher._prev_was_matched.numpy()[:count], np.zeros(count, dtype=np.int32))
@@ -686,6 +688,74 @@ def test_box_on_plane_multiple_contacts(test, device):
             np.arange(count2, dtype=np.int32),
             err_msg="Box multi-contact stable scene must produce identity match",
         )
+
+
+def _match_generation(contacts):
+    return int(contacts.rigid_contact_match_generation.numpy()[0])
+
+
+def _generation(contacts):
+    return int(contacts.contact_generation.numpy()[0])
+
+
+def test_match_generation_names_the_matched_buffer(test, device):
+    """Report which contact set of the written buffer the match indices refer to.
+
+    The matcher keeps one previous frame per pipeline. After a pass into another
+    buffer, the indices of the next pass into the first buffer refer to the other
+    buffer's contacts, so they must not be attributed to the first buffer's history.
+    """
+    with wp.ScopedDevice(device):
+        model, state = _build_simple_scene(device)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+        first, second = pipeline.contacts(), pipeline.contacts()
+
+        pipeline.collide(state, first)
+        test.assertEqual(_match_generation(first), -1, "no previous frame")
+        saved = _generation(first)
+        pipeline.collide(state, first)
+        test.assertEqual(_match_generation(first), saved)
+
+        pipeline.collide(state, second)
+        test.assertEqual(_match_generation(second), -1, "the previous frame came from the first buffer")
+        pipeline.collide(state, first)
+        test.assertEqual(_match_generation(first), -1, "the previous frame came from the second buffer")
+        count = int(first.rigid_contact_count.numpy()[0])
+        np.testing.assert_array_equal(first.rigid_contact_match_index.numpy()[:count], np.arange(count))
+
+        saved = _generation(first)
+        first.clear()
+        pipeline.collide(state, first)
+        test.assertNotEqual(_generation(first), saved + 1)
+        test.assertEqual(_match_generation(first), saved, "a clear between passes keeps the matched set")
+
+        pipeline.reset_contact_matching()
+        pipeline.collide(state, first)
+        test.assertEqual(_match_generation(first), -1, "a full reset drops the previous frame")
+
+
+def test_match_generation_follows_cuda_graph_replay(test, device):
+    """Keep the matched-set report on the device, so alternating captured passes stay correct."""
+    with wp.ScopedDevice(device):
+        model, state = _build_simple_scene(device)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+        first, second = pipeline.contacts(), pipeline.contacts()
+        pipeline.collide(state, first)
+        pipeline.collide(state, second)
+        graphs = {}
+        for name, contacts in (("first", first), ("second", second)):
+            with wp.ScopedCapture(device) as capture:
+                pipeline.collide(state, contacts)
+            graphs[name] = capture.graph
+
+        wp.capture_launch(graphs["first"])
+        saved = _generation(first)
+        wp.capture_launch(graphs["first"])
+        test.assertEqual(_match_generation(first), saved)
+        wp.capture_launch(graphs["second"])
+        test.assertEqual(_match_generation(second), -1)
+        wp.capture_launch(graphs["first"])
+        test.assertEqual(_match_generation(first), -1)
 
 
 def test_invalid_mode_raises(test, device):
@@ -1027,6 +1097,18 @@ add_function_test(
 )
 add_function_test(
     TestContactMatching, "test_box_on_plane_multiple_contacts", test_box_on_plane_multiple_contacts, devices=devices
+)
+add_function_test(
+    TestContactMatching,
+    "test_match_generation_names_the_matched_buffer",
+    test_match_generation_names_the_matched_buffer,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatching,
+    "test_match_generation_follows_cuda_graph_replay",
+    test_match_generation_follows_cuda_graph_replay,
+    devices=cuda_devices,
 )
 add_function_test(TestContactMatching, "test_invalid_mode_raises", test_invalid_mode_raises, devices=devices)
 add_function_test(

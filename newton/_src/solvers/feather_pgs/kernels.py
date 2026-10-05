@@ -24,6 +24,7 @@ from ...sim.articulation import (
     compute_3d_rotational_dofs,
     eval_single_articulation_fk,
 )
+from ...sim.contacts import GENERATION_SENTINEL
 from .contact_filters import contact_friction_eligible, contact_normal_gap_limit
 from .friction import friction_pair_candidate
 from .friction_patches import FrictionPatches, contact_tangent_basis, patch_normal_load
@@ -7153,6 +7154,61 @@ def _transport_warmstart_contact(
     impulses[world, slot + 2] = tangent[1]
 
 
+# Warm-start history generation of a step without a contact set; no contact set has it.
+CONTACT_GENERATION_NONE = wp.constant(GENERATION_SENTINEL)
+
+
+@wp.kernel
+def snapshot_warmstart_history(
+    contact_generation: wp.array[wp.int32],
+    contact_stream: int,
+    # outputs
+    history_generation: wp.array[wp.int32],
+    history_stream: wp.array[wp.int32],
+):
+    """Record the contact set the step solved on the device, so graph replays stay current.
+
+    ``contact_stream`` identifies the contact buffer (0: the step had none); generations
+    are only comparable within one buffer.
+    """
+    history_stream[0] = contact_stream
+    if contact_stream != 0:
+        history_generation[0] = contact_generation[0]
+    else:
+        history_generation[0] = CONTACT_GENERATION_NONE
+
+
+@wp.func
+def warmstart_previous_index(
+    c: int,
+    match_index: wp.array[int],
+    match_generation: wp.array[wp.int32],
+    contact_generation: wp.array[wp.int32],
+    contact_stream: int,
+    history_generation: wp.array[wp.int32],
+    history_stream: wp.array[wp.int32],
+):
+    """Return contact ``c``'s index in the contact set the previous step solved, or -1.
+
+    A step on the same contact set (same buffer ``contact_stream``, unchanged generation)
+    reuses ``c``. Otherwise ``match_index[c]`` applies only when the buffer's last
+    collision pass matched against the solved set, which
+    :attr:`~newton.Contacts.rigid_contact_match_generation` reports. After a pass into
+    another buffer, a skipped pass, or with another buffer, the match indices refer to a
+    contact set this solver never solved, so the contact starts cold.
+    """
+    if contact_stream == 0 or history_stream[0] != contact_stream:
+        return -1
+    previous = history_generation[0]
+    if previous == CONTACT_GENERATION_NONE:
+        return -1
+    if contact_generation[0] == previous:
+        return c
+    if match_generation[0] == previous:
+        return match_index[c]
+    return -1
+
+
 @wp.kernel
 def gather_mf_warmstart(
     contact_count: wp.array[int],
@@ -7160,6 +7216,11 @@ def gather_mf_warmstart(
     contact_slot: wp.array[int],
     contact_world: wp.array[int],
     match_index: wp.array[int],  # rigid_contact_match_index (sorted-current -> prev-sorted idx)
+    match_generation: wp.array[wp.int32],
+    contact_generation: wp.array[wp.int32],
+    contact_stream: int,
+    history_generation: wp.array[wp.int32],
+    history_stream: wp.array[wp.int32],
     prev_slot_sorted: wp.array[int],  # prev-sorted contact idx -> prev base MF slot (or -1)
     prev_mf_impulses: wp.array2d[float],
     prev_mf_row_type: wp.array2d[int],
@@ -7188,10 +7249,11 @@ def gather_mf_warmstart(
     ``dt_scale`` = dt_now / dt_prev rescales carried impulses across step-size
     changes (impulse is proportional to dt for quasi-static loads); 1.0 at fixed dt.
 
-    ``match_index[c] >= 0`` is the previous frame's *sorted* contact index;
+    :func:`warmstart_previous_index` gives the contact's index in the contact set the
+    previous step solved (``match_index[c]``, or ``c`` on the same set), or -1;
     ``prev_slot_sorted`` is keyed the same way (see solver writeback), so
-    ``prev_slot = prev_slot_sorted[match_index[c]]`` is the base slot that
-    contact occupied last step. Friction rows are only seeded when BOTH this
+    ``prev_slot = prev_slot_sorted[mi]`` is the base slot that contact occupied last
+    step. Friction rows are only seeded when BOTH this
     step and the previous step allocated a friction row at the corresponding
     offset (guards the variable 1-vs-3 stride).
     """
@@ -7209,7 +7271,9 @@ def gather_mf_warmstart(
     if new_slot >= count:
         return
 
-    mi = match_index[c]
+    mi = warmstart_previous_index(
+        c, match_index, match_generation, contact_generation, contact_stream, history_generation, history_stream
+    )
     matched = mi >= 0
     prev_slot = int(-1)
     if matched:
@@ -7363,6 +7427,11 @@ def gather_dense_warmstart(
     contact_slot: wp.array[int],
     contact_world: wp.array[int],
     match_index: wp.array[int],  # rigid_contact_match_index (sorted-current -> prev-sorted idx)
+    match_generation: wp.array[wp.int32],
+    contact_generation: wp.array[wp.int32],
+    contact_stream: int,
+    history_generation: wp.array[wp.int32],
+    history_stream: wp.array[wp.int32],
     prev_slot_sorted: wp.array[int],  # prev-sorted contact idx -> prev dense normal row (or -1)
     prev_dense_impulses: wp.array2d[float],
     prev_dense_row_type: wp.array2d[int],
@@ -7406,7 +7475,9 @@ def gather_dense_warmstart(
     if new_slot >= count:
         return
 
-    mi = match_index[c]
+    mi = warmstart_previous_index(
+        c, match_index, match_generation, contact_generation, contact_stream, history_generation, history_stream
+    )
     matched = mi >= 0
     prev_slot = int(-1)
     if matched:
@@ -7461,6 +7532,11 @@ def gather_propagation_warmstart(
     contact_slot: wp.array[int],
     contact_world: wp.array[int],
     match_index: wp.array[int],
+    match_generation: wp.array[wp.int32],
+    contact_generation: wp.array[wp.int32],
+    contact_stream: int,
+    history_generation: wp.array[wp.int32],
+    history_stream: wp.array[wp.int32],
     prev_slot_sorted: wp.array[int],
     prev_impulses: wp.array2d[float],
     prev_row_type: wp.array2d[int],
@@ -7489,7 +7565,9 @@ def gather_propagation_warmstart(
     if new_slot >= count:
         return
 
-    mi = match_index[c]
+    mi = warmstart_previous_index(
+        c, match_index, match_generation, contact_generation, contact_stream, history_generation, history_stream
+    )
     prev_slot = int(-1)
     if mi >= 0:
         prev_slot = prev_slot_sorted[mi]

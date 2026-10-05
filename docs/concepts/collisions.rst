@@ -1668,6 +1668,10 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
      - Per-contact frame-to-frame match result (int32). Only allocated when
        ``contact_matching`` is not ``"disabled"``.
        See :ref:`Contact Matching`.
+   * - ``rigid_contact_match_generation``
+     - Contact generation of this buffer that the match indices refer to, or ``-1``
+       (int32, one element). Allocated with ``rigid_contact_match_index``.
+       See :ref:`Contact Matching`.
    * - ``rigid_contact_new_indices``, ``rigid_contact_new_count``
      - Compact index list of new contacts in the current sorted buffer. Only
        allocated when ``contact_report=True``.
@@ -2333,6 +2337,15 @@ previous frame's sorted keys, then verifies candidates against a world-space
 distance threshold and a normal dot-product threshold.  The sort key encodes
 ``(shape_a, shape_b, sub_key)`` so only contacts between the same shape pair
 are compared.
+
+The previous frame is the pipeline's last collision pass, whichever
+:class:`~newton.Contacts` buffer it wrote.
+:attr:`Contacts.rigid_contact_match_generation` holds the
+:attr:`~newton.Contacts.contact_generation` of the buffer's contact set that the
+match indices refer to, or ``-1`` when the previous pass wrote another buffer
+(or none).  Code that carries per-contact state across frames can compare it
+with the generation it saved, so indices into another buffer's contacts are not
+mistaken for its own.
 
 The distance metric is the world-space **contact midpoint**
 ``0.5 * (world(point0) + world(point1))``, symmetric between the two shapes.

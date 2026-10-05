@@ -46,7 +46,7 @@ from ..geometry.support_function import (
 )
 from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
 from ..geometry.types import GeoType
-from ..sim.contacts import Contacts
+from ..sim.contacts import GENERATION_SENTINEL, Contacts
 from ..sim.model import Model
 from ..sim.state import State
 
@@ -3293,12 +3293,15 @@ class CollisionPipeline:
                 body_q=state.body_q,
                 shape_body=model.shape_body,
                 match_index_out=contacts.rigid_contact_match_index,
+                buffer_id=self._contact_matcher.buffer_id(contacts),
+                match_generation_out=contacts.rigid_contact_match_generation,
                 device=self.device,
             )
         elif contacts.rigid_contact_match_index is not None:
             # A buffer may come from a matching pipeline. Its current producer
             # cannot validate that previous identity, including on graph replay.
             contacts.rigid_contact_match_index.fill_(-1)
+            contacts.rigid_contact_match_generation.fill_(GENERATION_SENTINEL)
 
         # Sticky mode: overwrite matched rows with the saved previous-frame
         # contact geometry.  Must run after sort_full (so match_index points at
@@ -3390,6 +3393,8 @@ class CollisionPipeline:
                 sorted_normal=contacts.rigid_contact_normal,
                 body_q=state.body_q,
                 shape_body=model.shape_body,
+                buffer_id=self._contact_matcher.buffer_id(contacts),
+                contact_generation=contacts.contact_generation,
                 device=self.device,
                 **sticky_offsets,
             )

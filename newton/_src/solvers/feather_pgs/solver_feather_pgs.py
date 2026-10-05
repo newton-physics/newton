@@ -21,6 +21,7 @@ import re
 import sys
 import time
 import warnings
+import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cache
@@ -56,6 +57,7 @@ from .contact_torsion import (
 from .friction import FRICTION_PAIR_CUDA
 from .friction_patches import _FrictionPatchState, finish_patch_impulses, link_patch_rows, seed_patch_impulses
 from .kernels import (
+    CONTACT_GENERATION_NONE,
     FRICTION_MODE_BISECTION,
     FRICTION_MODE_BISECTION_DESAXCE,
     FRICTION_MODE_COULOMB_NEWTON,
@@ -199,6 +201,7 @@ from .kernels import (
     snapshot_contact_warmstart,
     snapshot_dense_phase_bound,
     snapshot_propagation_cache_qd_base,
+    snapshot_warmstart_history,
     solve_compact_diagonal_mass,
     solve_diagonal_mass,
     trisolve_loop,
@@ -1564,8 +1567,12 @@ class SolverFeatherPGS(SolverBase):
                 mf_max_constraints. Defaults to 32.
             pgs_warmstart (bool, optional): Re-use dense, matrix-free, and propagation contact
                 impulses from the previous frame. Contact and friction rows always carry by
-                contact identity through the collision pipeline's ``rigid_contact_match_index``;
-                non-contact dense rows cold-start because their runtime allocation does not
+                contact identity through the collision pipeline's ``rigid_contact_match_index``,
+                only when the buffer's last collision pass matched against the contact set the
+                previous step solved (``rigid_contact_match_generation``); a step on the same
+                contact set, such as a substep, reuses each contact's own impulses, and
+                another buffer, a skipped pass or a pass after the pipeline wrote another
+                buffer start cold. Non-contact dense rows cold-start because their runtime allocation does not
                 provide an identity contract. A non-``None`` Contacts buffer therefore requires
                 contact matching. Body-pair reduction is supported with
                 ``contact_matching="latest"``. Carried friction is transported into
@@ -1974,6 +1981,13 @@ class SolverFeatherPGS(SolverBase):
         # Allocated lazily in :meth:`_allocate_mf_buffers` only when enabled.
         self._ws_prev_mf_impulses = None
         self._ws_prev_dt = 0.0
+        # Contact buffer and generation the previous step solved, on the device so a
+        # captured graph replays them. Generations count collision passes per buffer, so
+        # each buffer gets its own nonzero stream id (0: no contacts).
+        self._ws_history_generation = wp.full(1, CONTACT_GENERATION_NONE, dtype=wp.int32, device=model.device)
+        self._ws_history_stream = wp.zeros(1, dtype=wp.int32, device=model.device)
+        self._ws_contact_streams: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+        self._ws_last_stream = 0
         self._ws_prev_mf_row_type = None
         self._ws_prev_mf_row_parent = None
         self._ws_prev_slot_sorted = None
@@ -3098,6 +3112,18 @@ class SolverFeatherPGS(SolverBase):
             self._fk_id_cache_valid.zero_()
             self._fk_id_cache_source_state = state
         self._clear_warmstart_history(world_mask)
+
+    def _contact_stream(self, contacts: Contacts | None) -> int:
+        """Return the warm-start stream id of a contact buffer; 0 for no contacts."""
+        if contacts is None:
+            return 0
+        stream = self._ws_contact_streams.get(contacts)
+        if stream is None:
+            # Ids are never reused, so a replaced buffer cannot alias saved history.
+            self._ws_last_stream += 1
+            stream = self._ws_last_stream
+            self._ws_contact_streams[contacts] = stream
+        return stream
 
     def _clear_warmstart_history(self, world_mask: wp.array | None) -> None:
         """Discard solver impulses independently of latched capacity status."""
@@ -9031,6 +9057,11 @@ class SolverFeatherPGS(SolverBase):
                         self.contact_slot,
                         self.contact_world,
                         match_index,
+                        contacts.rigid_contact_match_generation,
+                        contacts.contact_generation,
+                        self._contact_stream(contacts),
+                        self._ws_history_generation,
+                        self._ws_history_stream,
                         self._ws_prev_dense_slot_sorted,
                         self._ws_prev_dense_impulses,
                         self._ws_prev_dense_row_type,
@@ -9543,6 +9574,16 @@ class SolverFeatherPGS(SolverBase):
                     ],
                     device=model.device,
                 )
+            wp.launch(
+                snapshot_warmstart_history,
+                dim=1,
+                inputs=[
+                    contacts.contact_generation if contacts is not None else self._ws_history_generation,
+                    self._contact_stream(contacts),
+                ],
+                outputs=[self._ws_history_generation, self._ws_history_stream],
+                device=model.device,
+            )
             self._ws_prev_dt = float(dt)
 
         # Double-buffer: fork the maintenance stream to clear the current
@@ -12121,6 +12162,11 @@ class SolverFeatherPGS(SolverBase):
                             self.contact_slot,
                             self.contact_world,
                             contacts.rigid_contact_match_index,
+                            contacts.rigid_contact_match_generation,
+                            contacts.contact_generation,
+                            self._contact_stream(contacts),
+                            self._ws_history_generation,
+                            self._ws_history_stream,
                             self._ws_prev_propagation_slot_sorted,
                             self._ws_prev_propagation_impulses,
                             self._ws_prev_propagation_row_type,
@@ -12252,6 +12298,11 @@ class SolverFeatherPGS(SolverBase):
                             self.contact_slot,
                             self.contact_world,
                             match_index,
+                            contacts.rigid_contact_match_generation,
+                            contacts.contact_generation,
+                            self._contact_stream(contacts),
+                            self._ws_history_generation,
+                            self._ws_history_stream,
                             self._ws_prev_slot_sorted,
                             self._ws_prev_mf_impulses,
                             self._ws_prev_mf_row_type,
