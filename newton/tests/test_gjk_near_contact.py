@@ -65,7 +65,7 @@ def _query_rotated_box(output: wp.array2d[float]):
 
 def test_positive_sub_tolerance_gap(test, device):
     """Return positive gaps and oriented unit normals below the 0.1 mm convergence tolerance."""
-    for gap in (1e-3, 1.1e-4, 9.5e-5, 5e-5, 1e-5, 1e-6, 1e-7):
+    for gap in (1e-3, 1.1e-4, 9.5e-5, 5e-5, 1e-5, 1e-6, 1e-7, 5e-9):
         for direction in (-1.0, 1.0):
             with test.subTest(gap=gap, direction=direction):
                 out = wp.zeros(8, dtype=float, device=device)
@@ -79,7 +79,7 @@ def test_positive_sub_tolerance_gap(test, device):
 
 def test_true_overlap(test, device):
     """Keep the overlap classification for touching and penetrating boxes."""
-    for gap in (-1e-3, -1e-5, 0.0):
+    for gap in (-1e-3, -1e-5, -5e-9, 0.0):
         with test.subTest(gap=gap):
             out = wp.zeros(8, dtype=float, device=device)
             wp.launch(_query_box_gap, dim=1, inputs=[gap, 1.0], outputs=[out], device=device)

@@ -103,12 +103,12 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         edge = b - a
         vsq = wp.length_sq(edge)
 
-        degenerate = vsq < EPSILON
+        degenerate = vsq < EPSILON * EPSILON
 
         # Guard division by zero in degenerate cases
         denom = vsq
         if degenerate:
-            denom = EPSILON
+            denom = EPSILON * EPSILON
         t = -wp.dot(a, edge) / denom
         lambda0 = 1.0 - t
         lambda1 = t
@@ -395,16 +395,18 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                         support_plane = wp.dot(near_normal, support.BtoA)
                         if support_plane < 0.0 and dist_sq > EPSILON * EPSILON:
                             certified_near = True
-                            break
                         if support_plane <= 0.0 and dist_sq <= EPSILON * EPSILON:
                             point_a, point_b = simplex_get_closest(simplex_v, simplex_barycentric, simplex_usage_mask)
+                            if support_plane < 0.0:
+                                # At the origin tolerance, preserve the certified plane gap.
+                                return True, point_a, point_b, near_normal, -support_plane
                             return False, point_a, point_b, near_normal, 0.0
                 if dist_sq <= EPSILON * EPSILON:
                     # Origin reached without a separating/supporting plane.
                     point_a, point_b = simplex_get_closest(simplex_v, simplex_barycentric, simplex_usage_mask)
                     return False, point_a, point_b, wp.vec3(0.0), 0.0
-                # The simplex is close but its direction has not certified
-                # separation. Refine rather than declaring an overlap.
+                # Separation alone does not certify distance convergence.
+                # Refine rather than accepting the current witnesses.
                 duplicate_epsilon = EPSILON
 
             search_dir = -v
