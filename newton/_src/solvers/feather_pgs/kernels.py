@@ -3334,6 +3334,29 @@ def _contact_points_world(
 
 
 @wp.func
+def contact_row_points(
+    c: int,
+    row_offset: int,
+    point_a_world: wp.vec3,
+    point_b_world: wp.vec3,
+    contact_shared_anchor: int,
+    contact_friction_shared_anchor: int,
+    friction_patches: FrictionPatches,
+):
+    """Return the Jacobian points of row ``row_offset`` (0 normal, 1-2 friction) of contact ``c``.
+
+    Shared anchors put both bodies' points at the witness midpoint; patch friction rows act at
+    the patch anchors. ``phi`` always comes from the witness points.
+    """
+    if row_offset > 0 and friction_patches.enabled != 0:
+        return friction_patches.point_a[c], friction_patches.point_b[c]
+    if contact_shared_anchor != 0 or (row_offset > 0 and contact_friction_shared_anchor != 0):
+        midpoint = 0.5 * (point_a_world + point_b_world)
+        return midpoint, midpoint
+    return point_a_world, point_b_world
+
+
+@wp.func
 def _allocate_world_contact_slot(
     c: int,
     contact_shape0: wp.array[int],
@@ -3919,6 +3942,8 @@ def prepare_world_contact_rows(
     shape_material_mu: wp.array[float],
     shape_material_restitution: wp.array[float],
     friction_patches: FrictionPatches,
+    contact_shared_anchor: int,
+    contact_friction_shared_anchor: int,
     # outputs
     world_row_type: wp.array2d[int],
     world_row_parent: wp.array2d[int],
@@ -3966,13 +3991,16 @@ def prepare_world_contact_rows(
         world_row_mu[world, slot] = mu
         world_phi[world, slot] = phi
         world_row_restitution[world, slot] = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
+        point_a_normal, point_b_normal = contact_row_points(
+            c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
+        )
         world_target_velocity[world, slot] = prescribed_relative_contact_target(
             body_a,
             art_a,
             body_b,
             art_b,
-            point_a_world,
-            point_b_world,
+            point_a_normal,
+            point_b_normal,
             normal,
             prescribed_articulation,
             articulation_origin,
@@ -3982,11 +4010,9 @@ def prepare_world_contact_rows(
         # could cross a floating-point threshold and overwrite the next contact's rows.
         if contact_slots_needed[c] < 3:
             continue
-        point_a_friction = point_a_world
-        point_b_friction = point_b_world
-        if friction_patches.enabled != 0:
-            point_a_friction = friction_patches.point_a[c]
-            point_b_friction = friction_patches.point_b[c]
+        point_a_friction, point_b_friction = contact_row_points(
+            c, 1, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
+        )
         for k in range(2):
             tangent = tangent0
             if k == 1:
@@ -4037,6 +4063,8 @@ def populate_world_J_for_compact_size(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     friction_patches: FrictionPatches,
+    contact_shared_anchor: int,
+    contact_friction_shared_anchor: int,
     # output
     J_group: wp.array3d[float],
 ):
@@ -4062,8 +4090,17 @@ def populate_world_J_for_compact_size(
             body_b = shape_body[shape_b]
 
         normal = -contact_normal[c]
-        point_a, point_b = _contact_points_world(
+        point_a_world, point_b_world = _contact_points_world(
             c, body_a, body_b, normal, contact_point0, contact_point1, contact_thickness0, contact_thickness1, body_q
+        )
+        point_a, point_b = contact_row_points(
+            c,
+            row,
+            point_a_world,
+            point_b_world,
+            contact_shared_anchor,
+            contact_friction_shared_anchor,
+            friction_patches,
         )
         direction = normal
         if row > 0:
@@ -4072,9 +4109,6 @@ def populate_world_J_for_compact_size(
                 direction = tangent0
             else:
                 direction = tangent1
-            if friction_patches.enabled != 0:
-                point_a = friction_patches.point_a[c]
-                point_b = friction_patches.point_b[c]
 
         art_a = contact_art_a[c]
         art_b = contact_art_b[c]
@@ -4139,6 +4173,8 @@ def _populate_world_J_for_size_contact(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     friction_patches: FrictionPatches,
+    contact_shared_anchor: int,
+    contact_friction_shared_anchor: int,
     # outputs
     J_group: wp.array3d[float],
 ):
@@ -4165,22 +4201,23 @@ def _populate_world_J_for_size_contact(
     )
     t0, t1 = contact_tangent_basis(normal)
     row_count = contact_slots_needed[c]
-    friction_point_a = point_a_world
-    friction_point_b = point_b_world
-    if friction_patches.enabled != 0:
-        friction_point_a = friction_patches.point_a[c]
-        friction_point_b = friction_patches.point_b[c]
+    normal_point_a, normal_point_b = contact_row_points(
+        c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
+    )
+    friction_point_a, friction_point_b = contact_row_points(
+        c, 1, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
+    )
 
     for side in range(2):
         art = art_a
         body = body_a
-        point = point_a_world
+        point = normal_point_a
         friction_point = friction_point_a
         sign = 1.0
         if side == 1:
             art = art_b
             body = body_b
-            point = point_b_world
+            point = normal_point_b
             friction_point = friction_point_b
             sign = -1.0
         if art < 0 or articulation_response_dof_count[art] != target_size:
@@ -4243,6 +4280,8 @@ def populate_world_J_for_size(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     friction_patches: FrictionPatches,
+    contact_shared_anchor: int,
+    contact_friction_shared_anchor: int,
     # outputs
     J_group: wp.array3d[float],
 ):
@@ -4275,6 +4314,8 @@ def populate_world_J_for_size(
             shape_body,
             body_q,
             friction_patches,
+            contact_shared_anchor,
+            contact_friction_shared_anchor,
             J_group,
         )
 
@@ -5172,6 +5213,8 @@ def _build_mf_contact_row(
     shape_material_restitution: wp.array[float],
     friction_patches: FrictionPatches,
     friction_anchor_beta: float,
+    contact_shared_anchor: int,
+    contact_friction_shared_anchor: int,
     # outputs
     mf_body_a: wp.array2d[int],
     mf_body_b: wp.array2d[int],
@@ -5232,11 +5275,15 @@ def _build_mf_contact_row(
             d = t0
         elif row_offset == 2:
             d = t1
-        row_point_a = point_a_world
-        row_point_b = point_b_world
-        if row_offset > 0 and friction_patches.enabled != 0:
-            row_point_a = friction_patches.point_a[c]
-            row_point_b = friction_patches.point_b[c]
+        row_point_a, row_point_b = contact_row_points(
+            c,
+            row_offset,
+            point_a_world,
+            point_b_world,
+            contact_shared_anchor,
+            contact_friction_shared_anchor,
+            friction_patches,
+        )
 
         if response_body_a >= 0:
             ang_a = wp.cross(row_point_a - articulation_origin[contact_art_a[c]], d)
@@ -5311,6 +5358,8 @@ def build_mf_contact_rows(
     shape_material_restitution: wp.array[float],
     friction_patches: FrictionPatches,
     friction_anchor_beta: float,
+    contact_shared_anchor: int,
+    contact_friction_shared_anchor: int,
     # outputs
     mf_body_a: wp.array2d[int],
     mf_body_b: wp.array2d[int],
@@ -5352,6 +5401,8 @@ def build_mf_contact_rows(
             shape_material_restitution,
             friction_patches,
             friction_anchor_beta,
+            contact_shared_anchor,
+            contact_friction_shared_anchor,
             mf_body_a,
             mf_body_b,
             mf_J_a,
@@ -6822,6 +6873,9 @@ def build_propagation_contact_rows(
     prescribed_articulation: wp.array[int],
     articulation_origin: wp.array[wp.vec3],
     shape_material_mu: wp.array[float],
+    contact_shared_anchor: int,
+    contact_friction_shared_anchor: int,
+    friction_patches: FrictionPatches,
     # outputs
     propagation_body_a: wp.array2d[int],
     propagation_body_b: wp.array2d[int],
@@ -6888,13 +6942,22 @@ def build_propagation_contact_rows(
                 d = tangent0
             elif row_offset == 2:
                 d = tangent1
+            row_point_a, row_point_b = contact_row_points(
+                c,
+                row_offset,
+                point_a_world,
+                point_b_world,
+                contact_shared_anchor,
+                contact_friction_shared_anchor,
+                friction_patches,
+            )
             if response_body_a >= 0:
-                ang_a = wp.cross(point_a_world - com_a, d)
+                ang_a = wp.cross(row_point_a - com_a, d)
                 for k in range(3):
                     propagation_J_a[world, row, k] = d[k]
                     propagation_J_a[world, row, 3 + k] = ang_a[k]
             if response_body_b >= 0:
-                ang_b = wp.cross(point_b_world - com_b, d)
+                ang_b = wp.cross(row_point_b - com_b, d)
                 for k in range(3):
                     propagation_J_b[world, row, k] = -d[k]
                     propagation_J_b[world, row, 3 + k] = -ang_b[k]
@@ -6914,8 +6977,8 @@ def build_propagation_contact_rows(
                 art_a,
                 body_b,
                 art_b,
-                point_a_world,
-                point_b_world,
+                row_point_a,
+                row_point_b,
                 d,
                 prescribed_articulation,
                 articulation_origin,

@@ -1305,6 +1305,8 @@ class SolverFeatherPGS(SolverBase):
         articulation_pair_contact_gap_gate: float = 0.0,
         contact_friction_gap_threshold: float = float("inf"),
         contact_friction_articulation_pairs_only: bool = False,
+        contact_shared_anchor: bool = False,
+        contact_friction_shared_anchor: bool = False,
         contact_torsion_radius: float = 0.0,
         contact_torsion_shape_indices: tuple[int, ...] | None = None,
         contact_torsion_shape_patterns: tuple[str, ...] | None = None,
@@ -1511,6 +1513,13 @@ class SolverFeatherPGS(SolverBase):
             contact_friction_articulation_pairs_only: Apply
                 ``contact_friction_gap_threshold`` only to contacts between two articulated
                 (non-free) bodies.
+            contact_shared_anchor: Apply every contact row at the midpoint of the two witness
+                points instead of at each body's own witness point, as PhysX applies a contact at
+                one point. ``phi`` still comes from the witness points. Friction patch rows keep
+                their patch anchors, so with patches this moves only the normal rows.
+            contact_friction_shared_anchor: Apply the friction rows at the witness midpoint,
+                which removes the tangential force couple of witness points separated along the
+                normal. It has no effect on friction patch rows, which act at their anchors.
             contact_torsion_radius: Experimental effective spin radius [m] of contact
                 torsion; ``0`` disables it. A positive radius adds one angular row per
                 contact group of an articulated body, about the group's normal, bounded by
@@ -1756,6 +1765,17 @@ class SolverFeatherPGS(SolverBase):
         if np.isnan(self.contact_friction_gap_threshold):
             raise ValueError("contact_friction_gap_threshold must not be NaN")
         self.contact_friction_articulation_pairs_only = bool(contact_friction_articulation_pairs_only)
+        self.contact_shared_anchor = bool(contact_shared_anchor)
+        self.contact_friction_shared_anchor = bool(contact_friction_shared_anchor)
+        self._contact_anchor_args = (int(self.contact_shared_anchor), int(self.contact_friction_shared_anchor))
+        if self._friction_anchors_enabled and (self.contact_shared_anchor or self.contact_friction_shared_anchor):
+            warnings.warn(
+                "Patch friction selects its own friction locations and carries tangential displacement. "
+                "contact_shared_anchor still applies to normal rows; set friction_anchor_beta=0 "
+                "to apply shared-anchor flags to point friction rows as well.",
+                UserWarning,
+                stacklevel=2,
+            )
         configure_contact_torsion(
             self, contact_torsion_radius, contact_torsion_shape_indices, contact_torsion_shape_patterns
         )
@@ -6328,6 +6348,7 @@ class SolverFeatherPGS(SolverBase):
                     self.shape_material_mu,
                     self.shape_material_restitution,
                     self._friction_patches.view,
+                    *self._contact_anchor_args,
                 ],
                 outputs=[
                     self.row_type,
@@ -6366,6 +6387,7 @@ class SolverFeatherPGS(SolverBase):
                         state_aug.joint_S_s,
                         model.shape_body,
                         state_in.body_q,
+                        *self._contact_anchor_args,
                         self._sparse_mass_matrix_indices.permutation,
                         self._sparse_mass_matrix_indices.row_offsets,
                         self._sparse_Linv,
@@ -6408,6 +6430,7 @@ class SolverFeatherPGS(SolverBase):
                             model.shape_body,
                             state_in.body_q,
                             self._friction_patches.view,
+                            *self._contact_anchor_args,
                         ],
                         outputs=[self.J_by_size[size]],
                         device=model.device,
@@ -6436,6 +6459,7 @@ class SolverFeatherPGS(SolverBase):
                             model.shape_body,
                             state_in.body_q,
                             self._friction_patches.view,
+                            *self._contact_anchor_args,
                         ],
                         outputs=[self.J_by_size[size]],
                         device=model.device,
@@ -6467,6 +6491,7 @@ class SolverFeatherPGS(SolverBase):
                         self.shape_material_restitution,
                         self._friction_patches.view,
                         self.friction_anchor_beta,
+                        *self._contact_anchor_args,
                     ],
                     outputs=[
                         self.mf_body_a,
@@ -7092,6 +7117,8 @@ class SolverFeatherPGS(SolverBase):
                 self._prescribed_articulation,
                 self.articulation_origin,
                 self.shape_material_mu,
+                *self._contact_anchor_args,
+                self._friction_patches.view,
             ],
             outputs=[
                 self.propagation_body_a,

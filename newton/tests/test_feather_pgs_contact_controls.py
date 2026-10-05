@@ -320,16 +320,26 @@ def _dense_restitution_rhs(device, scale: float) -> float:
     return float(rhs.numpy()[0, 0])
 
 
-def _launch_dense_contact_builders(device):
+# Body-frame witness points and thicknesses of the dense same-articulation fixture contact.
+_DENSE_POINT0 = (0.2, 0.1, -0.05)
+_DENSE_POINT1 = (-0.1, 0.05, 0.2)
+_DENSE_THICKNESS = (0.01, 0.02)
+# World positions of the fixture's two contact bodies (shape 0 on body 2, shape 1 on body 1).
+_DENSE_BODY_POSITIONS = ((0.0, 0.0, 0.0), (-0.2, 0.3, 0.1), (0.4, -0.1, 0.2))
+
+
+def _launch_dense_contact_builders(
+    device, *, anchors=(0, 0), point0=_DENSE_POINT0, point1=_DENSE_POINT1, thickness=_DENSE_THICKNESS
+):
     """Build one same-articulation contact's Jacobian through the tree-walk and compact paths."""
     contact_count = wp.array([1], dtype=wp.int32, device=device)
-    point0 = wp.array([wp.vec3(0.2, 0.1, -0.05)], dtype=wp.vec3, device=device)
-    point1 = wp.array([wp.vec3(-0.1, 0.05, 0.2)], dtype=wp.vec3, device=device)
+    point0 = wp.array([wp.vec3(*point0)], dtype=wp.vec3, device=device)
+    point1 = wp.array([wp.vec3(*point1)], dtype=wp.vec3, device=device)
     normal = wp.array([wp.vec3(0.0, 0.0, -1.0)], dtype=wp.vec3, device=device)
     shape0 = wp.array([0], dtype=wp.int32, device=device)
     shape1 = wp.array([1], dtype=wp.int32, device=device)
-    thickness0 = wp.array([0.01], dtype=wp.float32, device=device)
-    thickness1 = wp.array([0.02], dtype=wp.float32, device=device)
+    thickness0 = wp.array([thickness[0]], dtype=wp.float32, device=device)
+    thickness1 = wp.array([thickness[1]], dtype=wp.float32, device=device)
     contact_world = wp.array([0], dtype=wp.int32, device=device)
     contact_slot = wp.array([0], dtype=wp.int32, device=device)
     contact_art_a = wp.array([0], dtype=wp.int32, device=device)
@@ -354,11 +364,7 @@ def _launch_dense_contact_builders(device):
     )
     shape_body = wp.array([2, 1], dtype=wp.int32, device=device)
     body_q = wp.array(
-        [
-            wp.transform(wp.vec3(0.0), wp.quat_identity()),
-            wp.transform(wp.vec3(-0.2, 0.3, 0.1), wp.quat_identity()),
-            wp.transform(wp.vec3(0.4, -0.1, 0.2), wp.quat_identity()),
-        ],
+        [wp.transform(wp.vec3(*position), wp.quat_identity()) for position in _DENSE_BODY_POSITIONS],
         dtype=wp.transform,
         device=device,
     )
@@ -390,6 +396,7 @@ def _launch_dense_contact_builders(device):
             shape_body,
             body_q,
             patches,
+            *anchors,
         ],
         outputs=[serial],
         device=device,
@@ -417,6 +424,7 @@ def _launch_dense_contact_builders(device):
             shape_body,
             body_q,
             patches,
+            *anchors,
         ],
         outputs=[compact],
         device=device,
@@ -450,6 +458,7 @@ def _launch_dense_contact_builders(device):
             wp.array([0.6, 0.8], dtype=wp.float32, device=device),
             wp.array([0.2, 0.4], dtype=wp.float32, device=device),
             patches,
+            *anchors,
         ],
         outputs=list(metadata.values()),
         device=device,
@@ -476,6 +485,108 @@ def test_compact_contact_builder_matches_tree_walk(test, device):
     np.testing.assert_array_equal(metadata["row_parent"][0, :3], [-1, 0, 0])
     np.testing.assert_allclose(metadata["row_mu"][0, :3], 0.7, rtol=1.0e-6)
     np.testing.assert_allclose(metadata["row_restitution"][0, :3], [0.3, 0.0, 0.0], rtol=1.0e-6)
+
+
+def test_shared_anchors_move_the_row_points_to_the_witness_midpoint(test, device):
+    """Apply shared-anchor rows at the witness midpoint while ``phi`` keeps the witness points."""
+    # The same contact with both points at the world midpoint and no thickness.
+    normal = np.array([0.0, 0.0, -1.0])
+    witness_a = np.add(_DENSE_BODY_POSITIONS[2], _DENSE_POINT0) + _DENSE_THICKNESS[0] * normal
+    witness_b = np.add(_DENSE_BODY_POSITIONS[1], _DENSE_POINT1) - _DENSE_THICKNESS[1] * normal
+    midpoint = 0.5 * (witness_a + witness_b)
+    midpoint_rows = _launch_dense_contact_builders(
+        device,
+        point0=tuple(midpoint - _DENSE_BODY_POSITIONS[2]),
+        point1=tuple(midpoint - _DENSE_BODY_POSITIONS[1]),
+        thickness=(0.0, 0.0),
+    )
+    witness_rows = _launch_dense_contact_builders(device)
+    for anchors, normal_source, friction_source in (
+        ((1, 0), midpoint_rows, midpoint_rows),
+        ((1, 1), midpoint_rows, midpoint_rows),
+        ((0, 1), witness_rows, midpoint_rows),
+    ):
+        with test.subTest(anchors=anchors):
+            serial, compact, metadata = _launch_dense_contact_builders(device, anchors=anchors)
+            for jacobian in (serial, compact):
+                np.testing.assert_allclose(jacobian[0, 0], normal_source[0][0, 0], rtol=0.0, atol=1.0e-6)
+                np.testing.assert_allclose(jacobian[0, 1:3], friction_source[0][0, 1:3], rtol=0.0, atol=1.0e-6)
+            np.testing.assert_allclose(metadata["phi"][0, 0], witness_rows[2]["phi"][0, 0], rtol=0.0, atol=1.0e-7)
+    # The fixture's witness points are separated along and across the normal, so the rows differ.
+    test.assertGreater(float(np.abs(midpoint_rows[0][0, :3] - witness_rows[0][0, :3]).max()), 1.0e-3)
+
+
+def test_shared_anchors_warn_with_patch_friction(test, device):
+    """Explain that patch anchors keep their friction points when shared anchors are requested."""
+    model = _free_body_model(device)
+    for flag in ("contact_shared_anchor", "contact_friction_shared_anchor"):
+        with test.subTest(flag=flag), test.assertWarnsRegex(UserWarning, "friction_anchor_beta=0"):
+            SolverFeatherPGS(model, **{flag: True})
+        solver = SolverFeatherPGS(model, friction_anchor_beta=0.0, **{flag: True})
+        test.assertTrue(getattr(solver, flag))
+
+
+def test_shared_anchors_step_on_every_route(test, device):
+    """Rest a box and a two-link arm on the ground with shared anchors in every solve and response."""
+    builder = newton.ModelBuilder()
+    box = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
+    builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1)
+    parent = -1
+    joints = []
+    for _ in range(2):
+        link = builder.add_link()
+        builder.add_shape_box(link, hx=0.08, hy=0.05, hz=0.05)
+        xform = wp.vec3(0.5, 0.0, 0.05) if parent == -1 else wp.vec3(0.2, 0.0, 0.0)
+        joints.append(
+            builder.add_joint_revolute(
+                parent,
+                link,
+                axis=newton.Axis.Y,
+                parent_xform=wp.transform(xform, wp.quat_identity()),
+                child_xform=wp.transform_identity(),
+            )
+        )
+        parent = link
+    builder.add_articulation(joints)
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    routes = (
+        {"pgs_mode": "matrix_free"},
+        {"pgs_mode": "split"},
+        {"articulated_contact_response": "propagation"},
+        {"articulated_contact_response": "propagation-fused"},
+    )
+
+    def run(route, shared):
+        solver = SolverFeatherPGS(
+            model,
+            friction_anchor_beta=0.0,
+            contact_shared_anchor=shared,
+            contact_friction_shared_anchor=shared,
+            dense_max_constraints=128,
+            mf_max_constraints=128,
+            **route,
+        )
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        control = model.control()
+        for _ in range(120):
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+            state_0, state_1 = state_1, state_0
+        solver.check_constraint_capacity()
+        return state_0.body_q.numpy(), state_0.body_qd.numpy()
+
+    for route in routes:
+        with test.subTest(**route):
+            body_q, body_qd = run(route, True)
+            reference_q, _ = run(route, False)
+            test.assertTrue(np.isfinite(body_q).all())
+            # Resting contacts have coincident witness points, so the rest pose is unchanged.
+            np.testing.assert_allclose(body_q, reference_q, rtol=0.0, atol=2.0e-3)
+            test.assertLess(float(np.abs(body_qd).max()), 0.05)
 
 
 def test_solver_exposes_documented_defaults(test, device):
@@ -693,6 +804,9 @@ class TestFeatherPGSContactControls(unittest.TestCase):
 devices = get_cuda_test_devices()
 for _fn in (
     test_compact_contact_builder_matches_tree_walk,
+    test_shared_anchors_move_the_row_points_to_the_witness_midpoint,
+    test_shared_anchors_warn_with_patch_friction,
+    test_shared_anchors_step_on_every_route,
     test_solver_exposes_documented_defaults,
     test_solver_validates_and_stores_contact_controls,
     test_scoped_gap_gate_only_drops_distant_same_articulation_contact,

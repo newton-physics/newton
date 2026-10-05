@@ -314,6 +314,8 @@ def _get_sparse_contact_response_kernel(
         joint_S_s: wp.array[wp.spatial_vector],
         shape_body: wp.array[int],
         body_q: wp.array[wp.transform],
+        contact_shared_anchor: int,
+        contact_friction_shared_anchor: int,
         permutation: wp.array[int],
         factor_row_offsets: wp.array[int],
         inverse_factor: wp.array2d[float],
@@ -352,20 +354,35 @@ def _get_sparse_contact_response_kernel(
                     point_a = wp.transform_point(body_q[body_a], contact_point0[c]) - contact_thickness0[c] * normal
                 if body_b >= 0:
                     point_b = wp.transform_point(body_q[body_b], contact_point1[c]) + contact_thickness1[c] * normal
+                friction_point_a = point_a
+                friction_point_b = point_b
+                # Shared anchors put both bodies' points at the witness midpoint.
+                midpoint = 0.5 * (point_a + point_b)
+                if contact_shared_anchor != 0:
+                    point_a = midpoint
+                    point_b = midpoint
+                if contact_shared_anchor != 0 or contact_friction_shared_anchor != 0:
+                    friction_point_a = midpoint
+                    friction_point_b = midpoint
                 tangent0, tangent1 = contact_tangent_basis(normal)
                 for row in range(3):
                     direction = normal
+                    row_point_a = point_a
+                    row_point_b = point_b
                     if row == 1:
                         direction = tangent0
                     elif row == 2:
                         direction = tangent1
+                    if row > 0:
+                        row_point_a = friction_point_a
+                        row_point_b = friction_point_b
                     # J = [direction, (point - origin) x direction] dot motion.
                     wrench_a = wp.vec3(0.0)
                     wrench_b = wp.vec3(0.0)
                     if art_a >= 0 and articulation_response_dof_count[art_a] > 0:
-                        wrench_a = wp.cross(point_a - articulation_origin[art_a], direction)
+                        wrench_a = wp.cross(row_point_a - articulation_origin[art_a], direction)
                     if art_b >= 0 and articulation_response_dof_count[art_b] > 0:
-                        wrench_b = wp.cross(point_b - articulation_origin[art_b], direction)
+                        wrench_b = wp.cross(row_point_b - articulation_origin[art_b], direction)
                     for axis in range(3):
                         angular_a[row, axis] = wrench_a[axis]
                         angular_b[row, axis] = wrench_b[axis]

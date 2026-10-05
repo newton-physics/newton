@@ -198,6 +198,8 @@ class TestSparseContacts(unittest.TestCase):
                 array(motion, wp.spatial_vector),
                 array([*range(len(transforms)), -1], int),
                 array(transforms, wp.transform),
+                0,
+                0,
                 indices.permutation,
                 indices.row_offsets,
                 array(articulated_inverse[:, p.entry_rows, p.columns]),
@@ -298,7 +300,9 @@ class TestSparseContacts(unittest.TestCase):
 
     def test_contact_response_matches_dense_jacobian(self):
         """Match dense contact rows for static, same-articulation, and fixed endpoints."""
-        self._check_contact_response("cpu", 1)
+        for anchors in ((0, 0), (1, 0), (0, 1)):
+            with self.subTest(anchors=anchors):
+                self._check_contact_response("cpu", 1, anchors=anchors)
 
     @unittest.skipUnless(wp.is_cuda_available(), "cooperative contact construction requires CUDA")
     def test_contact_response_cuda(self):
@@ -307,8 +311,10 @@ class TestSparseContacts(unittest.TestCase):
             for workers in (1, 2, 5) if lanes == 8 else (2,):
                 with self.subTest(workers=workers, lanes=lanes):
                     self._check_contact_response("cuda:0", workers, lanes=lanes)
+        with self.subTest(anchors=(1, 1)):
+            self._check_contact_response("cuda:0", 2, anchors=(1, 1))
 
-    def _check_contact_response(self, device, workers, *, lanes=8):
+    def _check_contact_response(self, device, workers, *, lanes=8, anchors=(0, 0)):
         """Match dense contact rows for static, same-articulation, and fixed endpoints."""
 
         def array(value, dtype=float):
@@ -348,6 +354,7 @@ class TestSparseContacts(unittest.TestCase):
                 f["shape_body"],
                 f["body_q"],
                 _point_friction_patches(device),
+                *anchors,
             ],
             outputs=[dense],
             device=device,
@@ -374,6 +381,7 @@ class TestSparseContacts(unittest.TestCase):
                 f["motion"],
                 f["shape_body"],
                 f["body_q"],
+                *anchors,
                 indices.permutation,
                 indices.row_offsets,
                 f["packed"],
