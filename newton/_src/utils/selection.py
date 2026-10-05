@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import functools
+import operator
 import re
 from fnmatch import fnmatch
 from types import NoneType
@@ -2131,6 +2132,19 @@ def _gather_object_vec3_kernel(
     out[object_index, i] = src[starts[object_index] + i]
 
 
+@wp.kernel(enable_backward=False)
+def _mark_object_membership_kernel(indices: wp.array[wp.int32], membership: wp.array[wp.int32]):
+    i = indices[wp.tid()]
+    if i >= 0 and i < membership.shape[0]:
+        wp.atomic_max(membership, i, 1)
+
+
+@wp.kernel(enable_backward=False)
+def _object_membership_to_mask_kernel(membership: wp.array[wp.int32], mask: wp.array[wp.bool]):
+    i = wp.tid()
+    mask[i] = membership[i] != 0
+
+
 @wp.kernel
 def _scatter_object_vec3_kernel(
     values: wp.array2d[wp.vec3],
@@ -2265,6 +2279,7 @@ class _DeformableViewBase:
         """World index of each selected deformable object, shape ``(count,)``."""
 
         # Element ranges are always available; only rectangular operations require homogeneity.
+        self._mask_membership = wp.empty(self.count, dtype=wp.int32, device=self.device)
         self._ranges: dict[str, list[tuple[int, int]]] = {}
         self._starts: dict[str, wp.array[wp.int32]] = {}
         self._counts: dict[str, int | None] = {}
@@ -2461,6 +2476,77 @@ class _DeformableViewBase:
         out = attribute._staging_array
         wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
         return out
+
+    def set_mask_from_indices(
+        self,
+        mask: wp.array[wp.bool],
+        deformable_object_indices: Any,
+    ) -> None:
+        """Replace a caller-owned mask with the selected deformable objects.
+
+        Indices refer to rows of this view, not model-global IDs. Their order
+        does not reorder values passed to setters. Repeats select an object
+        once. An empty selector clears the mask. Device inputs need no host
+        copy or temporary allocation and can change between CUDA graph replays.
+
+        Args:
+            mask: Output Boolean array with shape ``(count,)`` on the view's
+                device. Non-overlapping strided arrays are supported.
+            deformable_object_indices: Host integer sequence outside capture,
+                or a one-dimensional ``int32`` Warp array on the view's device.
+                Invalid host indices raise; invalid device indices are ignored,
+                so fixed-capacity device selectors may use ``-1`` for unused entries.
+
+        Raises:
+            TypeError: If the output is not a Warp array or a host index is not
+                an integer. Booleans are not indices.
+            ValueError: If shapes, dtypes, devices, host bounds, or output strides
+                are invalid. Validation failures leave the output unchanged.
+            RuntimeError: If host indices are passed during CUDA capture.
+        """
+        if not isinstance(mask, wp.array):
+            raise TypeError("Expected mask to be a caller-owned Warp array")
+        self._resolve_mask(mask)
+        if self.count > 1 and abs(mask.strides[0]) < type_size_in_bytes(wp.bool):
+            raise ValueError("Output mask entries must not overlap")
+        indices = deformable_object_indices
+        if isinstance(indices, wp.array):
+            if indices.ndim != 1 or indices.dtype is not wp.int32:
+                raise ValueError("Expected deformable_object_indices to be a one-dimensional int32 array")
+            if indices.device != self.device:
+                raise ValueError(f"Expected deformable_object_indices on device {self.device}, got {indices.device}")
+        else:
+            if self.device.is_capturing:
+                raise RuntimeError("Create indices as a Warp array on the view's device before CUDA capture")
+            validated = []
+            for value in indices:
+                if isinstance(value, (bool, np.bool_)):
+                    raise TypeError("deformable_object_indices entries must be integers, not booleans")
+                index = operator.index(value)
+                if not 0 <= index < self.count:
+                    raise ValueError(f"deformable_object_indices entries must be in [0, {self.count})")
+                validated.append(index)
+            indices = wp.array(validated, dtype=wp.int32, device=self.device)
+
+        # Atomic integer marking handles duplicate indices safely. Backward reads
+        # the caller's Boolean mask, never this reusable conversion scratch.
+        self._mask_membership.zero_()
+        wp.launch(
+            _mark_object_membership_kernel,
+            dim=indices.size,
+            inputs=[indices],
+            outputs=[self._mask_membership],
+            device=self.device,
+            record_tape=False,
+        )
+        wp.launch(
+            _object_membership_to_mask_kernel,
+            dim=self.count,
+            inputs=[self._mask_membership],
+            outputs=[mask],
+            device=self.device,
+            record_tape=False,
+        )
 
     def _resolve_mask(self, mask: Any) -> wp.array[wp.bool] | None:
         if mask is None:

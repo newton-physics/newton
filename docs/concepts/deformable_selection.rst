@@ -126,12 +126,32 @@ Host Boolean sequences are accepted outside capture. Numeric lists are not masks
 Device masks must have shape ``(count,)``, Boolean dtype, and the view's device.
 Strided masks are supported. Setters do not modify their masks or input values.
 
+When a reset supplies object indices, convert them into a caller-owned mask:
+
+.. code-block:: python
+
+    surfaces.set_mask_from_indices(mask_cloths, [2, 0, 2])
+    # mask_cloths is [True, False, True]. Values stay in view order.
+    surfaces.set_particle_positions(state, positions_default, mask=mask_cloths)
+
+The helper replaces the complete mask. Repeated indices select an object once;
+an empty selector clears it. Host indices must be integers within the view's
+range; booleans are rejected. Device indices must be one-dimensional ``int32``
+arrays on the view's device. Invalid device indices are ignored, so a
+fixed-capacity selector can use ``-1`` for unused entries. No source-row
+selection or compact-value mode is provided.
+
 Construct views and warm up operations before CUDA graph capture. Preallocate
 independent values and masks. Setters allocate no temporary arrays with device
 inputs, including when those inputs require gradients. Host values and masks
 raise ``RuntimeError`` during capture. Getters that reuse staging buffers can
 also be captured after their first call. Mask and value contents can change
 between inference replays without rebuilding the graph.
+
+``set_mask_from_indices()`` also supports capture with preallocated device
+indices and a mask. Host indices raise ``RuntimeError`` during capture.
+It reuses integer scratch owned by the view, but backward reads only the
+caller's Boolean masks. Use distinct output masks for distinct taped writes.
 
 Masked setters preserve gradients to the input values when recorded with
 ``wp.Tape``. Keep values and masks unchanged until backward completes.
