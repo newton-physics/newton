@@ -251,8 +251,10 @@ The first release deliberately supports a narrow, predictable set of inputs:
 * ``UsdPhysicsCollisionGroup`` membership is **not** applied to deformables; deformable
   collision filtering is per-pair only (the standard ``physics:filteredPairs`` and
   ``PhysicsElementCollisionFilter`` support above).
-* Every imported deformable can be found by prim path in the import results and,
-  after ``finalize()``, through the selection view (see below).
+* Every imported deformable can be found by prim path in the import results (see below).
+  After ``finalize()``, selection views use the recorded deformable object labels.
+  A welded graph is selected by its graph label, not by each source curve's prim path;
+  see :ref:`deformable-objects-welded-usd-graphs`.
 
 Anything outside this set warns and is skipped, or is recorded as unsupported in the returned
 attributes. It never silently becomes a different physical model. In particular: disabled

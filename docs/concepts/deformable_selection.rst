@@ -94,6 +94,11 @@ rows. Irregular layouts fill a reusable buffer. A later state change or another
 read can change the returned values. Use ``wp.clone()`` when a result must stay
 unchanged, as in the reset buffers above.
 
+A view caches getter results and keeps their source arrays alive for its lifetime.
+Dropping a state does not release those arrays while the view still holds them.
+Reuse a fixed set of state buffers, such as two alternating states. Reading newly
+created states on every step can grow the cache and its memory use.
+
 Use setters to change state; do not rely on editing a getter result. Setters
 reject input that shares storage with the target array. Copy such input with
 ``wp.clone()`` first. This prevents a write from overwriting values it still
