@@ -4,8 +4,9 @@
 """Check runner attribution contracts using local workflow source.
 
 These tests catch missing tags and incorrect trigger-category wiring across
-duplicated workflow definitions and callers. They do not contact GitHub or
-AWS, launch an EC2 instance, or verify that AWS applies the requested tags.
+the shared runner launch action, its workflows, and their callers. They do
+not contact GitHub or AWS, launch an EC2 instance, or verify that AWS applies
+the requested tags.
 Those behaviors require a live smoke test.
 """
 
@@ -14,6 +15,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
+START_RUNNER_ACTION = ROOT / ".github" / "actions" / "start-aws-gpu-runner" / "action.yml"
 WORKLOADS = {
     ".github/workflows/aws_gpu_tests.yml": "gpu-unit-tests",
     ".github/workflows/aws_gpu_benchmarks.yml": "gpu-benchmarks",
@@ -57,17 +59,21 @@ class TestRunnerWorkflowContract(unittest.TestCase):
         return "".join(block)
 
     @staticmethod
-    def _resource_tag_block(workflow: str) -> str:
-        start = workflow.index("          aws-resource-tags: >\n")
-        end = workflow.index("\n            ]", start) + len("\n            ]")
-        return workflow[start:end]
+    def _resource_tag_blocks(action: str) -> list[str]:
+        blocks = []
+        start = action.find("        aws-resource-tags: >\n")
+        while start != -1:
+            end = action.index("\n          ]", start) + len("\n          ]")
+            blocks.append(action[start:end])
+            start = action.find("        aws-resource-tags: >\n", end)
+        return blocks
 
     @classmethod
-    def _parse_resource_tags(cls, workflow: str, trigger_category: str) -> list[dict[str, str]]:
-        tags = cls._resource_tag_block(workflow)
+    def _parse_resource_tags(cls, tags: str, trigger_category: str, workload: str) -> list[dict[str, str]]:
         substitutions = {
             "${{ github.repository }}": "newton-physics/newton",
             "${{ toJSON(inputs['trigger-category']) }}": json.dumps(trigger_category),
+            "${{ toJSON(inputs.workload) }}": json.dumps(workload),
             "${{ github.run_id }}": "123456",
             "${{ github.run_attempt }}": "2",
         }
@@ -94,26 +100,37 @@ class TestRunnerWorkflowContract(unittest.TestCase):
                 )
                 self.assertIn("        default: 'manual'\n", dispatch_input)
 
-                tags = self._resource_tag_block(workflow)
-                expected_tags = (
-                    '"created-by", "Value": "github-actions-newton-role"',
-                    '"GitHub-Repository", "Value": "${{ github.repository }}"',
-                    f'"Newton-Workload", "Value": "{workload}"',
-                    '"GitHub-Run-ID", "Value": "${{ github.run_id }}"',
-                    '"GitHub-Run-Attempt", "Value": "${{ github.run_attempt }}"',
-                )
-                for expected_tag in expected_tags:
-                    self.assertIn(expected_tag, tags)
+                self.assertIn("        uses: ./.github/actions/start-aws-gpu-runner\n", workflow)
+                self.assertIn(f"          workload: {workload}\n", workflow)
+                self.assertIn("          trigger-category: ${{ inputs.trigger-category }}\n", workflow)
+
+    def test_runner_action_tags_every_launch(self):
+        """Apply the same attribution tags to primary and fallback launches."""
+        action = START_RUNNER_ACTION.read_text(encoding="utf-8")
+        blocks = self._resource_tag_blocks(action)
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(blocks[0], blocks[1])
+        expected_tags = (
+            '"created-by", "Value": "github-actions-newton-role"',
+            '"GitHub-Repository", "Value": "${{ github.repository }}"',
+            '"Newton-Workload", "Value": ${{ toJSON(inputs.workload) }}',
+            '"GitHub-Run-ID", "Value": "${{ github.run_id }}"',
+            '"GitHub-Run-Attempt", "Value": "${{ github.run_attempt }}"',
+        )
+        for expected_tag in expected_tags:
+            self.assertIn(expected_tag, blocks[0])
 
     def test_trigger_category_is_json_encoded(self):
         """Preserve arbitrary trigger-category strings in resource tag JSON."""
         trigger_category = 'manual "quoted"\ncategory'
-        for path in WORKLOADS:
-            with self.subTest(path=path):
-                workflow = (ROOT / path).read_text(encoding="utf-8")
-                tags = self._parse_resource_tags(workflow, trigger_category)
+        action = START_RUNNER_ACTION.read_text(encoding="utf-8")
+        for workload in WORKLOADS.values():
+            with self.subTest(workload=workload):
+                tags = self._parse_resource_tags(self._resource_tag_blocks(action)[0], trigger_category, workload)
                 trigger_tag = next(tag for tag in tags if tag["Key"] == "Newton-Trigger")
                 self.assertEqual(trigger_tag["Value"], trigger_category)
+                workload_tag = next(tag for tag in tags if tag["Key"] == "Newton-Workload")
+                self.assertEqual(workload_tag["Value"], workload)
 
     def test_callers_pass_expected_trigger_categories(self):
         """Map each runner caller to its normalized trigger category."""
