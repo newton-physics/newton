@@ -121,7 +121,7 @@ def _make_solver(model, sparse, **overrides):
     }
     options.update(overrides)
     with mock.patch.dict(SolverFeatherPGS._kernel_overrides, {"sparse_mass_matrix": sparse}):
-        return SolverFeatherPGS(model, **options)
+        return SolverFeatherPGS(model, pgs_mode="matrix_free", **options)
 
 
 def _case(sparse, *, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False):
@@ -509,9 +509,11 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
 
     def test_default_selects_sparse_factors_for_branched_articulations(self):
         """Select sparse factors without any option for branched trees and keep dense factors for chains."""
-        self.assertEqual(SolverFeatherPGS(_build_model())._sparse_mass_matrix_size, 9)
-        self.assertEqual(SolverFeatherPGS(_build_model(free_count=1))._sparse_mass_matrix_size, 9)
-        self.assertIsNone(SolverFeatherPGS(_build_chain("cuda:0"))._sparse_mass_matrix_size)
+        self.assertEqual(SolverFeatherPGS(_build_model(), pgs_mode="matrix_free")._sparse_mass_matrix_size, 9)
+        self.assertEqual(
+            SolverFeatherPGS(_build_model(free_count=1), pgs_mode="matrix_free")._sparse_mass_matrix_size, 9
+        )
+        self.assertIsNone(SolverFeatherPGS(_build_chain("cuda:0"), pgs_mode="matrix_free")._sparse_mass_matrix_size)
 
     def test_unsupported_configurations_keep_existing_path(self):
         """Keep dense factors for full-support chains, velocity-limit rows, no iterations and large row capacities."""
@@ -604,7 +606,7 @@ class TestFeatherPGSSparseSelectionGuard(unittest.TestCase):
     @unittest.skipUnless(wp.is_cuda_available(), "Sparse integrated solve requires CUDA")
     def test_y_tree_selects_sparse_factors(self):
         """Select sparse factors for the uncoupled Y tree used by the bilateral guard."""
-        self.assertEqual(SolverFeatherPGS(_build_y_tree("cuda:0"))._sparse_mass_matrix_size, 3)
+        self.assertEqual(SolverFeatherPGS(_build_y_tree("cuda:0"), pgs_mode="matrix_free")._sparse_mass_matrix_size, 3)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Sparse integrated solve requires CUDA")
     @unittest.skipUnless(
@@ -618,7 +620,7 @@ class TestFeatherPGSSparseSelectionGuard(unittest.TestCase):
             ("disabled closure", {"closure": True, "closure_enabled": False}),
         ):
             with self.subTest(label):
-                solver = SolverFeatherPGS(_build_y_tree("cuda:0", **kwargs))
+                solver = SolverFeatherPGS(_build_y_tree("cuda:0", **kwargs), pgs_mode="matrix_free")
                 self.assertIsNone(solver._sparse_mass_matrix_size)
                 self.assertGreater(solver.J_by_size[3].size, 1)
 

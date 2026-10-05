@@ -205,7 +205,7 @@ def test_serial_selection_skips_tree_setup(test, device):
     for options in ({}, {"parallel_tree": False}):
         with test.subTest(options=options):
             with patch.object(_FeatherPGSTreePlan, "build", wraps=_FeatherPGSTreePlan.build) as build:
-                solver = SolverFeatherPGS(model, **options)
+                solver = SolverFeatherPGS(model, pgs_mode="matrix_free", **options)
             build.assert_not_called()
             test.assertIsNone(solver._tree_plan)
             test.assertEqual(solver._tree_net_wrenches, ())
@@ -221,13 +221,13 @@ def test_explicit_parallel_preserves_eligibility_fallback(test, device):
     """Build a plan for branched trees and fall back to serial traversal for an unbranched chain."""
     model = _build_fingers(device, articulations=1)
     with patch.object(_FeatherPGSTreePlan, "build", wraps=_FeatherPGSTreePlan.build) as build:
-        solver = SolverFeatherPGS(model, parallel_tree=True)
+        solver = SolverFeatherPGS(model, pgs_mode="matrix_free", parallel_tree=True)
     build.assert_called_once()
     test.assertIsNotNone(solver._tree_plan)
     test.assertTrue(any(group.lanes > 1 for group in solver._tree_plan.groups))
     test.assertEqual(len(solver._tree_net_wrenches), len(solver._tree_plan.groups))
     model = _build_model(device, chain=True)[0]
-    solver = SolverFeatherPGS(model, parallel_tree=True)
+    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", parallel_tree=True)
     test.assertIsNone(solver._tree_plan)
     test.assertEqual(solver._tree_net_wrenches, ())
 

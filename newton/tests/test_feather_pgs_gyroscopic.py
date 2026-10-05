@@ -46,7 +46,7 @@ def test_free_spin_energy(test, device):
     """Conserve kinetic energy and angular momentum of a torque-free asymmetric spinning body."""
     inertia = np.diag([0.001, 0.02, 0.0205])
     model, state, output = _model(device, inertia, (100.0, 20.0, 50.0))
-    solver = newton.solvers.SolverFeatherPGS(model)
+    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free")
     control = model.control()
     omega = _body_omega(state)
     energy = 0.5 * omega @ inertia @ omega
@@ -67,7 +67,7 @@ def test_principal_axis_torque(test, device):
     inertia = np.diag([0.04, 0.02, 0.05])
     for armature in (0.0, 0.03):
         model, state, output = _model(device, inertia, (0.0, 0.0, 2.0), armature=armature)
-        solver = newton.solvers.SolverFeatherPGS(model)
+        solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free")
         control = model.control()
         torque = 0.1
         dt = 1.0 / 240.0
@@ -94,7 +94,7 @@ def test_rotated_inertia_and_armature(test, device):
         q[3:7] = np.asarray(rotation)
         state.joint_q.assign(q)
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-        solver = newton.solvers.SolverFeatherPGS(model)
+        solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free")
         control = model.control()
         w = _body_omega(state)
         initial = w @ inertia @ w + np.dot(rotor, omega * omega)
@@ -130,7 +130,7 @@ def test_gyro_precession_converges(test, device):
     errors = []
     for steps in (48, 96):
         model, state, output = _model(device, inertia, initial)
-        solver = newton.solvers.SolverFeatherPGS(model)
+        solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free")
         control = model.control()
         for _ in range(steps):
             solver.step(state, output, control, None, duration / steps)
@@ -189,7 +189,7 @@ def _mixed_scene(device, *, arm, totes):
     control = model.control()
     control.joint_target_q.fill_(0.1)
     # The 19 revolute joints keep two finite position-limit rows each.
-    solver = newton.solvers.SolverFeatherPGS(model, dense_max_constraints=64)
+    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", dense_max_constraints=64)
     return model, solver, control, [state, output]
 
 

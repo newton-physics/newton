@@ -153,6 +153,7 @@ def _solver(model, *, enabled, velocity_limits=False, **options):
     """Build a solver with serial (``enabled=False``) or parallel tree traversal."""
     solver = SolverFeatherPGS(
         model,
+        pgs_mode="matrix_free",
         pgs_iterations=8,
         update_mass_matrix_interval=2,
         enable_joint_limits=True,
