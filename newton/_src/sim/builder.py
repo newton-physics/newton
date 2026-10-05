@@ -786,8 +786,13 @@ class ModelBuilder:
         if not math.isfinite(alignment) or alignment < 0.999:
             raise ValueError(f"{method_name}: {argument_name} must align local +Z with the segment direction")
 
-        correction = quat_between_vectors_robust(wp.vec3(local_z_world), segment_direction)
-        result = wp.mul(correction, wp.quat(qx, qy, qz, qw))
+        # Stay below the shared helper's 2e-8 identity threshold, allowing for float32 rounding.
+        chord_sq = sum((a - b) ** 2 for a, b in zip(local_z_world, direction, strict=True))
+        if chord_sq <= 1.0e-8:
+            result = wp.quat(qx, qy, qz, qw)
+        else:
+            correction = quat_between_vectors_robust(wp.vec3(local_z_world), segment_direction)
+            result = wp.mul(correction, wp.quat(qx, qy, qz, qw))
         result_norm = math.hypot(*result)
         return wp.quat(*(component / result_norm for component in result))
 
@@ -5434,18 +5439,16 @@ class ModelBuilder:
                     "JointType.ROD requires exactly three linear and three angular axes; "
                     "use ModelBuilder.add_joint_rod() to construct the canonical layout."
                 )
-            expected_axes = (
-                axis_to_vec3(Axis.X),
-                axis_to_vec3(Axis.Y),
-                axis_to_vec3(Axis.Z),
-            )
+            expected_axes = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
             for configured, expected in zip(
                 (*linear_axes, *angular_axes), (*expected_axes, *expected_axes), strict=True
             ):
-                if not all(
-                    math.isfinite(float(configured.axis[k]))
-                    and abs(float(configured.axis[k]) - float(expected[k])) <= 1.0e-6
-                    for k in range(3)
+                axis = configured.axis
+                components = (float(axis[0]), float(axis[1]), float(axis[2]))
+                # Canonical axes compare exactly; only non-canonical input pays for the tolerant check.
+                if components != expected and not all(
+                    math.isfinite(component) and abs(component - target) <= 1.0e-6
+                    for component, target in zip(components, expected, strict=True)
                 ):
                     raise ValueError(
                         "JointType.ROD requires canonical XYZ linear and XYZ angular axis ordering; "
@@ -6001,8 +6004,14 @@ class ModelBuilder:
         """Initialize q7 from body poses so FK preserves the authored child pose."""
         q_start = self.joint_q_start[joint_id]
         parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
-        parent_anchor_world = parent_body_xform * self.joint_X_p[joint_id]
-        joint_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * self.joint_X_c[joint_id]
+        # Bypass Warp overload resolution, matching add_builder's transform_mul shortcut.
+        core = wp._src.context.runtime.core
+        anchor = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
+        joint_q = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
+        core.wp_builtin_mul_transformf_transformf(parent_body_xform, self.joint_X_p[joint_id], ctypes.byref(anchor))
+        core.wp_builtin_transform_inverse_transformf(anchor, ctypes.byref(joint_q))
+        core.wp_builtin_mul_transformf_transformf(joint_q, self.body_q[child], ctypes.byref(anchor))
+        core.wp_builtin_mul_transformf_transformf(anchor, self.joint_X_c[joint_id], ctypes.byref(joint_q))
         self.joint_q[q_start : q_start + 7] = list(joint_q)
 
     def add_joint_free(
@@ -9436,7 +9445,8 @@ class ModelBuilder:
                 link_joints.append(j_loop)
 
         if rest_straight:
-            # Builder targets are coordinate-sized; identity survives legacy projection unchanged.
+            # Builder targets are coordinate-sized. [0, 0, 0, 1] is the identity quaternion in the
+            # coordinate layout and zero Euler angles plus the padding slot in the legacy layout.
             for joint in link_joints:
                 q_start = self.joint_q_start[joint]
                 self.joint_target_q[q_start + 3 : q_start + 7] = [0.0, 0.0, 0.0, 1.0]

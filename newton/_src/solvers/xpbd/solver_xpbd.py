@@ -6,7 +6,7 @@ import warnings
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, ModelFlags, State
+from ...sim import Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
@@ -90,7 +90,8 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
     Joint limitations:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE, D6.
-          ROD joints are not supported.
+          ROD joints are not supported; constructing the solver on a model that
+          contains them raises ``ValueError``.
         - :attr:`~newton.Model.joint_enabled`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and
           :attr:`~newton.Control.joint_f` are supported.
@@ -168,6 +169,9 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 ``None`` (default) to inherit the current
                 ``wp.config.deterministic`` mode.
         """
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("SolverXPBD does not support JointType.ROD joints.")
+
         super().__init__(model=model)
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         module_options = {

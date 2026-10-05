@@ -846,9 +846,9 @@ class TestModelBuilderReplicate(unittest.TestCase):
             with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
                 actual = array_backed.finalize(device="cpu")
 
-            np.testing.assert_array_equal(
-                actual.joint_target_q.numpy(), np.zeros(actual.joint_dof_count, dtype=np.float32)
-            )
+            # Quaternion-to-Euler conversion may leave float32 roundoff at identity.
+            self.assertEqual(actual.joint_target_q.shape, (actual.joint_dof_count,))
+            np.testing.assert_allclose(actual.joint_target_q.numpy(), 0.0, atol=1.0e-6)
 
     def test_array_backed_joint_validation_returns_early_when_all_joints_are_articulated(self):
         """Skip orphan-joint validation and keep topology array-backed when every joint is articulated."""
