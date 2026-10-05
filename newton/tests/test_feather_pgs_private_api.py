@@ -77,16 +77,18 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
         """Keep physical behavior local to the model: no global friction or damping switches.
 
         The deliberate exceptions are opt-in and off by default: ``enable_joint_limits``, like the
-        reference solver's, and the experimental ``contact_compliance``.
+        reference solver's, the experimental ``contact_compliance``, and the experimental
+        ``friction_mode``, whose default is the standard Coulomb update.
         """
         parameters = inspect.signature(SolverFeatherPGS.__init__).parameters
         for opt_in in ("enable_joint_limits", "contact_compliance"):
             with self.subTest(opt_in=opt_in):
                 self.assertIs(parameters[opt_in].default, False)
+        self.assertEqual(parameters["friction_mode"].default, "current")
+        self.assertIn(".. experimental::", SolverFeatherPGS.__doc__)
         for removed in (
             "angular_damping",
             "enable_contact_friction",
-            "friction_mode",
             "enable_restitution",
         ):
             with self.subTest(option=removed):

@@ -240,7 +240,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``articulated_contact_response``, ``propagation_same_articulation_rows``,
        ``contact_shared_anchor``, ``contact_friction_shared_anchor``,
        ``row_watermark``, ``pgs_schedule``, ``use_parallel_streams``,
-       ``double_buffer``.
+       ``double_buffer``, ``friction_mode``.
      - Experimental. The default ``pgs_mode="matrix_free"`` requires CUDA and
        implements every option. ``pgs_mode="split"`` runs on CPU and CUDA (pass it
        explicitly on CPU) and stores a dense ``dense_max_constraints`` squared
@@ -248,8 +248,8 @@ repository examples spend tuning effort, not a shared solver API.
        ``drive_mode="physx_pgs"``, mimic joints, loop-closing joints, friction
        patches, contact regularization, velocity-only iterations, warm start,
        restitution, contact torsion, contact compliance, sleeping, the
-       propagation contact responses and the non-interleaved ``pgs_schedule``
-       values. Joint limits are enforced only with
+       propagation contact responses, the non-interleaved ``pgs_schedule``
+       values and the non-default ``friction_mode`` values. Joint limits are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``pgs_iterations`` reduce residual penetration and

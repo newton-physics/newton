@@ -67,6 +67,7 @@ def validate_configuration(settings):
         "pgs_contact_regularization": 0.0,
         "contact_shared_anchor": False,
         "contact_friction_shared_anchor": False,
+        "friction_mode": "current",
     }
     for key, expected in required.items():
         if settings[key] != expected:
