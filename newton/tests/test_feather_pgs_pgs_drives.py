@@ -247,14 +247,15 @@ def test_drive_rows_precede_limit_rows_and_count_against_capacity(test, device):
         test.assertTrue(np.all(row_type[world, 3:9] == PGS_CONSTRAINT_TYPE_JOINT_LIMIT))
     test.assertFalse(np.any(solver.constraint_overflow.numpy()))
 
-    small = SolverFeatherPGS(
-        model,
-        pgs_mode="matrix_free",
-        drive_mode="physx_pgs",
-        enable_joint_limits=True,
-        dense_max_constraints=2,
-        warn_constraint_overflow=False,
-    )
+    with test.assertWarnsRegex(UserWarning, r"need at least 6 dense rows .* dense_max_constraints=2"):
+        small = SolverFeatherPGS(
+            model,
+            pgs_mode="matrix_free",
+            drive_mode="physx_pgs",
+            enable_joint_limits=True,
+            dense_max_constraints=2,
+            warn_constraint_overflow=False,
+        )
     small.step(model.state(), model.state(), model.control(), None, DT)
     np.testing.assert_array_equal(small.constraint_count.numpy(), [2, 2])
     test.assertTrue(np.all(small.row_type.numpy()[:, :2] == PGS_CONSTRAINT_TYPE_JOINT_TARGET))
