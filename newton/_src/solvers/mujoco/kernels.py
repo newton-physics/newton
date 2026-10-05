@@ -1005,7 +1005,7 @@ def sync_qpos0_kernel(
     joint_child: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     dof_ref: wp.array[wp.float32],
-    dof_springref: wp.array[wp.float32],
+    joint_rest_q: wp.array[wp.float32],
     mj_q_start: wp.array[wp.int32],
     # outputs
     qpos0: wp.array2d[wp.float32],
@@ -1013,7 +1013,7 @@ def sync_qpos0_kernel(
 ):
     """Sync MuJoCo qpos0 and qpos_spring from Newton model data.
 
-    For hinge/slide: qpos0 = ref, qpos_spring = springref.
+    For hinge/slide: qpos0 = ref, qpos_spring = joint_rest_q + ref.
     For free: qpos0 from body_q (pos + quat in wxyz order).
     For ball: qpos0 = [1, 0, 0, 0] (identity quaternion in wxyz).
     """
@@ -1026,6 +1026,7 @@ def sync_qpos0_kernel(
 
     type = joint_type[jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+    wq_i = joint_q_start[joints_per_world * worldid + jntid]
 
     if type == JointType.FREE:
         child = joint_child[jntid]
@@ -1050,10 +1051,10 @@ def sync_qpos0_kernel(
         qpos0[worldid, q_i + 1] = 0.0
         qpos0[worldid, q_i + 2] = 0.0
         qpos0[worldid, q_i + 3] = 0.0
-        qpos_spring[worldid, q_i + 0] = 1.0
-        qpos_spring[worldid, q_i + 1] = 0.0
-        qpos_spring[worldid, q_i + 2] = 0.0
-        qpos_spring[worldid, q_i + 3] = 0.0
+        qpos_spring[worldid, q_i + 0] = joint_rest_q[wq_i + 3]
+        qpos_spring[worldid, q_i + 1] = joint_rest_q[wq_i + 0]
+        qpos_spring[worldid, q_i + 2] = joint_rest_q[wq_i + 1]
+        qpos_spring[worldid, q_i + 3] = joint_rest_q[wq_i + 2]
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
@@ -1061,8 +1062,7 @@ def sync_qpos0_kernel(
             springref = float(0.0)
             if dof_ref:
                 ref = dof_ref[wqd_i + i]
-            if dof_springref:
-                springref = dof_springref[wqd_i + i]
+            springref = joint_rest_q[wq_i + i] + ref
             qpos0[worldid, q_i + i] = ref
             qpos_spring[worldid, q_i + i] = springref
 

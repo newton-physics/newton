@@ -97,13 +97,36 @@ at the solver boundary:
   runtime observables (``qpos``, sensors) match the authored MJCF and
   native MuJoCo exactly.
 * Attributes in the ``mujoco.*`` custom-attribute namespace (for example
-  ``dof_springref`` or authored ``actuator_ctrlrange``) are native MuJoCo
+  the deprecated ``dof_springref`` or authored ``actuator_ctrlrange``) are native MuJoCo
   data and remain in MuJoCo's absolute units.
 
 Changing ``mujoco.dof_ref`` at runtime (via
 :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) shifts exported
 ``qpos0``, ``jnt_range``, and position controls with the new reference.
-Native MuJoCo attributes remain absolute and are not shifted.
+Native MuJoCo attributes remain absolute and are not shifted. Core
+:attr:`~newton.Model.joint_rest_q` values are relative to the authored pose;
+the solver exports them as ``qpos_spring = joint_rest_q + ref`` for scalar
+joints.
+
+.. deprecated:: 1.7
+
+    Use :attr:`~newton.Model.joint_stiffness` instead of
+    ``mujoco.dof_passive_stiffness``, and :attr:`~newton.Model.joint_rest_q`
+    instead of ``mujoco.dof_springref``. The latter requires subtracting
+    ``mujoco.dof_ref`` and uses coordinate indexing, not DOF indexing.
+
+The deprecated stiffness attribute aliases the core stiffness array.
+The deprecated spring-reference array remains in absolute MuJoCo
+coordinates. Writes are reconciled when the solver is constructed or
+notified with :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`. After a
+legacy custom reference is authored or edited, later ``ref`` edits keep that
+absolute spring reference fixed. Editing the corresponding core rest
+coordinate switches that coordinate to Newton semantics, so subsequent
+``ref`` edits preserve its physical rest pose. If both rest arrays change
+before a notification, the core edit takes precedence. Conflicting
+nonzero core and legacy values at model construction raise an error.
+MJCF and USD imports populate the core properties, so their rest poses
+follow Newton semantics unless subsequently edited through a legacy alias.
 
 
 Geometry types
@@ -878,7 +901,9 @@ such as MJCF ``solreflimit`` or USD ``mjc:solreflimit`` remain in the
 ``mujoco`` namespace and do not overwrite Newton's generic force-space
 joint-limit gains.
 
-MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`.
+MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`;
+``stiffness`` maps to :attr:`~newton.Model.joint_stiffness`, and scalar
+``springref - ref`` maps to :attr:`~newton.Model.joint_rest_q`.
 When importing MuJoCo-authored USD, opt into that mapping explicitly::
 
     from newton.usd import SchemaResolverMjc, SchemaResolverNewton

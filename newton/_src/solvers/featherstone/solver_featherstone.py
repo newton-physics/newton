@@ -7,6 +7,7 @@ import warp as wp
 from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import eval_mimic_joints, has_supported_joint_mimics
+from ...sim.joint_springs import warn_unsupported_joint_springs
 from ..coupled.interface import CouplingInterface
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
 from ..semi_implicit.kernels_contact import (
@@ -161,6 +162,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 ``wp.config.deterministic`` mode.
         """
         super().__init__(model)
+        warn_unsupported_joint_springs(model, type(self).__name__)
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverFeatherstone")
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         if model.joint_count > 0:
@@ -286,6 +288,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        super().notify_model_changed(flags)
         self._apply_module_options()
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
             self._update_kinematic_state()
@@ -753,6 +756,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             model.joint_limit_ke,
                             model.joint_limit_kd,
                             model.joint_damping,
+                            model.joint_stiffness,
+                            model.joint_rest_q,
                             state_aug.joint_S_s,
                             state_aug.body_q_com,
                             state_aug.body_solve_origin,

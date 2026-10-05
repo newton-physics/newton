@@ -309,6 +309,13 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
      - |no|
      - |yes|
+   * - :attr:`~newton.Model.joint_stiffness` / :attr:`~newton.Model.joint_rest_q`
+     - REVOLUTE, PRISMATIC, D6
+     - REVOLUTE, PRISMATIC, D6
+     - |no|
+     - Scalar joints and isotropic BALL springs
+     - |no|
+     - |no|
    * - :attr:`~newton.Model.joint_friction`
      - |no|
      - |no|

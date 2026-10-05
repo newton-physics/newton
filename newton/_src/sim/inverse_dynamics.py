@@ -269,6 +269,8 @@ def _rnea_compensation_pass(
             scratch.zeros_dof,  # joint_limit_ke
             scratch.zeros_dof,  # joint_limit_kd
             scratch.zeros_dof,  # joint_damping
+            scratch.zeros_dof,  # joint_stiffness
+            model.joint_rest_q,  # unused with zero stiffness
             scratch.joint_S_s,
             scratch.body_q_com,
             scratch.body_solve_origin,

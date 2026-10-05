@@ -454,6 +454,8 @@ class Model:
         "joint_target_ke": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_target_kd": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_damping": AttributeSpec(AttributeFrequency.JOINT_DOF),
+        "joint_stiffness": AttributeSpec(AttributeFrequency.JOINT_DOF),
+        "joint_rest_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
         "joint_limit_lower": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_limit_upper": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_limit_ke": AttributeSpec(AttributeFrequency.JOINT_DOF),
@@ -998,9 +1000,18 @@ class Model:
         self.joint_target_mode: wp.array[wp.int32] | None = None
         """Joint target mode per DOF, see :class:`newton.JointTargetMode`. Shape [joint_dof_count], dtype int32."""
         self.joint_target_ke: wp.array[wp.float32] | None = None
-        """Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
+        """Drive proportional gain [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_kd: wp.array[wp.float32] | None = None
-        """Joint damping [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
+        """Drive derivative gain [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
+        self._joint_spring_compat = None
+        self.joint_stiffness: wp.array[wp.float32] | None = None
+        """Passive spring stiffness [N/m or N·m/rad], shape [joint_dof_count]. Independent of drive gains."""
+        self.joint_rest_q: wp.array[wp.float32] | None = None
+        """Spring rest configuration [m or rad; xyzw unit quaternion for rotations], shape [joint_coord_count].
+
+        Uses the layout of :attr:`joint_q` and indexing of :attr:`joint_q_start`.
+        Scalar rest coordinates may lie outside the joint limits to produce preload.
+        """
         self.joint_damping: wp.array[wp.float32] | None = None
         """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint, shape [joint_dof_count], float."""
         self.joint_effort_limit: wp.array[wp.float32] | None = None
@@ -1400,6 +1411,11 @@ class Model:
         if frequency != spec.frequency or assignment != spec.assignment:
             return replace(spec, frequency=frequency, assignment=assignment)
         return spec
+
+    def _sync_joint_springs(self) -> None:
+        """Resolve edits to deprecated MuJoCo spring references before solver property updates."""
+        if self._joint_spring_compat is not None:
+            self._joint_spring_compat._sync()
 
     def _iter_attribute_specs(self, *, include_deprecated: bool = False) -> Iterator[tuple[str, Model.AttributeSpec]]:
         """Yield unified metadata, including late legacy registrations.

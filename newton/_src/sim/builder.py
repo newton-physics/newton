@@ -535,6 +535,16 @@ class _BuilderShapeCollisionFilterPairs:
         self._template_cache = None
 
 
+def _resolve_joint_target_alias(value: float | None, legacy: float | None, name: str, old_name: str) -> float | None:
+    """Resolve a deprecated joint target keyword without silently accepting conflicting values."""
+    if legacy is not None:
+        warnings.warn(f"{old_name} is deprecated; use {name} instead.", DeprecationWarning, stacklevel=3)
+        if value is not None and value != legacy:
+            raise ValueError(f"Conflicting {name} and deprecated {old_name} values")
+        return legacy
+    return value
+
+
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -1090,17 +1100,23 @@ class ModelBuilder:
             limit_upper: float = MAXVAL,
             limit_ke: float = 1e4,
             limit_kd: float = 1e1,
-            target_pos: float = 0.0,
-            target_vel: float = 0.0,
+            target_q: float | None = None,
+            target_qd: float | None = None,
             target_ke: float = 0.0,
             target_kd: float = 0.0,
             damping: float = 0.0,
+            stiffness: float = 0.0,
+            rest_q: float = 0.0,
             armature: float = 0.0,
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
             friction: float = 0.0,
             actuator_mode: JointTargetMode | None = None,
+            target_pos: float | None = None,
+            target_vel: float | None = None,
         ):
+            target_q = _resolve_joint_target_alias(target_q, target_pos, "target_q", "target_pos")
+            target_qd = _resolve_joint_target_alias(target_qd, target_vel, "target_qd", "target_vel")
             self.axis = wp.normalize(axis_to_vec3(axis))
             """The 3D joint axis in the joint parent anchor frame."""
             self.limit_lower = limit_lower
@@ -1112,11 +1128,11 @@ class ModelBuilder:
             self.limit_kd = limit_kd
             """The damping coefficient of the joint axis limits
             [N·s/m or N·m·s/rad, depending on joint type]. Defaults to 1e1."""
-            self.target_pos = target_pos
+            self.target_q = 0.0 if target_q is None else target_q
             """The target position of the joint axis.
-            If the initial `target_pos` is outside the limits,
+            If the initial `target_q` is outside the limits,
             it defaults to the midpoint of `limit_lower` and `limit_upper`. Otherwise, defaults to 0.0."""
-            self.target_vel = target_vel
+            self.target_qd = 0.0 if target_qd is None else target_qd
             """The target velocity of the joint axis."""
             self.target_ke = target_ke
             """The proportional gain of the target drive PD controller. Defaults to 0.0."""
@@ -1124,6 +1140,10 @@ class ModelBuilder:
             """The derivative gain of the target drive PD controller. Defaults to 0.0."""
             self.damping = damping
             """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] that is always active. Defaults to 0.0."""
+            self.stiffness = stiffness
+            """Passive spring stiffness [N/m or N·m/rad]. Defaults to zero."""
+            self.rest_q = rest_q
+            """Passive spring rest coordinate [m or rad], independent of joint limits. Defaults to zero."""
             self.armature = armature
             """Artificial inertia added around the joint axis [kg·m² or kg]. Defaults to 0."""
             self.effort_limit = effort_limit
@@ -1136,8 +1156,38 @@ class ModelBuilder:
             """Actuator mode for this DOF. Determines which actuators are installed (see :class:`JointTargetMode`).
             If None, the mode is inferred from gains and targets."""
 
-            if self.target_pos > self.limit_upper or self.target_pos < self.limit_lower:
-                self.target_pos = 0.5 * (self.limit_lower + self.limit_upper)
+            if self.target_q > self.limit_upper or self.target_q < self.limit_lower:
+                self.target_q = 0.5 * (self.limit_lower + self.limit_upper)
+
+        @property
+        def target_pos(self) -> float:
+            """Deprecated position target.
+
+            .. deprecated:: 1.7
+                Use :attr:`target_q` instead.
+            """
+            warnings.warn("target_pos is deprecated; use target_q instead.", DeprecationWarning, stacklevel=2)
+            return self.target_q
+
+        @target_pos.setter
+        def target_pos(self, value: float) -> None:
+            warnings.warn("target_pos is deprecated; use target_q instead.", DeprecationWarning, stacklevel=2)
+            self.target_q = value
+
+        @property
+        def target_vel(self) -> float:
+            """Deprecated velocity target.
+
+            .. deprecated:: 1.7
+                Use :attr:`target_qd` instead.
+            """
+            warnings.warn("target_vel is deprecated; use target_qd instead.", DeprecationWarning, stacklevel=2)
+            return self.target_qd
+
+        @target_vel.setter
+        def target_vel(self, value: float) -> None:
+            warnings.warn("target_vel is deprecated; use target_qd instead.", DeprecationWarning, stacklevel=2)
+            self.target_qd = value
 
         @classmethod
         def create_unlimited(cls, axis: AxisType | Vec3) -> ModelBuilder.JointDofConfig:
@@ -1146,8 +1196,8 @@ class ModelBuilder:
                 axis=axis,
                 limit_lower=-MAXVAL,
                 limit_upper=MAXVAL,
-                target_pos=0.0,
-                target_vel=0.0,
+                target_q=0.0,
+                target_qd=0.0,
                 target_ke=0.0,
                 target_kd=0.0,
                 damping=0.0,
@@ -1842,6 +1892,10 @@ class ModelBuilder:
         """Joint target stiffness values accumulated for :attr:`Model.joint_target_ke`."""
         self.joint_target_kd: list[float] = []
         """Joint target damping values accumulated for :attr:`Model.joint_target_kd`."""
+        self.joint_stiffness: list[float] = []
+        """Passive spring stiffness accumulated for :attr:`Model.joint_stiffness`."""
+        self.joint_rest_q: list[float] = []
+        """Spring rest configurations in joint coordinate layout, for :attr:`Model.joint_rest_q`."""
         self.joint_damping: list[float] = []
         """Passive velocity damping values accumulated for :attr:`Model.joint_damping`."""
         self.joint_limit_lower: list[float] = []
@@ -5390,6 +5444,12 @@ class ModelBuilder:
         if angular_axes is None:
             angular_axes = []
 
+        if joint_type in (JointType.BALL, JointType.FREE, JointType.DISTANCE):
+            if any(dim.rest_q != 0.0 for dim in angular_axes):
+                raise ValueError(
+                    "Quaternion joints require a joint-level rest orientation; scalar rest_q must be zero."
+                )
+
         if collision_filter_parent is None:
             collision_filter_parent = self._default_filter_parent(joint_type, parent)
 
@@ -5477,7 +5537,7 @@ class ModelBuilder:
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
-            self.joint_target_qd.append(dim.target_vel)
+            self.joint_target_qd.append(dim.target_qd)
 
             # Use actuator_mode if explicitly set, otherwise infer from gains
             if dim.actuator_mode is not None:
@@ -5492,6 +5552,7 @@ class ModelBuilder:
             self.joint_target_mode.append(mode)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
+            self.joint_stiffness.append(dim.stiffness)
             self.joint_damping.append(dim.damping)
             self.joint_limit_ke.append(dim.limit_ke)
             self.joint_limit_kd.append(dim.limit_kd)
@@ -5537,16 +5598,16 @@ class ModelBuilder:
                 quat_offset = target_q_offset
             else:
                 for i, dim in enumerate(linear_axes):
-                    self.joint_target_q[target_q_offset + i] = dim.target_pos
+                    self.joint_target_q[target_q_offset + i] = dim.target_q
                 quat_offset = target_q_offset + 3
 
             import newton  # noqa: PLC0415
 
             if newton.use_coord_layout_targets:
                 qx, qy, qz, qw = self._quat_from_axis_targets(
-                    angular_axes[0].target_pos,
-                    angular_axes[1].target_pos,
-                    angular_axes[2].target_pos,
+                    angular_axes[0].target_q,
+                    angular_axes[1].target_q,
+                    angular_axes[2].target_q,
                 )
                 self.joint_target_q[quat_offset + 0] = qx
                 self.joint_target_q[quat_offset + 1] = qy
@@ -5554,13 +5615,19 @@ class ModelBuilder:
                 self.joint_target_q[quat_offset + 3] = qw
             else:
                 for i, dim in enumerate(angular_axes):
-                    self.joint_target_q[quat_offset + i] = dim.target_pos
+                    self.joint_target_q[quat_offset + i] = dim.target_q
                 self.joint_target_q[quat_offset + 3] = 1.0
         elif joint_type != JointType.FIXED:
             for i, dim in enumerate(linear_axes):
-                self.joint_target_q[target_q_offset + i] = dim.target_pos
+                self.joint_target_q[target_q_offset + i] = dim.target_q
             for i, dim in enumerate(angular_axes):
-                self.joint_target_q[target_q_offset + len(linear_axes) + i] = dim.target_pos
+                self.joint_target_q[target_q_offset + len(linear_axes) + i] = dim.target_q
+
+        if joint_type in (JointType.BALL, JointType.FREE, JointType.DISTANCE):
+            rest = [dim.rest_q for dim in linear_axes] + [0.0, 0.0, 0.0, 1.0]
+        else:
+            rest = [dim.rest_q for dim in (*linear_axes, *angular_axes)]
+        self.joint_rest_q.extend(rest)
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
@@ -5598,11 +5665,15 @@ class ModelBuilder:
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         axis: AxisType | Vec3 | JointDofConfig | None = None,
-        target_pos: float | None = None,
-        target_vel: float | None = None,
+        target_q: float | None = None,
+        target_qd: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
         damping: float | None = None,
+        stiffness: float | None = None,
+        rest_q: float | None = None,
+        target_pos: float | None = None,
+        target_vel: float | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -5628,10 +5699,14 @@ class ModelBuilder:
             axis: The axis of rotation in the joint parent anchor frame, which is
                 the parent body's local frame transformed by `parent_xform`. It can be a :class:`JointDofConfig` object
                 whose settings will be used instead of the other arguments.
-            target_pos: The target position of the joint.
-            target_vel: The target velocity of the joint.
+            target_q: The target position of the joint.
+            target_qd: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
+            stiffness: Passive spring stiffness [N/m or N·m/rad]. Defaults to the joint configuration.
+            rest_q: Spring rest coordinate [m or rad], which may lie outside joint limits.
+            target_pos: Deprecated alias for target_q.
+            target_vel: Deprecated alias for target_qd.
             damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
@@ -5651,6 +5726,8 @@ class ModelBuilder:
 
         """
 
+        target_q = _resolve_joint_target_alias(target_q, target_pos, "target_q", "target_pos")
+        target_qd = _resolve_joint_target_alias(target_qd, target_vel, "target_qd", "target_vel")
         if axis is None:
             axis = self.default_joint_cfg.axis
         if isinstance(axis, ModelBuilder.JointDofConfig):
@@ -5660,11 +5737,13 @@ class ModelBuilder:
                 axis=axis,
                 limit_lower=limit_lower if limit_lower is not None else self.default_joint_cfg.limit_lower,
                 limit_upper=limit_upper if limit_upper is not None else self.default_joint_cfg.limit_upper,
-                target_pos=target_pos if target_pos is not None else self.default_joint_cfg.target_pos,
-                target_vel=target_vel if target_vel is not None else self.default_joint_cfg.target_vel,
+                target_q=target_q if target_q is not None else self.default_joint_cfg.target_q,
+                target_qd=target_qd if target_qd is not None else self.default_joint_cfg.target_qd,
                 target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
                 target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
                 damping=damping if damping is not None else self.default_joint_cfg.damping,
+                stiffness=stiffness if stiffness is not None else self.default_joint_cfg.stiffness,
+                rest_q=rest_q if rest_q is not None else self.default_joint_cfg.rest_q,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
@@ -5695,11 +5774,15 @@ class ModelBuilder:
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         axis: AxisType | Vec3 | JointDofConfig = Axis.X,
-        target_pos: float | None = None,
-        target_vel: float | None = None,
+        target_q: float | None = None,
+        target_qd: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
         damping: float | None = None,
+        stiffness: float | None = None,
+        rest_q: float | None = None,
+        target_pos: float | None = None,
+        target_vel: float | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -5724,10 +5807,14 @@ class ModelBuilder:
             axis: The axis of translation in the joint parent anchor frame, which is
                 the parent body's local frame transformed by `parent_xform`. It can be a :class:`JointDofConfig` object
                 whose settings will be used instead of the other arguments.
-            target_pos: The target position of the joint.
-            target_vel: The target velocity of the joint.
+            target_q: The target position of the joint.
+            target_qd: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
+            stiffness: Passive spring stiffness [N/m or N·m/rad]. Defaults to the joint configuration.
+            rest_q: Spring rest coordinate [m or rad], which may lie outside joint limits.
+            target_pos: Deprecated alias for target_q.
+            target_vel: Deprecated alias for target_qd.
             damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
@@ -5747,6 +5834,8 @@ class ModelBuilder:
 
         """
 
+        target_q = _resolve_joint_target_alias(target_q, target_pos, "target_q", "target_pos")
+        target_qd = _resolve_joint_target_alias(target_qd, target_vel, "target_qd", "target_vel")
         if axis is None:
             axis = self.default_joint_cfg.axis
         if isinstance(axis, ModelBuilder.JointDofConfig):
@@ -5756,11 +5845,13 @@ class ModelBuilder:
                 axis=axis,
                 limit_lower=limit_lower if limit_lower is not None else self.default_joint_cfg.limit_lower,
                 limit_upper=limit_upper if limit_upper is not None else self.default_joint_cfg.limit_upper,
-                target_pos=target_pos if target_pos is not None else self.default_joint_cfg.target_pos,
-                target_vel=target_vel if target_vel is not None else self.default_joint_cfg.target_vel,
+                target_q=target_q if target_q is not None else self.default_joint_cfg.target_q,
+                target_qd=target_qd if target_qd is not None else self.default_joint_cfg.target_qd,
                 target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
                 target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
                 damping=damping if damping is not None else self.default_joint_cfg.damping,
+                stiffness=stiffness if stiffness is not None else self.default_joint_cfg.stiffness,
+                rest_q=rest_q if rest_q is not None else self.default_joint_cfg.rest_q,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
@@ -5792,6 +5883,7 @@ class ModelBuilder:
         armature: float | None = None,
         friction: float | None = None,
         damping: float | None = None,
+        stiffness: float | None = None,
         label: str | None = None,
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
@@ -5807,6 +5899,7 @@ class ModelBuilder:
             child_xform: The transform from the child body frame to the joint child anchor frame.
             armature: Artificial inertia added around the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
             friction: Friction coefficient for the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
+            stiffness: Isotropic passive angular spring stiffness [N·m/rad], supported by SolverMuJoCo.
             damping: Passive angular velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on all three BALL joint angular DOFs. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
@@ -5825,6 +5918,8 @@ class ModelBuilder:
             armature = self.default_joint_cfg.armature
         if friction is None:
             friction = self.default_joint_cfg.friction
+        if stiffness is None:
+            stiffness = self.default_joint_cfg.stiffness
         if damping is None:
             damping = self.default_joint_cfg.damping
 
@@ -5833,6 +5928,7 @@ class ModelBuilder:
             armature=armature,
             friction=friction,
             damping=damping,
+            stiffness=stiffness,
             actuator_mode=actuator_mode,
         )
         y = ModelBuilder.JointDofConfig(
@@ -5840,6 +5936,7 @@ class ModelBuilder:
             armature=armature,
             friction=friction,
             damping=damping,
+            stiffness=stiffness,
             actuator_mode=actuator_mode,
         )
         z = ModelBuilder.JointDofConfig(
@@ -5847,6 +5944,7 @@ class ModelBuilder:
             armature=armature,
             friction=friction,
             damping=damping,
+            stiffness=stiffness,
             actuator_mode=actuator_mode,
         )
 
@@ -6776,6 +6874,7 @@ class ModelBuilder:
                 "type": self.joint_type[i],
                 "q": self.joint_q[q_start : q_start + q_dim],
                 "target_q": self.joint_target_q[q_start : q_start + q_dim],
+                "rest_q": self.joint_rest_q[q_start : q_start + q_dim],
                 "qd": self.joint_qd[qd_start : qd_start + qd_dim],
                 "target_qd": self.joint_target_qd[qd_start : qd_start + qd_dim],
                 "cts": self.joint_cts[cts_start : cts_start + cts_dim],
@@ -6804,6 +6903,7 @@ class ModelBuilder:
                         "actuator_mode": self.joint_target_mode[j],
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
+                        "stiffness": self.joint_stiffness[j],
                         "damping": self.joint_damping[j],
                         "limit_ke": self.joint_limit_ke[j],
                         "limit_kd": self.joint_limit_kd[j],
@@ -7269,6 +7369,8 @@ class ModelBuilder:
         self.joint_target_mode.clear()
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
+        self.joint_stiffness.clear()
+        self.joint_rest_q.clear()
         self.joint_damping.clear()
         self.joint_limit_lower.clear()
         self.joint_limit_upper.clear()
@@ -7292,6 +7394,7 @@ class ModelBuilder:
             self.joint_cts_start.append(len(self.joint_cts))
             self.joint_q.extend(joint["q"])
             self.joint_target_q.extend(joint["target_q"])
+            self.joint_rest_q.extend(joint["rest_q"])
             self.joint_qd.extend(joint["qd"])
             self.joint_target_qd.extend(joint["target_qd"])
             self.joint_cts.extend(joint["cts"])
@@ -7321,6 +7424,7 @@ class ModelBuilder:
                 self.joint_target_mode.append(axis["actuator_mode"])
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
+                self.joint_stiffness.append(axis["stiffness"])
                 self.joint_damping.append(axis["damping"])
                 self.joint_limit_lower.append(axis["limit_lower"])
                 self.joint_limit_upper.append(axis["limit_upper"])
@@ -12604,6 +12708,7 @@ class ModelBuilder:
                     ("joint_armature", self.joint_armature),
                     ("joint_target_ke", self.joint_target_ke),
                     ("joint_target_kd", self.joint_target_kd),
+                    ("joint_stiffness", self.joint_stiffness),
                     ("joint_damping", self.joint_damping),
                     ("joint_limit_lower", self.joint_limit_lower),
                     ("joint_limit_upper", self.joint_limit_upper),
@@ -12627,6 +12732,7 @@ class ModelBuilder:
                 coord_arrays = [
                     ("joint_q", self.joint_q),
                     ("joint_target_q", self.joint_target_q),
+                    ("joint_rest_q", self.joint_rest_q),
                 ]
             for name, arr in coord_arrays:
                 if len(arr) != self.joint_coord_count:
@@ -14120,6 +14226,8 @@ class ModelBuilder:
             m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_stiffness = wp.array(self.joint_stiffness, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_rest_q = wp.array(self.joint_rest_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_damping = wp.array(self.joint_damping, dtype=wp.float32, requires_grad=requires_grad)
             import newton  # noqa: PLC0415
 
@@ -14389,6 +14497,9 @@ class ModelBuilder:
                     custom_attr.references,
                 )
 
+            from .joint_springs import finalize_joint_springs  # noqa: PLC0415
+
+            finalize_joint_springs(self, m)
             self._finalize_custom_frequency_metadata(m, device)
 
             m.bvh_build_shapes(
@@ -14892,6 +15003,8 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "joint_target_mode": wp.int32,
     "joint_target_ke": wp.float32,
     "joint_target_kd": wp.float32,
+    "joint_stiffness": wp.float32,
+    "joint_rest_q": wp.float32,
     "joint_damping": wp.float32,
     "joint_effort_limit": wp.float32,
     "joint_velocity_limit": wp.float32,

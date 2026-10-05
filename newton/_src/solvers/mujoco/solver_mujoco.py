@@ -5026,6 +5026,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        super().notify_model_changed(flags)
         if self.use_mujoco_cpu:
             self._notify_model_changed(flags)
         else:
@@ -6204,12 +6205,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joint_solref_limit_mode = get_custom_attribute("solreflimit_mode")
         joint_dof_solref = get_custom_attribute("solreffriction")
         joint_dof_solimp = get_custom_attribute("solimpfriction")
-        joint_stiffness = get_custom_attribute("dof_passive_stiffness")
+        joint_stiffness = model.joint_stiffness.numpy()
         joint_damping = model.joint_damping.numpy() if model.joint_damping is not None else None
         joint_actgravcomp = get_custom_attribute("jnt_actgravcomp")
         body_gravcomp = get_custom_attribute("gravcomp")
         body_sleep_policy = get_custom_attribute("sleep_policy")
-        joint_springref = get_custom_attribute("dof_springref")
+        joint_rest_q = model.joint_rest_q.numpy()
         joint_ref = get_custom_attribute("dof_ref")
 
         def joint_has_raw_limit_solref(dof_idx: int) -> bool:
@@ -7241,8 +7242,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     joint_params["actfrclimited"] = True
                     joint_params["actfrcrange"] = (-effort_limit, effort_limit)
 
-                    if joint_springref is not None:
-                        joint_params["springref"] = joint_springref[ai]
+                    joint_params["springref"] = joint_rest_q[joint_q_start[j] + i] + (
+                        joint_ref[ai] if joint_ref is not None else 0.0
+                    )
                     if joint_ref is not None:
                         joint_params["ref"] = joint_ref[ai]
 
@@ -7357,8 +7359,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     joint_params["actfrclimited"] = True
                     joint_params["actfrcrange"] = (-effort_limit, effort_limit)
 
-                    if joint_springref is not None:
-                        joint_params["springref"] = np.rad2deg(joint_springref[ai])
+                    joint_params["springref"] = np.rad2deg(
+                        joint_rest_q[joint_q_start[j] + i] + (joint_ref[ai] if joint_ref is not None else 0.0)
+                    )
                     if joint_ref is not None:
                         joint_params["ref"] = np.rad2deg(joint_ref[ai])
 
@@ -8748,7 +8751,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Update joint properties (limits, stiffness, solimp) per MuJoCo joint.
         solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
         joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
-        joint_stiffness = getattr(mujoco_attrs, "dof_passive_stiffness", None) if mujoco_attrs is not None else None
+        joint_stiffness = self.model.joint_stiffness
 
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         njnt = self.mjc_jnt_to_newton_dof.shape[1]
@@ -8782,7 +8785,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # set_const copies qpos0 → d.qpos and runs FK to compute derived fields,
         # so qpos0 must be correct before calling it.
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
-        dof_springref = getattr(mujoco_attrs, "dof_springref", None) if mujoco_attrs is not None else None
         joints_per_world = self.model.joint_count // nworld
         bodies_per_world = self.model.body_count // nworld
         wp.launch(
@@ -8798,7 +8800,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.joint_child,
                 self.model.body_q,
                 dof_ref,
-                dof_springref,
+                self.model.joint_rest_q,
                 self.mj_q_start,
             ],
             outputs=[
