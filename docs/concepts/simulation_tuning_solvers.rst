@@ -237,7 +237,8 @@ repository examples spend tuning effort, not a shared solver API.
        ``contact_compliance``, ``parallel_tree``, ``enable_sleeping``,
        ``sleep_linear_threshold``, ``sleep_angular_threshold``,
        ``sleep_quiet_time``, ``sleep_skip_constraints``,
-       ``articulated_contact_response``, ``propagation_same_articulation_rows``.
+       ``articulated_contact_response``, ``propagation_same_articulation_rows``,
+       ``propagation_cached_response``, ``propagation_cached_response_max_bodies``.
      - Experimental. The default ``pgs_mode="matrix_free"`` requires CUDA and
        implements every option. ``pgs_mode="split"`` runs on CPU and CUDA (pass it
        explicitly on CPU) and stores a dense ``dense_max_constraints`` squared
@@ -308,9 +309,15 @@ repository examples spend tuning effort, not a shared solver API.
        selects how contacts of articulated bodies are solved: ``"immediate"`` rows of
        the generalized coordinates, or the matrix-free ``"propagation"`` responses,
        which solve them as body-space rows and propagate their impulses through each
-       articulation tree. In ``"propagation"`` every contact row, free bodies
-       included, shares one family of ``mf_max_constraints +
-       dense_max_constraints`` rows per world.
+       articulation tree. In ``"propagation"`` and ``"propagation-colored"`` every
+       contact row, free bodies included, shares one family of ``mf_max_constraints +
+       dense_max_constraints`` rows per world; ``"propagation-colored"`` sweeps them in
+       parallel batches of contacts that share no responding body, which pays off on
+       scenes with many contacts per world. ``propagation_cached_response`` replaces the
+       per-iteration tree walk with cached per-body responses (on by default); which is
+       faster depends on the model. The propagation responses reject contact torsion,
+       contact compliance, sleeping and loop-closing joints, and fall back from bilateral
+       pre-elimination to iterative mimic rows with a warning.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.
