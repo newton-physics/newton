@@ -71,6 +71,7 @@ from .kernels import (
     compute_composite_inertia,
     compute_contact_linear_force_from_impulses,
     compute_delta_and_accumulate,
+    compute_dense_contact_bounds,
     compute_mf_body_Hinv,
     compute_mf_effective_mass_and_rhs,
     compute_mf_velocity_rhs,
@@ -174,6 +175,10 @@ _COMPOSITE_INERTIA_WARPS_PER_BLOCK = 4
 _CRBA_CHOLESKY_WARPS_PER_BLOCK = 4
 # Largest DOF count of the fused tiled mass-matrix assembly and factorization.
 _FUSED_CRBA_MAX_DOF = 64
+# Smallest articulation DOF count of the paired articulation/free-body response.
+_PAIRED_RESPONSE_MIN_DOF = 17
+# Warps (rows) per block of the paired response kernel.
+_PAIRED_RESPONSE_WARPS_PER_BLOCK = 4
 # Largest contact regularization; larger values do not change the float32 weight usefully.
 _MAX_CONTACT_REGULARIZATION = 1.0e6
 # One-warp worlds packed per block of the propagation row sweep, which uses no shared memory.
@@ -2092,9 +2097,11 @@ class SolverFeatherPGS(SolverBase):
         )
         if not self._hinv_jt_writes_world or self._preelim_active or self._sparse_mass_matrix_size is not None:
             self._hinv_jt_diag_sizes = frozenset()
+        self._setup_paired_response(model)
 
         self._allocate_common_buffers(model)
         self._allocate_buffers(model)
+        self._allocate_paired_response_buffers(model)
         self._allocate_world_buffers(model)
         self._allocate_mf_buffers(model)
         # Contact rows keep row_parent for their friction/patch load linkage; torsion keeps
@@ -3434,6 +3441,146 @@ class SolverFeatherPGS(SolverBase):
                 f"Contact restitution is not supported with articulated_contact_response={self.articulated_contact_response!r}"
             )
 
+    def _setup_paired_response(self, model: Model) -> None:
+        """Select the paired articulation/free-body response of worlds with exactly one of each.
+
+        The selection is automatic. In the matrix-free solve on CUDA, without sparse factors or
+        pre-elimination, when every world holds exactly one articulation of one size of 17 to 26
+        DOFs whose H^-1 J^T is tiled in more than one row chunk, plus exactly one free rigid body,
+        one warp per row builds the world's rows from the explicit inverse mass matrices of the
+        two. Without joint velocity limits, drive rows, warm start, regularization, velocity-only
+        iterations, torsion and contact compliance, with ``pgs_iterations > 0``, the interleaved
+        schedule and the current friction projection, the rows and sweep work in factor
+        coordinates ``L^-1 J^T`` instead, for worlds without free-body rows.
+        """
+        self._paired_response_primary_size = None
+        self._paired_response_secondary_size = None
+        self._paired_response_secondary_groups = None
+        self._paired_factor_coordinates = False
+        self._factor_coordinate_contact_triples = False
+        candidate_sizes = frozenset(
+            size
+            for size in self.size_groups
+            if model.device.is_cuda
+            and not model.requires_grad
+            and self.pgs_mode == "matrix_free"
+            and not self._preelim_active
+            and self._sparse_mass_matrix_size is None
+            and size >= _PAIRED_RESPONSE_MIN_DOF
+            and size + 6 <= 32
+            and self._execution_plan.use_tiled_hinv_jt(size)
+            and self._execution_plan.hinv_jt_chunk_size(size) < self.dense_max_constraints
+        )
+        if (
+            not candidate_sizes
+            or not self._hinv_jt_writes_world
+            or self._hinv_jt_tiled_writes_group
+            or 6 not in self.size_groups
+            or self._execution_plan.use_tiled_hinv_jt(6)
+        ):
+            return
+        plan = self._model_plan
+        response_dofs = plan.response_dof_count
+        response_by_world: list[list[int]] = [[] for _ in range(self.world_count)]
+        for art in np.flatnonzero(response_dofs > 0):
+            response_by_world[int(plan.articulation_world[art])].append(int(art))
+        secondary_arts = np.flatnonzero(response_dofs == 6)
+        secondary_group_index = {int(art): group for group, art in enumerate(secondary_arts)}
+        for primary_size in sorted(candidate_sizes, reverse=True):
+            primary_arts = np.flatnonzero(response_dofs == primary_size)
+            if len(primary_arts) != self.world_count:
+                continue
+            paired_groups: list[int] = []
+            paired_arts: list[int] = []
+            for primary_art in primary_arts:
+                world_arts = response_by_world[int(plan.articulation_world[primary_art])]
+                secondaries = [
+                    art
+                    for art in world_arts
+                    if art != primary_art and response_dofs[art] == 6 and plan.is_free_rigid[art] != 0
+                ]
+                if len(world_arts) != 2 or len(secondaries) != 1:
+                    break
+                paired_arts.append(secondaries[0])
+                paired_groups.append(secondary_group_index[secondaries[0]])
+            else:
+                if set(paired_arts) == {int(art) for art in secondary_arts}:
+                    self._paired_response_primary_size = int(primary_size)
+                    self._paired_response_secondary_size = 6
+                    self._paired_response_secondary_groups = np.asarray(paired_groups, dtype=np.int32)
+                    break
+        if self._paired_response_primary_size is None:
+            return
+        self._paired_factor_coordinates = bool(
+            not self._regularization_enabled
+            and not self.pgs_warmstart
+            and self.pgs_iterations > 0
+            and self.pgs_velocity_iterations == 0
+            and self.pgs_schedule == "interleaved"
+            and self.articulated_contact_response == "immediate"
+            and self.drive_mode == "augmented"
+            and self.friction_mode == "current"
+            and not self.enable_joint_velocity_limits
+            # The factor-coordinate solve owns no torsion rows and no compliant law.
+            and not self._contact_torsion_enabled
+            and not self.contact_compliance
+        )
+        # Patches allocate one tangent pair per surviving anchor, so their rows are not uniform triples.
+        self._factor_coordinate_contact_triples = bool(
+            self._paired_factor_coordinates
+            and np.isinf(self.contact_friction_gap_threshold)
+            and not self._friction_anchors_enabled
+        )
+
+    def _allocate_paired_response_buffers(self, model: Model) -> None:
+        """Allocate the inverse factors and per-world maps of the paired response."""
+        self.Hinv_by_size = {}
+        if self._paired_response_primary_size is None:
+            return
+        primary_size = self._paired_response_primary_size
+        secondary_size = self._paired_response_secondary_size
+        device = model.device
+        self._paired_response_secondary_groups = wp.array(
+            self._paired_response_secondary_groups, dtype=wp.int32, device=device
+        )
+        for size in (primary_size, secondary_size):
+            if self._paired_factor_coordinates:
+                # Factor coordinates read L^-1; they never form H^-1.
+                self.Linv_by_size[size] = wp.zeros_like(self.L_by_size[size])
+                self.Hinv_by_size[size] = self.Linv_by_size[size]
+            else:
+                self.Hinv_by_size[size] = wp.zeros_like(self.L_by_size[size])
+        self._paired_response_inverse_identity = (
+            None
+            if self._paired_factor_coordinates
+            else wp.array(np.eye(primary_size, dtype=np.float32), dtype=wp.float32, device=device)
+        )
+        if not self._paired_factor_coordinates:
+            return
+        plan = self._model_plan
+        primary_arts = np.flatnonzero(plan.response_dof_count == primary_size)
+        secondary_arts = np.flatnonzero(plan.response_dof_count == secondary_size)
+        secondary_groups = self._paired_response_secondary_groups.numpy()
+        maps = np.empty((4, self.world_count), dtype=np.int32)
+        for primary_group, primary_art in enumerate(primary_arts):
+            world = int(plan.articulation_world[primary_art])
+            secondary_group = int(secondary_groups[primary_group])
+            secondary_art = int(secondary_arts[secondary_group])
+            primary_first = plan.articulation_dof_start[primary_art] < plan.articulation_dof_start[secondary_art]
+            maps[:, world] = (
+                primary_group,
+                secondary_group,
+                0 if primary_first else secondary_size,
+                primary_size if primary_first else 0,
+            )
+        (
+            self._paired_factor_primary_groups_by_world,
+            self._paired_factor_secondary_groups_by_world,
+            self._paired_factor_primary_offsets_by_world,
+            self._paired_factor_secondary_offsets_by_world,
+        ) = (wp.array(row, dtype=wp.int32, device=device) for row in maps)
+        self._dense_contact_bounds = wp.zeros((self.world_count, 2), dtype=wp.int32, device=device)
+
     def _setup_crba_topology_schedules(self, model: Model) -> None:
         """Map the mass-matrix elements of topology-homogeneous size groups for fused assembly.
 
@@ -4229,6 +4376,8 @@ class SolverFeatherPGS(SolverBase):
 
         self._crba_cholesky_kernels_by_size = {}
         self._crba_cholesky_warp_kernels_by_size = {}
+        self._inverse_cholesky_kernels_by_size = {}
+        self._init_paired_response_kernels(model)
         self._fused_drive_dof_K = (
             wp.zeros(max(model.joint_dof_count, 1), dtype=wp.float32, device=model.device)
             if self._crba_source_dof_by_size
@@ -4237,7 +4386,12 @@ class SolverFeatherPGS(SolverBase):
         for size in self.size_groups:
             # Sparse and diagonal mass matrices need no dense factorization, solve or response kernels.
             dense = size != self._sparse_mass_matrix_size and not self._execution_plan.use_diagonal_mass(size)
-            fusable = dense and size in self._crba_source_dof_by_size
+            # The explicit paired inverse reads the assembled mass matrix.
+            fusable = (
+                dense
+                and size in self._crba_source_dof_by_size
+                and (size != self._paired_response_primary_size or self._paired_factor_coordinates)
+            )
             use_tiled_cholesky = self._execution_plan.use_tiled_cholesky(size)
             self._crba_cholesky_kernels_by_size[size] = (
                 _get_crba_cholesky_kernel(size, device_arch, self._tile_threads)
@@ -4255,6 +4409,12 @@ class SolverFeatherPGS(SolverBase):
             self._cholesky_kernels_by_size[size] = (
                 _get_cholesky_kernel(size, device_arch, self._tile_threads)
                 if dense and use_tiled_cholesky and self._crba_cholesky_kernels_by_size[size] is None
+                else None
+            )
+            # The paired response's free body needs its explicit inverse mass matrix.
+            self._inverse_cholesky_kernels_by_size[size] = (
+                _get_inverse_cholesky_register_kernel(size, device_arch)
+                if size == self._paired_response_secondary_size and not self._paired_factor_coordinates
                 else None
             )
             self._triangular_solve_kernels_by_size[size] = (
@@ -4326,6 +4486,7 @@ class SolverFeatherPGS(SolverBase):
                 contact_torsion=self._contact_torsion_enabled,
                 row_phases=self._propagation_active or self.pgs_schedule != "interleaved",
                 friction_mode=self.friction_mode,
+                factor_coordinates=self._paired_factor_coordinates,
             )
 
     def _init_split_kernels(self, model):
@@ -4461,6 +4622,8 @@ class SolverFeatherPGS(SolverBase):
             return
         if iterations <= 0 or self._pgs_solve_mf_gs_kernel is None:
             return
+        if self._paired_factor_solve_kernel is not None:
+            self._launch_paired_factor_solve(rhs, iterations)
         launch = functools.partial(
             self._launch_mf_gs_phase, rhs=rhs, regularize=regularize, freeze_drive_rows=freeze_drive_rows
         )
@@ -4477,6 +4640,52 @@ class SolverFeatherPGS(SolverBase):
                     launch(5, 1)
         else:
             launch(0, iterations)
+
+    def _launch_paired_factor_solve(self, rhs: wp.array, iterations: int) -> None:
+        """Sweep the worlds without free-body rows in the factor coordinates of their pair."""
+        model = self.model
+        primary_size = self._paired_response_primary_size
+        secondary_size = self._paired_response_secondary_size
+        wp.launch(
+            compute_dense_contact_bounds,
+            dim=self.world_count,
+            inputs=[self.constraint_count, self.row_type],
+            outputs=[self._dense_contact_bounds],
+            device=model.device,
+        )
+        wp.launch_tiled(
+            self._paired_factor_solve_kernel,
+            dim=[(self.world_count + 1) // 2],
+            inputs=[
+                self.world_count,
+                self.constraint_count,
+                self._dense_contact_bounds,
+                self.world_dof_indices,
+                rhs,
+                self.diag,
+                self.impulses,
+                self.Y_world,
+                self.row_type,
+                self.row_parent,
+                self.row_mu,
+                self.mf_constraint_count,
+                self.L_by_size[primary_size],
+                self.Linv_by_size[primary_size],
+                self.L_by_size[secondary_size],
+                self.Linv_by_size[secondary_size],
+                self._paired_factor_primary_groups_by_world,
+                self._paired_factor_secondary_groups_by_world,
+                self._paired_factor_primary_offsets_by_world,
+                self._paired_factor_secondary_offsets_by_world,
+                int(iterations),
+                self.pgs_omega,
+                0,
+                0,
+            ],
+            outputs=[self.v_out],
+            block_dim=64,
+            device=model.device,
+        )
 
     def _internal_row_phases(self) -> tuple[bool, bool]:
         """Return whether internal rows and velocity limits can exist (the phases with work)."""
@@ -4667,6 +4876,15 @@ class SolverFeatherPGS(SolverBase):
                     dim=self.n_arts_by_size[size],
                     inputs=[self.group_to_art[size], self.mass_update_mask, size, self.L_by_size[size]],
                     outputs=[self.Linv_by_size[size]],
+                    device=model.device,
+                )
+            if self._inverse_cholesky_kernels_by_size[size] is not None:
+                wp.launch(
+                    self._inverse_cholesky_kernels_by_size[size],
+                    dim=self.n_arts_by_size[size] * 32,
+                    inputs=[self.L_by_size[size], self.group_to_art[size], self.mass_update_mask],
+                    outputs=[self.Hinv_by_size[size]],
+                    block_dim=256,
                     device=model.device,
                 )
 
@@ -5132,7 +5350,10 @@ class SolverFeatherPGS(SolverBase):
     def _solve_matrix_free(self, state_in: State, state_aug: State, contacts: Contacts | None, dt: float) -> None:
         """Build the matrix-free responses and right-hand sides and run the fused solve into ``v_out``."""
         model = self.model
-        if self._sparse_mass_matrix_size is None:
+        if self._paired_response_primary_size is not None:
+            # One kernel writes both components' world rows and the diagonal.
+            self._stage4_hinv_jt_paired()
+        elif self._sparse_mass_matrix_size is None:
             for size in self._for_sizes():
                 if self._execution_plan.use_diagonal_mass(size):
                     self._stage4_hinv_jt_diagonal(size)
@@ -6148,6 +6369,39 @@ class SolverFeatherPGS(SolverBase):
         self._mass_update_requested.zero_()
         self._force_mass_update = False
 
+    def _init_paired_response_kernels(self, model: Model) -> None:
+        """Resolve the paired response, inverse-factorization and factor-coordinate solve kernels."""
+        self._paired_cholesky_inverse_kernel = None
+        self._paired_response_kernel = None
+        self._paired_factor_solve_kernel = None
+        primary_size = self._paired_response_primary_size
+        if primary_size is None:
+            return
+        secondary_size = self._paired_response_secondary_size
+        device_arch = model.device.arch
+        if not self._paired_factor_coordinates:
+            self._paired_cholesky_inverse_kernel = _get_cholesky_inverse_tiled_kernel(
+                primary_size, device_arch, self._tile_threads
+            )
+        self._paired_response_kernel = _get_paired_hinv_jt_kernel(
+            primary_size,
+            secondary_size,
+            self.dense_max_constraints,
+            self.max_world_dofs,
+            device_arch,
+            _PAIRED_RESPONSE_WARPS_PER_BLOCK,
+            factor_coordinates=self._paired_factor_coordinates,
+        )
+        if self._paired_factor_coordinates:
+            self._paired_factor_solve_kernel = _get_pgs_solve_paired_factor_kernel(
+                self.dense_max_constraints,
+                self.max_world_dofs,
+                primary_size,
+                secondary_size,
+                device_arch,
+                contact_triples=self._factor_coordinate_contact_triples,
+            )
+
     def _launch_fused_crba_cholesky(self, state_aug: State, size: int) -> bool:
         """Assemble and factor the group's mass matrices in one kernel when it is fused; return whether."""
         tiled = self._crba_cholesky_kernels_by_size[size]
@@ -6246,6 +6500,22 @@ class SolverFeatherPGS(SolverBase):
         )
 
     def _stage2_cholesky_tiled(self, size: int):
+        if size == self._paired_response_primary_size and not self._paired_factor_coordinates:
+            wp.launch_tiled(
+                self._paired_cholesky_inverse_kernel,
+                dim=[self.n_arts_by_size[size]],
+                inputs=[
+                    self.H_by_size[size],
+                    self.R_by_size[size],
+                    self._paired_response_inverse_identity,
+                    self.group_to_art[size],
+                    self.mass_update_mask,
+                ],
+                outputs=[self.L_by_size[size], self.Hinv_by_size[size]],
+                block_dim=self._tile_threads,
+                device=self.model.device,
+            )
+            return
         wp.launch_tiled(
             self._cholesky_kernels_by_size[size],
             dim=[self.n_arts_by_size[size]],
@@ -7226,6 +7496,33 @@ class SolverFeatherPGS(SolverBase):
                 int(self._hinv_jt_writes_world),
             ],
             outputs=[self.Y_by_size[size], self.J_world, self.Y_world],
+            device=self.model.device,
+        )
+
+    def _stage4_hinv_jt_paired(self) -> None:
+        """Build each world's rows from its articulation and free-body inverse mass matrices."""
+        primary_size = self._paired_response_primary_size
+        secondary_size = self._paired_response_secondary_size
+        wp.launch_tiled(
+            self._paired_response_kernel,
+            dim=[self.n_arts_by_size[primary_size]],
+            inputs=[
+                self.Hinv_by_size[primary_size],
+                self.Hinv_by_size[primary_size],
+                self.J_by_size[primary_size],
+                self.group_to_art[primary_size],
+                self.Hinv_by_size[secondary_size],
+                self.Hinv_by_size[secondary_size],
+                self.J_by_size[secondary_size],
+                self.group_to_art[secondary_size],
+                self._paired_response_secondary_groups,
+                self.art_to_world,
+                self.articulation_world_dof_offset,
+                self.constraint_count,
+                self.mf_constraint_count,
+            ],
+            outputs=[self.J_world, self.Y_world, self.diag],
+            block_dim=32 * _PAIRED_RESPONSE_WARPS_PER_BLOCK,
             device=self.model.device,
         )
 
@@ -8755,6 +9052,765 @@ def _get_crba_cholesky_kernel(n_dofs: int, device_arch: str, tile_threads: int =
 
 
 @cache
+def _get_cholesky_inverse_tiled_kernel(n_dofs: int, device_arch: str, tile_threads: int = 64) -> "wp.Kernel":
+    """Build a tiled kernel that factors the mass matrix and materializes its inverse."""
+    del device_arch
+    dofs = wp.constant(int(n_dofs))
+
+    def cholesky_inverse_tiled_template(
+        H_group: wp.array3d[float],
+        R_group: wp.array2d[float],
+        identity: wp.array2d[float],
+        group_to_art: wp.array[int],
+        mass_update_mask: wp.array[int],
+        L_group: wp.array3d[float],
+        Hinv_group: wp.array3d[float],
+    ):
+        group, _lane = wp.tid()
+        art = group_to_art[group]
+        if mass_update_mask[art] == 0:
+            return
+        H_tile = wp.tile_load(H_group[group], shape=(dofs, dofs), bounds_check=False)
+        armature_tile = wp.tile_load(R_group[group], shape=(dofs,), bounds_check=False)
+        identity_tile = wp.tile_load(identity, shape=(dofs, dofs), bounds_check=False)
+        L_tile = wp.tile_cholesky(wp.tile_diag_add(H_tile, armature_tile))
+        Hinv_tile = wp.tile_cholesky_solve(L_tile, identity_tile, "lower")
+        wp.tile_store(L_group[group], L_tile, bounds_check=False)
+        wp.tile_store(Hinv_group[group], Hinv_tile, bounds_check=False)
+
+    name = f"cholesky_inverse_tiled_{int(n_dofs)}_bd{int(tile_threads)}"
+    cholesky_inverse_tiled_template.__name__ = name
+    cholesky_inverse_tiled_template.__qualname__ = name
+    return wp.kernel(enable_backward=False, module="unique")(cholesky_inverse_tiled_template)
+
+
+@cache
+def _get_inverse_cholesky_register_kernel(n_dofs: int, device_arch: str, *, lower_only: bool = False) -> "wp.Kernel":
+    """Build a small-system inverse kernel with one right-hand side per warp lane."""
+    del device_arch
+    backward_solve = ""
+    if not lower_only:
+        backward_solve = f"""
+#pragma unroll
+    for (int reverse = 0; reverse < {n_dofs}; ++reverse) {{
+        const int i = {n_dofs} - 1 - reverse;
+        float value = column[i];
+#pragma unroll
+        for (int k = i + 1; k < {n_dofs}; ++k)
+            value -= L_group.data[factor_base + k * {n_dofs} + i] * column[k];
+        const float diagonal = L_group.data[factor_base + i * {n_dofs} + i];
+        column[i] = diagonal != 0.0f ? value / diagonal : 0.0f;
+    }}
+"""
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+    const int lane = tid & 31;
+    const int group = tid / 32;
+    if (lane >= {n_dofs}) return;
+    const int art = group_to_art.data[group];
+    if (mass_update_mask.data[art] == 0) return;
+
+    const int factor_base = group * {n_dofs * n_dofs};
+    float column[{n_dofs}];
+#pragma unroll
+    for (int i = 0; i < {n_dofs}; ++i) {{
+        float value = i == lane ? 1.0f : 0.0f;
+#pragma unroll
+        for (int k = 0; k < i; ++k)
+            value -= L_group.data[factor_base + i * {n_dofs} + k] * column[k];
+        const float diagonal = L_group.data[factor_base + i * {n_dofs} + i];
+        column[i] = diagonal != 0.0f ? value / diagonal : 0.0f;
+    }}
+{backward_solve}
+#pragma unroll
+    for (int i = 0; i < {n_dofs}; ++i)
+        Hinv_group.data[factor_base + i * {n_dofs} + lane] = column[i];
+#endif
+"""
+
+    @wp.func_native(snippet)
+    def inverse_cholesky_register_native(
+        tid: int,
+        L_group: wp.array3d[float],
+        group_to_art: wp.array[int],
+        mass_update_mask: wp.array[int],
+        Hinv_group: wp.array3d[float],
+    ): ...
+
+    def inverse_cholesky_register_template(
+        L_group: wp.array3d[float],
+        group_to_art: wp.array[int],
+        mass_update_mask: wp.array[int],
+        Hinv_group: wp.array3d[float],
+    ):
+        inverse_cholesky_register_native(wp.tid(), L_group, group_to_art, mass_update_mask, Hinv_group)
+
+    name = f"inverse_{'lower' if lower_only else 'cholesky'}_register_{n_dofs}"
+    inverse_cholesky_register_template.__name__ = name
+    inverse_cholesky_register_template.__qualname__ = name
+    return wp.kernel(enable_backward=False, module="unique")(inverse_cholesky_register_template)
+
+
+@cache
+def _get_paired_hinv_jt_kernel(
+    primary_dofs: int,
+    secondary_dofs: int,
+    max_constraints: int,
+    max_world_dofs: int,
+    device_arch: str,
+    warps_per_block: int = 4,
+    *,
+    factor_coordinates: bool = False,
+) -> "wp.Kernel":
+    """Build a response kernel with one warp per row and one pair per block."""
+    del device_arch
+    total_dofs = primary_dofs + secondary_dofs
+    if total_dofs > 32:
+        raise ValueError("paired warp response requires at most 32 total DOFs")
+    if warps_per_block <= 0 or warps_per_block > 32:
+        raise ValueError("warps_per_block must be in [1, 32]")
+
+    hinv_shared = f"""
+    __shared__ float s_primary_Hinv[{primary_dofs * primary_dofs}];
+    __shared__ float s_secondary_Hinv[{secondary_dofs * secondary_dofs}];"""
+    hinv_load = f"""
+    for (int element = threadIdx.x; element < {primary_dofs * primary_dofs}; element += blockDim.x)
+        s_primary_Hinv[element] = primary_Hinv.data[primary_group * {primary_dofs * primary_dofs} + element];
+    for (int element = threadIdx.x; element < {secondary_dofs * secondary_dofs}; element += blockDim.x)
+        s_secondary_Hinv[element] = secondary_Hinv.data[secondary_group * {secondary_dofs * secondary_dofs} + element];"""
+    factor_shared = ""
+    factor_load = ""
+    factor_world_declaration = ""
+    response_calculation = f"""
+        float y = 0.0f;
+#pragma unroll
+        for (int k = 0; k < {primary_dofs}; ++k) {{
+            const float jk = __shfl_sync(MASK, j, k);
+            if (lane < {primary_dofs}) y += s_primary_Hinv[lane * {primary_dofs} + k] * jk;
+        }}
+#pragma unroll
+        for (int k = 0; k < {secondary_dofs}; ++k) {{
+            const float jk = __shfl_sync(MASK, j, {primary_dofs} + k);
+            if (lane >= {primary_dofs} && lane < {total_dofs})
+                y += s_secondary_Hinv[(lane - {primary_dofs}) * {secondary_dofs} + k] * jk;
+        }}"""
+    response_value = "y"
+    diagonal_value = "j * y"
+    if factor_coordinates:
+        hinv_shared = ""
+        hinv_load = ""
+        factor_shared = f"""
+    __shared__ float s_primary_Linv[{primary_dofs * primary_dofs}];
+    __shared__ float s_secondary_Linv[{secondary_dofs * secondary_dofs}];"""
+        factor_load = f"""
+    for (int element = threadIdx.x; element < {primary_dofs * primary_dofs}; element += blockDim.x)
+        s_primary_Linv[element] = primary_Linv.data[primary_group * {primary_dofs * primary_dofs} + element];
+    for (int element = threadIdx.x; element < {secondary_dofs * secondary_dofs}; element += blockDim.x)
+        s_secondary_Linv[element] = secondary_Linv.data[secondary_group * {secondary_dofs * secondary_dofs} + element];"""
+        factor_world_declaration = "    const bool factor_world = world_mf_constraint_count.data[world] == 0;"
+        response_calculation = f"""
+        float y = 0.0f;
+        float z = 0.0f;
+#pragma unroll
+        for (int k = 0; k < {primary_dofs}; ++k) {{
+            const float jk = __shfl_sync(MASK, j, k);
+            if (lane < {primary_dofs} && k <= lane)
+                z += s_primary_Linv[lane * {primary_dofs} + k] * jk;
+        }}
+        const int secondary_lane = lane - {primary_dofs};
+#pragma unroll
+        for (int k = 0; k < {secondary_dofs}; ++k) {{
+            const float jk = __shfl_sync(MASK, j, {primary_dofs} + k);
+            if (lane >= {primary_dofs} && lane < {total_dofs} && k <= secondary_lane)
+                z += s_secondary_Linv[secondary_lane * {secondary_dofs} + k] * jk;
+        }}
+        if (!factor_world) {{
+#pragma unroll
+            for (int k = 0; k < {primary_dofs}; ++k) {{
+                const float zk = __shfl_sync(MASK, z, k);
+                if (lane < {primary_dofs} && k >= lane)
+                    y += s_primary_Linv[k * {primary_dofs} + lane] * zk;
+            }}
+#pragma unroll
+            for (int k = 0; k < {secondary_dofs}; ++k) {{
+                const float zk = __shfl_sync(MASK, z, {primary_dofs} + k);
+                if (lane >= {primary_dofs} && lane < {total_dofs})
+                    if (k >= secondary_lane)
+                        y += s_secondary_Linv[k * {secondary_dofs} + secondary_lane] * zk;
+            }}
+        }}"""
+        response_value = "factor_world ? z : y"
+        diagonal_value = "factor_world ? z * z : j * y"
+
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+{hinv_shared}
+{factor_shared}
+    const int lane = threadIdx.x & 31;
+    const int row_warp = threadIdx.x >> 5;
+    const unsigned MASK = 0xffffffffu;
+
+    const int secondary_group = secondary_group_by_primary.data[primary_group];
+    const int primary_art = primary_group_to_art.data[primary_group];
+    const int secondary_art = secondary_group_to_art.data[secondary_group];
+    const int world = art_to_world.data[primary_art];
+{factor_world_declaration}
+    int n_constraints = world_constraint_count.data[world];
+    if (n_constraints > {max_constraints}) n_constraints = {max_constraints};
+    const int primary_offset = articulation_world_dof_offset.data[primary_art];
+    const int secondary_offset = articulation_world_dof_offset.data[secondary_art];
+{hinv_load}
+{factor_load}
+    __syncthreads();
+
+    for (int constraint = row_warp; constraint < n_constraints; constraint += {warps_per_block}) {{
+        const int world_row = (world * {max_constraints} + constraint) * {max_world_dofs};
+        float j = 0.0f;
+        if (lane < {primary_dofs}) {{
+            const int row = (primary_group * {max_constraints} + constraint) * {primary_dofs};
+            j = primary_J.data[row + lane];
+        }} else if (lane < {total_dofs}) {{
+            const int secondary_lane = lane - {primary_dofs};
+            const int row = (secondary_group * {max_constraints} + constraint) * {secondary_dofs};
+            j = secondary_J.data[row + secondary_lane];
+        }}
+
+{response_calculation}
+
+        if (lane < {primary_dofs}) {{
+            J_world.data[world_row + primary_offset + lane] = j;
+            Y_world.data[world_row + primary_offset + lane] = {response_value};
+        }} else if (lane < {total_dofs}) {{
+            const int secondary_lane = lane - {primary_dofs};
+            J_world.data[world_row + secondary_offset + secondary_lane] = j;
+            Y_world.data[world_row + secondary_offset + secondary_lane] = {response_value};
+        }}
+
+        float diagonal = lane < {total_dofs} ? {diagonal_value} : 0.0f;
+        diagonal += __shfl_down_sync(MASK, diagonal, 16);
+        diagonal += __shfl_down_sync(MASK, diagonal, 8);
+        diagonal += __shfl_down_sync(MASK, diagonal, 4);
+        diagonal += __shfl_down_sync(MASK, diagonal, 2);
+        diagonal += __shfl_down_sync(MASK, diagonal, 1);
+        if (lane == 0) {{
+            const int diag_index = world * {max_constraints} + constraint;
+            world_diag.data[diag_index] = diagonal;
+        }}
+    }}
+#endif
+"""
+
+    @wp.func_native(snippet)
+    def paired_hinv_jt_native(
+        primary_group: int,
+        primary_Hinv: wp.array3d[float],
+        primary_Linv: wp.array3d[float],
+        primary_J: wp.array3d[float],
+        primary_group_to_art: wp.array[int],
+        secondary_Hinv: wp.array3d[float],
+        secondary_Linv: wp.array3d[float],
+        secondary_J: wp.array3d[float],
+        secondary_group_to_art: wp.array[int],
+        secondary_group_by_primary: wp.array[int],
+        art_to_world: wp.array[int],
+        articulation_world_dof_offset: wp.array[int],
+        world_constraint_count: wp.array[int],
+        world_mf_constraint_count: wp.array[int],
+        J_world: wp.array3d[float],
+        Y_world: wp.array3d[float],
+        world_diag: wp.array2d[float],
+    ): ...
+
+    def paired_hinv_jt_template(
+        primary_Hinv: wp.array3d[float],
+        primary_Linv: wp.array3d[float],
+        primary_J: wp.array3d[float],
+        primary_group_to_art: wp.array[int],
+        secondary_Hinv: wp.array3d[float],
+        secondary_Linv: wp.array3d[float],
+        secondary_J: wp.array3d[float],
+        secondary_group_to_art: wp.array[int],
+        secondary_group_by_primary: wp.array[int],
+        art_to_world: wp.array[int],
+        articulation_world_dof_offset: wp.array[int],
+        world_constraint_count: wp.array[int],
+        world_mf_constraint_count: wp.array[int],
+        J_world: wp.array3d[float],
+        Y_world: wp.array3d[float],
+        world_diag: wp.array2d[float],
+    ):
+        primary_group, _lane = wp.tid()
+        paired_hinv_jt_native(
+            primary_group,
+            primary_Hinv,
+            primary_Linv,
+            primary_J,
+            primary_group_to_art,
+            secondary_Hinv,
+            secondary_Linv,
+            secondary_J,
+            secondary_group_to_art,
+            secondary_group_by_primary,
+            art_to_world,
+            articulation_world_dof_offset,
+            world_constraint_count,
+            world_mf_constraint_count,
+            J_world,
+            Y_world,
+            world_diag,
+        )
+
+    block_dim = 32 * warps_per_block
+    name = f"paired_hinv_jt_{primary_dofs}_{secondary_dofs}_{max_constraints}_bd{block_dim}"
+    if factor_coordinates:
+        name += "_factor"
+    paired_hinv_jt_template.__name__ = name
+    paired_hinv_jt_template.__qualname__ = name
+    return wp.kernel(enable_backward=False, module="unique")(paired_hinv_jt_template)
+
+
+@cache
+def _get_pgs_solve_paired_factor_kernel(
+    max_constraints: int,
+    max_world_dofs: int,
+    primary_dofs: int,
+    secondary_dofs: int,
+    device_arch: str,
+    contact_triples: bool = False,
+) -> "wp.Kernel":
+    """Build the dense PGS solve for a fixed articulation/free-body pair.
+
+    The kernel owns the complete factor-coordinate lifetime: it transforms
+    physical generalized velocity with ``L^T``, applies the dense PGS sweeps
+    using ``L^-1 J^T`` rows, and transforms back with ``L^-T``. Worlds with
+    matrix-free rows remain owned by the general physical-coordinate solver.
+    """
+    del device_arch
+    M = int(max_constraints)
+    D = int(max_world_dofs)
+    P = int(primary_dofs)
+    S = int(secondary_dofs)
+    W = 2
+    if M <= 0:
+        raise ValueError("max_constraints must be positive")
+    if P <= 0 or S <= 0 or P + S != D or D > 32:
+        raise ValueError("paired factor PGS requires two positive components spanning at most 32 world DOFs")
+
+    contact_type = int(PGS_CONSTRAINT_TYPE_CONTACT)
+    friction_type = int(PGS_CONSTRAINT_TYPE_FRICTION)
+    joint_limit_type = int(PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
+    joint_velocity_limit_type = int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+    __shared__ float s_lam_storage[{W * M}];
+    __shared__ float s_rhs_storage[{W * M}];
+    __shared__ float s_diag_storage[{W * M}];
+    __shared__ unsigned char s_type_storage[{W * M}];
+    __shared__ float s_contact_mu_storage[{W * ((M + 2) // 3)}];
+    constexpr unsigned MASK = 0xffffffffu;
+    const int lane = threadIdx.x & 31;
+    const int world_slot = threadIdx.x >> 5;
+
+    int m = world_constraint_count.data[world];
+    if (m > {M}) m = {M};
+    if (m == 0 || world_mf_constraint_count.data[world] != 0) return;
+
+    const int off = world * {M};
+    const int row_base = off * {D};
+    const int dof_map_base = world * {D};
+    const int primary_group = primary_group_by_world.data[world];
+    const int secondary_group = secondary_group_by_world.data[world];
+    const int primary_offset = primary_offset_by_world.data[world];
+    const int secondary_offset = secondary_offset_by_world.data[world];
+    const int primary_matrix_base = primary_group * {P * P};
+    const int secondary_matrix_base = secondary_group * {S * S};
+    float* s_lam = &s_lam_storage[world_slot * {M}];
+    float* s_rhs = &s_rhs_storage[world_slot * {M}];
+    float* s_diag = &s_diag_storage[world_slot * {M}];
+    unsigned char* s_type = &s_type_storage[world_slot * {M}];
+    float* s_contact_mu = &s_contact_mu_storage[world_slot * {((M + 2) // 3)}];
+
+    int contact_start = dense_phase_bounds.data[world * 2 + 1];
+    if (contact_start < 0) contact_start = 0;
+    if (contact_start > m) contact_start = m;
+    const bool triple_layout = {str(bool(contact_triples)).lower()}
+        && dense_phase_bounds.data[world * 2] == contact_start
+        && (m - contact_start) % 3 == 0;
+
+    for (int i = lane; i < m; i += 32) {{
+        s_lam[i] = world_impulses.data[off + i];
+        s_rhs[i] = rhs_bias.data[off + i];
+        s_diag[i] = world_diag.data[off + i];
+        if (!triple_layout || i < contact_start)
+            s_type[i] = static_cast<unsigned char>(world_row_type.data[off + i]);
+    }}
+    const int contact_count = (m - contact_start) / 3;
+    for (int contact = lane; contact < contact_count; contact += 32)
+        s_contact_mu[contact] = world_row_mu.data[off + contact_start + contact * 3 + 1];
+
+    const int global_dof = lane < {D} ? world_dof_indices.data[dof_map_base + lane] : -1;
+    const float physical_velocity = global_dof >= 0 ? v_out.data[global_dof] : 0.0f;
+    const int primary_lane = lane - primary_offset;
+    const int secondary_lane = lane - secondary_offset;
+    float factor_velocity = 0.0f;
+#pragma unroll
+    for (int k = 0; k < {P}; ++k) {{
+        const float xk = __shfl_sync(MASK, physical_velocity, primary_offset + k);
+        if (primary_lane >= 0 && primary_lane <= k && primary_lane < {P})
+            factor_velocity += primary_L.data[
+                primary_matrix_base + k * {P} + primary_lane] * xk;
+    }}
+#pragma unroll
+    for (int k = 0; k < {S}; ++k) {{
+        const float xk = __shfl_sync(MASK, physical_velocity, secondary_offset + k);
+        if (secondary_lane >= 0 && secondary_lane <= k && secondary_lane < {S})
+            factor_velocity += secondary_L.data[
+                secondary_matrix_base + k * {S} + secondary_lane] * xk;
+    }}
+    __syncwarp(MASK);
+
+    for (int iter = 0; iter < iterations; ++iter) {{
+        const int global_iter = iteration_offset + iter;
+        int iteration_changed = 0;
+
+        if (triple_layout) {{
+            // The prefix contains equality and unilateral joint-limit rows;
+            // contacts then own exact normal/tangent/tangent triples. Consume
+            // the trailing structural contract directly instead of decoding
+            // parent, sibling, and friction metadata for every contact row.
+            for (int i = 0; i < contact_start; ++i) {{
+                const float row_factor = lane < {D}
+                    ? factor_rows.data[row_base + i * {D} + lane] : 0.0f;
+                const float denom = s_diag[i];
+                if (denom <= 0.0f) continue;
+                float sum = lane < {D} ? row_factor * factor_velocity : 0.0f;
+                sum += __shfl_down_sync(MASK, sum, 16);
+                sum += __shfl_down_sync(MASK, sum, 8);
+                sum += __shfl_down_sync(MASK, sum, 4);
+                sum += __shfl_down_sync(MASK, sum, 2);
+                sum += __shfl_down_sync(MASK, sum, 1);
+                const float old_impulse = s_lam[i];
+                float new_impulse = old_impulse
+                    + omega * (-( __shfl_sync(MASK, sum, 0) + s_rhs[i]) / denom);
+                const int row_type = static_cast<int>(s_type[i]);
+                if ((row_type == {contact_type} || row_type == {joint_limit_type}) && new_impulse < 0.0f)
+                    new_impulse = 0.0f;
+                const float delta = new_impulse - old_impulse;
+                s_lam[i] = new_impulse;
+                if (delta != 0.0f) {{
+                    iteration_changed = 1;
+                    factor_velocity += row_factor * delta;
+                }}
+                __syncwarp(MASK);
+            }}
+
+            for (int contact = 0; contact < contact_count; ++contact) {{
+                const int normal = contact_start + contact * 3;
+                const int tangent1 = normal + 1;
+                const int tangent2 = normal + 2;
+                const float normal_factor = lane < {D}
+                    ? factor_rows.data[row_base + normal * {D} + lane] : 0.0f;
+                float normal_sum = lane < {D} ? normal_factor * factor_velocity : 0.0f;
+                normal_sum += __shfl_down_sync(MASK, normal_sum, 16);
+                normal_sum += __shfl_down_sync(MASK, normal_sum, 8);
+                normal_sum += __shfl_down_sync(MASK, normal_sum, 4);
+                normal_sum += __shfl_down_sync(MASK, normal_sum, 2);
+                normal_sum += __shfl_down_sync(MASK, normal_sum, 1);
+                const float normal_denom = s_diag[normal];
+                if (normal_denom > 0.0f) {{
+                    const float old_normal = s_lam[normal];
+                    float new_normal = old_normal
+                        + omega * (-( __shfl_sync(MASK, normal_sum, 0) + s_rhs[normal]) / normal_denom);
+                    if (new_normal < 0.0f) new_normal = 0.0f;
+                    const float normal_delta = new_normal - old_normal;
+                    s_lam[normal] = new_normal;
+                    if (normal_delta != 0.0f) {{
+                        iteration_changed = 1;
+                        factor_velocity += normal_factor * normal_delta;
+                    }}
+                }}
+                __syncwarp(MASK);
+
+                const float tangent1_factor = lane < {D}
+                    ? factor_rows.data[row_base + tangent1 * {D} + lane] : 0.0f;
+                const float tangent2_factor = lane < {D}
+                    ? factor_rows.data[row_base + tangent2 * {D} + lane] : 0.0f;
+                // Patch normal load: normal rows link the region's next normal (circular list, -1 ends a
+                // point contact). Solve both tangents together on the friction disk at that load.
+                float lambda_n = s_lam[normal];
+                for (int patch_row = world_row_parent.data[off + normal];
+                     patch_row >= 0 && patch_row != normal;
+                     patch_row = world_row_parent.data[off + patch_row])
+                    lambda_n += s_lam[patch_row];
+                const float radius = fmaxf(s_contact_mu[contact] * lambda_n, 0.0f);
+                const float old_tangent1 = s_lam[tangent1];
+                const float old_tangent2 = s_lam[tangent2];
+                if (radius <= 0.0f && old_tangent1 == 0.0f && old_tangent2 == 0.0f) {{
+                    __syncwarp(MASK);
+                    continue;
+                }}
+                if (global_iter < friction_start_iteration) {{
+                    s_lam[tangent1] = 0.0f;
+                    s_lam[tangent2] = 0.0f;
+                    __syncwarp(MASK);
+                    continue;
+                }}
+                float2 pair = make_float2(0.0f, 0.0f);
+                if (radius > 0.0f) {{
+                    float tangent1_sum = lane < {D} ? tangent1_factor * factor_velocity : 0.0f;
+                    float tangent2_sum = lane < {D} ? tangent2_factor * factor_velocity : 0.0f;
+                    float cross_sum = lane < {D} ? tangent1_factor * tangent2_factor : 0.0f;
+                    for (int offset = 16; offset > 0; offset >>= 1) {{
+                        tangent1_sum += __shfl_down_sync(MASK, tangent1_sum, offset);
+                        tangent2_sum += __shfl_down_sync(MASK, tangent2_sum, offset);
+                        cross_sum += __shfl_down_sync(MASK, cross_sum, offset);
+                    }}
+                    const float tangent1_residual = __shfl_sync(MASK, tangent1_sum, 0) + s_rhs[tangent1];
+                    const float tangent2_residual = __shfl_sync(MASK, tangent2_sum, 0) + s_rhs[tangent2];
+                    const float cross = __shfl_sync(MASK, cross_sum, 0);
+                    pair = friction_pair_candidate(s_diag[tangent1], cross, s_diag[tangent2],
+                        tangent1_residual, tangent2_residual, old_tangent1, old_tangent2, radius, omega);
+                }}
+                const float magnitude = sqrtf(pair.x * pair.x + pair.y * pair.y);
+                const float scale = magnitude > radius ? radius / magnitude : 1.0f;
+                const float new_tangent1 = pair.x * scale;
+                const float new_tangent2 = pair.y * scale;
+                const float tangent1_delta = new_tangent1 - old_tangent1;
+                const float tangent2_delta = new_tangent2 - old_tangent2;
+                s_lam[tangent1] = new_tangent1;
+                s_lam[tangent2] = new_tangent2;
+                if (tangent2_delta != 0.0f) {{
+                    iteration_changed = 1;
+                    factor_velocity += tangent2_factor * tangent2_delta;
+                }}
+                if (tangent1_delta != 0.0f) {{
+                    iteration_changed = 1;
+                    factor_velocity += tangent1_factor * tangent1_delta;
+                }}
+                __syncwarp(MASK);
+            }}
+        }} else {{
+        float prefetched_factor = lane < {D} ? factor_rows.data[row_base + lane] : 0.0f;
+
+        for (int i = 0; i < m; ++i) {{
+            const float row_factor = prefetched_factor;
+            if (i + 1 < m && lane < {D})
+                prefetched_factor = factor_rows.data[row_base + (i + 1) * {D} + lane];
+
+            const int row_type = static_cast<int>(s_type[i]);
+            if (row_type == {friction_type} && global_iter < friction_start_iteration) {{
+                s_lam[i] = 0.0f;
+                __syncwarp(MASK);
+                continue;
+            }}
+
+            int parent = -1;
+            int sibling = -1;
+            float sibling_factor = 0.0f;
+            if (row_type == {friction_type}) {{
+                parent = world_row_parent.data[off + i];
+                if (i != parent + 1) {{
+                    // The first tangent row solved both tangents; the second visit is a no-op.
+                    __syncwarp(MASK);
+                    continue;
+                }}
+                sibling = parent + 2;
+                sibling_factor = lane < {D} ? factor_rows.data[row_base + sibling * {D} + lane] : 0.0f;
+            }}
+
+            const float denom = s_diag[i];
+            if (denom <= 0.0f && row_type != {friction_type}) continue;
+            float sum = lane < {D} ? row_factor * factor_velocity : 0.0f;
+            sum += __shfl_down_sync(MASK, sum, 16);
+            sum += __shfl_down_sync(MASK, sum, 8);
+            sum += __shfl_down_sync(MASK, sum, 4);
+            sum += __shfl_down_sync(MASK, sum, 2);
+            sum += __shfl_down_sync(MASK, sum, 1);
+            const float jv = __shfl_sync(MASK, sum, 0);
+
+            const float residual = jv + s_rhs[i];
+            const float raw_delta = denom > 0.0f ? -residual / denom : 0.0f;
+            const float old_impulse = s_lam[i];
+            float new_impulse = old_impulse + omega * raw_delta;
+            float delta_impulse = 0.0f;
+            float sibling_delta = 0.0f;
+            if (row_type == {contact_type} || row_type == {joint_limit_type}) {{
+                if (new_impulse < 0.0f) new_impulse = 0.0f;
+                delta_impulse = new_impulse - old_impulse;
+            }} else if (row_type == {joint_velocity_limit_type}) {{
+                if (residual < 0.0f) {{
+                    delta_impulse = raw_delta;
+                    new_impulse = raw_delta;
+                }} else {{
+                    new_impulse = 0.0f;
+                }}
+            }} else if (row_type == {friction_type}) {{
+                // Paired tangent solve at the patch normal load, matching the general owner.
+                float lambda_n = s_lam[parent];
+                for (int patch_row = world_row_parent.data[off + parent];
+                     patch_row >= 0 && patch_row != parent;
+                     patch_row = world_row_parent.data[off + patch_row])
+                    lambda_n += s_lam[patch_row];
+                const float radius = fmaxf(world_row_mu.data[off + i] * lambda_n, 0.0f);
+                const float sibling_impulse = s_lam[sibling];
+                float2 pair = make_float2(0.0f, 0.0f);
+                if (radius > 0.0f) {{
+                    float sibling_sum = lane < {D} ? sibling_factor * factor_velocity : 0.0f;
+                    float cross_sum = lane < {D} ? row_factor * sibling_factor : 0.0f;
+                    for (int offset = 16; offset > 0; offset >>= 1) {{
+                        sibling_sum += __shfl_down_sync(MASK, sibling_sum, offset);
+                        cross_sum += __shfl_down_sync(MASK, cross_sum, offset);
+                    }}
+                    const float sibling_residual = __shfl_sync(MASK, sibling_sum, 0) + s_rhs[sibling];
+                    const float cross = __shfl_sync(MASK, cross_sum, 0);
+                    pair = friction_pair_candidate(denom, cross, s_diag[sibling],
+                        residual, sibling_residual, old_impulse, sibling_impulse, radius, omega);
+                }}
+                const float magnitude = sqrtf(pair.x * pair.x + pair.y * pair.y);
+                const float scale = magnitude > radius ? radius / magnitude : 1.0f;
+                new_impulse = pair.x * scale;
+                const float new_sibling_impulse = pair.y * scale;
+                sibling_delta = new_sibling_impulse - sibling_impulse;
+                s_lam[sibling] = new_sibling_impulse;
+                delta_impulse = new_impulse - old_impulse;
+            }} else {{
+                delta_impulse = new_impulse - old_impulse;
+            }}
+            s_lam[i] = new_impulse;
+
+            if (sibling_delta != 0.0f) {{
+                iteration_changed = 1;
+                factor_velocity += sibling_factor * sibling_delta;
+            }}
+            if (delta_impulse != 0.0f) {{
+                iteration_changed = 1;
+                factor_velocity += row_factor * delta_impulse;
+            }}
+            __syncwarp(MASK);
+        }}
+        }}
+
+        const unsigned changed = __ballot_sync(MASK, iteration_changed != 0);
+        if (global_iter >= friction_start_iteration && changed == 0u) break;
+    }}
+
+    float physical_output = 0.0f;
+#pragma unroll
+    for (int k = 0; k < {P}; ++k) {{
+        const float uk = __shfl_sync(MASK, factor_velocity, primary_offset + k);
+        if (primary_lane >= 0 && primary_lane <= k && primary_lane < {P})
+            physical_output += primary_Linv.data[
+                primary_matrix_base + k * {P} + primary_lane] * uk;
+    }}
+#pragma unroll
+    for (int k = 0; k < {S}; ++k) {{
+        const float uk = __shfl_sync(MASK, factor_velocity, secondary_offset + k);
+        if (secondary_lane >= 0 && secondary_lane <= k && secondary_lane < {S})
+            physical_output += secondary_Linv.data[
+                secondary_matrix_base + k * {S} + secondary_lane] * uk;
+    }}
+    if (global_dof >= 0) v_out.data[global_dof] = physical_output;
+    for (int i = lane; i < m; i += 32) world_impulses.data[off + i] = s_lam[i];
+#endif
+"""
+    snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA, 1)
+
+    @wp.func_native(snippet)
+    def pgs_solve_paired_factor_native(
+        world: int,
+        world_constraint_count: wp.array[int],
+        dense_phase_bounds: wp.array2d[int],
+        world_dof_indices: wp.array2d[int],
+        rhs_bias: wp.array2d[float],
+        world_diag: wp.array2d[float],
+        world_impulses: wp.array2d[float],
+        factor_rows: wp.array3d[float],
+        world_row_type: wp.array2d[int],
+        world_row_parent: wp.array2d[int],
+        world_row_mu: wp.array2d[float],
+        world_mf_constraint_count: wp.array[int],
+        primary_L: wp.array3d[float],
+        primary_Linv: wp.array3d[float],
+        secondary_L: wp.array3d[float],
+        secondary_Linv: wp.array3d[float],
+        primary_group_by_world: wp.array[int],
+        secondary_group_by_world: wp.array[int],
+        primary_offset_by_world: wp.array[int],
+        secondary_offset_by_world: wp.array[int],
+        iterations: int,
+        omega: float,
+        friction_start_iteration: int,
+        iteration_offset: int,
+        v_out: wp.array[float],
+    ): ...
+
+    def pgs_solve_paired_factor_template(
+        world_count: int,
+        world_constraint_count: wp.array[int],
+        dense_phase_bounds: wp.array2d[int],
+        world_dof_indices: wp.array2d[int],
+        rhs_bias: wp.array2d[float],
+        world_diag: wp.array2d[float],
+        world_impulses: wp.array2d[float],
+        factor_rows: wp.array3d[float],
+        world_row_type: wp.array2d[int],
+        world_row_parent: wp.array2d[int],
+        world_row_mu: wp.array2d[float],
+        world_mf_constraint_count: wp.array[int],
+        primary_L: wp.array3d[float],
+        primary_Linv: wp.array3d[float],
+        secondary_L: wp.array3d[float],
+        secondary_Linv: wp.array3d[float],
+        primary_group_by_world: wp.array[int],
+        secondary_group_by_world: wp.array[int],
+        primary_offset_by_world: wp.array[int],
+        secondary_offset_by_world: wp.array[int],
+        iterations: int,
+        omega: float,
+        friction_start_iteration: int,
+        iteration_offset: int,
+        v_out: wp.array[float],
+    ):
+        block, lane = wp.tid()
+        world = block * W + lane // 32
+        if world < world_count:
+            pgs_solve_paired_factor_native(
+                world,
+                world_constraint_count,
+                dense_phase_bounds,
+                world_dof_indices,
+                rhs_bias,
+                world_diag,
+                world_impulses,
+                factor_rows,
+                world_row_type,
+                world_row_parent,
+                world_row_mu,
+                world_mf_constraint_count,
+                primary_L,
+                primary_Linv,
+                secondary_L,
+                secondary_Linv,
+                primary_group_by_world,
+                secondary_group_by_world,
+                primary_offset_by_world,
+                secondary_offset_by_world,
+                iterations,
+                omega,
+                friction_start_iteration,
+                iteration_offset,
+                v_out,
+            )
+
+    name = f"pgs_solve_paired_factor_{M}_{D}_{P}_{S}_w{W}"
+    if contact_triples:
+        name += "_contact3"
+    pgs_solve_paired_factor_template.__name__ = name
+    pgs_solve_paired_factor_template.__qualname__ = name
+    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_paired_factor_template)
+
+
+@cache
 def _get_cholesky_kernel(n_dofs: int, device_arch: str, tile_threads: int = 64) -> "wp.Kernel":
     """Build specialized Cholesky kernel for given DOF count.
 
@@ -8921,6 +9977,7 @@ def _get_pgs_solve_mf_gs_kernel(
     contact_torsion: bool = False,
     row_phases: bool = False,
     friction_mode: str = "current",
+    factor_coordinates: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -8972,6 +10029,8 @@ def _get_pgs_solve_mf_gs_kernel(
             (``fuse_joint_velocity_limits``); requires ``has_drive_rows``.
         contact_torsion: Emit the contact torsion pass.
         row_phases: Honor the ``row_phase`` launch argument.
+        factor_coordinates: Skip the worlds without free-body rows, which the paired
+            factor-coordinate solve owns (:func:`_get_pgs_solve_paired_factor_kernel`).
         friction_mode: Contact update of the friction rows (see ``SolverFeatherPGS``):
             ``"current"`` solves the two tangents on the friction disk of the current
             normal impulse; the other modes solve each contact's normal and tangent rows
@@ -8980,6 +10039,12 @@ def _get_pgs_solve_mf_gs_kernel(
     """
     if fuse_vel_limits and not has_drive_rows:
         raise ValueError("fuse_vel_limits requires has_drive_rows")
+    if factor_coordinates and (
+        friction_mode != "current" or has_drive_rows or has_dense_velocity_limit_rows or row_phases
+    ):
+        raise ValueError("factor coordinates require the paired augmented-drive contact solve")
+    # The paired factor-coordinate solve owns the worlds without free-body rows.
+    factor_fallback_skip = "    if (m_mf == 0) return;" if factor_coordinates else ""
     M_D = max_constraints
     M_MF = mf_max_constraints
     D = max_world_dofs
@@ -9235,6 +10300,7 @@ def _get_pgs_solve_mf_gs_kernel(
     int m_dense = world_constraint_count.data[world];
     int m_mf = mf_constraint_count.data[world];
     if (m_dense == 0 && m_mf == 0) return;
+{factor_fallback_skip}
     if (m_dense > {M_D}) m_dense = {M_D};
     if (m_mf > {M_MF}) m_mf = {M_MF};
     // Free-body rows are laid out as [contacts and friction][velocity limits].
@@ -9625,6 +10691,7 @@ def _get_pgs_solve_mf_gs_kernel(
         f"{'_torsion' if contact_torsion else ''}"
         f"{'_phased' if row_phases else ''}"
         f"{'' if friction_mode == 'current' else '_' + friction_mode}"
+        f"{'_factor' if factor_coordinates else ''}"
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name

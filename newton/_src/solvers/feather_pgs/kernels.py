@@ -7855,3 +7855,27 @@ def accumulate_contact_watermark(
 ):
     """Accumulate the high-water mark of the rigid contact count."""
     wp.atomic_max(watermarks, ROW_WATERMARK_CONTACT_SLOT, contact_count[0])
+
+
+@wp.kernel
+def compute_dense_contact_bounds(
+    world_constraint_count: wp.array[int],
+    world_row_type: wp.array2d[int],
+    # outputs
+    dense_contact_bounds: wp.array2d[int],
+):
+    """Write each world's first contact or friction row, where its internal-row prefix ends, twice.
+
+    The two entries end the drive and position-limit prefix and the velocity-limit segment; the
+    paired factor-coordinate solve has no velocity-limit rows, so both name the contact start.
+    """
+    world = wp.tid()
+    count = wp.min(world_constraint_count[world], world_row_type.shape[1])
+    start = count
+    for i in range(count):
+        row_type = world_row_type[world, i]
+        if row_type == PGS_CONSTRAINT_TYPE_CONTACT or row_type == PGS_CONSTRAINT_TYPE_FRICTION:
+            start = i
+            break
+    dense_contact_bounds[world, 0] = start
+    dense_contact_bounds[world, 1] = start
