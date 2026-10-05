@@ -7620,13 +7620,31 @@ def _split_cable_dahl_full_step_state_stays_in_active_subspace(test, device):
     np.testing.assert_allclose(d_kappa[twist_joint, :2], [0.0, 0.0], atol=1.0e-6)
 
 
+@wp.kernel
+def _quat_between_vectors_robust_antiparallel_kernel(direction: wp.vec3, errors: wp.array[float]):
+    rotation = newton.math.quat_between_vectors_robust(direction, -direction)
+    errors[0] = wp.length(wp.quat_rotate(rotation, direction) + direction)
+
+
 class TestCable(unittest.TestCase):
     def test_quat_between_vectors_robust_antiparallel(self):
-        """Rotate a diagonal Rod direction onto its opposite."""
+        """Rotate a diagonal direction onto its opposite on host and devices."""
         direction = wp.normalize(wp.vec3(1.0, 1.0, 1.0))
         rotation = newton.math.quat_between_vectors_robust(direction, -direction)
         error = wp.length(wp.quat_rotate(rotation, direction) + direction)
         self.assertLess(error, 1.0e-6)
+
+        for device in devices:
+            with self.subTest(device=str(device)):
+                errors = wp.empty(1, dtype=float, device=device)
+                wp.launch(
+                    _quat_between_vectors_robust_antiparallel_kernel,
+                    dim=1,
+                    inputs=[direction],
+                    outputs=[errors],
+                    device=device,
+                )
+                self.assertLess(errors.numpy()[0], 1.0e-6)
 
     def test_prepared_rod_closed_rest_allows_open_initial_seam(self):
         """Preserve a closed rest shape and open initial seam through frame updates and copying."""

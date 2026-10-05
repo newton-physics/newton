@@ -769,7 +769,7 @@ class ModelBuilder:
         value: Quat,
         segment_direction: wp.vec3,
     ) -> wp.quat:
-        """Normalize a rod frame and align its local +Z exactly with the segment."""
+        """Normalize a rod frame and align its local +Z with the segment."""
         components = tuple(float(value[i]) for i in range(4))
         norm = math.hypot(*components)
         if not math.isfinite(norm) or norm == 0.0:
@@ -9441,7 +9441,7 @@ class ModelBuilder:
 
         Supplied initial and rest frames must align local ``+Z`` with their
         segment tangent (dot product at least ``0.999``). Accepted frames are
-        normalized and minimally rotated to align exactly while preserving roll.
+        normalized and minimally rotated to align while preserving roll.
 
         Args:
             positions: Geometry source for the ordered-chain form: centerline

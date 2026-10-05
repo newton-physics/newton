@@ -421,18 +421,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             )
             for joint, joint_length in zip(joints, (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
-                stretch_value, shear_value, bend_value, twist_value = structural
-                expected = tuple(
-                    value / joint_length
-                    for value in (
-                        shear_value,
-                        shear_value,
-                        stretch_value,
-                        bend_value,
-                        bend_value,
-                        twist_value,
-                    )
-                )
+                stretch, shear, bend, twist = structural
+                expected = tuple(value / joint_length for value in (shear, shear, stretch, bend, bend, twist))
                 np.testing.assert_allclose(builder.joint_target_ke[dof0 : dof0 + 6], expected, rtol=1.0e-3)
 
         with self.subTest(material="effective_defaults"):
@@ -457,18 +447,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertAlmostEqual(float(builder.shape_scale[0][0]), radius, places=7)
             for joint, joint_length in zip(joints, (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
-                stretch_value, shear_value, bend_value, twist_value = structural
-                expected = tuple(
-                    value / joint_length
-                    for value in (
-                        shear_value,
-                        shear_value,
-                        stretch_value,
-                        bend_value,
-                        bend_value,
-                        twist_value,
-                    )
-                )
+                stretch, shear, bend, twist = structural
+                expected = tuple(value / joint_length for value in (shear, shear, stretch, bend, bend, twist))
                 np.testing.assert_allclose(builder.joint_target_ke[dof0 : dof0 + 6], expected, rtol=1.0e-3)
 
         with self.subTest(material="legacy_modulus_compatibility"):

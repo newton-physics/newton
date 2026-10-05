@@ -791,22 +791,12 @@ class TestModelBuilderReplicate(unittest.TestCase):
             array_backed.replicate(source, 2)
             self.assertIn("joint_target_q", array_backed._array_backed_attributes)
 
-            materialized = ModelBuilder()
-            materialized.replicate(source, 2)
-            for name in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
-                getattr(materialized, name)
-
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message="The legacy DOF-shaped joint_target_q layout is deprecated.*",
-                    category=DeprecationWarning,
-                )
-                expected = materialized.finalize(device="cpu")
+            with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
                 actual = array_backed.finalize(device="cpu")
 
-            self.assertEqual(actual.joint_target_q.shape[0], actual.joint_dof_count)
-            np.testing.assert_array_equal(actual.joint_target_q.numpy(), expected.joint_target_q.numpy())
+            np.testing.assert_array_equal(
+                actual.joint_target_q.numpy(), np.zeros(actual.joint_dof_count, dtype=np.float32)
+            )
 
     def test_array_backed_joint_validation_returns_early_when_all_joints_are_articulated(self):
         """Skip orphan-joint validation and keep topology array-backed when every joint is articulated."""
