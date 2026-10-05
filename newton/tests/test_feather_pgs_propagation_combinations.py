@@ -153,7 +153,10 @@ def test_restitution_rebounds_on_propagation_rows(test, device):
 
 
 def test_regularization_weights_reach_the_propagation_rows(test, device):
-    """Write the regularization weight of penetrating propagation contact rows."""
+    """Write the regularization weight of penetrating propagation contact rows.
+
+    A row regularizes against its unsplit diagonal ``d``: ``w = 1 / (1 + g d / d_s)`` for the split diagonal ``d_s``.
+    """
     model = _scene(device)
     state = _settled_state(model, 60)
     for response in RESPONSES:
@@ -165,8 +168,19 @@ def test_regularization_weights_reach_the_propagation_rows(test, device):
             rows = solver.propagation_row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_CONTACT
             penetrating = solver.propagation_phi.numpy()[0, :count] <= 0.0
             weights = solver.propagation_row_w.numpy()[0, :count]
-            test.assertTrue((rows & penetrating).any())
-            np.testing.assert_allclose(weights[rows & penetrating], 0.5, rtol=1.0e-6)
+            # The unsplit diagonal from the bodies' own responses.
+            body_response = solver.propagation_body_response.numpy()
+            d = np.full(count, solver.pgs_cfm)
+            for body, J in (
+                (solver.propagation_body_a.numpy()[0, :count], solver.propagation_J_a.numpy()[0, :count]),
+                (solver.propagation_body_b.numpy()[0, :count], solver.propagation_J_b.numpy()[0, :count]),
+            ):
+                has_body = body >= 0
+                d[has_body] += np.einsum("ri,rij,rj->r", J[has_body], body_response[body[has_body]], J[has_body])
+            d_split = 1.0 / solver.propagation_eff_mass_inv.numpy()[0, :count]
+            checked = rows & penetrating
+            test.assertTrue((checked & (d_split > 1.01 * d)).any(), "no mass-split row was checked")
+            np.testing.assert_allclose(weights[checked], (1.0 / (1.0 + d / d_split))[checked], rtol=1.0e-4)
 
 
 def test_warm_start_seeds_the_propagation_rows(test, device):

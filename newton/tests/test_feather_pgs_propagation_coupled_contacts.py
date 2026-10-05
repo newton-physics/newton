@@ -14,6 +14,9 @@ from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 DT = 1.0 / 240.0
 PROPAGATION_RESPONSES = ("propagation", "propagation-fused")
+REGULARIZED = {"pgs_beta": 0.0, "pgs_cfm": 0.0, "pgs_contact_regularization": 3.0}
+# (articulated_contact_response, propagation_cached_response)
+PROPAGATION_ROUTES = (("propagation", False), ("propagation-fused", False), ("propagation", True))
 
 
 def _quadruped_model(device):
@@ -65,10 +68,10 @@ def _three_foot_slider_model(device):
     return builder.finalize(device=device)
 
 
-def _solver(model, response, iterations, **kwargs):
+def _solver(model, response, iterations, cached=False, **kwargs):
     options = {
         "articulated_contact_response": response,
-        "propagation_cached_response": False,
+        "propagation_cached_response": cached,
         "friction_anchor_beta": 0.0,
         "dense_max_constraints": 96,
         "mf_max_constraints": 96,
@@ -103,6 +106,46 @@ def test_shared_dof_feet_reach_rest(test, device):
                 test.assertLess(abs(float(qd[0])), 1.0e-3)
 
 
+def test_regularized_feet_reach_immediate_equilibrium(test, device):
+    """Keep the regularized contact fixed point of three coupled feet under the split."""
+    model = _three_foot_slider_model(device)
+    for iterations in (32, 128):
+        solver = _solver(model, "immediate", iterations, **REGULARIZED)
+        (expected,) = _rollout(model, solver, np.array([-1.0], dtype=np.float32), 1)
+        for response, cached in PROPAGATION_ROUTES:
+            with test.subTest(response=response, cached=cached, iterations=iterations):
+                solver = _solver(model, response, iterations, cached=cached, **REGULARIZED)
+                (qd,) = _rollout(model, solver, np.array([-1.0], dtype=np.float32), 1)
+                test.assertAlmostEqual(float(qd[0]), float(expected[0]), delta=1.0e-4)
+
+
+def test_graph_replay_matches_eager_steps(test, device):
+    """Recount the coupled bodies on every replay of a captured step pair."""
+    model = _three_foot_slider_model(device)
+    for response, cached in PROPAGATION_ROUTES:
+        with test.subTest(response=response, cached=cached):
+            eager = _solver(model, response, 12, cached=cached, **REGULARIZED)
+            expected = list(_rollout(model, eager, np.array([-1.0], dtype=np.float32), 7))[-1]
+            solver = _solver(model, response, 12, cached=cached, **REGULARIZED)
+            state, output = model.state(), model.state()
+            control = model.control()
+            state.joint_qd.assign(np.array([-1.0], dtype=np.float32))
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+            pipeline = newton.CollisionPipeline(model, deterministic=True)
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
+            solver.step(state, output, control, contacts, DT)
+            with wp.ScopedCapture(device=model.device) as capture:
+                solver.seed_double_buffer_events()
+                for source, target in ((output, state), (state, output)):
+                    pipeline.collide(source, contacts)
+                    solver.step(source, target, control, contacts, DT)
+            for _ in range(3):
+                wp.capture_launch(capture.graph)
+            np.testing.assert_allclose(output.joint_qd.numpy(), expected, atol=1.0e-6)
+            test.assertEqual(int(solver.propagation_coupling_group_body_count.numpy().max()), 3)
+
+
 def test_floating_quadruped_with_joint_velocities_stays_bounded(test, device):
     """Keep the roll rate of four feet coupled through a light free root physical."""
     model = _quadruped_model(device)
@@ -121,7 +164,12 @@ class TestFeatherPGSPropagationCoupledContacts(unittest.TestCase):
 
 
 devices = get_cuda_test_devices()
-for _fn in (test_shared_dof_feet_reach_rest, test_floating_quadruped_with_joint_velocities_stays_bounded):
+for _fn in (
+    test_shared_dof_feet_reach_rest,
+    test_regularized_feet_reach_immediate_equilibrium,
+    test_graph_replay_matches_eager_steps,
+    test_floating_quadruped_with_joint_velocities_stays_bounded,
+):
     add_function_test(TestFeatherPGSPropagationCoupledContacts, _fn.__name__, _fn, devices=devices)
 
 

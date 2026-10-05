@@ -7882,6 +7882,7 @@ class SolverFeatherPGS(SolverBase):
                     self.propagation_J_a,
                     self.propagation_J_b,
                     self.pgs_cfm,
+                    self._contact_w,
                     self.propagation_max_constraints,
                     self.propagation_tree_pA,
                     self.propagation_tree_u,
@@ -7892,6 +7893,7 @@ class SolverFeatherPGS(SolverBase):
                     self.propagation_eff_mass_inv,
                     self.propagation_MiJt_a,
                     self.propagation_MiJt_b,
+                    self.propagation_row_w,
                 ],
                 device=model.device,
             )
