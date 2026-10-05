@@ -958,17 +958,18 @@ class SolverFeatherPGS(SolverBase):
     - ``"matrix_free"`` (default, CUDA only): for each row the solver keeps ``Y`` and the
       diagonal ``J Y`` and recomputes ``J v`` every iteration instead of assembling a
       Delassus matrix. Every row applies its impulse to one world-local velocity vector
-      immediately, and one fused kernel sweeps all rows of a world. It implements every
-      feature below.
+      immediately, and one fused kernel sweeps all rows of a world. Each feature below is
+      available in it; some combinations are rejected, as the options document.
     - ``"split"`` (CPU and CUDA; required on CPU): the rows of articulated bodies of each
       world are assembled into a dense Delassus matrix ``C = J H^-1 J^T``
       (``dense_max_constraints`` squared per world) and solved in impulse space; the
       free-body rows are then solved against the resulting velocity. Worlds with both kinds
       of rows alternate one sweep of each per iteration. It implements the base feature set
-      and raises :class:`NotImplementedError` for joint velocity limits, PGS drive rows,
-      mimic and loop-closing joints, friction patches, contact regularization, restitution,
-      warm start, velocity-only iterations, contact torsion, contact compliance and
-      sleeping.
+      and raises :class:`NotImplementedError` when any of these is active: joint velocity
+      limits, PGS drive rows, mimic and loop-closing joints, friction patches, contact
+      regularization, restitution, warm start, velocity-only iterations, contact torsion,
+      contact compliance and sleeping. Contact torsion is CUDA-only, so on a CPU device a
+      positive ``contact_torsion_radius`` raises :class:`ValueError` first.
 
     Like :class:`~newton.solvers.SolverFeatherstone`, the solver uses
     :attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd` as its state and
