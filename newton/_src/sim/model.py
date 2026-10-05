@@ -279,6 +279,7 @@ class Model:
         "body_inertia": AttributeSpec(AttributeFrequency.BODY),
         "body_inv_inertia": AttributeSpec(AttributeFrequency.BODY),
         "body_mass": AttributeSpec(AttributeFrequency.BODY),
+        "body_disable_gravity": AttributeSpec(AttributeFrequency.BODY),
         "body_inv_mass": AttributeSpec(AttributeFrequency.BODY),
         "body_flags": AttributeSpec(AttributeFrequency.BODY),
         "body_f": AttributeSpec(AttributeFrequency.BODY),
@@ -448,6 +449,8 @@ class Model:
         "joint_target_ke": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_target_kd": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_damping": AttributeSpec(AttributeFrequency.JOINT_DOF),
+        "joint_spring_stiffness": AttributeSpec(AttributeFrequency.JOINT_DOF),
+        "joint_spring_ref": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_limit_lower": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_limit_upper": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_limit_ke": AttributeSpec(AttributeFrequency.JOINT_DOF),
@@ -911,6 +914,11 @@ class Model:
         """Rigid body inverse inertia tensor [1/(kg·m²)] (relative to COM), shape [body_count, 3, 3], float."""
         self.body_mass: wp.array[wp.float32] | None = None
         """Rigid body mass [kg], shape [body_count], float."""
+        self.body_disable_gravity: wp.array[wp.bool] | None = None
+        """Per-body gravity exclusion, shape [body_count], bool; supported by FeatherPGS and Featherstone.
+
+        After editing, notify the solver with :attr:`ModelFlags.BODY_PROPERTIES`.
+        """
         self.body_inv_mass: wp.array[wp.float32] | None = None
         """Rigid body inverse mass [1/kg], shape [body_count], float."""
         self.body_flags: wp.array[wp.int32] | None = None
@@ -997,6 +1005,12 @@ class Model:
         """Joint damping [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_damping: wp.array[wp.float32] | None = None
         """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint, shape [joint_dof_count], float."""
+        self.joint_spring_stiffness: wp.array[wp.float32] | None = None
+        """Passive spring stiffness [N/m or N·m/rad, depending on joint type] always active on the joint,
+        applying ``k * (joint_spring_ref - q)``; 0 disables the spring. Shape [joint_dof_count], float."""
+        self.joint_spring_ref: wp.array[wp.float32] | None = None
+        """Passive spring reference (rest) position [m or rad, depending on joint type]. May lie outside the
+        joint limits to preload the joint against a limit, shape [joint_dof_count], float."""
         self.joint_effort_limit: wp.array[wp.float32] | None = None
         """Joint effort (force/torque) limits [N or N·m, depending on joint type], shape [joint_dof_count], float."""
         self.joint_velocity_limit: wp.array[wp.float32] | None = None

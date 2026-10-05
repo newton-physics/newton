@@ -393,6 +393,7 @@ class SchemaResolverPhysx(SchemaResolver):
         },
         PrimType.BODY: {
             # Rigid body damping
+            "disable_gravity": SchemaAttribute("physxRigidBody:disableGravity", False),
             "rigid_body_linear_damping": SchemaAttribute("physxRigidBody:linearDamping", 0.0),
             "rigid_body_angular_damping": SchemaAttribute("physxRigidBody:angularDamping", 0.05),
         },
@@ -496,6 +497,9 @@ class SchemaResolverMjc(SchemaResolver):
             # "damping" key, so it resolves through the _per_rad variant.
             "damping_per_rad": SchemaAttribute("mjc:damping", None),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
+            # Passive spring: stiffness is per radian; springref follows mjc:compiler:angle.
+            "spring_stiffness": SchemaAttribute("mjc:stiffness", None),
+            "spring_ref": SchemaAttribute("mjc:springref", None),
             "effort_limit": SchemaAttribute(
                 "mjc:actuatorfrcrange:min",
                 None,

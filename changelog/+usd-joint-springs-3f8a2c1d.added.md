@@ -1,0 +1,1 @@
+Import passive joint springs from USD: `mjc:stiffness` / `mjc:springref` on `MjcJointAPI` now populate `Model.joint_spring_stiffness` / `joint_spring_ref` on revolute, prismatic, and merged D6 joints, with angular `mjc:springref` values following the scene-level `mjc:compiler:angle` token.

@@ -54,7 +54,7 @@ from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.types import Heightfield
-from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
+from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
@@ -828,6 +828,12 @@ class ModelBuilder:
 
         :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True``
         on the solver constructor for this field to take effect.
+        :class:`~newton.solvers.SolverFeatherPGS` applies this field inside the
+        ordinary normal contact row in ``dense``, ``split``, and
+        ``matrix_free`` modes without any implicit velocity iterations.
+        FeatherPGS clamps finite coefficients to ``[0, 1]``, treats non-finite
+        values as zero, and uses the arithmetic mean of the two contacting
+        shapes.
         """
         mu_torsional: float = 0.005
         """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
@@ -1090,6 +1096,8 @@ class ModelBuilder:
             target_ke: float = 0.0,
             target_kd: float = 0.0,
             damping: float = 0.0,
+            spring_stiffness: float = 0.0,
+            spring_ref: float = 0.0,
             armature: float = 0.0,
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
@@ -1119,6 +1127,12 @@ class ModelBuilder:
             """The derivative gain of the target drive PD controller. Defaults to 0.0."""
             self.damping = damping
             """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] that is always active. Defaults to 0.0."""
+            self.spring_stiffness = spring_stiffness
+            """Passive spring stiffness [N/m or N·m/rad, depending on joint type] that is always active,
+            applying ``spring_stiffness * (spring_ref - q)``. Defaults to 0.0 (no spring)."""
+            self.spring_ref = spring_ref
+            """Passive spring reference (rest) position [m or rad, depending on joint type]. May lie outside
+            the joint limits to preload the joint against a limit. Defaults to 0.0."""
             self.armature = armature
             """Artificial inertia added around the joint axis [kg·m² or kg]. Defaults to 0."""
             self.effort_limit = effort_limit
@@ -1774,6 +1788,8 @@ class ModelBuilder:
         # rigid bodies
         self.body_mass: list[float] = []
         """Body masses [kg] accumulated for :attr:`Model.body_mass`."""
+        self.body_disable_gravity: list[bool] = []
+        """Gravity exclusions accumulated for :attr:`Model.body_disable_gravity`."""
         self.body_inertia: list[Mat33] = []
         """Body inertia tensors accumulated for :attr:`Model.body_inertia`."""
         self.body_inv_mass: list[float] = []
@@ -1857,6 +1873,10 @@ class ModelBuilder:
         """Joint velocity limits accumulated for :attr:`Model.joint_velocity_limit`."""
         self.joint_friction: list[float] = []
         """Joint friction values accumulated for :attr:`Model.joint_friction`."""
+        self.joint_spring_stiffness: list[float] = []
+        """Passive joint spring stiffness values accumulated for :attr:`Model.joint_spring_stiffness`."""
+        self.joint_spring_ref: list[float] = []
+        """Passive joint spring reference positions accumulated for :attr:`Model.joint_spring_ref`."""
 
         self.joint_twist_lower: list[float] = []
         """Lower twist limits accumulated for :attr:`Model.joint_twist_lower`."""
@@ -4179,6 +4199,7 @@ class ModelBuilder:
         force_position_velocity_actuation: bool = False,
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
+        physx_missing_inertia_fallback: bool = False,
         legacy_margin_gap: bool = False,
         return_deformable_results: bool = False,
     ) -> dict[str, Any]:
@@ -4310,6 +4331,9 @@ class ModelBuilder:
                 :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+            physx_missing_inertia_fallback: If True, bodies with authored positive mass but no authored diagonal
+                inertia use PhysX's 0.1 m small-sphere inertia fallback instead of shape-derived inertia. This is
+                intended for IsaacLab/PhysX parity when PhysX reports the "possibly invalid inertia tensor" fallback.
             legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
                 where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
@@ -4469,6 +4493,7 @@ class ModelBuilder:
             force_position_velocity_actuation=force_position_velocity_actuation,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
+            physx_missing_inertia_fallback=physx_missing_inertia_fallback,
             legacy_margin_gap=legacy_margin_gap,
             return_deformable_results=return_deformable_results,
         )
@@ -5161,6 +5186,7 @@ class ModelBuilder:
         lock_inertia: bool = False,
         is_kinematic: bool = False,
         custom_attributes: dict[str, Any] | None = None,
+        disable_gravity: bool = False,
     ) -> int:
         """Adds a link (rigid body) to the model within an articulation.
 
@@ -5181,6 +5207,7 @@ class ModelBuilder:
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
             is_kinematic: If True, the body is kinematic and does not respond to forces.
                 Only root bodies (bodies whose joint parent is ``-1``) may be kinematic.
+            disable_gravity: Exclude this body's gravitational wrench in FeatherPGS and Featherstone.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -5205,6 +5232,7 @@ class ModelBuilder:
         # body data
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
+        self.body_disable_gravity.append(disable_gravity)
         self.body_com.append(com)
         self.body_lock_inertia.append(lock_inertia)
         self.body_flags.append(int(BodyFlags.KINEMATIC) if is_kinematic else int(BodyFlags.DYNAMIC))
@@ -5246,6 +5274,7 @@ class ModelBuilder:
         lock_inertia: bool = False,
         is_kinematic: bool = False,
         custom_attributes: dict[str, Any] | None = None,
+        disable_gravity: bool = False,
     ) -> int:
         """Adds a stand-alone free-floating rigid body to the model.
 
@@ -5270,6 +5299,7 @@ class ModelBuilder:
                 center of mass, or inertia. This does not affect merging behavior in
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
             is_kinematic: If True, the body is kinematic and does not respond to forces.
+            disable_gravity: Exclude this body's gravitational wrench in FeatherPGS and Featherstone.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -5284,6 +5314,7 @@ class ModelBuilder:
             label=label,
             lock_inertia=lock_inertia,
             is_kinematic=is_kinematic,
+            disable_gravity=disable_gravity,
             custom_attributes=custom_attributes,
         )
 
@@ -5459,6 +5490,8 @@ class ModelBuilder:
             self.joint_effort_limit.append(dim.effort_limit)
             self.joint_velocity_limit.append(dim.velocity_limit)
             self.joint_friction.append(dim.friction)
+            self.joint_spring_stiffness.append(dim.spring_stiffness)
+            self.joint_spring_ref.append(dim.spring_ref)
             if np.isfinite(dim.limit_lower):
                 self.joint_limit_lower.append(dim.limit_lower)
             else:
@@ -5571,6 +5604,8 @@ class ModelBuilder:
         effort_limit: float | None = None,
         velocity_limit: float | None = None,
         friction: float | None = None,
+        spring_stiffness: float | None = None,
+        spring_ref: float | None = None,
         actuator_mode: JointTargetMode | None = None,
         label: str | None = None,
         collision_filter_parent: bool | None = None,
@@ -5601,6 +5636,8 @@ class ModelBuilder:
             effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from ``ModelBuilder.default_joint_cfg.effort_limit`` is used.
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
+            spring_stiffness: Passive spring stiffness [N·m/rad] applying ``k * (spring_ref - q)`` around the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.spring_stiffness`` is used.
+            spring_ref: Passive spring reference angle [rad]. If None, the default value from ``ModelBuilder.default_joint_cfg.spring_ref`` is used.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
@@ -5631,6 +5668,10 @@ class ModelBuilder:
                 effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
                 velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
                 friction=friction if friction is not None else self.default_joint_cfg.friction,
+                spring_stiffness=spring_stiffness
+                if spring_stiffness is not None
+                else self.default_joint_cfg.spring_stiffness,
+                spring_ref=spring_ref if spring_ref is not None else self.default_joint_cfg.spring_ref,
                 actuator_mode=actuator_mode if actuator_mode is not None else self.default_joint_cfg.actuator_mode,
             )
         return self.add_joint(
@@ -5668,6 +5709,8 @@ class ModelBuilder:
         effort_limit: float | None = None,
         velocity_limit: float | None = None,
         friction: float | None = None,
+        spring_stiffness: float | None = None,
+        spring_ref: float | None = None,
         actuator_mode: JointTargetMode | None = None,
         label: str | None = None,
         collision_filter_parent: bool | None = None,
@@ -5697,6 +5740,8 @@ class ModelBuilder:
             effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from ``ModelBuilder.default_joint_cfg.effort_limit`` is used.
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
+            spring_stiffness: Passive spring stiffness [N/m] applying ``k * (spring_ref - q)`` along the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.spring_stiffness`` is used.
+            spring_ref: Passive spring reference position [m]. If None, the default value from ``ModelBuilder.default_joint_cfg.spring_ref`` is used.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
@@ -5727,6 +5772,10 @@ class ModelBuilder:
                 effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
                 velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
                 friction=friction if friction is not None else self.default_joint_cfg.friction,
+                spring_stiffness=spring_stiffness
+                if spring_stiffness is not None
+                else self.default_joint_cfg.spring_stiffness,
+                spring_ref=spring_ref if spring_ref is not None else self.default_joint_cfg.spring_ref,
                 actuator_mode=actuator_mode if actuator_mode is not None else self.default_joint_cfg.actuator_mode,
             )
         return self.add_joint(
@@ -6701,6 +6750,7 @@ class ModelBuilder:
                 "q": self.body_q[i],
                 "qd": self.body_qd[i],
                 "mass": self.body_mass[i],
+                "disable_gravity": self.body_disable_gravity[i],
                 "inertia": inertia_i,
                 "inv_mass": self.body_inv_mass[i],
                 "inv_inertia": self.body_inv_inertia[i],
@@ -6867,7 +6917,10 @@ class ModelBuilder:
                         stacklevel=3,
                     )
 
-            if joint["type"] == JointType.FIXED and not should_skip_merge and not joint_in_keep_list:
+            gravity_differs = last_dynamic_body >= 0 and (
+                body_data[child_body]["disable_gravity"] != body_data[last_dynamic_body]["disable_gravity"]
+            )
+            if joint["type"] == JointType.FIXED and not (should_skip_merge or joint_in_keep_list or gravity_differs):
                 joint_xform = joint["parent_xform"] * wp.transform_inverse(joint["child_xform"])
                 incoming_xform = incoming_xform * joint_xform
                 parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
@@ -7032,6 +7085,7 @@ class ModelBuilder:
         self.body_q.clear()
         self.body_qd.clear()
         self.body_mass.clear()
+        self.body_disable_gravity.clear()
         self.body_inertia.clear()
         self.body_com.clear()
         self.body_lock_inertia.clear()
@@ -7053,6 +7107,7 @@ class ModelBuilder:
             m = body["mass"]
             inertia = body["inertia"]
             self.body_mass.append(m)
+            self.body_disable_gravity.append(body["disable_gravity"])
             self.body_inertia.append(inertia)
             self.body_com.append(body["com"])
             self.body_lock_inertia.append(body["lock_inertia"])
@@ -7293,7 +7348,7 @@ class ModelBuilder:
         self.joint_coord_count = len(self.joint_q)
 
         # Trim per-DOF arrays that were not cleared/rebuilt above
-        for attr_name in ("joint_velocity_limit", "joint_friction"):
+        for attr_name in ("joint_velocity_limit", "joint_friction", "joint_spring_stiffness", "joint_spring_ref"):
             arr = getattr(self, attr_name)
             if len(arr) > self.joint_dof_count:
                 setattr(self, attr_name, arr[: self.joint_dof_count])
@@ -8707,19 +8762,29 @@ class ModelBuilder:
                     else:
                         decomposition = []
                         # Decomposition backends may merge disconnected convex parts into one hull.
-                        for component_vertices, component_faces in split_mesh_components(mesh):
+                        components = split_mesh_components(mesh)
+                        if method == "coacd":
+                            coacd_settings = {
+                                "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
+                                "mcts_nodes": 20,
+                                "mcts_iterations": 5,
+                                "mcts_max_depth": 1,
+                                "merge": False,
+                                "max_convex_hull": mesh.maxhullvert,
+                            }
+                            coacd_settings.update(remeshing_kwargs)
+                            hull_budget = coacd_settings["max_convex_hull"] if coacd_settings["merge"] else 0
+                            hull_budgets = [coacd_settings["max_convex_hull"]] * len(components)
+                            if hull_budget > 0 and len(components) > 1:
+                                hull_budgets = _split_hull_budget(hull_budget, components)
+                        for component_index, (component_vertices, component_faces) in enumerate(components):
                             if method == "coacd":
                                 cmesh = coacd.Mesh(component_vertices, component_faces)
-                                coacd_settings = {
-                                    "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
-                                    "mcts_nodes": 20,
-                                    "mcts_iterations": 5,
-                                    "mcts_max_depth": 1,
-                                    "merge": False,
-                                    "max_convex_hull": mesh.maxhullvert,
+                                component_settings = {
+                                    **coacd_settings,
+                                    "max_convex_hull": hull_budgets[component_index],
                                 }
-                                coacd_settings.update(remeshing_kwargs)
-                                decomposition.extend(coacd.run_coacd(cmesh, **coacd_settings))
+                                decomposition.extend(coacd.run_coacd(cmesh, **component_settings))
                             else:
                                 tmesh = trimesh.Trimesh(component_vertices, component_faces)
                                 vhacd_settings = {
@@ -8730,6 +8795,16 @@ class ModelBuilder:
                                     tmesh, **vhacd_settings
                                 )
                                 decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
+                        if method == "coacd" and 0 < hull_budget < len(decomposition):
+                            warnings.warn(
+                                f"Shape {shape} has more disconnected components than its convex hull budget of "
+                                f"{hull_budget}; merging the nearest hulls across the gaps.",
+                                stacklevel=2,
+                            )
+                            vertex_limit = (
+                                coacd_settings.get("max_ch_vertex", 0) if coacd_settings.get("decimate") else 0
+                            )
+                            decomposition = _merge_nearest_hulls(decomposition, hull_budget, vertex_limit)
                         decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
                         if raise_on_failure:
@@ -12573,6 +12648,8 @@ class ModelBuilder:
                     ("joint_effort_limit", self.joint_effort_limit),
                     ("joint_velocity_limit", self.joint_velocity_limit),
                     ("joint_friction", self.joint_friction),
+                    ("joint_spring_stiffness", self.joint_spring_stiffness),
+                    ("joint_spring_ref", self.joint_spring_ref),
                     ("joint_target_mode", self.joint_target_mode),
                 ]
             for name, arr in dof_arrays:
@@ -14041,6 +14118,7 @@ class ModelBuilder:
             m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
             m.body_label = self.body_label
             m.body_flags = wp.array(self.body_flags, dtype=wp.int32)
+            m.body_disable_gravity = wp.array(self.body_disable_gravity, dtype=wp.bool)
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
 
             # body colors
@@ -14105,6 +14183,10 @@ class ModelBuilder:
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_velocity_limit = wp.array(self.joint_velocity_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_friction = wp.array(self.joint_friction, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_spring_stiffness = wp.array(
+                self.joint_spring_stiffness, dtype=wp.float32, requires_grad=requires_grad
+            )
+            m.joint_spring_ref = wp.array(self.joint_spring_ref, dtype=wp.float32, requires_grad=requires_grad)
 
             m.joint_limit_lower = wp.array(self.joint_limit_lower, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)
@@ -14856,6 +14938,8 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "joint_effort_limit": wp.float32,
     "joint_velocity_limit": wp.float32,
     "joint_friction": wp.float32,
+    "joint_spring_stiffness": wp.float32,
+    "joint_spring_ref": wp.float32,
     "joint_enabled": wp.bool,
     "joint_limit_lower": wp.float32,
     "joint_limit_upper": wp.float32,
@@ -14874,6 +14958,38 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
 }
 """Builder attributes retained as NumPy arrays between replication and finalization."""
 # could be replaced by introspection if Model instance attribute annotations were moved to class level
+
+
+def _split_hull_budget(budget: int, components: list[tuple[np.ndarray, np.ndarray]]) -> list[int]:
+    """Share a whole-mesh hull budget across components in proportion to surface area, at least one each."""
+    areas = np.array(
+        [
+            0.5 * np.linalg.norm(np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]]), axis=1).sum()
+            for v, f in components
+        ]
+    )
+    spare = max(budget - len(components), 0)
+    shares = areas / areas.sum() * spare if areas.sum() > 0 else np.zeros(len(components))
+    budgets = 1 + np.floor(shares).astype(int)
+    # Largest remainders take the hulls that flooring left over.
+    for i in np.argsort(-(shares - np.floor(shares)), kind="stable")[: spare - int(np.floor(shares).sum())]:
+        budgets[i] += 1
+    return budgets.tolist()
+
+
+def _merge_nearest_hulls(
+    hulls: list[tuple[np.ndarray, np.ndarray]], budget: int, vertex_limit: int
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Replace the two hulls with the nearest centroids by their joint convex hull until ``budget`` remain."""
+    hulls = [(np.asarray(v, dtype=np.float64), np.asarray(f)) for v, f in hulls]
+    while len(hulls) > budget:
+        centroids = np.array([v.mean(axis=0) for v, _ in hulls])
+        distances = np.linalg.norm(centroids[:, None] - centroids[None], axis=-1)
+        np.fill_diagonal(distances, np.inf)
+        i, j = sorted(np.unravel_index(np.argmin(distances), distances.shape))
+        merged = remesh_convex_hull(np.concatenate((hulls[i][0], hulls[j][0])), maxhullvert=vertex_limit)
+        hulls = [hull for k, hull in enumerate(hulls) if k not in (i, j)] + [merged]
+    return hulls
 
 
 def _list_for_iteration(values: list[Any] | np.ndarray) -> list[Any]:

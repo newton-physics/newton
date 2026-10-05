@@ -1178,19 +1178,83 @@ Supported methods: ``"convex_hull"`` (default), ``"bounding_box"``, ``"bounding_
 Contact Reduction
 ^^^^^^^^^^^^^^^^^
 
-Contact reduction is enabled by default. For scenes with many mesh-mesh interactions that generate thousands of contacts, reduction selects a significantly smaller representative set that maintains stable contact behavior while improving solver performance.
+Newton has three reduction stages with different physical contracts.  They are
+configured separately even when they share the word "reduction":
 
-**How it works:**
+**Mesh and heightfield contact generation**
 
-1. Contacts are binned by normal direction (polyhedron face directions)
-2. Within each bin, contacts are scored by spatial distribution and penetration depth
-3. Representative contacts are selected to preserve coverage and depth cues
+The released ``CollisionPipeline(reduce_contacts=True)`` default reduces
+ordinary triangle contacts while the narrow phase generates them.  It prevents
+dense mesh or heightfield candidate streams from filling the final contact
+buffer and is supported by every solver.  It is automatically inactive in
+primitive-only scenes.  Passing ``False`` retains the old behavior of disabling
+only this producer stage.
 
-To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
+**Body-pair patch post-reduction**
 
-**Configuring contact reduction (HydroelasticSDF.Config):**
+Compound bodies made from many colliders can generate several shape-pair
+manifolds for one physical patch.  Enable the optional postpass through the same
+public entry point, using a configuration object rather than another constructor
+flag:
 
-For hydroelastic and SDF-based contacts, use :class:`~geometry.HydroelasticSDF.Config` to tune reduction behavior:
+.. code-block:: python
+
+    reduction = newton.CollisionPipeline.ContactReductionConfig(
+        mesh=True,
+        body_pairs=True,
+        body_pair_cell_size=0.25,
+        body_pair_hysteresis=0.001,
+    )
+    pipeline = newton.CollisionPipeline(model, reduce_contacts=reduction)
+
+The postpass groups the *finalized narrow-phase contacts* by body pair,
+material class, normal bin, and spatial cell, then retains one depth
+representative, up to six sampled footprint representatives over all
+candidates, and up to six more over the touching candidates alone (canonical
+separation ``<= 0``), so speculative contacts hovering inside the contact gap
+can never displace the support polygon that carries the body.  Under
+hysteresis a touching-slot winner that lifts off within the margin keeps
+competing in the touching family, but without the incumbency preference.  With nonzero
+hysteresis, an incumbent may trail the instantaneous slot winner by no more
+than the configured margin; coincident contacts with identical packed winner
+keys can exceed the nominal slot count.  This is a bounded-work spatial
+approximation, not an exact patch-wrench representation: support error is scene
+dependent, and selecting rim representatives can strengthen torsional friction.
+The group table is sized from the model's contact-pair topology, scaled by
+``body_pair_hashtable_headroom``; a table too small costs reduction quality for
+individual frames (reported as ``fallback_frames``) but never drops a contact.
+Measure the reduction ratio, ``fallback_frames``, and ``max_hashtable_entries`` with
+:meth:`~CollisionPipeline.body_pair_reduction_stats` and keep the feature
+disabled when it does not provide a material end-to-end benefit.
+
+The default hysteresis carries previous winners between frames.  Call
+:meth:`~CollisionPipeline.reset_body_pair_reduction_history` after episode
+resets, teleports, or scene reloads.  If solver-visible shape materials are
+changed at runtime, call
+:meth:`~CollisionPipeline.refresh_body_pair_reduction_groups` so contacts with
+different material laws stop competing in a stale equivalence class.
+
+Body-pair reduction is supported by :class:`~newton.solvers.SolverFeatherPGS`,
+including warm starting with ``contact_matching="latest"``. Sorting precedes
+reduction, and matching saves the retained stream, so cached impulses refer to
+the contacts actually solved. With matching enabled,
+:meth:`~CollisionPipeline.reset_contact_matching` also clears the selected
+reduction history; refreshing material groups invalidates matching history too.
+Sticky matching and active hydroelastic contacts remain incompatible.
+Mesh/heightfield producer reduction must remain enabled
+when the postpass is selected, because a pass after materialization cannot
+recover contacts lost to output-buffer overflow.
+
+**Hydroelastic contact reduction**
+
+Hydroelastic reduction preserves pressure, area, aggregate force, and optional
+moment data, so it remains independently controlled by
+:class:`~geometry.HydroelasticSDF.Config`:
+
+The short doctest below demonstrates the configuration syntax on an ordinary
+model.  The hydroelastic pipeline is instantiated only in a real scene where
+both shapes in at least one collision pair have ``is_hydroelastic=True`` and
+valid SDF data.
 
 .. testsetup:: hydro-config
 
@@ -1217,7 +1281,7 @@ For hydroelastic and SDF-based contacts, use :class:`~geometry.HydroelasticSDF.C
 
     pipeline = CollisionPipeline(model, sdf_hydroelastic_config=config)
 
-**Other reduction options:**
+**Hydroelastic reduction options:**
 
 .. list-table::
    :header-rows: 1
@@ -1603,6 +1667,10 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - ``rigid_contact_match_index``
      - Per-contact frame-to-frame match result (int32). Only allocated when
        ``contact_matching`` is not ``"disabled"``.
+       See :ref:`Contact Matching`.
+   * - ``rigid_contact_match_generation``
+     - Contact generation of this buffer that the match indices refer to, or ``-1``
+       (int32, one element). Allocated with ``rigid_contact_match_index``.
        See :ref:`Contact Matching`.
    * - ``rigid_contact_new_indices``, ``rigid_contact_new_count``
      - Compact index list of new contacts in the current sorted buffer. Only
@@ -2054,6 +2122,22 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
 .. note::
    :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True`` on
    the solver constructor before ``restitution`` takes effect.
+   :class:`~newton.solvers.SolverFeatherPGS` applies restitution in ``dense``,
+   ``split``, and ``matrix_free`` modes. Its ordinary normal row averages the
+   two shape coefficients, freezes incident relative normal velocity, and uses
+   the rebound target only when a sufficiently fast contact is predicted to
+   reach the surface during the timestep. Other rows retain their speculative
+   or Baumgarte law. ``pgs_velocity_iterations`` remains optional and exactly
+   user-controlled; positive values refine the velocity result but restitution
+   never enables them implicitly. Coefficients are read while rebuilding rows,
+   so in-place zero-to-positive material updates work under an already-captured
+   graph.
+
+   FeatherPGS applies the qualifying rebound velocity over the whole discrete
+   step, like conventional PGS. This makes post-impact velocity accurate but
+   leaves a first-order, impact-phase-dependent position offset because no
+   time-of-impact substep is introduced. Use a smaller timestep when impact
+   position or timing is important.
 
 Example:
 
@@ -2256,11 +2340,19 @@ distance threshold and a normal dot-product threshold.  The sort key encodes
 ``(shape_a, shape_b, sub_key)`` so only contacts between the same shape pair
 are compared.
 
+The previous frame is the pipeline's last collision pass, whichever
+:class:`~newton.Contacts` buffer it wrote.
+:attr:`Contacts.rigid_contact_match_generation` holds the
+:attr:`~newton.Contacts.contact_generation` of the buffer's contact set that the
+match indices refer to, or ``-1`` when the previous pass wrote another buffer
+(or none).  Code that carries per-contact state across frames can compare it
+with the generation it saved, so indices into another buffer's contacts are not
+mistaken for its own.
+
 The distance metric is the world-space **contact midpoint**
-``0.5 * (world(point0) + world(point1))`` — symmetric in shape 0 and shape 1
-— which means swapping the two shapes of a pair does not change whether a
-contact matches.  It also means pure changes in penetration depth register
-as motion on both sides of the contact, not just one.
+``0.5 * (world(point0) + world(point1))``, symmetric between the two shapes.
+The normal comparison is also in world space. Matching never transfers an
+impulse between different shape pairs, even when reduction groups them together.
 
 **Thresholds**
 
@@ -2284,10 +2376,10 @@ current body pose, lies farther than ``contact_matching_pos_threshold`` from
 its corresponding fresh witness.  This prevents a rotating surface from
 replaying a stale material point even when its geometric contact midpoint
 stays put.  These contacts retain their match indices and reports, and the
-fresh geometry becomes the saved history for the next frame.  The extra
-per-contact buffers (four ``vec3`` columns for the body-frame points and
-offsets) are only allocated when the mode is ``"sticky"``; ``"latest"`` and
-``"disabled"`` pay zero additional memory and launch no additional kernels.
+fresh geometry becomes the saved history for the next frame.  Both enabled
+modes own the previous midpoint and normal independently of sorter scratch.
+Sticky mode additionally stores two points and two offsets and runs the replay
+kernel; disabled matching allocates no matching history.
 
 .. _Contact Reports:
 

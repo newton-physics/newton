@@ -754,6 +754,7 @@ class GlobalContactReducerData:
     ht_values: wp.array[wp.uint64]
     ht_active_slots: wp.array[wp.int32]
     ht_insert_failures: wp.array[wp.int32]
+    buffer_overflows: wp.array[wp.int32]
     ht_capacity: int
     ht_values_per_key: int
 
@@ -785,6 +786,7 @@ def _clear_active_kernel(
     reclaimed_contact_bits: wp.array[wp.uint32],
     reclaimed_contact_cursor: wp.array[wp.int32],
     ht_insert_failures: wp.array[wp.int32],
+    buffer_overflows: wp.array[wp.int32],
     ht_capacity: int,
     values_per_key: int,
     num_threads: int,
@@ -812,6 +814,7 @@ def _clear_active_kernel(
         if reclaimed_contact_cursor.shape[0] > 0:
             reclaimed_contact_cursor[0] = 0
         ht_insert_failures[0] = 0
+        buffer_overflows[0] = 0
 
     # Read count from GPU - stored at active_slots[capacity].
     # All threads read this before it is modified by the follow-up zeroing kernel.
@@ -1025,6 +1028,7 @@ class GlobalContactReducer:
             self.reclaimed_contact_cursor = wp.zeros(0, dtype=wp.int32, device=device)
         # Count failed hashtable inserts (e.g., table full)
         self.ht_insert_failures = wp.zeros(1, dtype=wp.int32, device=device)
+        self.buffer_overflows = wp.zeros(1, dtype=wp.int32, device=device)
 
         # Hashtable sizing: keep the historical default at capacity / 4 for
         # memory compatibility, while exposing a factor for dense batched scenes.
@@ -1077,6 +1081,7 @@ class GlobalContactReducer:
         self.reclaimed_contact_bits.zero_()
         self.reclaimed_contact_cursor.zero_()
         self.ht_insert_failures.zero_()
+        self.buffer_overflows.zero_()
         self.hashtable.clear()
         self.ht_values.zero_()
 
@@ -1123,6 +1128,7 @@ class GlobalContactReducer:
                 self.reclaimed_contact_bits,
                 self.reclaimed_contact_cursor,
                 self.ht_insert_failures,
+                self.buffer_overflows,
                 self.hashtable.capacity,
                 self.values_per_key,
                 num_threads,
@@ -1168,6 +1174,7 @@ class GlobalContactReducer:
         data.ht_values = self.ht_values
         data.ht_active_slots = self.hashtable.active_slots
         data.ht_insert_failures = self.ht_insert_failures
+        data.buffer_overflows = self.buffer_overflows
         data.ht_capacity = self.hashtable.capacity
         data.ht_values_per_key = self.values_per_key
         data.deterministic = 1 if self.deterministic else 0
@@ -1246,6 +1253,7 @@ def export_contact_to_buffer(
         if contact_id == 0:
             # Undo the reservation because no buffer slot was available.
             wp.atomic_add(reducer_data.contact_count, 0, -1)
+            wp.atomic_add(reducer_data.buffer_overflows, 0, 1)
             return -1
         # A successful reuse is not a dropped contact.
         wp.atomic_add(reducer_data.contact_count, 0, -1)

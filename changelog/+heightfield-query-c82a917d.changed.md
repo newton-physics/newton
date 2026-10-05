@@ -1,0 +1,1 @@
+Accelerate heightfield collision queries with conservative cell rejection and packed heightfield-only execution, using upstream-compatible elevation data flow while retaining contact generation and tiled mesh traversal.

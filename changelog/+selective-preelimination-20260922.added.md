@@ -1,0 +1,1 @@
+Add keyword-only `bilateral_preelimination_include_mimics` to allow connect-only bilateral pre-elimination while preserving the default inclusion of mimic rows and existing positional argument bindings.

@@ -94,6 +94,18 @@ def get_attributes_in_namespace(prim: Usd.Prim, namespace: str) -> dict[str, Any
     return out
 
 
+def _mjc_angle_scale(physics_scene_prim: Usd.Prim | None) -> float:
+    """Radians per unit of MuJoCo angular joint coordinates (``mjc:ref``, ``mjc:springref``).
+
+    ``mjc:compiler:angle`` on the physics scene declares the units; unauthored means degrees.
+    """
+    if physics_scene_prim is not None:
+        angle_attr = physics_scene_prim.GetAttribute("mjc:compiler:angle")
+        if angle_attr and angle_attr.HasAuthoredValue() and str(angle_attr.Get()) != "degree":
+            return 1.0
+    return math.pi / 180.0
+
+
 def has_attribute(prim: Usd.Prim, name: str) -> bool:
     """
     Check if a USD prim has a valid and authored attribute.

@@ -536,6 +536,22 @@ def eval_articulation_fk(
     )
 
 
+def _fk_block_dim(articulation_count: int, sm_count: int, max_joints: int) -> int:
+    """Expose at least two blocks per SM when the serial workload permits.
+
+    Tiny articulations retain the packed layout: splitting them into more
+    blocks costs more than it saves. Otherwise round down to a power of two,
+    capped at 16 for this serial traversal. Use only host metadata, never
+    timing or device-array reads. CPU and single-articulation calls are unchanged.
+    """
+    if articulation_count <= 1 or sm_count <= 0:
+        return 256
+    if max_joints <= 4:
+        return 16 if articulation_count > 16 else 256
+    articulations_per_block = max(1, articulation_count // (2 * sm_count))
+    return min(16, 1 << (articulations_per_block.bit_length() - 1))
+
+
 def eval_fk(
     model: Model,
     joint_q: wp.array[float],
@@ -665,6 +681,12 @@ def eval_fk(
             state.body_qd,
         ],
         device=model.device,
+        # Each thread traverses one articulation; size the grid for this device.
+        block_dim=_fk_block_dim(
+            num_articulations,
+            model.device.sm_count if model.device.is_cuda else 0,
+            model.max_joints_per_articulation,
+        ),
     )
 
 

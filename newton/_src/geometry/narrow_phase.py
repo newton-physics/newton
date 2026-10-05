@@ -25,6 +25,7 @@ from ..geometry.collision_core import (
 )
 from ..geometry.collision_primitive import (
     _collide_plane_capsule_contacts,
+    collide_box_box_features,
     collide_capsule_capsule,
     collide_plane_box,
     collide_plane_cylinder,
@@ -418,6 +419,7 @@ def create_narrow_phase_primitive_kernel(
     speculative: bool = False,
     sparse_gjk_pairs: bool = False,
     hydroelastic_enabled: bool = False,
+    box_box_sat: bool = False,
 ):
     """
     Create a kernel for fast analytical collision detection of primitive shapes.
@@ -432,11 +434,13 @@ def create_narrow_phase_primitive_kernel(
         speculative: Enable predictive contact admission.
         sparse_gjk_pairs: Preserve broad-phase pair indices in the GJK buffer.
         hydroelastic_enabled: Route hydroelastic pairs to the SDF-SDF pipeline.
+        box_box_sat: Route box-box pairs through the SAT reference-face
+            primitive instead of GJK/MPR (4-slot feature-identity manifold).
 
     Returns:
         A warp kernel for primitive collision detection
     """
-    _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}_{sparse_gjk_pairs}_{hydroelastic_enabled}"
+    _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}_{sparse_gjk_pairs}_{hydroelastic_enabled}_sat{int(box_box_sat)}"
 
     @wp.func(module=_module)
     def _admit(
@@ -651,9 +655,10 @@ def create_narrow_phase_primitive_kernel(
                 continue
 
             # Route pairs without an analytical path before allocating contact
-            # storage and walking the primitive dispatch chain.
+            # storage and walking the primitive dispatch chain. SAT box-box is
+            # analytic: exempt it here or it never reaches its dispatch branch.
             if (
-                type_a >= GeoType.ELLIPSOID
+                (type_a >= GeoType.ELLIPSOID and not (wp.static(box_box_sat) and is_box_a and is_box_b))
                 or type_b == GeoType.CONE
                 or (type_a == GeoType.CAPSULE and type_b > GeoType.CAPSULE)
             ):
@@ -767,6 +772,122 @@ def create_narrow_phase_primitive_kernel(
                 contact_pos_1 = wp.vec3(positions4_box[1, 0], positions4_box[1, 1], positions4_box[1, 2])
                 contact_pos_2 = wp.vec3(positions4_box[2, 0], positions4_box[2, 1], positions4_box[2, 2])
                 contact_pos_3 = wp.vec3(positions4_box[3, 0], positions4_box[3, 1], positions4_box[3, 2])
+
+            # -----------------------------------------------------------------
+            # Box-Box collision via SAT reference-face clipping (opt-in).
+            # The manifold-quality fix for GJK/MPR witness-point teleports
+            # (measured up to ~a face width per frame under micro-wobble).
+            # -----------------------------------------------------------------
+            elif wp.static(box_box_sat) and is_box_a and is_box_b:
+                box_rot_a = wp.quat_to_matrix(quat_a)
+                box_rot_b = wp.quat_to_matrix(quat_b)
+                # SAT clips the raw box surfaces, while admission subtracts
+                # the per-shape collision margins. Include those margins in
+                # candidate generation so an inflated contact is not rejected
+                # before the shared admission gate can see it.
+                sat_margin = gap_sum + margin_offset_a + margin_offset_b
+                if wp.static(speculative):
+                    # Candidates must exist beyond the static gap for
+                    # predictive admission to see approaching boxes.
+                    sat_margin += max_speculative_extension
+                sat_dist, sat_pos, sat_normals, sat_feat = collide_box_box_features(
+                    pos_a,
+                    box_rot_a,
+                    wp.vec3(scale_a[0], scale_a[1], scale_a[2]),
+                    pos_b,
+                    box_rot_b,
+                    wp.vec3(scale_b[0], scale_b[1], scale_b[2]),
+                    sat_margin,
+                )
+                # Reduce to at most 4 by feature persistence: incident-face
+                # corners are the durable support points of a resting face
+                # (family 2), then reference corners (1), then edge clips (0),
+                # deepest first within a family. The generation-time feature
+                # id -- not the output slot or any center binning -- becomes
+                # sort_sub_key, so a surviving contact keeps its per-pair
+                # identity across frames however the raw manifold compacts.
+                # Dedup tolerance scaled by the smaller box so millimeter
+                # parts keep distinct manifold points; duplicates from
+                # different clip lines are (near-)exactly coincident.
+                min_ext_a = wp.min(scale_a[0], wp.min(scale_a[1], scale_a[2]))
+                min_ext_b = wp.min(scale_b[0], wp.min(scale_b[1], scale_b[2]))
+                min_ext = wp.min(min_ext_a, min_ext_b)
+                dedup_eps_sq = (1.0e-3 * min_ext) * (1.0e-3 * min_ext)
+                chosen = wp.vec4i(-1, -1, -1, -1)
+                for slot4 in range(4):
+                    best = int(-1)
+                    best_key = float(-3.4e38)
+                    for ci in range(8):
+                        if sat_dist[ci] >= MAXVAL:
+                            continue
+                        skip = False
+                        for c4 in range(4):
+                            cj = chosen[c4]
+                            if cj == ci:
+                                skip = True
+                            elif cj >= 0:
+                                # Aligned boxes emit coincident duplicates
+                                # from different clip lines; a duplicated
+                                # corner plus a missing one is a degenerate
+                                # support under load.
+                                dx = sat_pos[ci, 0] - sat_pos[cj, 0]
+                                dy = sat_pos[ci, 1] - sat_pos[cj, 1]
+                                dz = sat_pos[ci, 2] - sat_pos[cj, 2]
+                                if dx * dx + dy * dy + dz * dz < dedup_eps_sq:
+                                    skip = True
+                        if skip:
+                            continue
+                        key = float((sat_feat[ci] >> 4) & 3) * 1.0e3 - sat_dist[ci]
+                        if key > best_key:
+                            best_key = key
+                            best = ci
+                    chosen[slot4] = best
+                bb_data = ContactData()
+                bb_data.margin_a = margin_offset_a
+                bb_data.margin_b = margin_offset_b
+                bb_data.shape_a = shape_a
+                bb_data.shape_b = shape_b
+                if wp.static(speculative):
+                    # gap_sum is the velocity-expanded search gap here; admission needs the authored gap.
+                    bb_data.gap_sum = writer_data.shape_gap[shape_a] + writer_data.shape_gap[shape_b]
+                else:
+                    bb_data.gap_sum = gap_sum
+                num_valid = int(0)
+                for c4 in range(4):
+                    ci = chosen[c4]
+                    if ci >= 0:
+                        n_ci = wp.vec3(sat_normals[ci, 0], sat_normals[ci, 1], sat_normals[ci, 2])
+                        bb_data.contact_normal_a_to_b = n_ci
+                        if _admit(
+                            bb_data,
+                            wp.vec3(sat_pos[ci, 0], sat_pos[ci, 1], sat_pos[ci, 2]),
+                            sat_dist[ci],
+                            n_ci,
+                            margin_offset_a + margin_offset_b,
+                            shape_transform,
+                            shape_linear_velocity,
+                            shape_angular_velocity,
+                            collision_update_dt,
+                            max_speculative_extension,
+                        ):
+                            num_valid += 1
+                        else:
+                            chosen[c4] = -1
+                if num_valid > 0:
+                    bb_base = wp.atomic_add(writer_data.contact_count, 0, num_valid)
+                    if bb_base + num_valid <= writer_data.contact_max:
+                        for c4 in range(4):
+                            ci = chosen[c4]
+                            if ci >= 0:
+                                bb_data.contact_point_center = wp.vec3(sat_pos[ci, 0], sat_pos[ci, 1], sat_pos[ci, 2])
+                                bb_data.contact_distance = sat_dist[ci]
+                                bb_data.contact_normal_a_to_b = wp.vec3(
+                                    sat_normals[ci, 0], sat_normals[ci, 1], sat_normals[ci, 2]
+                                )
+                                bb_data.sort_sub_key = sat_feat[ci]
+                                writer_func(bb_data, writer_data, bb_base)
+                                bb_base += 1
+                continue
 
             # -----------------------------------------------------------------
             # Sphere-Sphere collision (type_a=SPHERE=2, type_b=SPHERE=2)
@@ -1506,6 +1627,44 @@ def create_narrow_phase_kernels_gjk_mpr_split(
 
 
 @wp.kernel(enable_backward=False)
+def narrow_phase_find_heightfield_triangle_overlaps_kernel(
+    shape_types: wp.array[int],
+    shape_transform: wp.array[wp.transform],
+    shape_gap: wp.array[float],
+    shape_data: wp.array[wp.vec4],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
+    shape_heightfield_index: wp.array[int],
+    heightfield_data: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[float],
+    shape_pairs: wp.array[wp.vec2i],
+    shape_pairs_count: wp.array[int],
+    total_num_threads: int,
+    triangle_pairs: wp.array[wp.vec3i],
+    triangle_pairs_count: wp.array[int],
+):
+    """Pack independent heightfield queries into every lane, without mesh BVH tiles."""
+    for i in range(wp.tid(), shape_pairs_count[0], total_num_threads):
+        pair = shape_pairs[i]
+        hfd = heightfield_data[shape_heightfield_index[pair[0]]]
+        heightfield_vs_convex_midphase(
+            pair[0],
+            pair[1],
+            hfd,
+            heightfield_elevations,
+            shape_transform,
+            shape_collision_aabb_lower,
+            shape_collision_aabb_upper,
+            shape_data,
+            shape_gap,
+            triangle_pairs,
+            triangle_pairs_count,
+            # Plane local AABBs are not bounds for arbitrary plane extents.
+            shape_types[pair[1]] != GeoType.PLANE,
+        )
+
+
+@wp.kernel(enable_backward=False)
 def narrow_phase_find_mesh_triangle_overlaps_kernel(
     shape_types: wp.array[int],
     shape_transform: wp.array[wp.transform],
@@ -1567,6 +1726,8 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
                 shape_gap,
                 triangle_pairs,
                 triangle_pairs_count,
+                # Plane local AABBs are not bounds for arbitrary plane extents.
+                type_b != GeoType.PLANE,
             )
             continue
 
@@ -2224,6 +2385,7 @@ class NarrowPhase:
         shape_aabb_upper: wp.array[wp.vec3] | None = None,
         shape_voxel_resolution: wp.array[wp.vec3i] | None = None,
         contact_writer_warp_func: Any | None = None,
+        box_box_sat: bool = False,
         hydroelastic_sdf: HydroelasticSDF | None = None,
         has_meshes: bool = True,
         has_heightfields: bool = False,
@@ -2341,6 +2503,9 @@ class NarrowPhase:
         self.reduce_contacts = reduce_contacts
         self.has_meshes = has_meshes
         self.has_heightfields = has_heightfields
+        # Heightfields enumerate cells serially per pair; the mesh BVH's tiled
+        # dimension otherwise leaves every lane but one idle for these queries.
+        self._heightfield_packed_pairs = has_heightfields and not has_meshes
         self.convex_support_acceleration = convex_support_acceleration
         self.mesh_sdf_texture_only = mesh_sdf_texture_only
         self.has_generic_convex_pairs = has_generic_convex_pairs
@@ -2385,6 +2550,9 @@ class NarrowPhase:
             if has_meshes or has_heightfields or hydroelastic_sdf is not None
             else CONTACT_SORT_CONVEX_SUB_KEY_BITS
         )
+        if box_box_sat:
+            # SAT feature ids reach 20 * 64 + 63; narrower keys would alias contact identities.
+            self._contact_sort_sub_key_bits = max(self._contact_sort_sub_key_bits, 11)
         self.shape_voxel_resolution = shape_voxel_resolution
 
         # Determine the writer function
@@ -2434,6 +2602,7 @@ class NarrowPhase:
             speculative=speculative,
             sparse_gjk_pairs=self.sparse_gjk_pairs,
             hydroelastic_enabled=hydroelastic_sdf is not None,
+            box_box_sat=box_box_sat,
         )
         # GJK/MPR kernel handles remaining convex-convex pairs. Only models with cooked
         # support data select the accelerated support function; other models
@@ -3028,12 +3197,30 @@ class NarrowPhase:
                     record_tape=False,
                 )
 
-            # Launch midphase: finds overlapping triangles for both mesh and heightfield pairs
-            second_dim = self.tile_size_mesh_convex if ENABLE_TILE_BVH_QUERY else 1
-            wp.launch(
-                kernel=narrow_phase_find_mesh_triangle_overlaps_kernel,
-                dim=[self.num_tile_blocks, second_dim],
-                inputs=[
+            # Pure heightfield scenes need scalar cell queries, not tiled BVH
+            # traversal. Mixed mesh scenes retain the existing shared midphase.
+            if self._heightfield_packed_pairs:
+                midphase_kernel = narrow_phase_find_heightfield_triangle_overlaps_kernel
+                midphase_dim = self.total_num_threads
+                midphase_inputs = [
+                    shape_types,
+                    shape_transform,
+                    shape_gap,
+                    shape_data,
+                    shape_collision_aabb_lower,
+                    shape_collision_aabb_upper,
+                    shape_heightfield_index,
+                    heightfield_data,
+                    heightfield_elevations,
+                    self.shape_pairs_mesh,
+                    self.shape_pairs_mesh_count,
+                    self.total_num_threads,
+                ]
+            else:
+                midphase_kernel = narrow_phase_find_mesh_triangle_overlaps_kernel
+                second_dim = self.tile_size_mesh_convex if ENABLE_TILE_BVH_QUERY else 1
+                midphase_dim = [self.num_tile_blocks, second_dim]
+                midphase_inputs = [
                     shape_types,
                     shape_transform,
                     shape_source,
@@ -3048,7 +3235,11 @@ class NarrowPhase:
                     self.shape_pairs_mesh,
                     self.shape_pairs_mesh_count,
                     self.num_tile_blocks,
-                ],
+                ]
+            wp.launch(
+                kernel=midphase_kernel,
+                dim=midphase_dim,
+                inputs=midphase_inputs,
                 outputs=[
                     self.triangle_pairs,
                     self.triangle_pairs_count,

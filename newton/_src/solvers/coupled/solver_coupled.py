@@ -2210,6 +2210,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         need a private contact pipeline (e.g. proxy collisions, ADMM internal
         contacts) own their own buffers internally.
         """
+        self._require_unreduced_contacts(contacts)
         self._distribute_state(state_in, dt=dt)
         self._step_coupled(state_in, state_out, control, contacts, dt)
         _copy_state(state_in, state_out)

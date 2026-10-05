@@ -480,6 +480,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         contacts: Contacts,
         dt: float,
     ) -> None:
+        self._require_unreduced_contacts(contacts)
         self._apply_module_options()
         requires_grad = state_in.requires_grad
         step_in_place = state_in is state_out
@@ -650,6 +651,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         state_aug.body_q_com,
                         model.joint_X_p,
                         model.body_world,
+                        model.body_disable_gravity,
                         model.gravity,
                     ],
                     outputs=[

@@ -1,0 +1,1 @@
+Distinguish intentional contact exclusions from row-capacity loss in experimental FeatherPGS contact compliance, expose per-step skipped-contact counts, and reject unqualified persistent-patch combinations before contact preprocessing. Keep compliance default-off and verify the zero-stiffness hard-contact fallback separately.

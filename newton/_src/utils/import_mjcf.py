@@ -2015,12 +2015,12 @@ def parse_mjcf(
                 has_range = "range" in joint_attrib
                 limit_lower = np.deg2rad(joint_range[0]) if has_range and is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
-                # MJCF ranges use absolute qpos, while Newton joint coordinates use qpos - ref.
-                # SolverMuJoCo adds ref back when it builds jnt_range.
+                # MJCF ranges and springref use absolute qpos, while Newton joint coordinates use
+                # qpos - ref. SolverMuJoCo adds ref back when it builds jnt_range.
+                joint_ref_value = parse_float(joint_attrib, "ref", 0.0)
+                if is_angular and use_degrees:
+                    joint_ref_value = np.deg2rad(joint_ref_value)
                 if has_range:
-                    joint_ref_value = parse_float(joint_attrib, "ref", 0.0)
-                    if is_angular and use_degrees:
-                        joint_ref_value = np.deg2rad(joint_ref_value)
                     limit_lower -= joint_ref_value
                     limit_upper -= joint_ref_value
 
@@ -2055,6 +2055,10 @@ def parse_mjcf(
                                 f"but actuatorfrclimited='{actuatorfrclimited}'. Force clamping will be disabled."
                             )
 
+                spring_ref = parse_float(joint_attrib, "springref", 0.0)
+                if is_angular and use_degrees:
+                    spring_ref = np.deg2rad(spring_ref)
+                spring_ref -= joint_ref_value
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
@@ -2064,6 +2068,8 @@ def parse_mjcf(
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
                     damping=parse_float(joint_attrib, "damping", default_joint_damping),
+                    spring_stiffness=parse_float(joint_attrib, "stiffness", 0.0),
+                    spring_ref=spring_ref,
                     armature=joint_armature[-1],
                     friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,

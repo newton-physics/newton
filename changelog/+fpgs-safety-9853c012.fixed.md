@@ -1,0 +1,1 @@
+Report FPGS contact and constraint capacity losses, including global mesh-reducer losses, and preserve reset isolation between worlds. Clear stale contact identity on producer changes and guard partial CUDA row groups against out-of-bounds accesses. Keep existing drive formulation and capacity defaults.

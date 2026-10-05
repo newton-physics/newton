@@ -157,6 +157,8 @@ def parse_joint(
         joint_params["armature"] = dof.armature
         joint_params["friction"] = dof.friction
         joint_params["damping"] = dof.damping
+        joint_params["spring_stiffness"] = dof.spring_stiffness
+        joint_params["spring_ref"] = dof.spring_ref
         joint_params["velocity_limit"] = dof.velocity_limit
         joint_params["effort_limit"] = dof.effort_limit
         if dof.has_drive:
@@ -205,6 +207,9 @@ def parse_joint(
             joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
         joint_linear_damping, joint_angular_damping = joint_properties.resolve_joint_damping(joint_prim)
+        # One spring per joint prim, replicated to every axis like armature and friction.
+        lin_spring_stiffness, lin_spring_ref = joint_properties.resolve_joint_spring(joint_prim, is_angular=False)
+        ang_spring_stiffness, ang_spring_ref = joint_properties.resolve_joint_spring(joint_prim, is_angular=True)
         joint_velocity_limit = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
         )
@@ -338,6 +343,8 @@ def parse_joint(
                         target_ke=target_ke,
                         target_kd=target_kd,
                         damping=joint_linear_damping,
+                        spring_stiffness=lin_spring_stiffness,
+                        spring_ref=lin_spring_ref,
                         armature=joint_armature,
                         effort_limit=effort_limit,
                         velocity_limit=joint_velocity_limit
@@ -406,6 +413,8 @@ def parse_joint(
                         target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                         target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                         damping=joint_angular_damping,
+                        spring_stiffness=ang_spring_stiffness,
+                        spring_ref=ang_spring_ref,
                         armature=joint_armature,
                         effort_limit=effort_limit,
                         velocity_limit=joint_velocity_limit * DegreesToRadian
@@ -690,6 +699,8 @@ def parse_merged_joints(
             target_ke=dof.target_ke,
             target_kd=dof.target_kd,
             damping=dof.damping,
+            spring_stiffness=dof.spring_stiffness,
+            spring_ref=dof.spring_ref,
             armature=dof.armature,
             friction=dof.friction,
             effort_limit=dof.effort_limit if dof.effort_limit is not None else np.inf,

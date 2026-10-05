@@ -1,0 +1,231 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1180" viewBox="0 0 1200 1180" role="img" aria-labelledby="title desc">
+  <title id="title">Sparse FPGS: remove intermediates, preserve the coupled solve</title>
+  <desc id="desc">Four changes in one PR: fuse sparse mass assembly and factorization using a leaf-first topology plan; directly construct compact contact and joint-limit responses; solve serial PGS in mixed articulated factor and free-body physical coordinates; decode articulated changes once before existing integration. Contact normal and tangent directions share geometry and factor loads in an eight-lane group. Shared-root coupling, free-body mass response, friction law and numerical budgets remain. The baseline already uses matrix-free PGS. The factor illustration is a toy seven-DOF pattern, not a benchmark.</desc>
+  <defs>
+    <style>
+      text { font-family: "DejaVu Sans", sans-serif; fill: #172b42; }
+      .title { font-size: 34px; font-weight: 700; letter-spacing: -.7px; }
+      .head { font-size: 24px; font-weight: 700; }
+      .body { font-size: 19px; }
+      .small { font-size: 16px; fill: #526579; }
+      .eyebrow { font-size: 15px; font-weight: 700; letter-spacing: 1.3px; }
+      .teal { fill: #087f83; }
+      .muted { fill: #526579; }
+      .center { text-anchor: middle; }
+      .arrow { fill: none; stroke: #8a9bad; stroke-width: 2; marker-end: url(#arrow); }
+      .panel { fill: #fff; stroke: #d5dee7; stroke-width: 1.5; }
+      .new { fill: #f5fbfa; stroke: #a8cfcc; stroke-width: 1.5; }
+    </style>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M1 1 L7 4 L1 7" fill="none" stroke="#8a9bad" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="1180" rx="20" fill="#fff"/>
+  <text x="40" y="40" class="eyebrow teal">ONE PR · FOUR CONNECTED CHANGES</text>
+  <text x="40" y="85" class="title">Remove intermediates. Preserve the coupled solve.</text>
+  <text x="40" y="116" class="body muted">Both paths use matrix-free PGS. This is not a switch from a dense contact matrix.</text>
+  <rect x="40" y="140" width="1120" height="40" rx="10" fill="#eef2f6"/>
+  <text x="600" y="166" class="body center">Inputs: model topology, current state, forces, contacts and joint limits</text>
+
+  <text x="64" y="210" class="eyebrow muted">FPGS-MAIN · REPRESENTATIVE DENSE PATH</text>
+  <text x="652" y="210" class="eyebrow teal">THIS PR · SPARSE FACTOR COORDINATES</text>
+
+  <rect x="40" y="228" width="532" height="222" rx="14" class="panel"/>
+  <rect x="628" y="228" width="532" height="222" rx="14" class="new"/>
+  <text x="64" y="262" class="head">Dense mass factors</text>
+  <text x="652" y="262" class="head">1  Pack the structural entries</text>
+  <rect x="74" y="282" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="92" y="282" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="110" y="282" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="128" y="282" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="146" y="282" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="164" y="282" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="182" y="282" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="74" y="300" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="92" y="300" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="110" y="300" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="128" y="300" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="146" y="300" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="164" y="300" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="182" y="300" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="74" y="318" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="92" y="318" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="110" y="318" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="128" y="318" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="146" y="318" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="164" y="318" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="182" y="318" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="74" y="336" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="92" y="336" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="110" y="336" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="128" y="336" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="146" y="336" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="164" y="336" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="182" y="336" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="74" y="354" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="92" y="354" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="110" y="354" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="128" y="354" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="146" y="354" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="164" y="354" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="182" y="354" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="74" y="372" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="92" y="372" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="110" y="372" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="128" y="372" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="146" y="372" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="164" y="372" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="182" y="372" width="14" height="14" rx="2" fill="#e9eef3"/>
+<rect x="74" y="390" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="92" y="390" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="110" y="390" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="128" y="390" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="146" y="390" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="164" y="390" width="14" height="14" rx="2" fill="#98aabc"/>
+<rect x="182" y="390" width="14" height="14" rx="2" fill="#98aabc"/>
+  <rect x="661" y="282" width="14" height="14" rx="2" fill="#087f83"/>
+<rect x="679" y="282" width="14" height="14" rx="2" fill="none"/>
+<rect x="697" y="282" width="14" height="14" rx="2" fill="none"/>
+<rect x="715" y="282" width="14" height="14" rx="2" fill="none"/>
+<rect x="733" y="282" width="14" height="14" rx="2" fill="none"/>
+<rect x="751" y="282" width="14" height="14" rx="2" fill="none"/>
+<rect x="769" y="282" width="14" height="14" rx="2" fill="none"/>
+<rect x="661" y="300" width="14" height="14" rx="2" fill="#087f83"/>
+<rect x="679" y="300" width="14" height="14" rx="2" fill="#087f83"/>
+<rect x="697" y="300" width="14" height="14" rx="2" fill="none"/>
+<rect x="715" y="300" width="14" height="14" rx="2" fill="none"/>
+<rect x="733" y="300" width="14" height="14" rx="2" fill="none"/>
+<rect x="751" y="300" width="14" height="14" rx="2" fill="none"/>
+<rect x="769" y="300" width="14" height="14" rx="2" fill="none"/>
+<rect x="661" y="318" width="14" height="14" rx="2" fill="none"/>
+<rect x="679" y="318" width="14" height="14" rx="2" fill="none"/>
+<rect x="697" y="318" width="14" height="14" rx="2" fill="#7868a6"/>
+<rect x="715" y="318" width="14" height="14" rx="2" fill="none"/>
+<rect x="733" y="318" width="14" height="14" rx="2" fill="none"/>
+<rect x="751" y="318" width="14" height="14" rx="2" fill="none"/>
+<rect x="769" y="318" width="14" height="14" rx="2" fill="none"/>
+<rect x="661" y="336" width="14" height="14" rx="2" fill="none"/>
+<rect x="679" y="336" width="14" height="14" rx="2" fill="none"/>
+<rect x="697" y="336" width="14" height="14" rx="2" fill="#7868a6"/>
+<rect x="715" y="336" width="14" height="14" rx="2" fill="#7868a6"/>
+<rect x="733" y="336" width="14" height="14" rx="2" fill="none"/>
+<rect x="751" y="336" width="14" height="14" rx="2" fill="none"/>
+<rect x="769" y="336" width="14" height="14" rx="2" fill="none"/>
+<rect x="661" y="354" width="14" height="14" rx="2" fill="none"/>
+<rect x="679" y="354" width="14" height="14" rx="2" fill="none"/>
+<rect x="697" y="354" width="14" height="14" rx="2" fill="none"/>
+<rect x="715" y="354" width="14" height="14" rx="2" fill="none"/>
+<rect x="733" y="354" width="14" height="14" rx="2" fill="#a47046"/>
+<rect x="751" y="354" width="14" height="14" rx="2" fill="none"/>
+<rect x="769" y="354" width="14" height="14" rx="2" fill="none"/>
+<rect x="661" y="372" width="14" height="14" rx="2" fill="none"/>
+<rect x="679" y="372" width="14" height="14" rx="2" fill="none"/>
+<rect x="697" y="372" width="14" height="14" rx="2" fill="none"/>
+<rect x="715" y="372" width="14" height="14" rx="2" fill="none"/>
+<rect x="733" y="372" width="14" height="14" rx="2" fill="#a47046"/>
+<rect x="751" y="372" width="14" height="14" rx="2" fill="#a47046"/>
+<rect x="769" y="372" width="14" height="14" rx="2" fill="none"/>
+<rect x="661" y="390" width="14" height="14" rx="2" fill="#304d70"/>
+<rect x="679" y="390" width="14" height="14" rx="2" fill="#304d70"/>
+<rect x="697" y="390" width="14" height="14" rx="2" fill="#304d70"/>
+<rect x="715" y="390" width="14" height="14" rx="2" fill="#304d70"/>
+<rect x="733" y="390" width="14" height="14" rx="2" fill="#304d70"/>
+<rect x="751" y="390" width="14" height="14" rx="2" fill="#304d70"/>
+<rect x="769" y="390" width="14" height="14" rx="2" fill="#304d70"/>
+  <text x="234" y="305" class="body">Dense n × n factor layout.</text>
+  <text x="234" y="338" class="body">Root-first elimination</text>
+  <text x="234" y="364" class="body">can fill between branches.</text>
+  <text x="817" y="305" class="body">Leaf-first CRBA → L, L⁻¹.</text>
+  <text x="817" y="338" class="body">Build directly into packed arrays.</text>
+  <text x="817" y="364" class="body">Keep the shared root.</text>
+  <text x="64" y="430" class="small">Toy 7-DOF lower factor, root-first ordering.</text>
+  <text x="652" y="430" class="small">Same toy, leaf-first. Dark blue = shared root.</text>
+
+  <path d="M306 451 V470 M894 451 V470" class="arrow"/>
+  <rect x="40" y="480" width="532" height="280" rx="14" class="panel"/>
+  <rect x="628" y="480" width="532" height="280" rx="14" class="new"/>
+  <text x="64" y="517" class="head">Full-width row intermediates</text>
+  <text x="64" y="549" class="body muted">J and M⁻¹Jᵀ span the world's DOFs.</text>
+  <text x="96" y="579" class="small">robot A</text>
+  <text x="222" y="579" class="small">robot B</text>
+  <text x="386" y="579" class="small">free body</text>
+  <text x="64" y="607" class="body">J</text>
+  <rect x="96" y="590" width="24" height="20" rx="3" fill="#087f83" opacity="1"/>
+<rect x="125" y="590" width="24" height="20" rx="3" fill="#e9eef3" opacity="1"/>
+<rect x="154" y="590" width="24" height="20" rx="3" fill="#e9eef3" opacity="1"/>
+<rect x="183" y="590" width="24" height="20" rx="3" fill="#087f83" opacity="1"/>
+<rect x="212" y="590" width="24" height="20" rx="3" fill="#e9eef3" opacity="1"/>
+<rect x="241" y="590" width="24" height="20" rx="3" fill="#e9eef3" opacity="1"/>
+<rect x="270" y="590" width="24" height="20" rx="3" fill="#e9eef3" opacity="1"/>
+<rect x="299" y="590" width="24" height="20" rx="3" fill="#e9eef3" opacity="1"/>
+<rect x="328" y="590" width="24" height="20" rx="3" fill="#c56c30" opacity=".85"/>
+<rect x="357" y="590" width="24" height="20" rx="3" fill="#c56c30" opacity=".85"/>
+<rect x="386" y="590" width="24" height="20" rx="3" fill="#c56c30" opacity=".85"/>
+<rect x="415" y="590" width="24" height="20" rx="3" fill="#c56c30" opacity=".85"/>
+<rect x="444" y="590" width="24" height="20" rx="3" fill="#c56c30" opacity=".85"/>
+<rect x="473" y="590" width="24" height="20" rx="3" fill="#c56c30" opacity=".85"/>
+  <text x="64" y="643" class="body">Y</text>
+  <rect x="96" y="626" width="24" height="20" rx="3" fill="#087f83" opacity="1"/>
+<rect x="125" y="626" width="24" height="20" rx="3" fill="#087f83" opacity="1"/>
+<rect x="154" y="626" width="24" height="20" rx="3" fill="#087f83" opacity="1"/>
+<rect x="183" y="626" width="24" height="20" rx="3" fill="#087f83" opacity="1"/>
+<rect x="212" y="626" width="24" height="20" rx="3" fill="#e9eef3" opacity="1"/>
+<rect x="241" y="626" width="24" height="20" rx="3" fill="#e9eef3" opacity="1"/>
+<rect x="270" y="626" width="24" height="20" rx="3" fill="#e9eef3" opacity="1"/>
+<rect x="299" y="626" width="24" height="20" rx="3" fill="#e9eef3" opacity="1"/>
+<rect x="328" y="626" width="24" height="20" rx="3" fill="#c56c30" opacity=".85"/>
+<rect x="357" y="626" width="24" height="20" rx="3" fill="#c56c30" opacity=".85"/>
+<rect x="386" y="626" width="24" height="20" rx="3" fill="#c56c30" opacity=".85"/>
+<rect x="415" y="626" width="24" height="20" rx="3" fill="#c56c30" opacity=".85"/>
+<rect x="444" y="626" width="24" height="20" rx="3" fill="#c56c30" opacity=".85"/>
+<rect x="473" y="626" width="24" height="20" rx="3" fill="#c56c30" opacity=".85"/>
+  <text x="64" y="684" class="body">Allocate full rows, including unused blocks.</text>
+  <text x="64" y="715" class="small">Y = M⁻¹Jᵀ. Pale cells = stored zeros in this row.</text>
+  <text x="64" y="740" class="small">Robot B is independent in this illustrative contact.</text>
+
+  <text x="652" y="517" class="head">2  Build compact responses directly</text>
+  <text x="652" y="549" class="body muted">Contact N / T₁ / T₂ + joint-limit rows</text>
+  <rect x="652" y="570" width="135" height="40" rx="8" fill="#dff0ed"/>
+  <text x="719" y="596" class="small center" style="fill:#176565">Geometry once</text>
+  <path d="M791 590 H801" class="arrow"/>
+  <rect x="811" y="591" width="12" height="12" rx="2" fill="#087f83"/>
+<rect x="827" y="591" width="12" height="12" rx="2" fill="#087f83"/>
+<rect x="843" y="591" width="12" height="12" rx="2" fill="#087f83"/>
+<rect x="859" y="591" width="12" height="12" rx="2" fill="#087f83"/>
+<rect x="875" y="591" width="12" height="12" rx="2" fill="#087f83"/>
+<rect x="891" y="591" width="12" height="12" rx="2" fill="#087f83"/>
+<rect x="907" y="591" width="12" height="12" rx="2" fill="#087f83"/>
+<rect x="923" y="591" width="12" height="12" rx="2" fill="#087f83"/>
+  <text x="875" y="579" class="small center">8 lanes / contact</text>
+  <path d="M944 590 H958" class="arrow"/>
+  <rect x="967" y="570" width="167" height="40" rx="8" fill="#dff0ed"/>
+  <text x="1050" y="596" class="small center" style="fill:#176565">Share factor loads</text>
+  <rect x="652" y="630" width="228" height="42" rx="8" fill="#dff0ed"/>
+  <text x="766" y="657" class="body center" style="fill:#176565">Robot: factor row Z</text>
+  <rect x="894" y="630" width="240" height="42" rx="8" fill="#fcf0e6"/>
+  <text x="1014" y="657" class="body center" style="fill:#8c4c23">Free body: J + response</text>
+  <text x="652" y="705" class="body">Write compact rows; no dense J/Y staging.</text>
+  <text x="652" y="738" class="small">Z = JPᵀL⁻ᵀ; P reorders the robot's coordinates.</text>
+
+  <path d="M306 761 V780 M894 761 V780" class="arrow"/>
+  <rect x="40" y="790" width="532" height="176" rx="14" class="panel"/>
+  <rect x="628" y="790" width="532" height="176" rx="14" class="new"/>
+  <text x="64" y="829" class="head">PGS with full-width responses</text>
+  <text x="64" y="867" class="body">Read J for the residual.</text>
+  <text x="64" y="898" class="body">Apply Y for the velocity change.</text>
+  <text x="64" y="942" class="small">Illustrative route; main also has specialized paths.</text>
+  <text x="652" y="829" class="head">3  PGS with mixed response blocks</text>
+  <text x="652" y="867" class="body">Articulations: reuse Z for both operations.</text>
+  <text x="652" y="898" class="body">Free bodies: retain physical J and M⁻¹Jᵀ.</text>
+  <text x="652" y="942" class="small">One warp / world · serial rows · same paired friction</text>
+
+  <path d="M306 967 V985 M894 967 V985" class="arrow"/>
+  <rect x="40" y="998" width="1120" height="116" rx="14" fill="#edf4fa" stroke="#c7d9e9"/>
+  <text x="64" y="1034" class="head">4  Return to physical velocity, then use existing integration</text>
+  <text x="64" y="1067" class="body">PR: decode articulated changes once after the sweeps. Free-body changes are already physical.</text>
+  <text x="64" y="1095" class="small">Shared-root coupling still transmits motion across limbs. Compact rows do not make limbs independent.</text>
+
+  <text x="40" y="1148" class="body teal">Unchanged: collision · timestep / substeps · iteration budgets · friction law · public state interface</text>
+  <text x="40" y="1173" class="small">Safety: use the allocated normal/tangent row extent; preserve each row's anchor and free-body mass metric.</text>
+</svg>

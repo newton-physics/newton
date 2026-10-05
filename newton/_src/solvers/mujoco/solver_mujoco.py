@@ -35,6 +35,7 @@ from ...sim.articulation import eval_fk
 from ...sim.collide import _estimate_rigid_contact_max, _estimate_rigid_contact_max_per_world
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
+from ...usd.utils import _mjc_angle_scale
 from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
@@ -1085,15 +1086,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             """
             angle = float(value)
             prim = context.get("prim")
-            physics_scene_prim = context.get("physics_scene_prim")
             if prim is None or prim.GetTypeName() != "PhysicsRevoluteJoint":
                 return angle
-            if physics_scene_prim is None:
-                return angle * (np.pi / 180.0)
-            angle_attr = physics_scene_prim.GetAttribute("mjc:compiler:angle")
-            if not angle_attr or not angle_attr.HasAuthoredValue() or str(angle_attr.Get()) == "degree":
-                return angle * (np.pi / 180.0)
-            return angle
+            return angle * _mjc_angle_scale(context.get("physics_scene_prim"))
 
         # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))
@@ -4334,6 +4329,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     @event_scope
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> None:
+        self._require_unreduced_contacts(contacts)
         if self.use_mujoco_cpu:
             self._apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
@@ -6742,6 +6738,39 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 else:
                     geom_params["margin"] = authored_margin
 
+                # Coerce warp/numpy array & scalar values to native python types: the
+                # installed mujoco `add_geom` pybind overload only accepts plain
+                # Sequence[float]/float, and rejects warp vec/quat and numpy arrays
+                # (TypeError: incompatible function arguments) for box geoms.
+                _seq_keys = {
+                    "pos",
+                    "quat",
+                    "axisangle",
+                    "xyaxes",
+                    "zaxis",
+                    "euler",
+                    "fromto",
+                    "size",
+                    "friction",
+                    "solref",
+                    "solimp",
+                    "rgba",
+                    "fluid_coefs",
+                    "userdata",
+                }
+                _flt_keys = {"solmix", "margin", "gap", "mass", "density", "fitscale"}
+                for _k in list(geom_params):
+                    _v = geom_params[_k]
+                    if _k in _seq_keys:
+                        geom_params[_k] = [float(_x) for _x in _v]
+                    elif _k in _flt_keys:
+                        geom_params[_k] = float(_v)
+                # contype/conaffinity are 32-bit collision masks; 1<<31 (color 31)
+                # is 2147483648, which overflows mujoco's *signed* int32 field and
+                # raises "incompatible function arguments". Wrap uint32 -> int32.
+                for _k in ("contype", "conaffinity"):
+                    if _k in geom_params:
+                        geom_params[_k] = ((int(geom_params[_k]) + 2**31) % 2**32) - 2**31
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
                 shape_mapping[shape] = name

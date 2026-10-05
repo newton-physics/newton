@@ -177,6 +177,7 @@ def parse_usd(
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
+    physx_missing_inertia_fallback: bool = False,
     legacy_margin_gap: bool = False,
     return_deformable_results: bool = False,
 ) -> dict[str, Any]:
@@ -309,6 +310,9 @@ def parse_usd(
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
             damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+        physx_missing_inertia_fallback: If True, bodies with authored positive mass but no authored diagonal
+            inertia use PhysX's 0.1 m small-sphere inertia fallback instead of shape-derived inertia. This is
+            intended for IsaacLab/PhysX parity when PhysX reports the "possibly invalid inertia tensor" fallback.
         legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
             where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
@@ -610,6 +614,7 @@ def parse_usd(
         default_limit_kd=default_joint_limit_kd,
         limit_gains_configured=default_joint_limit_gains_configured,
         mjc_resolver=mjc_resolver,
+        mjc_angle_scale=usd._mjc_angle_scale(physics_scene_prim),
         verbose=verbose,
     )
     solreflimit_mode_key = "mujoco:solreflimit_mode"
@@ -1092,6 +1097,7 @@ def parse_usd(
             xform=xform,
             label=label,
             is_kinematic=is_kinematic,
+            disable_gravity=R.get_value(prim, prim_type=PrimType.BODY, key="disable_gravity", default=False),
             custom_attributes=body_custom_attrs,
         )
         builder.body_qd[b] = body_qd
@@ -1468,14 +1474,40 @@ def parse_usd(
             return True
         return False
 
-    # Parsing physics materials from the stage
+    def _physics_material_from_desc(sdf_path, desc):
+        """Convert one native USD material descriptor into Newton's shape material."""
+        prim = stage.GetPrimAtPath(sdf_path)
+        return _resolve_physics_material(
+            prim, desc, R, builder.default_shape_cfg, default_shape_density=default_shape_density, verbose=verbose
+        )
+
+    # Parsing physics materials from the selected import subtree.
     for sdf_path, desc in data_for_key(ret_dict, UsdPhysics.ObjectType.RigidBodyMaterial):
         if warn_invalid_desc(sdf_path, desc):
             continue
-        prim = stage.GetPrimAtPath(sdf_path)
+        material_specs[str(sdf_path)] = _physics_material_from_desc(sdf_path, desc)
 
-        material_specs[str(sdf_path)] = _resolve_physics_material(
-            prim, desc, R, builder.default_shape_cfg, default_shape_density=default_shape_density, verbose=verbose
+    def _material_for_path(material_path: str):
+        """Resolve a bound material, including an absolute target outside ``root_path``.
+
+        The native physics parser reports collider material relationship targets even
+        when the material prim itself is outside the selected source subtree. Load that
+        one target on demand so clone sources can bind shared global materials without
+        forcing every material under every replicated environment.
+        """
+        if material_path in material_specs:
+            return material_specs[material_path]
+
+        external_results = usd.load_physics_from_range(stage, [material_path])
+        for sdf_path, desc in data_for_key(external_results, UsdPhysics.ObjectType.RigidBodyMaterial):
+            key = str(sdf_path)
+            if key != material_path or warn_invalid_desc(sdf_path, desc):
+                continue
+            material_specs[key] = _physics_material_from_desc(sdf_path, desc)
+            return material_specs[key]
+
+        raise ValueError(
+            f"Collider references physics material '{material_path}', but that target could not be parsed."
         )
 
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
@@ -1869,6 +1901,7 @@ def parse_usd(
         visuals=visuals,
         mass_properties=mass_properties,
         material_specs=material_specs,
+        material_for_path=_material_for_path,
         default_shape_density=default_shape_density,
         path_body_map=path_body_map,
         path_shape_map=path_shape_map,
@@ -1954,6 +1987,7 @@ def parse_usd(
                     else:
                         has_effective_inertia = True
                         inertia_tensor = wp.mat33(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz)
+            mass_compute_failed = False
 
             # Compute baseline mass properties via mass computer when at least one property needs resolving.
             if not (has_effective_mass and has_effective_inertia and has_effective_com):
@@ -1965,6 +1999,14 @@ def parse_usd(
                     cmp_mass, cmp_i_diag, cmp_com, cmp_principal_axes = rigid_body_api.ComputeMassProperties(
                         mass_properties.get_collision_mass_information
                     )
+                    if cmp_mass < 0.0:
+                        # Genuine mass-computer failure (colliders not discoverable,
+                        # e.g. shapes created by schema resolvers are not real USD
+                        # prims). Distinct from the blocked-attrs workaround above,
+                        # where real colliders exist and the accumulated-property
+                        # fallback must preserve upstream's mass-precedence scaling
+                        # rather than trigger the PhysX small-sphere inertia.
+                        mass_compute_failed = True
                 if cmp_mass < 0.0 or not math.isfinite(cmp_mass):
                     # ComputeMassProperties failed to discover colliders (e.g. shapes
                     # created by schema resolvers are not real USD prims) or aggregated
@@ -2052,7 +2094,21 @@ def parse_usd(
                     )
                 # When mass is authored but inertia is not, scale the accumulated
                 # inertia to be consistent with the authored mass.
-                if not has_effective_inertia and shape_accumulated_mass > 0.0 and mass > 0.0:
+                use_physx_missing_inertia_fallback = (
+                    not has_effective_inertia and mass > 0.0 and (mass_compute_failed or physx_missing_inertia_fallback)
+                )
+                if use_physx_missing_inertia_fallback:
+                    radius = 0.1 / linear_unit if linear_unit > 0.0 else 0.1
+                    inertia_val = 0.4 * mass * radius * radius
+                    inertia = wp.mat33(np.eye(3, dtype=np.float32) * inertia_val)
+                    builder.body_inertia[body_id] = inertia
+                    builder.body_inv_inertia[body_id] = wp.inverse(inertia)
+                    if verbose:
+                        print(
+                            f"Applied PhysX small-sphere fallback inertia for body {body_path}: "
+                            f"diagonal elements = [{inertia_val}, {inertia_val}, {inertia_val}]"
+                        )
+                elif not has_effective_inertia and shape_accumulated_mass > 0.0 and mass > 0.0:
                     scale = mass / shape_accumulated_mass
                     builder.body_inertia[body_id] = wp.mat33(np.array(builder.body_inertia[body_id]) * scale)
                     builder.body_inv_inertia[body_id] = wp.inverse(builder.body_inertia[body_id])
@@ -2618,6 +2674,22 @@ def parse_usd(
 
     initialize_free_joint_velocities()
 
+    def _set_imported_mimic(joint_idx: int, leader_idx: int, coef0: float, coef1: float) -> None:
+        """Keep one direction of equivalent reciprocal USD declarations."""
+        if builder.joint_mimic_joint[leader_idx] == joint_idx:
+            reverse_offset, reverse_multiplier = builder.joint_mimic_coeffs[leader_idx]
+            # Vendor and Newton schemas can author opposite directions of the
+            # same relation. Only discard the redundant equation, not a chain
+            # or a conflicting cycle. Coefficients may come from USD floats.
+            if (
+                math.isfinite(coef0)
+                and math.isfinite(coef1)
+                and math.isclose(coef1 * reverse_multiplier, 1.0, rel_tol=1.0e-6)
+                and math.isclose(coef0, -coef1 * reverse_offset, rel_tol=1.0e-6, abs_tol=1.0e-8)
+            ):
+                return
+        builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
+
     # Mimic constraints from PhysxMimicJointAPI (run after collapse so joint indices are final).
     # PhysxMimicJointAPI is an instance-applied schema (e.g. PhysxMimicJointAPI:rotZ)
     # that couples a follower joint to a leader (reference) joint with a gearing ratio.
@@ -2683,7 +2755,7 @@ def parse_usd(
             offset_attr = joint_prim.GetAttribute(f"physxMimicJoint:{axis_instance}:offset")
             offset = float(offset_attr.Get()) if offset_attr and offset_attr.HasValue() else 0.0
 
-            builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(-offset, -gearing))
+            _set_imported_mimic(joint_idx, leader_idx, -offset, -gearing)
 
             if verbose:
                 print(
@@ -2738,7 +2810,7 @@ def parse_usd(
                 stacklevel=2,
             )
         leader_idx = path_joint_map[leader_path_str]
-        builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
+        _set_imported_mimic(joint_idx, leader_idx, coef0, coef1)
 
     # Parse Newton actuator prims from the USD stage.
     from ..actuators.delay import Delay  # noqa: PLC0415
