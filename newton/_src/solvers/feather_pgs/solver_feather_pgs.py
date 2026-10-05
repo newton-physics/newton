@@ -45,6 +45,7 @@ from .kernels import (
     _get_tree_tau_kernel,
     accumulate_contact_watermark,
     accumulate_group_diag_worlds,
+    accumulate_propagation_warmstart_body_impulses,
     accumulate_row_watermarks,
     allocate_connect_slots,
     allocate_joint_velocity_limit_slots,
@@ -79,6 +80,7 @@ from .kernels import (
     compute_propagation_body_com_rel,
     compute_propagation_effective_mass_and_rhs,
     compute_propagation_tree_body_response_for_size,
+    compute_propagation_velocity_rhs,
     compute_spatial_inertia,
     compute_velocity_predictor,
     compute_world_contact_bias,
@@ -1692,10 +1694,8 @@ class SolverFeatherPGS(SolverBase):
                     stacklevel=2,
                 )
             else:
-                # The split solve and the propagation responses have no friction patches.
-                friction_anchor_beta = (
-                    0.2 if pgs_mode == "matrix_free" and articulated_contact_response == "immediate" else 0.0
-                )
+                # The split solve has no friction patches.
+                friction_anchor_beta = 0.2 if pgs_mode == "matrix_free" else 0.0
         elif contact_compliance and float(friction_anchor_beta) > 0.0:
             raise ValueError("contact_compliance is not validated with friction_anchor_beta > 0")
         self.contact_compliance = bool(contact_compliance)
@@ -1886,11 +1886,6 @@ class SolverFeatherPGS(SolverBase):
             unsupported = [
                 name
                 for name, requested in (
-                    ("drive_mode='physx_pgs'", self._has_drive_rows),
-                    ("friction_anchor_beta > 0", self._friction_anchors_enabled),
-                    ("pgs_contact_regularization > 0", self._regularization_enabled),
-                    ("pgs_velocity_iterations > 0", self.pgs_velocity_iterations > 0),
-                    ("pgs_warmstart=True", self.pgs_warmstart),
                     ("contact_torsion_radius > 0", self._contact_torsion_enabled),
                     ("contact_compliance=True", self.contact_compliance),
                     ("enable_sleeping=True", bool(enable_sleeping)),
@@ -1991,10 +1986,11 @@ class SolverFeatherPGS(SolverBase):
         if self.pgs_mode == "split" and (self._mimic_count or self._connect_count):
             # The split solve has no bilateral rows; it would project them as contacts.
             raise NotImplementedError("Mimic relationships and loop-closing joints require pgs_mode='matrix_free'")
-        if self.articulated_contact_response != "immediate" and (self._mimic_count or self._connect_count):
+        if self.articulated_contact_response != "immediate" and self._connect_count:
+            # The propagation tree passes walk whole articulation joint ranges.
             raise NotImplementedError(
-                "Mimic relationships and loop-closing joints are not supported with "
-                f"articulated_contact_response={self.articulated_contact_response!r}"
+                f"Loop-closing joints are not supported with articulated_contact_response="
+                f"{self.articulated_contact_response!r}"
             )
         self._build_preelimination_plan(model)
         self._setup_passive_joint_forces(model)
@@ -2339,6 +2335,14 @@ class SolverFeatherPGS(SolverBase):
         families = [(self._ws_prev_impulses, self._ws_prev_row_type, self._ws_prev_row_parent)]
         if self._has_free_rigid_bodies:
             families.append((self._ws_prev_mf_impulses, self._ws_prev_mf_row_type, self._ws_prev_mf_row_parent))
+        if self._propagation_active:
+            families.append(
+                (
+                    self._ws_prev_propagation_impulses,
+                    self._ws_prev_propagation_row_type,
+                    self._ws_prev_propagation_row_parent,
+                )
+            )
         for impulses, row_type, row_parent in families:
             wp.launch(
                 reset_row_warmstart,
@@ -2850,6 +2854,13 @@ class SolverFeatherPGS(SolverBase):
         if not self.enable_bilateral_preelimination:
             return
         if self._connect_count == 0 and (self._mimic_count == 0 or not include_mimics):
+            return
+        if self.articulated_contact_response != "immediate":
+            warnings.warn(
+                "SolverFeatherPGS: bilateral pre-elimination does not support the propagation contact responses; "
+                "pre-elimination is disabled and the mimic rows stay iterative.",
+                stacklevel=3,
+            )
             return
         if self.pgs_velocity_iterations > 0:
             # The velocity-only iterations rebuild the velocity without the bilateral projection.
@@ -3375,17 +3386,13 @@ class SolverFeatherPGS(SolverBase):
         return restitution is None or model.shape_count == 0 or not np.any(restitution.numpy() > 0.0)
 
     def _check_restitution_support(self) -> None:
-        """Reject positive restitution in the split solve and the propagation responses, which have no rebound targets."""
-        supports_rebound = self.pgs_mode == "matrix_free" and self.articulated_contact_response == "immediate"
+        """Reject positive restitution in the split solve, which has no rebound targets."""
+        supports_rebound = self.pgs_mode == "matrix_free"
         if supports_rebound or self.restitution_velocity_threshold >= np.finfo(np.float32).max:
             return
         restitution = self.model.shape_material_restitution
         if restitution is not None and self.model.shape_count and np.any(restitution.numpy() > 0.0):
-            if self.pgs_mode == "split":
-                raise NotImplementedError("Contact restitution requires pgs_mode='matrix_free'")
-            raise NotImplementedError(
-                f"Contact restitution is not supported with articulated_contact_response={self.articulated_contact_response!r}"
-            )
+            raise NotImplementedError("Contact restitution requires pgs_mode='matrix_free'")
 
     def _setup_sparse_mass_matrix(self, model: Model) -> None:
         """Select topology-derived sparse mass factors for branched articulations.
@@ -3899,6 +3906,7 @@ class SolverFeatherPGS(SolverBase):
             # Previous step's first row of each (sorted) contact per row family, and its normal.
             self._ws_prev_dense_slot = wp.full((max_contacts,), -1, dtype=wp.int32, device=device)
             self._ws_prev_mf_slot = wp.full((max_contacts,), -1, dtype=wp.int32, device=device)
+            self._ws_prev_propagation_slot = wp.full((max_contacts,), -1, dtype=wp.int32, device=device)
             self._ws_prev_contact_normal = wp.zeros((max_contacts,), dtype=wp.vec3, device=device)
         # Previous solver step, and the contact buffer and generation it solved, on the
         # device so a captured graph replays them instead of baking the capture's values.
@@ -4560,12 +4568,23 @@ class SolverFeatherPGS(SolverBase):
             wp.copy(self.v_out_snap, self.v_out)
             self._compute_velocity_pass_rhs(dt)
             self._pack_mf_meta(self.mf_rhs_unbiased)
-            self._launch_pgs_solve(
-                self.rhs_unbiased,
-                self.pgs_velocity_iterations,
-                regularize=False,
-                freeze_drive_rows=self.pgs_velocity_drive_mode == "freeze",
-            )
+            freeze_drive_rows = self.pgs_velocity_drive_mode == "freeze"
+            if self._propagation_active:
+                self._compute_propagation_velocity_pass_rhs(dt)
+                self._launch_propagation_solve(
+                    self.rhs_unbiased,
+                    self.propagation_rhs_unbiased,
+                    self.pgs_velocity_iterations,
+                    regularize=False,
+                    freeze_drive_rows=freeze_drive_rows,
+                )
+            else:
+                self._launch_pgs_solve(
+                    self.rhs_unbiased,
+                    self.pgs_velocity_iterations,
+                    regularize=False,
+                    freeze_drive_rows=freeze_drive_rows,
+                )
             wp.copy(self.qd_work, self.v_out_snap)
             self._integrate(state_in, state_aug, state_out, dt, self.qd_work)
             wp.launch(
@@ -4925,6 +4944,17 @@ class SolverFeatherPGS(SolverBase):
                     self._ws_prev_mf_row_parent,
                 )
             )
+        if self._propagation_active:
+            families.append(
+                (
+                    self.propagation_impulses,
+                    self.propagation_row_type,
+                    self.propagation_row_parent,
+                    self._ws_prev_propagation_impulses,
+                    self._ws_prev_propagation_row_type,
+                    self._ws_prev_propagation_row_parent,
+                )
+            )
         for impulses, row_type, row_parent, prev_impulses, prev_type, prev_parent in families:
             wp.launch(
                 snapshot_row_warmstart,
@@ -4943,7 +4973,12 @@ class SolverFeatherPGS(SolverBase):
                     self.contact_slot,
                     contacts.rigid_contact_normal,
                 ],
-                outputs=[self._ws_prev_dense_slot, self._ws_prev_mf_slot, self._ws_prev_contact_normal],
+                outputs=[
+                    self._ws_prev_dense_slot,
+                    self._ws_prev_mf_slot,
+                    self._ws_prev_propagation_slot,
+                    self._ws_prev_contact_normal,
+                ],
                 device=model.device,
             )
         wp.launch(
@@ -5157,7 +5192,11 @@ class SolverFeatherPGS(SolverBase):
             self._pack_mf_meta(self.mf_rhs)
             if self._propagation_active:
                 self._propagation_setup(state_in, state_aug, dt)
-                self._launch_propagation_solve()
+                if self.pgs_warmstart:
+                    self._apply_propagation_warmstart_velocity()
+                self._launch_propagation_solve(
+                    self.rhs, self.propagation_rhs, self.pgs_iterations, regularize=self._regularization_enabled
+                )
             else:
                 self._launch_pgs_solve(self.rhs, self.pgs_iterations, regularize=self._regularization_enabled)
 
@@ -6203,9 +6242,11 @@ class SolverFeatherPGS(SolverBase):
         yield 0, self.row_parent, self.row_mu, self.impulses
         if self._has_free_rigid_bodies:
             yield 1, self.mf_row_parent, self.mf_row_mu, self.mf_impulses
+        if self._propagation_active:
+            yield 2, self.propagation_row_parent, self.propagation_row_mu, self.propagation_impulses
 
     def _gather_warmstart(self, contacts: Contacts, route: int, dt: float) -> None:
-        """Seed one row family's contact impulses from the previous step."""
+        """Seed one row family's contact impulses (route 0 dense, 1 free-body, 2 propagation) from the previous step."""
         if route == 0:
             arrays = (
                 self._ws_prev_dense_slot,
@@ -6218,6 +6259,19 @@ class SolverFeatherPGS(SolverBase):
                 self.row_mu,
                 self.dense_max_constraints,
                 self.impulses,
+            )
+        elif route == 2:
+            arrays = (
+                self._ws_prev_propagation_slot,
+                self._ws_prev_propagation_impulses,
+                self._ws_prev_propagation_row_type,
+                self._ws_prev_propagation_row_parent,
+                self.propagation_constraint_count,
+                self.propagation_row_type,
+                self.propagation_row_parent,
+                self.propagation_row_mu,
+                self.propagation_max_constraints,
+                self.propagation_impulses,
             )
         else:
             arrays = (
@@ -6768,6 +6822,8 @@ class SolverFeatherPGS(SolverBase):
 
             if self._propagation_active:
                 self._propagation_build_rows(state_in, state_aug, contacts, contact_build_threads)
+                if self.pgs_warmstart:
+                    self._gather_warmstart(contacts, route=2, dt=dt)
 
             if mf_active:
                 wp.launch(
@@ -7263,16 +7319,6 @@ class SolverFeatherPGS(SolverBase):
                     parent_slot[j] = child_to_slot.get(int(joint_parent[j]), -1)
         self._propagation_joint_parent_slot = wp.array(parent_slot, dtype=wp.int32, device=model.device)
 
-        # Dense joint-limit and velocity-limit rows change the tree velocities between the
-        # propagation passes, so the per-iteration twist refresh cannot be skipped.
-        self._propagation_has_limit_rows = self.enable_joint_limits and bool(self._joint_limit_sizes)
-        has_velocity_limits = self.enable_joint_velocity_limits or (
-            self._has_rigid_body_velocity_limits and self._has_free_rigid_bodies
-        )
-        self._propagation_has_velocity_limit_rows = bool(
-            has_velocity_limits and not np.isinf(self.velocity_limit_activation_fraction)
-        )
-
     def _allocate_propagation_buffers(self, model) -> None:
         """Allocate the per-world propagation rows and the per-body and per-joint tree buffers.
 
@@ -7308,6 +7354,19 @@ class SolverFeatherPGS(SolverBase):
         self.propagation_row_mu = wp.zeros((worlds, rows), dtype=wp.float32, device=device)
         self.propagation_phi = wp.zeros((worlds, rows), dtype=wp.float32, device=device)
         self.propagation_target_velocity = wp.zeros((worlds, rows), dtype=wp.float32, device=device)
+        self.propagation_row_restitution = wp.zeros((worlds, rows), dtype=wp.float32, device=device)
+        # Rebound bias of each row, kept for the velocity-only iterations.
+        self.propagation_restitution_bias = wp.zeros((worlds, rows), dtype=wp.float32, device=device)
+        self.propagation_row_w = wp.ones(
+            (worlds, rows) if self._regularization_enabled else (1, 1), dtype=wp.float32, device=device
+        )
+        self.propagation_rhs_unbiased = wp.zeros(
+            (worlds, rows) if self.pgs_velocity_iterations else (1, 1), dtype=wp.float32, device=device
+        )
+        if self.pgs_warmstart:
+            self._ws_prev_propagation_impulses = wp.zeros((worlds, rows), dtype=wp.float32, device=device)
+            self._ws_prev_propagation_row_type = wp.full((worlds, rows), -1, dtype=wp.int32, device=device)
+            self._ws_prev_propagation_row_parent = wp.full((worlds, rows), -1, dtype=wp.int32, device=device)
         # Per body: 6x6 center-of-mass response, live twist and the impulse accumulated in a sweep.
         self.propagation_body_response = wp.zeros((bodies, 6, 6), dtype=wp.float32, device=device)
         self.propagation_body_qd = wp.zeros((bodies, 6), dtype=wp.float32, device=device)
@@ -7365,6 +7424,8 @@ class SolverFeatherPGS(SolverBase):
                 self.max_propagation_bodies,
                 int(self._propagation_fused_size),
                 device_arch,
+                has_drive_rows=self._has_drive_rows,
+                fuse_vel_limits=self.fuse_joint_velocity_limits,
             )
         else:
             self._pgs_solve_propagation_kernel = _get_pgs_solve_propagation_contact_kernel(
@@ -7418,8 +7479,11 @@ class SolverFeatherPGS(SolverBase):
                 self._prescribed_articulation,
                 self.articulation_origin,
                 self.shape_material_mu,
+                self.shape_material_restitution,
+                self.contact_slots_needed,
                 *self._contact_anchor_args,
                 self._friction_patches.view,
+                self.friction_anchor_beta,
             ],
             outputs=[
                 self.propagation_body_a,
@@ -7431,6 +7495,7 @@ class SolverFeatherPGS(SolverBase):
                 self.propagation_row_mu,
                 self.propagation_phi,
                 self.propagation_target_velocity,
+                self.propagation_row_restitution,
             ],
             device=model.device,
         )
@@ -7597,10 +7662,15 @@ class SolverFeatherPGS(SolverBase):
                 self.propagation_phi,
                 self.propagation_row_type,
                 self.propagation_target_velocity,
+                self.propagation_row_restitution,
+                self.propagation_body_qd,
                 self.rigid_body_max_depenetration_velocity,
                 self.pgs_cfm,
                 self.pgs_beta,
+                self._contact_w,
                 dt,
+                self.contact_speculative_scale,
+                self.restitution_velocity_threshold,
                 self.propagation_max_constraints,
             ],
             outputs=[
@@ -7608,6 +7678,8 @@ class SolverFeatherPGS(SolverBase):
                 self.propagation_MiJt_a,
                 self.propagation_MiJt_b,
                 self.propagation_rhs,
+                self.propagation_restitution_bias,
+                self.propagation_row_w,
             ],
             device=model.device,
         )
@@ -7803,16 +7875,71 @@ class SolverFeatherPGS(SolverBase):
             device=self.model.device,
         )
 
-    def _launch_propagation_solve(self) -> None:
+    def _apply_propagation_warmstart_velocity(self) -> None:
+        """Install the velocity of the seeded propagation impulses into the twists and ``v_out``."""
+        wp.launch(
+            accumulate_propagation_warmstart_body_impulses,
+            dim=self.world_count * self.propagation_max_constraints,
+            inputs=[
+                self.propagation_constraint_count,
+                self.propagation_body_a,
+                self.propagation_body_b,
+                self.propagation_J_a,
+                self.propagation_J_b,
+                self.propagation_MiJt_a,
+                self.propagation_MiJt_b,
+                self.propagation_impulses,
+                self.propagation_max_constraints,
+            ],
+            outputs=[self.propagation_body_qd, self.propagation_body_impulses],
+            device=self.model.device,
+        )
+        self._propagation_propagate_impulses()
+
+    def _compute_propagation_velocity_pass_rhs(self, dt: float) -> None:
+        """Build the propagation right-hand side of the velocity-only iterations from the position solve."""
+        self._propagation_refresh_twists(force=True)
+        wp.launch(
+            compute_propagation_velocity_rhs,
+            dim=self.world_count * self.propagation_max_constraints,
+            inputs=[
+                self.propagation_constraint_count,
+                self.propagation_body_a,
+                self.propagation_body_b,
+                self.propagation_J_a,
+                self.propagation_J_b,
+                self.propagation_phi,
+                self.propagation_row_type,
+                self.propagation_target_velocity,
+                self.propagation_restitution_bias,
+                self.propagation_body_qd,
+                dt,
+                self.propagation_max_constraints,
+            ],
+            outputs=[self.propagation_rhs_unbiased],
+            device=self.model.device,
+        )
+
+    def _launch_propagation_solve(
+        self,
+        rhs: wp.array,
+        propagation_rhs: wp.array,
+        iterations: int,
+        *,
+        regularize: bool,
+        freeze_drive_rows: bool = False,
+    ) -> None:
         """Run the projected Gauss-Seidel iterations of the propagation response.
 
-        Each iteration solves the dense joint-limit rows, the dense and free-body contact
-        rows, the propagation rows followed by the tree propagation of their impulses, and
-        last the velocity-limit rows. With ``pgs_schedule="contact_then_internal"`` the
-        iterations solve the contact and propagation rows only, and the joint-limit and
-        velocity-limit rows follow in their own iterations.
+        Each iteration solves the dense internal rows (drive, mimic and joint-limit rows),
+        the dense and free-body contact rows, the propagation rows followed by the tree
+        propagation of their impulses, and last the velocity limits. With
+        ``pgs_schedule="contact_then_internal"`` the iterations solve the contact and
+        propagation rows only, and the internal rows and velocity limits follow in their
+        own iterations. ``rhs`` and ``propagation_rhs`` are the dense and propagation
+        right-hand sides; the free-body one is packed into ``mf_meta_packed``.
         """
-        if self.pgs_iterations <= 0:
+        if iterations <= 0:
             return
         model = self.model
         if self._propagation_fused:
@@ -7823,7 +7950,7 @@ class SolverFeatherPGS(SolverBase):
                 inputs=[
                     self.constraint_count,
                     self.world_dof_indices,
-                    self.rhs,
+                    rhs,
                     self.diag,
                     self.impulses,
                     self.J_world,
@@ -7831,6 +7958,12 @@ class SolverFeatherPGS(SolverBase):
                     self.row_type,
                     self.row_parent,
                     self.row_mu,
+                    self.row_w,
+                    self.drive_target_vel_bias,
+                    self.drive_vel_multiplier,
+                    self.drive_impulse_multiplier,
+                    self.drive_max_impulse,
+                    self.drive_vel_limit,
                     self.mf_constraint_count,
                     self.mf_contact_rows_end,
                     self.mf_meta_packed,
@@ -7840,6 +7973,7 @@ class SolverFeatherPGS(SolverBase):
                     self.mf_MiJt_a,
                     self.mf_MiJt_b,
                     self.mf_row_mu,
+                    self.mf_row_w,
                     self.propagation_constraint_count,
                     self.propagation_body_count,
                     self.propagation_body_list,
@@ -7851,10 +7985,11 @@ class SolverFeatherPGS(SolverBase):
                     self.propagation_J_a,
                     self.propagation_J_b,
                     self.propagation_eff_mass_inv,
-                    self.propagation_rhs,
+                    propagation_rhs,
                     self.propagation_row_type,
                     self.propagation_row_parent,
                     self.propagation_row_mu,
+                    self.propagation_row_w,
                     self.body_to_articulation,
                     self.is_free_rigid,
                     self.articulation_dof_start,
@@ -7869,8 +8004,10 @@ class SolverFeatherPGS(SolverBase):
                     self.propagation_body_com_rel,
                     self.propagation_tree_U,
                     self.propagation_tree_D_inv,
-                    self.pgs_iterations,
+                    int(iterations),
                     self.pgs_omega,
+                    int(regularize),
+                    int(freeze_drive_rows),
                 ],
                 outputs=[
                     self.propagation_impulses,
@@ -7887,15 +8024,17 @@ class SolverFeatherPGS(SolverBase):
             )
             return
 
+        has_internal_rows, has_velocity_limits = self._internal_row_phases()
         contact_then_internal = self.pgs_schedule == "contact_then_internal"
-        refresh_forced = (
-            contact_then_internal or self._propagation_has_limit_rows or self._propagation_has_velocity_limit_rows
+        refresh_forced = contact_then_internal or has_internal_rows or has_velocity_limits
+        phase = functools.partial(
+            self._launch_mf_gs_phase, rhs=rhs, regularize=regularize, freeze_drive_rows=freeze_drive_rows
         )
         wpb = _PROPAGATION_WORLDS_PER_BLOCK
-        for _ in range(self.pgs_iterations):
-            if self._propagation_has_limit_rows and not contact_then_internal:
-                self._launch_mf_gs_phase(3)
-            self._launch_mf_gs_phase(4)
+        for _ in range(iterations):
+            if has_internal_rows and not contact_then_internal:
+                phase(3)
+            phase(4)
             self._propagation_refresh_twists(force=refresh_forced)
             wp.launch_tiled(
                 self._pgs_solve_propagation_kernel,
@@ -7910,11 +8049,13 @@ class SolverFeatherPGS(SolverBase):
                     self.propagation_J_a,
                     self.propagation_J_b,
                     self.propagation_eff_mass_inv,
-                    self.propagation_rhs,
+                    propagation_rhs,
                     self.propagation_row_type,
                     self.propagation_row_parent,
                     self.propagation_row_mu,
+                    self.propagation_row_w,
                     self.pgs_omega,
+                    int(regularize),
                 ],
                 outputs=[
                     self.propagation_impulses,
@@ -7925,10 +8066,10 @@ class SolverFeatherPGS(SolverBase):
                 device=model.device,
             )
             self._propagation_propagate_impulses()
-            if self._propagation_has_velocity_limit_rows and not contact_then_internal:
-                self._launch_mf_gs_phase(5)
-        if contact_then_internal and (self._propagation_has_limit_rows or self._propagation_has_velocity_limit_rows):
-            self._launch_mf_gs_phase(2, self.pgs_iterations)
+            if has_velocity_limits and not contact_then_internal:
+                phase(5)
+        if contact_then_internal and (has_internal_rows or has_velocity_limits):
+            phase(2, iterations)
 
 
 @cache
@@ -10498,12 +10639,24 @@ def _get_pgs_solve_propagation_contact_kernel(
         if (lane == 0) {{
             const float residual = partial + row_rhs;
             const float old_impulse = propagation_impulses.data[off];
-            float new_impulse = old_impulse + omega * (-residual * eff_inv);
+            float delta = -residual * eff_inv;
+            if (row_type == {contact_type} && regularize != 0) {{
+                // Regularized rows (weight w < 1) also relax the impulse toward zero.
+                const float w = propagation_row_w.data[off];
+                delta = delta * w - (1.0f - w) * old_impulse;
+            }}
+            float new_impulse = old_impulse + omega * delta;
             if (row_type == {contact_type}) {{
                 if (new_impulse < 0.0f) new_impulse = 0.0f;
             }} else if (row_type == {friction_type}) {{
                 const int parent_idx = propagation_row_parent.data[off];
-                const float radius = fmaxf(propagation_row_mu.data[off] * propagation_impulses.data[world_base + parent_idx], 0.0f);
+                // A patch's normal rows form a cycle through their parent links and share its load.
+                float lambda_n = propagation_impulses.data[world_base + parent_idx];
+                for (int patch_row = propagation_row_parent.data[world_base + parent_idx];
+                     patch_row >= 0 && patch_row != parent_idx;
+                     patch_row = propagation_row_parent.data[world_base + patch_row])
+                    lambda_n += propagation_impulses.data[world_base + patch_row];
+                const float radius = fmaxf(propagation_row_mu.data[off] * lambda_n, 0.0f);
                 if (i != parent_idx + 1) {{
                     // The first tangent row solves both tangents of its contact.
                     new_impulse = old_impulse;
@@ -10581,7 +10734,9 @@ def _get_pgs_solve_propagation_contact_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        propagation_row_w: wp.array2d[float],
         omega: float,
+        regularize: int,
         propagation_impulses: wp.array2d[float],
         propagation_body_qd: wp.array2d[float],
         propagation_body_impulses: wp.array2d[float],
@@ -10601,7 +10756,9 @@ def _get_pgs_solve_propagation_contact_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        propagation_row_w: wp.array2d[float],
         omega: float,
+        regularize: int,
         propagation_impulses: wp.array2d[float],
         propagation_body_qd: wp.array2d[float],
         propagation_body_impulses: wp.array2d[float],
@@ -10622,7 +10779,9 @@ def _get_pgs_solve_propagation_contact_kernel(
             propagation_row_type,
             propagation_row_parent,
             propagation_row_mu,
+            propagation_row_w,
             omega,
+            regularize,
             propagation_impulses,
             propagation_body_qd,
             propagation_body_impulses,
@@ -10643,6 +10802,8 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
     max_propagation_bodies: int,
     target_size: int,
     device_arch: str,
+    has_drive_rows: bool = False,
+    fuse_vel_limits: bool = False,
 ) -> "wp.Kernel":
     """Build the one-warp-per-world kernel that runs every propagation Gauss-Seidel iteration.
 
@@ -10652,6 +10813,11 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
     velocity stays in shared memory for all iterations. The tree passes cover the
     articulations of ``target_size`` response DOFs, the only articulated size group the
     fused response supports.
+
+    The internal rows are the drive (with ``has_drive_rows``), mimic, connect and joint-limit
+    rows; ``fuse_vel_limits`` adds the end-of-iteration velocity clamp of driven DOFs to the
+    velocity-limit stage. With ``regularize`` the contact rows of every family relax toward
+    zero with their row weights, and ``freeze_drive_rows`` skips the drive rows.
     """
     _ = device_arch
     M_D = max_constraints
@@ -10660,8 +10826,67 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
     M_PROP = propagation_max_constraints
     contact_type = int(PGS_CONSTRAINT_TYPE_CONTACT)
     friction_type = int(PGS_CONSTRAINT_TYPE_FRICTION)
-    limit_type = int(PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
     vlimit_type = int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)
+    drive_type = int(PGS_CONSTRAINT_TYPE_JOINT_TARGET)
+    drive_shared = (
+        f"""
+    __shared__ float s_drive_target_dense[{M_D}];
+    __shared__ float s_drive_vel_mul_dense[{M_D}];
+    __shared__ float s_drive_imp_mul_dense[{M_D}];
+    __shared__ float s_drive_max_imp_dense[{M_D}];
+    __shared__ float s_drive_vel_limit_dense[{M_D}];"""
+        if has_drive_rows
+        else ""
+    )
+    drive_loads = (
+        """
+        s_drive_target_dense[i] = world_drive_target_vel_bias.data[off];
+        s_drive_vel_mul_dense[i] = world_drive_vel_multiplier.data[off];
+        s_drive_imp_mul_dense[i] = world_drive_impulse_multiplier.data[off];
+        s_drive_max_imp_dense[i] = world_drive_max_impulse.data[off];"""
+        if has_drive_rows
+        else ""
+    )
+    if fuse_vel_limits:
+        drive_loads += """
+        s_drive_vel_limit_dense[i] = world_drive_vel_limit.data[off];"""
+    drive_update = (
+        f"""
+                if (row_type == {drive_type}) {{
+                    // PhysX force-drive update; not relaxed by omega.
+                    const float max_impulse = s_drive_max_imp_dense[i];
+                    new_impulse = old_impulse * s_drive_imp_mul_dense[i] + jv * s_drive_vel_mul_dense[i]
+                        + s_drive_target_dense[i];
+                    new_impulse = fminf(fmaxf(new_impulse, -max_impulse), max_impulse);
+                    delta_impulse = new_impulse - old_impulse;
+                }} else"""
+        if has_drive_rows
+        else ""
+    )
+    # Stateless clamp of driven DOFs, after the velocity-limit rows of the same iteration.
+    fused_clamp = (
+        f"""
+            if (stage == 2) {{
+                for (int i = 0; i < m_dense; ++i) {{
+                    if (s_rtype_dense[i] != {drive_type}) continue;
+                    const float denom = s_diag_dense[i];
+                    if (denom <= 0.0f) continue;
+                    const float qdot_max = s_drive_vel_limit_dense[i];
+                    const int row_base = jy_world_base + i * {D};
+                    float my_sum = 0.0f;
+                    for (int d = lane; d < {D}; d += 32) my_sum += J_world.data[row_base + d] * s_v[d];
+                    for (int shfl = 16; shfl > 0; shfl >>= 1) my_sum += __shfl_down_sync(MASK, my_sum, shfl);
+                    const float jv = __shfl_sync(MASK, my_sum, 0);
+                    if (fabsf(jv) > qdot_max) {{
+                        const float delta_impulse = (fminf(fmaxf(jv, -qdot_max), qdot_max) - jv) / denom;
+                        for (int d = lane; d < {D}; d += 32) s_v[d] += Y_world.data[row_base + d] * delta_impulse;
+                    }}
+                    __syncwarp(MASK);
+                }}
+            }}"""
+        if fuse_vel_limits
+        else ""
+    )
 
     snippet = f"""
 #if defined(__CUDA_ARCH__)
@@ -10697,6 +10922,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
     __shared__ int s_rtype_dense[{M_D}];
     __shared__ int s_parent_dense[{M_D}];
     __shared__ float s_mu_dense[{M_D}];
+{drive_shared}
     __shared__ float s_lam_mf[{M_MF}];
 
     for (int d = lane; d < {D}; d += 32) {{
@@ -10711,6 +10937,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
         s_rtype_dense[i] = world_row_type.data[off];
         s_parent_dense[i] = world_row_parent.data[off];
         s_mu_dense[i] = world_row_mu.data[off];
+{drive_loads}
     }}
     for (int i = lane; i < m_mf; i += 32) {{
         s_lam_mf[i] = mf_impulses.data[off_mf + i];
@@ -10719,10 +10946,12 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
 
     for (int iter = 0; iter < iterations; ++iter) {{
         for (int stage = 0; stage < 3; ++stage) {{
-            // Stage 0: joint-limit rows; stage 1: contact rows; stage 2: velocity limits.
+            // Stage 0: internal rows; stage 1: contact rows; stage 2: velocity limits.
             for (int i = 0; i < m_dense; ++i) {{
                 const int row_type = s_rtype_dense[i];
-                if (stage == 0 && row_type != {limit_type}) continue;
+                const int contact_row = row_type == {contact_type} || row_type == {friction_type};
+                if (stage == 0 && (contact_row || row_type == {vlimit_type})) continue;
+                if (freeze_drive_rows != 0 && row_type == {drive_type}) continue;
                 if (stage == 1 && row_type != {contact_type} && row_type != {friction_type}) continue;
                 if (stage == 2 && row_type != {vlimit_type}) continue;
                 const float denom = s_diag_dense[i];
@@ -10736,8 +10965,10 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
 
                 const float old_impulse = s_lam_dense[i];
                 const float residual = jv + s_rhs_dense[i];
-                float new_impulse = old_impulse + omega * (denom > 0.0f ? -residual / denom : 0.0f);
-                float delta_impulse = 0.0f;
+                // Regularized rows (weight w < 1) also relax the impulse toward zero.
+                const float w = regularize != 0 ? world_row_w.data[off_dense + i] : 1.0f;
+                float new_impulse = old_impulse + omega * (denom > 0.0f ? -residual / denom * w - (1.0f - w) * old_impulse : 0.0f);
+                float delta_impulse = 0.0f;{drive_update}
                 if (row_type == {vlimit_type}) {{
                     // Stateless projection onto the velocity box.
                     delta_impulse = residual < 0.0f ? -residual / denom : 0.0f;
@@ -10749,7 +10980,12 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
                     }} else {{
                         const int sib = parent_idx + 2;
                         const int sib_row_base = jy_world_base + sib * {D};
-                        const float radius = fmaxf(s_mu_dense[i] * s_lam_dense[parent_idx], 0.0f);
+                        // A patch's normal rows form a cycle through their parent links and share its load.
+                        float lambda_n = s_lam_dense[parent_idx];
+                        for (int patch_row = s_parent_dense[parent_idx]; patch_row >= 0 && patch_row != parent_idx;
+                             patch_row = s_parent_dense[patch_row])
+                            lambda_n += s_lam_dense[patch_row];
+                        const float radius = fmaxf(s_mu_dense[i] * lambda_n, 0.0f);
                         float sibling_residual = 0.0f;
                         float cross = 0.0f;
                         for (int d = lane; d < {D}; d += 32) {{
@@ -10776,8 +11012,9 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
                     }}
                     delta_impulse = new_impulse - old_impulse;
                 }} else {{
-                    // Contact and joint-limit rows are unilateral.
-                    if (new_impulse < 0.0f) new_impulse = 0.0f;
+                    // Contact and joint-limit rows are unilateral; mimic and connect rows are bilateral.
+                    if (new_impulse < 0.0f && (row_type == {contact_type} || row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_LIMIT)}))
+                        new_impulse = 0.0f;
                     delta_impulse = new_impulse - old_impulse;
                 }}
                 __syncwarp(MASK);
@@ -10805,7 +11042,12 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
                     if (mf_diag <= 0.0f && mf_rt != {friction_type}) continue;
                     float radius = 0.0f;
                     if (mf_rt == {friction_type}) {{
-                        radius = fmaxf(mf_row_mu.data[off_mf + i] * s_lam_mf[mf_par], 0.0f);
+                        float lambda_n = s_lam_mf[mf_par];
+                        for (int patch_row = (mf_meta.data[off_meta + mf_par * 4 + 3] >> 16);
+                             patch_row >= 0 && patch_row != mf_par;
+                             patch_row = (mf_meta.data[off_meta + patch_row * 4 + 3] >> 16))
+                            lambda_n += s_lam_mf[patch_row];
+                        radius = fmaxf(mf_row_mu.data[off_mf + i] * lambda_n, 0.0f);
                         if (radius == 0.0f && s_lam_mf[i] == 0.0f && s_lam_mf[i + 1] == 0.0f) continue;
                     }}
                     const int row_mf6 = mf6_base + i * 6;
@@ -10815,7 +11057,12 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
                     for (int shfl = 16; shfl > 0; shfl >>= 1) my_sum += __shfl_down_sync(MASK, my_sum, shfl);
                     const float residual = __shfl_sync(MASK, my_sum, 0) + __int_as_float(meta.z);
                     const float old_impulse = s_lam_mf[i];
-                    float new_impulse = old_impulse + omega * (-residual * mf_diag);
+                    float mf_delta = -residual * mf_diag;
+                    if (mf_rt == {contact_type} && regularize != 0) {{
+                        const float w = mf_row_w.data[off_mf + i];
+                        mf_delta = mf_delta * w - (1.0f - w) * old_impulse;
+                    }}
+                    float new_impulse = old_impulse + omega * mf_delta;
                     if (mf_rt == {contact_type}) {{
                         if (new_impulse < 0.0f) new_impulse = 0.0f;
                     }} else if (mf_rt == {vlimit_type}) {{
@@ -10871,6 +11118,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
                 }}
             }}
 
+{fused_clamp}
             if (stage != 1) continue;
 
             // Link twists of the world's articulations from the current world velocity.
@@ -10950,13 +11198,22 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
                 if (lane == 0) {{
                     const float residual = partial + propagation_rhs.data[off];
                     const float old_impulse = propagation_impulses.data[off];
-                    float new_impulse = old_impulse + omega * (-residual * eff_inv);
+                    float prop_delta = -residual * eff_inv;
+                    if (row_type == {contact_type} && regularize != 0) {{
+                        const float w = propagation_row_w.data[off];
+                        prop_delta = prop_delta * w - (1.0f - w) * old_impulse;
+                    }}
+                    float new_impulse = old_impulse + omega * prop_delta;
                     if (row_type == {contact_type}) {{
                         if (new_impulse < 0.0f) new_impulse = 0.0f;
                     }} else if (row_type == {friction_type}) {{
                         const int parent_idx = propagation_row_parent.data[off];
-                        const float radius = fmaxf(
-                            propagation_row_mu.data[off] * propagation_impulses.data[prop_world_base + parent_idx], 0.0f);
+                        float lambda_n = propagation_impulses.data[prop_world_base + parent_idx];
+                        for (int patch_row = propagation_row_parent.data[prop_world_base + parent_idx];
+                             patch_row >= 0 && patch_row != parent_idx;
+                             patch_row = propagation_row_parent.data[prop_world_base + patch_row])
+                            lambda_n += propagation_impulses.data[prop_world_base + patch_row];
+                        const float radius = fmaxf(propagation_row_mu.data[off] * lambda_n, 0.0f);
                         if (i != parent_idx + 1) {{
                             new_impulse = old_impulse;
                         }} else {{
@@ -11157,6 +11414,12 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
         world_row_type: wp.array2d[int],
         world_row_parent: wp.array2d[int],
         world_row_mu: wp.array2d[float],
+        world_row_w: wp.array2d[float],
+        world_drive_target_vel_bias: wp.array2d[float],
+        world_drive_vel_multiplier: wp.array2d[float],
+        world_drive_impulse_multiplier: wp.array2d[float],
+        world_drive_max_impulse: wp.array2d[float],
+        world_drive_vel_limit: wp.array2d[float],
         mf_constraint_count: wp.array[int],
         mf_contact_rows_end: wp.array[int],
         mf_meta: wp.array2d[int],
@@ -11166,6 +11429,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
         mf_MiJt_a: wp.array3d[float],
         mf_MiJt_b: wp.array3d[float],
         mf_row_mu: wp.array2d[float],
+        mf_row_w: wp.array2d[float],
         propagation_constraint_count: wp.array[int],
         propagation_body_count: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -11181,6 +11445,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        propagation_row_w: wp.array2d[float],
         body_to_articulation: wp.array[int],
         is_free_rigid: wp.array[int],
         articulation_dof_start: wp.array[int],
@@ -11197,6 +11462,8 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
         propagation_tree_D_inv: wp.array3d[float],
         iterations: int,
         omega: float,
+        regularize: int,
+        freeze_drive_rows: int,
         propagation_impulses: wp.array2d[float],
         propagation_tree_pA: wp.array2d[float],
         propagation_tree_u: wp.array[float],
@@ -11218,6 +11485,12 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
         world_row_type: wp.array2d[int],
         world_row_parent: wp.array2d[int],
         world_row_mu: wp.array2d[float],
+        world_row_w: wp.array2d[float],
+        world_drive_target_vel_bias: wp.array2d[float],
+        world_drive_vel_multiplier: wp.array2d[float],
+        world_drive_impulse_multiplier: wp.array2d[float],
+        world_drive_max_impulse: wp.array2d[float],
+        world_drive_vel_limit: wp.array2d[float],
         mf_constraint_count: wp.array[int],
         mf_contact_rows_end: wp.array[int],
         mf_meta: wp.array2d[int],
@@ -11227,6 +11500,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
         mf_MiJt_a: wp.array3d[float],
         mf_MiJt_b: wp.array3d[float],
         mf_row_mu: wp.array2d[float],
+        mf_row_w: wp.array2d[float],
         propagation_constraint_count: wp.array[int],
         propagation_body_count: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -11242,6 +11516,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        propagation_row_w: wp.array2d[float],
         body_to_articulation: wp.array[int],
         is_free_rigid: wp.array[int],
         articulation_dof_start: wp.array[int],
@@ -11258,6 +11533,8 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
         propagation_tree_D_inv: wp.array3d[float],
         iterations: int,
         omega: float,
+        regularize: int,
+        freeze_drive_rows: int,
         propagation_impulses: wp.array2d[float],
         propagation_tree_pA: wp.array2d[float],
         propagation_tree_u: wp.array[float],
@@ -11280,6 +11557,12 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
             world_row_type,
             world_row_parent,
             world_row_mu,
+            world_row_w,
+            world_drive_target_vel_bias,
+            world_drive_vel_multiplier,
+            world_drive_impulse_multiplier,
+            world_drive_max_impulse,
+            world_drive_vel_limit,
             mf_constraint_count,
             mf_contact_rows_end,
             mf_meta,
@@ -11289,6 +11572,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
             mf_MiJt_a,
             mf_MiJt_b,
             mf_row_mu,
+            mf_row_w,
             propagation_constraint_count,
             propagation_body_count,
             propagation_body_list,
@@ -11304,6 +11588,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
             propagation_row_type,
             propagation_row_parent,
             propagation_row_mu,
+            propagation_row_w,
             body_to_articulation,
             is_free_rigid,
             articulation_dof_start,
@@ -11320,6 +11605,8 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
             propagation_tree_D_inv,
             iterations,
             omega,
+            regularize,
+            freeze_drive_rows,
             propagation_impulses,
             propagation_tree_pA,
             propagation_tree_u,
@@ -11330,7 +11617,10 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
             v_out,
         )
 
-    name = f"pgs_solve_propagation_full_iteration_{M_D}_{M_MF}_{D}_{M_PROP}_{max_propagation_bodies}_{target_size}"
+    name = (
+        f"pgs_solve_propagation_full_iteration_{M_D}_{M_MF}_{D}_{M_PROP}_{max_propagation_bodies}_{target_size}"
+        f"_drive{int(has_drive_rows)}_fvl{int(fuse_vel_limits)}"
+    )
     pgs_solve_propagation_full_iteration.__name__ = name
     pgs_solve_propagation_full_iteration.__qualname__ = name
     return wp.kernel(enable_backward=False, module="unique")(pgs_solve_propagation_full_iteration)

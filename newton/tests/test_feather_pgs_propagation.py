@@ -129,7 +129,11 @@ def test_contact_effective_mass_matches_dense_response(test, device):
             SolverFeatherPGS._kernel_overrides = {"propagation_tree_kernel": tree_kernel}
             try:
                 solver = SolverFeatherPGS(
-                    model, pgs_iterations=0, dense_max_constraints=96, articulated_contact_response="propagation"
+                    model,
+                    pgs_iterations=0,
+                    dense_max_constraints=96,
+                    friction_anchor_beta=0.0,
+                    articulated_contact_response="propagation",
                 )
             finally:
                 SolverFeatherPGS._kernel_overrides = {}
@@ -270,7 +274,9 @@ def test_global_kinematic_floor_moves_articulated_bodies(test, device):
             results = {}
             for floor, floor_velocity in (("static", 0.0), ("kinematic", 0.0), ("kinematic", 0.5)):
                 model = _chains_on_global_floor(device, floor)
-                solver = SolverFeatherPGS(model, dense_max_constraints=64, articulated_contact_response=response)
+                solver = SolverFeatherPGS(
+                    model, dense_max_constraints=64, friction_anchor_beta=0.0, articulated_contact_response=response
+                )
                 state_0, state_1 = model.state(), model.state()
                 joint_qd = state_0.joint_qd.numpy()
                 joint_qd[:4] = -1.0

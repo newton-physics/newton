@@ -620,20 +620,15 @@ def test_articulated_contact_response_validation(test, device):
 
 
 def test_propagation_rejects_unsupported_options(test, device):
-    """Reject the split solve and every option the propagation rows do not implement."""
+    """Reject the split solve and the options the propagation rows do not implement; accept the rest."""
     model = _build_chain_model(device, num_links=2, num_worlds=1)
     for response in ("propagation", "propagation-fused"):
         with test.subTest(response=response, option="pgs_mode"):
             with test.assertRaisesRegex(NotImplementedError, "requires pgs_mode='matrix_free'"):
                 SolverFeatherPGS(model, pgs_mode="split", articulated_contact_response=response)
-        # The default friction resolves to point friction with the propagation rows.
-        test.assertEqual(SolverFeatherPGS(model, articulated_contact_response=response).friction_anchor_beta, 0.0)
+        # The default friction selects friction patches, as with the immediate response.
+        test.assertEqual(SolverFeatherPGS(model, articulated_contact_response=response).friction_anchor_beta, 0.2)
         options = (
-            ({"drive_mode": "physx_pgs"}, "physx_pgs"),
-            ({"friction_anchor_beta": 0.2}, "friction_anchor_beta"),
-            ({"pgs_contact_regularization": 0.02}, "pgs_contact_regularization"),
-            ({"pgs_velocity_iterations": 2}, "pgs_velocity_iterations"),
-            ({"pgs_warmstart": True}, "pgs_warmstart"),
             ({"contact_torsion_radius": 0.01}, "contact_torsion_radius"),
             ({"contact_compliance": True, "friction_anchor_beta": 0.0}, "contact_compliance"),
             ({"enable_sleeping": True}, "enable_sleeping"),
@@ -642,19 +637,20 @@ def test_propagation_rejects_unsupported_options(test, device):
             with test.subTest(response=response, option=name):
                 with test.assertRaisesRegex(NotImplementedError, f"{name}.*articulated_contact_response"):
                     SolverFeatherPGS(model, articulated_contact_response=response, **kwargs)
+        for kwargs in (
+            {"drive_mode": "physx_pgs"},
+            {"pgs_contact_regularization": 0.02},
+            {"pgs_velocity_iterations": 2},
+            {"pgs_warmstart": True},
+        ):
+            with test.subTest(response=response, **kwargs):
+                solver = SolverFeatherPGS(model, articulated_contact_response=response, **kwargs)
+                test.assertTrue(solver._propagation_active)
         restitution = model.shape_material_restitution.numpy().copy()
         model.shape_material_restitution.fill_(0.5)
         with test.subTest(response=response, option="restitution"):
-            with test.assertRaisesRegex(NotImplementedError, "restitution"):
-                SolverFeatherPGS(model, articulated_contact_response=response)
-            threshold = float(np.finfo(np.float32).max)
-            SolverFeatherPGS(model, articulated_contact_response=response, restitution_velocity_threshold=threshold)
-        model.shape_material_restitution.assign(restitution)
-        solver = SolverFeatherPGS(model, articulated_contact_response=response)
-        model.shape_material_restitution.fill_(0.5)
-        with test.subTest(response=response, option="restitution notify"):
-            with test.assertRaisesRegex(NotImplementedError, "restitution"):
-                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+            solver = SolverFeatherPGS(model, articulated_contact_response=response)
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         model.shape_material_restitution.assign(restitution)
 
 

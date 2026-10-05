@@ -3562,10 +3562,10 @@ def _allocate_world_contact_slot(
             return
         contact_path[c] = 1
     elif is_propagation:
-        slot = wp.atomic_add(propagation_slot_counter, world, 3)
-        if slot + 3 > propagation_max_constraints:
+        slot = wp.atomic_add(propagation_slot_counter, world, slots_needed)
+        if slot + slots_needed > propagation_max_constraints:
             wp.atomic_min(propagation_first_rejected_slot, world, slot)
-            wp.atomic_add(propagation_dropped_contact_rows, world, 3)
+            wp.atomic_add(propagation_dropped_contact_rows, world, slots_needed)
             contact_slot[c] = -1
             contact_path[c] = -1
             return
@@ -4888,6 +4888,7 @@ def snapshot_contact_warmstart(
     contact_normal: wp.array[wp.vec3],
     previous_dense_slot: wp.array[int],
     previous_mf_slot: wp.array[int],
+    previous_propagation_slot: wp.array[int],
     previous_normal: wp.array[wp.vec3],
 ):
     """Record each contact's first row per family and its normal for the next step's gather."""
@@ -4902,6 +4903,7 @@ def snapshot_contact_warmstart(
         previous_normal[contact] = contact_normal[contact]
     previous_dense_slot[contact] = wp.where(path == 0, slot, -1)
     previous_mf_slot[contact] = wp.where(path == 1, slot, -1)
+    previous_propagation_slot[contact] = wp.where(path == 2, slot, -1)
 
 
 @wp.kernel
@@ -6873,9 +6875,12 @@ def build_propagation_contact_rows(
     prescribed_articulation: wp.array[int],
     articulation_origin: wp.array[wp.vec3],
     shape_material_mu: wp.array[float],
+    shape_material_restitution: wp.array[float],
+    contact_slots_needed: wp.array[int],
     contact_shared_anchor: int,
     contact_friction_shared_anchor: int,
     friction_patches: FrictionPatches,
+    friction_anchor_beta: float,
     # outputs
     propagation_body_a: wp.array2d[int],
     propagation_body_b: wp.array2d[int],
@@ -6886,13 +6891,16 @@ def build_propagation_contact_rows(
     propagation_row_mu: wp.array2d[float],
     propagation_phi: wp.array2d[float],
     propagation_target_velocity: wp.array2d[float],
+    propagation_row_restitution: wp.array2d[float],
 ):
-    """Build the body-space normal and two friction rows of every propagation contact.
+    """Build the body-space normal row and, when allocated, the two friction rows of every propagation contact.
 
     Each side's row is ``J = [d, r x d]`` with ``r`` the contact point relative to the
     body's center of mass. A side without response DOFs (ground, a zero-DOF articulation
     or a prescribed kinematic body) gets body ``-1``; its prescribed motion enters
-    through the row target velocity.
+    through the row target velocity. With friction patches the friction rows act at the
+    patch anchor points and their ``phi`` holds ``friction_anchor_beta`` times the anchor's
+    tangential displacement.
     """
     total_contacts = wp.min(contact_count[0], contact_point0.shape[0])
     for c in range(wp.tid(), total_contacts, total_num_threads):
@@ -6935,7 +6943,8 @@ def build_propagation_contact_rows(
         if response_body_b >= 0:
             com_b = wp.transform_point(body_q[response_body_b], body_com[response_body_b])
 
-        for row_offset in range(3):
+        restitution = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
+        for row_offset in range(contact_slots_needed[c]):
             row = slot + row_offset
             d = normal
             if row_offset == 1:
@@ -6968,10 +6977,12 @@ def build_propagation_contact_rows(
                 propagation_row_type[world, row] = PGS_CONSTRAINT_TYPE_CONTACT
                 propagation_row_parent[world, row] = -1
                 propagation_phi[world, row] = phi
+                propagation_row_restitution[world, row] = restitution
             else:
                 propagation_row_type[world, row] = PGS_CONSTRAINT_TYPE_FRICTION
                 propagation_row_parent[world, row] = slot
-                propagation_phi[world, row] = 0.0
+                propagation_phi[world, row] = friction_anchor_beta * friction_patches.phi[c][row_offset - 1]
+                propagation_row_restitution[world, row] = 0.0
             propagation_target_velocity[world, row] = prescribed_relative_contact_target(
                 body_a,
                 art_a,
@@ -7005,6 +7016,26 @@ def copy_free_rigid_propagation_body_response(
             propagation_body_response[body, r, c] = Hinv[r, c]
 
 
+@wp.func
+def propagation_contact_row_dot(
+    J_a: wp.array3d[float],
+    J_b: wp.array3d[float],
+    body_qd: wp.array2d[float],
+    world: int,
+    row: int,
+    body_a: int,
+    body_b: int,
+):
+    """Return ``J v`` of one propagation row from the body twists."""
+    value = float(0.0)
+    for k in range(6):
+        if body_a >= 0:
+            value += J_a[world, row, k] * body_qd[body_a, k]
+        if body_b >= 0:
+            value += J_b[world, row, k] * body_qd[body_b, k]
+    return value
+
+
 @wp.kernel
 def compute_propagation_effective_mass_and_rhs(
     propagation_constraint_count: wp.array[int],
@@ -7016,16 +7047,23 @@ def compute_propagation_effective_mass_and_rhs(
     propagation_phi: wp.array2d[float],
     propagation_row_type: wp.array2d[int],
     propagation_target_velocity: wp.array2d[float],
+    propagation_row_restitution: wp.array2d[float],
+    propagation_body_qd: wp.array2d[float],
     rigid_body_max_depenetration_velocity: wp.array[float],
     pgs_cfm: float,
     pgs_beta: float,
+    contact_w: float,
     dt: float,
+    contact_speculative_scale: float,
+    restitution_velocity_threshold: float,
     propagation_max_constraints: int,
     # outputs
     propagation_eff_mass_inv: wp.array2d[float],
     propagation_MiJt_a: wp.array3d[float],
     propagation_MiJt_b: wp.array3d[float],
     propagation_rhs: wp.array2d[float],
+    propagation_restitution_bias: wp.array2d[float],
+    propagation_row_w: wp.array2d[float],
 ):
     """Compute the response ``M^-1 J^T``, inverse effective mass and bias of each propagation row.
 
@@ -7033,7 +7071,12 @@ def compute_propagation_effective_mass_and_rhs(
     articulation misses their cross term here; see
     :func:`refine_same_articulation_propagation_rows`. The bias follows the free-body
     rows: penetrating contacts get the Baumgarte term, bounded by the bodies' maximum
-    depenetration velocity, and separated contacts may close their gap during the step.
+    depenetration velocity, and separated contacts may close ``contact_speculative_scale``
+    times their gap during the step. An impacting contact whose rebound fires gets its
+    restitution target, from the twists in ``propagation_body_qd`` (the unconstrained
+    velocity), which ``propagation_restitution_bias`` keeps for the velocity-only
+    iterations. Patch friction rows get their anchor bias. ``propagation_row_w`` receives
+    the regularization weight when regularization is on.
     """
     tid = wp.tid()
     world = tid // propagation_max_constraints
@@ -7064,8 +7107,15 @@ def compute_propagation_effective_mass_and_rhs(
         propagation_eff_mass_inv[world, i] = 0.0
 
     bias = float(0.0)
-    if propagation_row_type[world, i] == PGS_CONSTRAINT_TYPE_CONTACT:
+    restitution_bias = float(0.0)
+    row_w = float(1.0)
+    row_type = propagation_row_type[world, i]
+    target_velocity = propagation_target_velocity[world, i]
+    if row_type == PGS_CONSTRAINT_TYPE_CONTACT:
         phi = propagation_phi[world, i]
+        if phi <= 0.0:
+            # Speculative rows stay rigid so a closing contact reaches the surface.
+            row_w = contact_w
         if phi < 0.0:
             bias = pgs_beta * phi / dt
             max_depen = 1.0e20
@@ -7079,8 +7129,115 @@ def compute_propagation_effective_mass_and_rhs(
             if max_depen > 0.0 and wp.isfinite(max_depen):
                 bias = wp.max(bias, -max_depen)
         else:
-            bias = phi / dt
-    propagation_rhs[world, i] = bias - propagation_target_velocity[world, i]
+            bias = contact_speculative_scale * phi / dt
+        restitution = propagation_row_restitution[world, i]
+        if restitution > 0.0:
+            relative_incident = (
+                propagation_contact_row_dot(propagation_J_a, propagation_J_b, propagation_body_qd, world, i, ba, bb)
+                - target_velocity
+            )
+            if contact_restitution_fires(phi, relative_incident, dt, restitution_velocity_threshold):
+                bias = restitution * relative_incident
+                restitution_bias = bias
+                # An impact is impulsive, not a spring: keep the rebound exact.
+                row_w = 1.0
+    elif row_type == PGS_CONSTRAINT_TYPE_FRICTION:
+        bias = propagation_phi[world, i] / dt
+    propagation_rhs[world, i] = bias - target_velocity
+    propagation_restitution_bias[world, i] = restitution_bias
+    if contact_w < 1.0:
+        propagation_row_w[world, i] = row_w
+
+
+@wp.kernel
+def compute_propagation_velocity_rhs(
+    propagation_constraint_count: wp.array[int],
+    propagation_body_a: wp.array2d[int],
+    propagation_body_b: wp.array2d[int],
+    propagation_J_a: wp.array3d[float],
+    propagation_J_b: wp.array3d[float],
+    propagation_phi: wp.array2d[float],
+    propagation_row_type: wp.array2d[int],
+    propagation_target_velocity: wp.array2d[float],
+    propagation_restitution_bias: wp.array2d[float],
+    position_body_qd: wp.array2d[float],
+    dt: float,
+    propagation_max_constraints: int,
+    # outputs
+    propagation_rhs: wp.array2d[float],
+):
+    """Build the propagation right-hand side of the velocity-only iterations.
+
+    Mirrors :func:`compute_mf_velocity_rhs`: no position bias, except that a positive-gap
+    contact whose end gap after the position solve stays above the slop keeps
+    ``phi / dt`` and an impacting contact keeps the rebound target frozen before the
+    position solve. ``position_body_qd`` holds the body twists after the position solve.
+    """
+    tid = wp.tid()
+    world = tid // propagation_max_constraints
+    i = tid - world * propagation_max_constraints
+    if i >= propagation_constraint_count[world]:
+        return
+
+    target_velocity = propagation_target_velocity[world, i]
+    bias = float(0.0)
+    if propagation_row_type[world, i] == PGS_CONSTRAINT_TYPE_CONTACT:
+        restitution_bias = propagation_restitution_bias[world, i]
+        phi = propagation_phi[world, i]
+        if restitution_bias != 0.0:
+            bias = restitution_bias
+        elif phi > 0.0:
+            jv_position = propagation_contact_row_dot(
+                propagation_J_a,
+                propagation_J_b,
+                position_body_qd,
+                world,
+                i,
+                propagation_body_a[world, i],
+                propagation_body_b[world, i],
+            )
+            end_gap = phi + dt * (jv_position - target_velocity)
+            if end_gap > _FPGS_CONTACT_END_GAP_SLOP:
+                bias = phi / dt
+    propagation_rhs[world, i] = bias - target_velocity
+
+
+@wp.kernel
+def accumulate_propagation_warmstart_body_impulses(
+    propagation_constraint_count: wp.array[int],
+    propagation_body_a: wp.array2d[int],
+    propagation_body_b: wp.array2d[int],
+    propagation_J_a: wp.array3d[float],
+    propagation_J_b: wp.array3d[float],
+    propagation_MiJt_a: wp.array3d[float],
+    propagation_MiJt_b: wp.array3d[float],
+    propagation_impulses: wp.array2d[float],
+    propagation_max_constraints: int,
+    # in/out
+    propagation_body_qd: wp.array2d[float],
+    propagation_body_impulses: wp.array2d[float],
+):
+    """Turn the seeded propagation impulses into body twists and pending body impulses.
+
+    The tree propagation then applies the pending impulses to the joint velocities.
+    """
+    tid = wp.tid()
+    world = tid // propagation_max_constraints
+    row = tid - world * propagation_max_constraints
+    if row >= propagation_constraint_count[world]:
+        return
+    impulse = propagation_impulses[world, row]
+    if impulse == 0.0:
+        return
+    ba = propagation_body_a[world, row]
+    bb = propagation_body_b[world, row]
+    for k in range(6):
+        if ba >= 0:
+            wp.atomic_add(propagation_body_qd, ba, k, propagation_MiJt_a[world, row, k] * impulse)
+            wp.atomic_add(propagation_body_impulses, ba, k, propagation_J_a[world, row, k] * impulse)
+        if bb >= 0:
+            wp.atomic_add(propagation_body_qd, bb, k, propagation_MiJt_b[world, row, k] * impulse)
+            wp.atomic_add(propagation_body_impulses, bb, k, propagation_J_b[world, row, k] * impulse)
 
 
 @wp.kernel
