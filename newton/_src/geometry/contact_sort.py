@@ -205,6 +205,10 @@ class ContactSorter:
 
     ``key_bit_count`` limits sorting to the populated low key bits, reducing
     radix passes without changing the full-capacity graph-capture behavior.
+
+    Set ``allocate_simple_scratch=False`` for a sorter used only by
+    :meth:`sort_full` to avoid allocating the unused simple-layout scratch.
+    Scratch allocation is fixed at construction time.
     """
 
     def __init__(
@@ -213,6 +217,7 @@ class ContactSorter:
         *,
         key_bit_count: int = 64,
         per_contact_shape_properties: bool = False,
+        allocate_simple_scratch: bool = True,
         device: Devicelike = None,
     ):
         if not 1 <= key_bit_count <= 64:
@@ -227,11 +232,13 @@ class ContactSorter:
             self._has_shape_props = per_contact_shape_properties
 
             # Scratch buffers for the simple gather (NarrowPhase.launch path).
-            self._simple_pair_buf = wp.zeros(capacity, dtype=wp.vec2i)
-            self._simple_position_buf = wp.zeros(capacity, dtype=wp.vec3)
-            self._simple_normal_buf = wp.zeros(capacity, dtype=wp.vec3)
-            self._simple_penetration_buf = wp.zeros(capacity, dtype=float)
-            self._simple_tangent_buf = wp.zeros(capacity, dtype=wp.vec3)
+            self._has_simple_scratch = allocate_simple_scratch
+            simple_capacity = capacity if allocate_simple_scratch else 0
+            self._simple_pair_buf = wp.zeros(simple_capacity, dtype=wp.vec2i)
+            self._simple_position_buf = wp.zeros(simple_capacity, dtype=wp.vec3)
+            self._simple_normal_buf = wp.zeros(simple_capacity, dtype=wp.vec3)
+            self._simple_penetration_buf = wp.zeros(simple_capacity, dtype=float)
+            self._simple_tangent_buf = wp.zeros(simple_capacity, dtype=wp.vec3)
             self._simple_match_index_buf = wp.zeros(1, dtype=wp.int32)
 
             # Scratch buffers for the full gather (CollisionPipeline.collide path).
@@ -289,6 +296,8 @@ class ContactSorter:
                 permuted alongside the other contact fields during sorting.
             device: Device to launch on.
         """
+        if not self._has_simple_scratch:
+            raise ValueError("sort_simple requires allocate_simple_scratch=True")
         n = self._capacity
 
         has_tangent = contact_tangent is not None and contact_tangent.shape[0] > 0
