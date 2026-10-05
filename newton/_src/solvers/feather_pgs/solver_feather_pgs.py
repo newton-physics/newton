@@ -63,11 +63,13 @@ from .kernels import (
     eval_rigid_fk_id,
     eval_rigid_tau,
     eval_rigid_tau_and_augmented_drives,
+    factor_diagonal_mass,
     finalize_mf_constraint_counts,
     finalize_world_constraint_counts,
     finalize_world_diag_cfm,
     gather_JY_to_world,
     gather_tau_to_groups,
+    hinv_jt_diagonal,
     hinv_jt_par_row,
     integrate_generalized_joints,
     invert_lower_factor_grouped,
@@ -93,6 +95,7 @@ from .kernels import (
     rhs_accum_world_par_art,
     scatter_augmented_drive_dof_K,
     scatter_qdd_from_groups,
+    solve_diagonal_mass,
     trisolve_loop,
     update_body_qd_from_featherstone,
     update_qdd_from_velocity,
@@ -802,6 +805,7 @@ class _FeatherPGSExecutionPlan:
     hinv_jt_tiled_sizes: frozenset[int]
     hinv_jt_chunk_sizes: tuple[tuple[int, int], ...]
     hinv_jt_fused_sizes: frozenset[int]
+    diagonal_mass_sizes: frozenset[int] = frozenset()
 
     @classmethod
     def build(
@@ -814,13 +818,21 @@ class _FeatherPGSExecutionPlan:
         hinv_jt_kernel: str,
         small_dof_threshold: int,
         tile_threads: int,
+        diagonal_mass_sizes: frozenset[int] = frozenset(),
     ) -> "_FeatherPGSExecutionPlan":
-        """Resolve the factorization and H^-1 J^T implementations from solver shape and device limits."""
+        """Resolve the factorization and H^-1 J^T implementations from solver shape and device limits.
+
+        Groups in ``diagonal_mass_sizes`` have a structurally diagonal mass matrix and use
+        the per-DOF diagonal kernels instead of a factorization, solve or response kernel.
+        """
         cholesky_tiled_sizes: set[int] = set()
         tiled_sizes: set[int] = set()
         chunk_sizes: list[tuple[int, int]] = []
         fused_sizes: set[int] = set()
+        diagonal_sizes = frozenset(size for size in size_groups if size in diagonal_mass_sizes)
         for size in size_groups:
+            if size in diagonal_sizes:
+                continue
             cholesky_requested = cholesky_kernel == "tiled" or (
                 cholesky_kernel == "auto" and size > small_dof_threshold
             )
@@ -858,7 +870,13 @@ class _FeatherPGSExecutionPlan:
             ):
                 fused_sizes.add(size)
 
-        return cls(frozenset(cholesky_tiled_sizes), frozenset(tiled_sizes), tuple(chunk_sizes), frozenset(fused_sizes))
+        return cls(
+            frozenset(cholesky_tiled_sizes),
+            frozenset(tiled_sizes),
+            tuple(chunk_sizes),
+            frozenset(fused_sizes),
+            diagonal_sizes,
+        )
 
     def use_tiled_cholesky(self, size: int) -> bool:
         """Return whether an articulation group uses tiled Cholesky."""
@@ -878,6 +896,10 @@ class _FeatherPGSExecutionPlan:
     def use_fused_hinv_jt(self, size: int) -> bool:
         """Return whether a response group may fuse H-inverse application and Delassus assembly."""
         return size in self.hinv_jt_fused_sizes
+
+    def use_diagonal_mass(self, size: int) -> bool:
+        """Return whether an articulation group uses the diagonal mass-matrix kernels."""
+        return size in self.diagonal_mass_sizes
 
 
 class SolverFeatherPGS(SolverBase):
@@ -991,8 +1013,12 @@ class SolverFeatherPGS(SolverBase):
     to floating-point rounding. The selection follows the model's structure only; it is not
     a performance prediction. Sparse factors take longer to set up and, depending on the
     articulation and the number of worlds, can run faster or markedly slower than dense
-    factors. ``parallel_tree=True`` additionally traverses the independent branches of each
-    tree in parallel.
+    factors. Articulations whose DOFs are not coupled at all, for example independent
+    single-DOF branches of a fixed base, have a diagonal mass matrix; they skip the
+    factorization and solve each DOF by division, bitwise identical to the dense ``loop``
+    kernels and equal to the ``tiled`` kernels up to float32 rounding, and take precedence
+    over sparse factors. ``parallel_tree=True`` additionally traverses the independent
+    branches of each tree in parallel.
 
     Constraint rows are stored per world with fixed capacities (``dense_max_constraints``
     for rows of articulated bodies, ``mf_max_constraints`` for free-body contacts). Rows
@@ -1054,7 +1080,8 @@ class SolverFeatherPGS(SolverBase):
     # Test hook: pin a kernel implementation regardless of the size heuristic
     # (keys: cholesky_kernel, trisolve_kernel, hinv_jt_kernel; split mode also
     # delassus_kernel and pgs_kernel, which selects the native or scalar Gauss-Seidel
-    # kernels of both row families; sparse_mass_matrix=False keeps dense mass factors).
+    # kernels of both row families; sparse_mass_matrix=False keeps dense mass factors;
+    # diagonal_mass=False keeps diagonal mass matrices on the factor paths).
     _kernel_overrides: ClassVar[dict[str, str]] = {}
 
     @classmethod
@@ -1430,6 +1457,7 @@ class SolverFeatherPGS(SolverBase):
             else ()
         )
         self.dense_max_constraints = self._requested_dense_max_constraints
+        self._setup_diagonal_mass(model)
         self._setup_sparse_mass_matrix(model)
         self._execution_plan = _FeatherPGSExecutionPlan.build(
             self.size_groups,
@@ -1439,6 +1467,7 @@ class SolverFeatherPGS(SolverBase):
             hinv_jt_kernel=self.hinv_jt_kernel,
             small_dof_threshold=self.small_dof_threshold,
             tile_threads=_TILE_THREADS,
+            diagonal_mass_sizes=self._diagonal_mass_sizes,
         )
         split = self.pgs_mode == "split"
         # Split mode assembles the Delassus matrix from the grouped responses and never
@@ -2567,6 +2596,74 @@ class SolverFeatherPGS(SolverBase):
             else {}
         )
 
+    def _setup_diagonal_mass(self, model: Model) -> None:
+        """Select the diagonal mass-matrix kernels for articulations without coupled DOFs.
+
+        The selection is automatic and structural. A response group qualifies when all its
+        articulations share one local topology in which every joint has at most one DOF and
+        no DOF's joint is an ancestor of another DOF's joint, for example independent
+        single-DOF branches of a fixed base. Every off-diagonal entry of their mass matrix is
+        then zero, so the factor, the unconstrained solve and the row responses reduce to
+        per-DOF divisions with the same results as the dense loop kernels. These groups keep
+        the dense row and response storage.
+        """
+        self._diagonal_mass_sizes = frozenset()
+        if not self._kernel_overrides.get("diagonal_mass", True):
+            return
+        # The split solve builds its responses from dense factors.
+        if self.pgs_mode != "matrix_free":
+            return
+        if (self.cholesky_kernel, self.trisolve_kernel, self.hinv_jt_kernel) != ("auto", "auto", "auto"):
+            return
+        if not self.size_groups or not model.joint_count:
+            return
+        plan = self._model_plan
+        articulation_start = model.articulation_start.numpy()
+        joint_end = self.articulation_joint_end.numpy()
+        joint_ancestor = model.joint_ancestor.numpy()
+        joint_qd_start = model.joint_qd_start.numpy()
+        free_rigid = plan.is_free_rigid != 0
+        diagonal_sizes: set[int] = set()
+        for size in self.size_groups:
+            arts = np.flatnonzero(plan.response_dof_count == size)
+            if not arts.size or np.any(free_rigid[arts]):
+                continue
+            reference = None
+            for art in arts:
+                start, end = int(articulation_start[art]), int(joint_end[art])
+                dof_start = int(plan.articulation_dof_start[art])
+                # Local joint of each response DOF, and the local parent of each joint.
+                dof_joint = np.full(int(size), -1, dtype=np.int32)
+                for joint in range(start, end):
+                    first = max(0, int(joint_qd_start[joint]) - dof_start)
+                    last = min(int(size), int(joint_qd_start[joint + 1]) - dof_start)
+                    dof_joint[first:last] = joint - start
+                parents = joint_ancestor[start:end].astype(np.int32, copy=True)
+                parents = np.where(parents >= start, parents - start, -1).astype(np.int32)
+                if reference is None:
+                    reference = (dof_joint, parents)
+                elif not (np.array_equal(dof_joint, reference[0]) and np.array_equal(parents, reference[1])):
+                    reference = None
+                    break
+            if reference is None:
+                continue
+            dof_joint, parents = reference
+            # Every DOF has its own joint, and no DOF joint is an ancestor of another.
+            if np.any(dof_joint < 0) or np.unique(dof_joint).size != dof_joint.size:
+                continue
+            owners = {int(joint) for joint in dof_joint}
+            coupled = False
+            for joint in owners:
+                ancestor = int(parents[joint])
+                while ancestor >= 0 and not coupled:
+                    coupled = ancestor in owners
+                    ancestor = int(parents[ancestor])
+                if coupled:
+                    break
+            if not coupled:
+                diagonal_sizes.add(int(size))
+        self._diagonal_mass_sizes = frozenset(diagonal_sizes)
+
     def _setup_sparse_mass_matrix(self, model: Model) -> None:
         """Select topology-derived sparse mass factors for branched articulations.
 
@@ -2603,6 +2700,9 @@ class SolverFeatherPGS(SolverBase):
         if self._has_free_rigid_bodies and (size == 6 or 6 not in self._free_body_inertia_sizes):
             return
         if size > 64:
+            return
+        # Diagonal mass matrices need no factor at all.
+        if size in self._diagonal_mass_sizes:
             return
 
         articulation_start = model.articulation_start.numpy()
@@ -3197,8 +3297,8 @@ class SolverFeatherPGS(SolverBase):
         self._hinv_jt_chunk_count_by_size = {}
 
         for size in self.size_groups:
-            # Sparse mass factors need no dense factorization, solve or response kernels.
-            dense = size != self._sparse_mass_matrix_size
+            # Sparse and diagonal mass matrices need no dense factorization, solve or response kernels.
+            dense = size != self._sparse_mass_matrix_size and not self._execution_plan.use_diagonal_mass(size)
             self._cholesky_kernels_by_size[size] = (
                 _get_cholesky_kernel(size, device_arch, _TILE_THREADS)
                 if dense and self._execution_plan.use_tiled_cholesky(size)
@@ -3504,7 +3604,9 @@ class SolverFeatherPGS(SolverBase):
         for size in self.size_groups:
             if size == self._sparse_mass_matrix_size:
                 continue
-            if self._execution_plan.use_tiled_cholesky(size):
+            if self._execution_plan.use_diagonal_mass(size):
+                self._stage2_factor_diagonal(size)
+            elif self._execution_plan.use_tiled_cholesky(size):
                 self._stage2_cholesky_tiled(size)
             else:
                 self._stage2_cholesky_loop(size)
@@ -3535,6 +3637,9 @@ class SolverFeatherPGS(SolverBase):
                     block_dim=128,
                     device=model.device,
                 )
+                continue
+            if self._execution_plan.use_diagonal_mass(size):
+                self._stage3_solve_diagonal(size, state_aug)
                 continue
             use_tiled = self.trisolve_kernel == "tiled" or (
                 self.trisolve_kernel == "auto" and size > self.small_dof_threshold
@@ -3605,7 +3710,9 @@ class SolverFeatherPGS(SolverBase):
         model = self.model
         if self._sparse_mass_matrix_size is None:
             for size in self.size_groups:
-                if self._execution_plan.use_tiled_hinv_jt(size):
+                if self._execution_plan.use_diagonal_mass(size):
+                    self._stage4_hinv_jt_diagonal(size)
+                elif self._execution_plan.use_tiled_hinv_jt(size):
                     self._stage4_hinv_jt_tiled(size)
                 else:
                     self._stage4_hinv_jt_par_row(size)
@@ -4518,6 +4625,22 @@ class SolverFeatherPGS(SolverBase):
             device=self.model.device,
         )
 
+    def _stage2_factor_diagonal(self, size: int) -> None:
+        """Factor a group whose mass matrix is structurally diagonal."""
+        wp.launch(
+            factor_diagonal_mass,
+            dim=self.n_arts_by_size[size] * size,
+            inputs=[
+                self.H_by_size[size],
+                self.R_by_size[size],
+                self.group_to_art[size],
+                self.mass_update_mask,
+                size,
+            ],
+            outputs=[self.L_by_size[size]],
+            device=self.model.device,
+        )
+
     def _stage2_cholesky_loop(self, size: int):
         wp.launch(
             cholesky_loop,
@@ -4571,6 +4694,22 @@ class SolverFeatherPGS(SolverBase):
             ],
             outputs=[state_aug.joint_qdd],
             device=model.device,
+        )
+
+    def _stage3_solve_diagonal(self, size: int, state_aug: State) -> None:
+        """Solve the unconstrained accelerations of a diagonal-mass group."""
+        wp.launch(
+            solve_diagonal_mass,
+            dim=self.n_arts_by_size[size] * size,
+            inputs=[
+                self.L_by_size[size],
+                self.group_to_art[size],
+                self.articulation_dof_start,
+                size,
+                state_aug.joint_tau,
+            ],
+            outputs=[state_aug.joint_qdd],
+            device=self.model.device,
         )
 
     def _stage3_trisolve_loop(self, size: int, state_aug: State):
@@ -5228,6 +5367,29 @@ class SolverFeatherPGS(SolverBase):
             ],
             outputs=outputs,
             block_dim=_TILE_THREADS,
+            device=self.model.device,
+        )
+
+    def _stage4_hinv_jt_diagonal(self, size: int) -> None:
+        """Compute the row responses of a diagonal-mass group."""
+        n_arts = self.n_arts_by_size[size]
+        world_dof_offset = self.articulation_world_dof_offset if self._hinv_jt_writes_world else self.group_to_art[size]
+        wp.launch(
+            hinv_jt_diagonal,
+            dim=n_arts * self.dense_max_constraints,
+            inputs=[
+                self.L_by_size[size],
+                self.J_by_size[size],
+                self.group_to_art[size],
+                self.art_to_world,
+                world_dof_offset,
+                self.constraint_count,
+                size,
+                self.dense_max_constraints,
+                n_arts,
+                int(self._hinv_jt_writes_world),
+            ],
+            outputs=[self.Y_by_size[size], self.J_world, self.Y_world],
             device=self.model.device,
         )
 
