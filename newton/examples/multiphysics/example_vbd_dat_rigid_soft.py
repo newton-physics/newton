@@ -105,7 +105,6 @@ PARAMS = {
     "soft_contact_mu": 0.6,
     # collision
     "collision_broad_phase": "nxn",
-    "rigid_body_particle_contact_buffer_size": 4096,
     # camera (fixed side view)
     "camera_offset": (2.4, -2.4, 0.6),
     "camera_pitch": -11.0,
@@ -154,7 +153,6 @@ class Example:
             particle_self_contact_gap=self.params["self_contact_gap"],
             particle_vertex_contact_buffer_size=64,
             particle_edge_contact_buffer_size=128,
-            rigid_body_particle_contact_buffer_size=self.params["rigid_body_particle_contact_buffer_size"],
             collision_pipeline=self.collision_pipeline,
         )
 
