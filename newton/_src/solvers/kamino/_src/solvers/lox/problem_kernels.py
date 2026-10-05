@@ -14,7 +14,7 @@ from functools import cache
 
 import warp as wp
 
-from ...core.joints import JointActuationType, JointCorrectionMode
+from ...core.joints import JointActuationType, JointCorrectionMode, JointDoFType
 from ...core.math import compute_body_pose_update_with_logmap, contact_wrench_matrix_from_points
 from ...core.types import mat36f, mat66f, vec6f
 from ...geometry.contacts import ContactMode
@@ -711,8 +711,11 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
 
     The candidate twist blends the global and projected twists of the joint bodies.
     With ``proximal`` relaxation, the exact joint residual at the candidate poses
-    corrects the linearized residual; only the proximal kernel compiles that code, which
-    keeps the register use of the default kernel low.
+    corrects the linearized residual of the three positional rows of fixed, revolute,
+    and spherical joints, expressed in the frozen joint frame of their Jacobian; the
+    correction of the other rows relaxes to zero. Only the proximal kernel compiles that
+    code, which keeps the register use of the default kernel low. A non-finite update
+    fails the world and stops the update of the joint.
     """
 
     @wp.kernel
@@ -735,7 +738,6 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
         data_bodies_q_i: wp.array[wp.transformf],
         data_joints_q_j_p: wp.array[wp.float32],
         world_active: wp.array[wp.bool],
-        world_failed: wp.array[wp.bool],
         body_vector_index: wp.array[wp.int32],
         global_twist: wp.array[vec6f],
         projected_twist: wp.array[vec6f],
@@ -755,6 +757,7 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
         reaction: wp.array[wp.float32],
         body_impulse: wp.array[vec6f],
         world_residual: wp.array[wp.float32],
+        world_failed: wp.array[wp.bool],
     ):
         jid = wp.tid()
         row_begin = model_joints_kinematic_cts_offset[jid]
@@ -786,6 +789,10 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
             twist_b = global_twist[bid_b] + projected_fraction * (projected_twist[bid_b] - global_twist[bid_b])
 
         # Evaluate the exact joint residual at the candidate poses
+        dof_type = model_joints_dof_type[jid]
+        full_position_block = (
+            dof_type == JointDoFType.FIXED or dof_type == JointDoFType.REVOLUTE or dof_type == JointDoFType.SPHERICAL
+        )
         if wp.static(proximal):
             a_pose = wp.transform_identity(dtype=wp.float32)
             if bid_a >= 0:
@@ -801,18 +808,20 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
                 wp.vec3f(twist_b[0], twist_b[1], twist_b[2]),
                 wp.vec3f(twist_b[3], twist_b[4], twist_b[5]),
             )
-            _, relative_position, relative_orientation, relative_twist = compute_joint_pose_and_relative_motion(
-                a_pose,
-                b_pose,
-                wp.spatial_vectorf(0.0),
-                wp.spatial_vectorf(0.0),
-                model_joints_B_r_Bj[jid],
-                model_joints_F_r_Fj[jid],
-                model_joints_X_Bj[jid],
-                model_joints_X_Fj[jid],
+            joint_pose, relative_position, relative_orientation, relative_twist = (
+                compute_joint_pose_and_relative_motion(
+                    a_pose,
+                    b_pose,
+                    wp.spatial_vectorf(0.0),
+                    wp.spatial_vectorf(0.0),
+                    model_joints_B_r_Bj[jid],
+                    model_joints_F_r_Fj[jid],
+                    model_joints_X_Bj[jid],
+                    model_joints_X_Fj[jid],
+                )
             )
             wp.static(make_write_joint_data(correction))(
-                model_joints_dof_type[jid],
+                dof_type,
                 row_begin,
                 model_joints_dofs_offset[jid],
                 model_joints_coords_offset[jid],
@@ -825,6 +834,17 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
                 scratch_joint_coordinate,
                 scratch_joint_velocity,
             )
+            if full_position_block:
+                # The Jacobian of the positional rows uses the joint frame of the base body at the
+                # beginning of the time step; express the candidate anchor separation in that frame
+                frozen_orientation = wp.quat_identity(dtype=wp.float32)
+                if bid_a >= 0:
+                    frozen_orientation = wp.transform_get_rotation(data_bodies_q_i[bid_a])
+                frozen_frame = frozen_orientation * wp.quat_from_matrix(model_joints_X_Bj[jid])
+                separation = wp.quat_rotate(wp.transform_get_rotation(joint_pose), relative_position)
+                frozen_separation = wp.quat_rotate_inv(frozen_frame, separation)
+                for axis in range(3):
+                    candidate_residual[row_begin + axis] = frozen_separation[axis]
 
         # Update the multipliers of the joint rows, and the multiplier impulses on its bodies
         residual_max = wp.float32(0.0)
@@ -843,13 +863,21 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
             linear_residual = row_residual + dt * candidate_velocity
             update_residual = linear_residual
             if wp.static(proximal):
+                feedback_residual = linear_residual
+                if full_position_block and row - row_begin < 3:
+                    feedback_residual = candidate_residual[row]
                 defect = proximal_defect[row]
-                defect += proximal_relaxation * (candidate_residual[row] - linear_residual - defect)
-                proximal_defect[row] = defect
+                defect += proximal_relaxation * (feedback_residual - linear_residual - defect)
                 update_residual += defect
-            residual_max = wp.max(residual_max, wp.abs(update_residual))
             reaction_change = -penalty[row] * update_residual
-            reaction[row] += reaction_change
+            next_reaction = reaction[row] + reaction_change
+            if not (wp.isfinite(update_residual) and wp.isfinite(next_reaction)):
+                world_failed[wid] = True
+                return
+            if wp.static(proximal):
+                proximal_defect[row] = defect
+            residual_max = wp.max(residual_max, wp.abs(update_residual))
+            reaction[row] = next_reaction
             impulse_change_a += reaction_change * row_jacobian_a
             impulse_change_b += reaction_change * row_jacobian_b
         if bid_a >= 0:
@@ -931,12 +959,23 @@ def _write_dynamic_outputs(
     effort_net_applied: wp.array[wp.float32],
     effort_value_index: wp.array[wp.int32],
     body_velocity: wp.array[vec6f],
+    world_failed: wp.array[wp.bool],
     # Outputs:
     data_joints_lambda_dyn_j: wp.array[wp.float32],
     data_joints_lambda_tau_j: wp.array[wp.float32],
     data_bodies_w_j_i: wp.array[vec6f],
 ):
+    """Write the implicit joint drive and actuator forces; failed worlds write zero."""
     row = wp.tid()
+    wid = row_world[row]
+    bounded = effort_index[row]
+    destination_index = multiplier_index[row]
+    if world_failed[wid]:
+        if bounded >= 0:
+            data_joints_lambda_tau_j[effort_value_index[bounded]] = 0.0
+        if destination_index >= 0:
+            data_joints_lambda_dyn_j[destination_index] = 0.0
+        return
     velocity = wp.float32(0.0)
     bid_a = body_a[row]
     bid_b = body_b[row]
@@ -944,13 +983,11 @@ def _write_dynamic_outputs(
         velocity += wp.dot(jacobian_a[row], body_velocity[bid_a])
     if bid_b >= 0:
         velocity += wp.dot(jacobian_b[row], body_velocity[bid_b])
-    inv_dt = model_time_inv_dt[row_world[row]]
+    inv_dt = model_time_inv_dt[wid]
     multiplier = inv_dt * effective_inertia[row] * (free_velocity[row] - velocity)
-    bounded = effort_index[row]
     if bounded >= 0:
         multiplier += inv_dt * effort_counter[bounded]
         data_joints_lambda_tau_j[effort_value_index[bounded]] = inv_dt * effort_net_applied[bounded]
-    destination_index = multiplier_index[row]
     if destination_index >= 0:
         data_joints_lambda_dyn_j[destination_index] = multiplier
     elif bounded >= 0:
@@ -999,15 +1036,20 @@ def _write_friction_outputs(
 @wp.kernel
 def _accumulate_aligned_joint_wrenches(
     # Inputs:
+    row_world: wp.array[wp.int32],
     body_a: wp.array[wp.int32],
     body_b: wp.array[wp.int32],
     jacobian_a: wp.array[vec6f],
     jacobian_b: wp.array[vec6f],
     reaction: wp.array[wp.float32],
+    world_failed: wp.array[wp.bool],
     # Outputs:
     data_bodies_w_j_i: wp.array[vec6f],
 ):
+    """Accumulate the structural joint wrenches of the non-failed worlds."""
     row = wp.tid()
+    if world_failed[row_world[row]]:
+        return
     scale = reaction[row]
     bid_a = body_a[row]
     bid_b = body_b[row]
@@ -1049,10 +1091,12 @@ def _write_limit_outputs(
     internal = world_offset[wid] + local
     # Failed worlds write zero, which also seeds their next time step
     force = wp.float32(0.0)
+    limit_velocity = wp.float32(0.0)
     if not world_failed[wid]:
         force = model_time_inv_dt[wid] * reaction[internal]
+        limit_velocity = velocity[internal]
     limits_reaction[lid] = force
-    limits_velocity[lid] = velocity[internal]
+    limits_velocity[lid] = limit_velocity
     bid_a = body_a[internal]
     bid_b = body_b[internal]
     if bid_a >= 0:
@@ -1098,11 +1142,13 @@ def _write_contact_outputs(
     # Failed worlds write zero, which also seeds their next time step
     failed = world_failed[wid]
     force = wp.vec3f(0.0)
+    contact_velocity = wp.vec3f(0.0)
     if not failed:
         force = model_time_inv_dt[wid] * reaction[internal]
+        contact_velocity = velocity[internal]
     contacts_reaction[cid] = force
-    contacts_velocity[cid] = velocity[internal]
-    contacts_mode[cid] = wp.static(ContactMode.make_compute_mode_func())(velocity[internal])
+    contacts_velocity[cid] = contact_velocity
+    contacts_mode[cid] = wp.static(ContactMode.make_compute_mode_func())(contact_velocity)
     wrench_a = wp.transpose(jacobian_a[internal]) @ force
     wrench_b = wp.transpose(jacobian_b[internal]) @ force
     if angular_reaction and not failed:

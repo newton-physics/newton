@@ -367,6 +367,7 @@ class LOXSolver:
         self._write_final_status_and_residuals()
         self._store_dual_wrench()
         self._write_accepted_dynamics()
+        self._discard_failed_warm_starts()
 
     def build_dual_solution(
         self,
@@ -938,3 +939,14 @@ class LOXSolver:
             outputs=[problem.kamino_data.bodies.w_i, problem.kamino_data.bodies.u_i],
             device=self._device,
         )
+
+    def _discard_failed_warm_starts(self) -> None:
+        """Clear the structural, actuator, and angular contact warm starts of the failed worlds.
+
+        The next time step of a failed world starts from the same warm starts as after a reset;
+        the output kernels already wrote zero joint, limit, and contact reactions for it.
+        """
+        world_failed = self._data.state.world_failed
+        self._problem.reset_structural_multipliers(world_mask=world_failed)
+        self._problem.reset_effort_counters(world_mask=world_failed)
+        self._problem.reset_angular_contact_reactions(world_failed)
