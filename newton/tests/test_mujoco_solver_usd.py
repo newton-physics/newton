@@ -198,12 +198,6 @@ def Xform "World"
         with self.assertRaisesRegex(ValueError, "nconmax"):
             SolverMuJoCo.create_from_usd(path, self._build_model(path))
 
-    def test_invalid_sleep_tolerance_raises(self):
-        """Reject a negative sleep tolerance."""
-        path = self._write(_stage_source("uniform float newton:mujoco:sleep_tolerance = -1"))
-        with self.assertRaisesRegex(ValueError, "sleep_tolerance"):
-            SolverMuJoCo.create_from_usd(path, self._build_model(path))
-
     def test_invalid_deterministic_raises(self):
         """Reject an unknown determinism token."""
         path = self._write(_stage_source('uniform token newton:mujoco:deterministic = "bogus"'))
@@ -221,7 +215,6 @@ def Xform "World"
         uniform bool mjc:flag:multiccd = true
         uniform bool mjc:flag:contact = false
         uniform int newton:mujoco:updateDataInterval = 3
-        uniform float newton:mujoco:sleep_tolerance = 0.5
         uniform token newton:mujoco:deterministic = "runToRun"
         """
             )
@@ -239,7 +232,6 @@ def Xform "World"
                 "enable_multiccd": True,
                 "disable_contacts": True,
                 "update_data_interval": 3,
-                "sleep_tolerance": 0.5,
                 "deterministic": wp.DeterministicMode.RUN_TO_RUN,
             },
         )
@@ -331,8 +323,9 @@ def Xform "World"
         uniform int newton:mujoco:njmax = 128
         uniform bool newton:mujoco:enableSleeping = true
         uniform int newton:mujoco:nvmax = 1
-        uniform float newton:mujoco:sleep_tolerance = 0.02
-        """
+        uniform double mjc:option:sleep_tolerance = 0.02
+        """,
+                scene_apis='"NewtonMuJoCoSceneAPI", "MjcSceneAPI"',
             )
         )
         solver = SolverMuJoCo.create_from_usd(path, self._build_model(path))
@@ -376,9 +369,6 @@ def Xform "World"
         # enable_sleeping defaults to None, which resolves to the model attribute (default False)
         self.assertFalse(scene.GetAttribute("newton:mujoco:enableSleeping").Get())
         self.assertIsNone(parameters["enable_sleeping"].default)
-        # sleep_tolerance defaults to None, which resolves to the model attribute default
-        self.assertIsNone(parameters["sleep_tolerance"].default)
-        self.assertAlmostEqual(scene.GetAttribute("newton:mujoco:sleep_tolerance").Get(), 1e-3, places=6)
         # "inherit" is the schema's spelling of deterministic=None
         self.assertEqual(scene.GetAttribute("newton:mujoco:deterministic").Get(), "inherit")
         self.assertIsNone(parameters["deterministic"].default)

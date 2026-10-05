@@ -1011,14 +1011,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             value = authored(name)
             return None if value is None else bool(value)
 
-        def authored_float(name: str, *, minimum: float = 0.0) -> float | None:
-            value = authored(name)
-            if value is None:
-                return None
-            if not math.isfinite(value) or value < minimum:
-                raise ValueError(f"{scene_path}: {name} must be finite and >= {minimum}, got {value!r}.")
-            return float(value)
-
         def authored_count(name: str, *, minimum: int = -1) -> int | None:
             value = authored(name)
             if value is None:
@@ -1046,7 +1038,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "njmax_nnz": authored_count("newton:mujoco:njmax_nnz"),
             "nconmax": authored_count("newton:mujoco:nconmax"),
             "nvmax": authored_count("newton:mujoco:nvmax"),
-            "sleep_tolerance": authored_float("newton:mujoco:sleep_tolerance"),
             "deterministic": None if deterministic is None else deterministic_modes[str(deterministic)],
             "update_data_interval": authored_count("newton:mujoco:updateDataInterval", minimum=0),
             "use_mujoco_cpu": authored_bool("newton:mujoco:useMujocoCpu"),
