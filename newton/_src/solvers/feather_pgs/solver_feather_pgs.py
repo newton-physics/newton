@@ -5815,6 +5815,8 @@ class SolverFeatherPGS(SolverBase):
                     model,
                     state_in,
                     contacts,
+                    # The solver's buffer: notified edits reach eager and captured steps alike.
+                    shape_material_mu=self.shape_material_mu,
                     body_to_articulation=self.body_to_articulation,
                     is_free_rigid=is_free_rigid,
                     contact_gap_gate=self.contact_gap_gate,

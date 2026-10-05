@@ -95,7 +95,7 @@ def _patch_fixture(
         rigid_contact_margin1=wp.zeros(n, dtype=float, device=device),
     )
     patches = _FrictionPatchState(model, max(n, 8), True, wp.zeros(max(n, 8), dtype=wp.vec2, device=device))
-    patches.build(model, state, contacts)
+    patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
     return model, state, contacts, patches
 
 
@@ -256,14 +256,14 @@ class TestFrictionPatchHistory(unittest.TestCase):
                     types = model.shape_type.numpy()
                     types[body] = int(newton.GeoType.SPHERE)
                     model.shape_type.assign(types)
-                    patches.build(model, state, contacts)
+                    patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
                     patches.store(state)
-                    patches.build(model, state, contacts)
+                    patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
                     self.assertGreaterEqual(int(patches.current.source.numpy()[0]), 0)
                     transforms = [wp.transform_identity(), wp.transform_identity()]
                     transforms[body] = wp.transform(wp.vec3(0), wp.quat_from_axis_angle(axis, 0.01))
                     state.body_q.assign(transforms)
-                    patches.build(model, state, contacts)
+                    patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
                     self.assertEqual(int(patches.current.source.numpy()[0]) >= 0, retained)
 
     def test_normal_turn_transports_tangent_error_without_decay(self):
@@ -275,14 +275,14 @@ class TestFrictionPatchHistory(unittest.TestCase):
         state.body_q.assign([wp.transform(wp.vec3(0.001, 0, 0), wp.quat_identity()), wp.transform_identity()])
         contacts.rigid_contact_point0.assign([local_point])
         contacts.rigid_contact_point1.assign([pivot])
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         for step in range(100):
             patches.store(state)
             rotation = wp.quat_from_axis_angle(wp.vec3(0, 1, 0), 0.025 if step % 2 else -0.025)
             state.body_q.assign(
                 [wp.transform(pivot - wp.quat_rotate(rotation, local_point), rotation), wp.transform_identity()]
             )
-            patches.build(model, state, contacts)
+            patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
             self.assertGreaterEqual(int(patches.current.source.numpy()[0]), 0)
             self.assertAlmostEqual(float(np.linalg.norm(patches.view.phi.numpy()[0])), 0.001, delta=1.0e-7)
 
@@ -292,12 +292,12 @@ class TestFrictionPatchHistory(unittest.TestCase):
         for coefficient in np.random.default_rng(42).uniform(0.1, 1.0, 3):
             model.shape_material_mu.assign([coefficient, 0.5, coefficient])
             patches.update_geometry(model)
-            patches.build(model, state, contacts)
+            patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
             self.assertEqual(len(np.unique(patches.current.owner.numpy()[:2])), 1)
             np.testing.assert_allclose(patches.view.weight.numpy()[:2], [0.5, 0.5])
             patches.store(state)
         model.shape_material_mu.assign([0.2, 0.5, 0.8])
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         self.assertEqual(len(np.unique(patches.current.owner.numpy()[:2])), 2)
         np.testing.assert_allclose(patches.view.weight.numpy()[:2], [1, 1])
 
@@ -307,11 +307,11 @@ class TestFrictionPatchHistory(unittest.TestCase):
         transforms = state.body_q.numpy()
         transforms[10, 0] = 0.002
         state.body_q.assign(transforms)
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         patches.store(state)
         transforms[10, 0] = 0.003
         state.body_q.assign(transforms)
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         self.assertGreaterEqual(int(patches.current.source.numpy()[0]), 0)
         self.assertAlmostEqual(float(np.linalg.norm(patches.view.phi.numpy()[0])), 0.001, delta=1.0e-7)
 
@@ -327,7 +327,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
         edge = [points[0], points[2], points[0], points[2]]
         contacts.rigid_contact_point0.assign(edge)
         contacts.rigid_contact_point1.assign(edge)
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         active = patches.current.valid.numpy() != 0
         self.assertEqual(np.count_nonzero(active), 2)
         np.testing.assert_allclose(patches.current.anchor_a.numpy()[active, 0], -0.1, atol=1.0e-7)
@@ -337,10 +337,10 @@ class TestFrictionPatchHistory(unittest.TestCase):
         """Retain history while decompression leaves the actual surfaces in contact."""
         model, state, contacts, patches = _patch_fixture([[-0.1, 0, 0], [0.1, 0, 0]])
         contacts.rigid_contact_point0.assign([[-0.1, 0, -0.005], [0.1, 0, -0.005]])
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         patches.store(state)
         state.body_q.assign([wp.transform(wp.vec3(0, 0, 0.003), wp.quat_identity()), wp.transform_identity()])
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         self.assertEqual(np.count_nonzero(patches.current.source.numpy() >= 0), 2)
 
     def test_support_witnesses_use_existing_contact_gap_limits(self):
@@ -352,13 +352,13 @@ class TestFrictionPatchHistory(unittest.TestCase):
                 patches.store(state)
                 state.body_q.assign([wp.transform(wp.vec3(0, 0, 0.0002), wp.quat_identity()), wp.transform_identity()])
                 contacts.rigid_contact_point0.assign([[-0.1, 0, -0.0004], [0.1, 0, -0.0004]])
-                patches.build(model, state, contacts, **limits)
+                patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, **limits)
                 self.assertEqual(np.count_nonzero(patches.current.source.numpy() >= 0), 2 if carried else 0)
                 # A fresh sample on the supported region cannot retain history
                 # whose old footprint has lifted beyond the shape gap envelope.
                 state.body_q.assign([wp.transform(wp.vec3(0, 0, 0.0012), wp.quat_identity()), wp.transform_identity()])
                 contacts.rigid_contact_point0.assign([[-0.1, 0, -0.0014], [0.1, 0, -0.0014]])
-                patches.build(model, state, contacts, **limits)
+                patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, **limits)
                 self.assertEqual(np.count_nonzero(patches.current.source.numpy() >= 0), 0)
 
     def test_geometry_edits_retire_only_affected_history(self):
@@ -373,7 +373,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
                         materials=(0.5,) * 5,
                     )
                     contacts.rigid_contact_shape1.assign([1, 4])
-                    patches.build(model, state, contacts)
+                    patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
                     patches.store(state)
                     np.testing.assert_array_equal(patches.previous.valid.numpy()[:2], [1, 1])
                     # Static geometry is identified by shape. A dynamic edit on
@@ -392,7 +392,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
         """Preserve implicit static contacts when an unrelated shape changes."""
         model, state, contacts, patches = _patch_fixture([[0, 0, 0]], shape_bodies=(0, 1, 1))
         contacts.rigid_contact_shape1.assign([-1])
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         patches.store(state)
         self.assertEqual(int(patches.previous.valid.numpy()[0]), 1)
         # Editing the last shape must not alias the contact's -1 sentinel.
@@ -413,7 +413,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
             state.body_q.assign(
                 [wp.transform(wp.vec3(displacement, 0, 0), wp.quat_identity()), wp.transform_identity()]
             )
-            patches.build(model, state, contacts)
+            patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
             active = patches.current.valid.numpy() != 0
             np.testing.assert_allclose(
                 np.linalg.norm(patches.view.phi.numpy()[active], axis=1), displacement, atol=1.0e-7
@@ -434,7 +434,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
         )
         model.shape_collision_radius.assign([0.06, 0.3, 0.06, 0.06, 0.06])
         patches.update_geometry(model)
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         self.assertEqual(len(np.unique(patches.current.owner.numpy()[:4])), 1)
         np.testing.assert_allclose(patches.view.weight.numpy()[:4], [0.5, 0.5, 0, 0])
 
@@ -450,7 +450,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
         )
         model.shape_collision_radius.assign([0.03, 0.2, 0.03])
         patches.update_geometry(model)
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         self.assertEqual(len(np.unique(patches.current.owner.numpy()[:2])), 2)
         np.testing.assert_allclose(patches.view.weight.numpy()[:2], [1, 1])
 
@@ -458,7 +458,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
         """Reject an overflowing contact frame before selecting or carrying anchors."""
         model, state, contacts, patches = _patch_fixture([[-0.1, 0, 0], [0.1, 0, 0]])
         contacts.rigid_contact_count.assign([3])
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         self.assertEqual(np.count_nonzero(patches.current.valid.numpy()), 0)
         self.assertEqual(np.count_nonzero(patches.view.weight.numpy()), 0)
 
@@ -468,7 +468,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
         contacts.rigid_contact_shape0.assign([0, 1])
         contacts.rigid_contact_shape1.assign([1, 0])
         contacts.rigid_contact_normal.assign([[0, 0, -1], [0, 0, 1]])
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         self.assertEqual(len(np.unique(patches.current.owner.numpy()[:2])), 1)
         np.testing.assert_allclose(patches.view.weight.numpy()[:2], [0.5, 0.5])
 
@@ -541,7 +541,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
         contacts.rigid_contact_point0.assign(points)
         contacts.rigid_contact_point1.assign(points)
         state.body_q.assign([wp.transform(wp.vec3(0.001, 0, 0), wp.quat_identity()), wp.transform_identity()])
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         active = patches.current.valid.numpy() != 0
         np.testing.assert_allclose(patches.view.point_a.numpy()[active], patches.current.center.numpy()[active])
         np.testing.assert_allclose(patches.view.point_b.numpy()[active], patches.current.center.numpy()[active])
@@ -556,14 +556,14 @@ class TestFrictionPatchHistory(unittest.TestCase):
         rotation = wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.01)
         state.body_q.assign([wp.transform(wp.vec3(0), rotation), wp.transform_identity()])
         contacts.rigid_contact_point0.assign([wp.quat_rotate(wp.quat_inverse(rotation), wp.vec3(*p)) for p in points])
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         before = patches.view.phi.numpy()[:2].copy()
         self.assertGreater(np.linalg.norm(before), 0.001)
         patches.store(state)
         points *= 0.8
         contacts.rigid_contact_point0.assign([wp.quat_rotate(wp.quat_inverse(rotation), wp.vec3(*p)) for p in points])
         contacts.rigid_contact_point1.assign(points)
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         np.testing.assert_allclose(patches.view.phi.numpy()[:2], 0.8 * before, atol=1.0e-7)
         self.assertTrue((patches.current.source.numpy()[:2] >= 0).all())
 
@@ -578,7 +578,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
         model, state, contacts, patches = _patch_fixture([[-0.1, 0, 0], [0, 0, 0], [0.1, 0, 0]])
         patches.current.tangent_impulse.assign([[0.8, 0, 0], [0, 0, 0], [0.8, 0, 0]] + [[0, 0, 0]] * 5)
         patches.store(state)
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         slots = wp.array([0, 3, 4], dtype=int, device=_DEVICE)
         worlds = wp.zeros(3, dtype=int, device=_DEVICE)
         paths = wp.zeros(3, dtype=int, device=_DEVICE)
@@ -699,10 +699,10 @@ class TestFrictionPatchHistory(unittest.TestCase):
         model, state, contacts, patches = _patch_fixture([[0.02, -0.03, 0.0]])
         rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.5, 0.8)), 1.1)
         state.body_q.assign([wp.transform(wp.vec3(1.3, -0.7, 2.1), rotation), wp.transform_identity()])
-        patches.build(model, state, contacts)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
         for _ in range(100):
             patches.store(state)
-            patches.build(model, state, contacts)
+            patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
             self.assertGreaterEqual(int(patches.current.source.numpy()[0]), 0)
             # Each step's world round trip may round in float32 on the device, but the
             # carried displacement must not grow with the number of stationary steps.
@@ -712,12 +712,12 @@ class TestFrictionPatchHistory(unittest.TestCase):
         """Carry existing anchors through a friction-filtered step with zero weight, and never create new ones."""
         model, state, contacts, patches = _patch_fixture([[-0.05, 0, 0], [0.05, 0, 0]])
         patches.store(state)
-        patches.build(model, state, contacts, friction_gap=-1.0)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, friction_gap=-1.0)
         self.assertEqual(int(patches.current.valid.numpy().sum()), 2)
         self.assertTrue((patches.current.source.numpy()[:2] >= 0).all())
         self.assertEqual(float(patches.view.weight.numpy().max()), 0.0)
         patches.previous.valid.zero_()
-        patches.build(model, state, contacts, friction_gap=-1.0)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, friction_gap=-1.0)
         self.assertEqual(int(patches.current.valid.numpy().sum()), 0)
         self.assertEqual(float(patches.view.weight.numpy().max()), 0.0)
 
@@ -1024,7 +1024,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
         model.shape_transform.assign(transforms)
         solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         pipeline.collide(s1, contacts)
-        patches.build(model, s1, contacts)
+        patches.build(model, s1, contacts, shape_material_mu=model.shape_material_mu)
         active = patches.current.valid.numpy() != 0
         self.assertEqual(np.count_nonzero(active), 2)
         np.testing.assert_array_equal(patches.current.source.numpy()[active], [-1, -1])
@@ -1202,6 +1202,64 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
             weights = patches.view.weight.numpy()
             sources = patches.current.source.numpy()
             self.assertGreater(int(((weights > 0) & (sources >= 0)).sum()), 0)
+
+    def test_notified_friction_edits_reach_the_patch_builder(self):
+        """Build patches from notified friction edits, in place or replaced, in eager and captured steps."""
+        for replace in (False, True):
+            for capture in (False, True):
+                with self.subTest(replace=replace, capture=capture), wp.ScopedDevice(_DEVICE):
+                    _check_notified_friction_edit(self, _DEVICE, replace, capture)
+
+
+def _check_notified_friction_edit(test, device, replace, capture):
+    """Edit friction after the anchors formed, notify, and require the next patch build to read it."""
+    # A box held on a 0.3 rad incline by static friction carries patch anchors.
+    builder = newton.ModelBuilder(gravity=(9.81 * np.sin(0.3), 0.0, -9.81 * np.cos(0.3)))
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+    body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.1), wp.quat_identity()))
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=32)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
+    contacts = pipeline.contacts()
+    state_0, state_1, control = model.state(), model.state(), model.control()
+
+    def advance():
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 0.005)
+        state_0.assign(state_1)
+
+    def patch_mu():
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertGreater(count, 0)
+        return solver._friction_patches.current.mu.numpy()[:count]
+
+    for _ in range(20):
+        advance()
+    test.assertGreater(int(solver._friction_patches.previous.valid.numpy().sum()), 0)
+    np.testing.assert_array_equal(patch_mu(), np.float32(0.5))
+    if capture:
+        with wp.ScopedCapture(device=device) as graph:
+            advance()
+
+    def run():
+        if capture:
+            wp.capture_launch(graph.graph)
+        else:
+            advance()
+
+    mu = np.full(model.shape_count, 0.8, dtype=np.float32)
+    if replace:
+        model.shape_material_mu = wp.array(mu, dtype=wp.float32, device=device)
+    else:
+        model.shape_material_mu.assign(mu)
+    solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    run()
+    np.testing.assert_array_equal(patch_mu(), np.float32(0.8))
+    # Like the contact rows, the builder sees friction edits only through a notification.
+    model.shape_material_mu.fill_(0.3)
+    run()
+    np.testing.assert_array_equal(patch_mu(), np.float32(0.8))
 
 
 if __name__ == "__main__":
