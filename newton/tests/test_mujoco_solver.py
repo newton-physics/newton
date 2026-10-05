@@ -71,19 +71,6 @@ def _expected_positive_limit_solref(ke: float, kd: float, factor: float) -> np.n
 
 
 class TestMuJoCoSolver(unittest.TestCase):
-    def _run_substeps_for_frame(self, sim_dt, sim_substeps):
-        """Helper method to run simulation substeps for one rendered frame."""
-        for _ in range(sim_substeps):
-            self.solver.step(self.state_in, self.state_out, self.control, self.contacts, sim_dt)
-            self.state_in, self.state_out = self.state_out, self.state_in  # Output becomes input for next substep
-
-    def test_setup_completes(self):
-        """
-        Tests if the setUp method completes successfully.
-        This implicitly tests model creation, finalization, solver, and viewer initialization.
-        """
-        self.assertTrue(True, "setUp method completed.")
-
     def test_collision_coloring_uses_all_32_mujoco_mask_bits(self):
         """Verify that graph-color fallback uses bits 0 through 31 before degrading to MuJoCo defaults."""
         clique_size = 33
@@ -150,94 +137,9 @@ class TestMuJoCoSolver(unittest.TestCase):
             msg=f"ls_tolerance should be {custom_ls_tolerance}",
         )
 
-    @unittest.skip("Trajectory rendering for debugging")
-    def test_render_trajectory(self):
-        """Simulates and renders a trajectory if solver and viewer are available."""
-        print("\nDebug: Starting test_render_trajectory...")
 
-        solver = None
-        viewer = None
-        substep_graph = None
-        use_cuda_graph = wp.get_device().is_cuda
-
-        try:
-            print("Debug: Attempting to initialize SolverMuJoCo for trajectory test...")
-            solver = SolverMuJoCo(self.model, iterations=10, ls_iterations=10)
-            print("Debug: SolverMuJoCo initialized successfully for trajectory test.")
-        except ImportError as e:
-            self.skipTest(f"MuJoCo or deps not installed. Skipping trajectory rendering: {e}")
-        except Exception as e:
-            self.skipTest(f"Error initializing SolverMuJoCo for trajectory test: {e}")
-
-        if self.debug_stage_path:
-            try:
-                print("Debug: Attempting to initialize ViewerGL...")
-                viewer = newton.viewer.ViewerGL()
-                viewer.set_model(self.model)
-                print("Debug: ViewerGL initialized successfully for trajectory test.")
-            except ImportError as e:
-                self.skipTest(f"ViewerGL dependencies not met. Skipping trajectory rendering: {e}")
-            except Exception as e:
-                self.skipTest(f"Error initializing ViewerGL for trajectory test: {e}")
-        else:
-            self.skipTest("No debug_stage_path set. Skipping trajectory rendering.")
-
-        num_frames = 200
-        sim_substeps = 2
-        frame_dt = 1.0 / 60.0
-        sim_dt = frame_dt / sim_substeps
-        sim_time = 0.0
-
-        # Override self.solver for _run_substeps_for_frame if it was defined in setUp
-        # However, since we moved initialization here, we pass it directly or use the local var.
-        # For simplicity, let _run_substeps_for_frame use self.solver, so we assign the local one to it.
-        self.solver = solver  # Make solver accessible to _run_substeps_for_frame via self
-
-        if use_cuda_graph:
-            print(
-                f"Debug: CUDA device detected. Attempting to capture {sim_substeps} substeps with dt={sim_dt:.4f} into a CUDA graph..."
-            )
-            try:
-                with wp.ScopedCapture() as capture:
-                    self._run_substeps_for_frame(sim_dt, sim_substeps)
-                substep_graph = capture.graph
-                print("Debug: CUDA graph captured successfully.")
-            except Exception as e:
-                print(f"Debug: CUDA graph capture failed: {e}. Falling back to regular execution.")
-                substep_graph = None
-        else:
-            print("Debug: Not using CUDA graph (non-CUDA device or flag disabled).")
-
-        print(f"Debug: Simulating and rendering {num_frames} frames ({sim_substeps} substeps/frame)...")
-        print("       Press Ctrl+C in the console to stop early.")
-
-        try:
-            for frame_num in range(num_frames):
-                if frame_num % 20 == 0:
-                    print(f"Debug: Frame {frame_num}/{num_frames}, Sim time: {sim_time:.2f}s")
-
-                viewer.begin_frame(sim_time)
-                viewer.log_state(self.state_in)
-                viewer.end_frame()
-
-                if use_cuda_graph and substep_graph:
-                    wp.capture_launch(substep_graph)
-                else:
-                    self._run_substeps_for_frame(sim_dt, sim_substeps)
-
-                sim_time += frame_dt
-                time.sleep(0.016)
-
-        except KeyboardInterrupt:
-            print("\nDebug: Trajectory rendering stopped by user.")
-        except Exception as e:
-            self.fail(f"Error during trajectory rendering: {e}")
-        finally:
-            print("Debug: test_render_trajectory finished.")
-
-
-class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
-    """Base class for MuJoCo solver property tests with common setup."""
+class _MuJoCoSolverPropertiesFixture:
+    """Multi-world scene shared by the MuJoCo solver property tests."""
 
     def setUp(self):
         """Set up a model with multiple worlds, each with a free body and an articulated tree."""
@@ -338,7 +240,104 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
         self.collision_pipeline.collide(self.state_in, self.contacts)
 
 
-class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
+class TestMuJoCoSolverPropertiesSetup(_MuJoCoSolverPropertiesFixture, unittest.TestCase):
+    """Tests of the shared property-test scene, run once rather than per property test class."""
+
+    def _run_substeps_for_frame(self, sim_dt, sim_substeps):
+        """Helper method to run simulation substeps for one rendered frame."""
+        for _ in range(sim_substeps):
+            self.solver.step(self.state_in, self.state_out, self.control, self.contacts, sim_dt)
+            self.state_in, self.state_out = self.state_out, self.state_in  # Output becomes input for next substep
+
+    def test_setup_completes(self):
+        """Verify the shared scene builds two worlds with four bodies each."""
+        self.assertEqual(self.model.world_count, 2)
+        np.testing.assert_array_equal(np.bincount(self.model.body_world.numpy()), [4, 4])
+
+    @unittest.skip("Trajectory rendering for debugging")
+    def test_render_trajectory(self):
+        """Simulates and renders a trajectory if solver and viewer are available."""
+        print("\nDebug: Starting test_render_trajectory...")
+
+        solver = None
+        viewer = None
+        substep_graph = None
+        use_cuda_graph = wp.get_device().is_cuda
+
+        try:
+            print("Debug: Attempting to initialize SolverMuJoCo for trajectory test...")
+            solver = SolverMuJoCo(self.model, iterations=10, ls_iterations=10)
+            print("Debug: SolverMuJoCo initialized successfully for trajectory test.")
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping trajectory rendering: {e}")
+        except Exception as e:
+            self.skipTest(f"Error initializing SolverMuJoCo for trajectory test: {e}")
+
+        if self.debug_stage_path:
+            try:
+                print("Debug: Attempting to initialize ViewerGL...")
+                viewer = newton.viewer.ViewerGL()
+                viewer.set_model(self.model)
+                print("Debug: ViewerGL initialized successfully for trajectory test.")
+            except ImportError as e:
+                self.skipTest(f"ViewerGL dependencies not met. Skipping trajectory rendering: {e}")
+            except Exception as e:
+                self.skipTest(f"Error initializing ViewerGL for trajectory test: {e}")
+        else:
+            self.skipTest("No debug_stage_path set. Skipping trajectory rendering.")
+
+        num_frames = 200
+        sim_substeps = 2
+        frame_dt = 1.0 / 60.0
+        sim_dt = frame_dt / sim_substeps
+        sim_time = 0.0
+
+        self.solver = solver  # _run_substeps_for_frame reads self.solver
+
+        if use_cuda_graph:
+            print(
+                f"Debug: CUDA device detected. Attempting to capture {sim_substeps} substeps with dt={sim_dt:.4f} into a CUDA graph..."
+            )
+            try:
+                with wp.ScopedCapture() as capture:
+                    self._run_substeps_for_frame(sim_dt, sim_substeps)
+                substep_graph = capture.graph
+                print("Debug: CUDA graph captured successfully.")
+            except Exception as e:
+                print(f"Debug: CUDA graph capture failed: {e}. Falling back to regular execution.")
+                substep_graph = None
+        else:
+            print("Debug: Not using CUDA graph (non-CUDA device or flag disabled).")
+
+        print(f"Debug: Simulating and rendering {num_frames} frames ({sim_substeps} substeps/frame)...")
+        print("       Press Ctrl+C in the console to stop early.")
+
+        try:
+            for frame_num in range(num_frames):
+                if frame_num % 20 == 0:
+                    print(f"Debug: Frame {frame_num}/{num_frames}, Sim time: {sim_time:.2f}s")
+
+                viewer.begin_frame(sim_time)
+                viewer.log_state(self.state_in)
+                viewer.end_frame()
+
+                if use_cuda_graph and substep_graph:
+                    wp.capture_launch(substep_graph)
+                else:
+                    self._run_substeps_for_frame(sim_dt, sim_substeps)
+
+                sim_time += frame_dt
+                time.sleep(0.016)
+
+        except KeyboardInterrupt:
+            print("\nDebug: Trajectory rendering stopped by user.")
+        except Exception as e:
+            self.fail(f"Error during trajectory rendering: {e}")
+        finally:
+            print("Debug: test_render_trajectory finished.")
+
+
+class TestMuJoCoSolverMassProperties(_MuJoCoSolverPropertiesFixture, unittest.TestCase):
     def test_randomize_body_mass(self):
         """
         Tests if the body mass is randomized correctly and updated properly after simulation steps.
@@ -1299,7 +1298,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-5)
 
 
-class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
+class TestMuJoCoSolverJointProperties(_MuJoCoSolverPropertiesFixture, unittest.TestCase):
     def test_joint_attributes_registration_and_updates(self):
         """
         Verify that joint effort limit, velocity limit, armature, and friction:
@@ -2908,7 +2907,7 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
         self.assertEqual(solver.mj_model.ngeom, 66)
 
 
-class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
+class TestMuJoCoSolverGeomProperties(_MuJoCoSolverPropertiesFixture, unittest.TestCase):
     def test_geom_property_conversion(self):
         """
         Test that ALL Newton shape properties are correctly converted to MuJoCo geom properties.
@@ -3791,7 +3790,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
 
-class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBase):
+class TestMuJoCoSolverEqualityConstraintProperties(unittest.TestCase):
     def test_connect_reference_anchors_use_free_joint_coordinates(self):
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
@@ -4567,7 +4566,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
             )
 
 
-class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
+class TestMuJoCoSolverFixedTendonProperties(unittest.TestCase):
     """Test fixed tendon property replication and runtime updates across multiple worlds."""
 
     def test_tendon_properties_conversion_and_update(self):
@@ -5210,8 +5209,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         )
 
     def test_fast_path_buffers_eagerly_allocated(self):
-        """The fast-path tracking buffers must be allocated in ``__init__``,
-        not lazily inside :meth:`_convert_contacts_to_mjwarp`.
+        """Verify persistent contact buffers and mappings are initialized in ``__init__``.
 
         Regression (PR #2678 bisect, "Fix 2"): lazy ``wp.full(...)`` allocation
         on the first step often runs while a CUDA graph is being captured.  The
@@ -5262,6 +5260,13 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         self.assertEqual(solver._contact_tid_to_cid.device, model.device)
         self.assertTrue(np.all(solver._contact_tid_to_cid.numpy() == -1))
 
+        self.assertIsNotNone(solver.newton_shape_to_mjc_geom)
+        fwd = solver.mjc_geom_to_newton_shape.numpy()
+        inv = solver.newton_shape_to_mjc_geom.numpy()
+        for geom, shape in enumerate(fwd[0]):
+            if shape >= 0:
+                self.assertEqual(inv[shape], geom)
+
         # Calling _invalidate_contact_fast_path() before any step must succeed
         # cleanly — this is the exact path that previously hit stale captured
         # memory when the buffers were still None / lazily allocated.
@@ -5273,6 +5278,45 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         # repro path from the bug report.
         solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
         wp.synchronize()  # surface any async device errors
+
+    def test_recapture_after_discarded_capture(self):
+        """Replay a replacement graph after discarding the first capture without replay."""
+        device = self.model.device
+        if not device.is_cuda or not wp.is_mempool_enabled(device):
+            self.skipTest("CUDA graph capture requires a CUDA device with the memory pool enabled.")
+
+        model = self._build_grounded_spheres(1)
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        state_in, state_out = model.state(), model.state()
+        control = model.control()
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        def simulate():
+            nonlocal state_in, state_out
+            # Two steps keep input/output buffers identical between captures and replays.
+            for _ in range(2):
+                state_in.clear_forces()
+                pipeline.collide(state_in, contacts)
+                solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+                state_in, state_out = state_out, state_in
+
+        with wp.ScopedCapture(device=device) as capture:
+            simulate()
+        del capture
+
+        with wp.ScopedCapture(device=device) as capture:
+            simulate()
+        for _ in range(3):
+            wp.capture_launch(capture.graph)
+
+        self.assertTrue(np.isfinite(state_in.body_q.numpy()).all())
+        self.assertTrue(np.isfinite(state_in.body_qd.numpy()).all())
 
     def test_ephemeral_contacts_wrapper_keeps_fast_path_armed(self):
         """A new ``Contacts`` wrapper that shares the same underlying

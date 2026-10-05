@@ -56,7 +56,6 @@ PARAMS = {
     "soft_contact_kd": 1e2,
     "soft_contact_mu": 0.8,
     "gravity": (0.0, 0.0, -9.8),
-    "initial_paused": False,
     "body_drop_offset": 0.04,
     "rigid_body_particle_contact_buffer_size": 1024,
     "particle_self_contact_margin_scale": 1.0,
@@ -325,8 +324,6 @@ class Example:
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = True
-        if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = self.params["initial_paused"]
         self.viewer.set_camera(wp.vec3(0.0, -0.8, 0.6), -20.0, 90.0)
 
     def simulate(self):

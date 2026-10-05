@@ -27,7 +27,11 @@ CONTACT_FRICTION = 2.0e-5
 BELT_FRICTION = 0.5
 
 _MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
-_MUJOCO_LS_ITERATIONS_OUTPUT_RE = r"^linesearch iterations limit reached - please increase ls_iterations \w+ \d+\n?"
+_MUJOCO_LS_ITERATIONS_OUTPUT_RE = (
+    r"^linesearch iterations limit reached - please increase ls_iterations \w+ \d+\n?"
+    r"(?:^To disable the print warning: m\.opt\.warn_overflow &= ~mjw\.OverflowType\.LS_ITERATIONS"
+    r" \(or = 0 for all\)\n?)?"
+)
 
 
 def _make_solver(solver_name, model):

@@ -117,12 +117,36 @@ class TestNarrowPhaseBufferWarnings(unittest.TestCase):
                     wp.launch(
                         verify_narrow_phase_buffers,
                         dim=1,
-                        inputs=[zero, 0] * 11 + [active_slots, capacity, zero, 80],
+                        inputs=[zero, 0] * 11 + [active_slots, capacity, zero, zero, 80],
                         device=device,
                     )
                 finally:
                     output = capture.end()
                 self.assertEqual("Contact reduction hashtable fill ratio" in output, expected_warning, output)
+
+    @unittest.skipIf(sys.platform == "win32", "Warp CPU printf capture is unreliable on Windows")
+    def test_reduction_buffer_overflow_warning(self):
+        """Report contact candidates dropped because the reduction buffer was full."""
+        device = "cpu"
+        zero = wp.zeros(1, dtype=int, device=device)
+        active_slots = wp.zeros(101, dtype=int, device=device)
+        for overflows, expected_warning in ((0, False), (3, True)):
+            with self.subTest(overflows=overflows):
+                buffer_overflows = wp.array([overflows], dtype=int, device=device)
+                capture = StdOutCapture()
+                capture.begin()
+                try:
+                    wp.launch(
+                        verify_narrow_phase_buffers,
+                        dim=1,
+                        inputs=[zero, 0] * 11 + [active_slots, 100, zero, buffer_overflows, 80],
+                        device=device,
+                    )
+                finally:
+                    output = capture.end()
+                self.assertEqual("Contact reduction buffer overflowed" in output, expected_warning, output)
+                if expected_warning:
+                    self.assertIn("3 contact candidates", output)
 
 
 def check_normal_direction(pos_a, pos_b, normal, tolerance=1e-5):
