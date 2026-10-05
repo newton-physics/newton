@@ -37,10 +37,14 @@ from .kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
     PGS_CONSTRAINT_TYPE_TORSION,
     PREELIM_MAX_ROWS,
+    ROW_WATERMARK_CONTACT_SLOT,
+    ROW_WATERMARK_FAMILY_STRIDE,
     _compute_body_net_wrench,
     _get_tree_fk_kernel,
     _get_tree_tau_kernel,
+    accumulate_contact_watermark,
     accumulate_group_diag_worlds,
+    accumulate_row_watermarks,
     allocate_connect_slots,
     allocate_joint_velocity_limit_slots,
     allocate_mimic_slots,
@@ -1287,6 +1291,7 @@ class SolverFeatherPGS(SolverBase):
         dense_max_constraints: int = 32,
         mf_max_constraints: int = 512,
         warn_constraint_overflow: bool = True,
+        row_watermark: bool = False,
         drive_mode: Literal["augmented", "physx_pgs"] = "augmented",
         fuse_joint_velocity_limits: bool = True,
         enable_bilateral_preelimination: bool = False,
@@ -1387,6 +1392,9 @@ class SolverFeatherPGS(SolverBase):
             warn_constraint_overflow: Print a device-side warning the first time a world
                 exceeds a row capacity. The warning does not synchronize the host and is
                 compatible with CUDA graph capture.
+            row_watermark: Accumulate the high-water marks of the per-world row counts of
+                every row family and of the contact count on the device in every step,
+                including captured ones; read them with :meth:`constraint_row_watermarks`.
             drive_mode: Joint drive formulation. ``"augmented"`` integrates drives
                 implicitly in the mass matrix. ``"physx_pgs"`` (``pgs_mode="matrix_free"``
                 only) adds one dense PGS row per driven DOF (positive ``joint_target_ke`` or
@@ -1716,6 +1724,12 @@ class SolverFeatherPGS(SolverBase):
         if self.mf_max_constraints < 1:
             raise ValueError("mf_max_constraints must be >= 1")
         self.warn_constraint_overflow = bool(warn_constraint_overflow)
+        self.row_watermark = bool(row_watermark)
+        self._row_watermarks = (
+            wp.zeros(ROW_WATERMARK_CONTACT_SLOT + 1, dtype=wp.int32, device=model.device)
+            if self.row_watermark
+            else None
+        )
         if drive_mode not in ("augmented", "physx_pgs"):
             raise ValueError(f"drive_mode must be 'augmented' or 'physx_pgs', got {drive_mode!r}")
         self.drive_mode = drive_mode
@@ -4494,12 +4508,46 @@ class SolverFeatherPGS(SolverBase):
                 self._friction_patches.previous.valid.zero_()
         if self.pgs_warmstart:
             self._snapshot_warmstart(contacts, dt)
+        if self.row_watermark:
+            self._accumulate_row_watermarks(contacts)
         if self._device_torsion is not None:
             self._device_torsion.end_step(state_out)
             if self._device_torsion.deferred_errors and not wp.get_stream(model.device).is_capturing:
                 self.validate_contact_torsion()
         self._step += 1
         return state_out
+
+    def _accumulate_row_watermarks(self, contacts: Contacts | None) -> None:
+        """Fold this step's row counts into the high-water marks."""
+        families = [
+            (self.constraint_count, self.slot_counter, self._row_dropped_dense, self.dense_max_constraints),
+            (self.mf_constraint_count, self.mf_slot_counter, self._row_dropped_mf, self.mf_max_constraints),
+        ]
+        if self._propagation_active:
+            families.append(
+                (
+                    self.propagation_constraint_count,
+                    self.propagation_slot_counter,
+                    self._row_dropped_propagation,
+                    self.propagation_max_constraints,
+                )
+            )
+        for family, (count, requested, dropped, capacity) in enumerate(families):
+            wp.launch(
+                accumulate_row_watermarks,
+                dim=self.world_count,
+                inputs=[count, requested, dropped, capacity, family * ROW_WATERMARK_FAMILY_STRIDE],
+                outputs=[self._row_watermarks],
+                device=self.model.device,
+            )
+        if contacts is not None:
+            wp.launch(
+                accumulate_contact_watermark,
+                dim=1,
+                inputs=[contacts.rigid_contact_count],
+                outputs=[self._row_watermarks],
+                device=self.model.device,
+            )
 
     def _integrate(self, state_in: State, state_aug: State, state_out: State, dt: float, velocity: wp.array) -> None:
         """Integrate the joint state from a solved generalized velocity (which is updated in place)."""
@@ -5198,6 +5246,31 @@ class SolverFeatherPGS(SolverBase):
             outputs=[self.mf_impulses, self.v_out],
             device=self.model.device,
         )
+
+    def constraint_row_watermarks(self) -> dict[str, int]:
+        """Return the row high-water marks accumulated since construction (``row_watermark`` only).
+
+        Per family (``dense``, ``mf`` for free-body rows, ``propagation``): the largest retained
+        and requested row count of any world and step, the largest number of dropped contact
+        rows, the largest excess over the capacity, and the number of overflowing world-steps;
+        and ``contact_high_water``, the largest contact count. Reads the device on the host, so
+        call it outside CUDA graph capture. Every value is ``0`` when ``row_watermark`` is off.
+        """
+        values = (
+            self._row_watermarks.numpy().tolist()
+            if self._row_watermarks is not None
+            else [0] * (ROW_WATERMARK_CONTACT_SLOT + 1)
+        )
+        result = {}
+        for family, name in enumerate(("dense", "mf", "propagation")):
+            base = family * ROW_WATERMARK_FAMILY_STRIDE
+            result[f"{name}_high_water"] = int(values[base])
+            result[f"{name}_raw_high_water"] = int(values[base + 1])
+            result[f"{name}_dropped_contact_rows_high_water"] = int(values[base + 2])
+            result[f"{name}_overflow_excess_high_water"] = int(values[base + 3])
+            result[f"{name}_overflow_world_steps"] = int(values[base + 4])
+        result["contact_high_water"] = int(values[ROW_WATERMARK_CONTACT_SLOT])
+        return result
 
     def check_constraint_capacity(self) -> None:
         """Raise if any world, or the global entry, lost contacts or constraint rows since its last reset.

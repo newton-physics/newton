@@ -7815,3 +7815,43 @@ def propagate_tree_impulses_for_size(
         for r in range(6):
             propagation_body_qd[child, r] = value[r]
             propagation_body_impulses[child, r] = 0.0
+
+
+# Slots of the row high-water array, per row family (dense, free-body, propagation) and the contact count.
+ROW_WATERMARK_FAMILY_STRIDE = 5
+ROW_WATERMARK_CONTACT_SLOT = 3 * ROW_WATERMARK_FAMILY_STRIDE
+
+
+@wp.kernel
+def accumulate_row_watermarks(
+    constraint_count: wp.array[wp.int32],
+    slot_counter: wp.array[wp.int32],
+    dropped_contact_rows: wp.array[wp.int32],
+    capacity: int,
+    base: int,
+    # outputs
+    watermarks: wp.array[wp.int32],
+):
+    """Accumulate one row family's high-water marks without changing solver state.
+
+    Slots from ``base``: retained rows, requested rows (accepted plus rejected reservations),
+    dropped contact rows, excess over ``capacity`` (maxima) and overflowing world-steps (a sum).
+    """
+    world = wp.tid()
+    requested = slot_counter[world]
+    wp.atomic_max(watermarks, base, constraint_count[world])
+    wp.atomic_max(watermarks, base + 1, requested)
+    wp.atomic_max(watermarks, base + 2, dropped_contact_rows[world])
+    if requested > capacity:
+        wp.atomic_max(watermarks, base + 3, requested - capacity)
+        wp.atomic_add(watermarks, base + 4, 1)
+
+
+@wp.kernel
+def accumulate_contact_watermark(
+    contact_count: wp.array[wp.int32],
+    # outputs
+    watermarks: wp.array[wp.int32],
+):
+    """Accumulate the high-water mark of the rigid contact count."""
+    wp.atomic_max(watermarks, ROW_WATERMARK_CONTACT_SLOT, contact_count[0])
