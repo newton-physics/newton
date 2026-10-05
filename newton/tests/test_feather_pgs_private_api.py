@@ -35,6 +35,8 @@ _KERNEL_FACTORIES = (
     "_get_propagation_tree_body_response_revolute_kernel",
     "_get_propagate_tree_impulses_revolute_kernel",
     "_get_refresh_propagation_tree_body_qd_warp_kernel",
+    "_get_propagation_tree_cached_response_kernel",
+    "_get_propagation_cached_gemv_kernel",
 )
 
 
