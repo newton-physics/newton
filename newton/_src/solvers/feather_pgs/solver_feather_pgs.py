@@ -46,6 +46,7 @@ from .kernels import (
     accumulate_contact_watermark,
     accumulate_group_diag_worlds,
     accumulate_row_watermarks,
+    accumulate_sparse_diagonal_response_diag,
     allocate_connect_slots,
     allocate_joint_velocity_limit_slots,
     allocate_mimic_slots,
@@ -58,6 +59,7 @@ from .kernels import (
     apply_free_root_velocity_corrections,
     apply_impulses_world_par_dof,
     apply_mf_warmstart_impulses,
+    apply_sparse_diagonal_contact_restitution,
     apply_world_contact_restitution,
     apply_world_impulses_to_velocity,
     build_joint_limit_rows,
@@ -68,6 +70,7 @@ from .kernels import (
     build_propagation_contact_rows,
     cholesky_loop,
     compute_com_transforms,
+    compute_compact_diagonal_inverse_mass,
     compute_composite_inertia,
     compute_contact_linear_force_from_impulses,
     compute_delta_and_accumulate,
@@ -115,11 +118,13 @@ from .kernels import (
     populate_mimic_J_for_size,
     populate_physx_drive_J_for_size,
     populate_rigid_velocity_limit_rows,
+    populate_sparse_diagonal_contact_response,
     populate_world_J_for_compact_size,
     populate_world_J_for_size,
     preelim_correct_Y_for_size,
     preelim_project_velocity_for_size,
     preelim_setup_for_size,
+    prepare_fused_diagonal_joint_limits,
     prepare_world_contact_rows,
     prepare_world_impulses,
     prescale_joint_velocity_limits,
@@ -134,8 +139,10 @@ from .kernels import (
     scatter_augmented_drive_dof_K,
     scatter_qdd_from_groups,
     snapshot_contact_warmstart,
+    snapshot_dense_contact_row_start,
     snapshot_row_warmstart,
     snapshot_step_warmstart,
+    solve_compact_diagonal_mass,
     solve_diagonal_mass,
     trisolve_loop,
     update_body_qd_from_featherstone,
@@ -2068,6 +2075,7 @@ class SolverFeatherPGS(SolverBase):
         self._setup_propagation(model)
         self.dense_max_constraints = self._requested_dense_max_constraints
         self._setup_diagonal_mass(model)
+        self._setup_sparse_diagonal(model)
         self._setup_sparse_mass_matrix(model)
         self._setup_crba_topology_schedules(model)
         self._execution_plan = _FeatherPGSExecutionPlan.build(
@@ -2090,7 +2098,13 @@ class SolverFeatherPGS(SolverBase):
         # group and world layouts already alias, and also computes the row diagonal.
         # Bilateral pre-elimination corrects the grouped response afterwards, so it keeps
         # the group response, the separate world gather and the separate diagonal pass.
-        self._hinv_jt_writes_world = not split and not self._jy_world_aliased and not self._preelim_active
+        # The sparse-diagonal solve reads the dense articulation's grouped response directly.
+        self._hinv_jt_writes_world = (
+            not split
+            and not self._jy_world_aliased
+            and not self._preelim_active
+            and not self._sparse_diagonal_contact_solve
+        )
         self._hinv_jt_tiled_writes_group = not self._hinv_jt_writes_world
         self._hinv_jt_diag_sizes = frozenset(
             size for size in self.size_groups if self._execution_plan.use_tiled_hinv_jt(size)
@@ -2104,6 +2118,7 @@ class SolverFeatherPGS(SolverBase):
         self._allocate_paired_response_buffers(model)
         self._allocate_world_buffers(model)
         self._allocate_mf_buffers(model)
+        self._allocate_sparse_diagonal_buffers(model)
         # Contact rows keep row_parent for their friction/patch load linkage; torsion keeps
         # its own group membership.
         self._contact_torsion_group = wp.full(
@@ -3269,6 +3284,7 @@ class SolverFeatherPGS(SolverBase):
             )
             self._joint_limit_sizes = frozenset()
             self._joint_limit_q_index = None
+            self._joint_limit_q_index_host = np.zeros(0, dtype=np.int32)
             self._joint_limit_warp_kernels = {}
             return
 
@@ -3323,6 +3339,7 @@ class SolverFeatherPGS(SolverBase):
             coord = int(joint_q_start[joint])
             limit_q_index[dof : dof + axis_count] = np.arange(coord, coord + axis_count, dtype=np.int32)
         self._joint_limit_q_index = wp.array(limit_q_index, dtype=wp.int32, device=model.device)
+        self._joint_limit_q_index_host = limit_q_index
         self._joint_limit_warp_kernels = (
             {
                 size: _get_joint_limit_warp_kernel(
@@ -3466,6 +3483,7 @@ class SolverFeatherPGS(SolverBase):
             and self.pgs_mode == "matrix_free"
             and not self._preelim_active
             and self._sparse_mass_matrix_size is None
+            and not self._sparse_diagonal_contact_solve
             and size >= _PAIRED_RESPONSE_MIN_DOF
             and size + 6 <= 32
             and self._execution_plan.use_tiled_hinv_jt(size)
@@ -3580,6 +3598,153 @@ class SolverFeatherPGS(SolverBase):
         ) = (wp.array(row, dtype=wp.int32, device=device) for row in maps)
         self._dense_contact_bounds = wp.zeros((self.world_count, 2), dtype=wp.int32, device=device)
 
+    def _has_owned_dof_topology(self, model: Model) -> bool:
+        """Return whether every DOF has one owning articulation for the stream-parallel mass paths.
+
+        The fused mass factorization and the sparse-diagonal response need ``use_parallel_streams``
+        on CUDA, augmented drives, no loop-closing joints, and DOF ranges that no two articulations share.
+        """
+        plan = self._model_plan
+        ownership = np.zeros(max(model.joint_dof_count, 1), dtype=np.int32)
+        for start, count in zip(plan.articulation_dof_start, plan.articulation_dof_count, strict=True):
+            ownership[int(start) : int(start + count)] += 1
+        return bool(
+            self.use_parallel_streams
+            and model.device.is_cuda
+            and not model.requires_grad
+            and self.drive_mode == "augmented"
+            and model.joint_dof_count
+            and not np.any(plan.loop_joint_articulation >= 0)
+            and np.all(ownership[: model.joint_dof_count] == 1)
+        )
+
+    def _setup_sparse_diagonal(self, model: Model) -> None:
+        """Select the sparse-diagonal contact solve: one diagonal-mass and one small dense articulation per world.
+
+        The selection is automatic and structural. It applies in the matrix-free CUDA solve with
+        ``use_parallel_streams``, joint limits enabled, augmented drives, the immediate response,
+        the interleaved schedule, ``friction_mode="current"``, no free rigid bodies, mimic or
+        loop-closing joints, joint velocity limits, warm start, velocity-only iterations,
+        pre-elimination, contact regularization, torsion or compliance, when every world holds
+        exactly two responding articulations: one whose mass matrix is diagonal and which has
+        position limits, and one dense articulation of at most ``_CONTACT_JACOBIAN_MAX_DOF``
+        DOFs, with the same two sizes in every world. The diagonal articulation then keeps its
+        inverse mass per DOF, its contact rows store only the two coordinates they touch, and its
+        position limits are projected per DOF inside the solve instead of occupying dense rows.
+        """
+        self._sparse_diagonal_contact_solve = False
+        self._sparse_diagonal_response_size = None
+        self._sparse_diagonal_dense_size = 0
+        self._fused_diagonal_joint_limit_sizes = frozenset()
+        fused_mask = np.zeros(max(model.joint_dof_count, 1), dtype=np.int32)
+        dense_offsets = np.zeros(1, dtype=np.int32)
+        dense_groups = np.zeros(1, dtype=np.int32)
+        supported = bool(
+            model.joint_dof_count > 0
+            and self.enable_joint_limits
+            and self.pgs_mode == "matrix_free"
+            and self.articulated_contact_response == "immediate"
+            and self.pgs_schedule == "interleaved"
+            and self.pgs_velocity_iterations == 0
+            and self.friction_mode == "current"
+            and not self.enable_joint_velocity_limits
+            and not self.pgs_warmstart
+            and not self._preelim_active
+            and not self._has_free_rigid_bodies
+            and not self._regularization_enabled
+            and not self._contact_torsion_enabled
+            and not self.contact_compliance
+            and self._mimic_count == 0
+            and self._connect_count == 0
+            and self._has_owned_dof_topology(model)
+        )
+        candidate_sizes = self._diagonal_mass_sizes.intersection(self._joint_limit_sizes) if supported else ()
+        if candidate_sizes:
+            plan = self._model_plan
+            response_dofs = plan.response_dof_count
+            offsets = self.articulation_world_dof_offset.numpy()
+            group_indices = self.art_group_idx.numpy()
+            dense_offsets = np.full(self.world_count, -1, dtype=np.int32)
+            dense_groups = np.full(self.world_count, -1, dtype=np.int32)
+            sizes = set()
+            for world in range(self.world_count):
+                arts = np.flatnonzero((plan.articulation_world == world) & (response_dofs > 0))
+                if len(arts) != 2 or np.any(plan.is_free_rigid[arts] != 0):
+                    candidate_sizes = ()
+                    break
+                diagonal_arts = [int(art) for art in arts if int(response_dofs[art]) in candidate_sizes]
+                if len(diagonal_arts) != 1:
+                    candidate_sizes = ()
+                    break
+                diagonal_art = diagonal_arts[0]
+                dense_art = int(arts[0] if arts[1] == diagonal_art else arts[1])
+                if not 0 < int(response_dofs[dense_art]) <= _CONTACT_JACOBIAN_MAX_DOF:
+                    candidate_sizes = ()
+                    break
+                start = int(plan.articulation_dof_start[diagonal_art])
+                size = int(response_dofs[diagonal_art])
+                valid = self._joint_limit_q_index_host[start : start + size] >= 0
+                if not np.any(valid):
+                    candidate_sizes = ()
+                    break
+                fused_mask[start : start + size] = valid.astype(np.int32)
+                sizes.add((size, int(response_dofs[dense_art])))
+                dense_offsets[world] = int(offsets[dense_art])
+                dense_groups[world] = int(group_indices[dense_art])
+            if candidate_sizes and len(sizes) == 1 and self.world_count > 0:
+                response_size, dense_size = sizes.pop()
+                self._sparse_diagonal_contact_solve = True
+                self._sparse_diagonal_response_size = response_size
+                self._sparse_diagonal_dense_size = dense_size
+                self._fused_diagonal_joint_limit_sizes = frozenset((response_size,))
+            else:
+                fused_mask.fill(0)
+                dense_offsets = np.zeros(1, dtype=np.int32)
+                dense_groups = np.zeros(1, dtype=np.int32)
+        device = model.device
+        self._fused_diagonal_limit_dof_mask = wp.array(fused_mask, dtype=wp.int32, device=device)
+        self._sparse_diagonal_dense_offsets = wp.array(dense_offsets, dtype=wp.int32, device=device)
+        self._sparse_diagonal_dense_groups = wp.array(dense_groups, dtype=wp.int32, device=device)
+        # Patch friction allocates one tangent pair per surviving anchor, so its contact rows are
+        # not uniform normal/tangent/tangent triples; the triple schedule is for point friction.
+        self._sparse_diagonal_contact_triples = bool(
+            self._sparse_diagonal_contact_solve
+            and self.contact_friction_gap_threshold == float("inf")
+            and not self._friction_anchors_enabled
+        )
+        self._sparse_diagonal_speculative_contact_batches = bool(
+            self._sparse_diagonal_contact_triples and self._sparse_diagonal_dense_size + 2 <= 8
+        )
+
+    def _allocate_sparse_diagonal_buffers(self, model: Model) -> None:
+        """Allocate the sparse-diagonal response, limit and schedule buffers (one-element stand-ins when unused)."""
+        device = model.device
+        active = self._sparse_diagonal_contact_solve
+        triples = self._sparse_diagonal_contact_triples
+        batches = self._sparse_diagonal_speculative_contact_batches
+        worlds, rows, dofs = self.world_count, self.dense_max_constraints, self.max_world_dofs
+        self._diagonal_inverse_mass = wp.zeros(
+            max(model.joint_dof_count, 1) if active else 1, dtype=wp.float32, device=device
+        )
+        limit_shape = (worlds, dofs) if active else (1, 1)
+        self._fused_diagonal_limit_active = wp.zeros(limit_shape, dtype=wp.int32, device=device)
+        self._fused_diagonal_limit_lower_rhs = wp.zeros(limit_shape, dtype=wp.float32, device=device)
+        self._fused_diagonal_limit_upper_rhs = wp.zeros(limit_shape, dtype=wp.float32, device=device)
+        self._fused_diagonal_limit_lower_lambda = wp.zeros(limit_shape, dtype=wp.float32, device=device)
+        self._fused_diagonal_limit_upper_lambda = wp.zeros(limit_shape, dtype=wp.float32, device=device)
+        row_shape = (worlds, rows) if active else (1, 1)
+        self._sparse_diagonal_row_dof = wp.full((*row_shape, 2), -1, dtype=wp.int32, device=device)
+        self._sparse_diagonal_row_jy = wp.zeros((*row_shape, 4), dtype=wp.float32, device=device)
+        self._dense_contact_row_start = wp.zeros(worlds if active else 1, dtype=wp.int32, device=device)
+        self._sparse_contact_group_count = wp.zeros(worlds if triples else 1, dtype=wp.int32, device=device)
+        self._sparse_contact_group_heads = wp.empty(
+            (worlds, dofs) if triples else (1, 1), dtype=wp.int32, device=device
+        )
+        self._sparse_contact_serial_count = wp.zeros(worlds if batches else 1, dtype=wp.int32, device=device)
+        self._sparse_contact_serial_normals = wp.empty(
+            (worlds, (rows + 2) // 3) if batches else (1, 1), dtype=wp.int32, device=device
+        )
+
     def _setup_crba_topology_schedules(self, model: Model) -> None:
         """Map the mass-matrix elements of topology-homogeneous size groups for fused assembly.
 
@@ -3594,24 +3759,13 @@ class SolverFeatherPGS(SolverBase):
         self._crba_source_dof_by_size = {}
         self._crba_lower_schedule_by_size = {}
         plan = self._model_plan
-        ownership = np.zeros(max(model.joint_dof_count, 1), dtype=np.int32)
-        for start, count in zip(plan.articulation_dof_start, plan.articulation_dof_count, strict=True):
-            ownership[int(start) : int(start + count)] += 1
-        if not (
-            self.use_parallel_streams
-            and model.device.is_cuda
-            and not model.requires_grad
-            and self.drive_mode == "augmented"
-            and model.joint_dof_count
-            and not np.any(plan.loop_joint_articulation >= 0)
-            and np.all(ownership[: model.joint_dof_count] == 1)
-        ):
+        if not self._has_owned_dof_topology(model):
             return
         articulation_start = model.articulation_start.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
         joint_ancestor = model.joint_ancestor.numpy()
         for size in self.size_groups:
-            if size == self._sparse_mass_matrix_size or size in self._diagonal_mass_sizes:
+            if size == self._sparse_mass_matrix_size:
                 continue
             reference_offsets = None
             reference_parents = None
@@ -3682,7 +3836,7 @@ class SolverFeatherPGS(SolverBase):
         """
         self._sparse_mass_matrix_size = None
         self._sparse_mass_matrix_plan = None
-        if not self._kernel_overrides.get("sparse_mass_matrix", True):
+        if not self._kernel_overrides.get("sparse_mass_matrix", True) or self._sparse_diagonal_contact_solve:
             return
         if _model_has_bilateral_constraints(model):
             return
@@ -3952,6 +4106,8 @@ class SolverFeatherPGS(SolverBase):
         self.body_to_articulation = wp.array(body_to_articulation, dtype=wp.int32, device=device)
         self.body_has_response_dofs = wp.array(body_has_response_dofs, dtype=wp.int32, device=device)
         self.body_response_dof_mask = wp.array(body_response_dof_mask, dtype=wp.uint32, device=device)
+        self._body_single_response_dof_host = body_single_response_dof
+        self.body_single_response_dof = wp.array(body_single_response_dof, dtype=wp.int32, device=device)
 
     def _classify_free_rigid_bodies(self, model):
         """Materialize free-rigid execution metadata from the model plan."""
@@ -4118,9 +4274,9 @@ class SolverFeatherPGS(SolverBase):
             n_arts = self.n_arts_by_size[size]
             # Armature, added to the mass-matrix diagonal by the factorization kernels.
             self.R_by_size[size] = wp.zeros((n_arts, size), dtype=wp.float32, device=device)
-            if size == self._sparse_mass_matrix_size:
-                # Sparse factors replace the dense matrices, rows and responses of this group;
-                # one-element stand-ins keep shared kernel arguments valid.
+            if size in (self._sparse_mass_matrix_size, self._sparse_diagonal_response_size):
+                # Sparse factors and the sparse-diagonal response replace the dense matrices, rows
+                # and responses of this group; one-element stand-ins keep shared kernel arguments valid.
                 stand_in = wp.zeros((1, 1, 1), dtype=wp.float32, device=device)
                 self.H_by_size[size] = self.L_by_size[size] = stand_in
                 self.J_by_size[size] = self.Y_by_size[size] = stand_in
@@ -4458,10 +4614,39 @@ class SolverFeatherPGS(SolverBase):
         self._pack_mf_meta_kernel = _get_pack_mf_meta_kernel(self.mf_meta_packed.shape[1] // 4, device_arch)
         self._pgs_solve_mf_gs_kernel = None
         self._init_propagation_kernels(model)
+        triples = self._sparse_diagonal_contact_triples
+        self._mark_independent_sparse_contact_candidates_kernel = (
+            _get_mark_independent_sparse_contact_candidates_kernel(self._sparse_diagonal_response_size, device_arch)
+            if triples
+            else None
+        )
+        self._build_independent_sparse_contact_groups_kernel = (
+            _get_build_independent_sparse_contact_groups_kernel(
+                self.dense_max_constraints,
+                self.max_world_dofs,
+                device_arch,
+                build_serial_contacts=self._sparse_diagonal_speculative_contact_batches,
+            )
+            if triples
+            else None
+        )
+        self._pgs_solve_sparse_diagonal_kernel = (
+            _get_pgs_solve_sparse_diagonal_kernel(
+                self.dense_max_constraints,
+                self.max_world_dofs,
+                self._sparse_diagonal_dense_size,
+                device_arch,
+                contact_triples=triples,
+                speculative_contact_batches=self._sparse_diagonal_speculative_contact_batches,
+            )
+            if self._sparse_diagonal_contact_solve
+            else None
+        )
         if (
             self.world_count > 0
             and self.max_world_dofs > 0
             and self._sparse_mass_matrix_size is None
+            and not self._sparse_diagonal_contact_solve
             and not self._propagation_fused
         ):
             mf_rows = self.mf_meta_packed.shape[1] // 4
@@ -4619,6 +4804,9 @@ class SolverFeatherPGS(SolverBase):
             # Sparse selection excludes every option that changes the right-hand side or sweep.
             self._launch_sparse_pgs_solve()
             return
+        if self._sparse_diagonal_contact_solve:
+            self._launch_sparse_diagonal_solve(rhs, iterations)
+            return
         if iterations <= 0 or self._pgs_solve_mf_gs_kernel is None:
             return
         if self._paired_factor_solve_kernel is not None:
@@ -4703,6 +4891,53 @@ class SolverFeatherPGS(SolverBase):
             and not np.isinf(self.velocity_limit_activation_fraction)
         )
         return has_internal_rows, has_velocity_limits
+
+    def _launch_sparse_diagonal_solve(self, rhs: wp.array, iterations: int) -> None:
+        """Sweep the rows of sparse-diagonal worlds, projecting the diagonal articulation's limits per DOF."""
+        if iterations <= 0:
+            return
+        dense_size = self._sparse_diagonal_dense_size
+        wp.launch_tiled(
+            self._pgs_solve_sparse_diagonal_kernel,
+            dim=[self.world_count],
+            inputs=[
+                self.constraint_count,
+                self.world_dof_indices,
+                rhs,
+                self.diag,
+                self.impulses,
+                self.row_type,
+                self.row_parent,
+                self.row_mu,
+                self._dense_contact_row_start,
+                self._sparse_contact_group_count,
+                self._sparse_contact_group_heads,
+                self._sparse_contact_serial_count,
+                self._sparse_contact_serial_normals,
+                self._sparse_diagonal_dense_offsets,
+                self._sparse_diagonal_dense_groups,
+                self.J_by_size[dense_size],
+                self.Y_by_size[dense_size],
+                self._sparse_diagonal_row_dof,
+                self._sparse_diagonal_row_jy,
+                self._fused_diagonal_limit_active,
+                self._fused_diagonal_limit_lower_rhs,
+                self._fused_diagonal_limit_upper_rhs,
+                self._diagonal_inverse_mass,
+                self.pgs_cfm,
+                int(iterations),
+                self.pgs_omega,
+                0,
+                0,
+            ],
+            outputs=[
+                self._fused_diagonal_limit_lower_lambda,
+                self._fused_diagonal_limit_upper_lambda,
+                self.v_out,
+            ],
+            block_dim=32,
+            device=self.model.device,
+        )
 
     def _launch_sparse_pgs_solve(self) -> None:
         """Sweep the rows in factor coordinates, then decode the velocity change of every world."""
@@ -4858,7 +5093,7 @@ class SolverFeatherPGS(SolverBase):
 
         # Stage 2: factor the augmented mass matrix of every articulation group.
         for size in self._for_sizes():
-            if size == self._sparse_mass_matrix_size:
+            if size in (self._sparse_mass_matrix_size, self._sparse_diagonal_response_size):
                 continue
             # Fused groups were assembled and factored in stage 1.
             if self._crba_cholesky_kernels_by_size[size] or self._crba_cholesky_warp_kernels_by_size[size]:
@@ -4904,6 +5139,22 @@ class SolverFeatherPGS(SolverBase):
                     ],
                     outputs=[self._sparse_mass_matrix_scratch, state_aug.joint_qdd],
                     block_dim=128,
+                    device=model.device,
+                )
+                continue
+            if size == self._sparse_diagonal_response_size:
+                wp.launch(
+                    solve_compact_diagonal_mass,
+                    dim=self.n_arts_by_size[size] * size,
+                    inputs=[
+                        self._diagonal_inverse_mass,
+                        self.group_to_art[size],
+                        self.articulation_dof_start,
+                        size,
+                        state_aug.joint_tau,
+                        self._dynamics_art_active,
+                    ],
+                    outputs=[state_aug.joint_qdd],
                     device=model.device,
                 )
                 continue
@@ -5354,6 +5605,8 @@ class SolverFeatherPGS(SolverBase):
             self._stage4_hinv_jt_paired()
         elif self._sparse_mass_matrix_size is None:
             for size in self._for_sizes():
+                if size == self._sparse_diagonal_response_size:
+                    continue
                 if self._execution_plan.use_diagonal_mass(size):
                     self._stage4_hinv_jt_diagonal(size)
                 elif self._execution_plan.use_tiled_hinv_jt(size):
@@ -5465,7 +5718,12 @@ class SolverFeatherPGS(SolverBase):
                     ],
                     device=model.device,
                 )
-        if self._sparse_mass_matrix_size is None and not self._jy_world_aliased and not self._hinv_jt_writes_world:
+        if (
+            self._sparse_mass_matrix_size is None
+            and not self._sparse_diagonal_contact_solve
+            and not self._jy_world_aliased
+            and not self._hinv_jt_writes_world
+        ):
             for size in self.size_groups:
                 n_arts = self.n_arts_by_size[size]
                 wp.launch(
@@ -5486,27 +5744,53 @@ class SolverFeatherPGS(SolverBase):
                     device=model.device,
                 )
         # Impacts replace the position bias by their rebound target, from the unconstrained velocity.
-        wp.launch(
-            apply_world_contact_restitution,
-            dim=self.world_count * self.dense_max_constraints,
-            inputs=[
-                self.constraint_count,
-                self.dense_max_constraints,
-                self.world_dof_count,
-                self.phi,
-                self.row_type,
-                self.target_velocity,
-                self.row_restitution,
-                self.v_hat,
-                self.world_dof_indices,
-                self.J_world,
-                dt,
-                self.restitution_velocity_threshold,
-                int(self._regularization_enabled),
-            ],
-            outputs=[self.rhs, self.row_w],
-            device=model.device,
-        )
+        if self._sparse_diagonal_contact_solve:
+            wp.launch(
+                apply_sparse_diagonal_contact_restitution,
+                dim=self.world_count * self.dense_max_constraints,
+                inputs=[
+                    self.constraint_count,
+                    self.dense_max_constraints,
+                    self.phi,
+                    self.row_type,
+                    self.target_velocity,
+                    self.row_restitution,
+                    self.v_hat,
+                    self.world_dof_indices,
+                    self._sparse_diagonal_dense_offsets,
+                    self._sparse_diagonal_dense_groups,
+                    self._sparse_diagonal_dense_size,
+                    self.J_by_size[self._sparse_diagonal_dense_size],
+                    self._sparse_diagonal_row_dof,
+                    self._sparse_diagonal_row_jy,
+                    dt,
+                    self.restitution_velocity_threshold,
+                ],
+                outputs=[self.rhs],
+                device=model.device,
+            )
+        else:
+            wp.launch(
+                apply_world_contact_restitution,
+                dim=self.world_count * self.dense_max_constraints,
+                inputs=[
+                    self.constraint_count,
+                    self.dense_max_constraints,
+                    self.world_dof_count,
+                    self.phi,
+                    self.row_type,
+                    self.target_velocity,
+                    self.row_restitution,
+                    self.v_hat,
+                    self.world_dof_indices,
+                    self.J_world,
+                    dt,
+                    self.restitution_velocity_threshold,
+                    int(self._regularization_enabled),
+                ],
+                outputs=[self.rhs, self.row_w],
+                device=model.device,
+            )
         wp.copy(self.v_out, self.v_hat)
         if self.pgs_warmstart:
             # The solve updates the velocity from impulse deltas, so the seeded impulses'
@@ -6323,6 +6607,9 @@ class SolverFeatherPGS(SolverBase):
             if size == self._sparse_mass_matrix_size:
                 self._stage1_sparse_factor(state_aug, size)
                 continue
+            if size == self._sparse_diagonal_response_size:
+                self._stage1_compact_diagonal_inverse_mass(state_aug, size)
+                continue
             if self._launch_fused_crba_cholesky(state_aug, size):
                 continue
             if global_flag and not self._double_buffered:
@@ -6401,17 +6688,95 @@ class SolverFeatherPGS(SolverBase):
                 contact_triples=self._factor_coordinate_contact_triples,
             )
 
-    def _launch_fused_crba_cholesky(self, state_aug: State, size: int) -> bool:
-        """Assemble and factor the group's mass matrices in one kernel when it is fused; return whether."""
-        tiled = self._crba_cholesky_kernels_by_size[size]
-        warp = self._crba_cholesky_warp_kernels_by_size[size]
-        if tiled is None and warp is None:
-            return False
+    def _populate_sparse_diagonal_contact_rows(
+        self, state_in: State, state_aug: State, contacts: Contacts, workers: int, threads: int
+    ) -> None:
+        """Store the diagonal-articulation coordinates of the dense contact rows and mark independent triples."""
+        model = self.model
+        wp.launch(
+            populate_sparse_diagonal_contact_response,
+            dim=workers,
+            inputs=[
+                contacts.rigid_contact_count,
+                workers,
+                contacts.rigid_contact_point0,
+                contacts.rigid_contact_point1,
+                contacts.rigid_contact_normal,
+                contacts.rigid_contact_shape0,
+                contacts.rigid_contact_shape1,
+                contacts.rigid_contact_margin0,
+                contacts.rigid_contact_margin1,
+                self.contact_world,
+                self.contact_slot,
+                self.contact_art_a,
+                self.contact_art_b,
+                self.contact_path,
+                self.contact_slots_needed,
+                self._sparse_diagonal_response_size,
+                self.articulation_response_dof_count,
+                self.articulation_dof_start,
+                self.articulation_world_dof_offset,
+                self.articulation_origin,
+                self.body_single_response_dof,
+                self._diagonal_inverse_mass,
+                state_aug.joint_S_s,
+                model.shape_body,
+                state_in.body_q,
+                self._friction_patches.view,
+                *self._contact_anchor_args,
+            ],
+            outputs=[self._sparse_diagonal_row_dof, self._sparse_diagonal_row_jy],
+            device=model.device,
+        )
+        if self._sparse_diagonal_contact_triples:
+            wp.launch(
+                self._mark_independent_sparse_contact_candidates_kernel,
+                dim=threads,
+                inputs=[
+                    contacts.rigid_contact_count,
+                    threads,
+                    self.contact_world,
+                    self.contact_slot,
+                    self.contact_art_a,
+                    self.contact_art_b,
+                    self.contact_path,
+                    self.contact_slots_needed,
+                    self.articulation_response_dof_count,
+                ],
+                outputs=[self._sparse_diagonal_row_dof],
+                device=model.device,
+            )
+
+    def _stage1_compact_diagonal_inverse_mass(self, state_aug: State, size: int) -> None:
+        """Store the per-DOF inverse mass of the sparse-diagonal group's articulations due for a refresh."""
         model = self.model
         n_arts = self.n_arts_by_size[size]
+        self._scatter_drive_dof_K(size)
+        wp.launch(
+            compute_compact_diagonal_inverse_mass,
+            dim=n_arts * size,
+            inputs=[
+                model.articulation_start,
+                self.articulation_dof_start,
+                self.mass_update_mask,
+                model.joint_child,
+                state_aug.joint_S_s,
+                self.body_I_c,
+                self.group_to_art[size],
+                self._crba_dof_joint_offset_by_size[size],
+                self.R_by_size[size],
+                self._fused_drive_dof_K,
+                size,
+            ],
+            outputs=[self._diagonal_inverse_mass],
+            device=model.device,
+        )
+
+    def _scatter_drive_dof_K(self, size: int) -> None:
+        """Write the implicit drive stiffness of the group's DOFs due for a mass refresh to ``_fused_drive_dof_K``."""
         wp.launch(
             scatter_augmented_drive_dof_K,
-            dim=n_arts,
+            dim=self.n_arts_by_size[size],
             inputs=[
                 self.group_to_art[size],
                 self.articulation_dof_start,
@@ -6423,8 +6788,18 @@ class SolverFeatherPGS(SolverBase):
                 self.aug_row_K,
             ],
             outputs=[self._fused_drive_dof_K],
-            device=model.device,
+            device=self.model.device,
         )
+
+    def _launch_fused_crba_cholesky(self, state_aug: State, size: int) -> bool:
+        """Assemble and factor the group's mass matrices in one kernel when it is fused; return whether."""
+        tiled = self._crba_cholesky_kernels_by_size[size]
+        warp = self._crba_cholesky_warp_kernels_by_size[size]
+        if tiled is None and warp is None:
+            return False
+        model = self.model
+        n_arts = self.n_arts_by_size[size]
+        self._scatter_drive_dof_K(size)
         inertia = state_aug.body_I_s if size in self._free_body_inertia_sizes else self.body_I_c
         common = [
             model.articulation_start,
@@ -6885,6 +7260,31 @@ class SolverFeatherPGS(SolverBase):
 
         # Disabled joint limits create no rows (and use no capacity), as in the reference solver.
         limit_sizes = self._joint_limit_sizes if self.enable_joint_limits else frozenset()
+        if self._sparse_diagonal_contact_solve:
+            # The diagonal articulation's limits are projected per DOF inside the sparse-diagonal solve.
+            limit_sizes = limit_sizes - self._fused_diagonal_joint_limit_sizes
+            wp.launch(
+                prepare_fused_diagonal_joint_limits,
+                dim=self.world_count * self.max_world_dofs,
+                inputs=[
+                    self.world_dof_indices,
+                    self.max_world_dofs,
+                    self._fused_diagonal_limit_dof_mask,
+                    limit_q_index,
+                    model.joint_limit_lower,
+                    model.joint_limit_upper,
+                    state_in.joint_q,
+                    self.joint_limit_activation_gap,
+                    self.pgs_beta,
+                    dt,
+                ],
+                outputs=[
+                    self._fused_diagonal_limit_active,
+                    self._fused_diagonal_limit_lower_rhs,
+                    self._fused_diagonal_limit_upper_rhs,
+                ],
+                device=model.device,
+            )
         for size in limit_sizes:
             n_arts = self.n_arts_by_size[size]
             if size == sparse_size:
@@ -7029,6 +7429,17 @@ class SolverFeatherPGS(SolverBase):
                     ],
                     device=model.device,
                 )
+
+        if self._sparse_diagonal_contact_solve:
+            # Dense contact rows follow the internal rows; the sparse coordinates of every row start empty.
+            wp.launch(
+                snapshot_dense_contact_row_start,
+                dim=self.world_count,
+                inputs=[self.slot_counter, max_constraints],
+                outputs=[self._dense_contact_row_start],
+                device=model.device,
+            )
+            self._sparse_diagonal_row_dof.fill_(-1)
 
         if contacts is not None and contacts.rigid_contact_max > 0:
             contact_build_threads = min(contacts.rigid_contact_max, _CONTACT_BUILD_THREAD_CAP)
@@ -7191,10 +7602,12 @@ class SolverFeatherPGS(SolverBase):
                     block_dim=128,
                     device=model.device,
                 )
-            elif self._compact_contact_jacobian:
+            elif self._compact_contact_jacobian or self._sparse_diagonal_contact_solve:
                 # Small articulations: one lane per (row, DOF) of each contact.
                 contact_jacobian_workers = min(contacts.rigid_contact_max, _CONTACT_JACOBIAN_WORKER_CAP)
                 for size in self.size_groups:
+                    if size == self._sparse_diagonal_response_size:
+                        continue
                     wp.launch(
                         populate_world_J_for_compact_size,
                         dim=(contact_jacobian_workers, 32),
@@ -7221,6 +7634,10 @@ class SolverFeatherPGS(SolverBase):
                         ],
                         outputs=[self.J_by_size[size]],
                         device=model.device,
+                    )
+                if self._sparse_diagonal_contact_solve:
+                    self._populate_sparse_diagonal_contact_rows(
+                        state_in, state_aug, contacts, contact_jacobian_workers, contact_build_threads
                     )
             else:
                 for size in self.size_groups:
@@ -7389,6 +7806,20 @@ class SolverFeatherPGS(SolverBase):
             outputs=[self.constraint_count],
             device=model.device,
         )
+        if self._sparse_diagonal_contact_triples:
+            wp.launch(
+                self._build_independent_sparse_contact_groups_kernel,
+                dim=self.world_count * 32,
+                inputs=[self.constraint_count, self._dense_contact_row_start],
+                outputs=[
+                    self._sparse_diagonal_row_dof,
+                    self._sparse_contact_group_count,
+                    self._sparse_contact_group_heads,
+                    self._sparse_contact_serial_count,
+                    self._sparse_contact_serial_normals,
+                ],
+                device=model.device,
+            )
         wp.launch(
             _finalize_constraint_status,
             dim=self.world_count + 1,
@@ -7528,6 +7959,21 @@ class SolverFeatherPGS(SolverBase):
     def _stage4_compute_matrix_free_diag(self):
         """Compute each dense row's effective-mass diagonal ``J Y``."""
         self.diag.zero_()
+        if self._sparse_diagonal_contact_solve:
+            self._stage4_diag_from_JY(self._sparse_diagonal_dense_size)
+            wp.launch(
+                accumulate_sparse_diagonal_response_diag,
+                dim=self.world_count * self.dense_max_constraints,
+                inputs=[
+                    self.constraint_count,
+                    self.dense_max_constraints,
+                    self._sparse_diagonal_row_dof,
+                    self._sparse_diagonal_row_jy,
+                ],
+                outputs=[self.diag],
+                device=self.model.device,
+            )
+            return
         if self._hinv_jt_diag_sizes:
             for size in self.size_groups:
                 if size in self._hinv_jt_diag_sizes:
@@ -14046,6 +14492,812 @@ def _get_refresh_propagation_tree_body_qd_warp_kernel(size: int, max_joints: int
     refresh_propagation_tree_body_qd_warp_template.__name__ = name
     refresh_propagation_tree_body_qd_warp_template.__qualname__ = name
     return wp.kernel(enable_backward=False, module="unique")(refresh_propagation_tree_body_qd_warp_template)
+
+
+@cache
+def _get_mark_independent_sparse_contact_candidates_kernel(
+    sparse_response_dofs: int,
+    device_arch: str,
+) -> "wp.Kernel":
+    """Mark contact triples whose response is confined to one diagonal-articulation coordinate."""
+    del device_arch
+    sparse_size = int(sparse_response_dofs)
+    if sparse_size <= 0:
+        raise ValueError("sparse response DOFs must be positive")
+
+    def mark_independent_sparse_contact_candidates_template(
+        contact_count: wp.array[int],
+        total_num_workers: int,
+        contact_world: wp.array[int],
+        contact_slot: wp.array[int],
+        contact_art_a: wp.array[int],
+        contact_art_b: wp.array[int],
+        contact_path: wp.array[int],
+        contact_slots_needed: wp.array[int],
+        articulation_response_dof_count: wp.array[int],
+        sparse_row_dof: wp.array3d[int],
+    ):
+        worker = wp.tid()
+        total_contacts = wp.min(contact_count[0], contact_slot.shape[0])
+        for contact in range(worker, total_contacts, total_num_workers):
+            slot = contact_slot[contact]
+            if contact_path[contact] != 0 or slot < 0 or contact_slots_needed[contact] != 3:
+                continue
+
+            art_a = contact_art_a[contact]
+            art_b = contact_art_b[contact]
+            has_other_response = False
+            if art_a >= 0:
+                response_dofs = articulation_response_dof_count[art_a]
+                has_other_response = response_dofs > 0 and response_dofs != sparse_size
+            if art_b >= 0:
+                response_dofs = articulation_response_dof_count[art_b]
+                has_other_response = has_other_response or (response_dofs > 0 and response_dofs != sparse_size)
+            if has_other_response:
+                continue
+
+            world = contact_world[contact]
+            coord_0 = sparse_row_dof[world, slot, 0]
+            coord_1 = sparse_row_dof[world, slot, 1]
+            if coord_0 >= 0 and coord_1 < 0:
+                sparse_row_dof[world, slot, 1] = -2
+            elif coord_1 >= 0 and coord_0 < 0:
+                sparse_row_dof[world, slot, 0] = -2
+
+    name = f"mark_independent_sparse_contact_candidates_{sparse_size}"
+    mark_independent_sparse_contact_candidates_template.__name__ = name
+    mark_independent_sparse_contact_candidates_template.__qualname__ = name
+    return wp.kernel(enable_backward=False, module="unique")(mark_independent_sparse_contact_candidates_template)
+
+
+@cache
+def _get_build_independent_sparse_contact_groups_kernel(
+    max_constraints: int,
+    max_world_dofs: int,
+    device_arch: str,
+    *,
+    build_serial_contacts: bool = False,
+) -> "wp.Kernel":
+    """Build the per-coordinate chains of independent contact triples and the serial contact list of each world.
+
+    A marked triple joins its coordinate's chain unless a coupled row touches that coordinate;
+    chains link in ascending row order, so each coordinate keeps the Gauss-Seidel order.
+    """
+    del device_arch
+    M = int(max_constraints)
+    D = int(max_world_dofs)
+    S = (M + 2) // 3
+    serial_schedule = (
+        f"""
+    // Compact the remaining contacts in original row order. The solve may
+    // inspect four normals concurrently, but any active batch is still
+    // applied through this serial list in exact GS order.
+    if (lane == 0) {{
+        int serial_count = 0;
+        for (int normal = contact_start; normal + 2 < contact_end; normal += 3) {{
+            const int sparse_row = sparse_world_base + normal * 2;
+            const bool scheduled_independently = sparse_row_dof.data[sparse_row] < -1
+                || sparse_row_dof.data[sparse_row + 1] < -1;
+            if (!scheduled_independently)
+                serial_normals.data[world * {S} + serial_count++] = normal;
+        }}
+        serial_count_out.data[world] = serial_count;
+    }}
+    __syncwarp(MASK);
+"""
+        if build_serial_contacts
+        else ""
+    )
+
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+    constexpr unsigned MASK = 0xffffffffu;
+    const int contact_start = dense_contact_row_start.data[world];
+    const int contact_end = world_constraint_count.data[world];
+    const int head_base = world * {D};
+    const int sparse_world_base = world * {M} * 2;
+    for (int coordinate = lane; coordinate < {D}; coordinate += 32)
+        group_heads.data[head_base + coordinate] = -1;
+    __syncwarp(MASK);
+
+    // Reserve every diagonal coordinate used by a coupled contact. A scalar
+    // row sharing one must remain in the serial chain to preserve GS order.
+    for (int normal = contact_start + lane * 3; normal + 2 < contact_end; normal += 96) {{
+        const int sparse_row = sparse_world_base + normal * 2;
+        const int coord_0 = sparse_row_dof.data[sparse_row];
+        const int coord_1 = sparse_row_dof.data[sparse_row + 1];
+        const bool scalar_candidate = coord_0 < -1 || coord_1 < -1;
+        if (!scalar_candidate) {{
+            if (coord_0 >= 0) atomicExch(&group_heads.data[head_base + coord_0], -2);
+            if (coord_1 >= 0) atomicExch(&group_heads.data[head_base + coord_1], -2);
+        }}
+    }}
+    __syncwarp(MASK);
+
+    // Prepending candidates in reverse row order makes each negative link
+    // reproduce the original ascending GS order.
+    if (lane == 0) {{
+        int normal = contact_start + ((contact_end - contact_start) / 3 - 1) * 3;
+        while (normal >= contact_start) {{
+            const int sparse_row = sparse_world_base + normal * 2;
+            const int coord_0 = sparse_row_dof.data[sparse_row];
+            const int coord_1 = sparse_row_dof.data[sparse_row + 1];
+            const bool scalar_candidate = coord_0 < -1 || coord_1 < -1;
+            const int scalar_coordinate = coord_0 >= 0 ? coord_0 : coord_1;
+            if (scalar_candidate) {{
+                if (group_heads.data[head_base + scalar_coordinate] != -2) {{
+                    const int next_normal = group_heads.data[head_base + scalar_coordinate];
+                    const int link = next_normal >= 0 ? -(next_normal + 3) : -2;
+                    if (sparse_row_dof.data[sparse_row] < 0)
+                        sparse_row_dof.data[sparse_row] = link;
+                    else
+                        sparse_row_dof.data[sparse_row + 1] = link;
+                    group_heads.data[head_base + scalar_coordinate] = normal;
+                }} else if (coord_0 < -1) {{
+                    sparse_row_dof.data[sparse_row] = -1;
+                }} else {{
+                    sparse_row_dof.data[sparse_row + 1] = -1;
+                }}
+            }}
+            normal -= 3;
+        }}
+    }}
+    __syncwarp(MASK);
+
+{serial_schedule}
+
+    int count = 0;
+    for (int coordinate_base = 0; coordinate_base < {D}; coordinate_base += 32) {{
+        const int coordinate = coordinate_base + lane;
+        const int head = coordinate < {D} ? group_heads.data[head_base + coordinate] : -1;
+        const unsigned active = __ballot_sync(MASK, head >= 0);
+        const unsigned lower_lanes = lane == 0 ? 0u : 0xffffffffu >> (32 - lane);
+        if (head >= 0) {{
+            const int output = count + __popc(active & lower_lanes);
+            group_heads.data[head_base + output] = head;
+        }}
+        count += __popc(active);
+        __syncwarp(MASK);
+    }}
+    if (lane == 0) group_count.data[world] = count;
+#endif
+"""
+
+    @wp.func_native(snippet)
+    def build_independent_sparse_contact_groups_native(
+        world: int,
+        lane: int,
+        world_constraint_count: wp.array[int],
+        dense_contact_row_start: wp.array[int],
+        sparse_row_dof: wp.array3d[int],
+        group_count: wp.array[int],
+        group_heads: wp.array2d[int],
+        serial_count_out: wp.array[int],
+        serial_normals: wp.array2d[int],
+    ): ...
+
+    def build_independent_sparse_contact_groups_template(
+        world_constraint_count: wp.array[int],
+        dense_contact_row_start: wp.array[int],
+        sparse_row_dof: wp.array3d[int],
+        group_count: wp.array[int],
+        group_heads: wp.array2d[int],
+        serial_count_out: wp.array[int],
+        serial_normals: wp.array2d[int],
+    ):
+        thread = wp.tid()
+        world = thread // 32
+        lane = thread % 32
+        build_independent_sparse_contact_groups_native(
+            world,
+            lane,
+            world_constraint_count,
+            dense_contact_row_start,
+            sparse_row_dof,
+            group_count,
+            group_heads,
+            serial_count_out,
+            serial_normals,
+        )
+
+    name = f"build_independent_sparse_contact_groups_{M}_{D}"
+    if build_serial_contacts:
+        name += "_serial_contacts"
+    build_independent_sparse_contact_groups_template.__name__ = name
+    build_independent_sparse_contact_groups_template.__qualname__ = name
+    return wp.kernel(enable_backward=False, module="unique")(build_independent_sparse_contact_groups_template)
+
+
+@cache
+def _get_pgs_solve_sparse_diagonal_kernel(
+    max_constraints: int,
+    max_world_dofs: int,
+    dense_dofs: int,
+    device_arch: str,
+    *,
+    contact_triples: bool = False,
+    speculative_contact_batches: bool = False,
+) -> "wp.Kernel":
+    """Build the Gauss-Seidel kernel of sparse-diagonal worlds, one warp per world.
+
+    Every dense row acts on the ``dense_dofs`` coordinates of the world's dense articulation
+    (lanes ``0..dense_dofs-1``) and on at most two coordinates of its diagonal articulation (the
+    next two lanes). Each iteration first projects the diagonal articulation's position limits
+    per coordinate. With ``contact_triples``, contact triples confined to one diagonal coordinate
+    are solved by coordinate in parallel (they commute with the remaining rows), and the other rows
+    follow in row order; ``speculative_contact_batches`` lets eight-lane groups skip runs of four
+    inactive contacts.
+    """
+    M = int(max_constraints)
+    D = int(max_world_dofs)
+    P = int(dense_dofs)
+    S = (M + 2) // 3
+    if speculative_contact_batches and (not contact_triples or P + 2 > 8):
+        raise ValueError("speculative contact batches require an eight-lane sparse contact triple")
+    elems_per_lane = (D + 31) // 32
+
+    limit_declarations = []
+    limit_loads = []
+    limit_projection = []
+    limit_stores = []
+    for element in range(elems_per_lane):
+        coord = f"lane + {element * 32}" if element else "lane"
+        limit_declarations.append(
+            f"""    int limit_active_{element} = 0;
+    float limit_lower_rhs_{element} = 0.0f;
+    float limit_upper_rhs_{element} = 0.0f;
+    float limit_response_{element} = 0.0f;
+    float limit_lower_lambda_{element} = 0.0f;
+    float limit_upper_lambda_{element} = 0.0f;"""
+        )
+        limit_loads.append(
+            f"""    if ({coord} < {D}) {{
+        const int limit_index = world * {D} + {coord};
+        const int global_dof = world_dof_indices.data[dof_map_base + {coord}];
+        limit_active_{element} = fused_limit_active.data[limit_index];
+        limit_lower_rhs_{element} = fused_limit_lower_rhs.data[limit_index];
+        limit_upper_rhs_{element} = fused_limit_upper_rhs.data[limit_index];
+        if (global_dof >= 0) limit_response_{element} = diagonal_inverse_mass.data[global_dof];
+    }}"""
+        )
+        limit_projection.append(
+            f"""        if ({coord} < {D} && limit_response_{element} > 0.0f) {{
+            const float limit_denom = limit_response_{element} + fused_limit_cfm;
+            if ((limit_active_{element} & 1) != 0) {{
+                const float residual = s_v[{coord}] + limit_lower_rhs_{element};
+                const float old_lambda = limit_lower_lambda_{element};
+                const float new_lambda = fmaxf(0.0f, old_lambda - omega * residual / limit_denom);
+                const float delta_lambda = new_lambda - old_lambda;
+                limit_lower_lambda_{element} = new_lambda;
+                s_v[{coord}] += limit_response_{element} * delta_lambda;
+                if (delta_lambda != 0.0f) iteration_changed = 1;
+            }}
+            if ((limit_active_{element} & 2) != 0) {{
+                const float residual = -s_v[{coord}] + limit_upper_rhs_{element};
+                const float old_lambda = limit_upper_lambda_{element};
+                const float new_lambda = fmaxf(0.0f, old_lambda - omega * residual / limit_denom);
+                const float delta_lambda = new_lambda - old_lambda;
+                limit_upper_lambda_{element} = new_lambda;
+                s_v[{coord}] -= limit_response_{element} * delta_lambda;
+                if (delta_lambda != 0.0f) iteration_changed = 1;
+            }}
+        }}"""
+        )
+        limit_stores.append(
+            f"""    if ({coord} < {D}) {{
+        const int limit_index = world * {D} + {coord};
+        fused_limit_lower_lambda.data[limit_index] = limit_lower_lambda_{element};
+        fused_limit_upper_lambda.data[limit_index] = limit_upper_lambda_{element};
+    }}"""
+        )
+
+    independent_contact_phase = ""
+    skip_independent_contact = ""
+    skip_inactive_friction = ""
+    serial_loop_open = "        for (int row = 0; row < row_count; ++row) {"
+    serial_loop_close = "        }"
+    if contact_triples:
+        independent_contact_phase = f"""
+        // Independent scalar triples commute with the serial chain because
+        // schedule construction excludes every coordinate touched by a
+        // coupled contact. Each lane retains original row order per coordinate.
+        const int independent_group_count = sparse_contact_group_count.data[world];
+        for (int group = lane; group < independent_group_count; group += 32) {{
+            int normal = sparse_contact_group_heads.data[world * {D} + group];
+            while (normal >= 0) {{
+                const int normal_sparse_row = row_base + normal;
+                const int normal_coord_0 = sparse_row_dof.data[normal_sparse_row * 2];
+                const int normal_coord_1 = sparse_row_dof.data[normal_sparse_row * 2 + 1];
+                const int scalar_coord = normal_coord_0 >= 0 ? normal_coord_0 : normal_coord_1;
+                const int link = normal_coord_0 < -1 ? normal_coord_0 : normal_coord_1;
+                const int next_normal = link == -2 ? -1 : -link - 3;
+                const int tangent1 = normal + 1;
+                const int tangent2 = normal + 2;
+
+                const int normal_slot = normal_coord_0 >= 0 ? 0 : 1;
+                const int normal_jy = normal_sparse_row * 4 + normal_slot * 2;
+                const float normal_j = sparse_row_jy.data[normal_jy];
+                const float normal_y = sparse_row_jy.data[normal_jy + 1];
+                const float normal_denom = s_diag[normal];
+                if (normal_denom > 0.0f) {{
+                    const float normal_jv = __fmul_rn(normal_j, s_v[scalar_coord]);
+                    const float residual = __fadd_rn(normal_jv, s_rhs[normal]);
+                    const float old_impulse = s_lambda[normal];
+                    float new_impulse = old_impulse - omega * residual / normal_denom;
+                    if (new_impulse < 0.0f) new_impulse = 0.0f;
+                    const float delta_impulse = new_impulse - old_impulse;
+                    s_lambda[normal] = new_impulse;
+                    if (delta_impulse != 0.0f) {{
+                        iteration_changed = 1;
+                        s_v[scalar_coord] += normal_y * delta_impulse;
+                    }}
+                }}
+
+                // Patch normal load over the region's linked normal rows (circular parent list).
+                float lambda_n = s_lambda[normal];
+                for (int patch_row = (s_meta[normal] >> {_DENSE_META_ROW_TYPE_BITS}) - 1;
+                     patch_row >= 0 && patch_row != normal;
+                     patch_row = (s_meta[patch_row] >> {_DENSE_META_ROW_TYPE_BITS}) - 1)
+                    lambda_n += s_lambda[patch_row];
+                const float radius = fmaxf(s_mu[tangent1] * lambda_n, 0.0f);
+                const float old_tangent1 = s_lambda[tangent1];
+                const float old_tangent2 = s_lambda[tangent2];
+                if (radius <= 0.0f && old_tangent1 == 0.0f && old_tangent2 == 0.0f) {{
+                    normal = next_normal;
+                    continue;
+                }}
+                if (global_iteration < friction_start_iteration) {{
+                    s_lambda[tangent1] = 0.0f;
+                    s_lambda[tangent2] = 0.0f;
+                    normal = next_normal;
+                    continue;
+                }}
+
+                const int tangent1_sparse_row = row_base + tangent1;
+                const int tangent1_coord_0 = sparse_row_dof.data[tangent1_sparse_row * 2];
+                const int tangent1_slot = tangent1_coord_0 >= 0 ? 0 : 1;
+                const int tangent1_jy = tangent1_sparse_row * 4 + tangent1_slot * 2;
+                const float tangent1_j = sparse_row_jy.data[tangent1_jy];
+                const float tangent1_y = sparse_row_jy.data[tangent1_jy + 1];
+                const int tangent2_sparse_row = row_base + tangent2;
+                const int tangent2_coord_0 = sparse_row_dof.data[tangent2_sparse_row * 2];
+                const int tangent2_slot = tangent2_coord_0 >= 0 ? 0 : 1;
+                const int tangent2_jy = tangent2_sparse_row * 4 + tangent2_slot * 2;
+                const float tangent2_j = sparse_row_jy.data[tangent2_jy];
+                const float tangent2_y = sparse_row_jy.data[tangent2_jy + 1];
+
+                // Both tangents act on the same scalar coordinate: solve them together on the friction disk
+                // at the patch normal load, as the general owner does.
+                float2 pair = make_float2(0.0f, 0.0f);
+                if (radius > 0.0f) {{
+                    const float tangent1_residual = __fadd_rn(__fmul_rn(tangent1_j, s_v[scalar_coord]), s_rhs[tangent1]);
+                    const float tangent2_residual = __fadd_rn(__fmul_rn(tangent2_j, s_v[scalar_coord]), s_rhs[tangent2]);
+                    const float cross = tangent1_j * tangent2_y;
+                    pair = friction_pair_candidate(s_diag[tangent1], cross, s_diag[tangent2],
+                        tangent1_residual, tangent2_residual, old_tangent1, old_tangent2, radius, omega);
+                }}
+                const float magnitude = sqrtf(pair.x * pair.x + pair.y * pair.y);
+                const float scale = magnitude > radius ? radius / magnitude : 1.0f;
+                const float new_tangent1 = pair.x * scale;
+                const float new_tangent2 = pair.y * scale;
+                const float tangent1_delta = new_tangent1 - old_tangent1;
+                const float tangent2_delta = new_tangent2 - old_tangent2;
+                s_lambda[tangent1] = new_tangent1;
+                s_lambda[tangent2] = new_tangent2;
+                if (tangent2_delta != 0.0f) {{
+                    iteration_changed = 1;
+                    s_v[scalar_coord] += tangent2_y * tangent2_delta;
+                }}
+                if (tangent1_delta != 0.0f) {{
+                    iteration_changed = 1;
+                    s_v[scalar_coord] += tangent1_y * tangent1_delta;
+                }}
+                normal = next_normal;
+            }}
+        }}
+        __syncwarp(MASK);
+"""
+        skip_independent_contact = """
+            if (row >= contact_start) {
+                const int normal = contact_start + ((row - contact_start) / 3) * 3;
+                const int normal_sparse_row = row_base + normal;
+                if (sparse_row_dof.data[normal_sparse_row * 2] < -1
+                    || sparse_row_dof.data[normal_sparse_row * 2 + 1] < -1) {
+                    row = normal + 2;
+                    continue;
+                }
+            }"""
+        skip_inactive_friction = f"""
+            if (row >= contact_start && (row - contact_start) % 3 == 0
+                && s_lambda[row + 1] == 0.0f
+                && s_lambda[row + 2] == 0.0f) {{
+                float patch_load = s_lambda[row];
+                for (int patch_row = (s_meta[row] >> {_DENSE_META_ROW_TYPE_BITS}) - 1;
+                     patch_row >= 0 && patch_row != row;
+                     patch_row = (s_meta[patch_row] >> {_DENSE_META_ROW_TYPE_BITS}) - 1)
+                    patch_load += s_lambda[patch_row];
+                if (patch_load <= 0.0f) row += 2;
+            }}"""
+        if speculative_contact_batches:
+            skip_independent_contact = ""
+            serial_loop_open = f"""        const int serial_contact_count = sparse_contact_serial_count.data[world];
+        const int serial_row_end = contact_start + serial_contact_count * 3;
+        for (int serial_row = 0; serial_row < serial_row_end; ++serial_row) {{
+            int row = serial_row;
+            int contact_component = -1;
+            if (serial_row >= contact_start) {{
+                int contact_index = (serial_row - contact_start) / 3;
+                contact_component = (serial_row - contact_start) % 3;
+                if (contact_component == 0 && (contact_index & 3) == 0) {{
+                    const int batch_group = lane >> 3;
+                    const int batch_lane = lane & 7;
+                    const int candidate_index = contact_index + batch_group;
+                    const bool candidate_valid = candidate_index < serial_contact_count;
+                    const int candidate_normal = candidate_valid
+                        ? sparse_contact_serial_normals.data[world * {S} + candidate_index] : -1;
+                    int candidate_coord = -1;
+                    float candidate_jacobian = 0.0f;
+                    if (candidate_valid && batch_lane < {P}) {{
+                        candidate_coord = dense_offset + batch_lane;
+                        candidate_jacobian = dense_J.data[
+                            (dense_group * {M} + candidate_normal) * {P} + batch_lane];
+                    }} else if (candidate_valid && batch_lane <= {P + 1}) {{
+                        const int sparse_slot = batch_lane - {P};
+                        const int sparse_row = row_base + candidate_normal;
+                        candidate_coord = sparse_row_dof.data[sparse_row * 2 + sparse_slot];
+                        candidate_jacobian = sparse_row_jy.data[sparse_row * 4 + sparse_slot * 2];
+                    }}
+                    if (candidate_coord < 0) candidate_jacobian = 0.0f;
+                    float candidate_sum = candidate_coord >= 0
+                        ? candidate_jacobian * s_v[candidate_coord] : 0.0f;
+                    const unsigned candidate_mask = 0xffu << (batch_group * 8);
+                    candidate_sum += __shfl_down_sync(candidate_mask, candidate_sum, 4, 8);
+                    candidate_sum += __shfl_down_sync(candidate_mask, candidate_sum, 2, 8);
+                    candidate_sum += __shfl_down_sync(candidate_mask, candidate_sum, 1, 8);
+                    const float candidate_velocity = __shfl_sync(candidate_mask, candidate_sum, 0, 8);
+                    bool candidate_noop = !candidate_valid;
+                    if (candidate_valid) {{
+                        const float old_impulse = s_lambda[candidate_normal];
+                        float new_impulse = old_impulse;
+                        const float denominator = s_diag[candidate_normal];
+                        if (denominator > 0.0f) {{
+                            new_impulse -= omega
+                                * (candidate_velocity + s_rhs[candidate_normal]) / denominator;
+                            if (new_impulse < 0.0f) new_impulse = 0.0f;
+                        }}
+                        candidate_noop = old_impulse == 0.0f && new_impulse == 0.0f
+                            && s_lambda[candidate_normal + 1] == 0.0f
+                            && s_lambda[candidate_normal + 2] == 0.0f;
+                        if (candidate_noop) {{
+                            for (int patch_row = (s_meta[candidate_normal] >> {_DENSE_META_ROW_TYPE_BITS}) - 1;
+                                 patch_row >= 0 && patch_row != candidate_normal;
+                                 patch_row = (s_meta[patch_row] >> {_DENSE_META_ROW_TYPE_BITS}) - 1)
+                                if (s_lambda[patch_row] > 0.0f) candidate_noop = false;
+                        }}
+                    }}
+                    const unsigned noop_lanes = __ballot_sync(MASK, candidate_noop);
+                    if (noop_lanes == MASK) {{
+                        const int remaining_contacts = serial_contact_count - contact_index;
+                        const int batch_contacts = remaining_contacts < 4 ? remaining_contacts : 4;
+                        serial_row += batch_contacts * 3 - 1;
+                        continue;
+                    }}
+                    const int first_active_contact = (__ffs((int)(~noop_lanes)) - 1) >> 3;
+                    serial_row += first_active_contact * 3;
+                    contact_index += first_active_contact;
+                }}
+                contact_component = (serial_row - contact_start) % 3;
+                contact_index = (serial_row - contact_start) / 3;
+                row = sparse_contact_serial_normals.data[world * {S} + contact_index]
+                    + contact_component;
+            }}"""
+            skip_inactive_friction = f"""
+            if (contact_component == 0
+                && s_lambda[row + 1] == 0.0f
+                && s_lambda[row + 2] == 0.0f) {{
+                float patch_load = s_lambda[row];
+                for (int patch_row = (s_meta[row] >> {_DENSE_META_ROW_TYPE_BITS}) - 1;
+                     patch_row >= 0 && patch_row != row;
+                     patch_row = (s_meta[patch_row] >> {_DENSE_META_ROW_TYPE_BITS}) - 1)
+                    patch_load += s_lambda[patch_row];
+                if (patch_load <= 0.0f) serial_row += 2;
+            }}"""
+
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+    const unsigned MASK = 0xffffffffu;
+    const int lane = threadIdx.x & 31;
+    int row_count = world_constraint_count.data[world];
+    if (row_count > {M}) row_count = {M};
+    const int row_base = world * {M};
+    const int dof_map_base = world * {D};
+    const int dense_offset = dense_offsets.data[world];
+    const int dense_group = dense_groups.data[world];
+    const int contact_start = {"dense_contact_row_start.data[world]" if contact_triples else "row_count"};
+
+    __shared__ float s_v[{D}];
+    __shared__ float s_lambda[{M}];
+    __shared__ float s_rhs[{M}];
+    __shared__ float s_diag[{M}];
+    __shared__ int s_meta[{M}];
+    __shared__ float s_mu[{M}];
+
+{chr(10).join(limit_declarations)}
+
+    for (int row = lane; row < row_count; row += 32) {{
+        const int index = row_base + row;
+        s_lambda[row] = world_impulses.data[index];
+        s_rhs[row] = rhs_bias.data[index];
+        s_diag[row] = world_diag.data[index];
+        const int row_type = world_row_type.data[index];
+        const int row_parent = world_row_parent.data[index];
+        s_meta[row] = (row_type & {_DENSE_META_ROW_TYPE_MASK})
+            | ((row_parent + 1) << {_DENSE_META_ROW_TYPE_BITS});
+        s_mu[row] = world_row_mu.data[index];
+    }}
+    for (int coord = lane; coord < {D}; coord += 32) {{
+        const int global_dof = world_dof_indices.data[dof_map_base + coord];
+        s_v[coord] = global_dof >= 0 ? v_out.data[global_dof] : 0.0f;
+    }}
+{chr(10).join(limit_loads)}
+    __syncwarp(MASK);
+
+    for (int iteration = 0; iteration < iterations; ++iteration) {{
+        const int global_iteration = iteration_offset + iteration;
+        int iteration_changed = 0;
+
+{chr(10).join(limit_projection)}
+        __syncwarp(MASK);
+
+{independent_contact_phase}
+
+{serial_loop_open}
+{skip_independent_contact}
+            const int row_type = s_meta[row] & {_DENSE_META_ROW_TYPE_MASK};
+            if (row_type == {int(PGS_CONSTRAINT_TYPE_FRICTION)}
+                && global_iteration < friction_start_iteration) {{
+                s_lambda[row] = 0.0f;
+                __syncwarp(MASK);
+                continue;
+            }}
+            const int parent = (s_meta[row] >> {_DENSE_META_ROW_TYPE_BITS}) - 1;
+            if (row_type == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && row != parent + 1) {{
+                // The first tangent row solved both tangents; the second visit is a no-op.
+                __syncwarp(MASK);
+                continue;
+            }}
+            const float denominator = s_diag[row];
+            if (denominator <= 0.0f && row_type != {int(PGS_CONSTRAINT_TYPE_FRICTION)}) continue;
+
+            int coord = -1;
+            float jacobian = 0.0f;
+            float response = 0.0f;
+            if (lane < {P}) {{
+                coord = dense_offset + lane;
+                const int dense_index = (dense_group * {M} + row) * {P} + lane;
+                jacobian = dense_J.data[dense_index];
+                response = dense_Y.data[dense_index];
+            }} else if (lane <= {P + 1}) {{
+                const int sparse_slot = lane - {P};
+                const int sparse_row = row_base + row;
+                coord = sparse_row_dof.data[sparse_row * 2 + sparse_slot];
+                jacobian = sparse_row_jy.data[sparse_row * 4 + sparse_slot * 2];
+                response = sparse_row_jy.data[sparse_row * 4 + sparse_slot * 2 + 1];
+            }}
+            float partial = coord >= 0 ? jacobian * s_v[coord] : 0.0f;
+            partial += __shfl_down_sync(MASK, partial, 16);
+            partial += __shfl_down_sync(MASK, partial, 8);
+            partial += __shfl_down_sync(MASK, partial, 4);
+            partial += __shfl_down_sync(MASK, partial, 2);
+            partial += __shfl_down_sync(MASK, partial, 1);
+            const float velocity = __shfl_sync(MASK, partial, 0);
+
+            const float residual = velocity + s_rhs[row];
+            const float old_impulse = s_lambda[row];
+            float new_impulse = old_impulse;
+            if (denominator > 0.0f) new_impulse -= omega * residual / denominator;
+            if (row_type == {int(PGS_CONSTRAINT_TYPE_CONTACT)}
+                || row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_LIMIT)}) {{
+                new_impulse = fmaxf(new_impulse, 0.0f);
+            }} else if (row_type == {int(PGS_CONSTRAINT_TYPE_FRICTION)}) {{
+                // Paired tangent solve at the patch normal load, matching the general owner.
+                const int sibling = parent + 2;
+                float lambda_n = s_lambda[parent];
+                for (int patch_row = (s_meta[parent] >> {_DENSE_META_ROW_TYPE_BITS}) - 1;
+                     patch_row >= 0 && patch_row != parent;
+                     patch_row = (s_meta[patch_row] >> {_DENSE_META_ROW_TYPE_BITS}) - 1)
+                    lambda_n += s_lambda[patch_row];
+                const float radius = fmaxf(s_mu[row] * lambda_n, 0.0f);
+                const float sibling_old = s_lambda[sibling];
+                // Sibling row entries on this lane's coordinate and its own two sparse slots.
+                int sibling_coord = -1;
+                float sibling_jacobian = 0.0f;
+                float sibling_response = 0.0f;
+                float sibling_response_here = 0.0f;
+                const int sibling_sparse_row = row_base + sibling;
+                if (lane < {P}) {{
+                    sibling_coord = dense_offset + lane;
+                    const int sibling_dense_index = (dense_group * {M} + sibling) * {P} + lane;
+                    sibling_jacobian = dense_J.data[sibling_dense_index];
+                    sibling_response = dense_Y.data[sibling_dense_index];
+                    sibling_response_here = sibling_response;
+                }} else if (lane <= {P + 1}) {{
+                    const int sparse_slot = lane - {P};
+                    sibling_coord = sparse_row_dof.data[sibling_sparse_row * 2 + sparse_slot];
+                    sibling_jacobian = sparse_row_jy.data[sibling_sparse_row * 4 + sparse_slot * 2];
+                    sibling_response = sparse_row_jy.data[sibling_sparse_row * 4 + sparse_slot * 2 + 1];
+                    // The sibling's response at this lane's (row) coordinate, if it carries that coordinate.
+                    const int sibling_coord_0 = sparse_row_dof.data[sibling_sparse_row * 2];
+                    const int sibling_coord_1 = sparse_row_dof.data[sibling_sparse_row * 2 + 1];
+                    if (coord >= 0 && coord == sibling_coord_0)
+                        sibling_response_here = sparse_row_jy.data[sibling_sparse_row * 4 + 1];
+                    else if (coord >= 0 && coord == sibling_coord_1)
+                        sibling_response_here = sparse_row_jy.data[sibling_sparse_row * 4 + 3];
+                }}
+                float2 pair = make_float2(0.0f, 0.0f);
+                if (radius > 0.0f) {{
+                    float partial_sibling = sibling_coord >= 0 ? sibling_jacobian * s_v[sibling_coord] : 0.0f;
+                    float partial_cross = coord >= 0 ? jacobian * sibling_response_here : 0.0f;
+                    for (int offset = 16; offset > 0; offset >>= 1) {{
+                        partial_sibling += __shfl_down_sync(MASK, partial_sibling, offset);
+                        partial_cross += __shfl_down_sync(MASK, partial_cross, offset);
+                    }}
+                    const float sibling_residual = __shfl_sync(MASK, partial_sibling, 0) + s_rhs[sibling];
+                    const float cross = __shfl_sync(MASK, partial_cross, 0);
+                    pair = friction_pair_candidate(denominator, cross, s_diag[sibling],
+                        residual, sibling_residual, old_impulse, sibling_old, radius, omega);
+                }}
+                const float magnitude = sqrtf(pair.x * pair.x + pair.y * pair.y);
+                const float scale = magnitude > radius ? radius / magnitude : 1.0f;
+                new_impulse = pair.x * scale;
+                const float sibling_new = pair.y * scale;
+                const float sibling_delta = sibling_new - sibling_old;
+                s_lambda[sibling] = sibling_new;
+                if (sibling_delta != 0.0f) {{
+                    iteration_changed = 1;
+                    if (sibling_coord >= 0)
+                        s_v[sibling_coord] += sibling_response * sibling_delta;
+                }}
+            }}
+
+            const float delta_impulse = new_impulse - old_impulse;
+            s_lambda[row] = new_impulse;
+            if (delta_impulse != 0.0f) {{
+                iteration_changed = 1;
+                if (coord >= 0) s_v[coord] += response * delta_impulse;
+            }}
+            __syncwarp(MASK);
+{skip_inactive_friction}
+{serial_loop_close}
+
+        if (global_iteration >= friction_start_iteration
+            && __ballot_sync(MASK, iteration_changed != 0) == 0u) break;
+    }}
+
+    for (int row = lane; row < row_count; row += 32)
+        world_impulses.data[row_base + row] = s_lambda[row];
+    for (int coord = lane; coord < {D}; coord += 32) {{
+        const int global_dof = world_dof_indices.data[dof_map_base + coord];
+        if (global_dof >= 0) v_out.data[global_dof] = s_v[coord];
+    }}
+{chr(10).join(limit_stores)}
+#endif
+"""
+    snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA, 1)
+
+    @wp.func_native(snippet)
+    def pgs_solve_sparse_diagonal_native(
+        world: int,
+        world_constraint_count: wp.array[int],
+        world_dof_indices: wp.array2d[int],
+        rhs_bias: wp.array2d[float],
+        world_diag: wp.array2d[float],
+        world_impulses: wp.array2d[float],
+        world_row_type: wp.array2d[int],
+        world_row_parent: wp.array2d[int],
+        world_row_mu: wp.array2d[float],
+        dense_contact_row_start: wp.array[int],
+        sparse_contact_group_count: wp.array[int],
+        sparse_contact_group_heads: wp.array2d[int],
+        sparse_contact_serial_count: wp.array[int],
+        sparse_contact_serial_normals: wp.array2d[int],
+        dense_offsets: wp.array[int],
+        dense_groups: wp.array[int],
+        dense_J: wp.array3d[float],
+        dense_Y: wp.array3d[float],
+        sparse_row_dof: wp.array3d[int],
+        sparse_row_jy: wp.array3d[float],
+        fused_limit_active: wp.array2d[int],
+        fused_limit_lower_rhs: wp.array2d[float],
+        fused_limit_upper_rhs: wp.array2d[float],
+        diagonal_inverse_mass: wp.array[float],
+        fused_limit_cfm: float,
+        iterations: int,
+        omega: float,
+        friction_start_iteration: int,
+        iteration_offset: int,
+        fused_limit_lower_lambda: wp.array2d[float],
+        fused_limit_upper_lambda: wp.array2d[float],
+        v_out: wp.array[float],
+    ): ...
+
+    def pgs_solve_sparse_diagonal_template(
+        world_constraint_count: wp.array[int],
+        world_dof_indices: wp.array2d[int],
+        rhs_bias: wp.array2d[float],
+        world_diag: wp.array2d[float],
+        world_impulses: wp.array2d[float],
+        world_row_type: wp.array2d[int],
+        world_row_parent: wp.array2d[int],
+        world_row_mu: wp.array2d[float],
+        dense_contact_row_start: wp.array[int],
+        sparse_contact_group_count: wp.array[int],
+        sparse_contact_group_heads: wp.array2d[int],
+        sparse_contact_serial_count: wp.array[int],
+        sparse_contact_serial_normals: wp.array2d[int],
+        dense_offsets: wp.array[int],
+        dense_groups: wp.array[int],
+        dense_J: wp.array3d[float],
+        dense_Y: wp.array3d[float],
+        sparse_row_dof: wp.array3d[int],
+        sparse_row_jy: wp.array3d[float],
+        fused_limit_active: wp.array2d[int],
+        fused_limit_lower_rhs: wp.array2d[float],
+        fused_limit_upper_rhs: wp.array2d[float],
+        diagonal_inverse_mass: wp.array[float],
+        fused_limit_cfm: float,
+        iterations: int,
+        omega: float,
+        friction_start_iteration: int,
+        iteration_offset: int,
+        fused_limit_lower_lambda: wp.array2d[float],
+        fused_limit_upper_lambda: wp.array2d[float],
+        v_out: wp.array[float],
+    ):
+        world, _lane = wp.tid()
+        pgs_solve_sparse_diagonal_native(
+            world,
+            world_constraint_count,
+            world_dof_indices,
+            rhs_bias,
+            world_diag,
+            world_impulses,
+            world_row_type,
+            world_row_parent,
+            world_row_mu,
+            dense_contact_row_start,
+            sparse_contact_group_count,
+            sparse_contact_group_heads,
+            sparse_contact_serial_count,
+            sparse_contact_serial_normals,
+            dense_offsets,
+            dense_groups,
+            dense_J,
+            dense_Y,
+            sparse_row_dof,
+            sparse_row_jy,
+            fused_limit_active,
+            fused_limit_lower_rhs,
+            fused_limit_upper_rhs,
+            diagonal_inverse_mass,
+            fused_limit_cfm,
+            iterations,
+            omega,
+            friction_start_iteration,
+            iteration_offset,
+            fused_limit_lower_lambda,
+            fused_limit_upper_lambda,
+            v_out,
+        )
+
+    name = f"pgs_solve_sparse_diagonal_{M}_{D}_{P}"
+    if contact_triples:
+        name += "_contact_groups"
+    if speculative_contact_batches:
+        name += "_speculative_batches"
+    pgs_solve_sparse_diagonal_template.__name__ = name
+    pgs_solve_sparse_diagonal_template.__qualname__ = name
+    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_sparse_diagonal_template)
 
 
 def _synchronize_streams(streams: list) -> None:
