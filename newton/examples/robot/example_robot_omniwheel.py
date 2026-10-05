@@ -157,7 +157,7 @@ def add_mecanum_wheel(
         parent_xform=wp.transform(p=position, q=wp.quat_identity()),
         child_xform=wp.transform(),
         axis=newton.Axis.Y,
-        target_vel=0.0,
+        target_qd=0.0,
         target_kd=40.0,
         damping=0.05,
         armature=0.02,

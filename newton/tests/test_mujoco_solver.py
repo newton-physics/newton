@@ -1802,9 +1802,9 @@ class TestMuJoCoSolverJointProperties(_MuJoCoSolverPropertiesFixture, unittest.T
                 actual_val = updated_jnt_margin[world_idx, mjc_jnt]
                 self.assertAlmostEqual(actual_val, expected_val, places=6)
 
-    def test_dof_passive_stiffness_damping_multiworld(self):
+    def test_joint_stiffness_damping_multiworld(self):
         """
-        Verify that dof_passive_stiffness and joint_damping propagate correctly:
+        Verify that joint_stiffness and joint_damping propagate correctly:
         1. Different per-world values survive conversion to MuJoCo.
         2. notify_model_changed updates all worlds consistently.
         """
@@ -1850,7 +1850,7 @@ class TestMuJoCoSolverJointProperties(_MuJoCoSolverPropertiesFixture, unittest.T
                 initial_stiffness[global_idx] = 0.05 + 0.01 * dof_idx + 0.25 * world_idx
                 initial_damping[global_idx] = 0.4 + 0.02 * dof_idx + 0.3 * world_idx
 
-        model.mujoco.dof_passive_stiffness.assign(initial_stiffness)
+        model.joint_stiffness.assign(initial_stiffness)
         model.joint_damping.assign(initial_damping)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -1897,7 +1897,7 @@ class TestMuJoCoSolverJointProperties(_MuJoCoSolverPropertiesFixture, unittest.T
         updated_stiffness = initial_stiffness + 0.5 + 0.05 * np.arange(model.joint_dof_count, dtype=np.float32)
         updated_damping = initial_damping + 0.3 + 0.03 * np.arange(model.joint_dof_count, dtype=np.float32)
 
-        model.mujoco.dof_passive_stiffness.assign(updated_stiffness)
+        model.joint_stiffness.assign(updated_stiffness)
         model.joint_damping.assign(updated_damping)
         solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 

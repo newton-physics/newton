@@ -112,6 +112,7 @@ class TestJointSprings(unittest.TestCase):
                     def Xform "root" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {{
                         def Cube "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]) {{
                             float physics:mass = 1
+                            float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
                             double size = 0.1
                         }}
                         def PhysicsRevoluteJoint "hinge" (prepend apiSchemas = ["MjcJointAPI"]) {{
@@ -142,13 +143,13 @@ class TestJointSprings(unittest.TestCase):
     def test_builder_composition_and_coordinate_layout(self):
         """Preserve spring data through fixed-joint collapse and world replication with quaternion joints."""
         builder = newton.ModelBuilder()
-        root = builder.add_link(mass=1.0)
+        root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         free = builder.add_joint_free(root)
-        ball_body = builder.add_link(mass=1.0)
+        ball_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         ball = builder.add_joint_ball(root, ball_body)
-        fixed_body = builder.add_link(mass=1.0)
+        fixed_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         fixed = builder.add_joint_fixed(ball_body, fixed_body)
-        slider_body = builder.add_link(mass=1.0)
+        slider_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         slider = builder.add_joint_prismatic(fixed_body, slider_body, stiffness=4.0, rest_q=0.6)
         builder.add_articulation([free, ball, fixed, slider])
         builder.collapse_fixed_joints()
@@ -172,7 +173,7 @@ class TestJointSprings(unittest.TestCase):
                 newton.ModelBuilder.JointDofConfig(target_q=0.0, target_pos=0.4)
         for method in ("add_joint_revolute", "add_joint_prismatic"):
             builder = newton.ModelBuilder()
-            body = builder.add_link(mass=1.0)
+            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
             with self.assertWarns(DeprecationWarning):
                 joint = getattr(builder, method)(-1, body, target_pos=0.4, target_vel=0.8)
             builder.add_articulation([joint])

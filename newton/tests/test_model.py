@@ -2467,7 +2467,7 @@ class TestModelJoints(unittest.TestCase):
 
         def _axes(targets):
             return [
-                ModelBuilder.JointDofConfig(axis=axis, target_pos=target)
+                ModelBuilder.JointDofConfig(axis=axis, target_q=target)
                 for axis, target in zip((newton.Axis.X, newton.Axis.Y, newton.Axis.Z), targets, strict=True)
             ]
 
@@ -2491,7 +2491,7 @@ class TestModelJoints(unittest.TestCase):
                 angular_axes=_axes(ang_targets),
             )
             b_rev = builder.add_link(mass=1.0)
-            j_rev = builder.add_joint_revolute(parent=b_ball, child=b_rev, axis=newton.Axis.Z, target_pos=0.7)
+            j_rev = builder.add_joint_revolute(parent=b_ball, child=b_rev, axis=newton.Axis.Z, target_q=0.7)
             builder.add_articulation([j_free, j_ball, j_rev])
             with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
                 model = builder.finalize()
@@ -2520,7 +2520,7 @@ class TestModelJoints(unittest.TestCase):
         self.assertAlmostEqual(float(target_q[int(qd_starts[j_rev])]), 0.7, places=6)
 
     def test_ball_free_per_axis_target_pos_preserved(self):
-        """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
+        """``JointDofConfig.target_q`` on BALL/FREE angular axes must flow
         into the ``joint_target_q`` coord slice: the 3 angular scalars are
         interpreted as extrinsic ZYX Euler angles and converted to a unit
         quaternion via :meth:`ModelBuilder._quat_from_euler_zyx`, matching
@@ -2530,18 +2530,18 @@ class TestModelJoints(unittest.TestCase):
 
         def _make_axes():
             return [
-                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_pos=ang_targets[0]),
-                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_pos=ang_targets[1]),
-                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_pos=ang_targets[2]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_q=ang_targets[0]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_q=ang_targets[1]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_q=ang_targets[2]),
             ]
 
         lin_targets = (1.5, -2.5, 3.5)
 
         def _make_linear_axes():
             return [
-                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_pos=lin_targets[0]),
-                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_pos=lin_targets[1]),
-                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_pos=lin_targets[2]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_q=lin_targets[0]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_q=lin_targets[1]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_q=lin_targets[2]),
             ]
 
         expected_quat = ModelBuilder._quat_from_axis_targets(*ang_targets)

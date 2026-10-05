@@ -124,14 +124,6 @@ def finalize_joint_springs(builder: ModelBuilder, model: Model) -> None:
         if attr is None:
             continue
         values = attr.values or {}
-        if values:
-            replacement_name = "joint_stiffness" if name == "dof_passive_stiffness" else "joint_rest_q"
-            warnings.warn(
-                f"mujoco:{name} is deprecated in Newton 1.7; use {replacement_name} instead. "
-                "Scalar rest coordinates use springref - ref.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
         entries = values.items() if isinstance(values, dict) else enumerate(values)
         for d, value in entries:
             q = int(coord[d]) if name == "dof_springref" else d

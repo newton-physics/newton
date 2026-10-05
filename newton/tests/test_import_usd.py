@@ -3928,17 +3928,17 @@ def Xform "Articulation" (
         SolverMuJoCo.register_custom_attributes(builder)
         self.assertNotIn("mujoco:dof_passive_damping", builder.custom_attributes)
         # mjc:damping resolves through SchemaResolverMjc into joint_damping;
-        # mjc:stiffness stays a namespaced custom attribute.
+        # mjc:stiffness resolves into core joint_stiffness.
         builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverMjc()])
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
+        self.assertTrue(hasattr(model, "joint_stiffness"))
         self.assertFalse(hasattr(model.mujoco, "dof_passive_damping"))
 
         joint_names = model.joint_label
         joint_qd_start = model.joint_qd_start.numpy()
-        joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
+        joint_stiffness = model.joint_stiffness.numpy()
         joint_damping = model.joint_damping.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
@@ -5028,8 +5028,10 @@ def Xform "Articulation" (
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "dof_springref"))
-        springref = model.mujoco.dof_springref.numpy()
+        with self.assertWarnsRegex(DeprecationWarning, "dof_springref"):
+            self.assertTrue(hasattr(model.mujoco, "dof_springref"))
+        with self.assertWarnsRegex(DeprecationWarning, "dof_springref"):
+            springref = model.mujoco.dof_springref.numpy()
         qd_start = model.joint_qd_start.numpy()
 
         revolute_joint_idx = model.joint_label.index("/Articulation/revolute_joint")
@@ -5132,7 +5134,8 @@ def Xform "Articulation" (
 
         qd_start = model.joint_qd_start.numpy()
         dof_ref = model.mujoco.dof_ref.numpy()
-        springref = model.mujoco.dof_springref.numpy()
+        with self.assertWarnsRegex(DeprecationWarning, "dof_springref"):
+            springref = model.mujoco.dof_springref.numpy()
 
         revolute_dof = qd_start[model.joint_label.index("/Articulation/revolute_joint")]
         prismatic_dof = qd_start[model.joint_label.index("/Articulation/prismatic_joint")]
