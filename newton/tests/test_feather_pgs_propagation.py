@@ -374,6 +374,102 @@ def test_phased_sweeps_touch_only_their_row_family(test, device):
     test.assertEqual(touched[5], (False, False, True))
 
 
+def _build_box_chain(device, links, boxes, articulations=1):
+    """Build revolute chains in zero gravity with ``boxes`` free boxes pressed into their links."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.default_shape_cfg.density = 1000.0
+    builder.default_shape_cfg.mu = 0.75
+    builder.default_shape_cfg.margin = 0.0
+    builder.default_shape_cfg.gap = 0.0
+    link_hx, link_hy, link_hz, cube_h = 0.15, 0.06, 0.045, 0.04
+    slots = np.ceil(boxes / links)
+    if slots > 2:
+        link_hy = max(link_hy, 0.5 * (slots - 1) * 0.09 + cube_h + 0.01)
+    for art in range(articulations):
+        origin = wp.vec3(0.0, 0.55 * art, 0.5)
+        parent = -1
+        joints = []
+        for _ in range(links):
+            link = builder.add_link()
+            builder.add_shape_box(link, hx=link_hx, hy=link_hy, hz=link_hz)
+            parent_xform = wp.transform(origin if parent == -1 else wp.vec3(link_hx, 0.0, 0.0), wp.quat_identity())
+            joints.append(
+                builder.add_joint_revolute(
+                    parent,
+                    link,
+                    axis=wp.vec3(0.0, 1.0, 0.0),
+                    parent_xform=parent_xform,
+                    child_xform=wp.transform(wp.vec3(-link_hx, 0.0, 0.0), wp.quat_identity()),
+                )
+            )
+            parent = link
+        builder.add_articulation(joints)
+        # Spread the boxes over the links, side by side when a link carries several.
+        per_link = [[] for _ in range(links)]
+        if boxes <= links:
+            chosen = sorted({int(round(v)) for v in np.linspace(0, links - 1, boxes)}) if boxes > 1 else [links - 1]
+            for link_index in chosen:
+                per_link[link_index].append(0)
+        else:
+            for box in range(boxes):
+                per_link[box % links].append(box // links)
+        for link_index, link_slots in enumerate(per_link):
+            for slot in range(len(link_slots)):
+                y = 0.0 if len(link_slots) == 1 else (slot - 0.5 * (len(link_slots) - 1)) * 0.09
+                position = wp.vec3(
+                    (2.0 * link_index + 1.0) * link_hx, float(origin[1]) + y, 0.5 + link_hz + cube_h - 0.012
+                )
+                cube = builder.add_body(xform=wp.transform(position, wp.quat_identity()))
+                builder.add_shape_box(cube, hx=cube_h, hy=cube_h, hz=cube_h)
+    return builder.finalize(device=device)
+
+
+def test_propagation_matches_immediate_when_converged(test, device):
+    """Agree with the immediate response on articulated-free multi-box contacts at 32 iterations.
+
+    The responses sweep rows in different orders, so after a few iterations they differ
+    legitimately; converged, the step must agree.
+    """
+    cases = ((4, 1, 1), (4, 2, 1), (2, 2, 1), (4, 4, 1), (4, 1, 2))
+    for links, boxes, articulations in cases:
+        model = _build_box_chain(device, links, boxes, articulations)
+        initial = model.state()
+        newton.eval_fk(model, initial.joint_q, initial.joint_qd, initial)
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(initial, contacts)
+        capacity = 16 * articulations * boxes
+        results = {}
+        for response in ("immediate", *RESPONSES):
+            solver = SolverFeatherPGS(
+                model,
+                articulated_contact_response=response,
+                pgs_iterations=32,
+                friction_anchor_beta=0.0,
+                dense_max_constraints=capacity,
+                mf_max_constraints=16,
+            )
+            state_out = model.state()
+            solver.step(initial, state_out, model.control(), contacts, 1.0 / 240.0)
+            solver.check_constraint_capacity()
+            if response != "immediate":
+                test.assertGreater(int(solver.propagation_constraint_count.numpy().sum()), 0)
+            results[response] = {
+                name: getattr(state_out, name).numpy().astype(np.float64)
+                for name in ("joint_q", "joint_qd", "body_q", "body_qd")
+            }
+        reference = results["immediate"]
+        for response in RESPONSES:
+            with test.subTest(links=links, boxes=boxes, articulations=articulations, response=response):
+                result = results[response]
+                rel_l2 = np.linalg.norm(result["joint_qd"] - reference["joint_qd"]) / max(
+                    np.linalg.norm(reference["joint_qd"]), 1.0e-30
+                )
+                state_linf = max(np.max(np.abs(result[name] - reference[name])) for name in reference)
+                test.assertLess(rel_l2, 1.0e-4)
+                test.assertLess(state_linf, 1.0e-4)
+
+
 class TestFeatherPGSPropagation(unittest.TestCase):
     pass
 
@@ -386,6 +482,7 @@ for _name in (
     "test_captured_steps_match_eager",
     "test_global_kinematic_floor_moves_articulated_bodies",
     "test_phased_sweeps_touch_only_their_row_family",
+    "test_propagation_matches_immediate_when_converged",
 ):
     add_function_test(TestFeatherPGSPropagation, _name, globals()[_name], devices=devices)
 
