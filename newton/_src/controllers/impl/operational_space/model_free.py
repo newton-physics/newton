@@ -46,12 +46,17 @@ need not coincide with the tool's own current orientation.
 ``Omega`` is the generalized task specification matrix from Khatib, O.
 (1987), "A unified approach for motion and force control of robot
 manipulators: The operational space formulation," IEEE Journal of
-Robotics and Automation, 3(1), 43-53 — applied once, *before* Lambda,
-matching that paper's ``F_m = Lambda · Omega · F*_m`` (eq. 46) — not a
-second time afterward: Lambda's own coupling
-between axes is exactly what should propagate through an already-selected
-acceleration, so masking again after Lambda would remove information Lambda
-is supposed to provide. ``Omega`` masks the linear half through ``S_f``
+Robotics and Automation, 3(1), 43-53 — applied before Lambda by default,
+matching that paper's ``F_m = Lambda · Omega · F*_m`` (eq. 46).
+With ``use_motion_wrench_projection=True``, the motion law instead becomes
+``F_motion = Omega · [Lambda if use_inertia_decoupling else I] · Omega ·
+(Kp·pose_error + Kd·twist_error)``. For complementary binary selectors,
+this removes motion-derived wrench along force-controlled axes. It can
+reduce stationary force bias when constraints or disturbances sustain
+nonzero motion demand, but also removes cross-axis inertial compensation
+that supports tangential acceleration. Fractional selection weights are
+applied twice; overlapping selectors do not ensure motion/force separation.
+``Omega`` masks the linear half through ``S_f``
 (``linear_selection_frame_operational``) and the angular half independently
 through ``S_tau`` (``angular_selection_frame_operational``) — two rotations,
 each relative to the operational frame, that need not agree (e.g. a
@@ -409,6 +414,17 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             command is the feedback correction alone, regulating the
             measured wrench toward the desired setpoint with no separate
             feedforward term.
+        use_motion_wrench_projection: Apply the motion selection matrix again
+            to the motion wrench after optional inertia decoupling, before
+            mapping it to joint torques. Defaults to False, preserving
+            ``Lambda @ Omega @ acceleration``; True uses
+            ``Omega @ Lambda @ Omega @ acceleration`` (identity inertia
+            when decoupling is disabled). Only effective with wrench control.
+            With complementary binary masks, this removes motion-derived
+            wrench along force-controlled axes and can reduce stationary
+            force bias under persistent motion demand. It also removes
+            inertial compensation during acceleration. Fractional weights
+            are applied twice. Gravity and null-space terms are unaffected.
         motion_selection_axes: Diagonal selection weight per task axis (0/1,
             or any scalar weight): (linear x, y, z, angular x, y, z), the
             linear half interpreted in ``linear_selection_frame_operational``
@@ -542,6 +558,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         use_gravity_compensation: bool = True,
         use_wrench_feedforward: bool = False,
         use_wrench_feedback: bool = False,
+        use_motion_wrench_projection: bool = False,
         motion_selection_axes: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         wrench_selection_axes: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None = None,
@@ -662,6 +679,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         self._use_wrench_feedforward = bool(use_wrench_feedforward)
         self._use_wrench_feedback = bool(use_wrench_feedback)
         self._use_wrench = self._use_wrench_feedforward or self._use_wrench_feedback
+        self._use_motion_wrench_projection = bool(use_motion_wrench_projection)
         self._use_null_space = bool(use_null_space_control)
         self._requires_grad = requires_grad
 
@@ -763,6 +781,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         self._linear_selection_frame_buf: wp.array[wp.quat] | None = None
         self._angular_selection_frame_buf: wp.array[wp.quat] | None = None
         self._masked_accel_operational_buf: wp.array[wp.spatial_vector] | None = None
+        self._projected_motion_force_buf: wp.array[wp.spatial_vector] | None = None
         self._desired_wrench_buf: wp.array[wp.spatial_vector] | None = None
         self._measured_wrench_buf: wp.array[wp.spatial_vector] | None = None
         self._wrench_command_buf: wp.array[wp.spatial_vector] | None = None
@@ -786,6 +805,8 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 else None
             )
             self._masked_accel_operational_buf = _twist_buf()
+            if self._use_motion_wrench_projection:
+                self._projected_motion_force_buf = _twist_buf()
             self._desired_wrench_buf = _twist_buf()
             self._wrench_command_buf = _twist_buf()
             self._masked_wrench_force_buf = _twist_buf()
@@ -1621,6 +1642,21 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 device=self._device,
             )
             force_source = self._task_space_force_buf
+
+        if self._use_wrench and self._use_motion_wrench_projection:
+            wp.launch(
+                _apply_generalized_task_specification_matrix_kernel,
+                dim=robot_count,
+                inputs=[
+                    linear_selection_frame,
+                    angular_selection_frame,
+                    self._motion_selection_axes,
+                    force_source,
+                ],
+                outputs=[self._projected_motion_force_buf],
+                device=self._device,
+            )
+            force_source = self._projected_motion_force_buf
 
         wp.launch(
             _jacobian_transpose_force_kernel,
