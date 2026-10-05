@@ -128,7 +128,7 @@ jobs:
         with:
           python-version-file: ".python-version"
       # Post-submit (push) runs start cold to catch stale-cache issues without
-      # slowing the merge queue, and publish the fresh cache.
+      # slowing the merge queue.
       - name: Restore Warp kernel cache
         id: restore-warp-cache
         if: github.event_name != 'push'
@@ -163,6 +163,7 @@ jobs:
           --start-directory asv/tests
           --junit-report-xml asv-rspec.xml
       # Merge queue caches are scoped to throwaway gh-readonly-queue refs.
+      # Cache keys are immutable, so cold runs only save when the key is new.
       - name: Save Warp kernel cache
         if: github.event_name != 'merge_group' && steps.restore-warp-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
