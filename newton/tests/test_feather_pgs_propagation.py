@@ -94,7 +94,8 @@ def _scene(device, kind, worlds=2):
 def _step(model, solver, steps=1, dt=1.0 / 240.0):
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    pipeline = newton.CollisionPipeline(model)
+    # Sorted contacts, so solvers compared on separate pipelines see the same rows in the same order.
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
     contacts = pipeline.contacts()
     control = model.control()
     for _ in range(steps):
