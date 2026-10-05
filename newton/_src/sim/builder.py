@@ -6004,14 +6004,17 @@ class ModelBuilder:
         """Initialize q7 from body poses so FK preserves the authored child pose."""
         q_start = self.joint_q_start[joint_id]
         parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
-        # Bypass Warp overload resolution, matching add_builder's transform_mul shortcut.
+        # Compute inverse(parent_body * parent_anchor) * child_body * child_anchor.
+        # Use native calls to bypass Warp overload resolution, as in add_builder().
         core = wp._src.context.runtime.core
+        transform_mul = core.wp_builtin_mul_transformf_transformf
+        transform_inverse = core.wp_builtin_transform_inverse_transformf
         anchor = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
         joint_q = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
-        core.wp_builtin_mul_transformf_transformf(parent_body_xform, self.joint_X_p[joint_id], ctypes.byref(anchor))
-        core.wp_builtin_transform_inverse_transformf(anchor, ctypes.byref(joint_q))
-        core.wp_builtin_mul_transformf_transformf(joint_q, self.body_q[child], ctypes.byref(anchor))
-        core.wp_builtin_mul_transformf_transformf(anchor, self.joint_X_c[joint_id], ctypes.byref(joint_q))
+        transform_mul(parent_body_xform, self.joint_X_p[joint_id], ctypes.byref(anchor))
+        transform_inverse(anchor, ctypes.byref(joint_q))
+        transform_mul(joint_q, self.body_q[child], ctypes.byref(anchor))
+        transform_mul(anchor, self.joint_X_c[joint_id], ctypes.byref(joint_q))
         self.joint_q[q_start : q_start + 7] = list(joint_q)
 
     def add_joint_free(
