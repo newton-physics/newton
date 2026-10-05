@@ -1280,8 +1280,8 @@ class SolverFeatherPGS(SolverBase):
                 parallel (forward kinematics and dynamics, the inverse-dynamics backward pass
                 and state publication), with up to 32 threads per articulation instead of
                 one. Results match the serial traversal up to floating-point summation order.
-                Unbranched articulations and models whose joints are not ordered parent before
-                child keep the serial traversal. Broad trees can benefit; narrow trees can be
+                Unbranched articulations, models whose joints are not ordered parent before
+                child, and CPU devices keep the serial traversal. Broad trees can benefit; narrow trees can be
                 slower, so measure the full step before enabling it.
         """
         super().__init__(model)
@@ -1415,8 +1415,11 @@ class SolverFeatherPGS(SolverBase):
         self._setup_passive_joint_forces(model)
         self._compute_world_response_dof_mapping(model)
         self.parallel_tree = bool(parallel_tree)
+        # The cooperative traversal synchronizes warp lanes, so CPU devices keep the serial one.
         self._tree_plan = (
-            _FeatherPGSTreePlan.build(model, self.articulation_joint_end.numpy()) if self.parallel_tree else None
+            _FeatherPGSTreePlan.build(model, self.articulation_joint_end.numpy())
+            if self.parallel_tree and model.device.is_cuda
+            else None
         )
         self._tree_net_wrenches = (
             tuple(
@@ -1474,9 +1477,10 @@ class SolverFeatherPGS(SolverBase):
         ).astype(np.int32)
         self._composite_articulation_count = int(composite_articulations.size)
         self._composite_articulations = wp.array(composite_articulations, dtype=wp.int32, device=model.device)
+        # The warp reduction is a native CUDA kernel; CPU devices use the scalar reduction.
         self._composite_inertia_warp_kernel = (
             _get_composite_inertia_warp_kernel(str(model.device.arch), _COMPOSITE_INERTIA_WARPS_PER_BLOCK)
-            if self._composite_articulation_count
+            if self._composite_articulation_count and model.device.is_cuda
             else None
         )
         self._dummy_is_free_rigid = wp.zeros((1,), dtype=wp.int32, device=model.device)
@@ -4377,7 +4381,7 @@ class SolverFeatherPGS(SolverBase):
                 outputs=[state_aug.body_I_s, self._body_inertia_terms],
                 device=model.device,
             )
-        if global_flag and self._composite_articulation_count:
+        if global_flag and self._composite_inertia_warp_kernel is not None:
             # A global refresh reduces every articulation that reads composite inertias,
             # one warp per articulation.
             wp.launch_tiled(
@@ -4399,7 +4403,7 @@ class SolverFeatherPGS(SolverBase):
                 block_dim=32 * _COMPOSITE_INERTIA_WARPS_PER_BLOCK,
                 device=model.device,
             )
-        elif not global_flag:
+        elif not global_flag or self._composite_articulation_count:
             wp.launch(
                 compute_composite_inertia,
                 dim=model.articulation_count,
