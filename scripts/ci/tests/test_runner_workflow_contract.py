@@ -20,7 +20,6 @@ WORKLOADS = {
     ".github/workflows/minimum_deps_tests.yml": "minimum-deps-tests",
     ".github/workflows/warp_nightly_tests.yml": "warp-nightly-tests",
 }
-DIRECT_DISPATCH_WORKFLOWS = WORKLOADS.keys() - {".github/workflows/aws_gpu_benchmarks.yml"}
 REUSABLE_CALLERS = {
     ".github/workflows/pr_target_aws_gpu_tests.yml": ("./.github/workflows/aws_gpu_tests.yml", "pull-request"),
     ".github/workflows/pr_target_aws_gpu_benchmarks.yml": (
@@ -34,6 +33,7 @@ SCHEDULED_CALLERS = (
     "aws_gpu_tests.yml",
     "minimum_deps_tests.yml",
     "warp_nightly_tests.yml",
+    "aws_gpu_benchmarks.yml",
 )
 
 
@@ -80,21 +80,19 @@ class TestRunnerWorkflowContract(unittest.TestCase):
         for path, workload in WORKLOADS.items():
             with self.subTest(path=path):
                 workflow = (ROOT / path).read_text(encoding="utf-8")
-                call_end = "  workflow_dispatch:" if path in DIRECT_DISPATCH_WORKFLOWS else "jobs:"
-                call = self._event_block(workflow, "workflow_call", call_end)
+                call = self._event_block(workflow, "workflow_call", "  workflow_dispatch:")
                 call_input = self._input_block(call, "trigger-category")
                 self.assertIn("        required: true\n", call_input)
                 self.assertIn("        type: string\n", call_input)
 
-                if path in DIRECT_DISPATCH_WORKFLOWS:
-                    dispatch = self._event_block(workflow, "workflow_dispatch", "\njobs:")
-                    dispatch_input = self._input_block(dispatch, "trigger-category")
-                    self.assertIn("        type: choice\n", dispatch_input)
-                    self.assertIn(
-                        "        options:\n          - manual\n          - scheduled-nightly\n",
-                        dispatch_input,
-                    )
-                    self.assertIn("        default: 'manual'\n", dispatch_input)
+                dispatch = self._event_block(workflow, "workflow_dispatch", "\njobs:")
+                dispatch_input = self._input_block(dispatch, "trigger-category")
+                self.assertIn("        type: choice\n", dispatch_input)
+                self.assertIn(
+                    "        options:\n          - manual\n          - scheduled-nightly\n",
+                    dispatch_input,
+                )
+                self.assertIn("        default: 'manual'\n", dispatch_input)
 
                 tags = self._resource_tag_block(workflow)
                 expected_tags = (
