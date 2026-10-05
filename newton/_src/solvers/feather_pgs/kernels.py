@@ -33,6 +33,9 @@ PGS_CONSTRAINT_TYPE_MIMIC = 5
 # Connect row: one world axis of the point coincidence of a loop-closing BALL joint's
 # parent and child anchors (three rows per closure), with an unbounded impulse.
 PGS_CONSTRAINT_TYPE_CONNECT = 6
+# Experimental contact torsion row: one bounded angular row per contact group about the
+# group normal (see ``contact_torsion.py``).
+PGS_CONSTRAINT_TYPE_TORSION = 7
 
 # Positive gaps below this slop [m] count as touching: it absorbs float32 residuals of
 # rows that land exactly at contact.

@@ -232,13 +232,14 @@ repository examples spend tuning effort, not a shared solver API.
        ``bilateral_preelimination_include_mimics``, ``friction_anchor_beta``,
        ``pgs_contact_regularization``, ``pgs_velocity_iterations``,
        ``pgs_warmstart``, ``restitution_velocity_threshold``,
-       ``contact_speculative_scale``, ``contact_gap_gate``, ``parallel_tree``.
+       ``contact_speculative_scale``, ``contact_gap_gate``,
+       ``contact_torsion_radius``, ``contact_torsion_device``, ``parallel_tree``.
      - Experimental. The default ``pgs_mode="split"`` runs on CPU and CUDA and
        stores a dense ``dense_max_constraints`` squared Delassus matrix per world;
        ``pgs_mode="matrix_free"`` requires CUDA and is needed for joint velocity
        limits, ``drive_mode="physx_pgs"``, mimic joints, loop-closing joints,
        friction patches, contact regularization, velocity-only iterations, warm
-       start and restitution. Joint limits are enforced only with
+       start, restitution and contact torsion. Joint limits are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``pgs_iterations`` reduce residual penetration and
@@ -254,11 +255,16 @@ repository examples spend tuning effort, not a shared solver API.
        adds, and ``pgs_warmstart`` (with contact matching in the
        :class:`~newton.CollisionPipeline`) reuses the previous step's
        impulses. ``contact_gap_gate`` and ``contact_speculative_scale`` bound
-       the work and the closing allowance of speculative contacts. Joint drives
-       are integrated implicitly by default, which keeps large drive gains
-       stable at ordinary ``dt``; ``drive_mode="physx_pgs"`` solves them as PGS
-       rows together with contacts and limits instead, and each driven DOF then
-       uses one row of ``dense_max_constraints``. Rows beyond ``dense_max_constraints``
+       the work and the closing allowance of speculative contacts.
+       Experimental ``contact_torsion_radius`` adds spin friction to the
+       contacts of articulated bodies, bounded by the shared Coulomb budget;
+       the radius is an explicit footprint assumption (``2 R / 3`` for a
+       uniformly loaded disk of radius ``R``). ``contact_torsion_device``
+       prepares these rows on the device, which CUDA graph capture requires.
+       Joint drives are integrated implicitly by default, which keeps large
+       drive gains stable at ordinary ``dt``; ``drive_mode="physx_pgs"`` solves
+       them as PGS rows together with contacts and limits instead, and each
+       driven DOF then uses one row of ``dense_max_constraints``. Rows beyond ``dense_max_constraints``
        (articulated bodies) or ``mf_max_constraints`` (free bodies) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world
        and a final entry for global articulations); call
