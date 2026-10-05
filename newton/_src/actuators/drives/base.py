@@ -173,6 +173,17 @@ class DriveBase:
         """Return True if compute() can be captured in a CUDA graph."""
         raise NotImplementedError(f"{type(self).__name__} must implement is_graphable")
 
+    def uses_battery(self) -> bool:
+        """Return True if :meth:`compute` reads a :class:`~newton.actuators.Battery`.
+
+        Such a drive's :meth:`compute` accepts the keyword arguments
+        ``battery`` and ``dof_indices`` (the DOF index of each actuator slot
+        into ``joint_qd``-shaped arrays, for looking up
+        ``battery.dof_battery``). They are passed only when a battery is
+        given to :meth:`Actuator.step <newton.actuators.Actuator.step>`.
+        """
+        return False
+
     def state(self, num_actuators: int, device: wp.Device) -> DriveBase.State | None:
         """Create and return a new state object, or None if stateless."""
         return None

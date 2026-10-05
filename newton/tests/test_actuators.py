@@ -3,7 +3,9 @@
 
 """Tests for Newton actuators."""
 
+import dataclasses
 import importlib.util
+import itertools
 import json
 import math
 import os
@@ -25,16 +27,21 @@ from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     Actuator,
     ActuatorParsed,
+    Battery,
     ClampingBase,
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
-    Delay,
+    DriveBAM,
     DriveBase,
     DriveNeuralLSTM,
     DriveNeuralMLP,
     DrivePD,
     DrivePID,
+    InputProcessorBacklash,
+    InputProcessorBase,
+    InputProcessorDelay,
+    InputProcessorRandomDelay,
     JointSpaceResponse,
     parse_actuator_prim,
 )
@@ -1427,7 +1434,7 @@ class TestDelay(unittest.TestCase):
         n, max_delay = 2, 5
         device = wp.get_device()
         delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
-        delay = Delay(delay_steps=delays, max_delay=max_delay)
+        delay = InputProcessorDelay(delay_steps=delays, max_delay=max_delay)
         delay.finalize(device, n)
 
         ds = delay.state(n, device)
@@ -1442,7 +1449,7 @@ class TestDelay(unittest.TestCase):
         n, delay_val = 1, 2
         device = wp.get_device()
         delays = wp.array([delay_val], dtype=wp.int32, device=device)
-        delay = Delay(delay_steps=delays, max_delay=delay_val)
+        delay = InputProcessorDelay(delay_steps=delays, max_delay=delay_val)
         delay.finalize(device, n)
 
         indices = wp.array([0], dtype=wp.uint32, device=device)
@@ -1471,7 +1478,7 @@ class TestDelay(unittest.TestCase):
         n = 2
         device = wp.get_device()
         delays = wp.array([0, 1], dtype=wp.int32, device=device)
-        delay = Delay(delay_steps=delays, max_delay=1)
+        delay = InputProcessorDelay(delay_steps=delays, max_delay=1)
         delay.finalize(device, n)
 
         indices = wp.array([0, 1], dtype=wp.uint32, device=device)
@@ -1503,6 +1510,451 @@ class TestDelay(unittest.TestCase):
         self.assertAlmostEqual(history_dof1[1], 10.0, places=4, msg="dof1 step 1: reads step 0 (10)")
         self.assertAlmostEqual(history_dof1[2], 20.0, places=4, msg="dof1 step 2: reads step 1 (20)")
         self.assertAlmostEqual(history_dof1[3], 30.0, places=4, msg="dof1 step 3: reads step 2 (30)")
+
+
+@wp.kernel
+def _offset_positions_kernel(
+    positions: wp.array[float],
+    pos_indices: wp.array[wp.uint32],
+    offset: wp.array[float],
+    out: wp.array[float],
+):
+    i = wp.tid()
+    out[i] = positions[pos_indices[i]] + offset[i]
+
+
+class _OffsetPositions(InputProcessorBase):
+    """Test processor that replaces ``positions`` with one shifted entry per slot."""
+
+    @classmethod
+    def resolve_arguments(cls, args):
+        return {"offset": float(args["offset"])}
+
+    def __init__(self, offset):
+        self.offset = offset
+
+    def finalize(self, device, num_actuators, requires_grad=False):
+        self._out = wp.zeros(num_actuators, dtype=float, device=device)
+        self._slots = wp.array(np.arange(num_actuators, dtype=np.uint32), device=device)
+
+    def process(self, inputs, state, dt):
+        wp.launch(
+            _offset_positions_kernel,
+            dim=len(self._out),
+            inputs=[inputs.positions, inputs.pos_indices, self.offset],
+            outputs=[self._out],
+            device=self._out.device,
+        )
+        return dataclasses.replace(inputs, positions=self._out, pos_indices=self._slots)
+
+
+class TestInputProcessors(unittest.TestCase):
+    """Input processors composed through ModelBuilder.add_actuator."""
+
+    def test_backlash_drive_reads_link_side_joint(self):
+        """The drive sees actuated + backlash joint position and velocity, in every replicated world.
+
+        A processor that replaces ``positions`` runs first, so the backlash
+        joint must be read from the unprocessed simulation arrays.
+        """
+        kp, kd, target, offset = 10.0, 2.0, 1.0, 0.1
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        motor = template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
+        output = template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
+        j_motor = template.add_joint_revolute(parent=-1, child=motor, axis=newton.Axis.Z)
+        j_backlash = template.add_joint_revolute(
+            parent=motor, child=output, axis=newton.Axis.Z, limit_lower=-0.05, limit_upper=0.05, label="backlash"
+        )
+        template.add_articulation([j_motor, j_backlash])
+        template.add_actuator(
+            DrivePD,
+            index=template.joint_qd_start[j_motor],
+            kp=kp,
+            kd=kd,
+            input_processors=[
+                (_OffsetPositions, {"offset": offset}),
+                (InputProcessorBacklash, {"backlash_joint": "backlash"}),
+            ],
+        )
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        state = model.state()
+        control = model.control()
+        q = np.array([0.3, 0.04, -0.2, -0.05], dtype=np.float32)
+        qd = np.array([0.5, 0.1, -1.0, 0.2], dtype=np.float32)
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        control.joint_target_q.fill_(target)
+
+        actuator = model.actuators[0]
+        actuator.step(state, control, dt=0.01)
+
+        expected = [kp * (target - (q[w] + offset + q[w + 1])) - kd * (qd[w] + qd[w + 1]) for w in (0, 2)]
+        np.testing.assert_allclose(control.joint_f.numpy()[[0, 2]], expected, rtol=1e-5)
+        np.testing.assert_array_equal(control.joint_f.numpy()[[1, 3]], [0.0, 0.0])
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_bam_backlash_random_delay_from_usd(self):
+        """BAM servos with a shared random delay and backlash on some joints, loaded from USD.
+
+        A passive ``passive_<servo>_backlash`` hinge sits in series with the
+        knee servo, and the knee drive reads ``q_servo + q_backlash``. The
+        ankle and toe servos have no backlash hinge and read ``q_servo``.
+
+        All servo prims have ``NewtonBAMControlAPI``, the registered
+        ``NewtonMaxEffortClampingAPI`` and ``NewtonActuatorRandomDelayAPI``;
+        only the knee prim has ``NewtonActuatorBacklashAPI``. The BAM and
+        processor tokens have no registered USD schema, so they must be found
+        next to the registered clamping schema.
+
+        The knee becomes one actuator and the ankle and toe another, without a
+        per-joint mask and without ``SHARED_PARAMS`` on the drive. All name the
+        knee as ``lagJoint``, so they draw one lag per robot although they are
+        in different actuators with different slot layouts. Joint velocities
+        are zero.
+        """
+
+        bam_attrs = """
+            float newton:kp = 0.5
+            float newton:kt = 0.6
+            float newton:resistance = 2.0
+            float newton:vin = 5.0
+            float newton:maxPwm = 0.9
+            float newton:maxEffort = 0.8
+            int newton:minDelay = 1
+            int newton:maxDelay = 3
+            rel newton:lagJoint = </World/Robot/left_knee>
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            f"""#usda 1.0
+(
+    upAxis = "Z"
+)
+def Xform "World"
+{{
+    def Xform "Robot" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
+    {{
+        def Xform "Base" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+        {{
+            float physics:mass = 1.0
+        }}
+        def Xform "Thigh" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+        {{
+            float physics:mass = 1.0
+        }}
+        def Xform "Shin" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+        {{
+            float physics:mass = 1.0
+        }}
+        def Xform "Foot" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+        {{
+            float physics:mass = 1.0
+        }}
+        def Xform "Toe" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+        {{
+            float physics:mass = 1.0
+        }}
+        def PhysicsFixedJoint "root"
+        {{
+            rel physics:body1 = </World/Robot/Base>
+        }}
+        def PhysicsRevoluteJoint "left_knee"
+        {{
+            rel physics:body0 = </World/Robot/Base>
+            rel physics:body1 = </World/Robot/Thigh>
+            uniform token physics:axis = "Z"
+        }}
+        def PhysicsRevoluteJoint "passive_left_knee_backlash"
+        {{
+            rel physics:body0 = </World/Robot/Thigh>
+            rel physics:body1 = </World/Robot/Shin>
+            uniform token physics:axis = "Z"
+            float physics:lowerLimit = -1.0
+            float physics:upperLimit = 1.0
+        }}
+        def PhysicsRevoluteJoint "left_ankle"
+        {{
+            rel physics:body0 = </World/Robot/Shin>
+            rel physics:body1 = </World/Robot/Foot>
+            uniform token physics:axis = "Z"
+        }}
+        def PhysicsRevoluteJoint "left_toe"
+        {{
+            rel physics:body0 = </World/Robot/Foot>
+            rel physics:body1 = </World/Robot/Toe>
+            uniform token physics:axis = "Z"
+        }}
+        def NewtonActuator "left_knee_actuator" (
+            prepend apiSchemas = [
+                "NewtonBAMControlAPI",
+                "NewtonMaxEffortClampingAPI",
+                "NewtonActuatorRandomDelayAPI",
+                "NewtonActuatorBacklashAPI",
+            ]
+        )
+        {{
+            rel newton:targets = [</World/Robot/left_knee>]{bam_attrs}
+            rel newton:backlashJoint = </World/Robot/passive_left_knee_backlash>
+        }}
+        def NewtonActuator "left_ankle_actuator" (
+            prepend apiSchemas = ["NewtonBAMControlAPI", "NewtonMaxEffortClampingAPI", "NewtonActuatorRandomDelayAPI"]
+        )
+        {{
+            rel newton:targets = [</World/Robot/left_ankle>]{bam_attrs}
+        }}
+        def NewtonActuator "left_toe_actuator" (
+            prepend apiSchemas = ["NewtonBAMControlAPI", "NewtonMaxEffortClampingAPI", "NewtonActuatorRandomDelayAPI"]
+        )
+        {{
+            rel newton:targets = [</World/Robot/left_toe>]{bam_attrs}
+        }}
+    }}
+}}
+"""
+        )
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        parse_usd(template, stage)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+
+        self.assertEqual(DriveBAM.SHARED_PARAMS, set())
+        self.assertEqual(len(model.actuators), 2)
+
+        knee, backlash, ankle, toe = (
+            template.joint_q_start[template.joint_label.index(f"/World/Robot/{name}")]
+            for name in ("left_knee", "passive_left_knee_backlash", "left_ankle", "left_toe")
+        )
+        coords_per_world = template.joint_coord_count
+        knees = [knee, knee + coords_per_world]
+        backlashes = [backlash, backlash + coords_per_world]
+        ankles = [ankle, ankle + coords_per_world]
+        toes = [toe, toe + coords_per_world]
+        q = np.zeros(model.joint_coord_count, dtype=np.float32)
+        q[knees] = [0.3, -0.2]
+        q[backlashes] = [0.015, -0.017]
+        q[ankles] = [-0.1, 0.4]
+        q[toes] = [0.2, -0.3]
+        state = model.state()
+        control = model.control()
+        state.joint_q.assign(q)
+        measured = {"knee": q[knees] + q[backlashes], "ankle": q[ankles], "toe": q[toes]}
+        servos = {"knee": knees, "ankle": ankles, "toe": toes}
+
+        def bam_effort(target: float, measured: float) -> float:
+            duty = np.clip(0.5 * (target - measured), -0.9, 0.9)
+            return float(np.clip(0.6 * 5.0 * duty / 2.0, -0.8, 0.8))
+
+        targets = [0.1, -0.3, 0.6, -0.5, 0.9, -0.1, 0.4, -0.6]
+        states = [(actuator, actuator.state(), actuator.state()) for actuator in model.actuators]
+        seen_lags = set()
+        for step, target in enumerate(targets):
+            control.joint_target_q.fill_(target)
+            control.joint_f.zero_()
+            for actuator, current, nxt in states:
+                actuator.step(state, control, current, nxt, dt=0.01)
+            states = [(actuator, nxt, current) for actuator, current, nxt in states]
+            effort = control.joint_f.numpy()
+            np.testing.assert_array_equal(effort[backlashes], [0.0, 0.0])
+            for world in range(2):
+                lags = {}
+                for servo, dofs in servos.items():
+                    candidates = {
+                        lag: bam_effort(targets[max(step - lag, 0)], measured[servo][world]) for lag in (1, 2, 3)
+                    }
+                    lags[servo] = {lag for lag, e in candidates.items() if abs(e - effort[dofs[world]]) < 1e-5}
+                shared = lags["knee"] & lags["ankle"] & lags["toe"]
+                self.assertTrue(shared, f"step {step} world {world}: lags per servo {lags}")
+                if step >= 3 and len(shared) == 1:
+                    seen_lags |= shared
+        self.assertGreater(len(seen_lags), 1)
+
+    def test_bam_battery_shared_across_actuator_groups(self):
+        """Servos in different actuator groups sag one shared battery.
+
+        The knee has a backlash processor and the ankle has none, so they are
+        two actuators. Each world has one battery for both. Each step, both
+        drives read the voltage left by the previous step's total draw.
+        """
+        kp, kt, resistance, max_pwm, target, dt = 0.5, 0.6, 2.0, 0.9, 1.0, 0.01
+        nominal_voltage, sag_gain, min_voltage = 5.0, 0.5, 4.4
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        links = [template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA) for _ in range(3)]
+        knee = template.add_joint_revolute(parent=-1, child=links[0], axis=newton.Axis.Z, label="knee")
+        backlash = template.add_joint_revolute(
+            parent=links[0], child=links[1], axis=newton.Axis.Z, limit_lower=-0.02, limit_upper=0.02, label="backlash"
+        )
+        ankle = template.add_joint_revolute(parent=links[1], child=links[2], axis=newton.Axis.Z, label="ankle")
+        template.add_articulation([knee, backlash, ankle])
+        bam = {"kp": kp, "kt": kt, "resistance": resistance, "vin": 5.0, "max_pwm": max_pwm}
+        template.add_actuator(
+            DriveBAM,
+            index=template.joint_qd_start[knee],
+            input_processors=[(InputProcessorBacklash, {"backlash_joint": "backlash"})],
+            **bam,
+        )
+        template.add_actuator(DriveBAM, index=template.joint_qd_start[ankle], **bam)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        self.assertEqual(len(model.actuators), 2)
+
+        dofs = template.joint_dof_count
+        knees, backlashes, ankles = ([j, j + dofs] for j in (0, 1, 2))
+        battery = Battery(
+            dof_battery=wp.array([0, -1, 0, 1, -1, 1], dtype=wp.int32),
+            nominal_voltage=wp.full(2, nominal_voltage, dtype=float),
+            sag_gain=wp.full(2, sag_gain, dtype=float),
+            min_voltage=wp.full(2, min_voltage, dtype=float),
+        )
+        q = np.array([0.3, 0.015, -0.1, -0.2, -0.017, 0.4], dtype=np.float32)
+        state = model.state()
+        control = model.control()
+        state.joint_q.assign(q)
+        control.joint_target_q.fill_(target)
+        duty = {
+            "knee": np.clip(kp * (target - (q[knees] + q[backlashes])), -max_pwm, max_pwm),
+            "ankle": np.clip(kp * (target - q[ankles]), -max_pwm, max_pwm),
+        }
+
+        drawn = np.zeros(2)
+        sagged = []
+        for _ in range(4):
+            battery.refresh()
+            control.joint_f.zero_()
+            for actuator in model.actuators:
+                actuator.step(state, control, dt=dt, battery=battery)
+
+            voltage = np.maximum(nominal_voltage - sag_gain * drawn, min_voltage)
+            sagged.append(nominal_voltage - sag_gain * drawn)
+            np.testing.assert_allclose(battery.voltage.numpy(), voltage, rtol=1e-5)
+            current = {servo: voltage * d / resistance for servo, d in duty.items()}
+            effort = control.joint_f.numpy()
+            np.testing.assert_allclose(effort[knees], kt * current["knee"], rtol=1e-5)
+            np.testing.assert_allclose(effort[ankles], kt * current["ankle"], rtol=1e-5)
+            drawn = sum(np.abs(kt * current[servo]) for servo in duty)
+        sagged = np.array(sagged[1:])
+        self.assertTrue(np.any(sagged > min_voltage) and np.any(sagged < min_voltage))
+
+    def test_random_delay_redraw_period_and_reset(self):
+        """The lag holds between redraws, every ``update_period`` steps, and a reset starts a new sequence.
+
+        A unit-gain PD drive at zero position outputs the delayed target, and
+        each step's target is unique, so the effort reveals the lag.
+        """
+        period, max_delay, steps = 3, 6, 30
+        builder = newton.ModelBuilder()
+        link = builder.add_link()
+        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        builder.add_articulation([joint])
+        builder.add_actuator(
+            DrivePD,
+            index=0,
+            kp=1.0,
+            kd=0.0,
+            input_processors=[(InputProcessorRandomDelay, {"max_delay": max_delay, "update_period": period})],
+        )
+        model = builder.finalize()
+        actuator = model.actuators[0]
+        state, control = model.state(), model.control()
+        s0, s1 = actuator.state(), actuator.state()
+
+        def episode() -> list[int]:
+            nonlocal s0, s1
+            lags = []
+            for step in range(steps):
+                control.joint_target_q.fill_(float(step))
+                control.joint_f.zero_()
+                actuator.step(state, control, s0, s1, dt=0.01)
+                s0, s1 = s1, s0
+                lags.append(step - round(float(control.joint_f.numpy()[0])))
+            return lags[max_delay:]
+
+        first = episode()
+        changes = [i for i in range(1, len(first)) if first[i] != first[i - 1]]
+        self.assertGreater(len(changes), 1)
+        self.assertTrue(all((b - a) % period == 0 for a, b in itertools.pairwise(changes)), first)
+        self.assertTrue(all(0 <= lag <= max_delay for lag in first))
+
+        s0.reset()
+        s1.reset()
+        self.assertNotEqual(episode(), first)
+
+    def test_bam_current_and_pwm_limits(self):
+        """DriveBAM limits the duty cycle by the firmware current limit, then by ``max_pwm``."""
+        kp, kt, resistance, vin, max_pwm = 2.0, 0.5, 1.0, 10.0, 0.9
+        max_current = np.array([1.0, 0.0], dtype=np.float32)
+        qd = np.array([0.5, -1.0], dtype=np.float32)
+        n = 2
+        drive = DriveBAM(
+            kp=wp.full(n, kp, dtype=float),
+            kt=wp.full(n, kt, dtype=float),
+            resistance=wp.full(n, resistance, dtype=float),
+            vin=wp.full(n, vin, dtype=float),
+            max_pwm=wp.full(n, max_pwm, dtype=float),
+            max_current=wp.array(max_current, dtype=float),
+        )
+        actuator = Actuator(indices=wp.array(np.arange(n), dtype=wp.uint32), drive=drive)
+        state = types.SimpleNamespace(joint_q=wp.zeros(n, dtype=float), joint_qd=wp.array(qd, dtype=float))
+        control = types.SimpleNamespace(
+            joint_target_q=wp.ones(n, dtype=float),
+            joint_target_qd=wp.zeros(n, dtype=float),
+            joint_act=None,
+            joint_f=wp.zeros(n, dtype=float),
+        )
+        actuator.step(state, control, dt=0.01)
+
+        duty = np.full(n, kp * 1.0)
+        limited = max_current > 0.0
+        center, span = kt * qd / vin, resistance * max_current / vin
+        duty[limited] = np.clip(duty[limited], (center - span)[limited], (center + span)[limited])
+        duty = np.clip(duty, -max_pwm, max_pwm)
+        expected = kt * (vin * duty - kt * qd) / resistance
+        np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-5)
+        self.assertAlmostEqual(float(control.joint_f.numpy()[0]), kt * 1.0, places=5)
+
+    def test_deprecated_delay_arguments_match_input_processor(self):
+        """Deprecated delay arguments warn and delay targets exactly like the Delay input processor."""
+
+        def build(**actuator_kwargs) -> newton.Model:
+            builder = newton.ModelBuilder()
+            link = builder.add_link()
+            joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+            builder.add_articulation([joint])
+            builder.add_actuator(DrivePD, index=0, kp=10.0, **actuator_kwargs)
+            return builder.finalize()
+
+        def run(actuator: Actuator, model: newton.Model) -> list[float]:
+            state, control = model.state(), model.control()
+            sa, sb = actuator.state(), actuator.state()
+            efforts = []
+            for target in (1.0, 2.0, 3.0, 4.0):
+                control.joint_target_q.fill_(target)
+                control.joint_f.zero_()
+                actuator.step(state, control, sa, sb, dt=0.01)
+                sa, sb = sb, sa
+                efforts.append(float(control.joint_f.numpy()[0]))
+            return efforts
+
+        model = build(input_processors=[(InputProcessorDelay, {"delay_steps": 2})])
+        expected = run(model.actuators[0], model)
+        np.testing.assert_allclose(expected, [10.0, 10.0, 10.0, 20.0])
+
+        with self.assertWarns(DeprecationWarning):
+            legacy_model = build(delay_steps=2)
+        np.testing.assert_allclose(run(legacy_model.actuators[0], legacy_model), expected)
+
+        with self.assertWarns(DeprecationWarning):
+            self.assertIs(newton.actuators.Delay, InputProcessorDelay)
+
+        legacy_drive = DrivePD(kp=wp.array([10.0], dtype=wp.float32), kd=wp.array([0.0], dtype=wp.float32))
+        legacy_delay = InputProcessorDelay(delay_steps=wp.array([2], dtype=wp.int32))
+        with self.assertWarns(DeprecationWarning):
+            legacy_actuator = Actuator(indices=wp.array([0], dtype=wp.uint32), drive=legacy_drive, delay=legacy_delay)
+        np.testing.assert_allclose(run(legacy_actuator, model), expected)
 
 
 # ---------------------------------------------------------------------------
@@ -3531,7 +3983,7 @@ class TestStateReset(unittest.TestCase):
         n, max_delay = 4, 2
         device = wp.get_device()
         delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
-        delay = Delay(delay_steps=delays, max_delay=max_delay)
+        delay = InputProcessorDelay(delay_steps=delays, max_delay=max_delay)
         delay.finalize(device, n)
 
         state_0 = delay.state(n, device)
@@ -3567,7 +4019,7 @@ class TestStateReset(unittest.TestCase):
         n, max_delay = 2, 3
         device = wp.get_device()
         delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
-        delay = Delay(delay_steps=delays, max_delay=max_delay)
+        delay = InputProcessorDelay(delay_steps=delays, max_delay=max_delay)
         delay.finalize(device, n)
 
         state = delay.state(n, device)
