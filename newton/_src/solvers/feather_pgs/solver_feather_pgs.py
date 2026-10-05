@@ -3449,7 +3449,7 @@ class SolverFeatherPGS(SolverBase):
         DOFs whose H^-1 J^T is tiled in more than one row chunk, plus exactly one free rigid body,
         one warp per row builds the world's rows from the explicit inverse mass matrices of the
         two. Without joint velocity limits, drive rows, warm start, regularization, velocity-only
-        iterations, torsion and contact compliance, with ``pgs_iterations > 0``, the interleaved
+        iterations and torsion, with ``pgs_iterations > 0``, the interleaved
         schedule and the current friction projection, the rows and sweep work in factor
         coordinates ``L^-1 J^T`` instead, for worlds without free-body rows.
         """
@@ -3521,9 +3521,8 @@ class SolverFeatherPGS(SolverBase):
             and self.drive_mode == "augmented"
             and self.friction_mode == "current"
             and not self.enable_joint_velocity_limits
-            # The factor-coordinate solve owns no torsion rows and no compliant law.
+            # The factor-coordinate solve owns no torsion rows.
             and not self._contact_torsion_enabled
-            and not self.contact_compliance
         )
         # Patches allocate one tangent pair per surviving anchor, so their rows are not uniform triples.
         self._factor_coordinate_contact_triples = bool(

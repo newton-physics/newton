@@ -375,6 +375,46 @@ class TestFeatherPGSPairedResponse(unittest.TestCase):
                 self.assertEqual(solver._paired_response_primary_size, 23)
                 self.assertFalse(solver._paired_factor_coordinates)
 
+    @unittest.skipUnless(wp.is_cuda_available(), "paired response ownership requires CUDA")
+    def test_paired_factor_coordinates_with_contact_compliance_match_general(self):
+        """Solve compliant contacts in factor coordinates like the general response."""
+        results = {}
+        for kernel in ("par_row", "auto"):
+            model = _build_mixed_response_model("cuda:0", dof_count=23, friction=0.5)
+            with mock.patch.object(SolverFeatherPGS, "_kernel_overrides", {"hinv_jt_kernel": kernel}):
+                solver = SolverFeatherPGS(
+                    model,
+                    friction_anchor_beta=0.0,
+                    contact_compliance=True,
+                    pgs_iterations=16,
+                    dense_max_constraints=96,
+                    mf_max_constraints=32,
+                )
+            state_0, state_1 = model.state(), model.state()
+            joint_qd = state_0.joint_qd.numpy()
+            free = int(np.flatnonzero(solver._model_plan.is_free_rigid)[0])
+            joint_qd[int(solver._model_plan.articulation_dof_start[free]) + 2] = -3.0
+            state_0.joint_qd.assign(joint_qd)
+            newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+            pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=False, rigid_contact_max=64)
+            contacts = pipeline.contacts()
+            for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+                setattr(contacts, name, wp.zeros(64, dtype=float, device="cuda:0"))
+            compliant = 0
+            for _ in range(20):
+                pipeline.collide(state_0, contacts)
+                contacts.rigid_contact_stiffness.fill_(3000.0)
+                contacts.rigid_contact_damping.fill_(20.0)
+                contacts.rigid_contact_friction.fill_(1.0)
+                solver.step(state_0, state_1, model.control(), contacts, 1.0 / 240.0)
+                state_0, state_1 = state_1, state_0
+                compliant = max(compliant, solver.compliance_contact_count)
+            results[kernel] = (solver, compliant, state_0.joint_qd.numpy())
+        paired, compliant, joint_qd = results["auto"]
+        self.assertTrue(paired._paired_factor_coordinates)
+        self.assertGreater(compliant, 0)
+        np.testing.assert_allclose(joint_qd, results["par_row"][2], rtol=0.0, atol=1.0e-4)
+
 
 if __name__ == "__main__":
     unittest.main()
