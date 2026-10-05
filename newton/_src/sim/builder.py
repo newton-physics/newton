@@ -4708,7 +4708,9 @@ class ModelBuilder:
                 joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
                 equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
                 and finalize under ``model.mujoco.equality_constraint_*``.
-            convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
+            convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
+                Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
+                an identity rest orientation. Default is False.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
             ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
                 where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).

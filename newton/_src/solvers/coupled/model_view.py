@@ -28,6 +28,8 @@ def _types_compatible(current, value) -> bool:
         )
     if isinstance(current, np.ndarray):
         return isinstance(value, np.ndarray) and value.dtype == current.dtype and value.ndim == current.ndim
+    if isinstance(current, Model.AttributeNamespace):
+        return isinstance(value, Model.AttributeNamespace)
     if isinstance(current, float) and isinstance(value, (int, float)) and not isinstance(value, bool):
         return True
     return isinstance(value, type(current))

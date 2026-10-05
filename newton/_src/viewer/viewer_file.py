@@ -465,6 +465,21 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
                 ],
             }
 
+        # Persist namespace data under its stable container type, including subclasses
+        # that expose runtime properties backed by private model references.
+        if isinstance(obj, Model.AttributeNamespace):
+            return {
+                "__type__": "AttributeNamespace",
+                "__module__": Model.AttributeNamespace.__module__,
+                "attributes": {
+                    attr: serialize(
+                        value, callback, _visited, f"{_path}.{attr}" if _path else attr, format_type, cache=cache
+                    )
+                    for attr, value in vars(obj).items()
+                    if attr == "_name" or not attr.startswith("_")
+                },
+            }
+
         # Custom object — serialize attributes
         if hasattr(obj, "__dict__"):
             return {
