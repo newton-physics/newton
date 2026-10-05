@@ -84,9 +84,9 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
                 self.assertNotIn(removed, parameters)
 
     def test_pgs_mode_selects_only_the_supported_solves(self):
-        """Offer exactly the matrix-free and split solves, with the split solve as the default."""
+        """Offer exactly the matrix-free and split solves, with the matrix-free solve as the default."""
         parameter = inspect.signature(SolverFeatherPGS.__init__).parameters["pgs_mode"]
-        self.assertEqual(parameter.default, "split")
+        self.assertEqual(parameter.default, "matrix_free")
         self.assertEqual(typing.get_args(parameter.annotation), ("matrix_free", "split"))
         for option in ("pgs_kernel", "delassus_kernel", "tile_threads", "pgs_chunk_size"):
             with self.subTest(option=option):

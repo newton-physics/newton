@@ -114,7 +114,7 @@ def _build_heterogeneous_world_model(device):
 def test_defaults(test, device):
     """Keep the documented constructor defaults."""
     solver = SolverFeatherPGS(_build_chain_model(device, num_links=2, num_worlds=1))
-    test.assertEqual(solver.pgs_mode, "split")
+    test.assertEqual(solver.pgs_mode, "matrix_free")
     test.assertEqual(solver.pgs_iterations, 12)
     test.assertAlmostEqual(solver.pgs_beta, 0.2)
     test.assertAlmostEqual(solver.pgs_cfm, 1.0e-6)
@@ -544,11 +544,13 @@ def test_non_default_tile_threads_compiles_and_steps(test, device):
 
 class TestFeatherPGSLaunchConfig(unittest.TestCase):
     def test_cpu_construction_raises(self):
-        """Construct the default split solve on CPU and reject the CUDA-only matrix-free solve there."""
+        """Reject the default CUDA-only matrix-free solve on CPU, naming the split solve, which constructs."""
         model = _build_chain_model("cpu", num_links=2, num_worlds=1)
-        self.assertEqual(SolverFeatherPGS(model).pgs_mode, "split")
-        with self.assertRaisesRegex(NotImplementedError, "requires a CUDA device; use pgs_mode='split' on CPU"):
-            SolverFeatherPGS(model, pgs_mode="matrix_free")
+        for options in ({}, {"pgs_mode": "matrix_free"}):
+            with self.subTest(**options):
+                with self.assertRaisesRegex(NotImplementedError, "requires a CUDA device; use pgs_mode='split' on CPU"):
+                    SolverFeatherPGS(model, **options)
+        self.assertEqual(SolverFeatherPGS(model, pgs_mode="split").pgs_mode, "split")
 
     def test_hinv_fusion_requires_full_working_set_to_fit(self):
         """Fuse H^-1 J^T with the Delassus assembly only when the whole row set and its Delassus tile fit."""

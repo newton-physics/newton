@@ -237,12 +237,13 @@ repository examples spend tuning effort, not a shared solver API.
        ``contact_compliance``, ``parallel_tree``, ``enable_sleeping``,
        ``sleep_linear_threshold``, ``sleep_angular_threshold``,
        ``sleep_quiet_time``, ``sleep_skip_constraints``.
-     - Experimental. The default ``pgs_mode="split"`` runs on CPU and CUDA and
-       stores a dense ``dense_max_constraints`` squared Delassus matrix per world;
-       ``pgs_mode="matrix_free"`` requires CUDA and is needed for joint velocity
-       limits, ``drive_mode="physx_pgs"``, mimic joints, loop-closing joints,
-       friction patches, contact regularization, velocity-only iterations, warm
-       start, restitution, contact torsion, contact compliance and sleeping.
+     - Experimental. The default ``pgs_mode="matrix_free"`` requires CUDA and
+       implements every option. ``pgs_mode="split"`` runs on CPU and CUDA (pass it
+       explicitly on CPU) and stores a dense ``dense_max_constraints`` squared
+       Delassus matrix per world; it raises for joint velocity limits,
+       ``drive_mode="physx_pgs"``, mimic joints, loop-closing joints, friction
+       patches, contact regularization, velocity-only iterations, warm start,
+       restitution, contact torsion, contact compliance and sleeping.
        Joint limits are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``

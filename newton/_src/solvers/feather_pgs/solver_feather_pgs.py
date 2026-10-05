@@ -960,16 +960,20 @@ class SolverFeatherPGS(SolverBase):
 
     ``pgs_mode`` selects the solve:
 
-    - ``"split"`` (default, CPU and CUDA): the rows of articulated bodies of each world are
-      assembled into a dense Delassus matrix ``C = J H^-1 J^T`` (``dense_max_constraints``
-      squared per world) and solved in impulse space; the free-body rows are then solved
-      against the resulting velocity. Worlds with both kinds of rows alternate one sweep
-      of each per iteration. Joint velocity limits are not supported.
-    - ``"matrix_free"`` (CUDA only): for each row the solver keeps ``Y`` and the
+    - ``"matrix_free"`` (default, CUDA only): for each row the solver keeps ``Y`` and the
       diagonal ``J Y`` and recomputes ``J v`` every iteration instead of assembling a
       Delassus matrix. Every row applies its impulse to one world-local velocity vector
-      immediately, and one fused kernel sweeps all rows of a world. Required for
-      ``enable_joint_velocity_limits``.
+      immediately, and one fused kernel sweeps all rows of a world. It implements every
+      feature below.
+    - ``"split"`` (CPU and CUDA; required on CPU): the rows of articulated bodies of each
+      world are assembled into a dense Delassus matrix ``C = J H^-1 J^T``
+      (``dense_max_constraints`` squared per world) and solved in impulse space; the
+      free-body rows are then solved against the resulting velocity. Worlds with both kinds
+      of rows alternate one sweep of each per iteration. It implements the base feature set
+      and raises :class:`NotImplementedError` for joint velocity limits, PGS drive rows,
+      mimic and loop-closing joints, friction patches, contact regularization, restitution,
+      warm start, velocity-only iterations, contact torsion, contact compliance and
+      sleeping.
 
     Like :class:`~newton.solvers.SolverFeatherstone`, the solver uses
     :attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd` as its state and
@@ -1041,8 +1045,8 @@ class SolverFeatherPGS(SolverBase):
 
     Limitations:
 
-    - ``pgs_mode="matrix_free"`` requires a CUDA device; constructing it on a CPU device
-      raises :class:`NotImplementedError`.
+    - ``pgs_mode="matrix_free"``, the default, requires a CUDA device; constructing it on a
+      CPU device raises :class:`NotImplementedError` that names ``pgs_mode="split"``.
     - Mimic relationships across articulations or on joints whose position and velocity
       coordinates differ (BALL, FREE, DISTANCE), loop-closing joints of other types, and
       loop closures between two dynamic articulations raise
@@ -1235,7 +1239,7 @@ class SolverFeatherPGS(SolverBase):
         self,
         model: Model,
         *,
-        pgs_mode: Literal["matrix_free", "split"] = "split",
+        pgs_mode: Literal["matrix_free", "split"] = "matrix_free",
         pgs_iterations: int = 12,
         pgs_beta: float = 0.2,
         pgs_cfm: float = 1.0e-6,
@@ -1285,13 +1289,14 @@ class SolverFeatherPGS(SolverBase):
 
         Args:
             model: Model to simulate.
-            pgs_mode: Constraint solve. ``"split"`` (default, CPU and CUDA) assembles the rows
-                of articulated bodies into a dense Delassus matrix ``J H^-1 J^T`` per world,
+            pgs_mode: Constraint solve. ``"matrix_free"`` (default, CUDA only) sweeps every
+                row in one fused kernel and recomputes ``J v`` from the current velocity.
+                ``"split"`` (CPU and CUDA; pass it explicitly on CPU) assembles the rows of
+                articulated bodies into a dense Delassus matrix ``J H^-1 J^T`` per world,
                 solves it in impulse space and then solves the free-body rows against the
                 resulting velocity; worlds that contain both kinds of rows alternate one sweep
-                of each per iteration. ``"matrix_free"`` (CUDA only) sweeps every row in one
-                fused kernel and recomputes ``J v`` from the current velocity; it is required
-                for ``enable_joint_velocity_limits``.
+                of each per iteration. The split solve raises for the matrix-free-only
+                options listed in the class description.
             pgs_iterations: Number of projected Gauss-Seidel iterations per step.
             pgs_beta: Baumgarte position-correction factor of contact and joint-limit rows,
                 as a fraction of the position error removed per step.

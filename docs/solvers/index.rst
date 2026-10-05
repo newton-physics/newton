@@ -161,7 +161,7 @@ Supported Features
 
 .. experimental::
     :class:`~newton.solvers.SolverFeatherPGS`'s public API and behavior may change without prior notice.
-    Its default ``pgs_mode="split"`` runs on CPU and CUDA; ``pgs_mode="matrix_free"`` requires a CUDA device.
+    Its default ``pgs_mode="matrix_free"`` requires a CUDA device; ``pgs_mode="split"`` runs on CPU and CUDA with the base feature set.
 
 .. experimental::
     :class:`~newton.solvers.SolverKamino`'s public API and behavior may change without prior notice.
@@ -461,7 +461,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 | :sup:`9` FeatherPGS enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
 | :sup:`10` FeatherPGS clamps the explicit joint drive force to the effort limit. With the default ``drive_mode="augmented"`` the implicit stiffness and damping response is unbounded, so under a large external load the drive reaction can exceed the limit; the PGS drive rows of ``drive_mode="physx_pgs"`` bound the complete reaction.
 | :sup:`11` FeatherPGS enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True`` and ``pgs_mode="matrix_free"``. With ``drive_mode="physx_pgs"``, driven DOFs are clamped at the end of every solver iteration instead of using velocity-limit rows (``fuse_joint_velocity_limits``).
-| :sup:`12` With ``pgs_mode="matrix_free"``, FeatherPGS enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints. The default ``pgs_mode="split"`` rejects mimic relationships and loop-closing joints.
+| :sup:`12` With ``pgs_mode="matrix_free"``, FeatherPGS enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints. ``pgs_mode="split"`` rejects mimic relationships and loop-closing joints.
 
 
 

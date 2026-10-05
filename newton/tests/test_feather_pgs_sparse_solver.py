@@ -517,8 +517,10 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
         self.assertIsNone(SolverFeatherPGS(_build_chain("cuda:0"), **point)._sparse_mass_matrix_size)
         # The sparse kernels do not implement friction patches, the default friction.
         self.assertIsNone(SolverFeatherPGS(_build_model(), pgs_mode="matrix_free")._sparse_mass_matrix_size)
-        # The split solve, the default, uses dense factors.
-        self.assertIsNone(SolverFeatherPGS(_build_model())._sparse_mass_matrix_size)
+        # The split solve uses dense factors.
+        self.assertIsNone(
+            SolverFeatherPGS(_build_model(), pgs_mode="split", friction_anchor_beta=0.0)._sparse_mass_matrix_size
+        )
 
     def test_unsupported_configurations_keep_existing_path(self):
         """Keep dense factors for full-support chains, velocity-limit rows, no iterations and large row capacities."""
