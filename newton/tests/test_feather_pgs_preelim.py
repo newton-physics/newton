@@ -525,7 +525,7 @@ def test_propagation_keeps_iterative_mimic_rows(test, device):
     """Keep iterative mimic rows with the propagation responses; pre-elimination falls back with a warning."""
     builder, _, _ = _build_two_revolute_chain(0.0, 1.0)
     model = builder.finalize(device=device)
-    for response in ("propagation", "propagation-fused"):
+    for response in ("propagation", "propagation-fused", "propagation-colored"):
         with test.subTest(response=response):
             with test.assertWarnsRegex(UserWarning, "propagation"):
                 solver = SolverFeatherPGS(
@@ -538,7 +538,7 @@ def test_propagation_keeps_iterative_mimic_rows(test, device):
 def test_propagation_rejects_loop_joints(test, device):
     """Reject loop-closing joints with the propagation responses."""
     model = _build_four_bar().finalize(device=device)
-    for response in ("propagation", "propagation-fused"):
+    for response in ("propagation", "propagation-fused", "propagation-colored"):
         with test.subTest(response=response):
             with test.assertRaisesRegex(NotImplementedError, "Loop-closing joints.*articulated_contact_response"):
                 SolverFeatherPGS(model, articulated_contact_response=response)

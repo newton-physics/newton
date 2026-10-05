@@ -622,7 +622,7 @@ def test_articulated_contact_response_validation(test, device):
 def test_propagation_rejects_unsupported_options(test, device):
     """Reject the split solve and the options the propagation rows do not implement; accept the rest."""
     model = _build_chain_model(device, num_links=2, num_worlds=1)
-    for response in ("propagation", "propagation-fused"):
+    for response in ("propagation", "propagation-fused", "propagation-colored"):
         with test.subTest(response=response, option="pgs_mode"):
             with test.assertRaisesRegex(NotImplementedError, "requires pgs_mode='matrix_free'"):
                 SolverFeatherPGS(model, pgs_mode="split", articulated_contact_response=response)
@@ -658,7 +658,7 @@ def test_propagation_matrix_free_compiles_and_steps_with_velocity_limit_rows(tes
     """Step both propagation responses with dense joint velocity-limit rows."""
     model = _build_chain_model(device, num_links=3, num_worlds=1)
     model.joint_velocity_limit.assign(np.full(model.joint_dof_count, 0.1, dtype=np.float32))
-    for response in ("propagation", "propagation-fused"):
+    for response in ("propagation", "propagation-fused", "propagation-colored"):
         with test.subTest(response=response):
             solver = SolverFeatherPGS(
                 model,

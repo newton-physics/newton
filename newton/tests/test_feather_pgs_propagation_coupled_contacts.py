@@ -13,10 +13,16 @@ from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 DT = 1.0 / 240.0
-PROPAGATION_RESPONSES = ("propagation", "propagation-fused")
+PROPAGATION_RESPONSES = ("propagation", "propagation-fused", "propagation-colored")
 REGULARIZED = {"pgs_beta": 0.0, "pgs_cfm": 0.0, "pgs_contact_regularization": 3.0}
 # (articulated_contact_response, propagation_cached_response)
-PROPAGATION_ROUTES = (("propagation", False), ("propagation-fused", False), ("propagation", True))
+PROPAGATION_ROUTES = (
+    ("propagation", False),
+    ("propagation-fused", False),
+    ("propagation", True),
+    ("propagation-colored", False),
+    ("propagation-colored", True),
+)
 
 
 def _quadruped_model(device):

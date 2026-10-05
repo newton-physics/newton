@@ -7289,6 +7289,181 @@ def accumulate_propagation_warmstart_body_impulses(
             wp.atomic_add(propagation_body_impulses, bb, k, propagation_J_b[world, row, k] * impulse)
 
 
+# Coloring of the propagation contact units ("propagation-colored").
+#
+# Two units conflict when they share a body with a response: their twist updates and deferred
+# impulses overlap. The units of one color are body-disjoint and solve in parallel; colors run in
+# sequence, a Gauss-Seidel reordering of the serial sweep. A unit's friction rows share its bodies,
+# so a friction pair's sibling write has one writer. The coloring is first-fit greedy over the
+# world's units in contact-index order, which uses at most 2 * degree - 1 colors; units left
+# without a color below the cap run in an ordered serial tail.
+
+PROPAGATION_COLOR_TAIL = 512
+"""Color cap of the unit coloring; the index of the serial tail bucket."""
+
+PROPAGATION_UNIT_RING = 4
+"""Patch-ring members carried in a unit record; longer rings resume the walk after them."""
+
+PROPAGATION_UNIT_META = 12
+"""Words per unit record of the colored solve, ``7 + PROPAGATION_UNIT_RING`` padded for 16-byte copies."""
+
+
+@wp.kernel(enable_backward=False)
+def collect_propagation_units(
+    contact_count: wp.array[int],
+    contact_path: wp.array[int],
+    contact_world: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_art_a: wp.array[int],
+    contact_art_b: wp.array[int],
+    articulation_response_dof_count: wp.array[int],
+    shape_body: wp.array[int],
+    contact_slots_needed: wp.array[int],
+    propagation_max_constraints: int,
+    # in/out
+    world_unit_cursor: wp.array[int],
+    # outputs
+    unit_contact: wp.array[int],
+    unit_body_a: wp.array[int],
+    unit_body_b: wp.array[int],
+    unit_len: wp.array[int],
+):
+    """Gather the propagation contacts into per-world unit lists for the coloring.
+
+    A side without response DOFs (ground or a prescribed kinematic body) is recorded as ``-1``,
+    as in the rows, so it never conflicts.
+    """
+    c = wp.tid()
+    if c >= contact_count[0]:
+        return
+    if contact_path[c] != 2:
+        return
+    world = contact_world[c]
+    idx = wp.atomic_add(world_unit_cursor, world, 1)
+    if idx >= propagation_max_constraints:
+        return
+    base = world * propagation_max_constraints
+    body_a = -1
+    body_b = -1
+    art_a = contact_art_a[c]
+    art_b = contact_art_b[c]
+    shape_a = contact_shape0[c]
+    shape_b = contact_shape1[c]
+    if shape_a >= 0 and art_a >= 0 and articulation_response_dof_count[art_a] > 0:
+        body_a = shape_body[shape_a]
+    if shape_b >= 0 and art_b >= 0 and articulation_response_dof_count[art_b] > 0:
+        body_b = shape_body[shape_b]
+    unit_contact[base + idx] = c
+    unit_body_a[base + idx] = body_a
+    unit_body_b[base + idx] = body_b
+    unit_len[base + idx] = contact_slots_needed[c]
+
+
+@wp.kernel(enable_backward=False)
+def gather_propagation_unit_meta(
+    propagation_max_constraints: int,
+    n_color_entries: int,
+    world_color_offsets: wp.array[int],
+    world_row_order: wp.array[int],
+    row_type: wp.array2d[int],
+    row_parent: wp.array2d[int],
+    body_a: wp.array2d[int],
+    body_b: wp.array2d[int],
+    body_local_slot: wp.array[int],
+    constraint_count: wp.array[int],
+    ring_overflow_cursor: wp.array[int],
+    straight_line: int,
+    # out
+    unit_meta: wp.array[int],
+    ring_overflow: wp.array[int],
+):
+    """Pack the static record of every colored unit, indexed by its position in color order.
+
+    Words: start slot, local slots of bodies a and b, the stored patch-ring length, the first
+    ``PROPAGATION_UNIT_RING`` ring members, the member after them, the row count, the
+    straight-line kind (1 a contact row with its friction pair, 2 a lone contact row, 0 the
+    row loop) and the rest of the ring in ``ring_overflow`` (offset | count << 20, or -1).
+    """
+    tid = wp.tid()
+    world = tid // propagation_max_constraints
+    pos = tid - world * propagation_max_constraints
+    if pos >= world_color_offsets[world * n_color_entries + n_color_entries - 1]:
+        return
+    slot = world_row_order[tid]
+    ba = body_a[world, slot]
+    bb = body_b[world, slot]
+    la = int(-1)
+    lb = int(-1)
+    if ba >= 0:
+        la = body_local_slot[ba]
+    if bb >= 0:
+        lb = body_local_slot[bb]
+    base = tid * PROPAGATION_UNIT_META
+    unit_meta[base + 0] = slot
+    unit_meta[base + 1] = la
+    unit_meta[base + 2] = lb
+    n = int(0)
+    member = int(-1)
+    if row_type[world, slot] == PGS_CONSTRAINT_TYPE_CONTACT:
+        member = row_parent[world, slot]
+        while member >= 0 and member != slot and n < PROPAGATION_UNIT_RING:
+            unit_meta[base + 4 + n] = member
+            n += 1
+            member = row_parent[world, member]
+    for q in range(n, PROPAGATION_UNIT_RING):
+        unit_meta[base + 4 + q] = -1
+    # Past the stored members: -1 when the ring closed within them.
+    if member == slot:
+        member = -1
+    unit_meta[base + 3] = n
+    unit_meta[base + 4 + PROPAGATION_UNIT_RING] = member
+    # The rest of a long ring, in ring order, goes to the world's overflow list for parallel loads.
+    overflow = int(-1)
+    if member >= 0:
+        count = int(0)
+        walk = member
+        while walk >= 0 and walk != slot:
+            count += 1
+            walk = row_parent[world, walk]
+        offset = wp.atomic_add(ring_overflow_cursor, world, count)
+        if offset + count <= propagation_max_constraints and offset < (1 << 20) and count < 1024:
+            walk = member
+            q = int(0)
+            while walk >= 0 and walk != slot:
+                ring_overflow[world * propagation_max_constraints + offset + q] = walk
+                q += 1
+                walk = row_parent[world, walk]
+            overflow = offset | (count << 20)
+    unit_meta[base + 7 + PROPAGATION_UNIT_RING] = overflow
+    # Rows of the unit: its first row and the friction rows following it.
+    m = wp.min(constraint_count[world], int(row_type.shape[1]))
+    rows = int(1)
+    while slot + rows < m and row_type[world, slot + rows] == PGS_CONSTRAINT_TYPE_FRICTION:
+        rows += 1
+    unit_meta[base + 5 + PROPAGATION_UNIT_RING] = rows
+    # Straight-line kinds: a contact row with its friction pair on the unit's two bodies, or a lone contact row.
+    standard = int(0)
+    if (
+        straight_line != 0
+        and rows == 3
+        and row_type[world, slot] == PGS_CONSTRAINT_TYPE_CONTACT
+        and (la != lb or la < 0)
+    ):
+        if row_parent[world, slot + 1] == slot and row_parent[world, slot + 2] == slot:
+            if body_a[world, slot + 1] == ba and body_b[world, slot + 1] == bb:
+                if body_a[world, slot + 2] == ba and body_b[world, slot + 2] == bb:
+                    standard = 1
+    if (
+        straight_line != 0
+        and rows == 1
+        and row_type[world, slot] == PGS_CONSTRAINT_TYPE_CONTACT
+        and (la != lb or la < 0)
+    ):
+        standard = 2  # a lone contact row
+    unit_meta[base + 6 + PROPAGATION_UNIT_RING] = standard
+
+
 @wp.kernel
 def build_propagation_body_map(
     propagation_constraint_count: wp.array[int],

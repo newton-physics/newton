@@ -13,7 +13,7 @@ from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_CONTACT
 from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
-RESPONSES = ("propagation", "propagation-fused")
+RESPONSES = ("propagation", "propagation-fused", "propagation-colored")
 PROPAGATION_PATH = 2
 
 

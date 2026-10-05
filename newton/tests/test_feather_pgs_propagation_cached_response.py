@@ -381,6 +381,15 @@ def test_lockstep_single_contact(test, device):
     _assert_stats(test, stats, expect_min_bodies=1)
 
 
+def test_lockstep_colored(test, device):
+    """Match the tree walk under the colored sweep."""
+    model = _build_model(device, chains=(6,), spheres=("base", "mid", "deep"))
+    stats, _, cached = _run_lockstep(model, "propagation-colored", 40)
+    test.assertTrue(cached._propagation_cached_kernels)
+    test.assertTrue(np.all(cached.propagation_cache_world_flag.numpy() == 1))
+    _assert_stats(test, stats, expect_min_bodies=2)
+
+
 def test_lockstep_fixed_base_single_dof(test, device):
     """Match the tree walk with fixed-base all-revolute chains, the single-DOF extraction."""
     model = _build_model(device, chains=(6,), spheres=("base", "mid", "deep"), fixed_base=True)
@@ -526,6 +535,7 @@ for _fn in (
     test_lockstep_multi_contact_bodies,
     test_lockstep_second_size_group,
     test_lockstep_single_contact,
+    test_lockstep_colored,
     test_lockstep_fixed_base_single_dof,
     test_overflow_falls_back_to_tree_walk,
     test_clutter_does_not_evict_cache,
