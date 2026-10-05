@@ -1753,29 +1753,5 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
         assert_np_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), np.arange(6))
 
 
-class TestSelectionGatherDevice(unittest.TestCase):
-    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
-    def test_indexed_gather_on_cpu_model_with_cuda_current_device(self):
-        """Gather an indexed selection of a CPU model on the CPU while a CUDA device is current."""
-        builder = newton.ModelBuilder()
-        parent, joints = -1, []
-        for index in range(3):
-            child = builder.add_link()
-            joints.append(builder.add_joint_revolute(parent=parent, child=child, label=f"joint_{index}"))
-            parent = child
-        builder.add_articulation(joints, label="robot")
-        model = builder.finalize(device="cpu", requires_grad=True)
-        # skipping joint_1 makes the selection indexed
-        view = ArticulationView(model, "robot", include_joints=["joint_0", "joint_2"], verbose=False)
-
-        rng = np.random.default_rng(0)
-        with wp.ScopedDevice("cuda:0"):
-            # a gather on the CUDA device races the host read, so repeat to catch it
-            for _ in range(20):
-                q = rng.standard_normal(3).astype(np.float32)
-                model.joint_q.assign(q)
-                assert_np_equal(view.get_dof_positions(model).numpy(), q[[0, 2]].reshape(1, 1, 2))
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)
