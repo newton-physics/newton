@@ -1063,10 +1063,12 @@ class LOXSolverConfig:
     """Relaxation factor for exact candidate-pose structural joint residuals.
 
     Zero retains the frozen linear residual. Positive values relax a stored
-    nonlinear residual correction toward the exact candidate-pose residual
-    while reusing the frozen Jacobian, primal matrix, and factorization. The
-    relaxation changes convergence speed without changing the nonlinear fixed
-    point.
+    nonlinear residual correction of the three positional rows of fixed,
+    revolute, and spherical joints toward their exact candidate-pose residual,
+    expressed in the frozen joint frame, while reusing the frozen Jacobian,
+    primal matrix, and factorization. The relaxation changes convergence speed
+    without changing the nonlinear fixed point. The angular rows and the
+    positional rows of the other joint types retain the frozen linear residual.
     """
 
     position_tolerance: float = 1.0e-5

@@ -240,6 +240,180 @@ def _build_flagged_kinematic_model(*, device: wp.DeviceLike = None) -> tuple[new
     return builder.finalize(device=device), body
 
 
+def _build_driven_chain_model(*, world_count: int, device: wp.DeviceLike = None) -> newton.Model:
+    """Build worlds of an effort-limited driven hinge carrying a fixed child under gravity."""
+    builder = newton.ModelBuilder()
+    SolverKamino.register_custom_attributes(builder)
+    inertia = wp.mat33f(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4)
+    offset = wp.transformf(wp.vec3f(1.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32))
+    for _ in range(world_count):
+        builder.begin_world()
+        parent = builder.add_link(mass=1.0, inertia=inertia, lock_inertia=True)
+        child = builder.add_link(xform=offset, mass=1.0, inertia=inertia, lock_inertia=True)
+        root = builder.add_joint_revolute(
+            parent=-1,
+            child=parent,
+            axis=newton.Axis.Y,
+            target_ke=100.0,
+            effort_limit=1.0,
+            actuator_mode=newton.JointTargetMode.POSITION,
+        )
+        fixed = builder.add_joint_fixed(parent=parent, child=child, parent_xform=offset)
+        builder.add_articulation([root, fixed])
+        builder.end_world()
+    return builder.finalize(device=device)
+
+
+def _build_prescribed_rotating_joint_model(
+    *,
+    angle: float,
+    joint_kind: str = "ball",
+    nonidentity_frames: bool = False,
+    device: wp.DeviceLike = None,
+) -> tuple[newton.Model, int, int, wp.transformf, wp.transformf]:
+    """Build a prescribed parent rotating by ``angle`` [rad] in 0.01 s with an offset dynamic child."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    SolverKamino.register_custom_attributes(builder)
+    builder.begin_world()
+    inertia = wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    parent = builder.add_link(mass=1.0, inertia=inertia, lock_inertia=True, is_kinematic=True)
+    child = builder.add_link(
+        xform=wp.transformf(wp.vec3f(1.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
+        mass=1.0,
+        inertia=inertia,
+        lock_inertia=True,
+    )
+    root = builder.add_joint_free(parent=-1, child=parent)
+    frame_orientation = (
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3f(1.0, 2.0, -1.0)), 0.7)
+        if nonidentity_frames
+        else wp.quat_identity(dtype=wp.float32)
+    )
+    parent_xform = wp.transformf(wp.vec3f(1.0, 0.0, 0.0), frame_orientation)
+    child_xform = wp.transformf(wp.vec3f(0.0), frame_orientation)
+    if joint_kind == "ball":
+        joint = builder.add_joint_ball(parent=parent, child=child, parent_xform=parent_xform, child_xform=child_xform)
+    elif joint_kind == "revolute":
+        joint = builder.add_joint_revolute(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            axis=newton.Axis.X,
+        )
+    else:
+        raise ValueError(f"Unsupported joint kind: {joint_kind}")
+    builder.add_articulation([root, joint])
+    builder.body_qd[parent] = wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, angle / 0.01)
+    builder.end_world()
+    return builder.finalize(device=device), parent, child, parent_xform, child_xform
+
+
+def _build_two_body_joint_model(
+    *,
+    joint_kind: str,
+    mass_ratio: float,
+    reverse_body_order: bool,
+    device: wp.DeviceLike = None,
+) -> tuple[newton.Model, int, int, wp.transformf, wp.transformf]:
+    """Build an offset two-body fixed or revolute joint below a world hinge."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    SolverKamino.register_custom_attributes(builder)
+    builder.begin_world()
+    frame_orientation = wp.quat_from_axis_angle(wp.normalize(wp.vec3f(1.0, -2.0, 0.5)), 0.6)
+    parent_xform = wp.transformf(wp.vec3f(0.3, -0.2, 0.7), frame_orientation)
+    child_xform = wp.transformf(wp.vec3f(-0.1, 0.2, -0.3), frame_orientation)
+    child_position = wp.vec3f(0.4, -0.4, 1.0)
+    parent_inertia = wp.mat33f(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4)
+    child_inertia = parent_inertia / mass_ratio
+
+    def add_parent() -> int:
+        return builder.add_link(mass=1.0, inertia=parent_inertia, lock_inertia=True)
+
+    def add_child() -> int:
+        return builder.add_link(
+            xform=wp.transformf(child_position, wp.quat_identity(dtype=wp.float32)),
+            mass=1.0 / mass_ratio,
+            inertia=child_inertia,
+            lock_inertia=True,
+        )
+
+    if reverse_body_order:
+        child = add_child()
+        parent = add_parent()
+    else:
+        parent = add_parent()
+        child = add_child()
+    root = builder.add_joint_revolute(parent=-1, child=parent, axis=newton.Axis.Y)
+    if joint_kind == "fixed":
+        joint = builder.add_joint_fixed(parent=parent, child=child, parent_xform=parent_xform, child_xform=child_xform)
+    elif joint_kind == "revolute":
+        joint = builder.add_joint_revolute(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            axis=newton.Axis.X,
+        )
+    else:
+        raise ValueError(f"Unsupported joint kind: {joint_kind}")
+    builder.add_articulation([root, joint])
+    builder.end_world()
+    return builder.finalize(device=device), parent, child, parent_xform, child_xform
+
+
+def _rotate_vector(quaternion: np.ndarray, vector: np.ndarray) -> np.ndarray:
+    """Rotate a vector by an xyzw quaternion."""
+    axis = quaternion[:3]
+    scalar = quaternion[3]
+    return vector + 2.0 * (scalar * np.cross(axis, vector) + np.cross(axis, np.cross(axis, vector)))
+
+
+def _quaternion_product(first: np.ndarray, second: np.ndarray) -> np.ndarray:
+    """Multiply xyzw quaternions."""
+    first_axis = first[:3]
+    second_axis = second[:3]
+    return np.concatenate(
+        (
+            first[3] * second_axis + second[3] * first_axis + np.cross(first_axis, second_axis),
+            np.asarray([first[3] * second[3] - np.dot(first_axis, second_axis)]),
+        )
+    )
+
+
+def _joint_anchor_error(
+    body_pose: np.ndarray,
+    parent: int,
+    child: int,
+    parent_xform: wp.transformf,
+    child_xform: wp.transformf,
+) -> np.ndarray:
+    """Return the child-minus-parent joint anchor separation in world coordinates [m]."""
+    parent_anchor = body_pose[parent, :3] + _rotate_vector(body_pose[parent, 3:], np.asarray(parent_xform.p))
+    child_anchor = body_pose[child, :3] + _rotate_vector(body_pose[child, 3:], np.asarray(child_xform.p))
+    return child_anchor - parent_anchor
+
+
+def _joint_angular_error(
+    body_pose: np.ndarray,
+    parent: int,
+    child: int,
+    parent_xform: wp.transformf,
+    child_xform: wp.transformf,
+    joint_kind: str,
+) -> float:
+    """Return the constrained angular error of a fixed or X-axis revolute joint [rad]."""
+    parent_frame = _quaternion_product(body_pose[parent, 3:], np.asarray(parent_xform.q))
+    child_frame = _quaternion_product(body_pose[child, 3:], np.asarray(child_xform.q))
+    parent_inverse = parent_frame * np.asarray((-1.0, -1.0, -1.0, 1.0))
+    relative = _quaternion_product(parent_inverse, child_frame)
+    relative /= np.linalg.norm(relative)
+    if joint_kind == "fixed":
+        return float(2.0 * np.arccos(np.clip(abs(relative[3]), 0.0, 1.0)))
+    follower_axis = _rotate_vector(relative, np.asarray((1.0, 0.0, 0.0)))
+    return float(np.linalg.norm(np.cross(np.asarray((1.0, 0.0, 0.0)), follower_axis)))
+
+
 class TestSolverKaminoLOX(unittest.TestCase):
     def setUp(self):
         if not test_context.setup_done:
@@ -551,6 +725,235 @@ class TestSolverKaminoLOX(unittest.TestCase):
         )
         position_error = poses[child, :3] - parent_position - rotated_offset
         np.testing.assert_allclose(position_error, 0.0, atol=1.0e-5)
+
+    def test_joint_proximal_uses_frozen_frame_for_full_position_blocks(self):
+        """Constrain offset anchors while a prescribed parent rotates substantially."""
+        cases = (
+            ("ball", 0.1, False),
+            ("ball", 0.5, True),
+            ("ball", 1.2, True),
+            ("revolute", 0.5, True),
+        )
+        for joint_kind, angle, nonidentity_frames in cases:
+            with self.subTest(joint_kind=joint_kind, angle=angle, nonidentity_frames=nonidentity_frames):
+                model, parent, child, parent_xform, child_xform = _build_prescribed_rotating_joint_model(
+                    angle=angle,
+                    joint_kind=joint_kind,
+                    nonidentity_frames=nonidentity_frames,
+                    device=self.default_device,
+                )
+                config = self.make_config()
+                config.use_collision_detector = False
+                config.lox.fixed_iterations = True
+                config.lox.joint_proximal_relaxation = 1.0
+                solver = SolverKamino(model, config=config)
+                state_next = model.state()
+
+                solver.step(model.state(), state_next, model.control(), contacts=None, dt=0.01)
+
+                anchor_error = _joint_anchor_error(state_next.body_q.numpy(), parent, child, parent_xform, child_xform)
+                self.assertTrue(np.isfinite(anchor_error).all())
+                np.testing.assert_allclose(anchor_error, 0.0, rtol=0.0, atol=1.0e-6)
+
+    def test_joint_proximal_relaxations_share_position_fixed_point(self):
+        """Reach the same anchor constraint for every positive relaxation."""
+        child_poses = []
+        for relaxation in (0.25, 0.5, 1.0):
+            with self.subTest(relaxation=relaxation):
+                model, parent, child, parent_xform, child_xform = _build_prescribed_rotating_joint_model(
+                    angle=0.5,
+                    nonidentity_frames=True,
+                    device=self.default_device,
+                )
+                config = self.make_config()
+                config.use_collision_detector = False
+                config.lox.fixed_iterations = True
+                config.lox.max_iterations = 80
+                config.lox.joint_proximal_relaxation = relaxation
+                solver = SolverKamino(model, config=config)
+                state_next = model.state()
+
+                solver.step(model.state(), state_next, model.control(), contacts=None, dt=0.01)
+
+                poses = state_next.body_q.numpy()
+                anchor_error = _joint_anchor_error(poses, parent, child, parent_xform, child_xform)
+                np.testing.assert_allclose(anchor_error, 0.0, rtol=0.0, atol=1.0e-6)
+                child_poses.append(poses[child])
+        child_poses = np.asarray(child_poses)
+        np.testing.assert_allclose(child_poses, np.broadcast_to(child_poses[0], child_poses.shape), atol=2.0e-6)
+
+    def test_joint_proximal_handles_two_body_frames_and_orderings(self):
+        """Keep fixed and revolute joint errors bounded across mass ratios and body storage orders."""
+        cases = (
+            ("fixed", 1.0, False),
+            ("fixed", 100.0, True),
+            ("revolute", 100.0, False),
+            ("revolute", 1.0, True),
+        )
+        for joint_kind, mass_ratio, reverse_body_order in cases:
+            with self.subTest(joint_kind=joint_kind, mass_ratio=mass_ratio, reverse_body_order=reverse_body_order):
+                model, parent, child, parent_xform, child_xform = _build_two_body_joint_model(
+                    joint_kind=joint_kind,
+                    mass_ratio=mass_ratio,
+                    reverse_body_order=reverse_body_order,
+                    device=self.default_device,
+                )
+                config = self.make_config()
+                config.use_collision_detector = False
+                config.lox.fixed_iterations = True
+                config.lox.joint_proximal_relaxation = 1.0
+                solver = SolverKamino(model, config=config)
+                state_previous = model.state()
+                state_next = model.state()
+                velocity = np.zeros((model.body_count, 6), dtype=np.float32)
+                velocity[parent] = (2.0, -1.0, 0.5, 0.0, 50.0, 0.0)
+                velocity[child] = (-3.0, 2.0, -1.0, 20.0, -10.0, 15.0)
+                state_previous.body_qd.assign(velocity)
+
+                solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.01)
+
+                poses = state_next.body_q.numpy()
+                position_error = np.linalg.norm(_joint_anchor_error(poses, parent, child, parent_xform, child_xform))
+                angular_error = _joint_angular_error(poses, parent, child, parent_xform, child_xform, joint_kind)
+                self.assertTrue(math.isfinite(position_error))
+                self.assertTrue(math.isfinite(angular_error))
+                self.assertLess(position_error, 1.0e-4)
+                self.assertLess(angular_error, 0.1)
+
+    def test_joint_proximal_accepts_finite_root_translation_transient(self):
+        """Accept a large finite first trial of a relaxed fixed joint."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverKamino.register_custom_attributes(builder)
+        builder.begin_world()
+        inertia = wp.mat33f(0.2, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.2)
+        parent = builder.add_link(mass=1.0, inertia=inertia, lock_inertia=True)
+        child = builder.add_link(
+            xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), wp.quat_identity(dtype=wp.float32)),
+            mass=1.0,
+            inertia=inertia,
+            lock_inertia=True,
+        )
+        root = builder.add_joint_revolute(parent=-1, child=parent, axis=newton.Axis.Y)
+        parent_xform = wp.transformf(wp.vec3f(0.0, 0.0, 1.0), wp.quat_identity(dtype=wp.float32))
+        child_xform = wp.transformf(wp.vec3f(0.0), wp.quat_identity(dtype=wp.float32))
+        joint = builder.add_joint_fixed(parent=parent, child=child, parent_xform=parent_xform, child_xform=child_xform)
+        builder.add_articulation([root, joint])
+        builder.end_world()
+        model = builder.finalize(device=self.default_device)
+        state_in = model.state()
+        state_in.body_qd.assign(np.random.default_rng(1).normal(size=(2, 6)).astype(np.float32) / 0.01)
+        state_out = model.state()
+        config = self.make_config()
+        config.use_collision_detector = False
+        config.lox.fixed_iterations = True
+        config.lox.max_iterations = 80
+        config.lox.joint_proximal_relaxation = 1.0
+        solver = SolverKamino(model, config=config)
+
+        solver.step(state_in, state_out, model.control(), contacts=None, dt=0.01)
+
+        self.assertEqual(int(solver.status.numpy()["failed"][0]), 0)
+        anchor_error = _joint_anchor_error(state_out.body_q.numpy(), parent, child, parent_xform, child_xform)
+        self.assertTrue(np.isfinite(anchor_error).all())
+        self.assertLess(float(np.linalg.norm(anchor_error)), 1.0e-5)
+
+    def test_joint_proximal_rotates_poses_velocities_and_wrenches(self):
+        """Rotate the whole scene and obtain the rotated solution."""
+        rotation = np.asarray(wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, -2.0, 0.7)), 1.1))
+        for kind in ("fixed", "revolute"):
+            with self.subTest(kind=kind):
+                results = []
+                for rotated in (False, True):
+                    model, parent, child, _, _ = _build_two_body_joint_model(
+                        joint_kind=kind,
+                        mass_ratio=100.0,
+                        reverse_body_order=True,
+                        device=self.default_device,
+                    )
+                    velocity = np.zeros((model.body_count, 6), dtype=np.float32)
+                    velocity[parent] = (2.0, -1.0, 0.5, 0.0, 50.0, 0.0)
+                    velocity[child] = (-3.0, 2.0, -1.0, 20.0, -10.0, 15.0)
+                    if rotated:
+                        poses = model.body_q.numpy()
+                        for pose in poses:
+                            pose[:3] = _rotate_vector(rotation, pose[:3])
+                            pose[3:] = _quaternion_product(rotation, pose[3:])
+                        model.body_q.assign(poses)
+                        root_frames = model.joint_X_p.numpy()
+                        for joint in np.flatnonzero(model.joint_parent.numpy() < 0):
+                            root_frames[joint, :3] = _rotate_vector(rotation, root_frames[joint, :3])
+                            root_frames[joint, 3:] = _quaternion_product(rotation, root_frames[joint, 3:])
+                        model.joint_X_p.assign(root_frames)
+                        for body in range(model.body_count):
+                            velocity[body, :3] = _rotate_vector(rotation, velocity[body, :3])
+                            velocity[body, 3:] = _rotate_vector(rotation, velocity[body, 3:])
+                    config = self.make_config()
+                    config.use_collision_detector = False
+                    config.lox.fixed_iterations = True
+                    config.lox.joint_proximal_relaxation = 1.0
+                    solver = SolverKamino(model, config=config)
+                    state_previous, state_next = model.state(), model.state()
+                    state_previous.body_qd.assign(velocity)
+                    solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.01)
+                    results.append(
+                        (
+                            state_next.body_q.numpy(),
+                            state_next.body_qd.numpy(),
+                            solver._solver_kamino.data.bodies.w_j_i.numpy(),
+                        )
+                    )
+                original, transformed = results
+                for body in range(len(original[0])):
+                    np.testing.assert_allclose(
+                        transformed[0][body, :3], _rotate_vector(rotation, original[0][body, :3]), atol=2.0e-5
+                    )
+                    expected_q = _quaternion_product(rotation, original[0][body, 3:])
+                    actual_q = transformed[0][body, 3:]
+                    if np.dot(expected_q, actual_q) < 0.0:
+                        actual_q = -actual_q
+                    np.testing.assert_allclose(actual_q, expected_q, atol=2.0e-5)
+                    for quantity in (1, 2):
+                        for begin in (0, 3):
+                            np.testing.assert_allclose(
+                                transformed[quantity][body, begin : begin + 3],
+                                _rotate_vector(rotation, original[quantity][body, begin : begin + 3]),
+                                rtol=5.0e-4,
+                                atol=2.0e-3,
+                            )
+
+    def test_failed_jointed_world_discards_its_warm_starts(self):
+        """Zero the outputs and discard the joint and actuator warm starts of a failed world."""
+        model = _build_driven_chain_model(world_count=2, device=self.default_device)
+        solver = SolverKamino(model, config=self.make_config())
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        for _ in range(3):
+            solver.step(state_in, state_out, control, contacts=None, dt=0.01)
+            state_in, state_out = state_out, state_in
+        np.testing.assert_array_equal(solver.status.numpy()["failed"], [0, 0])
+        joints = solver._solver_kamino.data.joints
+        bodies = solver._solver_kamino.data.bodies
+        half_rows = joints.lambda_kin_j.shape[0] // 2
+        half_bodies = model.body_count // 2
+        self.assertGreater(float(np.abs(joints.lambda_kin_j.numpy()[half_rows:]).max()), 0.0)
+
+        # On the CPU, the NumPy view aliases the state
+        finite = state_in.body_qd.numpy().copy()
+        velocity = finite.copy()
+        velocity[half_bodies:] = np.nan
+        state_in.body_qd.assign(velocity)
+        solver.step(state_in, state_out, control, contacts=None, dt=0.01)
+        np.testing.assert_array_equal(solver.status.numpy()["failed"], [0, 1])
+        np.testing.assert_array_equal(joints.lambda_kin_j.numpy()[half_rows:], 0.0)
+        np.testing.assert_array_equal(joints.lambda_tau_j.numpy()[1], 0.0)
+        np.testing.assert_array_equal(bodies.w_j_i.numpy()[half_bodies:], 0.0)
+        self.assertTrue(np.isfinite(joints.lambda_kin_j.numpy()[:half_rows]).all())
+
+        # A finite input recovers the failed world
+        state_in.body_qd.assign(finite)
+        solver.step(state_in, state_out, control, contacts=None, dt=0.01)
+        np.testing.assert_array_equal(solver.status.numpy()["failed"], [0, 0])
+        self.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
+        self.assertTrue(np.isfinite(state_out.body_qd.numpy()).all())
 
     def test_position_drive_with_massless_fixed_child(self):
         """Track a target when the driven body has a massless fixed child."""

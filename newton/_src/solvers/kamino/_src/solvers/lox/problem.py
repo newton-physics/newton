@@ -581,7 +581,7 @@ class LOXProblem:
         """Update the structural multipliers from the candidate twist of each joint, in one pass over the joints.
 
         The per-world structural residual is accumulated into ``structural_rows.world_residual``,
-        which the convergence check reads and clears.
+        which the convergence check reads and clears. A non-finite update fails its world.
         """
         if self._data.structural_rows.count == 0:
             return
@@ -607,7 +607,6 @@ class LOXProblem:
                 self.kamino_data.bodies.q_i,
                 self.kamino_data.joints.q_j_p,
                 world_active,
-                world_failed,
                 self.system.data.body_vector_index,
                 global_twist,
                 projected_twist,
@@ -628,6 +627,7 @@ class LOXProblem:
                 self._data.structural_rows.reaction,
                 self._data.structural_rows.body_impulse,
                 self._data.structural_rows.world_residual,
+                world_failed,
             ],
             device=self.device,
         )
@@ -708,6 +708,7 @@ class LOXProblem:
                     self._data.effort_rows.net_applied,
                     self._data.effort_rows.value_index,
                     body_velocity,
+                    world_failed,
                 ],
                 outputs=[self.kamino_data.joints.lambda_dyn_j, self.kamino_data.joints.lambda_tau_j, joint_wrench],
                 device=self.device,
@@ -789,11 +790,13 @@ class LOXProblem:
                 _accumulate_aligned_joint_wrenches,
                 dim=self._data.structural_rows.count,
                 inputs=[
+                    self._data.structural_rows.world,
                     self._data.structural_rows.body_a,
                     self._data.structural_rows.body_b,
                     self._data.structural_rows.jacobian_a,
                     self._data.structural_rows.jacobian_b,
                     self._data.structural_rows.reaction,
+                    world_failed,
                 ],
                 outputs=[joint_wrench],
                 device=self.device,
