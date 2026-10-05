@@ -437,6 +437,41 @@ def test_joint_limit_solver_compatibility_validation(test, device):
         SolverFeatherPGS(model, pgs_mode="dense")
 
 
+def test_split_rejects_matrix_free_only_options(test, device):
+    """Reject in the split solve every option that only the matrix-free solve implements."""
+    model = _build_chain_model(device, num_links=2, num_worlds=1)
+    options = (
+        ({"enable_joint_velocity_limits": True}, "enable_joint_velocity_limits"),
+        ({"drive_mode": "physx_pgs"}, "physx_pgs"),
+        ({"friction_anchor_beta": 0.2}, "friction_anchor_beta"),
+        ({"pgs_contact_regularization": 0.02}, "pgs_contact_regularization"),
+        ({"pgs_velocity_iterations": 2}, "pgs_velocity_iterations"),
+        ({"pgs_warmstart": True}, "pgs_warmstart"),
+        ({"contact_compliance": True, "friction_anchor_beta": 0.0}, "contact_compliance"),
+        ({"enable_sleeping": True}, "enable_sleeping"),
+    )
+    for kwargs, name in options:
+        with test.subTest(option=name):
+            with test.assertRaisesRegex(NotImplementedError, f"{name}.*requires pgs_mode='matrix_free'"):
+                SolverFeatherPGS(model, pgs_mode="split", **kwargs)
+    # Contact torsion is CUDA-only; on CUDA the split solve rejects it.
+    error = NotImplementedError if wp.get_device(device).is_cuda else ValueError
+    with test.assertRaises(error):
+        SolverFeatherPGS(model, pgs_mode="split", contact_torsion_radius=0.01)
+    # The default friction resolves to point friction in the split solve.
+    test.assertEqual(SolverFeatherPGS(model, pgs_mode="split").friction_anchor_beta, 0.0)
+    # Positive shape restitution is rejected at construction and when notified.
+    restitution = model.shape_material_restitution.numpy().copy()
+    model.shape_material_restitution.fill_(0.5)
+    with test.assertRaisesRegex(NotImplementedError, "restitution requires pgs_mode='matrix_free'"):
+        SolverFeatherPGS(model, pgs_mode="split")
+    model.shape_material_restitution.assign(restitution)
+    solver = SolverFeatherPGS(model, pgs_mode="split")
+    model.shape_material_restitution.fill_(0.5)
+    with test.assertRaisesRegex(NotImplementedError, "restitution requires pgs_mode='matrix_free'"):
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+
 def test_split_defaults(test, device):
     """Keep the documented defaults in split mode and allocate its Delassus storage."""
     solver = SolverFeatherPGS(_build_chain_model(device, num_links=2, num_worlds=2), pgs_mode="split")
@@ -787,6 +822,11 @@ for _name, _func, _devices in (
     (
         "test_joint_limit_solver_compatibility_validation",
         test_joint_limit_solver_compatibility_validation,
+        split_devices,
+    ),
+    (
+        "test_split_rejects_matrix_free_only_options",
+        test_split_rejects_matrix_free_only_options,
         split_devices,
     ),
     ("test_split_defaults", test_split_defaults, split_devices),
