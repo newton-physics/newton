@@ -31,19 +31,29 @@ Minimum Requirements
      - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
      - macOS has no GPU acceleration
    * - NVIDIA GPU
-     - Compute capability 5.0+ (Maxwell)
-     - Any GeForce GTX 9xx or newer
+     - Compute capability 5.2+ (Maxwell)
+     - With Warp 1.17; see the current default below
    * - NVIDIA Driver
      - 545 or newer (CUDA 12)
-     - 550 or newer (CUDA 12.4) recommended for best performance
+     - With Warp 1.17; 550 or newer (CUDA 12.4) recommended for best performance
    * - CUDA
      - 12, 13
-     - No local CUDA Toolkit required; `Warp <https://github.com/NVIDIA/warp>`__ bundles its own runtime. See :ref:`cuda-compatibility` for version-specific notes.
+     - No local CUDA Toolkit required; `Warp <https://github.com/NVIDIA/warp>`__ bundles the CUDA components it needs. See :ref:`cuda-compatibility`.
+
+A fresh install may select Warp 1.18, whose standard CUDA 13.4 wheel needs an
+R580-series driver and a Turing (``sm_75``) GPU. For older drivers or GPUs,
+install the CUDA 12.9 based Warp 1.17 wheel with
+``python -m pip install "newton" "warp-lang==1.17.0"``.
 
 Platform-Specific Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Linux aarch64 (ARM64)**
+
+Warp 1.17's CUDA 12.9 wheel omits ``sm_52``, ``sm_60``, ``sm_61``, and
+``sm_70`` targets on Linux ARM64. These GPUs need a Warp build made with an
+earlier CUDA 12 toolkit; see `Warp's CUDA 12.9 ARM64 limitation
+<https://nvidia.github.io/warp/v1.17/user_guide/installation.html#cuda-12-9-limitation-on-linux-arm-platforms>`__.
 
 On ARM64 Linux, the ``importers`` extra requires GLIBC 2.35 or newer because
 `usd-exchange <https://pypi.org/project/usd-exchange/>`__ publishes its Linux

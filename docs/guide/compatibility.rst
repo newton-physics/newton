@@ -39,9 +39,11 @@ Inherited Platform Support
 --------------------------
 
 Newton's baseline operating system, CUDA toolkit, NVIDIA driver, and
-GPU architecture compatibility is inherited from `NVIDIA Warp
-<https://nvidia.github.io/warp/stable/user_guide/compatibility.html>`__.
-Warp's compatibility page is the source of truth for:
+GPU architecture compatibility depends on the installed Warp wheel. The
+`Warp 1.18 compatibility page
+<https://nvidia.github.io/warp/v1.18/user_guide/compatibility.html>`__
+and the corresponding page for each installed Warp version are the source of
+truth for:
 
 * Supported operating systems and their runtime requirements (e.g.,
   GLIBC versions on Linux).
@@ -49,9 +51,11 @@ Warp's compatibility page is the source of truth for:
   requirements.
 * Minimum GPU compute capability and forward-compatibility via PTX.
 
-Newton may apply additional constraints on top of Warp's baseline; see
-:ref:`cuda-compatibility` below.  For the install-relevant minimums,
-see :ref:`system-requirements` in the installation guide.
+Newton may apply additional constraints on top of Warp's baseline. Newton's
+source lockfile controls contributor environments, while a wheel installation
+resolves from the package's declared ``warp-lang`` requirement. For current
+default requirements and the Warp 1.17 installation command, see
+:ref:`system-requirements`.
 
 .. _cuda-compatibility:
 
@@ -68,8 +72,13 @@ CUDA Compatibility
      - Required for reliable CUDA graph capture
    * - 12.4+
      - Recommended for best performance
-   * - 13
-     - Supported
+   * - 12.9
+     - The Warp 1.17 wheel uses CUDA 12.9. Newton documents driver 545 or
+       newer; Warp supports compute capability 5.2 or newer, with a Linux ARM64
+       architecture limitation described in :ref:`system-requirements`.
+   * - 13.4
+     - The standard Warp 1.18 wheel uses CUDA 13.4 and requires an R580-series
+       or newer driver and a GPU with compute capability 7.5 or newer
 
 .. _versioning:
 
