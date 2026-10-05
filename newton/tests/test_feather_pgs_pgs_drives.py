@@ -297,6 +297,7 @@ def test_prescale_skips_fused_driven_dofs(test, device):
                 wp.array([int(BodyFlags.DYNAMIC)] * 2, dtype=wp.int32, device=device),
                 wp.array([0, -1], dtype=wp.int32, device=device),
                 skip_driven,
+                wp.ones(1, dtype=wp.int32, device=device),
             ],
             outputs=[joint_qd],
             device=device,

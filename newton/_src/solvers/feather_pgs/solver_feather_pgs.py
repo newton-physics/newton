@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import dataclasses
+import math
 import re
 import warnings
 import weakref
@@ -124,6 +125,7 @@ from .kernels import (
     update_qdd_from_velocity,
     vector_add_inplace,
 )
+from .sleeping import _SleepState
 from .sparse_contact import (
     _get_sparse_contact_response_kernel,
     apply_sparse_factor_velocity,
@@ -1033,6 +1035,9 @@ class SolverFeatherPGS(SolverBase):
       point friction.
     - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds.
     - CUDA graph capture of :meth:`step` and :meth:`reset`.
+    - Experimental passive-island sleeping (``enable_sleeping``, ``pgs_mode="matrix_free"``
+      only): settled, supported islands of articulations freeze their published state and
+      skip their rows and dynamics until a wake event.
 
     Limitations:
 
@@ -1266,6 +1271,11 @@ class SolverFeatherPGS(SolverBase):
         contact_torsion_shape_patterns: tuple[str, ...] | None = None,
         contact_torsion_device: bool = False,
         contact_compliance: bool = False,
+        enable_sleeping: bool = False,
+        sleep_linear_threshold: float = 0.05,
+        sleep_angular_threshold: float = 0.15,
+        sleep_quiet_time: float = 0.5,
+        sleep_skip_constraints: bool = True,
     ):
         """Create a FeatherPGS solver for a finalized model.
 
@@ -1513,6 +1523,41 @@ class SolverFeatherPGS(SolverBase):
                 ``compliance_contact_count``; a compliant contact lost to a row capacity
                 raises, even with ``warn_constraint_overflow`` off. This option may change
                 without the normal deprecation period.
+            enable_sleeping: Experimental passive-island sleeping. Articulations in contact
+                are joined into islands every step. Static geometry and articulations with no
+                responding degrees of freedom (such as a body welded to the world) support an
+                island without joining it. A fixed-base articulation with responding joints,
+                such as a robot arm, joins the island of everything it touches, so it can
+                connect them into one island; its fixed root supports that island. A
+                supported island whose bodies stay below ``sleep_linear_threshold`` and
+                ``sleep_angular_threshold`` for ``sleep_quiet_time`` falls asleep, and its
+                published state (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd`` and, when
+                requested, ``body_parent_f``) is frozen until a wake event: a nonzero or nonfinite
+                external force (:attr:`~newton.State.body_f`, :attr:`~newton.Control.joint_f`),
+                a changed state or gravity, a contact with an awake or moving body, lost
+                support or row capacity, a :meth:`reset` of its world, or
+                :meth:`notify_model_changed` for properties of its joints, DOFs, bodies or
+                shapes (other notifications and changes to static or kinematic owners wake
+                every island). Driven articulations (nonzero drive gains or passive springs)
+                stay awake. Sleeping is configured at construction; rebuild captured graphs
+                to change it. Construction raises :class:`ValueError` with ``pgs_warmstart``
+                or ``pgs_velocity_iterations``, or for a model without articulations;
+                :meth:`step` raises :class:`ValueError` for a nonpositive or nonfinite
+                ``dt`` and when ``state_in`` and ``state_out`` share arrays. The sleeping
+                options are runtime solver settings with no USD schema.
+            sleep_linear_threshold: Body center-of-mass speed below which a body is quiet
+                [m/s], finite and positive.
+            sleep_angular_threshold: Body angular speed below which a body is quiet [rad/s],
+                finite and positive.
+            sleep_quiet_time: Quiet, supported interval after which an island sleeps [s],
+                finite and positive.
+            sleep_skip_constraints: Skip the work of sleeping islands: their contact and
+                joint-limit rows (collision still runs, so wake events are complete), the
+                rebuild of their friction-patch history (carried instead), and their
+                articulated dynamics (kinematics, inverse dynamics, drives, mass matrix
+                and factorization, velocity prediction and integration). ``False`` keeps
+                the rows and dynamics of sleeping islands and only freezes their published
+                state.
         """
         if contact_compliance:
             # Reject unsupported combinations before any allocation.
@@ -1653,6 +1698,7 @@ class SolverFeatherPGS(SolverBase):
                     ("pgs_warmstart=True", self.pgs_warmstart),
                     ("contact_torsion_radius > 0", self._contact_torsion_enabled),
                     ("contact_compliance=True", self.contact_compliance),
+                    ("enable_sleeping=True", bool(enable_sleeping)),
                 )
                 if requested
             ]
@@ -1851,6 +1897,25 @@ class SolverFeatherPGS(SolverBase):
             from .contact_torsion_device import enable_device_torsion  # noqa: PLC0415
 
             enable_device_torsion(self)
+        # Per-entity activity of the articulated dynamics and of the constraint rows; sleeping
+        # clears the entries of islands that sleep through a step, otherwise they stay one.
+        self._dynamics_art_active = wp.ones(model.articulation_count, dtype=wp.int32, device=model.device)
+        self._dynamics_art_mask = wp.ones(model.articulation_count, dtype=wp.bool, device=model.device)
+        self._dynamics_joint_active = wp.ones(model.joint_count, dtype=wp.int32, device=model.device)
+        self._dynamics_dof_active = wp.ones(model.joint_dof_count, dtype=wp.int32, device=model.device)
+        self._dynamics_body_active = wp.ones(model.body_count, dtype=wp.int32, device=model.device)
+        self._constraint_art_active = wp.ones(model.articulation_count, dtype=wp.int32, device=model.device)
+        self.sleeping = (
+            _SleepState(
+                self,
+                float(sleep_linear_threshold),
+                float(sleep_angular_threshold),
+                float(sleep_quiet_time),
+                bool(sleep_skip_constraints),
+            )
+            if enable_sleeping
+            else None
+        )
 
     def _refresh_shape_materials(self) -> None:
         """Copy the model's current friction and restitution coefficients into the solver's fixed buffers."""
@@ -1985,6 +2050,8 @@ class SolverFeatherPGS(SolverBase):
         """
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             _validate_equality_constraints(self.model)
+        if self.sleeping is not None:
+            self.sleeping.notify(flags)
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
             self._update_kinematic_state()
             self._scatter_armature_to_groups()
@@ -2089,6 +2156,8 @@ class SolverFeatherPGS(SolverBase):
         if self.contact_compliance:
             _contact_compliance.clear(self)
         world_mask = self._normalize_reset_world_mask(world_mask)
+        if self.sleeping is not None:
+            self.sleeping.wake(world_mask)
         if self.world_count == 0:
             return
 
@@ -4145,6 +4214,20 @@ class SolverFeatherPGS(SolverBase):
         if not model.joint_count:
             self._step += 1
             return state_out
+        if self.sleeping is not None:
+            if not math.isfinite(dt) or dt <= 0.0:
+                raise ValueError("Experimental sleeping requires a finite positive timestep")
+            if any(
+                a.size and a.ptr == b.ptr
+                for a, b in (
+                    (state_in.joint_q, state_out.joint_q),
+                    (state_in.joint_qd, state_out.joint_qd),
+                    (state_in.body_q, state_out.body_q),
+                    (state_in.body_qd, state_out.body_qd),
+                )
+            ):
+                raise ValueError("Experimental sleeping requires distinct input/output states")
+            self.sleeping.begin(state_in, control, contacts)
         state_aug = self._prepare_augmented_state(state_in)
         self._begin_dense_rows()
 
@@ -4185,6 +4268,7 @@ class SolverFeatherPGS(SolverBase):
                         self._sparse_mass_matrix_indices,
                         self._sparse_Linv,
                         state_aug.joint_tau,
+                        self._dynamics_art_active,
                     ],
                     outputs=[self._sparse_mass_matrix_scratch, state_aug.joint_qdd],
                     block_dim=128,
@@ -4231,7 +4315,7 @@ class SolverFeatherPGS(SolverBase):
             wp.launch(
                 update_qdd_from_velocity,
                 dim=model.joint_dof_count,
-                inputs=[state_in.joint_qd, self._kinematic_dof_mask, 1.0 / dt],
+                inputs=[state_in.joint_qd, self._kinematic_dof_mask, 1.0 / dt, self._dynamics_dof_active],
                 outputs=[self.v_out, state_aug.joint_qdd],
                 device=model.device,
             )
@@ -4255,6 +4339,8 @@ class SolverFeatherPGS(SolverBase):
         else:
             self._integrate(state_in, state_aug, state_out, dt, self.v_out)
         self._stage7_update_kinematics(state_out)
+        if self.sleeping is not None:
+            self.sleeping.finish(state_in, state_out, state_aug, dt)
 
         if self._friction_anchors_enabled:
             if has_contacts:
@@ -4299,7 +4385,7 @@ class SolverFeatherPGS(SolverBase):
         wp.launch(
             update_qdd_from_velocity,
             dim=model.joint_dof_count,
-            inputs=[state_in.joint_qd, self._kinematic_dof_mask, 1.0 / dt],
+            inputs=[state_in.joint_qd, self._kinematic_dof_mask, 1.0 / dt, self._dynamics_dof_active],
             outputs=[velocity, state_aug.joint_qdd],
             device=model.device,
         )
@@ -4313,6 +4399,7 @@ class SolverFeatherPGS(SolverBase):
                     model.joint_qd_start,
                     self._kinematic_joint_mask,
                     state_in.joint_qd,
+                    self._dynamics_joint_active,
                 ],
                 outputs=[state_aug.joint_qdd],
                 device=model.device,
@@ -4335,6 +4422,7 @@ class SolverFeatherPGS(SolverBase):
                 state_aug.joint_qdd,
                 dt,
                 self.rigid_body_angular_damping,
+                self._dynamics_joint_active,
             ],
             outputs=[state_out.joint_q, state_out.joint_qd],
             device=model.device,
@@ -5105,6 +5193,7 @@ class SolverFeatherPGS(SolverBase):
                     model.body_flags,
                     self.drive_slot,
                     int(self.fuse_joint_velocity_limits),
+                    self._dynamics_art_active,
                 ],
                 outputs=[self.qd_work],
                 device=model.device,
@@ -5150,12 +5239,12 @@ class SolverFeatherPGS(SolverBase):
             state_aug.body_a_s,
         ]
         if self._tree_plan is not None:
-            self._launch_tree_fk("id", fk_inputs, fk_outputs)
+            self._launch_tree_fk("id", [*fk_inputs, self._dynamics_art_active], fk_outputs)
         else:
             wp.launch(
                 eval_rigid_fk_id,
                 dim=model.articulation_count,
-                inputs=fk_inputs,
+                inputs=[*fk_inputs, self._dynamics_art_active],
                 outputs=fk_outputs,
                 block_dim=16,
                 device=model.device,
@@ -5170,6 +5259,7 @@ class SolverFeatherPGS(SolverBase):
                     model.body_com,
                     self.body_to_articulation,
                     self.articulation_origin,
+                    self._dynamics_body_active,
                 ],
                 outputs=[state_out.body_qd],
                 device=model.device,
@@ -5240,6 +5330,7 @@ class SolverFeatherPGS(SolverBase):
                         model.joint_effort_limit,
                         self.articulation_max_dofs,
                         dt,
+                        self._dynamics_art_active,
                     ],
                     outputs=[self.aug_row_counts, self.aug_row_dof_index, self.aug_row_K, state_aug.joint_tau],
                     block_dim=_SERIAL_KERNEL_BLOCK_DIM,
@@ -5261,6 +5352,7 @@ class SolverFeatherPGS(SolverBase):
                     model.joint_effort_limit,
                     self.articulation_max_dofs,
                     dt,
+                    self._dynamics_art_active,
                 ],
                 outputs=[
                     state_aug.body_ft_s,
@@ -5276,7 +5368,7 @@ class SolverFeatherPGS(SolverBase):
             wp.launch(
                 eval_rigid_tau,
                 dim=model.articulation_count,
-                inputs=[*common_inputs, *tau_inputs],
+                inputs=[*common_inputs, *tau_inputs, self._dynamics_art_active],
                 outputs=[state_aug.body_ft_s, state_aug.joint_tau],
                 block_dim=_SERIAL_KERNEL_BLOCK_DIM,
                 device=model.device,
@@ -5341,6 +5433,7 @@ class SolverFeatherPGS(SolverBase):
                     group.child_segments,
                     joint_type,
                     *rest,
+                    self._dynamics_art_active,
                 ],
                 outputs=[state_aug.body_ft_s, state_aug.joint_tau, net_wrench],
                 block_dim=32,
@@ -5354,7 +5447,7 @@ class SolverFeatherPGS(SolverBase):
         wp.launch(
             build_mass_update_mask,
             dim=model.articulation_count,
-            inputs=[global_flag, self._mass_update_requested],
+            inputs=[global_flag, self._mass_update_requested, self._dynamics_art_active],
             outputs=[self.mass_update_mask],
             device=model.device,
         )
@@ -5396,6 +5489,7 @@ class SolverFeatherPGS(SolverBase):
                     model.joint_ancestor,
                     model.joint_child,
                     state_aug.body_I_s,
+                    self._dynamics_art_active,
                 ],
                 outputs=[self.body_I_c],
                 block_dim=32 * _COMPOSITE_INERTIA_WARPS_PER_BLOCK,
@@ -5558,6 +5652,7 @@ class SolverFeatherPGS(SolverBase):
                 self.group_to_art[size],
                 self.articulation_dof_start,
                 size,
+                self._dynamics_art_active,
             ],
             outputs=[self.tau_by_size[size]],
             device=model.device,
@@ -5569,6 +5664,7 @@ class SolverFeatherPGS(SolverBase):
                 self.L_by_size[size],
                 self.tau_by_size[size],
                 self.group_to_art[size],
+                self._dynamics_art_active,
             ],
             outputs=[self.qdd_by_size[size]],
             block_dim=_TILE_THREADS,
@@ -5582,6 +5678,7 @@ class SolverFeatherPGS(SolverBase):
                 self.group_to_art[size],
                 self.articulation_dof_start,
                 size,
+                self._dynamics_art_active,
             ],
             outputs=[state_aug.joint_qdd],
             device=model.device,
@@ -5598,6 +5695,7 @@ class SolverFeatherPGS(SolverBase):
                 self.articulation_dof_start,
                 size,
                 state_aug.joint_tau,
+                self._dynamics_art_active,
             ],
             outputs=[state_aug.joint_qdd],
             device=self.model.device,
@@ -5613,6 +5711,7 @@ class SolverFeatherPGS(SolverBase):
                 self.articulation_dof_start,
                 size,
                 state_aug.joint_tau,
+                self._dynamics_art_active,
             ],
             outputs=[state_aug.joint_qdd],
             device=self.model.device,
@@ -5624,7 +5723,7 @@ class SolverFeatherPGS(SolverBase):
         wp.launch(
             compute_velocity_predictor,
             dim=model.joint_dof_count,
-            inputs=[stage3_qd, self._kinematic_dof_mask, dt],
+            inputs=[stage3_qd, self._kinematic_dof_mask, dt, self._dynamics_dof_active],
             outputs=[state_aug.joint_qdd, self.v_hat],
             device=model.device,
         )
@@ -5650,6 +5749,7 @@ class SolverFeatherPGS(SolverBase):
                     self.L_by_size[6],
                     stage3_qd,
                     dt,
+                    self._dynamics_joint_active,
                 ],
                 outputs=[self.v_hat],
                 device=model.device,
@@ -5664,6 +5764,7 @@ class SolverFeatherPGS(SolverBase):
                     self._kinematic_joint_mask,
                     stage3_qd,
                     dt,
+                    self._dynamics_joint_active,
                 ],
                 outputs=[self.v_hat],
                 device=model.device,
@@ -5807,6 +5908,17 @@ class SolverFeatherPGS(SolverBase):
         mf_first_rejected_slot = self._mf_first_rejected_slot if mf_active else self._dummy_mf_slot_counter
 
         sparse_size = self._sparse_mass_matrix_size
+        sleeping = self.sleeping
+        # Sleeping islands get no joint-limit or contact rows (their limit coordinates and
+        # contact response are masked) when they skip constraints.
+        limit_q_index = self._joint_limit_q_index
+        contact_response = self.body_has_response_dofs
+        frozen_bodies = None
+        if sleeping is not None:
+            if sleeping.limit_q_index is not None:
+                limit_q_index = sleeping.limit_q_index
+            contact_response = sleeping.contact_response_mask
+            frozen_bodies = sleeping.patch_frozen_bodies
         # Rows are rebuilt every step; clear the grouped Jacobians once before any family writes.
         if sparse_size is None:
             for size in self.size_groups:
@@ -5869,7 +5981,7 @@ class SolverFeatherPGS(SolverBase):
                         self.art_to_world,
                         self.articulation_world_dof_offset,
                         self.articulation_dof_start,
-                        self._joint_limit_q_index,
+                        limit_q_index,
                         model.joint_limit_lower,
                         model.joint_limit_upper,
                         state_in.joint_q,
@@ -5932,7 +6044,7 @@ class SolverFeatherPGS(SolverBase):
                     self.articulation_dof_start,
                     self.art_to_world,
                     self.group_to_art[size],
-                    self._joint_limit_q_index,
+                    limit_q_index,
                     model.joint_limit_lower,
                     model.joint_limit_upper,
                     state_in.joint_q,
@@ -5970,6 +6082,7 @@ class SolverFeatherPGS(SolverBase):
                     int(self.fuse_joint_velocity_limits),
                     self.art_to_world,
                     max_constraints,
+                    self._constraint_art_active,
                 ],
                 outputs=[self.velocity_limit_slot, self.velocity_limit_sign, self.slot_counter],
                 device=model.device,
@@ -6028,6 +6141,7 @@ class SolverFeatherPGS(SolverBase):
                     articulation_pair_gap_gate=self.articulation_pair_contact_gap_gate,
                     friction_gap=self.contact_friction_gap_threshold,
                     friction_articulation_pairs_only=self.contact_friction_articulation_pairs_only,
+                    frozen_bodies=frozen_bodies,
                 )
             wp.launch(
                 allocate_world_contact_slots,
@@ -6048,7 +6162,7 @@ class SolverFeatherPGS(SolverBase):
                     self.art_to_world,
                     self.articulation_response_dof_count,
                     model.body_flags,
-                    self.body_has_response_dofs,
+                    contact_response,
                     is_free_rigid,
                     int(mf_active),
                     max_constraints,
@@ -6298,6 +6412,7 @@ class SolverFeatherPGS(SolverBase):
                     self.v_hat,
                     self.velocity_limit_activation_fraction,
                     self.mf_max_constraints,
+                    self._constraint_art_active,
                 ],
                 outputs=[self.rigid_velocity_limit_slot, self.rigid_velocity_limit_sign, self.mf_slot_counter],
                 device=model.device,
@@ -6555,11 +6670,19 @@ class SolverFeatherPGS(SolverBase):
             device=model.device,
         )
 
+    @property
+    def _sleep_skips_dynamics(self) -> bool:
+        """Whether sleeping islands skip their articulated dynamics."""
+        sleeping = self.sleeping
+        return sleeping is not None and sleeping.skip_constraints and sleeping.skip_dynamics
+
     def _stage7_update_kinematics(self, state_out: State) -> None:
         """Publish the maximal-coordinate body state of the integrated joint state."""
         model = self.model
         if self._tree_plan is None:
-            eval_fk(model, state_out.joint_q, state_out.joint_qd, state_out)
+            # Sleeping islands that skipped their dynamics keep their frozen bodies.
+            mask = self._dynamics_art_mask if self._sleep_skips_dynamics else None
+            eval_fk(model, state_out.joint_q, state_out.joint_qd, state_out, mask=mask)
             return
         self._launch_tree_fk(
             "public",
@@ -6579,6 +6702,7 @@ class SolverFeatherPGS(SolverBase):
                 model.body_com,
                 model.body_flags,
                 int(BodyFlags.ALL),
+                self._dynamics_art_active,
             ],
             [state_out.body_q, state_out.body_qd],
         )
@@ -6599,6 +6723,8 @@ def _get_composite_inertia_warp_kernel(device_arch: str, warps_per_block: int) -
     const int candidate = block * {warps_per_block} + (threadIdx.x >> 5);
     if (candidate >= composite_articulation_count) return;
     const int articulation = composite_articulations.data[candidate];
+    // One warp per articulation, so skipping a sleeping articulation is warp-uniform.
+    if (articulation_active.data[articulation] == 0) return;
     const int start = articulation_start.data[articulation];
     const int end = articulation_joint_end.data[articulation];
     for (int joint = start; joint < end; ++joint) {{
@@ -6633,6 +6759,7 @@ def _get_composite_inertia_warp_kernel(device_arch: str, warps_per_block: int) -
         joint_ancestor: wp.array[int],
         joint_child: wp.array[int],
         body_I_s: wp.array[wp.spatial_matrix],
+        articulation_active: wp.array[int],
         body_I_c: wp.array[wp.spatial_matrix],
     ): ...
 
@@ -6644,6 +6771,7 @@ def _get_composite_inertia_warp_kernel(device_arch: str, warps_per_block: int) -
         joint_ancestor: wp.array[int],
         joint_child: wp.array[int],
         body_I_s: wp.array[wp.spatial_matrix],
+        articulation_active: wp.array[int],
         body_I_c: wp.array[wp.spatial_matrix],
     ):
         block, _lane = wp.tid()
@@ -6656,6 +6784,7 @@ def _get_composite_inertia_warp_kernel(device_arch: str, warps_per_block: int) -
             joint_ancestor,
             joint_child,
             body_I_s,
+            articulation_active,
             body_I_c,
         )
 
@@ -7004,9 +7133,13 @@ def _get_triangular_solve_kernel(n_dofs: int, device_arch: str, tile_threads: in
         L_group: wp.array3d[float],  # [n_arts, n_dofs, n_dofs]
         tau_group: wp.array3d[float],  # [n_arts, n_dofs, 1]
         group_to_art: wp.array[int],
+        articulation_active: wp.array[int],
         qdd_group: wp.array3d[float],  # [n_arts, n_dofs, 1]
     ):
         idx = wp.tid()
+        # One articulation per block, so the early exit is uniform across the tile.
+        if articulation_active[group_to_art[idx]] == 0:
+            return
         L_tile = wp.tile_load(L_group[idx], shape=(TILE_DOF_LOCAL, TILE_DOF_LOCAL), bounds_check=False)
         tau_tile = wp.tile_load(tau_group[idx], shape=(TILE_DOF_LOCAL, 1), bounds_check=False)
 

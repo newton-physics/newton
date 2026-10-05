@@ -234,14 +234,16 @@ repository examples spend tuning effort, not a shared solver API.
        ``pgs_warmstart``, ``restitution_velocity_threshold``,
        ``contact_speculative_scale``, ``contact_gap_gate``,
        ``contact_torsion_radius``, ``contact_torsion_device``,
-       ``contact_compliance``, ``parallel_tree``.
+       ``contact_compliance``, ``parallel_tree``, ``enable_sleeping``,
+       ``sleep_linear_threshold``, ``sleep_angular_threshold``,
+       ``sleep_quiet_time``, ``sleep_skip_constraints``.
      - Experimental. The default ``pgs_mode="split"`` runs on CPU and CUDA and
        stores a dense ``dense_max_constraints`` squared Delassus matrix per world;
        ``pgs_mode="matrix_free"`` requires CUDA and is needed for joint velocity
        limits, ``drive_mode="physx_pgs"``, mimic joints, loop-closing joints,
        friction patches, contact regularization, velocity-only iterations, warm
-       start, restitution, contact torsion and contact compliance. Joint limits
-       are enforced only with
+       start, restitution, contact torsion, contact compliance and sleeping.
+       Joint limits are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``pgs_iterations`` reduce residual penetration and
@@ -295,7 +297,12 @@ repository examples spend tuning effort, not a shared solver API.
        (depending on the topology and the world count they can be faster or
        markedly slower);
        ``parallel_tree`` traverses independent tree branches in parallel and is
-       worth measuring on broad trees such as hands.
+       worth measuring on broad trees such as hands. The
+       experimental ``enable_sleeping`` freezes settled, supported islands of
+       articulations and skips their rows and dynamics until a force, state
+       change, contact with a moving body, reset or model notification wakes
+       them; it saves work on scenes where many objects rest, and costs a few
+       extra launches per step when nothing sleeps.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.
