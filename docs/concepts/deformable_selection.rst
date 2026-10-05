@@ -103,6 +103,19 @@ Setters change only the supplied model or state. Applications with two alternati
 states must reset both when both should retain the reset. Model writes change
 initial arrays, not states that were already created.
 
+For differently sized objects, use separate views for batched state access:
+
+.. code-block:: python
+
+    cables_short = DeformableCurveView(model, "cable_10_segments*")
+    cables_long = DeformableCurveView(model, "cable_30_segments*")
+    transforms_short = cables_short.get_body_transforms(state)
+    transforms_long = cables_long.get_body_transforms(state)
+
+These labels are an application naming choice, not a size filter. The view
+checks the actual element counts. A broader view can still expose raw ranges,
+but masking out a differently sized object does not make batched access valid.
+
 Update selected deformable objects
 ----------------------------------
 
@@ -140,6 +153,27 @@ range; booleans are rejected. Device indices must be one-dimensional ``int32``
 arrays on the view's device. Invalid device indices are ignored, so a
 fixed-capacity selector can use ``-1`` for unused entries. No source-row
 selection or compact-value mode is provided.
+
+For one matching object in every model world, environment IDs can be used as
+object indices. Verify that mapping once during setup. Then reset both active
+states from the same full buffers:
+
+.. code-block:: python
+
+    # Setup: surfaces selects exactly one named cloth in every world.
+    assert surfaces.worlds == list(range(model.world_count))
+    indices_world = wp.array([2, 0], dtype=wp.int32, device=model.device)
+    mask_cloths = wp.zeros(surfaces.count, dtype=bool, device=model.device)
+
+    # Runtime: indices_world may be filled on the device before each reset.
+    surfaces.set_mask_from_indices(mask_cloths, indices_world)
+    for state in (state_0, state_1):
+        surfaces.set_particle_positions(state, positions_default, mask=mask_cloths)
+        surfaces.set_particle_velocities(state, velocities_default, mask=mask_cloths)
+
+Missing matches, multiple objects in one world, and global objects invalidate
+this shortcut. Use selected-object indices or fill the object mask directly
+in those cases. A global-only view has world IDs of ``-1``.
 
 Construct views and warm up operations before CUDA graph capture. Preallocate
 independent values and masks. Setters allocate no temporary arrays with device
@@ -304,11 +338,12 @@ identical worlds, each with one robot, two cables, and one cloth:
 
 The method style is similar, but the layouts serve different needs:
 
-* ArticulationView keeps a world/articulation layout. It requires equal selected
-  articulation counts per world, compatible element counts, and regular spacing
-  in the model arrays. Deformable views use one flat row per selected deformable
-  object. This allows uneven world counts and irregular spacing without padding.
-  Batched reads still require equal counts of the requested element kind.
+* ArticulationView keeps a world/articulation layout. By default, it requires
+  compatible layouts for all selected data. ``allow_partial_layouts=True`` keeps
+  access to the data that can still be batched; it does not pad unsupported
+  layouts. Deformable views use one flat row per selected object, allowing
+  uneven world counts and irregular spacing without padding. Batched reads and
+  writes still require equal counts of the requested element kind.
 * Both views use Boolean masks with full-sized input arrays. Deformable masks
   have one entry per selected object, including when worlds have different
   object counts. A small reset still requires a full-view value buffer.
@@ -334,11 +369,8 @@ For example, these calls reset velocities in world 1 of a three-world model.
     robots.eval_fk(state, mask=world_mask)
 
     start, end = cables.deformable_object_ranges()[world_id]
-    mask_cables = wp.array(
-        [start <= i < end for i in range(cables.count)],
-        dtype=bool,
-        device=model.device,
-    )
+    mask_cables = wp.zeros(cables.count, dtype=bool, device=model.device)
+    cables.set_mask_from_indices(mask_cables, range(start, end))
     cable_velocities = wp.zeros(
         cables.get_body_velocities(state).shape,
         dtype=wp.spatial_vector,
@@ -351,3 +383,8 @@ The cable call writes segment velocities directly. These are different state
 fields, not interchangeable operations. Prepare buffers outside graph capture.
 Both examples target one state; applications with alternating states must manage
 resetting both.
+
+The deformable conversion helper maps a list of selected-object indices to
+mask membership. It is not the same as ArticulationView's
+``get_model_articulation_mask()``, which maps a view mask to model articulation
+IDs. Neither call changes the view's fixed membership.
