@@ -410,7 +410,7 @@ apply the appropriate rotation transforms:
 
 The up axis controls geometry conventions but does not constrain an explicit
 gravity vector. Omitting ``gravity`` defaults to ``-9.81`` along the configured
-up axis. Passing a scalar gravity value is deprecated.
+up axis.
 
 Color Space Handling
 --------------------
@@ -441,9 +441,9 @@ with :func:`newton.utils.color_srgb_to_linear` and
 Base-color textures stored on Newton models follow the same convention and are
 kept display/sRGB-encoded.
 
-Packed color and albedo outputs from :class:`newton.sensors.SensorTiledCamera`
+Packed color and albedo outputs from :class:`newton.sensors.SensorCamera`
 use display/sRGB encoding by default. Set
-``SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
+``SensorCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
 when linear RGB bytes are required for downstream processing. Clear colors are
 specified as display/sRGB packed RGBA values and are converted to linear when
 linear output is requested.

@@ -2209,7 +2209,9 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
 - ``"sticky"`` — match like ``"latest"``, then overwrite
   each matched contact's body-frame contact points (``point0``/``point1``),
   offsets (``offset0``/``offset1``), and world-frame ``normal`` with the
-  saved previous-frame values.  The remaining contact fields
+  saved previous-frame values when the contact is penetrating and the saved
+  witnesses remain within the position threshold of the fresh witnesses.
+  The remaining contact fields
   (``shape0``/``shape1``, ``margin0``/``margin1``) are either key-derived
   or per-shape constants and so are already identical for a matched
   contact — no extra state is kept for them.  Unmatched contacts pass
@@ -2264,8 +2266,9 @@ as motion on both sides of the contact, not just one.
 
 - ``contact_matching_pos_threshold`` — maximum world-space distance [m]
   between the previous and current contact midpoints for a match.  Contacts
-  that moved more than this between frames are considered broken.  Defaults
-  to ``0.0005`` m.
+  that moved more than this between frames are considered broken.  In sticky
+  mode, this also bounds each saved witness's distance from its fresh contact
+  point under the current body transforms.  Defaults to ``0.0005`` m.
 - ``contact_matching_normal_dot_threshold`` — minimum dot product between old
   and new contact normals.  Below this the contact is reported as broken even
   if the key and position match.
@@ -2275,10 +2278,13 @@ as motion on both sides of the contact, not just one.
 Replay of the matched previous-frame geometry happens after the deterministic
 sort, so ``match_index`` already addresses the final sorted layout.  Unmatched
 rows are left untouched, so new and threshold-broken contacts keep their fresh
-narrow-phase geometry.  Because
-matching requires both a position delta below the threshold and a normal dot
-product above the threshold, the saved values are guaranteed to be a close
-approximation of the current geometry and are safe to reuse.  The extra
+narrow-phase geometry.  Matched contacts also keep fresh geometry if the
+fresh contact is separated, or if either saved witness, transformed by the
+current body pose, lies farther than ``contact_matching_pos_threshold`` from
+its corresponding fresh witness.  This prevents a rotating surface from
+replaying a stale material point even when its geometric contact midpoint
+stays put.  These contacts retain their match indices and reports, and the
+fresh geometry becomes the saved history for the next frame.  The extra
 per-contact buffers (four ``vec3`` columns for the body-frame points and
 offsets) are only allocated when the mode is ``"sticky"``; ``"latest"`` and
 ``"disabled"`` pay zero additional memory and launch no additional kernels.
