@@ -1898,6 +1898,7 @@ class CollisionPipeline:
                 rigid_contact_max,
                 key_bit_count=self._contact_sort_sub_key_bits + 2 * self._contact_sort_shape_index_bits,
                 per_contact_shape_properties=per_contact_props,
+                allocate_simple_scratch=False,
                 device=device,
             )
         else:
@@ -2574,8 +2575,8 @@ class CollisionPipeline:
                 device=self.device,
             )
 
-        # Match the sorted stream against the previous frame, so every match
-        # index names a final row of this frame's buffer.
+        # Match the sorted stream against the previous frame: entry i belongs to
+        # final row i, and its value is a row of the previous sorted stream.
         if self._contact_matcher is not None:
             self._contact_matcher.match(
                 sort_keys=self._contact_sorter.sorted_keys_view,

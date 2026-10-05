@@ -830,7 +830,9 @@ class ContactMatcher:
         """Match current sorted contacts against last frame's sorted contacts.
 
         Must be called **after** :meth:`ContactSorter.sort_full`, on the final
-        contact stream, so each ``match_index`` entry names its final row.
+        contact stream. Entry ``i`` of ``match_index_out`` belongs to current
+        sorted row ``i``; a nonnegative value is the matching row of the
+        previous frame's sorted stream.
 
         Distance is measured between world-space contact midpoints
         (``0.5 * (world(point0) + world(point1))``) so the metric is symmetric

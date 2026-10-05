@@ -11,6 +11,7 @@ import warp as wp
 import newton
 from newton._src.geometry.contact_data import CONTACT_SORT_CONVEX_SUB_KEY_BITS, CONTACT_SORT_SUB_KEY_BITS
 from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND
+from newton._src.geometry.contact_sort import ContactSorter
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -838,6 +839,63 @@ def test_prev_count_clamped_on_overflow(test, device):
         match_idx = contacts.rigid_contact_match_index.numpy()
         test.assertTrue(np.all(match_idx < capacity), f"Match indices must address stored rows: {match_idx}")
         test.assertTrue(np.all(match_idx >= MATCH_BROKEN))
+        # Drain the expected device printf here, not into the next test's output check.
+        wp.synchronize_device(device)
+
+
+def test_pipeline_sorter_omits_unused_simple_scratch(test, device):
+    """Avoid simple-layout scratch while preserving full-layout sorting and matching."""
+    with wp.ScopedDevice(device):
+        model, state = _build_simple_scene(device)
+        for mode in ("disabled", "latest", "sticky"):
+            pipeline = newton.CollisionPipeline(
+                model, broad_phase="nxn", deterministic=True, contact_matching=mode, rigid_contact_max=64
+            )
+            sorter = pipeline._contact_sorter
+            unused_scratch = (
+                sorter._simple_pair_buf,
+                sorter._simple_position_buf,
+                sorter._simple_normal_buf,
+                sorter._simple_penetration_buf,
+                sorter._simple_tangent_buf,
+            )
+            test.assertEqual(sum(array.capacity for array in unused_scratch), 0)
+            contacts = pipeline.contacts()
+            count = _collide_once(pipeline, state, contacts)
+            test.assertGreater(count, 0)
+            test.assertEqual(_collide_once(pipeline, state, contacts), count)
+            if mode != "disabled":
+                np.testing.assert_array_equal(
+                    contacts.rigid_contact_match_index.numpy()[:count], np.arange(count, dtype=np.int32)
+                )
+
+
+def test_sorter_simple_layout_remains_available(test, device):
+    """Keep default simple sorting available and reject a full-only sorter safely."""
+    with wp.ScopedDevice(device):
+        capacity = 8
+        keys = wp.array((3, 1, 2, 0, 0, 0, 0, 0), dtype=wp.int64)
+        count = wp.array((3,), dtype=wp.int32)
+        pairs = wp.array(((3, 4), (1, 2), (2, 3)) + ((0, 0),) * 5, dtype=wp.vec2i)
+        positions = wp.array(
+            ((3.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)) + ((0.0, 0.0, 0.0),) * 5, dtype=wp.vec3
+        )
+        normals = wp.zeros(capacity, dtype=wp.vec3)
+        penetration = wp.array((3.0, 1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0), dtype=float)
+        kwargs = {
+            "contact_pair": pairs,
+            "contact_position": positions,
+            "contact_normal": normals,
+            "contact_penetration": penetration,
+        }
+        full_only = ContactSorter(capacity, allocate_simple_scratch=False)
+        with test.assertRaisesRegex(ValueError, "allocate_simple_scratch=True"):
+            full_only.sort_simple(keys, count, **kwargs)
+        sorter = ContactSorter(capacity)
+        sorter.sort_simple(keys, count, **kwargs)
+        np.testing.assert_array_equal(pairs.numpy()[:3], ((1, 2), (2, 3), (3, 4)))
+        np.testing.assert_array_equal(positions.numpy()[:3, 0], (1.0, 2.0, 3.0))
+        np.testing.assert_array_equal(penetration.numpy()[:3], (1.0, 2.0, 3.0))
 
 
 def test_invalid_mode_raises(test, device):
@@ -1277,6 +1335,18 @@ add_function_test(
     check_output=False,
 )
 add_function_test(TestContactMatching, "test_invalid_mode_raises", test_invalid_mode_raises, devices=devices)
+add_function_test(
+    TestContactMatching,
+    "test_pipeline_sorter_omits_unused_simple_scratch",
+    test_pipeline_sorter_omits_unused_simple_scratch,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatching,
+    "test_sorter_simple_layout_remains_available",
+    test_sorter_simple_layout_remains_available,
+    devices=devices,
+)
 add_function_test(
     TestContactMatching, "test_contact_report_requires_matching", test_contact_report_requires_matching, devices=devices
 )
