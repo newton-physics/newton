@@ -20,7 +20,7 @@ from newton.viewer import ViewerRTX
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestViewerRTXGetFrame(unittest.TestCase):
     def test_headless_frame_capture(self):
-        """Capture real RTX frames and keep deprecated screenshot saving functional."""
+        """Capture the latest moving scene in sync and async modes and save screenshots."""
         if importlib.util.find_spec("ovrtx") is None:
             self.skipTest("Requires ovrtx")
         if not wp.is_cuda_available():
@@ -39,7 +39,8 @@ class TestViewerRTXGetFrame(unittest.TestCase):
                 try:
                     viewer.set_model(model)
                     viewer.set_camera(pos=wp.vec3(2.0, 0.0, 0.0), pitch=0.0, yaw=180.0)
-                    for frame_index in range(3):
+                    for frame_index, y in enumerate((-0.5, 0.5, -0.5)):
+                        state.body_q.assign([wp.transform((0.0, y, 0.0), wp.quat_identity())])
                         viewer.begin_frame(frame_index / 60)
                         viewer.log_state(state)
                         viewer.end_frame()
@@ -48,7 +49,11 @@ class TestViewerRTXGetFrame(unittest.TestCase):
                         self.assertEqual(frame.dtype, wp.uint8)
                         self.assertEqual(frame.device, model.device)
                         rgb = frame.numpy()
-                        self.assertGreater(np.ptp(rgb), 0)
+                        red_pixels = (rgb[:, :, 0] > 32) & (rgb[:, :, 1] < rgb[:, :, 0] // 2)
+                        _, columns = np.nonzero(red_pixels)
+                        self.assertGreater(columns.size, 0)
+                        # The box must appear on the side logged in this frame.
+                        self.assertGreater(y * (columns.mean() - 32), 0)
 
                     target = wp.empty_like(frame)
                     self.assertIs(viewer.get_frame(target_image=target), target)

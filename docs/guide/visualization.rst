@@ -26,11 +26,11 @@ current viewer session, or a persistent artifact:
       - Dependencies
     * - :class:`~newton.viewer.ViewerGL`
       - Interactive development and live debugging
-      - Real-time display; frame capture in headless mode
+      - Real-time display; frame capture
       - pyglet, imgui_bundle
     * - :class:`~newton.viewer.ViewerRTX`
       - Path-traced visualization on NVIDIA GPUs
-      - Real-time display; frame capture in headless mode
+      - Real-time display; frame capture
       - ovrtx, usd-core, pyglet (``uv sync --extra rtx``)
     * - :class:`~newton.viewer.ViewerFile`
       - Persistent state-snapshot recording and visual playback
@@ -208,8 +208,10 @@ Use an image library to save the captured pixels, for example:
 UI overlays are excluded by default. ``ViewerGL`` supports
 ``get_frame(render_ui=True)`` to include them; ``ViewerRTX`` does not support
 that option. RTX capture uses the fixed render resolution and reads through
-CPU memory. With asynchronous rendering, it returns the last completed frame,
-waiting for the pending render only when no completed frame is available.
+CPU memory. With asynchronous rendering, ``get_frame()`` waits for the render
+submitted by the latest ``end_frame()`` so each captured image contains the
+latest logged state. Capturing a frame therefore blocks until that render
+completes.
 
 .. note::
 

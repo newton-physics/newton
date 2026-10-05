@@ -2042,6 +2042,7 @@ void main() {
         with wp.ScopedTimer("ViewerRTX::swap_buffers", active=PROFILE_ENABLED, use_nvtx=True):
             self._window.flip()
 
+    # Keep optional arguments positional to match ViewerGL.get_frame().
     def get_frame(
         self, target_image: wp.array3d[wp.uint8] | None = None, render_ui: bool = False
     ) -> wp.array3d[wp.uint8]:
@@ -2050,9 +2051,9 @@ void main() {
         Like :meth:`ViewerGL.get_frame`, this returns a Warp array on the
         viewer device. Call ``.numpy()`` on the result for a NumPy array.
         Works in headless mode and reads the RTX render output through CPU
-        memory. With asynchronous rendering, this returns the last completed
-        frame, waiting for the pending render only if no completed frame is
-        available. Call after :meth:`end_frame`.
+        memory. Call after :meth:`end_frame`. With asynchronous rendering,
+        capture waits for the render submitted by that call so the image
+        contains the latest logged state.
 
         Args:
             target_image: Optional pre-allocated Warp array on the viewer
@@ -2085,6 +2086,10 @@ void main() {
                 raise ValueError(f"The dtype of `target_image` must be wp.uint8, got {target_image.dtype}")
             if target_image.device != self.device:
                 raise ValueError(f"The device of `target_image` must be {self.device}, got {target_image.device}")
+
+        # Async presentation retains the previous frame; capture needs the latest.
+        if self._render_result is not None:
+            self._render_products = self._render_result.wait().fetch()
 
         pixels = self._capture_screenshot_pixels()
         target_image.assign(np.ascontiguousarray(pixels[:, :, :3]))
