@@ -162,7 +162,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(set(expected.actuator_entries), set(actual.actuator_entries))
         for key, expected_entry in expected.actuator_entries.items():
             actual_entry = actual.actuator_entries[key]
-            for field in ("indices", "pos_indices", "drive_args", "delay_args", "clamping_args"):
+            for field in ("indices", "pos_indices", "drive_args", "input_processor_args", "clamping_args"):
                 self.assertEqual(getattr(expected_entry, field), getattr(actual_entry, field))
 
     def test_replicate_matches_add_world_loop(self):

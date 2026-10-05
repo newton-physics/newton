@@ -524,6 +524,18 @@ class TestDrivePID(unittest.TestCase):
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
 
 
+def _delay_of(actuator):
+    """Return the actuator's InputProcessorDelay, or None."""
+    return next((p for p in actuator.input_processors if isinstance(p, InputProcessorDelay)), None)
+
+
+def _delay_state_of(actuator_state):
+    """Return the actuator state's InputProcessorDelay.State, or None."""
+    return next(
+        (s for s in actuator_state.input_processor_states or () if isinstance(s, InputProcessorDelay.State)), None
+    )
+
+
 @unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
 class TestDriveNeuralMLP(unittest.TestCase):
     """DriveNeuralMLP - load via model_path, call compute() directly."""
@@ -1464,7 +1476,7 @@ class TestDelay(unittest.TestCase):
 
             out_pos, _out_vel, _out_act = delay.get_delayed_targets(tgt_pos, tgt_vel, None, indices, indices, state_0)
             read_history.append(out_pos.numpy()[0])
-            delay.update_state(tgt_pos, tgt_vel, None, indices, indices, state_0, state_1)
+            delay._push_targets(tgt_pos, tgt_vel, None, indices, indices, state_0, state_1)
             state_0, state_1 = state_1, state_0
 
         self.assertAlmostEqual(read_history[0], 10.0, places=4, msg="step 0: empty buffer -> current target")
@@ -1496,7 +1508,7 @@ class TestDelay(unittest.TestCase):
             result = out_pos.numpy()
             history_dof0.append(result[0])
             history_dof1.append(result[1])
-            delay.update_state(tgt_pos, tgt_vel, None, indices, indices, state_0, state_1)
+            delay._push_targets(tgt_pos, tgt_vel, None, indices, indices, state_0, state_1)
             state_0, state_1 = state_1, state_0
 
         # DOF 0 (delay=0): always sees current target
@@ -2691,7 +2703,7 @@ class TestActuatorStep(unittest.TestCase):
             index=dof_a,
             kp=kp,
             kd=kd,
-            delay_steps=delay_a,
+            input_processors=[(InputProcessorDelay, {"delay_steps": delay_a})],
             clamping=[(ClampingDCMotor, dc_args)],
         )
         template.add_actuator(
@@ -2699,7 +2711,7 @@ class TestActuatorStep(unittest.TestCase):
             index=dof_b,
             kp=kp,
             kd=kd,
-            delay_steps=delay_b,
+            input_processors=[(InputProcessorDelay, {"delay_steps": delay_b})],
             clamping=[(ClampingDCMotor, dc_args)],
         )
 
@@ -2712,7 +2724,7 @@ class TestActuatorStep(unittest.TestCase):
         n = actuator.num_actuators
         self.assertEqual(n, 2 * num_envs)
 
-        delays_np = actuator.delay.delay_steps.numpy()
+        delays_np = _delay_of(actuator).delay_steps.numpy()
         expected_delays = [delay_a, delay_b] * num_envs
         np.testing.assert_array_equal(delays_np, expected_delays)
 
@@ -2764,10 +2776,10 @@ class TestActuatorStep(unittest.TestCase):
                     f"delayed_tgt={delayed_tgt} raw={raw} expected={expected}",
                 )
 
-        ds = state_0.delay_state
+        ds = _delay_state_of(state_0)
         np.testing.assert_array_equal(
             ds.num_pushes.numpy(),
-            [min(5, actuator.delay.buf_depth)] * n,
+            [min(5, _delay_of(actuator).buf_depth)] * n,
             err_msg="num_pushes should be clamped to buf_depth",
         )
 
@@ -3509,7 +3521,7 @@ class TestActuatorBuilder(unittest.TestCase):
 
         self.assertEqual(len(model.actuators), 2)
         clamped = next(a for a in model.actuators if a.clamping)
-        delayed = next(a for a in model.actuators if a.delay is not None)
+        delayed = next(a for a in model.actuators if _delay_of(a) is not None)
 
         self.assertEqual(clamped.num_actuators, 1)
         self.assertAlmostEqual(clamped.drive.kp.numpy()[0], 100.0, places=3)
@@ -3520,8 +3532,8 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertEqual(delayed.num_actuators, 1)
         self.assertAlmostEqual(delayed.drive.kp.numpy()[0], 200.0, places=3)
         self.assertAlmostEqual(delayed.drive.kd.numpy()[0], 20.0, places=3)
-        np.testing.assert_array_equal(delayed.delay.delay_steps.numpy(), [5])
-        self.assertEqual(delayed.delay.buf_depth, 5)
+        np.testing.assert_array_equal(_delay_of(delayed).delay_steps.numpy(), [5])
+        self.assertEqual(_delay_of(delayed).buf_depth, 5)
 
         stage = Usd.Stage.Open(usd_path)
         parsed = parse_actuator_prim(stage.GetPrimAtPath("/World/Robot/Joint1Actuator"))
@@ -3595,14 +3607,16 @@ class TestActuatorBuilder(unittest.TestCase):
                 (ClampingDCMotor, {"saturation_effort": 80.0, "velocity_limit": 15.0, "max_motor_effort": 200.0})
             ],
         )
-        builder.add_actuator(DrivePD, index=dofs[2], kp=150.0, delay_steps=4)
+        builder.add_actuator(
+            DrivePD, index=dofs[2], kp=150.0, input_processors=[(InputProcessorDelay, {"delay_steps": 4})]
+        )
 
         model = builder.finalize()
         self.assertEqual(len(model.actuators), 3)
 
-        pd_plain = next(a for a in model.actuators if isinstance(a.drive, DrivePD) and a.delay is None)
+        pd_plain = next(a for a in model.actuators if isinstance(a.drive, DrivePD) and _delay_of(a) is None)
         pid_act = next(a for a in model.actuators if isinstance(a.drive, DrivePID))
-        pd_delay = next(a for a in model.actuators if isinstance(a.drive, DrivePD) and a.delay is not None)
+        pd_delay = next(a for a in model.actuators if isinstance(a.drive, DrivePD) and _delay_of(a) is not None)
 
         self.assertEqual(pd_plain.num_actuators, 1)
         np.testing.assert_array_almost_equal(pd_plain.drive.kp.numpy(), [50.0])
@@ -3624,9 +3638,9 @@ class TestActuatorBuilder(unittest.TestCase):
 
         self.assertEqual(pd_delay.num_actuators, 1)
         np.testing.assert_array_almost_equal(pd_delay.drive.kp.numpy(), [150.0])
-        np.testing.assert_array_equal(pd_delay.delay.delay_steps.numpy(), [4])
-        self.assertEqual(pd_delay.delay.buf_depth, 4)
-        ds = pd_delay.state().delay_state
+        np.testing.assert_array_equal(_delay_of(pd_delay).delay_steps.numpy(), [4])
+        self.assertEqual(_delay_of(pd_delay).buf_depth, 4)
+        ds = _delay_state_of(pd_delay.state())
         self.assertEqual(ds.buffer_pos.shape, (4, 1))
         np.testing.assert_array_equal(ds.num_pushes.numpy(), [0])
 
@@ -3653,10 +3667,20 @@ class TestActuatorBuilder(unittest.TestCase):
         dof2 = template.joint_qd_start[j2]
 
         template.add_actuator(
-            DrivePD, index=dof1, kp=100.0, kd=10.0, pos_index=template.joint_q_start[j1], delay_steps=2
+            DrivePD,
+            index=dof1,
+            kp=100.0,
+            kd=10.0,
+            pos_index=template.joint_q_start[j1],
+            input_processors=[(InputProcessorDelay, {"delay_steps": 2})],
         )
         template.add_actuator(
-            DrivePD, index=dof2, kp=200.0, kd=20.0, pos_index=template.joint_q_start[j2], delay_steps=3
+            DrivePD,
+            index=dof2,
+            kp=200.0,
+            kd=20.0,
+            pos_index=template.joint_q_start[j2],
+            input_processors=[(InputProcessorDelay, {"delay_steps": 3})],
         )
 
         builder = newton.ModelBuilder()
@@ -3678,12 +3702,12 @@ class TestActuatorBuilder(unittest.TestCase):
         np.testing.assert_array_almost_equal(act.drive.kp.numpy(), [100.0, 200.0] * num_envs)
         np.testing.assert_array_almost_equal(act.drive.kd.numpy(), [10.0, 20.0] * num_envs)
 
-        np.testing.assert_array_equal(act.delay.delay_steps.numpy(), [2, 3] * num_envs)
-        self.assertEqual(act.delay.buf_depth, 3)
+        np.testing.assert_array_equal(_delay_of(act).delay_steps.numpy(), [2, 3] * num_envs)
+        self.assertEqual(_delay_of(act).buf_depth, 3)
 
         act_state = act.state()
-        self.assertEqual(act_state.delay_state.buffer_pos.shape, (3, n))
-        np.testing.assert_array_equal(act_state.delay_state.num_pushes.numpy(), [0] * n)
+        self.assertEqual(_delay_state_of(act_state).buffer_pos.shape, (3, n))
+        np.testing.assert_array_equal(_delay_state_of(act_state).num_pushes.numpy(), [0] * n)
 
 
 # ---------------------------------------------------------------------------
@@ -3993,7 +4017,7 @@ class TestStateReset(unittest.TestCase):
         for step in range(3):
             tgt = wp.array([float(step + 1) * 10] * n, dtype=wp.float32, device=device)
             vel = wp.zeros(n, dtype=wp.float32, device=device)
-            delay.update_state(tgt, vel, None, indices, indices, state_0, state_1)
+            delay._push_targets(tgt, vel, None, indices, indices, state_0, state_1)
             state_0, state_1 = state_1, state_0
 
         pushes_before = state_0.num_pushes.numpy().copy()
@@ -4029,7 +4053,7 @@ class TestStateReset(unittest.TestCase):
         for step in range(4):
             tgt = wp.array([float(step + 1)] * n, dtype=wp.float32, device=device)
             vel = wp.zeros(n, dtype=wp.float32, device=device)
-            delay.update_state(tgt, vel, None, indices, indices, state, state_tmp)
+            delay._push_targets(tgt, vel, None, indices, indices, state, state_tmp)
             state, state_tmp = state_tmp, state
 
         self.assertTrue(any(p > 0 for p in state.num_pushes.numpy()))
@@ -4126,7 +4150,9 @@ class TestStateReset(unittest.TestCase):
         joint = template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
         template.add_articulation([joint])
         dof = template.joint_qd_start[joint]
-        template.add_actuator(DrivePID, index=dof, kp=50.0, ki=10.0, kd=5.0, delay_steps=2)
+        template.add_actuator(
+            DrivePID, index=dof, kp=50.0, ki=10.0, kd=5.0, input_processors=[(InputProcessorDelay, {"delay_steps": 2})]
+        )
 
         builder = newton.ModelBuilder()
         builder.replicate(template, num_envs)
@@ -4148,14 +4174,14 @@ class TestStateReset(unittest.TestCase):
             actuator.step(state, control, state_0, state_1, 0.01)
             state_0, state_1 = state_1, state_0
 
-        self.assertTrue(all(p > 0 for p in state_0.delay_state.num_pushes.numpy()))
+        self.assertTrue(all(p > 0 for p in _delay_state_of(state_0).num_pushes.numpy()))
         self.assertTrue(all(v > 0 for v in state_0.drive_state.integral.numpy()))
 
         mask = wp.array([True, False], dtype=wp.bool, device=device)
         state_0.reset(mask)
 
-        self.assertEqual(state_0.delay_state.num_pushes.numpy()[0], 0, "env 0 delay should be reset")
-        self.assertGreater(state_0.delay_state.num_pushes.numpy()[1], 0, "env 1 delay should be untouched")
+        self.assertEqual(_delay_state_of(state_0).num_pushes.numpy()[0], 0, "env 0 delay should be reset")
+        self.assertGreater(_delay_state_of(state_0).num_pushes.numpy()[1], 0, "env 1 delay should be untouched")
         self.assertAlmostEqual(
             state_0.drive_state.integral.numpy()[0], 0.0, places=6, msg="env 0 integral should be reset"
         )
@@ -4208,7 +4234,7 @@ class TestDelayGraphCapture(unittest.TestCase):
             index=dof,
             kp=200.0,
             kd=10.0,
-            delay_steps=max_delay,
+            input_processors=[(InputProcessorDelay, {"delay_steps": max_delay})],
             clamping=[(ClampingMaxEffort, {"max_effort": 500.0})],
         )
         model = builder.finalize()
@@ -4297,20 +4323,27 @@ class TestActuatorStateAssign(unittest.TestCase):
         link = builder.add_link()
         joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
         builder.add_articulation([joint])
-        builder.add_actuator(DrivePID, index=builder.joint_qd_start[joint], kp=0.0, ki=1.0, kd=0.0, delay_steps=2)
+        builder.add_actuator(
+            DrivePID,
+            index=builder.joint_qd_start[joint],
+            kp=0.0,
+            ki=1.0,
+            kd=0.0,
+            input_processors=[(InputProcessorDelay, {"delay_steps": 2})],
+        )
         actuator = builder.finalize(device=device).actuators[0]
         current, advanced = actuator.state(), actuator.state()
 
         delay_fields = ("buffer_pos", "buffer_vel", "buffer_act", "num_pushes", "write_idx")
         for value, name in enumerate(delay_fields, start=1):
-            getattr(advanced.delay_state, name).fill_(value)
+            getattr(_delay_state_of(advanced), name).fill_(value)
         advanced.drive_state.integral.fill_(6.0)
 
         current.assign(advanced)
 
         for value, name in enumerate(delay_fields, start=1):
             with self.subTest(name=name):
-                np.testing.assert_array_equal(getattr(current.delay_state, name).numpy(), value)
+                np.testing.assert_array_equal(getattr(_delay_state_of(current), name).numpy(), value)
         np.testing.assert_array_equal(current.drive_state.integral.numpy(), 6.0)
 
     def test_assign_delegates_to_custom_drive_state(self):
