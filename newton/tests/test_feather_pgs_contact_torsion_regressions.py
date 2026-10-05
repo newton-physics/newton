@@ -11,7 +11,7 @@ import warp as wp
 import newton
 from newton import GeoType
 from newton._src.solvers.feather_pgs.contact_torsion import _contact_groups
-from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_TORSION
+from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_JOINT_TARGET, PGS_CONSTRAINT_TYPE_TORSION
 from newton.solvers import SolverFeatherPGS
 from newton.tests.test_feather_pgs_contact_torsion import fixture
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
@@ -136,6 +136,56 @@ def test_torsion_keeps_joint_velocity_limits(test, device):
                 test.assertLess(float(qd[11]), 9.0)
 
 
+def test_torsion_keeps_fused_drive_velocity_limits(test, device):
+    """Let the fused drive-row velocity clamp have the last word over the spin rows of each sweep."""
+    limit = 0.1
+    passes = ((1, 0), (4, 0), (1, 2))
+    preparations = ("host", "device", "graph")
+    limits = np.full(12, np.inf, dtype=np.float32)
+    limits[5] = limit
+    damping = np.zeros(12, dtype=np.float32)
+    damping[5] = 1.0e-3
+    for (iterations, velocity_iterations), preparation, radius in itertools.product(passes, preparations, (0.0, 1.0)):
+        with test.subTest(
+            iterations=iterations, velocity_iterations=velocity_iterations, preparation=preparation, radius=radius
+        ):
+            _, solver, model, initial, contacts = fixture(
+                radius,
+                device=device,
+                center_only=True,
+                spin=0.0,
+                model_arrays={"joint_velocity_limit": limits, "joint_target_kd": damping},
+                drive_mode="physx_pgs",
+                fuse_joint_velocity_limits=True,
+                pgs_iterations=iterations,
+                pgs_velocity_iterations=velocity_iterations,
+                contact_torsion_device=preparation != "host",
+            )
+            test.assertTrue(solver.fuse_joint_velocity_limits)
+            # Only the second pad spins, so any DOF 5 motion is transferred through the contact.
+            velocity = initial.joint_qd.numpy()
+            velocity[5], velocity[11] = 0.0, 10.0
+            initial.joint_qd.assign(velocity)
+            newton.eval_fk(model, initial.joint_q, initial.joint_qd, initial)
+            output = model.state()
+            if preparation == "graph":
+                solver.prepare_contact_torsion_capture(initial, output)
+                with wp.ScopedCapture(device=model.device) as capture:
+                    solver.step(initial, output, model.control(), contacts, 0.0025)
+                wp.capture_launch(capture.graph)
+                solver.validate_contact_torsion()
+            else:
+                solver.step(initial, output, model.control(), contacts, 0.0025)
+            count = int(solver.constraint_count.numpy()[0])
+            row_type = solver.row_type.numpy()[0, :count]
+            test.assertEqual(np.count_nonzero(row_type == PGS_CONSTRAINT_TYPE_JOINT_TARGET), 1)
+            test.assertEqual(np.count_nonzero(row_type == PGS_CONSTRAINT_TYPE_TORSION), int(radius > 0.0))
+            qd = output.joint_qd.numpy()
+            test.assertLessEqual(abs(float(qd[5])), limit * (1.0 + 1e-5))
+            if radius > 0.0:
+                test.assertLess(float(qd[11]), 9.0)
+
+
 def test_torsion_keeps_free_body_velocity_limits(test, device):
     """Let the free-body velocity-limit rows have the last word over a mixed contact's spin row."""
     limit = 0.1
@@ -256,6 +306,7 @@ for _fn in (
     test_torsion_uses_cfm_floor,
     test_torsion_respects_relaxation,
     test_torsion_keeps_joint_velocity_limits,
+    test_torsion_keeps_fused_drive_velocity_limits,
     test_torsion_keeps_free_body_velocity_limits,
     test_contact_row_loss_fails_without_diagnostics,
     test_selected_unsupported_shape_fails_at_construction,
