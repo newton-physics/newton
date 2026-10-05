@@ -282,9 +282,9 @@ repository examples spend tuning effort, not a shared solver API.
        with another world's bodies cannot be solved and are flagged the same
        way; the constructor warns when a model allows them. Per-body angular
        damping and free-body velocity bounds are model attributes registered by
-       ``register_custom_attributes()``, which also registers the MuJoCo joint
-       spring attributes (``stiffness``, ``springref`` and ``ref``) that FeatherPGS
-       applies to PRISMATIC and REVOLUTE joints. Mimic joints and loop-closing BALL
+       ``register_custom_attributes()``. Passive joint springs are not applied
+       yet; a model with nonzero MuJoCo spring stiffness warns at construction.
+       Mimic joints and loop-closing BALL
        joints are bilateral rows that converge with ``pgs_iterations`` like the
        other rows; ``enable_bilateral_preelimination`` eliminates them before
        the sweep with a regularized Schur complement, which keeps closed chains

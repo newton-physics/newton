@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import dataclasses
 import math
 import re
 import warnings
@@ -112,7 +111,6 @@ from .kernels import (
     refresh_masked_body_inertia,
     remove_free_root_transport_from_qdd,
     reset_row_warmstart,
-    resolve_passive_joint_springs,
     rhs_accum_world_par_art,
     scatter_augmented_drive_dof_K,
     scatter_qdd_from_groups,
@@ -150,9 +148,6 @@ _CONTACT_BUILD_THREAD_CAP = 65536
 _CONTACT_JACOBIAN_WORKER_CAP = 4096
 _CONTACT_JACOBIAN_MAX_DOF = 10
 _JOINT_LIMIT_WARPS_PER_BLOCK = 4
-# MuJoCo joint-spring attributes read by FeatherPGS (see register_custom_attributes).
-_PASSIVE_SPRING_ATTRIBUTES = ("mujoco:dof_passive_stiffness", "mujoco:dof_springref", "mujoco:dof_ref")
-_SPRING_JOINT_TYPES = (int(JointType.PRISMATIC), int(JointType.REVOLUTE))
 # Warps (articulations) per block of the sparse mass-factor kernel, bounded by shared memory.
 _SPARSE_FACTOR_WARPS_PER_BLOCK = 4
 # Warps (articulations) per block of the warp-parallel composite-inertia reduction.
@@ -996,13 +991,6 @@ class SolverFeatherPGS(SolverBase):
       update and clamps its impulse, which bounds the complete reaction.
       :attr:`~newton.Model.joint_armature` and :attr:`~newton.Model.joint_damping` are
       applied.
-    - Passive joint springs of PRISMATIC and REVOLUTE DOFs from the MuJoCo spring
-      attributes ``mujoco:dof_passive_stiffness``, ``mujoco:dof_springref`` and
-      ``mujoco:dof_ref`` (MJCF ``stiffness`` / ``springref`` / ``ref``, USD
-      ``mjc:stiffness`` / ``mjc:springref`` / ``mjc:ref``), applied explicitly as
-      ``stiffness * (springref - ref - q)``. :meth:`register_custom_attributes` registers
-      them. Springs on D6 and BALL DOFs are not supported: they are ignored with a
-      warning at construction.
     - Joint limits: with ``enable_joint_limits=True``, every finite
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
@@ -1163,17 +1151,9 @@ class SolverFeatherPGS(SolverBase):
 
         Models built without these attributes use the defaults.
 
-        It also registers the passive joint-spring attributes that FeatherPGS shares with
-        :class:`~newton.solvers.SolverMuJoCo`, with the same definitions and importer unit
-        handling: ``mujoco:dof_passive_stiffness`` [N/m or N·m/rad], ``mujoco:dof_springref``
-        and ``mujoco:dof_ref`` [m or rad] (MJCF ``stiffness`` / ``springref`` / ``ref``, USD
-        ``mjc:stiffness`` / ``mjc:springref`` / ``mjc:ref``). Registering the attributes of both
-        solvers on one builder is allowed.
-
         Args:
             builder: Model builder to register the attributes with.
         """
-        cls._register_passive_spring_attributes(builder)
 
         def _angular_velocity_deg_to_rad(value, _context):
             if value is None:
@@ -1224,16 +1204,6 @@ class SolverFeatherPGS(SolverBase):
                 usd_attribute_name="physxRigidBody:maxDepenetrationVelocity",
             )
         )
-
-    @staticmethod
-    def _register_passive_spring_attributes(builder: ModelBuilder) -> None:
-        """Register the MuJoCo joint-spring attributes with SolverMuJoCo's own definitions."""
-        from ..mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
-
-        definitions = ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(definitions)
-        for key in _PASSIVE_SPRING_ATTRIBUTES:
-            builder.add_custom_attribute(dataclasses.replace(definitions.custom_attributes[key], values=None))
 
     def __init__(
         self,
@@ -1543,7 +1513,7 @@ class SolverFeatherPGS(SolverBase):
                 support or row capacity, a :meth:`reset` of its world, or
                 :meth:`notify_model_changed` for properties of its joints, DOFs, bodies or
                 shapes (other notifications and changes to static or kinematic owners wake
-                every island). Driven articulations (nonzero drive gains or passive springs)
+                every island). Driven articulations (nonzero drive gains)
                 stay awake. Sleeping is configured at construction; rebuild captured graphs
                 to change it. Construction raises :class:`ValueError` with ``pgs_warmstart``
                 or ``pgs_velocity_iterations``, or for a model without articulations;
@@ -2036,9 +2006,9 @@ class SolverFeatherPGS(SolverBase):
         Joint (frames), joint DOF (armature, drive gains), body (kinematic flags) and
         inertial changes request a mass-matrix refresh of every articulation on the next
         step, independent of ``update_mass_matrix_interval``. Body flags (kinematic
-        membership), joint DOF properties (armature, damping, the passive spring attributes)
-        and shape friction and restitution coefficients are re-read. Other model data, such
-        as gravity, limits and shape transforms, is read every step. A kinematic free
+        membership), joint DOF properties (armature, damping) and shape friction and
+        restitution coefficients are re-read. Other model data, such as gravity, limits and
+        shape transforms, is read every step. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
         equality rows: enabling one that is not converted to a Newton loop joint or mimic
@@ -2063,7 +2033,6 @@ class SolverFeatherPGS(SolverBase):
             self._mass_update_requested.fill_(1)
         if flags & ModelFlags.JOINT_DOF_PROPERTIES:
             self._refresh_passive_joint_damping()
-            self._refresh_passive_springs()
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_shape_materials()
             self._check_split_restitution()
@@ -2862,39 +2831,24 @@ class SolverFeatherPGS(SolverBase):
             )
 
     def _setup_passive_joint_forces(self, model) -> None:
-        """Select the passive spring and damping arrays applied in the inverse-dynamics pass.
+        """Select the passive damping of the inverse-dynamics pass; its passive springs are zero.
 
-        Springs come from the MuJoCo spring attributes (see :meth:`register_custom_attributes`);
-        a model without ``mujoco:dof_passive_stiffness`` has none. The resolved arrays have
-        fixed addresses, so captured graphs see later :meth:`notify_model_changed` updates.
+        Passive joint springs are not applied yet (newton-physics/newton#4516): the spring
+        buffers stay zero, and nonzero ``mujoco:dof_passive_stiffness`` warns at construction.
         """
         n_dofs = max(int(model.joint_dof_count), 1)
-        zeros = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
-        self._passive_joint_damping = wp.zeros_like(zeros)
+        self._passive_joint_damping = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._refresh_passive_joint_damping()
-        stiffness = getattr(getattr(model, "mujoco", None), "dof_passive_stiffness", None)
-        self._spring_dof_supported = None
-        if stiffness is None or not model.joint_dof_count:
-            self._passive_spring_stiffness = zeros
-            self._passive_spring_ref = zeros
-            return
-
-        joint_type = model.joint_type.numpy()
-        dof_joint = np.repeat(np.arange(model.joint_count), np.diff(model.joint_qd_start.numpy()))
-        supported = np.isin(joint_type[dof_joint], _SPRING_JOINT_TYPES)
-        unsupported = (stiffness.numpy() != 0.0) & ~supported
-        if np.any(unsupported):
-            names = ", ".join(sorted({JointType(int(t)).name for t in joint_type[dof_joint[unsupported]]}))
-            warnings.warn(
-                f"SolverFeatherPGS ignores the passive springs (nonzero mujoco:dof_passive_stiffness) of "
-                f"{int(unsupported.sum())} DOF(s) of {names} joints; only PRISMATIC and REVOLUTE joint "
-                "springs are supported.",
-                stacklevel=3,
-            )
-        self._spring_dof_supported = wp.array(supported.astype(np.int32), dtype=wp.int32, device=model.device)
         self._passive_spring_stiffness = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._passive_spring_ref = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
-        self._refresh_passive_springs()
+        stiffness = getattr(getattr(model, "mujoco", None), "dof_passive_stiffness", None)
+        if stiffness is not None and model.joint_dof_count and np.any(stiffness.numpy() != 0.0):
+            warnings.warn(
+                "SolverFeatherPGS does not support passive joint springs yet and ignores nonzero "
+                "mujoco:dof_passive_stiffness (see newton-physics/newton#4516).",
+                UserWarning,
+                stacklevel=3,
+            )
 
     def _refresh_passive_joint_damping(self) -> None:
         """Copy the model's current joint damping into the solver's fixed damping buffer."""
@@ -2902,30 +2856,6 @@ class SolverFeatherPGS(SolverBase):
         damping = self.model.joint_damping
         if damping is not None and self.model.joint_dof_count:
             wp.copy(self._passive_joint_damping, damping, count=self.model.joint_dof_count)
-
-    def _refresh_passive_springs(self) -> None:
-        """Resolve the model's current spring arrays into the solver's fixed spring buffers."""
-        if self._spring_dof_supported is None:
-            return
-        # Re-read the model arrays, which users may replace between refreshes.
-        mujoco = self.model.mujoco
-        stiffness = mujoco.dof_passive_stiffness
-        springref = getattr(mujoco, "dof_springref", None)
-        ref = getattr(mujoco, "dof_ref", None)
-        wp.launch(
-            resolve_passive_joint_springs,
-            dim=self.model.joint_dof_count,
-            inputs=[
-                self._spring_dof_supported,
-                stiffness,
-                springref if springref is not None else stiffness,
-                ref if ref is not None else stiffness,
-                int(springref is not None),
-                int(ref is not None),
-            ],
-            outputs=[self._passive_spring_stiffness, self._passive_spring_ref],
-            device=self.model.device,
-        )
 
     def _compute_articulation_indices(self, model):
         # calculate total size and offsets of Jacobian and mass matrices for entire system
