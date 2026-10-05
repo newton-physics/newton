@@ -207,7 +207,7 @@ class InputProcessorDelay(InputProcessorBase):
             ValueError: If *max_delay* < 1.
         """
         if max_delay is None:
-            max_delay = int(np.max(delay_steps.numpy())) if len(delay_steps) > 0 else 0
+            max_delay = max(int(np.max(delay_steps.numpy())) if len(delay_steps) > 0 else 0, 1)
         if max_delay < 1:
             raise ValueError(f"max_delay must be >= 1, got {max_delay}")
         self.buf_depth = max_delay

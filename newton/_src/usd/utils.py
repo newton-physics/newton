@@ -114,11 +114,7 @@ def _get_raw_api_schemas(prim: Usd.Prim) -> list[str]:
     listop = prim.GetMetadata("apiSchemas")
     if listop is None:
         return []
-    return (
-        list(getattr(listop, "prependedItems", []))
-        + list(getattr(listop, "appendedItems", []))
-        + list(getattr(listop, "explicitItems", []))
-    )
+    return list(listop.GetAppliedItems())
 
 
 def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
