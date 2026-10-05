@@ -170,6 +170,10 @@ _JOINT_LIMIT_WARPS_PER_BLOCK = 4
 _SPARSE_FACTOR_WARPS_PER_BLOCK = 4
 # Warps (articulations) per block of the warp-parallel composite-inertia reduction.
 _COMPOSITE_INERTIA_WARPS_PER_BLOCK = 4
+# Warps (articulations) per block of the fused small mass-matrix assembly and factorization.
+_CRBA_CHOLESKY_WARPS_PER_BLOCK = 4
+# Largest DOF count of the fused tiled mass-matrix assembly and factorization.
+_FUSED_CRBA_MAX_DOF = 64
 # Largest contact regularization; larger values do not change the float32 weight usefully.
 _MAX_CONTACT_REGULARIZATION = 1.0e6
 # One-warp worlds packed per block of the propagation row sweep, which uses no shared memory.
@@ -2020,6 +2024,7 @@ class SolverFeatherPGS(SolverBase):
         self.dense_max_constraints = self._requested_dense_max_constraints
         self._setup_diagonal_mass(model)
         self._setup_sparse_mass_matrix(model)
+        self._setup_crba_topology_schedules(model)
         self._execution_plan = _FeatherPGSExecutionPlan.build(
             self.size_groups,
             max_constraints=self.dense_max_constraints,
@@ -3387,6 +3392,92 @@ class SolverFeatherPGS(SolverBase):
                 f"Contact restitution is not supported with articulated_contact_response={self.articulated_contact_response!r}"
             )
 
+    def _setup_crba_topology_schedules(self, model: Model) -> None:
+        """Map the mass-matrix elements of topology-homogeneous size groups for fused assembly.
+
+        With ``use_parallel_streams`` on CUDA, augmented drives and without loop-closing joints,
+        a size group whose articulations share one joint topology assembles and factors its
+        mass matrices in one kernel (:func:`_get_crba_cholesky_kernel`): element ``(row, col)``
+        projects the composite-inertia force of the deeper of the two DOFs onto the other, or
+        is zero for unrelated branches. Results match the separate assembly and factorization
+        up to float32 rounding.
+        """
+        self._crba_dof_joint_offset_by_size = {}
+        self._crba_source_dof_by_size = {}
+        self._crba_lower_schedule_by_size = {}
+        plan = self._model_plan
+        ownership = np.zeros(max(model.joint_dof_count, 1), dtype=np.int32)
+        for start, count in zip(plan.articulation_dof_start, plan.articulation_dof_count, strict=True):
+            ownership[int(start) : int(start + count)] += 1
+        if not (
+            self.use_parallel_streams
+            and model.device.is_cuda
+            and not model.requires_grad
+            and self.drive_mode == "augmented"
+            and model.joint_dof_count
+            and not np.any(plan.loop_joint_articulation >= 0)
+            and np.all(ownership[: model.joint_dof_count] == 1)
+        ):
+            return
+        articulation_start = model.articulation_start.numpy()
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_ancestor = model.joint_ancestor.numpy()
+        for size in self.size_groups:
+            if size == self._sparse_mass_matrix_size or size in self._diagonal_mass_sizes:
+                continue
+            reference_offsets = None
+            reference_parents = None
+            compatible = True
+            for art in np.flatnonzero(plan.response_dof_count == size):
+                joint_start = int(articulation_start[art])
+                joint_end = int(articulation_start[art + 1])
+                dof_start = int(plan.articulation_dof_start[art])
+                offsets = np.full(int(size), -1, dtype=np.int32)
+                for joint in range(joint_start, joint_end):
+                    local_start = max(0, int(joint_qd_start[joint]) - dof_start)
+                    local_end = min(int(size), int(joint_qd_start[joint + 1]) - dof_start)
+                    if local_start < local_end:
+                        offsets[local_start:local_end] = joint - joint_start
+                if np.any(offsets < 0):
+                    compatible = False
+                    break
+                parents = joint_ancestor[joint_start:joint_end].astype(np.int32)
+                parents = np.where(parents >= joint_start, parents - joint_start, -1).astype(np.int32)
+                if reference_offsets is None:
+                    reference_offsets, reference_parents = offsets, parents
+                elif not (np.array_equal(offsets, reference_offsets) and np.array_equal(parents, reference_parents)):
+                    compatible = False
+                    break
+            if not compatible or reference_offsets is None:
+                continue
+            ancestor_sets = []
+            for joint_offset in reference_offsets:
+                ancestors = set()
+                current = int(joint_offset)
+                while current >= 0:
+                    ancestors.add(current)
+                    current = int(reference_parents[current])
+                ancestor_sets.append(ancestors)
+            sources = np.full((int(size), int(size)), -1, dtype=np.int32)
+            for row in range(int(size)):
+                for col in range(int(size)):
+                    if int(reference_offsets[row]) in ancestor_sets[col]:
+                        sources[row, col] = col
+                    elif int(reference_offsets[col]) in ancestor_sets[row]:
+                        sources[row, col] = row
+            lower_schedule = [
+                row * int(size) + col
+                | (int(sources[row, col]) + 1) << 8
+                | (row if sources[row, col] == col else col) << 16
+                for row in range(int(size))
+                for col in range(row + 1)
+            ]
+            self._crba_dof_joint_offset_by_size[size] = wp.array(reference_offsets, dtype=wp.int32, device=model.device)
+            self._crba_source_dof_by_size[size] = wp.array(sources, dtype=wp.int32, device=model.device)
+            self._crba_lower_schedule_by_size[size] = wp.array(
+                np.asarray(lower_schedule, dtype=np.int32), dtype=wp.int32, device=model.device
+            )
+
     def _setup_sparse_mass_matrix(self, model: Model) -> None:
         """Select topology-derived sparse mass factors for branched articulations.
 
@@ -4094,12 +4185,34 @@ class SolverFeatherPGS(SolverBase):
         self._hinv_jt_kernels_by_size = {}
         self._hinv_jt_chunk_count_by_size = {}
 
+        self._crba_cholesky_kernels_by_size = {}
+        self._crba_cholesky_warp_kernels_by_size = {}
+        self._fused_drive_dof_K = (
+            wp.zeros(max(model.joint_dof_count, 1), dtype=wp.float32, device=model.device)
+            if self._crba_source_dof_by_size
+            else None
+        )
         for size in self.size_groups:
             # Sparse and diagonal mass matrices need no dense factorization, solve or response kernels.
             dense = size != self._sparse_mass_matrix_size and not self._execution_plan.use_diagonal_mass(size)
+            fusable = dense and size in self._crba_source_dof_by_size
+            use_tiled_cholesky = self._execution_plan.use_tiled_cholesky(size)
+            self._crba_cholesky_kernels_by_size[size] = (
+                _get_crba_cholesky_kernel(size, device_arch, self._tile_threads)
+                if fusable and use_tiled_cholesky and size <= _FUSED_CRBA_MAX_DOF
+                else None
+            )
+            self._crba_cholesky_warp_kernels_by_size[size] = (
+                _get_crba_cholesky_warp_kernel(size, device_arch, warps_per_block=_CRBA_CHOLESKY_WARPS_PER_BLOCK)
+                if fusable
+                and not use_tiled_cholesky
+                and self.cholesky_kernel == "auto"
+                and size <= self.small_dof_threshold
+                else None
+            )
             self._cholesky_kernels_by_size[size] = (
                 _get_cholesky_kernel(size, device_arch, self._tile_threads)
-                if dense and self._execution_plan.use_tiled_cholesky(size)
+                if dense and use_tiled_cholesky and self._crba_cholesky_kernels_by_size[size] is None
                 else None
             )
             self._triangular_solve_kernels_by_size[size] = (
@@ -4496,7 +4609,10 @@ class SolverFeatherPGS(SolverBase):
         for size in self._for_sizes():
             if size == self._sparse_mass_matrix_size:
                 continue
-            if self._execution_plan.use_diagonal_mass(size):
+            # Fused groups were assembled and factored in stage 1.
+            if self._crba_cholesky_kernels_by_size[size] or self._crba_cholesky_warp_kernels_by_size[size]:
+                pass
+            elif self._execution_plan.use_diagonal_mass(size):
                 self._stage2_factor_diagonal(size)
             elif self._execution_plan.use_tiled_cholesky(size):
                 self._stage2_cholesky_tiled(size)
@@ -5944,6 +6060,8 @@ class SolverFeatherPGS(SolverBase):
             if size == self._sparse_mass_matrix_size:
                 self._stage1_sparse_factor(state_aug, size)
                 continue
+            if self._launch_fused_crba_cholesky(state_aug, size):
+                continue
             if global_flag and not self._double_buffered:
                 self.H_by_size[size].zero_()
             wp.launch(
@@ -5986,6 +6104,62 @@ class SolverFeatherPGS(SolverBase):
             )
         self._mass_update_requested.zero_()
         self._force_mass_update = False
+
+    def _launch_fused_crba_cholesky(self, state_aug: State, size: int) -> bool:
+        """Assemble and factor the group's mass matrices in one kernel when it is fused; return whether."""
+        tiled = self._crba_cholesky_kernels_by_size[size]
+        warp = self._crba_cholesky_warp_kernels_by_size[size]
+        if tiled is None and warp is None:
+            return False
+        model = self.model
+        n_arts = self.n_arts_by_size[size]
+        wp.launch(
+            scatter_augmented_drive_dof_K,
+            dim=n_arts,
+            inputs=[
+                self.group_to_art[size],
+                self.articulation_dof_start,
+                size,
+                self.articulation_max_dofs,
+                self.mass_update_mask,
+                self.aug_row_counts,
+                self.aug_row_dof_index,
+                self.aug_row_K,
+            ],
+            outputs=[self._fused_drive_dof_K],
+            device=model.device,
+        )
+        inertia = state_aug.body_I_s if size in self._free_body_inertia_sizes else self.body_I_c
+        common = [
+            model.articulation_start,
+            self.articulation_dof_start,
+            self.mass_update_mask,
+            model.joint_child,
+            state_aug.joint_S_s,
+            inertia,
+            self.group_to_art[size],
+            self.R_by_size[size],
+            self._crba_dof_joint_offset_by_size[size],
+        ]
+        if warp is not None:
+            wp.launch(
+                warp,
+                dim=n_arts * 32,
+                inputs=[n_arts, *common, self._crba_lower_schedule_by_size[size], 1, self._fused_drive_dof_K],
+                outputs=[self.L_by_size[size]],
+                block_dim=_CRBA_CHOLESKY_WARPS_PER_BLOCK * 32,
+                device=model.device,
+            )
+        else:
+            wp.launch_tiled(
+                tiled,
+                dim=[n_arts],
+                inputs=[*common, self._crba_source_dof_by_size[size], 1, self._fused_drive_dof_K],
+                outputs=[self.L_by_size[size]],
+                block_dim=self._tile_threads,
+                device=model.device,
+            )
+        return True
 
     def _stage1_sparse_factor(self, state_aug: State, size: int) -> None:
         """Assemble and factor the sparse mass matrices of articulations due for a refresh."""
@@ -8303,6 +8477,238 @@ def _get_hinv_jt_kernel(
     hinv_jt_tiled_template.__name__ = f"hinv_jt_tiled_{n_dofs}_{max_constraints}_c{chunk_size}_bd{tile_threads}{suffix}"
     hinv_jt_tiled_template.__qualname__ = hinv_jt_tiled_template.__name__
     return wp.kernel(enable_backward=False, module="unique")(hinv_jt_tiled_template)
+
+
+@cache
+def _get_crba_cholesky_warp_kernel(n_dofs: int, device_arch: str, *, warps_per_block: int = 4) -> "wp.Kernel":
+    """Build and factor the mass matrices of small articulations, one warp per articulation.
+
+    The composite-inertia forces of each DOF are staged once; ``lower_schedule`` packs, per
+    lower-triangle element, the source DOF whose force projects onto it (0 for unrelated
+    branches) and the projected DOF. Lane 0 then factors the matrix plus armature and drive
+    stiffness in shared memory.
+    """
+    del device_arch
+    matrix_elements = int(n_dofs) * int(n_dofs)
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+    const int lane = tid & 31;
+    const int group = tid >> 5;
+    if (group >= n_arts) return;
+
+    const int articulation = group_to_art.data[group];
+    if (mass_update_mask.data[articulation] == 0) return;
+
+    const int warp = threadIdx.x >> 5;
+    __shared__ float factors[{int(warps_per_block) * matrix_elements}];
+    __shared__ float forces[{int(warps_per_block) * int(n_dofs) * 6}];
+    float* factor = factors + warp * {matrix_elements};
+    float* force_components = forces + warp * {int(n_dofs) * 6};
+
+    const int dof_start = articulation_dof_start.data[articulation];
+    if (lane < {int(n_dofs)}) {{
+        const int joint = articulation_start.data[articulation] + dof_joint_offset.data[lane];
+        const auto force = wp::mul(body_I_c.data[joint_child.data[joint]], joint_S_s.data[dof_start + lane]);
+        #pragma unroll
+        for (int component = 0; component < 6; ++component)
+            force_components[lane * 6 + component] = force.c[component];
+    }}
+    __syncwarp();
+
+    for (int schedule_index = lane; schedule_index < {int(n_dofs) * (int(n_dofs) + 1) // 2}; schedule_index += 32) {{
+        const int packed = lower_schedule.data[schedule_index];
+        const int element = packed & 255;
+        const int row = element / {int(n_dofs)};
+        const int col = element - row * {int(n_dofs)};
+        const int source_code = (packed >> 8) & 255;
+        float value = 0.0f;
+        if (source_code != 0) {{
+            const int source = source_code - 1;
+            const int projection = (packed >> 16) & 255;
+            const auto motion = joint_S_s.data[dof_start + projection];
+#pragma unroll
+            for (int component = 0; component < 6; ++component)
+                value += motion.c[component] * force_components[source * 6 + component];
+        }}
+        if (row == col) {{
+            value += R_group.data[group * {int(n_dofs)} + row];
+            if (fused_augmented_drive != 0) {{
+                const float K = drive_dof_K.data[dof_start + row];
+                if (K > 0.0f) value += K;
+            }}
+        }}
+        factor[element] = value;
+    }}
+    __syncwarp();
+
+    if (lane == 0) {{
+#pragma unroll
+        for (int col = 0; col < {int(n_dofs)}; ++col) {{
+            float diagonal = factor[col * {int(n_dofs)} + col];
+#pragma unroll
+            for (int k = 0; k < col; ++k) {{
+                const float value = factor[col * {int(n_dofs)} + k];
+                diagonal -= value * value;
+            }}
+            diagonal = sqrtf(diagonal);
+            factor[col * {int(n_dofs)} + col] = diagonal;
+            const float inverse_diagonal = 1.0f / diagonal;
+#pragma unroll
+            for (int row = col + 1; row < {int(n_dofs)}; ++row) {{
+                float value = factor[row * {int(n_dofs)} + col];
+#pragma unroll
+                for (int k = 0; k < col; ++k)
+                    value -= factor[row * {int(n_dofs)} + k] * factor[col * {int(n_dofs)} + k];
+                factor[row * {int(n_dofs)} + col] = value * inverse_diagonal;
+            }}
+        }}
+    }}
+    __syncwarp();
+
+    if (lane < {int(n_dofs)}) {{
+        const int factor_base = group * {matrix_elements};
+#pragma unroll
+        for (int col = 0; col <= lane; ++col)
+            L_group.data[factor_base + lane * {int(n_dofs)} + col] = factor[lane * {int(n_dofs)} + col];
+    }}
+#endif
+"""
+
+    @wp.func_native(snippet)
+    def crba_cholesky_warp_native(
+        tid: int,
+        n_arts: int,
+        articulation_start: wp.array[int],
+        articulation_dof_start: wp.array[int],
+        mass_update_mask: wp.array[int],
+        joint_child: wp.array[int],
+        joint_S_s: wp.array[wp.spatial_vector],
+        body_I_c: wp.array[wp.spatial_matrix],
+        group_to_art: wp.array[int],
+        R_group: wp.array2d[float],
+        dof_joint_offset: wp.array[int],
+        lower_schedule: wp.array[int],
+        fused_augmented_drive: int,
+        drive_dof_K: wp.array[float],
+        L_group: wp.array3d[float],
+    ): ...
+
+    def crba_cholesky_warp_template(
+        n_arts: int,
+        articulation_start: wp.array[int],
+        articulation_dof_start: wp.array[int],
+        mass_update_mask: wp.array[int],
+        joint_child: wp.array[int],
+        joint_S_s: wp.array[wp.spatial_vector],
+        body_I_c: wp.array[wp.spatial_matrix],
+        group_to_art: wp.array[int],
+        R_group: wp.array2d[float],
+        dof_joint_offset: wp.array[int],
+        lower_schedule: wp.array[int],
+        fused_augmented_drive: int,
+        drive_dof_K: wp.array[float],
+        L_group: wp.array3d[float],
+    ):
+        crba_cholesky_warp_native(
+            wp.tid(),
+            n_arts,
+            articulation_start,
+            articulation_dof_start,
+            mass_update_mask,
+            joint_child,
+            joint_S_s,
+            body_I_c,
+            group_to_art,
+            R_group,
+            dof_joint_offset,
+            lower_schedule,
+            fused_augmented_drive,
+            drive_dof_K,
+            L_group,
+        )
+
+    name = f"crba_cholesky_warp{int(warps_per_block)}_{int(n_dofs)}"
+    crba_cholesky_warp_template.__name__ = name
+    crba_cholesky_warp_template.__qualname__ = name
+    return wp.kernel(enable_backward=False, module="unique")(crba_cholesky_warp_template)
+
+
+@cache
+def _get_crba_cholesky_kernel(n_dofs: int, device_arch: str, tile_threads: int = 64) -> "wp.Kernel":
+    """Build the mass matrix of one articulation per block from a fixed topology map and factor it.
+
+    ``source_dof`` maps each element to the DOF whose composite-inertia force projects onto it,
+    or ``-1`` for unrelated branches; the matrix is factored in shared memory without storing it.
+    """
+    del device_arch
+    dofs = wp.constant(int(n_dofs))
+    element_rounds = (int(n_dofs) * int(n_dofs) + int(tile_threads) - 1) // int(tile_threads)
+    tile_stride = wp.constant(int(tile_threads))
+
+    def crba_cholesky_template(
+        articulation_start: wp.array[int],
+        articulation_dof_start: wp.array[int],
+        mass_update_mask: wp.array[int],
+        joint_child: wp.array[int],
+        joint_S_s: wp.array[wp.spatial_vector],
+        body_I_c: wp.array[wp.spatial_matrix],
+        group_to_art: wp.array[int],
+        R_group: wp.array2d[float],
+        dof_joint_offset: wp.array[int],
+        source_dof: wp.array2d[int],
+        fused_augmented_drive: int,
+        drive_dof_K: wp.array[float],
+        L_group: wp.array3d[float],
+    ):
+        group, lane = wp.tid()
+        art = group_to_art[group]
+        if mass_update_mask[art] == 0:
+            return
+
+        H_tile = wp.tile_zeros(shape=(dofs, dofs), dtype=wp.float32, storage="shared")
+        force_tile = wp.tile_zeros(shape=(dofs,), dtype=wp.spatial_vector, storage="shared")
+        dof_start = articulation_dof_start[art]
+        force = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        lane_has_dof = lane < dofs
+        if lane_has_dof:
+            joint = articulation_start[art] + dof_joint_offset[lane]
+            force = body_I_c[joint_child[joint]] * joint_S_s[dof_start + lane]
+        wp.tile_scatter_masked(force_tile, lane, force, lane_has_dof)
+
+        # Every lane executes the same fixed number of cooperative scatters.
+        # The immutable source map turns tree ancestry into direct indexing:
+        # H[row, col] projects the deeper DOF's composite force onto the
+        # ancestor DOF, or remains zero for unrelated branches.
+        for element_round in range(element_rounds):
+            element = lane + element_round * tile_stride
+            row = int(0)
+            col = int(0)
+            value = float(0.0)
+            has_value = element < dofs * dofs
+            if has_value:
+                row = element // dofs
+                col = element - row * dofs
+                source = source_dof[row, col]
+                has_value = source >= 0
+                if has_value:
+                    projection = col
+                    if source == col:
+                        projection = row
+                    value = wp.dot(joint_S_s[dof_start + projection], wp.tile_extract(force_tile, source))
+                    if fused_augmented_drive != 0 and row == col:
+                        K = drive_dof_K[dof_start + row]
+                        if K > 0.0:
+                            value += K
+            wp.tile_scatter_masked(H_tile, row, col, value, has_value)
+
+        armature = wp.tile_load(R_group[group], shape=(dofs,), bounds_check=False)
+        L_tile = wp.tile_cholesky(wp.tile_diag_add(H_tile, armature))
+        wp.tile_store(L_group[group], L_tile, bounds_check=False)
+
+    name = f"crba_cholesky_{int(n_dofs)}_bd{int(tile_threads)}"
+    crba_cholesky_template.__name__ = name
+    crba_cholesky_template.__qualname__ = name
+    return wp.kernel(enable_backward=False, module="unique")(crba_cholesky_template)
 
 
 @cache

@@ -19,6 +19,8 @@ _KERNEL_FACTORIES = (
     "_get_pack_mf_meta_kernel",
     "_get_pgs_solve_mf_gs_kernel",
     "_get_cholesky_kernel",
+    "_get_crba_cholesky_kernel",
+    "_get_crba_cholesky_warp_kernel",
     "_get_triangular_solve_kernel",
     "_get_hinv_jt_kernel",
     "_get_hinv_jt_plain_kernel",
