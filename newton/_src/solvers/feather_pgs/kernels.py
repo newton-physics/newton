@@ -1857,6 +1857,39 @@ def build_mass_update_mask(
 
 
 @wp.kernel
+def resolve_passive_joint_springs(
+    dof_spring_supported: wp.array[wp.int32],
+    dof_passive_stiffness: wp.array[float],
+    dof_springref: wp.array[float],
+    dof_ref: wp.array[float],
+    has_springref: int,
+    has_ref: int,
+    # outputs
+    spring_stiffness: wp.array[float],
+    spring_rest: wp.array[float],
+):
+    """Resolve the explicit passive spring of each DOF from the MuJoCo spring attributes.
+
+    The spring torque is ``stiffness * (rest - q)`` with the rest coordinate
+    ``springref - ref``: MuJoCo coordinates are offset from Newton's by ``ref``. The
+    attributes are already in Newton units, so no unit conversion happens here. DOFs
+    without spring support (``dof_spring_supported == 0``) get zero stiffness; with
+    ``has_springref`` or ``has_ref`` zero the corresponding array is not read.
+    """
+    dof = wp.tid()
+    stiffness = float(0.0)
+    if dof_spring_supported[dof] != 0:
+        stiffness = dof_passive_stiffness[dof]
+    rest = float(0.0)
+    if has_springref != 0:
+        rest = dof_springref[dof]
+    if has_ref != 0:
+        rest = rest - dof_ref[dof]
+    spring_stiffness[dof] = stiffness
+    spring_rest[dof] = rest
+
+
+@wp.kernel
 def allocate_joint_velocity_limit_slots(
     articulation_start: wp.array[int],
     articulation_dof_start: wp.array[int],
