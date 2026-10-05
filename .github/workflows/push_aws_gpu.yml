@@ -15,6 +15,8 @@ jobs:
   run-tests:
     if: github.repository == 'newton-physics/newton'
     uses: ./.github/workflows/aws_gpu_tests.yml
+    with:
+      trigger-category: push
     secrets: inherit
     permissions:
       id-token: write   # Required for AWS OIDC authentication in start-runner/stop-runner

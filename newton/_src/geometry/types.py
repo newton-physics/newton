@@ -148,6 +148,12 @@ class Mesh:
             ``compute_inertia`` is ``True``.
         com [m]: Mesh center of mass in local coordinates.
         inertia [kg*m^2]: Mesh inertia tensor about :attr:`com` in local coordinates.
+        enable_surface_velocity: If True, rigid contacts sample the finalized Warp
+            mesh's per-vertex velocities for contact friction.
+        mesh: Most recently finalized Warp mesh. Its ``velocities`` array may be
+            updated on the device to prescribe per-vertex surface motion [m/s].
+            Contact solvers use only the component tangent to the contact surface;
+            normal motion must be represented by updating the mesh geometry.
 
     Example:
         Load a mesh from an OBJ file using OpenMesh and create a Newton Mesh:
@@ -167,10 +173,12 @@ class Mesh:
     MAX_HULL_VERTICES = 64
     """Default maximum vertex count for convex hull approximation."""
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
         indices: Sequence[int] | np.ndarray,
+        *,
         normals: Sequence[Vec3] | np.ndarray | None = None,
         uvs: Sequence[Vec2] | np.ndarray | None = None,
         compute_inertia: bool = True,
@@ -180,8 +188,10 @@ class Mesh:
         roughness: float | None = None,
         metallic: float | None = None,
         texture: str | np.ndarray | None = None,
-        *,
+        texture_transform: Sequence[Sequence[float]] | np.ndarray = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
         sdf: "SDF | None" = None,
+        opacity: float | None = None,
+        enable_surface_velocity: bool = False,
     ):
         """
         Construct a Mesh object from a triangle mesh.
@@ -202,7 +212,17 @@ class Mesh:
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
             texture: Optional texture path/URL or image data (H, W, C).
+            texture_transform: Affine texture-coordinate transform as two rows
+                ``((m00, m01, tx), (m10, m11, ty))``. It is applied to the
+                authored UV coordinates as ``(u', v') = M @ (u, v) + t``.
             sdf: Optional prebuilt SDF object owned by this mesh.
+            opacity: Optional per-mesh opacity in [0, 1].
+            enable_surface_velocity: If ``True``, rigid contacts sample per-vertex
+                velocities from the finalized Warp mesh for friction. Solvers use
+                only the component tangent to the contact surface; normal motion
+                must be represented by updating the mesh geometry. Disabled by
+                default so ordinary mesh contacts incur no surface-velocity query
+                cost.
         """
         from .inertia import compute_inertia_mesh  # noqa: PLC0415
 
@@ -213,11 +233,15 @@ class Mesh:
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
         self._color: Vec3 | None = None
         self.color = color
+        self._opacity: float | None = None
+        self.opacity = opacity
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
+        self.texture_transform = texture_transform
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
+        self.enable_surface_velocity = enable_surface_velocity
         self.has_inertia = compute_inertia
         self.mesh = None
         # Finalized wp.Mesh cache keyed by (device, requires_grad, bvh_constructor).
@@ -229,6 +253,7 @@ class Mesh:
             maxhullvert = Mesh.MAX_HULL_VERTICES
         self.maxhullvert = maxhullvert
         self._cached_hash = None
+        self._cached_render_attribute_hash = None
         self._texture_hash = None
         self._edges = None
         self._collision_edges: np.ndarray | None = None
@@ -790,17 +815,20 @@ class Mesh:
         m = Mesh(
             vertices,
             indices,
+            enable_surface_velocity=self.enable_surface_velocity,
             compute_inertia=recompute_inertia,
             is_solid=self.is_solid,
             maxhullvert=self.maxhullvert,
             normals=self.normals.copy() if self.normals is not None else None,
             uvs=self.uvs.copy() if self.uvs is not None else None,
             color=self.color,
+            opacity=self.opacity,
             texture=self._texture
             if isinstance(self._texture, str)
             else (self._texture.copy() if self._texture is not None else None),
             roughness=self._roughness,
             metallic=self._metallic,
+            texture_transform=self._texture_transform,
         )
         if not recompute_inertia:
             m.inertia = self.inertia
@@ -833,7 +861,7 @@ class Mesh:
         paired_samples: bool = True,
         edge_lower_angle_threshold_rad: float = math.radians(0.1),
         edge_upper_angle_threshold_rad: float = math.radians(10.0),
-        edge_inward_filter: bool = True,
+        edge_concave_filter: bool = True,
         edge_box_absorption: bool = False,
         edge_box_half_normal: float | None = None,
         edge_box_half_normal_rel: float | None = None,
@@ -878,8 +906,11 @@ class Mesh:
             paired_samples: Store each SDF sample with its positive-X
                 neighbor for faster software interpolation. Disable to halve
                 texture memory at the cost of slower hydroelastic sampling.
-                When the mesh is added to a :class:`ModelBuilder`, this value
-                must match :attr:`ModelBuilder.sdf_texture_paired_samples`.
+                This optimization is automatically disabled on CUDA devices
+                with architectures older than SM90 when Warp was built with
+                CUDA Toolkit 13.0 or earlier. When the mesh is added to a
+                :class:`ModelBuilder`, its effective layout must match the
+                builder's effective layout.
             edge_lower_angle_threshold_rad: Drop internal edges whose
                 dihedral angle is below this value [rad]. Set to 0 to keep
                 every manifold edge. A negative value opts out of edge
@@ -889,8 +920,13 @@ class Mesh:
             edge_upper_angle_threshold_rad: Maximum dihedral angle [rad] for
                 an absorbed edge to be removed. Only consulted when
                 ``edge_box_absorption`` is ``True``.
-            edge_inward_filter: Drop concave edges whose endpoints both have
-                fully inward manifold one-rings. Defaults to ``True``.
+            edge_concave_filter: Drop a concave manifold edge when both of its
+                endpoints are fully concave. An endpoint is fully concave when
+                every neighbor in its closed manifold one-ring lies on or
+                outward from its angle-weighted tangent plane, with at least
+                one neighbor strictly outward. Ignored when
+                ``sign_method="normal"`` because pseudo-normal SDFs do not
+                define an unambiguous solid interior. Defaults to ``True``.
             edge_box_absorption: Drop manifold edges fully covered by
                 another edge's oriented box.
             edge_box_half_normal: Absolute box half-extent [m] along the
@@ -959,7 +995,7 @@ class Mesh:
                 lower_angle_threshold_rad=edge_lower_angle_threshold_rad,
                 upper_angle_threshold_rad=edge_upper_angle_threshold_rad,
                 enable_box_absorption=edge_box_absorption,
-                enable_inward_filter=edge_inward_filter,
+                edge_concave_filter=edge_concave_filter,
                 sign_method=sign_method,
                 half_normal=edge_half_normal,
                 half_lateral=edge_half_lateral,
@@ -1028,7 +1064,7 @@ class Mesh:
         lower_angle_threshold_rad: float,
         upper_angle_threshold_rad: float,
         enable_box_absorption: bool,
-        enable_inward_filter: bool = True,
+        edge_concave_filter: bool = True,
         sign_method: "SignMethod" = "auto",
         half_normal: float,
         half_lateral: float,
@@ -1059,8 +1095,8 @@ class Mesh:
 
         canonical = None
         topology = None
-        run_inward_filter = enable_inward_filter and sign_method != "normal" and self._indices.size > 0
-        if run_inward_filter:
+        run_concave_filter = edge_concave_filter and sign_method != "normal" and self._indices.size > 0
+        if run_concave_filter:
             canonical = self._canonical_vertex_ids()
             topology = self._build_edge_slot_topology(canonical)
 
@@ -1101,11 +1137,11 @@ class Mesh:
                 full_edges = full_edges[~np.isin(full_keys, remove_keys)]
 
         # Pseudo-normal SDFs define a sided sheet rather than a closed solid,
-        # so they have no unambiguous fully inward features to remove.
-        if run_inward_filter and len(full_edges) > 0:
-            from .edge_inward_filter import filter_fully_inward_edges  # noqa: PLC0415
+        # so they have no unambiguous fully concave features to remove.
+        if run_concave_filter and len(full_edges) > 0:
+            from .edge_concave_filter import filter_fully_concave_edges  # noqa: PLC0415
 
-            full_edges = filter_fully_inward_edges(
+            full_edges = filter_fully_concave_edges(
                 self,
                 full_edges,
                 canonical_vertex_ids=canonical,
@@ -1140,8 +1176,11 @@ class Mesh:
         method automatically. Call it explicitly after modifying those arrays
         in place (e.g. ``mesh.vertices[0] = ...``), which bypasses the
         property setters and would otherwise leave stale cached data.
+        Also call this after modifying :attr:`normals` or :attr:`uvs` in place
+        to invalidate the rendering identity.
         """
         self._cached_hash = None
+        self._cached_render_attribute_hash = None
         self._edges = None
         self._collision_edges = None
         self._is_watertight = None
@@ -1513,6 +1552,15 @@ class Mesh:
         self._color = value
 
     @property
+    def opacity(self) -> float | None:
+        """Optional display opacity with value in [0, 1]."""
+        return self._opacity
+
+    @opacity.setter
+    def opacity(self, value: float | None):
+        self._opacity = None if value is None else float(value)
+
+    @property
     def texture(self) -> str | np.ndarray | None:
         """Optional texture as a file path or a normalized RGBA array."""
         return self._texture
@@ -1533,6 +1581,21 @@ class Mesh:
         is reassigned.
         """
         return self._compute_texture_hash()
+
+    @property
+    def texture_transform(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        """Affine transform applied to the authored UV coordinates."""
+        return self._texture_transform
+
+    @texture_transform.setter
+    def texture_transform(self, value: Sequence[Sequence[float]] | np.ndarray):
+        try:
+            matrix = np.asarray(value, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("texture_transform must be a finite 2-by-3 matrix.") from exc
+        if matrix.shape != (2, 3) or not np.all(np.isfinite(matrix)):
+            raise ValueError("texture_transform must be a finite 2-by-3 matrix.")
+        self._texture_transform = tuple(tuple(float(component) for component in row) for row in matrix)
 
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:
@@ -1558,7 +1621,6 @@ class Mesh:
         self._cached_hash = None
 
     # construct simulation ready buffers from points
-    @deprecate_nonkeyword_arguments
     def finalize(
         self,
         device: Devicelike = None,
@@ -1628,6 +1690,17 @@ class Mesh:
             hull_mesh.com = self.com
             hull_mesh.inertia = self.inertia
             return hull_mesh
+
+    def _get_render_hash(self) -> int:
+        """Include vertex attributes without changing simulation mesh caching."""
+        if self._cached_render_attribute_hash is None:
+            self._cached_render_attribute_hash = hash(
+                (
+                    None if self._normals is None else self._normals.tobytes(),
+                    None if self._uvs is None else self._uvs.tobytes(),
+                )
+            )
+        return hash((hash(self), self._cached_render_attribute_hash))
 
     @override
     def __hash__(self) -> int:
@@ -1746,12 +1819,25 @@ class TetMesh:
             tet_mesh = newton.TetMesh(vertices, tet_indices)
     """
 
-    _RESERVED_ATTR_KEYS = frozenset({"vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"})
+    _RESERVED_ATTR_KEYS = frozenset(
+        {
+            "vertices",
+            "tet_indices",
+            "k_mu",
+            "k_lambda",
+            "k_damp",
+            "density",
+            "__custom_names__",
+            "__custom_freqs__",
+        }
+    )
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
         tet_indices: Sequence[int] | np.ndarray,
+        *,
         k_mu: np.ndarray | float | None = None,
         k_lambda: np.ndarray | float | None = None,
         k_damp: np.ndarray | float | None = None,
@@ -1989,9 +2075,12 @@ class TetMesh:
         to the prim (via ``material:binding:physics``) and contains
         ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes (canonical
         ``physics:`` namespace, with ``compat_namespaces`` as a fallback),
-        those values are read and converted to Lame parameters (``k_mu``,
-        ``k_lambda``) and density on the returned TetMesh. Material properties
-        are set to ``None`` if not present.
+        those values are read and converted to Lamé parameters (``k_mu``,
+        ``k_lambda``) and density on the returned TetMesh, expressed in the stage's
+        configured units. Their SI-equivalent units are [Pa] for the Lamé parameters
+        and [kg/m^3] for density. A material applying
+        ``PhysicsVolumeDeformableMaterialAPI`` receives the proposal's elasticity
+        fallbacks; API-less compatibility materials leave missing properties unset.
 
         Custom primvars use their resolved interpolation to determine attribute
         frequency. Other custom arrays use length-based inference; arrays whose
@@ -2033,7 +2122,7 @@ class TetMesh:
                 canonical-only.
 
         Returns:
-            TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
+            A :class:`newton.TetMesh` with vertex positions and tet connectivity.
         """
         from ..usd.utils import get_tetmesh  # noqa: PLC0415
 
@@ -2130,10 +2219,10 @@ class TetMesh:
                     if key == "density":
                         if arr.size > 1 and not np.allclose(arr, arr[0]):
                             raise ValueError(
-                                f"Non-uniform per-element density found in '{filename}'. "
-                                f"TetMesh only supports a single uniform density value."
+                                f"Non-uniform per-element {key} found in '{filename}'. "
+                                f"TetMesh only supports a single uniform {key} value."
                             )
-                        kwargs["density"] = float(arr[0])
+                        kwargs[key] = float(arr[0])
                     else:
                         kwargs[key] = arr
 
@@ -2308,6 +2397,9 @@ class Heightfield:
             hy: Half-extent in Y direction. The heightfield spans [-hy, +hy].
             min_z: World-space Z value corresponding to data minimum. Must be provided
                 together with ``max_z``, or both omitted to auto-derive from data.
+                Uniform data normalizes to zeros, so with an explicit range the flat
+                surface sits at ``min_z`` (matching MuJoCo's compilation of constant
+                elevation); omit both bounds to place a flat field at its value.
             max_z: World-space Z value corresponding to data maximum. Must be provided
                 together with ``min_z``, or both omitted to auto-derive from data.
         """
@@ -2319,7 +2411,11 @@ class Heightfield:
         raw = np.array(data, dtype=np.float32).reshape(nrow, ncol)
         d_min, d_max = float(raw.min()), float(raw.max())
 
-        # Normalize data to [0, 1]
+        # Normalize data to [0, 1]. Uniform data has no range of its own and
+        # normalizes to zeros, so the surface sits at min_z — the same
+        # convention MuJoCo compiles (and SolverMuJoCo re-derives), keeping
+        # every solver's view of the field identical. To place a flat field
+        # at its value, omit min_z/max_z so both derive from the data.
         if d_max > d_min:
             self._data = (raw - d_min) / (d_max - d_min)
         else:
@@ -2474,6 +2570,12 @@ class Gaussian:
         min_response: wp.float32
         sorting_mode: wp.int32
 
+    _WARP_DATA_DEPRECATION_MSG = (
+        "Gaussian.warp_data is deprecated in Newton 1.6; use the Gaussian.Data object returned by "
+        "Gaussian.finalize() instead."
+    )
+    _WARP_BVH_DEPRECATION_MSG = "Gaussian.warp_bvh is deprecated in Newton 1.6; use Gaussian.bvh instead."
+
     def __init__(
         self,
         positions: np.ndarray,
@@ -2547,8 +2649,8 @@ class Gaussian:
         self._sh_coeffs.setflags(write=False)
 
         # GPU arrays populated by finalize()
-        self.warp_bvh: wp.Bvh = None
-        self.warp_data: Gaussian.Data = None
+        self._warp_bvh: wp.Bvh = None
+        self._warp_data: Gaussian.Data = None
 
         # Inertia: Gaussians are render-only so they contribute no mass
         self.has_inertia = False
@@ -2604,6 +2706,46 @@ class Gaussian:
         """Sorting mode, Gaussian.SortingMode."""
         return self._sorting_mode
 
+    @property
+    def bvh(self) -> wp.Bvh | None:
+        """The finalized Warp BVH over the Gaussians, or ``None`` before :meth:`finalize`.
+
+        Mirrors the scene shape BVH exposed as :attr:`~newton.Model.bvh_shapes`.
+        Use :meth:`bvh_refit` to update it in place after the finalized
+        :class:`Data` arrays change.
+        """
+        return self._warp_bvh
+
+    @property
+    def warp_data(self) -> "Gaussian.Data | None":
+        """Deprecated alias for the finalized Warp Gaussian data.
+
+        .. deprecated:: 1.6
+            Use the :class:`Data` object returned by :meth:`finalize` instead.
+        """
+        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self._warp_data
+
+    @warp_data.setter
+    def warp_data(self, value: "Gaussian.Data | None") -> None:
+        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self._warp_data = value
+
+    @property
+    def warp_bvh(self) -> wp.Bvh | None:
+        """Deprecated alias for :attr:`bvh`.
+
+        .. deprecated:: 1.6
+            Use :attr:`bvh` instead.
+        """
+        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self._warp_bvh
+
+    @warp_bvh.setter
+    def warp_bvh(self, value: wp.Bvh | None) -> None:
+        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self._warp_bvh = value
+
     def _find_sh_degree(self) -> int:
         """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""
         c = self._sh_coeffs.shape[1]
@@ -2627,32 +2769,58 @@ class Gaussian:
             Gaussian.Data struct containing the Warp arrays.
         """
 
-        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+        from ..sensors.sensor_camera_render.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         with wp.ScopedDevice(device):
-            self.warp_data = Gaussian.Data()
-            self.warp_data.transforms = wp.array(
-                np.append(self._positions, self._rotations, axis=1), dtype=wp.transformf
-            )
-            self.warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
-            self.warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
-            self.warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
-            self.warp_data.min_response = self.min_response
-            self.warp_data.sorting_mode = self.sorting_mode
-            self.warp_data.num_points = self.warp_data.transforms.shape[0]
-
+            warp_data = Gaussian.Data()
+            warp_data.transforms = wp.array(np.append(self._positions, self._rotations, axis=1), dtype=wp.transformf)
+            warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
+            warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
+            warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
+            warp_data.min_response = self.min_response
+            warp_data.sorting_mode = self.sorting_mode
+            warp_data.num_points = warp_data.transforms.shape[0]
             lowers = wp.zeros(self.count, dtype=wp.vec3f)
             uppers = wp.zeros(self.count, dtype=wp.vec3f)
-
             wp.launch(
                 kernel=compute_gaussian_bvh_bounds,
                 dim=self.count,
-                inputs=[self.warp_data, lowers, uppers],
+                inputs=[warp_data, lowers, uppers],
             )
+            warp_bvh = wp.Bvh(lowers, uppers, constructor=bvh_constructor)
+            warp_data.bvh_id = warp_bvh.id
+            self._warp_data = warp_data
+            self._warp_bvh = warp_bvh
+        return warp_data
 
-            self.warp_bvh = wp.Bvh(lowers, uppers, constructor=bvh_constructor)
-            self.warp_data.bvh_id = self.warp_bvh.id
-        return self.warp_data
+    def bvh_refit(self) -> None:
+        """Refit the Gaussian :attr:`bvh` in place for the current finalized data.
+
+        Recomputes per-Gaussian bounds from the finalized GPU data and refits
+        the BVH in place, keeping its existing topology. Call this after
+        mutating the finalized :class:`Data` arrays (e.g. ``transforms`` or
+        ``scales``) on the device so the acceleration structure tracks the
+        moved Gaussians. Structural changes (a different Gaussian count)
+        require a full rebuild via :meth:`finalize` instead.
+
+        This mirrors :meth:`~newton.Model.bvh_refit_shapes` for the scene
+        shape BVH.
+
+        Raises:
+            RuntimeError: If :meth:`finalize` has not been called yet.
+        """
+        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+
+        if self._warp_bvh is None or self._warp_data is None:
+            raise RuntimeError("Gaussian.bvh_refit() requires Gaussian.finalize() to have been called first.")
+
+        with wp.ScopedDevice(self._warp_bvh.device):
+            wp.launch(
+                kernel=compute_gaussian_bvh_bounds,
+                dim=self.count,
+                inputs=[self._warp_data, self._warp_bvh.lowers, self._warp_bvh.uppers],
+            )
+            self._warp_bvh.refit()
 
     # ---- Factory methods -----------------------------------------------------
 

@@ -44,7 +44,6 @@ PARAMS = {
     "container_kd": 0,
     "container_mu": 0.8,
     "gravity": (0.0, 0.0, -9.8),
-    "initial_paused": True,
     "body_drop_offset_scale": 4.0,
     "body_drop_spacing_scale": 3.0,
     "rigid_body_contact_buffer_size": 256,
@@ -87,7 +86,7 @@ def build_model(builder, params, seed=42):
     # Floor
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(0.0, 0.0, elev - t / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(0.0, 0.0, elev - t / 2), wp.quat_identity()),
         hx=hx + t,
         hy=hy + t,
         hz=t / 2,
@@ -96,7 +95,7 @@ def build_model(builder, params, seed=42):
     # Front wall (-Y)
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(0.0, -(hy + t / 2), elev + hz / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(0.0, -(hy + t / 2), elev + hz / 2), wp.quat_identity()),
         hx=hx + t,
         hy=t / 2,
         hz=hz / 2,
@@ -105,7 +104,7 @@ def build_model(builder, params, seed=42):
     # Back wall (+Y)
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(0.0, hy + t / 2, elev + hz / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(0.0, hy + t / 2, elev + hz / 2), wp.quat_identity()),
         hx=hx + t,
         hy=t / 2,
         hz=hz / 2,
@@ -114,7 +113,7 @@ def build_model(builder, params, seed=42):
     # Left wall (-X)
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(-(hx + t / 2), 0.0, elev + hz / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(-(hx + t / 2), 0.0, elev + hz / 2), wp.quat_identity()),
         hx=t / 2,
         hy=hy,
         hz=hz / 2,
@@ -123,7 +122,7 @@ def build_model(builder, params, seed=42):
     # Right wall (+X)
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(hx + t / 2, 0.0, elev + hz / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(hx + t / 2, 0.0, elev + hz / 2), wp.quat_identity()),
         hx=t / 2,
         hy=hy,
         hz=hz / 2,
@@ -230,10 +229,7 @@ class Example:
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = True
-        if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = self.params["initial_paused"]
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(wp.vec3(0.35, -0.35, 0.55), -25.0, 135.0)
+        self.viewer.set_camera(wp.vec3(0.35, -0.35, 0.55), -25.0, 135.0)
 
         self.capture()
 
@@ -287,6 +283,7 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.add_argument("--seed", type=int, default=42)
+        parser.set_defaults(paused=True)
         return parser
 
 

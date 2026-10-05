@@ -296,6 +296,15 @@ The main ADMM parameters are:
   rows;
 - rigid contact matching mode, thresholds, and warm-start force scale.
 
+ADMM detects cross-entry contacts with its own collision pipeline. Set
+``Config.contact_max_triangle_pairs`` to size its triangle-pair storage and
+``Config.contact_reduction_hashtable_size_factor`` to scale its contact-reduction
+hash table independently. Both default to ``None``, preserving the collision
+pipeline defaults. When rigid contact matching is ``"latest"`` or ``"sticky"``,
+the triangle-pair capacity must be less than ``2**20``. Larger capacities are
+allowed with matching disabled. Increase the hash table size factor when
+contact reduction needs more storage while retaining contact matching.
+
 When ``gamma`` is positive, the coupler scales owned body and particle masses in
 each entry ``ModelView``, asks sub-solvers to refresh model-derived caches, and
 shifts entry input velocities toward the previous ADMM iterate. Endpoint

@@ -110,7 +110,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.log_points` — draw a point cloud (e.g. contact locations, particle positions)
 - :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
 - :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
-- :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — log numeric data for backend-specific visualization (e.g. time-series plots in Rerun)
+- :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — display numeric diagnostics as scalar plots or array visualizations; see :ref:`viewer-live-plots`
 - :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image in :class:`~newton.viewer.ViewerGL` as a dockable window or, with ``fullscreen=True``, as the main viewer surface for the current frame (no-op on other
   backends)
 
@@ -127,6 +127,43 @@ All viewers support ``set_visible_worlds()`` to limit visualization to a subset 
     viewer = newton.viewer.ViewerNull()
     viewer.set_model(model)
     viewer.set_visible_worlds(range(4))
+
+.. _viewer-live-plots:
+
+Live Plots
+~~~~~~~~~~
+
+:meth:`~newton.viewer.ViewerBase.log_scalar` and
+:meth:`~newton.viewer.ViewerBase.log_array` provide numeric diagnostics with
+backend-specific displays:
+
+- :class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX`
+  display rolling scalar line plots and heatmaps for scalar, 1-D, and 2-D
+  NumPy or Warp arrays in a Plots window.
+- :class:`~newton.viewer.ViewerViser` displays rolling scalar line plots in
+  the sidebar. Generic array visualization is not supported.
+- :class:`~newton.viewer.ViewerRerun` forwards scalar and array data to
+  Rerun's native scalar visualization.
+
+For ``ViewerGL``, ``ViewerRTX``, and ``ViewerViser``, set
+``plot_history_size`` when constructing the viewer to configure the number
+of plotted scalar samples (default: 250). Use ``smoothing`` to average a
+group of raw samples into each plotted point, and ``clear=True`` with
+``log_scalar`` to reset a signal's history and pending smoothing samples.
+For example, with ``ViewerGL`` or ``ViewerRTX``:
+
+.. code-block:: python
+
+    viewer.log_scalar("Training/reward", reward, smoothing=10)
+    viewer.log_array("Training/observations", observations)
+
+In ``ViewerGL`` and ``ViewerRTX``, pass ``None`` to ``log_array`` to remove
+a heatmap. Logging works before the first rendered frame and in headless
+mode; plots are displayed when the viewer window and its UI are active.
+
+``ViewerRerun`` controls history through ``keep_scalar_history`` for
+scalars and ``keep_historical_data`` for arrays. It ignores ``clear`` and
+``smoothing``, and passing ``None`` to ``log_array`` is a no-op.
 
 Real-time Viewers
 -----------------
@@ -187,6 +224,30 @@ Warp array on the viewer device:
 
     # Returns a wp.array with shape (height, width, 3), dtype wp.uint8
     frame = viewer.get_frame()
+
+.. note::
+
+    On a machine without a display, pyglet must also be put in headless mode. pyglet binds its
+    display backend the first time that backend is imported, and Newton imports pyglet's window
+    and display modules when the first :class:`~newton.viewer.ViewerGL` is constructed, so the
+    option has to be set before that point. Otherwise the snippet above fails with
+    ``pyglet.display.xlib.NoSuchDisplayException: Cannot connect to "None"`` on Linux, since
+    pyglet defaults to Xlib. Either set the environment variable::
+
+        PYGLET_HEADLESS=1 python your_script.py
+
+    or set the option in Python before creating the viewer::
+
+        import newton
+        import pyglet
+
+        pyglet.options["headless"] = True
+
+        viewer = newton.viewer.ViewerGL(headless=True)
+
+    On a machine with several GPUs, ``PYGLET_HEADLESS_DEVICE`` (or
+    ``pyglet.options["headless_device"]``) selects which one renders; it defaults to ``0``,
+    which is not necessarily the device the rest of the simulation runs on.
 
 **Custom UI panels:**
 
@@ -262,6 +323,14 @@ RTX Viewer
 It builds a USD scene on the first frame and updates rigid-body transforms each frame via the OVRTX attribute API,
 presenting the result in a pyglet/OpenGL window.
 
+Debug geometry can be added before or after the first rendered frame using
+:meth:`~newton.viewer.ViewerBase.log_shapes`, :meth:`~newton.viewer.ViewerBase.log_points`,
+:meth:`~newton.viewer.ViewerBase.log_lines`, and :meth:`~newton.viewer.ViewerBase.log_arrows`.
+For custom markers, register a triangle mesh with :meth:`~newton.viewer.ViewerBase.log_mesh`
+and place it with :meth:`~newton.viewer.ViewerBase.log_instances`. Instance batches support
+changing counts, transforms, scales, colors, and visibility. RTX arrows have cylinder shafts
+and cone heads; their ``width`` specifies the shaft radius in meters.
+
 .. note::
     The RTX viewer is experimental and may not have the same functionality as the OpenGL viewer.
 
@@ -283,6 +352,10 @@ This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in additio
     viewer.begin_frame(sim_time)
     viewer.log_state(state)
     viewer.end_frame()
+
+The :ref:`live plots <viewer-live-plots>` use ``imgui_bundle``, included in
+the ``examples`` dependencies. Install both RTX viewer and UI dependencies
+with ``uv sync --extra rtx --extra examples``.
 
 Recording and Offline Viewers
 -----------------------------
@@ -674,6 +747,12 @@ The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.Viewe
 
     viewer.log_contacts(contacts, state)
 
+Contact normals, mode disks, and force arrows are sized relative to the smaller
+shape in each contact pair. Use the ``Contact Relative Scale`` control to adjust
+all contact glyphs while preserving their proportions across differently sized
+contacts. Contact mode coloring and force arrows require the ``"force"``
+extended contact attribute.
+
 **Transform gizmos:**
 
 Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gizmo at a given transform:
@@ -684,8 +763,8 @@ Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gi
 
 **Logging images:**
 
-Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including batched/tiled
-outputs from :class:`~newton.sensors.SensorTiledCamera`) in
+Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including per-view
+outputs from :class:`~newton.sensors.SensorCamera`) in
 :class:`~newton.viewer.ViewerGL`. By default, non-headless :class:`~newton.viewer.ViewerGL`
 shows logged images as dockable windows. Pass ``fullscreen=True`` to draw the image
 as the main viewer surface for the current frame instead of the 3D scene. Accepted
@@ -695,7 +774,7 @@ shapes are ``(H, W)``, ``(H, W, C)``, ``(N, H, W)``, and ``(N, H, W, C)`` with
 
 .. testcode:: viewer-log-image
 
-    from newton.sensors import SensorTiledCamera
+    from newton.sensors import SensorCamera
 
     builder = newton.ModelBuilder()
     builder.add_body(mass=1.0)
@@ -710,15 +789,14 @@ shapes are ``(H, W)``, ``(H, W, C)``, ``(N, H, W)``, and ``(N, H, W, C)`` with
     heatmap = depth_image / max(depth_image.max(), 1e-6)
     viewer.log_image("heatmap", heatmap)
 
-    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
-    # output once and reuse it every frame; the RGBA conversion is a
-    # zero-copy view.
-    sensor = SensorTiledCamera(model=model)
-    W, H, camera_count = 16, 16, 1
-    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
-    # ... in a real pipeline, sensor.update(...) fills color_image each frame.
-    rgba = sensor.utils.to_rgba_from_color(color_image)
-    viewer.log_image("tiled_camera", rgba)
+    # Per-view color images from a camera sensor. Allocate the sensor output
+    # once and reuse it every frame; the RGBA conversion is a zero-copy view.
+    camera = SensorCamera(model)
+    view_count, width, height = 1, 16, 16
+    color_image = camera.create_color_image_output(view_count, width, height)
+    # ... in a real pipeline, camera.update(...) fills color_image each frame.
+    rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
+    viewer.log_image("camera", rgba)
 
 For a 3D input, a last-axis of 1, 3, or 4 is interpreted as channel count
 for a single ``(H, W, C)`` image; otherwise the array is interpreted as a
@@ -730,7 +808,7 @@ frame capture where the image should replace the 3D scene:
 
 .. code-block:: python
 
-    from newton.sensors import SensorTiledCamera
+    from newton.sensors import SensorCamera
 
     builder = newton.ModelBuilder()
     builder.add_body(mass=1.0)
@@ -739,15 +817,14 @@ frame capture where the image should replace the 3D scene:
     viewer = newton.viewer.ViewerNull()
     viewer.set_model(model)
 
-    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
-    # output once and reuse it every frame; the RGBA conversion is a
-    # zero-copy view.
-    sensor = SensorTiledCamera(model=model)
-    W, H, camera_count = 16, 16, 1
-    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
-    # ... in a real pipeline, sensor.update(...) fills color_image each frame.
-    rgba = sensor.utils.to_rgba_from_color(color_image)
-    viewer.log_image("tiled_camera", rgba, fullscreen=True)
+    # Per-view color images from a camera sensor. Allocate the sensor output
+    # once and reuse it every frame; the RGBA conversion is a zero-copy view.
+    camera = SensorCamera(model)
+    view_count, width, height = 1, 16, 16
+    color_image = camera.create_color_image_output(view_count, width, height)
+    # ... in a real pipeline, camera.update(...) fills color_image each frame.
+    rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
+    viewer.log_image("camera", rgba, fullscreen=True)
 
 The ``fullscreen=True`` selection is per-frame: call
 :meth:`~newton.viewer.ViewerBase.log_image` with ``fullscreen=True`` after

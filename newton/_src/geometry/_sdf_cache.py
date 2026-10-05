@@ -51,8 +51,8 @@ Cooked array layout (``.npz`` contents)
 * ``__created_utc__`` — 0-d ``str``: ISO-8601 UTC timestamp of the
   write.  Diagnostic only.
 
-The ``__kind__``, ``__newton_version__``, and ``__created_utc__``
-fields are not consulted at load time.
+The ``__kind__`` field is validated at load time. The ``__newton_version__`` and
+``__created_utc__`` fields are diagnostic only.
 
 To inspect a cache file from a shell, an ``.npz`` is just a zip of
 ``.npy`` members:
@@ -90,6 +90,7 @@ import json
 import logging
 import os
 import secrets
+import zipfile
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -116,6 +117,16 @@ _NEWTON_VERSION_KEY = "__newton_version__"
 _CREATED_UTC_KEY = "__created_utc__"
 _NPZ_SUFFIX = ".sdf.npz"
 _KIND = "newton.texture_sdf"
+# Match the sentinels in ``sdf_texture``. Valid slots pack three 10-bit
+# coordinates into bits 0-29, leaving the two highest uint32 values reserved.
+_SLOT_LINEAR = np.uint32(0xFFFFFFFE)
+_SLOT_EMPTY = np.uint32(0xFFFFFFFF)
+
+_QUANTIZATION_DTYPES: dict[int, np.dtype] = {
+    1: np.dtype(np.uint8),
+    2: np.dtype(np.uint16),
+    4: np.dtype(np.float32),
+}
 
 # Plain ndarray entries that pass through unmodified.
 _NDARRAY_KEYS: tuple[str, ...] = (
@@ -232,6 +243,123 @@ def cache_path(cache_dir: str | os.PathLike[str], hash_hex: str) -> Path:
     """Return the ``.npz`` path for a given cache key."""
 
     return Path(cache_dir) / f"{hash_hex}{_NPZ_SUFFIX}"
+
+
+def _require_array(
+    npz: np.lib.npyio.NpzFile,
+    key: str,
+    dtype: np.dtype,
+    shape: tuple[int, ...],
+) -> np.ndarray:
+    """Return one cache array after exact dtype and shape validation."""
+    array = np.asarray(npz[key])
+    if array.dtype != dtype or array.shape != shape:
+        raise ValueError(
+            f"invalid {key}: expected dtype {dtype} and shape {shape}, got dtype {array.dtype} and shape {array.shape}"
+        )
+    return array
+
+
+def _validate_sparse_data(data: Mapping[str, Any]) -> None:
+    """Validate relationships that keep cached SDF texture accesses in bounds."""
+    coarse_dims = data["coarse_dims"]
+    if any(dim <= 0 for dim in coarse_dims):
+        raise ValueError(f"invalid coarse_dims: expected positive dimensions, got {coarse_dims}")
+
+    subgrid_tex_size = data["subgrid_tex_size"]
+    num_subgrids = data["num_subgrids"]
+    subgrid_size = data["subgrid_size"]
+    quantization_mode = data["quantization_mode"]
+    total_subgrids = coarse_dims[0] * coarse_dims[1] * coarse_dims[2]
+    if subgrid_tex_size <= 0:
+        raise ValueError(f"invalid subgrid_tex_size: expected a positive value, got {subgrid_tex_size}")
+    if not 0 <= num_subgrids <= total_subgrids:
+        raise ValueError(f"invalid num_subgrids: expected a value in [0, {total_subgrids}], got {num_subgrids}")
+    if subgrid_size <= 0:
+        raise ValueError(f"invalid subgrid_size: expected a positive value, got {subgrid_size}")
+    if quantization_mode not in _QUANTIZATION_DTYPES:
+        raise ValueError(f"invalid quantization_mode: {quantization_mode}")
+
+    min_extents = data["min_extents"]
+    max_extents = data["max_extents"]
+    cell_size = data["cell_size"]
+    if not np.all(np.isfinite(min_extents)) or not np.all(np.isfinite(max_extents)):
+        raise ValueError("invalid SDF extents: values must be finite")
+    if not np.all(max_extents > min_extents):
+        raise ValueError("invalid SDF extents: max_extents must exceed min_extents")
+    if not np.all(np.isfinite(cell_size)) or not np.all(cell_size > 0.0):
+        raise ValueError("invalid cell_size: values must be finite and positive")
+
+    sdf_min = data["subgrids_min_sdf_value"]
+    sdf_range = data["subgrids_sdf_value_range"]
+    if not np.isfinite(sdf_min):
+        raise ValueError("invalid subgrids_min_sdf_value: expected a finite value")
+    if not np.isfinite(sdf_range) or sdf_range <= 0.0:
+        raise ValueError("invalid subgrids_sdf_value_range: expected a finite positive value")
+
+    coarse_sdf = data["coarse_sdf"]
+    expected_coarse_shape = (coarse_dims[2] + 1, coarse_dims[1] + 1, coarse_dims[0] + 1)
+    if coarse_sdf.shape != expected_coarse_shape:
+        raise ValueError(f"invalid coarse_sdf shape: expected {expected_coarse_shape}, got {coarse_sdf.shape}")
+    if not np.all(np.isfinite(coarse_sdf)):
+        raise ValueError("invalid coarse_sdf: values must be finite")
+
+    subgrid_data = data["subgrid_data"]
+    expected_subgrid_dtype = np.dtype(np.float32) if num_subgrids == 0 else _QUANTIZATION_DTYPES[quantization_mode]
+    expected_subgrid_shape = (subgrid_tex_size, subgrid_tex_size, subgrid_tex_size)
+    if subgrid_data.dtype != expected_subgrid_dtype or subgrid_data.shape != expected_subgrid_shape:
+        raise ValueError(
+            f"invalid subgrid_data: expected dtype {expected_subgrid_dtype} and shape {expected_subgrid_shape}, "
+            f"got dtype {subgrid_data.dtype} and shape {subgrid_data.shape}"
+        )
+    if np.issubdtype(subgrid_data.dtype, np.floating) and not np.all(np.isfinite(subgrid_data)):
+        raise ValueError("invalid subgrid_data: values must be finite")
+
+    expected_slots_shape = coarse_dims
+    subgrid_start_slots = data["subgrid_start_slots"]
+    if subgrid_start_slots.shape != expected_slots_shape:
+        raise ValueError(
+            f"invalid subgrid_start_slots shape: expected {expected_slots_shape}, got {subgrid_start_slots.shape}"
+        )
+
+    subgrid_required = data["subgrid_required"]
+    if subgrid_required.shape != (total_subgrids,):
+        raise ValueError(f"invalid subgrid_required shape: expected {(total_subgrids,)}, got {subgrid_required.shape}")
+    if not np.all((subgrid_required == 0) | (subgrid_required == 1)):
+        raise ValueError("invalid subgrid_required: values must be 0 or 1")
+    if int(np.count_nonzero(subgrid_required)) != num_subgrids:
+        raise ValueError("invalid subgrid_required: active count does not match num_subgrids")
+
+    active_slots = subgrid_start_slots < _SLOT_LINEAR
+    required_grid = subgrid_required.reshape((coarse_dims[2], coarse_dims[1], coarse_dims[0])).transpose(2, 1, 0)
+    if not np.array_equal(active_slots, required_grid.astype(bool)):
+        raise ValueError("invalid subgrid_start_slots: active slots do not match subgrid_required")
+    inactive_slots = subgrid_start_slots[~active_slots]
+    if not np.all((inactive_slots == _SLOT_EMPTY) | (inactive_slots == _SLOT_LINEAR)):
+        raise ValueError("invalid subgrid_start_slots: inactive cells must use a recognized sentinel")
+
+    if num_subgrids == 0:
+        if subgrid_tex_size != 1:
+            raise ValueError("invalid empty subgrid texture: expected size 1")
+        return
+
+    samples_per_dim = subgrid_size + 1
+    if subgrid_tex_size % samples_per_dim != 0:
+        raise ValueError("invalid subgrid_tex_size: size must be divisible by subgrid_size + 1")
+    blocks_per_dim = subgrid_tex_size // samples_per_dim
+    if blocks_per_dim > 1024 or blocks_per_dim**3 < num_subgrids:
+        raise ValueError("invalid subgrid texture capacity")
+
+    encoded_slots = subgrid_start_slots[active_slots]
+    if np.unique(encoded_slots).size != num_subgrids:
+        raise ValueError("invalid subgrid_start_slots: active slots must be unique")
+    if np.any(encoded_slots >> np.uint32(30)):
+        raise ValueError("invalid subgrid_start_slots: encoded slot uses reserved bits")
+    slot_x = encoded_slots & np.uint32(0x3FF)
+    slot_y = (encoded_slots >> np.uint32(10)) & np.uint32(0x3FF)
+    slot_z = (encoded_slots >> np.uint32(20)) & np.uint32(0x3FF)
+    if np.any(slot_x >= blocks_per_dim) or np.any(slot_y >= blocks_per_dim) or np.any(slot_z >= blocks_per_dim):
+        raise ValueError("invalid subgrid_start_slots: encoded slot exceeds the packed texture bounds")
 
 
 def save_sparse_data(
@@ -354,11 +482,8 @@ def try_load_sparse_data(
         return None
 
     try:
-        with np.load(npz_path, allow_pickle=False) as npz:
-            if _VERSION_KEY not in npz.files:
-                logger.info("SDF cache: missing embedded version key, treating as miss (%s)", npz_path)
-                return None
-            embedded = int(npz[_VERSION_KEY].item())
+        with npz_path.open("rb") as cache_file, np.load(cache_file, allow_pickle=False) as npz:
+            embedded = int(_require_array(npz, _VERSION_KEY, np.dtype(np.int32), ()).item())
             if embedded != CACHE_FORMAT_VERSION:
                 logger.info(
                     "SDF cache: embedded version %d != %d, treating as miss (%s)",
@@ -368,16 +493,51 @@ def try_load_sparse_data(
                 )
                 return None
 
-            data: dict[str, Any] = {k: np.asarray(npz[k]) for k in _NDARRAY_KEYS}
-            data["coarse_dims"] = tuple(int(v) for v in npz["coarse_dims"].reshape(-1))
-            for k, _, cast in _INT_SCALARS:
-                data[k] = cast(npz[k].item())
-            for k, _, cast in _FLOAT_SCALARS:
-                data[k] = cast(npz[k].item())
+            kind = np.asarray(npz[_KIND_KEY])
+            if kind.shape != () or kind.dtype.kind != "U" or str(kind.item()) != _KIND:
+                raise ValueError(f"invalid {_KIND_KEY}: expected {_KIND!r}")
+
+            coarse_dims_array = _require_array(npz, "coarse_dims", np.dtype(np.int32), (3,))
+            coarse_dims = tuple(int(v) for v in coarse_dims_array)
+            if any(dim <= 0 for dim in coarse_dims):
+                raise ValueError(f"invalid coarse_dims: expected positive dimensions, got {coarse_dims}")
+            total_subgrids = coarse_dims[0] * coarse_dims[1] * coarse_dims[2]
+            data: dict[str, Any] = {
+                "coarse_sdf": _require_array(
+                    npz,
+                    "coarse_sdf",
+                    np.dtype(np.float32),
+                    (coarse_dims[2] + 1, coarse_dims[1] + 1, coarse_dims[0] + 1),
+                ),
+                "subgrid_start_slots": _require_array(
+                    npz,
+                    "subgrid_start_slots",
+                    np.dtype(np.uint32),
+                    coarse_dims,
+                ),
+                "subgrid_required": _require_array(
+                    npz,
+                    "subgrid_required",
+                    np.dtype(np.int32),
+                    (total_subgrids,),
+                ),
+                "coarse_dims": coarse_dims,
+            }
+            for k, dtype, cast in _INT_SCALARS:
+                data[k] = cast(_require_array(npz, k, dtype, ()).item())
+            for k, dtype, cast in _FLOAT_SCALARS:
+                data[k] = cast(_require_array(npz, k, dtype, ()).item())
             for k in _VEC3_SCALARS:
-                data[k] = np.asarray(npz[k], dtype=np.float64).reshape(3)
+                data[k] = _require_array(npz, k, np.dtype(np.float64), (3,))
+            subgrid_tex_size = data["subgrid_tex_size"]
+            data["subgrid_data"] = np.asarray(npz["subgrid_data"])
+            if data["subgrid_data"].ndim != 3 or data["subgrid_data"].shape != (subgrid_tex_size,) * 3:
+                raise ValueError(
+                    f"invalid subgrid_data shape: expected {(subgrid_tex_size,) * 3}, got {data['subgrid_data'].shape}"
+                )
+            _validate_sparse_data(data)
             return data
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
         logger.warning("SDF cache: failed to load %s: %s", npz_path, exc)
         return None
 

@@ -101,7 +101,7 @@ PARAMS = {
     # collision
     "rigid_body_contact_buffer_size": 512,
     "collision_broad_phase": "nxn",
-    "soft_contact_margin": 0.01,
+    "soft_contact_gap": 0.01,
     # cloth stiffness (soft enough that the corners drape over the grip)
     "grid_tri_ke": 5.0e2,
     "grid_tri_kd": 1.0e-1,
@@ -111,7 +111,6 @@ PARAMS = {
     "camera_pitch": -10.0,
     "camera_yaw": 128.0,
     "draw_wireframe": False,
-    "initial_paused": False,
 }
 
 
@@ -152,7 +151,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase=self.params["collision_broad_phase"],
-            soft_contact_margin=self.params["soft_contact_margin"],
+            soft_contact_gap=self.params["soft_contact_gap"],
             enable_rigid_soft_full_surface_contact=self.params["enable_water_tight"],
         )
 
@@ -170,15 +169,12 @@ class Example:
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = self.params["draw_wireframe"]
-        if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = self.params["initial_paused"]
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(
-                wp.vec3(*self.params["camera_pos"]),
-                self.params["camera_pitch"],
-                self.params["camera_yaw"],
-            )
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+        self.viewer.set_camera(
+            wp.vec3(*self.params["camera_pos"]),
+            self.params["camera_pitch"],
+            self.params["camera_yaw"],
+        )
+        if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = self.params["camera_fov"]
 
     # ── model construction ──────────────────────────────────────────────

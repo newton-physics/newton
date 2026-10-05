@@ -10,6 +10,7 @@
 # performs selective resets on subsets of worlds.
 #
 # Command: python -m newton.examples selection_articulations
+#          python -m newton.examples selection_articulations --solver kamino
 #
 ###########################################################################
 
@@ -81,15 +82,18 @@ class Example:
         self.frame_dt = 1.0 / self.fps
 
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 6 if args.solver == "kamino" else 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
+        self.solver_type = args.solver
 
         # increase contact stiffness
         contact_ke = 1.0e4
 
         world = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(world)
         world.default_shape_cfg.ke = contact_ke
         world.default_shape_cfg.gap = 0.0
         world.add_mjcf(
@@ -116,7 +120,16 @@ class Example:
         # finalize model
         self.model = scene.finalize()
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=200, nconmax=50)
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.dvi.max_alternating_iterations = 7
+            solver_config.dvi.inequality_sweeps_per_iteration = 1
+            solver_config.constraints.gamma = 0.1
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        else:
+            self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=200, nconmax=50)
 
         self.viewer = viewer
 
@@ -304,6 +317,7 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
+        parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=16)
         return parser
 

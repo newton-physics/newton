@@ -7,12 +7,10 @@
 def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, density=None, collision=True):
     """Author a GeomBasisCurves marked as a curve deformable (cable).
 
-    Binds a minimal canonical curve-deformable material carrying ``curvesThickness`` (and optional
-    ``density``) so the importer does not warn about an unauthored cable thickness. Pass
-    ``thickness=None`` to leave the cable without a bound material, e.g. to exercise the
-    default-radius fallback or a test's own material binding. ``collision`` authors an
-    enabled ``PhysicsCollisionAPI`` (the common colliding case); pass ``False`` for the
-    collision-gating tests.
+    Authors a constant simulation-geometry ``thicknesses`` array and optionally binds a material
+    carrying ``density``. Pass ``thickness=None`` to exercise the default-radius fallback.
+    ``collision`` authors an enabled ``PhysicsCollisionAPI`` (the common colliding case); pass
+    ``False`` for the collision-gating tests.
     """
     from pxr import UsdGeom
 
@@ -27,11 +25,18 @@ def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, den
     if collision:
         curves.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
     if thickness is not None:
-        mat_attrs = {"curvesThickness": thickness}
-        if density is not None:
-            mat_attrs["density"] = density
-        _bind_deformable_material(stage, curves.GetPrim(), f"{path}Mat", **mat_attrs)
+        _author_deformable_element_array(curves.GetPrim(), "thicknesses", [thickness], "constant")
+    if density is not None:
+        _bind_deformable_material(stage, curves.GetPrim(), f"{path}Mat", density=density)
     return curves
+
+
+def _author_deformable_element_array(prim, name, values, element_type):
+    """Author a deformable simulation array with its required element-type token."""
+    from pxr import Sdf
+
+    prim.CreateAttribute(f"physics:{name}", Sdf.ValueTypeNames.FloatArray).Set(list(values))
+    prim.CreateAttribute(f"physics:{name}:elementType", Sdf.ValueTypeNames.Token).Set(element_type)
 
 
 def _bind_deformable_material(stage, prim, mat_path, *, namespace="physics", **attrs):
@@ -59,6 +64,17 @@ def _bind_deformable_material(stage, prim, mat_path, *, namespace="physics", **a
     binding = UsdShade.MaterialBindingAPI.Apply(prim)
     binding.Bind(mat, materialPurpose="physics")
     return mat
+
+
+def _author_newton_curve_damping(material, **attrs):
+    """Apply the Newton curve-material API and author its damping attributes."""
+    from pxr import Sdf
+
+    prim = material.GetPrim()
+    prim.AddAppliedSchema("NewtonCurvesDeformableMaterialAPI")
+    for name, value in attrs.items():
+        prim.CreateAttribute(f"newton:{name}", Sdf.ValueTypeNames.Float).Set(value)
+    return material
 
 
 def _add_physics_attachment(
@@ -167,10 +183,11 @@ def group_labels(builder, family):
     """Prim-path labels of a deformable family's imported groups (``cable``/``cloth``/``soft``).
 
     The single seam through which tests locate deformable groups: it reads the builder
-    registries, so a change to how group metadata is stored or exposed only touches this
-    helper, not the tests.
+    registry, so a change to its private range storage only touches this helper,
+    not the importer behavior tests.
     """
-    return list(getattr(builder, f"_{family}_label"))
+    family = {"cable": "curve", "cloth": "surface", "soft": "volume"}[family]
+    return list(getattr(builder, f"{family}_label"))
 
 
 def group_range(builder, family, label, kind, world=None):
@@ -180,12 +197,16 @@ def group_range(builder, family, label, kind, world=None):
     ``particle``/``tet`` for soft volumes. See :func:`group_labels` for why tests must resolve
     ranges through this seam.
     """
-    labels = getattr(builder, f"_{family}_label")
-    worlds = getattr(builder, f"_{family}_world")
+    registry_family = {"cable": "curve", "cloth": "surface", "soft": "volume"}[family]
+    labels = getattr(builder, f"{registry_family}_label")
+    worlds = getattr(builder, f"{registry_family}_world")
     matches = [i for i, group_label in enumerate(labels) if group_label == label]
     if world is not None:
         matches = [i for i in matches if worlds[i] == world]
     if len(matches) != 1:
         raise LookupError(f"{len(matches)} {family} groups labelled '{label}' (world={world})")
     (i,) = matches
-    return getattr(builder, f"_{family}_{kind}_start")[i], getattr(builder, f"_{family}_{kind}_end")[i]
+    return (
+        getattr(builder, f"_{registry_family}_{kind}_start")[i],
+        getattr(builder, f"_{registry_family}_{kind}_end")[i],
+    )

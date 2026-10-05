@@ -8,6 +8,7 @@
 # from a USD file using newton.ModelBuilder.add_usd().
 #
 # Command: python -m newton.examples robot_h1 --world-count 16
+#          python -m newton.examples robot_h1 --solver kamino
 #
 ###########################################################################
 
@@ -16,7 +17,7 @@ import warp as wp
 import newton
 import newton.examples
 import newton.utils
-from newton import JointTargetMode
+from newton import JointTargetMode, JointType
 
 
 class Example:
@@ -30,13 +31,17 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
+        self.solver_type = args.solver
 
         self.viewer = viewer
 
         self.device = wp.get_device()
 
         h1 = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(h1)
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(h1)
+        else:
+            newton.solvers.SolverMuJoCo.register_custom_attributes(h1)
         h1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
         h1.default_shape_cfg.ke = 2.0e3
         h1.default_shape_cfg.kd = 1.0e2
@@ -53,28 +58,53 @@ class Example:
         # approximate meshes for faster collision detection
         h1.approximate_meshes("bounding_box")
 
-        for i in range(len(h1.joint_target_ke)):
-            h1.joint_target_ke[i] = 150
-            h1.joint_target_kd[i] = 5
-            h1.joint_target_mode[i] = int(JointTargetMode.POSITION)
+        for joint_id, joint_type in enumerate(h1.joint_type):
+            if joint_type != JointType.REVOLUTE:
+                continue
+            dof_start = h1.joint_qd_start[joint_id]
+            dof_end = h1.joint_qd_start[joint_id + 1] if joint_id + 1 < h1.joint_count else h1.joint_dof_count
+            for dof_id in range(dof_start, dof_end):
+                h1.joint_target_ke[dof_id] = 500 if self.solver_type == "kamino" else 150
+                h1.joint_target_kd[dof_id] = 10 if self.solver_type == "kamino" else 5
+                h1.joint_target_mode[dof_id] = int(JointTargetMode.POSITION)
 
         builder = newton.ModelBuilder()
         builder.replicate(h1, self.world_count)
+
+        self.root_dof_indices = []
+        for root_joint_id in builder.articulation_start:
+            root_dof_start = builder.joint_qd_start[root_joint_id]
+            root_dof_end = builder.joint_qd_start[root_joint_id + 1]
+            self.root_dof_indices.extend(range(root_dof_start, root_dof_end))
 
         builder.default_shape_cfg.ke = 1.0e3
         builder.default_shape_cfg.kd = 1.0e2
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        use_mujoco_contacts = args.use_mujoco_contacts if args else False
-        self.solver = newton.solvers.SolverMuJoCo(
-            self.model,
-            iterations=100,
-            ls_iterations=50,
-            njmax=100,
-            nconmax=210,
-            use_mujoco_contacts=use_mujoco_contacts,
-        )
+        use_mujoco_contacts = self.solver_type == "mujoco" and args.use_mujoco_contacts
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.dvi.bilateral_solve_interval = 8
+            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
+            solver_config.dvi.omega = 1.2
+            solver_config.dvi.contact_warmstart_method = (
+                "key_and_position_with_net_force_backup_and_tangential_net_force"
+            )
+            solver_config.dvi.use_schur_complement = True
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        else:
+            self.solver = newton.solvers.SolverMuJoCo(
+                self.model,
+                iterations=100,
+                ls_iterations=50,
+                njmax=100,
+                nconmax=210,
+                use_mujoco_contacts=use_mujoco_contacts,
+            )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -133,6 +163,17 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        """Verify the robot settles without actuating its floating base."""
+        target_mode = self.model.joint_target_mode.numpy()
+        target_ke = self.model.joint_target_ke.numpy()
+        target_kd = self.model.joint_target_kd.numpy()
+        if any(
+            target_mode[dof_id] != int(JointTargetMode.NONE) or target_ke[dof_id] != 0.0 or target_kd[dof_id] != 0.0
+            for dof_id in self.root_dof_indices
+        ):
+            raise AssertionError("floating-base DOFs must remain unactuated")
+
+        velocity_limit = 0.015 if self.solver_type == "kamino" else 5e-3
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -143,7 +184,7 @@ class Example:
             self.model,
             self.state_0,
             "all body velocities are small",
-            lambda q, qd: max(abs(qd)) < 5e-3,
+            lambda q, qd: max(abs(qd)) < velocity_limit,
         )
 
     @staticmethod
@@ -151,6 +192,7 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_mujoco_contacts_arg(parser)
+        parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=4)
         return parser
 

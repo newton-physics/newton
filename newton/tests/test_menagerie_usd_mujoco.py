@@ -1005,6 +1005,7 @@ ACTUATOR_SKIP_FIELDS: set[str] = {
     "actuator_trntype_body_adr",
     "actuator_actadr",
     "actuator_actnum",
+    "actuator_ctrladr",
     # Position/velocity-shortcut MjcActuator rows targeting single-DOF joints are
     # promoted to CtrlSource.JOINT_TARGET on import (matching MJCF behavior).
     # _init_actuators rebuilds the compiled MuJoCo actuators from joint_target_*,
@@ -1177,8 +1178,8 @@ class TestMenagerieUSD(TestMenagerieBase):
         "nmeshpolymap",
         "nmeshpolyvert",
         "nmeshvert",
-        "nmaxmeshdeg",
-        "nmaxpolygon",
+        "nmeshdegmax",
+        "npolygonmax",
         "mesh_",
         # Site body IDs reference body indices (different ordering)
         "site_",
@@ -1329,9 +1330,6 @@ class TestMenagerieUSD(TestMenagerieBase):
         # Derived from mass matrix; differs when backfill_model=False because
         # Newton re-diagonalizes inertia. Compared indirectly via simulation equivalence.
         "actuator_acc0",
-        # Derived from joint ranges via set_length_range; Newton recomputes this
-        # during notify_model_changed but the native model does not.
-        "actuator_lengthrange",
     }
 
     # Per-joint fields the USD parser doesn't populate to match native MJCF, but
@@ -1805,13 +1803,10 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
     num_steps = 20
     fk_enabled = True
     # Menagerie PR #252 corrected the source finger pads from 2e-6 kg to
-    # 0.0035 kg. The pinned USD was generated from the old source and still
-    # authors the old mass on its colliders; the test below tracks that fixture.
+    # 0.0035 kg. The pinned USD is generated from that corrected source, so it
+    # authors physics:mass = 0.00175 on each pad collider and agrees with the
+    # MJCF geom masses; body mass and inertia now compare exactly.
     dynamics_tolerance = 1e-4
-
-    def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
-        # body_mass differs for finger pads (see class docstring).
-        pass
 
     def test_pad_mass_matches_source_scale(self):
         """The pinned MJCF and USD agree on the finger-pad mass scale."""
@@ -1824,9 +1819,6 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
             native_id = self._mj_model.body(body_name).id
             newton_id = self._body_map[native_id]
             pad_masses.append((body_name, newton_mass[newton_id], native_mass[native_id]))
-
-        if all(np.isclose(usd_mass, 2.0e-6) for _, usd_mass, _ in pad_masses):
-            self.skipTest("Pinned USD fixture still authors the pre-Menagerie-#252 finger-pad mass")
 
         for body_name, usd_mass, mjcf_mass in pad_masses:
             np.testing.assert_allclose(
