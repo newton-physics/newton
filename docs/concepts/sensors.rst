@@ -163,7 +163,9 @@ For fisheye cameras, extract the calibration values from your chosen USD attribu
 :meth:`~newton.sensors.SensorCamera.compute_camera_rays_fisheye_opencv`,
 :meth:`~newton.sensors.SensorCamera.compute_camera_rays_fisheye_ftheta`, or
 :meth:`~newton.sensors.SensorCamera.compute_camera_rays_fisheye_kannala_brandt`. Each helper builds a single-camera
-``(height, width, 2)`` ray bundle.
+``(height, width, sample_count, 2)`` ray bundle. Set ``multisamples`` to generate
+subpixel rays and select ``SensorCamera.AntiAliasing.SSAA`` or ``MSAA`` through
+``SensorCamera.RenderConfig.anti_aliasing`` to resolve them.
 
 Extended Attributes
 -------------------

@@ -54,6 +54,29 @@ class GaussianRenderMode(enum.IntEnum):
     """Quality Render Mode, collect hits until minimum transmittance is reached"""
 
 
+class AntiAliasing(enum.IntEnum):
+    """Anti-aliasing mode applied to multisampled camera-ray bundles."""
+
+    NONE = 0
+    """Resolve a single ray per pixel. Extra samples in the ray bundle are ignored."""
+
+    SSAA = 1
+    """Supersample: trace and shade every ray in the bundle, then average the results.
+
+    Highest quality and highest cost; shading runs once per sample.
+    """
+
+    MSAA = 2
+    """Multisample: resolve every ray against its own nearest hit, but shade each distinct
+    surface only once and composite the shaded colors per subsample.
+
+    Anti-aliases silhouettes against both the background and other objects at a fraction of
+    the :attr:`SSAA` cost, since shading runs once per covered surface (typically one or
+    two at an edge) instead of once per ray. Interior shading is not supersampled: rays
+    landing on the same surface share a single shaded color.
+    """
+
+
 class TextureProjectionMode(enum.IntEnum):
     """Projection mode for texture-mapped shapes without authored UVs."""
 
@@ -112,6 +135,14 @@ class RenderConfig:
 
     render_order: RenderOrder = RenderOrder.PIXEL_PRIORITY
     """Render traversal order (see :class:`RenderOrder`)."""
+
+    anti_aliasing: AntiAliasing = AntiAliasing.NONE
+    """Anti-aliasing mode applied to multisampled ray bundles (see :class:`AntiAliasing`).
+
+    Has no effect on single-sample ray bundles. Multisampled bundles are only
+    resolved when this is :attr:`AntiAliasing.SSAA` or :attr:`AntiAliasing.MSAA`;
+    :attr:`AntiAliasing.NONE` renders the first sample of each pixel.
+    """
 
     tile_width: int = 16
     """Tile width [px] for ``RenderOrder.TILED`` traversal."""
