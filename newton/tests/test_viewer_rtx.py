@@ -1,15 +1,67 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Test RTX runtime mesh updates without starting OVRTX."""
+"""Test RTX frame capture and runtime mesh updates."""
 
+import importlib.util
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
 import warp as wp
 
+import newton
+from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerRTX
+
+
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+class TestViewerRTXGetFrame(unittest.TestCase):
+    def test_headless_frame_capture(self):
+        """Capture real RTX frames and keep deprecated screenshot saving functional."""
+        if importlib.util.find_spec("ovrtx") is None:
+            self.skipTest("Requires ovrtx")
+        if not wp.is_cuda_available():
+            self.skipTest("Requires an NVIDIA RTX-capable GPU")
+
+        from PIL import Image
+
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, color=(1.0, 0.0, 0.0))
+        model = builder.finalize()
+        state = model.state()
+        for async_rendering in (False, True):
+            with self.subTest(async_rendering=async_rendering):
+                viewer = ViewerRTX(width=64, height=48, headless=True, async_rendering=async_rendering)
+                try:
+                    viewer.set_model(model)
+                    viewer.set_camera(pos=wp.vec3(2.0, 0.0, 0.0), pitch=0.0, yaw=180.0)
+                    for frame_index in range(3):
+                        viewer.begin_frame(frame_index / 60)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                        frame = viewer.get_frame()
+                        self.assertEqual(frame.shape, (48, 64, 3))
+                        self.assertEqual(frame.dtype, wp.uint8)
+                        self.assertEqual(frame.device, model.device)
+                        rgb = frame.numpy()
+                        self.assertGreater(np.ptp(rgb), 0)
+
+                    target = wp.empty_like(frame)
+                    self.assertIs(viewer.get_frame(target_image=target), target)
+                    np.testing.assert_array_equal(target.numpy(), rgb)
+
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "screenshot.png"
+                        with self.assertWarnsRegex(DeprecationWarning, "get_frame"):
+                            viewer.save_screenshot(str(path))
+                        with Image.open(path) as screenshot:
+                            np.testing.assert_array_equal(np.asarray(screenshot.convert("RGB")), rgb)
+                finally:
+                    viewer.close()
 
 
 class TestViewerRTX(unittest.TestCase):

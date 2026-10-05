@@ -2042,13 +2042,61 @@ void main() {
         with wp.ScopedTimer("ViewerRTX::swap_buffers", active=PROFILE_ENABLED, use_nvtx=True):
             self._window.flip()
 
+    def get_frame(
+        self, target_image: wp.array3d[wp.uint8] | None = None, render_ui: bool = False
+    ) -> wp.array3d[wp.uint8]:
+        """Retrieve the last rendered frame as RGB image data.
+
+        Like :meth:`ViewerGL.get_frame`, this returns a Warp array on the
+        viewer device. Call ``.numpy()`` on the result for a NumPy array.
+        Works in headless mode and reads the RTX render output through CPU
+        memory. With asynchronous rendering, this returns the last completed
+        frame, waiting for the pending render only if no completed frame is
+        available. Call after :meth:`end_frame`.
+
+        Args:
+            target_image: Optional pre-allocated Warp array on the viewer
+                device with shape ``(height, width, 3)`` and dtype ``wp.uint8``.
+                If ``None``, a new array is created.
+            render_ui: Whether to include UI overlays. Only ``False`` is
+                supported because RTX capture reads the renderer output.
+
+        Returns:
+            RGB image data on the viewer device with shape
+            ``(height, width, 3)`` and dtype ``wp.uint8``. The origin is
+            top-left and the dimensions are the fixed render resolution.
+            If supplied, returns ``target_image``.
+
+        Raises:
+            RuntimeError: No rendered frame or color output is available.
+            ValueError: The target shape, dtype, or device is incompatible.
+            NotImplementedError: ``render_ui`` is ``True``.
+        """
+        if render_ui:
+            raise NotImplementedError("ViewerRTX.get_frame() does not support render_ui=True")
+
+        h, w = self._render_height, self._render_width
+        if target_image is None:
+            target_image = wp.empty(shape=(h, w, 3), dtype=wp.uint8, device=self.device)
+        else:
+            if target_image.shape != (h, w, 3):
+                raise ValueError(f"Shape of `target_image` must be ({h}, {w}, 3), got {target_image.shape}")
+            if target_image.dtype != wp.uint8:
+                raise ValueError(f"The dtype of `target_image` must be wp.uint8, got {target_image.dtype}")
+            if target_image.device != self.device:
+                raise ValueError(f"The device of `target_image` must be {self.device}, got {target_image.device}")
+
+        pixels = self._capture_screenshot_pixels()
+        target_image.assign(np.ascontiguousarray(pixels[:, :, :3]))
+        return target_image
+
     def _capture_screenshot_pixels(self) -> np.ndarray:
         if self._render_products is not None:
             products = self._render_products
         elif self._render_result is not None:
             products = self._render_result.wait().fetch()
         else:
-            raise RuntimeError("save_screenshot() requires at least one completed render frame")
+            raise RuntimeError("Frame capture requires at least one completed render frame")
 
         from ovrtx import Device
 
@@ -2059,15 +2107,25 @@ void main() {
                         pixels = np.array(np.from_dlpack(mapping), copy=True)
                     return pixels
 
-        raise RuntimeError("save_screenshot() could not find the LdrColor render output")
+        raise RuntimeError("Frame capture could not find the LdrColor render output")
 
     def save_screenshot(self, path: str) -> None:
         """Save the last rendered frame to an image file.
+
+        .. deprecated:: 1.7
+            Use :meth:`get_frame` and an image library instead, for example
+            ``PIL.Image.fromarray(viewer.get_frame().numpy()).save(path)``.
 
         The file format is inferred from the extension (e.g. ``.png``, ``.jpg``).
         Call this after at least one completed frame has been rendered (e.g.
         after the simulation loop). Works in headless mode.
         """
+        warnings.warn(
+            "ViewerRTX.save_screenshot() is deprecated in Newton 1.7; "
+            "use get_frame().numpy() and an image library such as Pillow to save the image instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         from PIL import Image
 
         pixels = self._capture_screenshot_pixels()
