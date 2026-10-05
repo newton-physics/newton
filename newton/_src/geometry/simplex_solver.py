@@ -129,7 +129,11 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         bc[i0] = lambda0
         bc[i1] = lambda1
 
-        return lambda0 * a + lambda1 * b, bc, mask
+        closest = lambda0 * a + lambda1 * b
+        if lambda0 > 0.0 and lambda1 > 0.0 and wp.length_sq(closest) <= EPSILON * EPSILON:
+            # Project directly to avoid cancellation along a nearly touching edge.
+            closest = wp.cross(edge, wp.cross(a, edge)) * (1.0 / vsq)
+        return closest, bc, mask
 
     @wp.func
     def closest_triangle(
@@ -385,9 +389,9 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                 # separation, even below the distance convergence tolerance.
                 if simplex_usage_mask != wp.uint32(0):
                     near_direction = last_search_dir
-                    if dist_sq > EPSILON * EPSILON:
+                    if dist_sq > 0.0:
                         near_direction = -v
-                    if wp.length_sq(near_direction) > EPSILON * EPSILON:
+                    if wp.length_sq(near_direction) > 0.0:
                         near_normal = wp.normalize(near_direction)
                         support = minkowski_support(
                             geom_a, geom_b, near_normal, orientation_b, position_b, extend, data_provider
@@ -401,7 +405,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                                 # At the origin tolerance, preserve the certified plane gap.
                                 return True, point_a, point_b, near_normal, -support_plane
                             return False, point_a, point_b, near_normal, 0.0
-                if dist_sq <= EPSILON * EPSILON:
+                if simplex_usage_mask != wp.uint32(0) and dist_sq <= EPSILON * EPSILON:
                     # Origin reached without a separating/supporting plane.
                     point_a, point_b = simplex_get_closest(simplex_v, simplex_barycentric, simplex_usage_mask)
                     return False, point_a, point_b, wp.vec3(0.0), 0.0

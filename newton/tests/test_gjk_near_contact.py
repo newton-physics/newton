@@ -37,6 +37,24 @@ def _query_box_gap(gap: float, direction: float, output: wp.array[float]):
 
 
 @wp.kernel
+def _query_tiny_gap(shape_type: int, scale: wp.vec3, positions: wp.array[wp.vec3], output: wp.array2d[float]):
+    """Query pairs with representable nanometer gaps and retain both witnesses."""
+    i = wp.tid()
+    a = GenericShapeData()
+    a.shape_type = shape_type
+    a.scale = scale
+    separated, pa, pb, normal, distance = wp.static(create_solve_closest_distance(support_map).core)(
+        a, a, wp.quat_identity(), positions[i], 0.0, SupportMapDataProvider()
+    )
+    output[i, 0] = float(separated)
+    output[i, 1] = distance
+    for axis in range(3):
+        output[i, 2 + axis] = normal[axis]
+        output[i, 5 + axis] = pa[axis]
+        output[i, 8 + axis] = pb[axis]
+
+
+@wp.kernel
 def _query_rotated_box(output: wp.array2d[float]):
     """Place a small rotated box at a known gap above a much larger box."""
     i = wp.tid()
@@ -77,6 +95,67 @@ def test_positive_sub_tolerance_gap(test, device):
                 np.testing.assert_allclose(actual[5:8], [direction * gap, 0.0, 0.0], atol=3e-9)
 
 
+def test_tiny_gap_with_tangential_offsets(test, device):
+    """Preserve signed nanometer gaps when offset boxes need edge or face refinement."""
+    for gap in (-5e-9, 0.0, 5e-9):
+        positions = np.array(
+            [
+                [direction * (np.float32(0.02) + np.float32(gap)), y, z]
+                for direction in (-1.0, 1.0)
+                for y in (-0.035, -0.0315, 0.0, 0.014, 0.035)
+                for z in (-0.055, -0.022, 0.0, 0.033, 0.055)
+            ],
+            dtype=np.float32,
+        )
+        output = wp.zeros((len(positions), 11), dtype=float, device=device)
+        wp.launch(
+            _query_tiny_gap,
+            dim=len(positions),
+            inputs=[int(GeoType.BOX), wp.vec3(0.01, 0.02, 0.03), wp.array(positions, dtype=wp.vec3, device=device)],
+            outputs=[output],
+            device=device,
+        )
+        actual = output.numpy()
+        test.assertTrue(np.isfinite(actual).all())
+        np.testing.assert_array_equal(actual[:, 0], float(gap > 0.0))
+        if gap > 0.0:
+            expected_gap = np.abs(positions[:, 0]) - np.float32(0.02)
+            np.testing.assert_allclose(actual[:, 1], expected_gap, atol=1e-12, rtol=1e-5)
+            normals = np.zeros_like(positions)
+            normals[:, 0] = np.sign(positions[:, 0])
+            np.testing.assert_allclose(actual[:, 2:5], normals, atol=1e-6)
+        else:
+            np.testing.assert_array_equal(actual[:, 1], 0.0)
+
+
+def test_tiny_initial_center_displacement(test, device):
+    """Build a simplex for separated points whose initial displacement is below epsilon."""
+    positions = np.array(
+        [
+            [direction * gap if axis == coordinate else 0.0 for coordinate in range(3)]
+            for gap in (1e-9, 5e-9, 1e-8)
+            for direction in (-1.0, 1.0)
+            for axis in range(3)
+        ],
+        dtype=np.float32,
+    )
+    output = wp.zeros((len(positions), 11), dtype=float, device=device)
+    wp.launch(
+        _query_tiny_gap,
+        dim=len(positions),
+        inputs=[int(GeoType.SPHERE), wp.vec3(0.0), wp.array(positions, dtype=wp.vec3, device=device)],
+        outputs=[output],
+        device=device,
+    )
+    actual = output.numpy()
+    distances = np.linalg.norm(positions, axis=1)
+    np.testing.assert_array_equal(actual[:, 0], 1.0)
+    np.testing.assert_allclose(actual[:, 1], distances, atol=1e-15, rtol=1e-6)
+    np.testing.assert_allclose(actual[:, 2:5], positions / distances[:, None], atol=1e-6)
+    np.testing.assert_array_equal(actual[:, 5:8], 0.0)
+    np.testing.assert_allclose(actual[:, 8:11], positions, atol=1e-15, rtol=1e-6)
+
+
 def test_true_overlap(test, device):
     """Keep the overlap classification for touching and penetrating boxes."""
     for gap in (-1e-3, -1e-5, -5e-9, 0.0):
@@ -109,6 +188,8 @@ class TestGJKNearContact(unittest.TestCase):
 devices = get_test_devices()
 for _test in (
     test_positive_sub_tolerance_gap,
+    test_tiny_gap_with_tangential_offsets,
+    test_tiny_initial_center_displacement,
     test_true_overlap,
     test_rotated_box_above_large_face,
 ):
