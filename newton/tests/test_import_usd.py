@@ -7086,13 +7086,10 @@ def Xform "Articulation" (
         np.testing.assert_allclose(inertia @ inv_inertia, np.eye(3), atol=1e-5, rtol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_massapi_authored_mass_without_inertia_can_use_physx_fallback(self):
-        """Use the small-sphere inertia override for authored mass without inertia only on request.
+    def test_massapi_authored_mass_without_colliders_uses_small_sphere_inertia(self):
+        """Authored mass without inertia or colliders gets OpenUSD's small-sphere inertia.
 
-        With ``physx_missing_inertia_fallback=True``, a body with authored mass ``m`` and no
-        authored inertia gets ``I = 0.4 * m * r**2`` with ``r = 0.1 [m]``, with or without
-        colliders. Authored inertia is kept. Without the flag, the same bodies keep their
-        previous inertia, so the default is unchanged.
+        Bodies with colliders keep the collider inertia scaled to the authored mass.
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -7100,11 +7097,11 @@ def Xform "Articulation" (
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
-        cube_size = 2.0
-        for name, mass, has_collider, diagonal_inertia in (
-            ("Cube", 1.0, True, None),
-            ("Bare", 2.0, False, None),
-            ("Authored", 1.0, True, Gf.Vec3f(1.0, 2.0, 3.0)),
+        for name, mass, geometry, diagonal_inertia in (
+            ("Bare", 2.0, None, None),
+            ("VisualOnly", 1.0, "visual", None),
+            ("Cube", 1.0, "collider", None),
+            ("Authored", 1.0, None, Gf.Vec3f(1.0, 2.0, 3.0)),
         ):
             body = UsdGeom.Xform.Define(stage, f"/World/{name}")
             UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
@@ -7112,30 +7109,24 @@ def Xform "Articulation" (
             mass_api.CreateMassAttr().Set(mass)
             if diagonal_inertia is not None:
                 mass_api.CreateDiagonalInertiaAttr().Set(diagonal_inertia)
-            if has_collider:
-                collider = UsdGeom.Cube.Define(stage, f"/World/{name}/Collider")
-                collider.CreateSizeAttr().Set(cube_size)
-                UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            if geometry is not None:
+                cube = UsdGeom.Cube.Define(stage, f"/World/{name}/Geom")
+                cube.CreateSizeAttr().Set(2.0)
+                if geometry == "collider":
+                    UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
 
-        def body_inertia(**kwargs):
-            builder = newton.ModelBuilder()
-            result = builder.add_usd(stage, **kwargs)
-            inertia = {}
-            for name in ("Cube", "Bare", "Authored"):
-                body_idx = result["path_body_map"][f"/World/{name}"]
-                inertia[name] = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
-            return inertia
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
 
-        fallback = body_inertia(physx_missing_inertia_fallback=True)
-        for name, mass in (("Cube", 1.0), ("Bare", 2.0)):
-            np.testing.assert_allclose(fallback[name], np.eye(3) * 0.4 * mass * 0.1**2, rtol=1e-6, atol=1e-9)
-        np.testing.assert_allclose(np.diag(fallback["Authored"]), [1.0, 2.0, 3.0], rtol=1e-6)
+        def inertia(name):
+            return np.array(builder.body_inertia[result["path_body_map"][f"/World/{name}"]]).reshape(3, 3)
 
-        default = body_inertia()
-        # Solid cube of unit mass: I = m * s**2 / 6.
-        np.testing.assert_allclose(default["Cube"], np.eye(3) * cube_size**2 / 6.0, rtol=1e-5)
-        self.assertFalse(np.allclose(default["Bare"], fallback["Bare"]))
-        np.testing.assert_allclose(np.diag(default["Authored"]), [1.0, 2.0, 3.0], rtol=1e-6)
+        # Solid sphere of radius 0.1 m: I = 0.4 * m * r**2.
+        np.testing.assert_allclose(inertia("Bare"), np.eye(3) * 0.4 * 2.0 * 0.1**2, rtol=1e-6)
+        np.testing.assert_allclose(inertia("VisualOnly"), np.eye(3) * 0.4 * 1.0 * 0.1**2, rtol=1e-6)
+        # Solid cube of unit mass and edge 2: I = m * s**2 / 6.
+        np.testing.assert_allclose(inertia("Cube"), np.eye(3) * 2.0**2 / 6.0, rtol=1e-5)
+        np.testing.assert_allclose(np.diag(inertia("Authored")), [1.0, 2.0, 3.0], rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):

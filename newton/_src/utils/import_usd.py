@@ -179,7 +179,6 @@ def parse_usd(
     override_root_xform: bool = False,
     legacy_margin_gap: bool = False,
     return_deformable_results: bool = False,
-    physx_missing_inertia_fallback: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -319,12 +318,6 @@ def parse_usd(
             returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
             ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
             default return shape carries no deformable additions.
-        physx_missing_inertia_fallback: If True, every body with an authored positive ``physics:mass``
-            but no authored inertia (``physics:diagonalInertia`` or ``newton:inertia``) gets the inertia
-            of a solid sphere of radius 0.1 m (in stage units) with that mass. This explicit override
-            matches OpenUSD's observed small-sphere formula; it does not detect PhysX fallback conditions
-            and also replaces usable collider-derived inertia, so use it only for assets known to rely on
-            that fallback. If False (default), inertia is resolved from the colliders as usual.
 
     Returns:
         .. experimental::
@@ -2026,6 +2019,10 @@ def parse_usd(
             elif not has_effective_mass:
                 i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
                 principal_axes = cmp_principal_axes
+            elif builder.body_mass[body_id] == 0.0 and np.all(np.isfinite(cmp_i_diag)) and min(cmp_i_diag) > 0.0:
+                # No collider mass: use OpenUSD's small-sphere inertia, as PhysX does; its principal axes are undefined.
+                i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
+                principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
             else:
                 # Mass authored, inertia not: keep accumulated inertia and scale
                 # to match authored mass in the mass block below.
@@ -2057,21 +2054,9 @@ def parse_usd(
                         f"Ignoring body-level density.",
                         stacklevel=2,
                     )
-                if not has_effective_inertia and mass > 0.0 and physx_missing_inertia_fallback:
-                    # Small-sphere inertia override: radius 0.1 m, converted to stage units.
-                    radius = 0.1 / linear_unit if linear_unit > 0.0 else 0.1
-                    inertia_val = 0.4 * mass * radius * radius
-                    inertia = wp.mat33(np.eye(3, dtype=np.float32) * inertia_val)
-                    builder.body_inertia[body_id] = inertia
-                    builder.body_inv_inertia[body_id] = wp.inverse(inertia)
-                    if verbose:
-                        print(
-                            f"Applied PhysX small-sphere fallback inertia for body {body_path}: "
-                            f"diagonal elements = [{inertia_val}, {inertia_val}, {inertia_val}]"
-                        )
                 # When mass is authored but inertia is not, scale the accumulated
                 # inertia to be consistent with the authored mass.
-                elif not has_effective_inertia and shape_accumulated_mass > 0.0 and mass > 0.0:
+                if not has_effective_inertia and shape_accumulated_mass > 0.0 and mass > 0.0:
                     scale = mass / shape_accumulated_mass
                     builder.body_inertia[body_id] = wp.mat33(np.array(builder.body_inertia[body_id]) * scale)
                     builder.body_inv_inertia[body_id] = wp.inverse(builder.body_inertia[body_id])

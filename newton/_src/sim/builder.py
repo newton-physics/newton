@@ -4139,7 +4139,6 @@ class ModelBuilder:
         override_root_xform: bool = False,
         legacy_margin_gap: bool = False,
         return_deformable_results: bool = False,
-        physx_missing_inertia_fallback: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -4278,12 +4277,6 @@ class ModelBuilder:
                 returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
                 ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
                 default return shape carries no deformable additions.
-            physx_missing_inertia_fallback: If True, every body with an authored positive ``physics:mass``
-                but no authored inertia (``physics:diagonalInertia`` or ``newton:inertia``) gets the inertia
-                of a solid sphere of radius 0.1 m (in stage units) with that mass. This explicit override
-                matches OpenUSD's observed small-sphere formula; it does not detect PhysX fallback conditions
-                and also replaces usable collider-derived inertia, so use it only for assets known to rely on
-                that fallback. If False (default), inertia is resolved from the colliders as usual.
 
         Returns:
             .. experimental::
@@ -4436,7 +4429,6 @@ class ModelBuilder:
             override_root_xform=override_root_xform,
             legacy_margin_gap=legacy_margin_gap,
             return_deformable_results=return_deformable_results,
-            physx_missing_inertia_fallback=physx_missing_inertia_fallback,
         )
 
     def add_mjcf(
