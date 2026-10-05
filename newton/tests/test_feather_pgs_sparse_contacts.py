@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.solvers.feather_pgs.friction_patches import FrictionPatches
 from newton._src.solvers.feather_pgs.kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
     populate_world_J_for_compact_size,
@@ -19,6 +20,18 @@ from newton._src.solvers.feather_pgs.sparse_contact import (
     build_sparse_joint_limit_rows,
 )
 from newton._src.solvers.feather_pgs.sparse_mass_matrix import _SparseMassMatrixPlan
+
+
+def _point_friction_patches(device):
+    """Return the disabled friction-patch view: every contact gets its two friction rows."""
+    patches = FrictionPatches()
+    patches.enabled = 0
+    patches.weight = wp.zeros(0, dtype=float, device=device)
+    patches.next_contact = wp.zeros(0, dtype=int, device=device)
+    patches.point_a = wp.zeros(0, dtype=wp.vec3, device=device)
+    patches.point_b = wp.zeros(0, dtype=wp.vec3, device=device)
+    patches.phi = wp.zeros(1, dtype=wp.vec2, device=device)
+    return patches
 
 
 def _contact_directions(normal):
@@ -324,6 +337,7 @@ class TestSparseContacts(unittest.TestCase):
                 f["art_a"],
                 f["art_b"],
                 f["path"],
+                array([3, 3, 3], int),
                 6,
                 array([6], int),
                 f["group"],
@@ -333,6 +347,7 @@ class TestSparseContacts(unittest.TestCase):
                 f["motion"],
                 f["shape_body"],
                 f["body_q"],
+                _point_friction_patches(device),
             ],
             outputs=[dense],
             device=device,

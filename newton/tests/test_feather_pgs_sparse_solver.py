@@ -118,6 +118,8 @@ def _make_solver(model, sparse, **overrides):
         "enable_joint_velocity_limits": False,
         "dense_max_constraints": 32,
         "update_mass_matrix_interval": 4,
+        # Sparse factors solve point friction; persistent friction patches keep dense factors.
+        "friction_anchor_beta": 0.0,
     }
     options.update(overrides)
     with mock.patch.dict(SolverFeatherPGS._kernel_overrides, {"sparse_mass_matrix": sparse}):
@@ -508,12 +510,15 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
         self.assert_sparse_state(graph)
 
     def test_default_selects_sparse_factors_for_branched_articulations(self):
-        """Select sparse factors without any option for branched trees and keep dense factors for chains."""
-        self.assertEqual(SolverFeatherPGS(_build_model(), pgs_mode="matrix_free")._sparse_mass_matrix_size, 9)
-        self.assertEqual(
-            SolverFeatherPGS(_build_model(free_count=1), pgs_mode="matrix_free")._sparse_mass_matrix_size, 9
-        )
-        self.assertIsNone(SolverFeatherPGS(_build_chain("cuda:0"), pgs_mode="matrix_free")._sparse_mass_matrix_size)
+        """Select sparse factors for branched trees with point friction and keep dense factors for chains."""
+        point = {"pgs_mode": "matrix_free", "friction_anchor_beta": 0.0}
+        self.assertEqual(SolverFeatherPGS(_build_model(), **point)._sparse_mass_matrix_size, 9)
+        self.assertEqual(SolverFeatherPGS(_build_model(free_count=1), **point)._sparse_mass_matrix_size, 9)
+        self.assertIsNone(SolverFeatherPGS(_build_chain("cuda:0"), **point)._sparse_mass_matrix_size)
+        # The sparse kernels do not implement friction patches, the default friction.
+        self.assertIsNone(SolverFeatherPGS(_build_model(), pgs_mode="matrix_free")._sparse_mass_matrix_size)
+        # The split solve, the default, uses dense factors.
+        self.assertIsNone(SolverFeatherPGS(_build_model())._sparse_mass_matrix_size)
 
     def test_unsupported_configurations_keep_existing_path(self):
         """Keep dense factors for full-support chains, velocity-limit rows, no iterations and large row capacities."""
@@ -525,6 +530,11 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
             {"enable_joint_velocity_limits": True},
             {"pgs_iterations": 0},
             {"dense_max_constraints": 2048},
+            {"friction_anchor_beta": 0.2},
+            {"pgs_warmstart": True},
+            {"pgs_contact_regularization": 0.01},
+            {"pgs_velocity_iterations": 1},
+            {"contact_friction_gap_threshold": 0.01},
         ):
             with self.subTest(options=options):
                 solver = _make_solver(model, True, **options)
@@ -606,7 +616,12 @@ class TestFeatherPGSSparseSelectionGuard(unittest.TestCase):
     @unittest.skipUnless(wp.is_cuda_available(), "Sparse integrated solve requires CUDA")
     def test_y_tree_selects_sparse_factors(self):
         """Select sparse factors for the uncoupled Y tree used by the bilateral guard."""
-        self.assertEqual(SolverFeatherPGS(_build_y_tree("cuda:0"), pgs_mode="matrix_free")._sparse_mass_matrix_size, 3)
+        self.assertEqual(
+            SolverFeatherPGS(
+                _build_y_tree("cuda:0"), pgs_mode="matrix_free", friction_anchor_beta=0.0
+            )._sparse_mass_matrix_size,
+            3,
+        )
 
     @unittest.skipUnless(wp.is_cuda_available(), "Sparse integrated solve requires CUDA")
     @unittest.skipUnless(

@@ -1,0 +1,1 @@
+Add persistent friction patches, contact regularization, shape restitution, contact-identity warm start, velocity-only iterations and gap gates for speculative contacts to `SolverFeatherPGS` (`friction_anchor_beta`, `pgs_contact_regularization`, `restitution_velocity_threshold`, `pgs_warmstart`, `pgs_velocity_iterations`, `contact_gap_gate` and related options).

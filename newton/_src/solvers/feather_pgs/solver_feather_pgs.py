@@ -4,6 +4,7 @@
 import dataclasses
 import re
 import warnings
+import weakref
 from dataclasses import dataclass
 from functools import cache
 from typing import ClassVar, Literal
@@ -18,7 +19,9 @@ from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder,
 from ...sim.articulation import eval_fk
 from ..solver import SolverBase
 from .friction import FRICTION_PAIR_CUDA
+from .friction_patches import _FrictionPatchState, finish_patch_impulses, link_patch_rows, seed_patch_impulses
 from .kernels import (
+    CONTACT_GENERATION_NONE,
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
@@ -36,9 +39,13 @@ from .kernels import (
     allocate_rigid_velocity_limit_slots,
     allocate_world_contact_slots,
     apply_augmented_mass_diagonal_grouped,
+    apply_free_root_angular_damping,
     apply_free_root_transport_to_predictor,
     apply_free_root_velocity_corrections,
     apply_impulses_world_par_dof,
+    apply_mf_warmstart_impulses,
+    apply_world_contact_restitution,
+    apply_world_impulses_to_velocity,
     build_joint_limit_rows,
     build_mass_update_mask,
     build_mf_body_map,
@@ -50,11 +57,13 @@ from .kernels import (
     compute_delta_and_accumulate,
     compute_mf_body_Hinv,
     compute_mf_effective_mass_and_rhs,
+    compute_mf_velocity_rhs,
     compute_mf_world_dof_offsets,
     compute_physx_pgs_drive_desc,
     compute_spatial_inertia,
     compute_velocity_predictor,
     compute_world_contact_bias,
+    compute_world_contact_velocity_bias,
     crba_fill_par_dof,
     delassus_par_row_col,
     diag_from_JY_par_art,
@@ -67,6 +76,7 @@ from .kernels import (
     finalize_mf_constraint_counts,
     finalize_world_constraint_counts,
     finalize_world_diag_cfm,
+    gather_contact_warmstart,
     gather_JY_to_world,
     gather_tau_to_groups,
     hinv_jt_diagonal,
@@ -91,10 +101,14 @@ from .kernels import (
     prescale_joint_velocity_limits,
     refresh_masked_body_inertia,
     remove_free_root_transport_from_qdd,
+    reset_row_warmstart,
     resolve_passive_joint_springs,
     rhs_accum_world_par_art,
     scatter_augmented_drive_dof_K,
     scatter_qdd_from_groups,
+    snapshot_contact_warmstart,
+    snapshot_row_warmstart,
+    snapshot_step_warmstart,
     solve_diagonal_mass,
     trisolve_loop,
     update_body_qd_from_featherstone,
@@ -132,6 +146,8 @@ _SPRING_JOINT_TYPES = (int(JointType.PRISMATIC), int(JointType.REVOLUTE))
 _SPARSE_FACTOR_WARPS_PER_BLOCK = 4
 # Warps (articulations) per block of the warp-parallel composite-inertia reduction.
 _COMPOSITE_INERTIA_WARPS_PER_BLOCK = 4
+# Largest contact regularization; larger values do not change the float32 weight usefully.
+_MAX_CONTACT_REGULARIZATION = 1.0e6
 _SUPPORTED_JOINT_TYPES = (
     int(JointType.PRISMATIC),
     int(JointType.REVOLUTE),
@@ -141,6 +157,17 @@ _SUPPORTED_JOINT_TYPES = (
     int(JointType.DISTANCE),
     int(JointType.D6),
 )
+
+
+def _finite_non_negative(name: str, value) -> float:
+    """Return ``value`` as a float, raising :class:`ValueError` unless it is finite and non-negative."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be finite and non-negative") from exc
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError(f"{name} must be finite and non-negative")
+    return value
 
 
 def _validate_supported_model(model: Model) -> None:
@@ -978,10 +1005,20 @@ class SolverFeatherPGS(SolverBase):
       ``enable_bilateral_preelimination`` the mimic and connect rows are eliminated
       before the sweep through a regularized Schur complement; this is not exact
       elimination, see the option.
-    - Contacts: rigid contacts from :class:`~newton.CollisionPipeline` with Coulomb
-      point friction (one normal and two coupled tangent rows per contact, friction
-      coefficient from the two shapes' ``mu``). Contact restitution, compliance and
-      torsional friction are not applied.
+    - Contacts: rigid contacts from :class:`~newton.CollisionPipeline`, one normal row
+      per contact, with Coulomb friction from the mean of the two shapes' ``mu``. By
+      default friction acts through persistent friction patches: compatible contacts of
+      a body pair form a region whose friction is applied at up to two anchors that
+      share the region's normal load and carry their tangential displacement across
+      steps, so static friction holds without creep (``friction_anchor_beta``). Setting
+      ``friction_anchor_beta=0`` selects point friction, two coupled tangent rows per
+      contact. Restitution follows the shapes'
+      :attr:`~newton.ModelBuilder.ShapeConfig.restitution`. Optional contact
+      regularization, warm start from the previous step's impulses, velocity-only
+      iterations and gap gates for speculative contacts are configured on the
+      constructor. Friction patches, restitution, regularization, warm start and
+      velocity-only iterations need ``pgs_mode="matrix_free"``; the split solve uses point
+      friction. Contact compliance and torsional friction are not applied.
     - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds.
     - CUDA graph capture of :meth:`step` and :meth:`reset`.
 
@@ -1005,10 +1042,14 @@ class SolverFeatherPGS(SolverBase):
       between the row's own bodies or joints. Particles are not simulated.
     - Gradients are not supported.
 
-    Branched articulations use sparse mass factors when every articulated (non-free-body)
-    response group shares one joint topology with at most 64 DOFs, joint velocity-limit
-    rows are disabled and the model has no mimic or loop-closing joints: the mass matrix is assembled and factored in the fill-free pattern
-    of the kinematic tree, and constraint rows keep only the DOFs that support them.
+    With ``pgs_mode="matrix_free"``, branched articulations use sparse mass factors when
+    every articulated (non-free-body) response group shares one joint topology with at most
+    64 DOFs, joint velocity-limit rows are disabled, the model has no mimic or loop-closing
+    joints, drives are augmented and contacts use hard point friction
+    (``friction_anchor_beta=0``, no warm start, regularization, velocity-only iterations,
+    friction gap threshold or restitution): the mass matrix is assembled and factored in
+    the fill-free pattern of the kinematic tree, and constraint rows keep only the DOFs
+    that support them.
     Otherwise, and for free bodies, dense factors are used. Both give the same dynamics up
     to floating-point rounding. The selection follows the model's structure only; it is not
     a performance prediction. Sparse factors take longer to set up and, depending on the
@@ -1195,6 +1236,19 @@ class SolverFeatherPGS(SolverBase):
         enable_bilateral_preelimination: bool = False,
         bilateral_preelimination_include_mimics: bool = True,
         parallel_tree: bool = False,
+        friction_anchor_beta: float | None = None,
+        pgs_contact_regularization: float = 0.0,
+        pgs_velocity_iterations: int = 0,
+        pgs_velocity_drive_mode: Literal["freeze", "active"] = "freeze",
+        pgs_warmstart: bool = False,
+        pgs_warmstart_decay: float = 1.0,
+        restitution_velocity_threshold: float = 0.5,
+        contact_speculative_scale: float = 1.0,
+        contact_gap_gate: float = 0.0,
+        same_articulation_contact_gap_gate: float = 0.0,
+        articulation_pair_contact_gap_gate: float = 0.0,
+        contact_friction_gap_threshold: float = float("inf"),
+        contact_friction_articulation_pairs_only: bool = False,
     ):
         """Create a FeatherPGS solver for a finalized model.
 
@@ -1296,9 +1350,10 @@ class SolverFeatherPGS(SolverBase):
                 projection, and the corrected responses of other rows still couple into the
                 bilateral rows by the same factor. The rows stay allocated and in the sweep,
                 which reduces this residual further. If any articulation owns more than
-                eight bilateral rows, or any loop closure has a kinematic or world parent,
-                elimination is disabled for the whole solver (every articulation keeps
-                iterative rows) with a warning at construction.
+                eight bilateral rows, any loop closure has a kinematic or world parent, or
+                ``pgs_velocity_iterations`` is positive, elimination is disabled for the
+                whole solver (every articulation keeps iterative rows) with a warning at
+                construction.
             bilateral_preelimination_include_mimics: With pre-elimination enabled, also
                 eliminate mimic rows. ``False`` eliminates only the connect rows and keeps
                 mimic rows iterative, which avoids a singular block when a mimic row is
@@ -1310,6 +1365,82 @@ class SolverFeatherPGS(SolverBase):
                 Unbranched articulations, models whose joints are not ordered parent before
                 child, and CPU devices keep the serial traversal. Broad trees can benefit; narrow trees can be
                 slower, so measure the full step before enabling it.
+            friction_anchor_beta: Position-correction gain of persistent friction patches;
+                ``0`` selects point friction. ``None`` selects ``0.2`` with
+                ``pgs_mode="matrix_free"`` and point friction with ``pgs_mode="split"``, which
+                has no friction patches. With a positive gain, the contacts of a body
+                pair whose normals, contact planes and friction coefficients agree and whose
+                shapes touch form a region. Each region's friction acts at up to two anchors
+                along its principal extent, which share the region's total normal impulse;
+                every contact keeps its own normal row. An anchor carries its tangential
+                displacement across steps, following the pose increments of both bodies,
+                and the tangent rows add ``friction_anchor_beta * displacement / dt``, so a
+                held object does not creep under a static load. Anchors are released when
+                their region is unloaded or slides at the Coulomb limit; history is matched
+                by body pair and geometry, independently of collision contact matching. A
+                one-anchor region has no torsional friction of its own. Call :meth:`reset`
+                after teleporting a body to discard its history.
+            pgs_contact_regularization: Dimensionless regularization ``g`` of penetrating
+                contact rows (``pgs_mode="matrix_free"`` only). Each iteration moves a row's impulse toward the rigid solution
+                with weight ``1 / (1 + g)`` and toward zero with weight ``g / (1 + g)``, the
+                update of an implicitly integrated contact spring. It makes statically
+                indeterminate normal-force splits unique and damps the sweep, at the cost of
+                a resting penetration: a row at rest settles at ``pgs_beta * phi / dt = -g * d * lambda``
+                (``d`` its inverse effective mass, ``lambda`` its impulse), about
+                ``g * a * dt^2 / pgs_beta`` for a body under acceleration ``a`` resting on one row.
+                Speculative (positive-gap) rows, rows whose rebound fires and the
+                velocity-only iterations stay rigid. ``0`` is the rigid law; at most ``1e6``.
+            pgs_velocity_iterations: Number of velocity-only iterations after the position
+                solve (``pgs_mode="matrix_free"`` only). Positions are integrated from the position solve; these iterations
+                then refine the velocity without the position bias, so stabilization does
+                not add velocity to the bodies. A positive-gap contact whose linearized gap
+                at the end of the step stays open keeps its speculative allowance, and an
+                impacting contact keeps its rebound target.
+            pgs_velocity_drive_mode: Treatment of PGS joint-drive rows during the
+                velocity-only iterations: ``"freeze"`` keeps the drive impulses of the
+                position solve, ``"active"`` keeps solving the drive rows. Implicit
+                (mass-matrix) drives have no rows, so the option has no effect for them.
+            pgs_warmstart: Start each step (``pgs_mode="matrix_free"`` only) from the previous
+                step's contact impulses, matched
+                by contact identity through :attr:`~newton.Contacts.rigid_contact_match_index`,
+                so the :class:`~newton.CollisionPipeline` must be created with contact matching
+                enabled. Substeps that reuse a contact set without a collision pass seed each
+                contact from its own previous substep. History carries across one collision
+                pass into the same :class:`~newton.Contacts` buffer when that pass matched
+                against the solved contact set
+                (:attr:`~newton.Contacts.rigid_contact_match_generation`); a different
+                buffer, skipped passes, or a pass after the pipeline wrote another buffer
+                start cold. Carried impulses are scaled by the
+                ratio of the step to the previous one, including under graph replay; tangent
+                impulses are rotated into the current tangent frame and clamped to the
+                current friction cone; other rows start cold.
+            pgs_warmstart_decay: Non-negative scale applied to the carried impulses.
+            restitution_velocity_threshold: Minimum incident normal speed [m/s] for a
+                rebound. Contacts bounce with the arithmetic mean of the two shapes'
+                restitution coefficients (:attr:`~newton.ModelBuilder.ShapeConfig.restitution`,
+                clamped to ``[0, 1]``; zero gives no rebound): an impacting contact replaces
+                its position bias by the rebound target ``-e * u``, where ``u`` is its
+                incident normal velocity in the unconstrained prediction. The contact must
+                also touch, or be predicted to reach the surface during the step. Slower
+                contacts keep the ordinary contact law, so resting contacts do not bounce
+                under small accelerations. The largest finite float32 value turns
+                restitution off for every contact without editing materials. Restitution
+                needs ``pgs_mode="matrix_free"``; the split solve rejects shapes with a
+                positive restitution unless this value turns restitution off.
+            contact_speculative_scale: Fraction of a positive contact gap that the contact
+                may close during the step (``rhs = scale * phi / dt``). ``0`` removes the
+                speculative allowance; penetration correction is unchanged.
+            contact_gap_gate: When positive, contacts whose gap [m] exceeds this distance
+                get no rows. ``0`` keeps every contact of the collision pipeline.
+            same_articulation_contact_gap_gate: When positive, the gap gate [m] of contacts
+                between two links of the same articulation (free bodies excluded).
+            articulation_pair_contact_gap_gate: When positive, the gap gate [m] of contacts
+                between two articulated (non-free) bodies.
+            contact_friction_gap_threshold: Contacts with a gap [m] above this threshold get
+                a normal row only. ``inf`` gives every contact friction.
+            contact_friction_articulation_pairs_only: Apply
+                ``contact_friction_gap_threshold`` only to contacts between two articulated
+                (non-free) bodies.
         """
         super().__init__(model)
         if pgs_mode not in ("matrix_free", "split"):
@@ -1370,6 +1501,57 @@ class SolverFeatherPGS(SolverBase):
         )
         self.enable_bilateral_preelimination = bool(enable_bilateral_preelimination)
         self.bilateral_preelimination_include_mimics = bool(bilateral_preelimination_include_mimics)
+        if friction_anchor_beta is None:
+            # The split solve has no friction patches.
+            friction_anchor_beta = 0.2 if pgs_mode == "matrix_free" else 0.0
+        self.friction_anchor_beta = _finite_non_negative("friction_anchor_beta", friction_anchor_beta)
+        self._friction_anchors_enabled = self.friction_anchor_beta > 0.0
+        self.pgs_contact_regularization = _finite_non_negative("pgs_contact_regularization", pgs_contact_regularization)
+        if self.pgs_contact_regularization > _MAX_CONTACT_REGULARIZATION:
+            raise ValueError(
+                f"pgs_contact_regularization must be at most {_MAX_CONTACT_REGULARIZATION:g}; "
+                "larger values are not numerically useful in the float32 solve"
+            )
+        # Kernels use the float32 weight w = 1 / (1 + g). Values too small to change w
+        # are the exact rigid update.
+        self._contact_w = float(np.float32(1.0 / (1.0 + self.pgs_contact_regularization)))
+        self._regularization_enabled = self._contact_w < 1.0
+        self.pgs_velocity_iterations = int(pgs_velocity_iterations)
+        if self.pgs_velocity_iterations < 0:
+            raise ValueError("pgs_velocity_iterations must be non-negative")
+        if pgs_velocity_drive_mode not in ("freeze", "active"):
+            raise ValueError(f"pgs_velocity_drive_mode must be 'freeze' or 'active', got {pgs_velocity_drive_mode!r}")
+        self.pgs_velocity_drive_mode = pgs_velocity_drive_mode
+        self.pgs_warmstart = bool(pgs_warmstart)
+        self.pgs_warmstart_decay = _finite_non_negative("pgs_warmstart_decay", pgs_warmstart_decay)
+        self.restitution_velocity_threshold = _finite_non_negative(
+            "restitution_velocity_threshold", restitution_velocity_threshold
+        )
+        self.contact_speculative_scale = _finite_non_negative("contact_speculative_scale", contact_speculative_scale)
+        self.contact_gap_gate = _finite_non_negative("contact_gap_gate", contact_gap_gate)
+        self.same_articulation_contact_gap_gate = _finite_non_negative(
+            "same_articulation_contact_gap_gate", same_articulation_contact_gap_gate
+        )
+        self.articulation_pair_contact_gap_gate = _finite_non_negative(
+            "articulation_pair_contact_gap_gate", articulation_pair_contact_gap_gate
+        )
+        self.contact_friction_gap_threshold = float(contact_friction_gap_threshold)
+        if np.isnan(self.contact_friction_gap_threshold):
+            raise ValueError("contact_friction_gap_threshold must not be NaN")
+        self.contact_friction_articulation_pairs_only = bool(contact_friction_articulation_pairs_only)
+        if pgs_mode == "split":
+            unsupported = [
+                name
+                for name, requested in (
+                    ("friction_anchor_beta > 0", self._friction_anchors_enabled),
+                    ("pgs_contact_regularization > 0", self._regularization_enabled),
+                    ("pgs_velocity_iterations > 0", self.pgs_velocity_iterations > 0),
+                    ("pgs_warmstart=True", self.pgs_warmstart),
+                )
+                if requested
+            ]
+            if unsupported:
+                raise NotImplementedError(f"{', '.join(unsupported)} requires pgs_mode='matrix_free'")
 
         self.rigid_body_angular_damping = getattr(model, "rigid_body_angular_damping", None)
         if self.rigid_body_angular_damping is None:
@@ -1545,14 +1727,20 @@ class SolverFeatherPGS(SolverBase):
         self._row_dropped_mf = self._row_dropped_all[1]
 
         self.shape_material_mu = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
-        self._refresh_shape_material_mu()
+        self.shape_material_restitution = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
+        self._refresh_shape_materials()
+        self._check_split_restitution()
 
-    def _refresh_shape_material_mu(self) -> None:
-        """Copy the model's current friction coefficients into the solver's fixed buffer."""
-        # Users may replace model.shape_material_mu; captured graphs keep this buffer's address.
-        mu = self.model.shape_material_mu
-        if mu is not None and self.model.shape_count:
-            wp.copy(self.shape_material_mu, mu, count=self.model.shape_count)
+    def _refresh_shape_materials(self) -> None:
+        """Copy the model's current friction and restitution coefficients into the solver's fixed buffers."""
+        # Users may replace the model arrays; captured graphs keep these buffers' addresses.
+        model = self.model
+        for buffer, values in (
+            (self.shape_material_mu, model.shape_material_mu),
+            (self.shape_material_restitution, model.shape_material_restitution),
+        ):
+            if values is not None and model.shape_count:
+                wp.copy(buffer, values, count=model.shape_count)
 
     def _update_kinematic_state(self) -> None:
         """Refresh cached kinematic flags and effective joint armature."""
@@ -1603,13 +1791,18 @@ class SolverFeatherPGS(SolverBase):
         inertial changes request a mass-matrix refresh of every articulation on the next
         step, independent of ``update_mass_matrix_interval``. Body flags (kinematic
         membership), joint DOF properties (armature, damping, the passive spring attributes)
-        and shape friction coefficients are re-read. Other model data, such as gravity,
-        limits and shape transforms, is read every step. A kinematic free
+        and shape friction and restitution coefficients are re-read. Other model data, such
+        as gravity, limits and shape transforms, is read every step. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
         equality rows: enabling one that is not converted to a Newton loop joint or mimic
         constraint raises :class:`NotImplementedError`. Capacity status in
         :attr:`constraint_overflow` is not cleared, see :meth:`reset`.
+
+        Body, inertial, joint DOF and shape changes discard the warm-start impulses. With
+        friction patches, shape changes also discard the anchors of the bodies whose
+        collision geometry changed; this copies the shape geometry to the host, so issue
+        such notifications outside CUDA graph capture.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -1624,7 +1817,8 @@ class SolverFeatherPGS(SolverBase):
             self._refresh_passive_joint_damping()
             self._refresh_passive_springs()
         if flags & ModelFlags.SHAPE_PROPERTIES:
-            self._refresh_shape_material_mu()
+            self._refresh_shape_materials()
+            self._check_split_restitution()
         if flags & ModelFlags.JOINT_PROPERTIES:
             # Joint frames move the bodies the mass matrix is built from.
             self._mass_update_requested.fill_(1)
@@ -1646,6 +1840,46 @@ class SolverFeatherPGS(SolverBase):
                 device=self.model.device,
             )
             self._mass_update_requested.fill_(1)
+        if self._friction_anchors_enabled and flags & ModelFlags.SHAPE_PROPERTIES:
+            self._friction_patches.update_geometry(self.model)
+        if (
+            self._sparse_mass_matrix_size is not None
+            and flags & ModelFlags.SHAPE_PROPERTIES
+            and not self._sparse_supports_contact_options(self.model)
+        ):
+            raise ValueError(
+                "Sparse mass factors do not apply contact restitution; reconstruct the solver after "
+                "giving shapes a positive restitution"
+            )
+        if flags & (
+            ModelFlags.BODY_PROPERTIES
+            | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.SHAPE_PROPERTIES
+        ):
+            self._clear_warmstart_history(None)
+
+    def _clear_warmstart_history(self, world_mask: wp.array[wp.bool] | None) -> None:
+        """Discard the carried contact impulses of the selected worlds (all worlds for ``None``)."""
+        if not self.pgs_warmstart or self.world_count == 0:
+            return
+        families = [(self._ws_prev_impulses, self._ws_prev_row_type, self._ws_prev_row_parent)]
+        if self._has_free_rigid_bodies:
+            families.append((self._ws_prev_mf_impulses, self._ws_prev_mf_row_type, self._ws_prev_mf_row_parent))
+        for impulses, row_type, row_parent in families:
+            wp.launch(
+                reset_row_warmstart,
+                dim=impulses.shape,
+                inputs=[
+                    world_mask,
+                    int(self.model.world_count),
+                    int(self._has_responding_global),
+                    impulses,
+                    row_type,
+                    row_parent,
+                ],
+                device=self.model.device,
+            )
 
     @override
     def reset(
@@ -1657,11 +1891,15 @@ class SolverFeatherPGS(SolverBase):
         """Clear solver-owned state of the selected worlds.
 
         The simulation state is not modified. For the selected worlds this clears the
-        capacity status in :attr:`constraint_overflow` and requests a mass-matrix refresh
-        on the next step, so a teleported articulation does not reuse a stale factorization;
-        other worlds keep their refresh cadence. The solver keeps no impulse history between
-        steps. The reset is launched on the device without host synchronization and can be
-        captured in a CUDA graph.
+        capacity status in :attr:`constraint_overflow`, discards the warm-start impulses
+        and the friction-patch anchors, and requests a mass-matrix refresh on the next
+        step, so a teleported articulation does not reuse a stale factorization or anchor;
+        other worlds keep their refresh cadence and history. An anchor between bodies of
+        two entries (for example a global body and a world body) is discarded when either
+        is selected. Global articulations share world 0's rows, so selecting the global
+        entry also discards world 0's warm-start impulses while a dynamic global
+        articulation exists. The reset is launched on the device without host
+        synchronization and can be captured in a CUDA graph.
 
         Args:
             state: Simulation state; left unchanged.
@@ -1669,7 +1907,7 @@ class SolverFeatherPGS(SolverBase):
                 ``world_count`` entries select worlds; the final entry selects global
                 articulations (world ``-1``) and the final entry of
                 :attr:`constraint_overflow`. ``None`` resets everything.
-            flags: Unused; the solver keeps no per-attribute state.
+            flags: Unused; the solver's history is cleared regardless of the state flags.
         """
         del flags
         world_mask = self._normalize_reset_world_mask(world_mask)
@@ -1690,6 +1928,9 @@ class SolverFeatherPGS(SolverBase):
             ],
             device=self.model.device,
         )
+        if self._friction_anchors_enabled:
+            self._friction_patches.reset(world_mask, int(self.model.world_count))
+        self._clear_warmstart_history(world_mask)
 
     def _compute_articulation_metadata(self, model):
         self._compute_articulation_indices(model)
@@ -2132,6 +2373,15 @@ class SolverFeatherPGS(SolverBase):
         if not self.enable_bilateral_preelimination:
             return
         if self._connect_count == 0 and (self._mimic_count == 0 or not include_mimics):
+            return
+        if self.pgs_velocity_iterations > 0:
+            # The velocity-only iterations rebuild the velocity without the bilateral projection.
+            warnings.warn(
+                "SolverFeatherPGS: enable_bilateral_preelimination does not support pgs_velocity_iterations > 0; "
+                "pre-elimination is disabled for the whole solver and every articulation keeps iterative mimic "
+                "and connect rows.",
+                stacklevel=3,
+            )
             return
         if self._connect_count and np.any(self._connect_parent_prescribed_np != 0):
             warnings.warn(
@@ -2664,14 +2914,41 @@ class SolverFeatherPGS(SolverBase):
                 diagonal_sizes.add(int(size))
         self._diagonal_mass_sizes = frozenset(diagonal_sizes)
 
+    def _sparse_supports_contact_options(self, model: Model) -> bool:
+        """Whether the sparse factor kernels implement the configured contact law.
+
+        They solve hard point-friction contacts (one normal and two tangent rows per
+        contact) without restitution, so friction patches, warm start, regularization,
+        velocity-only iterations, normal-only contacts and restitution keep the dense path.
+        """
+        if (
+            self._friction_anchors_enabled
+            or self.pgs_warmstart
+            or self._regularization_enabled
+            or self.pgs_velocity_iterations > 0
+            or np.isfinite(self.contact_friction_gap_threshold)
+        ):
+            return False
+        restitution = model.shape_material_restitution
+        return restitution is None or model.shape_count == 0 or not np.any(restitution.numpy() > 0.0)
+
+    def _check_split_restitution(self) -> None:
+        """Reject positive restitution in the split solve, which has no rebound targets."""
+        if self.pgs_mode != "split" or self.restitution_velocity_threshold >= np.finfo(np.float32).max:
+            return
+        restitution = self.model.shape_material_restitution
+        if restitution is not None and self.model.shape_count and np.any(restitution.numpy() > 0.0):
+            raise NotImplementedError("Contact restitution requires pgs_mode='matrix_free'")
+
     def _setup_sparse_mass_matrix(self, model: Model) -> None:
         """Select topology-derived sparse mass factors for branched articulations.
 
         The selection is automatic. It applies when every articulated (non-free-body)
         response group has one size and one joint topology, the factor of that topology has
         fewer nonzeros than a dense lower triangle (the tree branches), the articulation has at
-        most 64 DOFs, and joint velocity-limit rows are disabled. Free bodies keep their dense
-        6 x 6 factors. Otherwise the dense factors are kept.
+        most 64 DOFs, joint velocity-limit rows are disabled and the contact options are ones
+        the sparse kernels implement (:meth:`_sparse_supports_contact_options`). Free bodies keep
+        their dense 6 x 6 factors. Otherwise the dense factors are kept.
 
         Models with mimic relationships or loop-closing joints, including disabled ones that
         can be re-enabled at runtime, keep the dense factors: their bilateral rows are built
@@ -2687,6 +2964,8 @@ class SolverFeatherPGS(SolverBase):
         if self.pgs_mode != "matrix_free" or self._has_drive_rows:
             return
         if self.enable_joint_velocity_limits or self.pgs_iterations <= 0 or not self.size_groups:
+            return
+        if not self._sparse_supports_contact_options(model):
             return
         plan = self._model_plan
         response_dofs = plan.response_dof_count
@@ -2958,6 +3237,7 @@ class SolverFeatherPGS(SolverBase):
             self.is_free_rigid = None
             self.free_rigid_body_indices = None
             self._free_rigid_body_count = 0
+            self._max_free_rigid_bodies_per_world = 0
             return
         if self._model_plan is None:
             raise RuntimeError("FeatherPGS model plan must be built before free-body classification")
@@ -2983,6 +3263,13 @@ class SolverFeatherPGS(SolverBase):
         self.free_rigid_body_indices = wp.array(
             self._model_plan.response_free_rigid_body_indices, dtype=wp.int32, device=model.device
         )
+        free_bodies = np.asarray(self._model_plan.response_free_rigid_body_indices, dtype=np.int64)
+        if free_bodies.size:
+            body_art = self.body_to_articulation.numpy()
+            worlds = self._model_plan.articulation_world[body_art[free_bodies]]
+            self._max_free_rigid_bodies_per_world = int(np.max(np.bincount(np.maximum(worlds, 0))))
+        else:
+            self._max_free_rigid_bodies_per_world = 0
 
     def _compute_world_response_dof_mapping(self, model):
         """Build compact per-world response offsets and global-DOF indices."""
@@ -3034,11 +3321,14 @@ class SolverFeatherPGS(SolverBase):
             self.v_hat = wp.zeros_like(model.joint_qd)
             self.v_out = wp.zeros_like(model.joint_qd)
             self.qd_work = wp.zeros_like(model.joint_qd)
+            # Velocity of the position solve, kept while the velocity-only iterations refine v_out.
+            self.v_out_snap = wp.zeros_like(model.joint_qd) if self.pgs_velocity_iterations else None
         else:
             self.mass_update_mask = None
             self.v_hat = None
             self.v_out = None
             self.qd_work = None
+            self.v_out_snap = None
 
         if model.body_count:
             self.body_I_m = wp.empty((model.body_count,), dtype=wp.spatial_matrix, device=model.device)
@@ -3139,6 +3429,30 @@ class SolverFeatherPGS(SolverBase):
         self.contact_art_a = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
         self.contact_art_b = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
         self.contact_path = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
+        # Rows reserved by each contact: 1 (normal only) or 3 (normal and friction).
+        self.contact_slots_needed = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
+        # Friction patches own their history, independently of collision contact matching.
+        # Row builders read a zero anchor displacement when patches are off.
+        self._friction_patches = _FrictionPatchState(
+            model,
+            max_contacts,
+            self._friction_anchors_enabled,
+            wp.zeros(max_contacts, dtype=wp.vec2, device=device),
+        )
+        if self.pgs_warmstart:
+            # Previous step's first row of each (sorted) contact per row family, and its normal.
+            self._ws_prev_dense_slot = wp.full((max_contacts,), -1, dtype=wp.int32, device=device)
+            self._ws_prev_mf_slot = wp.full((max_contacts,), -1, dtype=wp.int32, device=device)
+            self._ws_prev_contact_normal = wp.zeros((max_contacts,), dtype=wp.vec3, device=device)
+        # Previous solver step, and the contact buffer and generation it solved, on the
+        # device so a captured graph replays them instead of baking the capture's values.
+        # Generations count collision passes per buffer, so each buffer gets its own
+        # nonzero stream id (0: no contacts).
+        self._ws_history_dt = wp.zeros(1, dtype=float, device=device)
+        self._ws_history_generation = wp.full(1, CONTACT_GENERATION_NONE, dtype=wp.int32, device=device)
+        self._ws_history_stream = wp.zeros(1, dtype=wp.int32, device=device)
+        self._ws_contact_streams: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+        self._ws_last_stream = 0
         self.slot_counter = wp.zeros((self.world_count,), dtype=wp.int32, device=device)
         self._dense_first_rejected_slot = wp.full(
             (self.world_count,), _ROW_SLOT_UNBOUNDED, dtype=wp.int32, device=device
@@ -3191,6 +3505,11 @@ class SolverFeatherPGS(SolverBase):
         self.row_mu = wp.zeros(shape, dtype=wp.float32, device=device)
         self.phi = wp.zeros(shape, dtype=wp.float32, device=device)
         self.target_velocity = wp.zeros(shape, dtype=wp.float32, device=device)
+        self.row_restitution = wp.zeros(shape, dtype=wp.float32, device=device)
+        # Regularization weight per row, read by the solve only when regularization is on.
+        self.row_w = wp.ones(shape if self._regularization_enabled else (1, 1), dtype=wp.float32, device=device)
+        # Right-hand side of the velocity-only iterations.
+        self.rhs_unbiased = wp.zeros(shape if self.pgs_velocity_iterations else (1, 1), dtype=wp.float32, device=device)
         self.constraint_count = wp.zeros((self.world_count,), dtype=wp.int32, device=device)
         # Drive-row parameters and their per-step force-drive coefficients; (1, 1)
         # placeholders keep the kernel signatures fixed when there are no drive rows.
@@ -3206,6 +3525,10 @@ class SolverFeatherPGS(SolverBase):
         self.drive_vel_limit = wp.zeros(
             shape if self.fuse_joint_velocity_limits else (1, 1), dtype=wp.float32, device=device
         )
+        if self.pgs_warmstart:
+            self._ws_prev_impulses = wp.zeros(shape, dtype=wp.float32, device=device)
+            self._ws_prev_row_type = wp.full(shape, -1, dtype=wp.int32, device=device)
+            self._ws_prev_row_parent = wp.full(shape, -1, dtype=wp.int32, device=device)
 
     def _allocate_mf_buffers(self, model):
         """Allocate the per-world free-body row system.
@@ -3238,10 +3561,29 @@ class SolverFeatherPGS(SolverBase):
         #   .x = (dof_a << 16) | (dof_b & 0xFFFF), .y = eff_mass_inv bits,
         #   .z = rhs bits, .w = row_type | (row_parent << 16)
         self.mf_meta_packed = wp.zeros((worlds, rows * 4), dtype=wp.int32, device=device)
+        self.mf_row_restitution = wp.zeros((worlds, rows), dtype=wp.float32, device=device)
+        self.mf_row_w = wp.ones(
+            (worlds, rows) if self._regularization_enabled else (1, 1), dtype=wp.float32, device=device
+        )
+        self.mf_rhs_unbiased = wp.zeros(
+            (worlds, rows) if self.pgs_velocity_iterations else (1, 1), dtype=wp.float32, device=device
+        )
+        if self.pgs_warmstart:
+            self._ws_prev_mf_impulses = wp.zeros((worlds, rows), dtype=wp.float32, device=device)
+            self._ws_prev_mf_row_type = wp.full((worlds, rows), -1, dtype=wp.int32, device=device)
+            self._ws_prev_mf_row_parent = wp.full((worlds, rows), -1, dtype=wp.int32, device=device)
+            # Free bodies with rows in each world, for installing the seeded impulses.
+            self.max_mf_bodies = max(self._max_free_rigid_bodies_per_world, 1)
+            self.mf_body_list = wp.zeros((worlds, self.max_mf_bodies), dtype=wp.int32, device=device)
+            self.mf_body_dof_start = wp.zeros((worlds, self.max_mf_bodies), dtype=wp.int32, device=device)
+            self.mf_body_count = wp.zeros((worlds,), dtype=wp.int32, device=device)
+            self.mf_local_body_a = wp.zeros((worlds, rows), dtype=wp.int32, device=device)
+            self.mf_local_body_b = wp.zeros((worlds, rows), dtype=wp.int32, device=device)
         if self.pgs_mode == "split":
             # Local body table of the native free-body solve, which keeps the velocities of a
             # world's free bodies in shared memory.
             bodies = max(self._max_free_bodies_per_world, 1)
+            self.mf_body_list = wp.zeros((worlds, bodies), dtype=wp.int32, device=device)
             self.mf_body_dof_start = wp.zeros((worlds, bodies), dtype=wp.int32, device=device)
             self.mf_body_count = wp.zeros((worlds,), dtype=wp.int32, device=device)
             self.mf_local_body_a = wp.zeros((worlds, rows), dtype=wp.int32, device=device)
@@ -3415,7 +3757,7 @@ class SolverFeatherPGS(SolverBase):
             else None
         )
 
-    def _pack_mf_meta(self) -> None:
+    def _pack_mf_meta(self, mf_rhs: wp.array) -> None:
         wp.launch_tiled(
             self._pack_mf_meta_kernel,
             dim=[self.world_count],
@@ -3424,7 +3766,7 @@ class SolverFeatherPGS(SolverBase):
                 self.mf_dof_a,
                 self.mf_dof_b,
                 self.mf_eff_mass_inv,
-                self.mf_rhs,
+                mf_rhs,
                 self.mf_row_type,
                 self.mf_row_parent,
             ],
@@ -3433,12 +3775,23 @@ class SolverFeatherPGS(SolverBase):
             device=self.model.device,
         )
 
-    def _launch_pgs_solve(self) -> None:
-        """Run the fused matrix-free Gauss-Seidel sweep over the dense and free-body rows."""
+    def _launch_pgs_solve(
+        self, rhs: wp.array, iterations: int, *, regularize: bool, freeze_drive_rows: bool = False
+    ) -> None:
+        """Run the fused matrix-free Gauss-Seidel sweep over the dense and free-body rows.
+
+        Args:
+            rhs: Dense right-hand side (position or velocity-only); the free-body one is
+                packed into ``mf_meta_packed`` by :meth:`_pack_mf_meta`.
+            iterations: Number of sweeps.
+            regularize: Apply the per-row regularization weights.
+            freeze_drive_rows: Skip PGS joint-drive rows (velocity-only iterations).
+        """
         if self._sparse_mass_matrix_size is not None:
+            # Sparse selection excludes every option that changes the right-hand side or sweep.
             self._launch_sparse_pgs_solve()
             return
-        if self.pgs_iterations <= 0 or self._pgs_solve_mf_gs_kernel is None:
+        if iterations <= 0 or self._pgs_solve_mf_gs_kernel is None:
             return
         wp.launch_tiled(
             self._pgs_solve_mf_gs_kernel,
@@ -3446,7 +3799,7 @@ class SolverFeatherPGS(SolverBase):
             inputs=[
                 self.constraint_count,
                 self.world_dof_indices,
-                self.rhs,
+                rhs,
                 self.diag,
                 self.impulses,
                 self.J_world,
@@ -3468,8 +3821,12 @@ class SolverFeatherPGS(SolverBase):
                 self.mf_MiJt_a,
                 self.mf_MiJt_b,
                 self.mf_row_mu,
-                self.pgs_iterations,
+                self.row_w,
+                self.mf_row_w,
+                int(iterations),
                 self.pgs_omega,
+                int(regularize),
+                int(freeze_drive_rows),
             ],
             outputs=[self.v_out],
             block_dim=32,
@@ -3581,6 +3938,11 @@ class SolverFeatherPGS(SolverBase):
                 f"{contacts.rigid_contact_max} slots, but solver scratch was allocated for "
                 f"{self._max_contacts_alloc}. Set model.rigid_contact_max before constructing the solver."
             )
+        if self.pgs_warmstart and contacts is not None and contacts.rigid_contact_match_index is None:
+            raise ValueError(
+                "pgs_warmstart=True matches contacts across steps and requires a Contacts buffer created "
+                'with contact matching; create the CollisionPipeline with contact_matching="latest".'
+            )
         if self._last_step_dt is not None and abs(self._last_step_dt - dt) > 1.0e-8:
             # The augmented mass matrix depends on dt through the implicit drive terms.
             self._force_mass_update = True
@@ -3651,18 +4013,97 @@ class SolverFeatherPGS(SolverBase):
         self._stage3_compute_v_hat(state_in, state_aug, dt, stage3_qd)
 
         # Stage 4: constraint rows, responses Y = H^-1 J^T, diagonals and right-hand sides.
-        self._stage4_build_rows(state_in, state_aug, control, contacts)
+        self._stage4_build_rows(state_in, state_aug, control, contacts, dt)
+        has_contacts = contacts is not None and contacts.rigid_contact_max > 0
         if self.pgs_mode == "split":
             self._solve_split(state_aug, dt)
         else:
-            self._solve_matrix_free(state_aug, dt)
+            self._solve_matrix_free(state_in, state_aug, contacts, dt)
 
         # Stage 7: convert the solved velocity to accelerations, integrate and publish.
+        if self.pgs_velocity_iterations > 0:
+            # Positions follow the position solve; the velocity-only iterations then refine
+            # the velocity without the position bias.
+            wp.copy(self.v_out_snap, self.v_out)
+            self._compute_velocity_pass_rhs(dt)
+            self._pack_mf_meta(self.mf_rhs_unbiased)
+            self._launch_pgs_solve(
+                self.rhs_unbiased,
+                self.pgs_velocity_iterations,
+                regularize=False,
+                freeze_drive_rows=self.pgs_velocity_drive_mode == "freeze",
+            )
+            wp.copy(self.qd_work, self.v_out_snap)
+            self._integrate(state_in, state_aug, state_out, dt, self.qd_work)
+            wp.launch(
+                update_qdd_from_velocity,
+                dim=model.joint_dof_count,
+                inputs=[state_in.joint_qd, self._kinematic_dof_mask, 1.0 / dt],
+                outputs=[self.v_out, state_aug.joint_qdd],
+                device=model.device,
+            )
+            if self._free_root_joint_count:
+                # The integrator damped the position-solve velocity; damp the published one alike.
+                wp.launch(
+                    apply_free_root_angular_damping,
+                    dim=self._free_root_joint_count,
+                    inputs=[
+                        self._free_root_joint_indices,
+                        model.joint_qd_start,
+                        self._kinematic_joint_mask,
+                        model.joint_child,
+                        self.rigid_body_angular_damping,
+                        dt,
+                    ],
+                    outputs=[self.v_out],
+                    device=model.device,
+                )
+            wp.copy(state_out.joint_qd, self.v_out)
+        else:
+            self._integrate(state_in, state_aug, state_out, dt, self.v_out)
+        self._stage7_update_kinematics(state_out)
+
+        if self._friction_anchors_enabled:
+            if has_contacts:
+                for route, parents, mu, impulses in self._patch_row_arrays():
+                    wp.launch(
+                        finish_patch_impulses,
+                        dim=contacts.rigid_contact_max,
+                        inputs=[
+                            contacts.rigid_contact_count,
+                            self._friction_patches.current,
+                            state_in.body_q,
+                            state_out.body_q,
+                            state_out.body_qd,
+                            model.body_com,
+                            self.contact_world,
+                            self.contact_slot,
+                            self.contact_path,
+                            self.contact_slots_needed,
+                            route,
+                            parents,
+                            mu,
+                            impulses,
+                            dt,
+                        ],
+                        device=model.device,
+                    )
+                self._friction_patches.store(state_in)
+            else:
+                self._friction_patches.previous.valid.zero_()
+        if self.pgs_warmstart:
+            self._snapshot_warmstart(contacts, dt)
+        self._step += 1
+        return state_out
+
+    def _integrate(self, state_in: State, state_aug: State, state_out: State, dt: float, velocity: wp.array) -> None:
+        """Integrate the joint state from a solved generalized velocity (which is updated in place)."""
+        model = self.model
         wp.launch(
             update_qdd_from_velocity,
             dim=model.joint_dof_count,
             inputs=[state_in.joint_qd, self._kinematic_dof_mask, 1.0 / dt],
-            outputs=[self.v_out, state_aug.joint_qdd],
+            outputs=[velocity, state_aug.joint_qdd],
             device=model.device,
         )
         if self._free_root_joint_count:
@@ -3701,11 +4142,169 @@ class SolverFeatherPGS(SolverBase):
             outputs=[state_out.joint_q, state_out.joint_qd],
             device=model.device,
         )
-        self._stage7_update_kinematics(state_out)
-        self._step += 1
-        return state_out
 
-    def _solve_matrix_free(self, state_aug: State, dt: float) -> None:
+    def _compute_velocity_pass_rhs(self, dt: float) -> None:
+        """Build the right-hand sides of the velocity-only iterations from the position solve."""
+        model = self.model
+        wp.launch(
+            compute_world_contact_velocity_bias,
+            dim=self.world_count * self.dense_max_constraints,
+            inputs=[
+                self.constraint_count,
+                self.dense_max_constraints,
+                self.world_dof_count,
+                self.phi,
+                self.row_type,
+                self.target_velocity,
+                self.row_restitution,
+                self.v_out_snap,
+                self.v_hat,
+                self.world_dof_indices,
+                self.J_world,
+                dt,
+                self.restitution_velocity_threshold,
+            ],
+            outputs=[self.rhs_unbiased],
+            device=model.device,
+        )
+        if self._has_free_rigid_bodies:
+            wp.launch(
+                compute_mf_velocity_rhs,
+                dim=self.world_count * self.mf_max_constraints,
+                inputs=[
+                    self.mf_constraint_count,
+                    self.mf_dof_a,
+                    self.mf_dof_b,
+                    self.mf_J_a,
+                    self.mf_J_b,
+                    self.world_dof_indices,
+                    self.mf_phi,
+                    self.mf_row_type,
+                    self.mf_target_velocity,
+                    self.mf_row_restitution,
+                    int(self._has_prescribed_response),
+                    dt,
+                    self.v_out_snap,
+                    self.v_hat,
+                    self.restitution_velocity_threshold,
+                    self.mf_max_constraints,
+                ],
+                outputs=[self.mf_rhs_unbiased],
+                device=model.device,
+            )
+
+    def _apply_mf_warmstart_velocity(self) -> None:
+        """Install the velocity of the seeded free-body impulses into ``v_out``."""
+        model = self.model
+        wp.launch(
+            build_mf_body_map,
+            dim=self.world_count,
+            inputs=[
+                self.mf_constraint_count,
+                self.mf_body_a,
+                self.mf_body_b,
+                self.body_to_articulation,
+                self.articulation_dof_start,
+                self.max_mf_bodies,
+            ],
+            outputs=[
+                self.mf_body_list,
+                self.mf_body_dof_start,
+                self.mf_body_count,
+                self.mf_local_body_a,
+                self.mf_local_body_b,
+            ],
+            device=model.device,
+        )
+        wp.launch(
+            apply_mf_warmstart_impulses,
+            dim=self.world_count * self.max_mf_bodies * 6,
+            inputs=[
+                self.mf_constraint_count,
+                self.mf_body_count,
+                self.mf_body_dof_start,
+                self.mf_local_body_a,
+                self.mf_local_body_b,
+                self.mf_MiJt_a,
+                self.mf_MiJt_b,
+                self.mf_impulses,
+                self.max_mf_bodies,
+            ],
+            outputs=[self.v_out],
+            device=model.device,
+        )
+
+    def _snapshot_warmstart(self, contacts: Contacts | None, dt: float) -> None:
+        """Keep this step's impulses, row layout and contact slots for the next step's gather."""
+        model = self.model
+        has_contacts = int(contacts is not None)
+        families = [
+            (
+                self.impulses,
+                self.row_type,
+                self.row_parent,
+                self._ws_prev_impulses,
+                self._ws_prev_row_type,
+                self._ws_prev_row_parent,
+            )
+        ]
+        if self._has_free_rigid_bodies:
+            families.append(
+                (
+                    self.mf_impulses,
+                    self.mf_row_type,
+                    self.mf_row_parent,
+                    self._ws_prev_mf_impulses,
+                    self._ws_prev_mf_row_type,
+                    self._ws_prev_mf_row_parent,
+                )
+            )
+        for impulses, row_type, row_parent, prev_impulses, prev_type, prev_parent in families:
+            wp.launch(
+                snapshot_row_warmstart,
+                dim=impulses.shape,
+                inputs=[impulses, row_type, row_parent, has_contacts],
+                outputs=[prev_impulses, prev_type, prev_parent],
+                device=model.device,
+            )
+        if contacts is not None:
+            wp.launch(
+                snapshot_contact_warmstart,
+                dim=contacts.rigid_contact_max,
+                inputs=[
+                    contacts.rigid_contact_count,
+                    self.contact_path,
+                    self.contact_slot,
+                    contacts.rigid_contact_normal,
+                ],
+                outputs=[self._ws_prev_dense_slot, self._ws_prev_mf_slot, self._ws_prev_contact_normal],
+                device=model.device,
+            )
+        wp.launch(
+            snapshot_step_warmstart,
+            dim=1,
+            inputs=[
+                float(dt),
+                contacts.contact_generation if contacts is not None else self._ws_history_generation,
+                self._contact_stream(contacts),
+            ],
+            outputs=[self._ws_history_dt, self._ws_history_generation, self._ws_history_stream],
+            device=model.device,
+        )
+
+    def _contact_stream(self, contacts: Contacts | None) -> int:
+        """Return the warm-start stream id of a contact buffer; 0 for no contacts."""
+        if contacts is None:
+            return 0
+        stream = self._ws_contact_streams.get(contacts)
+        if stream is None:
+            # Ids are never reused, so a replaced buffer cannot alias saved history.
+            self._ws_last_stream += 1
+            stream = self._ws_last_stream
+            self._ws_contact_streams[contacts] = stream
+        return stream
+
+    def _solve_matrix_free(self, state_in: State, state_aug: State, contacts: Contacts | None, dt: float) -> None:
         """Build the matrix-free responses and right-hand sides and run the fused solve into ``v_out``."""
         model = self.model
         if self._sparse_mass_matrix_size is None:
@@ -3760,9 +4359,12 @@ class SolverFeatherPGS(SolverBase):
                 self.row_type,
                 self.target_velocity,
                 self.pgs_beta,
+                self.friction_anchor_beta,
+                self.contact_speculative_scale,
+                self._contact_w,
                 dt,
             ],
-            outputs=[self.rhs],
+            outputs=[self.rhs, self.row_w],
             device=model.device,
         )
         if self._has_free_rigid_bodies:
@@ -3786,10 +4388,38 @@ class SolverFeatherPGS(SolverBase):
         wp.launch(
             prepare_world_impulses,
             dim=self.world_count,
-            inputs=[self.constraint_count],
+            inputs=[self.constraint_count, self.dense_max_constraints, int(self.pgs_warmstart)],
             outputs=[self.impulses],
             device=model.device,
         )
+        has_contacts = contacts is not None and contacts.rigid_contact_max > 0
+        if self.pgs_warmstart and has_contacts:
+            self._gather_warmstart(contacts, route=0, dt=dt)
+        if self._friction_anchors_enabled and has_contacts and self.pgs_warmstart and self.pgs_warmstart_decay > 0.0:
+            # Carried anchors replace the identity-matched tangent impulses of their rows.
+            for route, parents, mu, impulses in self._patch_row_arrays():
+                wp.launch(
+                    seed_patch_impulses,
+                    dim=contacts.rigid_contact_max,
+                    inputs=[
+                        contacts.rigid_contact_count,
+                        self._friction_patches.current,
+                        self._friction_patches.previous,
+                        state_in.body_q,
+                        self.contact_world,
+                        self.contact_slot,
+                        self.contact_path,
+                        self.contact_slots_needed,
+                        route,
+                        parents,
+                        mu,
+                        impulses,
+                        self.pgs_warmstart_decay,
+                        dt,
+                        self._ws_history_dt,
+                    ],
+                    device=model.device,
+                )
         if self._sparse_mass_matrix_size is None and not self._jy_world_aliased and not self._hinv_jt_writes_world:
             for size in self.size_groups:
                 n_arts = self.n_arts_by_size[size]
@@ -3810,11 +4440,53 @@ class SolverFeatherPGS(SolverBase):
                     outputs=[self.J_world, self.Y_world],
                     device=model.device,
                 )
+        # Impacts replace the position bias by their rebound target, from the unconstrained velocity.
+        wp.launch(
+            apply_world_contact_restitution,
+            dim=self.world_count * self.dense_max_constraints,
+            inputs=[
+                self.constraint_count,
+                self.dense_max_constraints,
+                self.world_dof_count,
+                self.phi,
+                self.row_type,
+                self.target_velocity,
+                self.row_restitution,
+                self.v_hat,
+                self.world_dof_indices,
+                self.J_world,
+                dt,
+                self.restitution_velocity_threshold,
+                int(self._regularization_enabled),
+            ],
+            outputs=[self.rhs, self.row_w],
+            device=model.device,
+        )
         wp.copy(self.v_out, self.v_hat)
+        if self.pgs_warmstart:
+            # The solve updates the velocity from impulse deltas, so the seeded impulses'
+            # velocity must be installed before the first sweep.
+            if self.max_world_dofs > 0:
+                wp.launch(
+                    apply_world_impulses_to_velocity,
+                    dim=self.world_count * self.max_world_dofs,
+                    inputs=[
+                        self.constraint_count,
+                        self.world_dof_indices,
+                        self.max_world_dofs,
+                        self.Y_world,
+                        self.impulses,
+                    ],
+                    outputs=[self.v_out],
+                    device=model.device,
+                )
+            if self._has_free_rigid_bodies:
+                self._apply_mf_warmstart_velocity()
         if self._preelim_active:
+            # After the warm-start installs, so a carried contact impulse cannot reopen the projection.
             self._stage5_project_bilateral_velocity()
-        self._pack_mf_meta()
-        self._launch_pgs_solve()
+        self._pack_mf_meta(self.mf_rhs)
+        self._launch_pgs_solve(self.rhs, self.pgs_iterations, regularize=self._regularization_enabled)
 
     def _solve_split(self, state_aug: State, dt: float) -> None:
         """Assemble and solve the dense Delassus systems, then the free-body rows, into ``v_out``.
@@ -3862,8 +4534,18 @@ class SolverFeatherPGS(SolverBase):
         wp.launch(
             compute_world_contact_bias,
             dim=self.world_count,
-            inputs=[self.constraint_count, self.phi, self.row_type, self.target_velocity, self.pgs_beta, dt],
-            outputs=[self.rhs],
+            inputs=[
+                self.constraint_count,
+                self.phi,
+                self.row_type,
+                self.target_velocity,
+                self.pgs_beta,
+                self.friction_anchor_beta,
+                self.contact_speculative_scale,
+                self._contact_w,
+                dt,
+            ],
+            outputs=[self.rhs, self.row_w],
             device=model.device,
         )
         for size in self.size_groups:
@@ -3871,7 +4553,7 @@ class SolverFeatherPGS(SolverBase):
         wp.launch(
             prepare_world_impulses,
             dim=self.world_count,
-            inputs=[self.constraint_count],
+            inputs=[self.constraint_count, self.dense_max_constraints, 0],
             outputs=[self.impulses],
             device=model.device,
         )
@@ -3894,7 +4576,13 @@ class SolverFeatherPGS(SolverBase):
                     self.articulation_dof_start,
                     self.mf_body_dof_start.shape[1],
                 ],
-                outputs=[self.mf_body_dof_start, self.mf_body_count, self.mf_local_body_a, self.mf_local_body_b],
+                outputs=[
+                    self.mf_body_list,
+                    self.mf_body_dof_start,
+                    self.mf_body_count,
+                    self.mf_local_body_a,
+                    self.mf_local_body_b,
+                ],
                 device=model.device,
             )
         if not self._has_mixed_contacts:
@@ -4156,6 +4844,7 @@ class SolverFeatherPGS(SolverBase):
                 self.contact_world,
                 self.contact_slot,
                 self.contact_path,
+                self.contact_slots_needed,
                 self.impulses,
                 self.mf_impulses,
                 self.constraint_count,
@@ -4778,6 +5467,77 @@ class SolverFeatherPGS(SolverBase):
                 device=model.device,
             )
 
+    def _patch_row_arrays(self):
+        """Yield ``(route, row_parent, row_mu, impulses)`` of each row family that can hold contact rows."""
+        yield 0, self.row_parent, self.row_mu, self.impulses
+        if self._has_free_rigid_bodies:
+            yield 1, self.mf_row_parent, self.mf_row_mu, self.mf_impulses
+
+    def _gather_warmstart(self, contacts: Contacts, route: int, dt: float) -> None:
+        """Seed one row family's contact impulses from the previous step."""
+        if route == 0:
+            arrays = (
+                self._ws_prev_dense_slot,
+                self._ws_prev_impulses,
+                self._ws_prev_row_type,
+                self._ws_prev_row_parent,
+                self.constraint_count,
+                self.row_type,
+                self.row_parent,
+                self.row_mu,
+                self.dense_max_constraints,
+                self.impulses,
+            )
+        else:
+            arrays = (
+                self._ws_prev_mf_slot,
+                self._ws_prev_mf_impulses,
+                self._ws_prev_mf_row_type,
+                self._ws_prev_mf_row_parent,
+                self.mf_constraint_count,
+                self.mf_row_type,
+                self.mf_row_parent,
+                self.mf_row_mu,
+                self.mf_max_constraints,
+                self.mf_impulses,
+            )
+        prev_slot, prev_impulses, prev_type, prev_parent, count, row_type, row_parent, row_mu, capacity, impulses = (
+            arrays
+        )
+        wp.launch(
+            gather_contact_warmstart,
+            dim=contacts.rigid_contact_max,
+            inputs=[
+                contacts.rigid_contact_count,
+                route,
+                self.contact_path,
+                self.contact_slot,
+                self.contact_world,
+                contacts.rigid_contact_match_index,
+                contacts.rigid_contact_match_generation,
+                prev_slot,
+                prev_impulses,
+                prev_type,
+                prev_parent,
+                count,
+                row_type,
+                row_parent,
+                contacts.rigid_contact_normal,
+                self._ws_prev_contact_normal,
+                row_mu,
+                self.pgs_warmstart_decay,
+                dt,
+                self._ws_history_dt,
+                contacts.contact_generation,
+                self._contact_stream(contacts),
+                self._ws_history_generation,
+                self._ws_history_stream,
+                capacity,
+            ],
+            outputs=[impulses],
+            device=self.model.device,
+        )
+
     def _begin_dense_rows(self) -> None:
         """Start the step's dense row allocation and reserve the drive rows first.
 
@@ -4812,7 +5572,9 @@ class SolverFeatherPGS(SolverBase):
                 device=model.device,
             )
 
-    def _stage4_build_rows(self, state_in: State, state_aug: State, control: Control, contacts: Contacts | None):
+    def _stage4_build_rows(
+        self, state_in: State, state_aug: State, control: Control, contacts: Contacts | None, dt: float
+    ):
         """Allocate and fill the drive, bilateral, joint-limit, velocity-limit, contact and friction rows.
 
         Dense rows (rows touching an articulated body) are laid out per world as
@@ -5048,6 +5810,19 @@ class SolverFeatherPGS(SolverBase):
                 contacts.rigid_contact_margin0,
                 contacts.rigid_contact_margin1,
             ]
+            if self._friction_anchors_enabled:
+                self._friction_patches.build(
+                    model,
+                    state_in,
+                    contacts,
+                    body_to_articulation=self.body_to_articulation,
+                    is_free_rigid=is_free_rigid,
+                    contact_gap_gate=self.contact_gap_gate,
+                    same_articulation_gap_gate=self.same_articulation_contact_gap_gate,
+                    articulation_pair_gap_gate=self.articulation_pair_contact_gap_gate,
+                    friction_gap=self.contact_friction_gap_threshold,
+                    friction_articulation_pairs_only=self.contact_friction_articulation_pairs_only,
+                )
             wp.launch(
                 allocate_world_contact_slots,
                 dim=contact_build_threads,
@@ -5056,6 +5831,12 @@ class SolverFeatherPGS(SolverBase):
                     contact_build_threads,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_normal,
+                    contacts.rigid_contact_margin0,
+                    contacts.rigid_contact_margin1,
+                    state_in.body_q,
                     model.shape_body,
                     self.body_to_articulation,
                     self.art_to_world,
@@ -5067,12 +5848,19 @@ class SolverFeatherPGS(SolverBase):
                     max_constraints,
                     self.mf_max_constraints,
                     self._articulation_model_world,
+                    self.contact_gap_gate,
+                    self.same_articulation_contact_gap_gate,
+                    self.articulation_pair_contact_gap_gate,
+                    self.contact_friction_gap_threshold,
+                    int(self.contact_friction_articulation_pairs_only),
+                    self._friction_patches.view,
                 ],
                 outputs=[
                     self.contact_world,
                     self.contact_slot,
                     self.contact_art_a,
                     self.contact_art_b,
+                    self.contact_slots_needed,
                     self.slot_counter,
                     self.contact_path,
                     mf_slot_counter,
@@ -5094,12 +5882,15 @@ class SolverFeatherPGS(SolverBase):
                     self.contact_art_a,
                     self.contact_art_b,
                     self.contact_path,
+                    self.contact_slots_needed,
                     model.shape_body,
                     state_in.body_q,
                     state_aug.body_v_s,
                     self._prescribed_articulation,
                     self.articulation_origin,
                     self.shape_material_mu,
+                    self.shape_material_restitution,
+                    self._friction_patches.view,
                 ],
                 outputs=[
                     self.row_type,
@@ -5107,6 +5898,7 @@ class SolverFeatherPGS(SolverBase):
                     self.row_mu,
                     self.phi,
                     self.target_velocity,
+                    self.row_restitution,
                 ],
                 device=model.device,
             )
@@ -5168,6 +5960,7 @@ class SolverFeatherPGS(SolverBase):
                             self.contact_art_a,
                             self.contact_art_b,
                             self.contact_path,
+                            self.contact_slots_needed,
                             size,
                             self.articulation_response_dof_count,
                             self.art_group_idx,
@@ -5177,6 +5970,7 @@ class SolverFeatherPGS(SolverBase):
                             state_aug.joint_S_s,
                             model.shape_body,
                             state_in.body_q,
+                            self._friction_patches.view,
                         ],
                         outputs=[self.J_by_size[size]],
                         device=model.device,
@@ -5192,6 +5986,7 @@ class SolverFeatherPGS(SolverBase):
                             self.contact_art_a,
                             self.contact_art_b,
                             self.contact_path,
+                            self.contact_slots_needed,
                             size,
                             self.articulation_response_dof_count,
                             self.art_group_idx,
@@ -5203,6 +5998,7 @@ class SolverFeatherPGS(SolverBase):
                             state_aug.joint_S_s,
                             model.shape_body,
                             state_in.body_q,
+                            self._friction_patches.view,
                         ],
                         outputs=[self.J_by_size[size]],
                         device=model.device,
@@ -5227,6 +6023,10 @@ class SolverFeatherPGS(SolverBase):
                         self._prescribed_articulation,
                         int(self._has_prescribed_response),
                         self.shape_material_mu,
+                        self.contact_slots_needed,
+                        self.shape_material_restitution,
+                        self._friction_patches.view,
+                        self.friction_anchor_beta,
                     ],
                     outputs=[
                         self.mf_body_a,
@@ -5238,6 +6038,7 @@ class SolverFeatherPGS(SolverBase):
                         self.mf_row_mu,
                         self.mf_phi,
                         self.mf_target_velocity,
+                        self.mf_row_restitution,
                     ],
                     device=model.device,
                 )
@@ -5248,6 +6049,29 @@ class SolverFeatherPGS(SolverBase):
                     outputs=[self.mf_constraint_count],
                     device=model.device,
                 )
+                if self.pgs_warmstart:
+                    self._gather_warmstart(contacts, route=1, dt=dt)
+
+            if self._friction_anchors_enabled:
+                # Chain each region's normal rows and share the friction budget among the
+                # anchors that received rows.
+                for route, parents, mu, _impulses in self._patch_row_arrays():
+                    wp.launch(
+                        link_patch_rows,
+                        dim=contacts.rigid_contact_max,
+                        inputs=[
+                            contacts.rigid_contact_count,
+                            self._friction_patches.view,
+                            self.contact_world,
+                            self.contact_slot,
+                            self.contact_path,
+                            self.contact_slots_needed,
+                            route,
+                            parents,
+                            mu,
+                        ],
+                        device=model.device,
+                    )
 
         if mf_active:
             # Contact rows precede the free-body velocity-limit rows in each world.
@@ -5507,14 +6331,21 @@ class SolverFeatherPGS(SolverBase):
                 self.mf_phi,
                 self.mf_row_type,
                 self.mf_target_velocity,
+                self.mf_row_restitution,
                 int(self._has_prescribed_response),
+                self.body_to_articulation,
+                self.articulation_dof_start,
+                self.v_hat,
                 self.rigid_body_max_depenetration_velocity,
                 self.pgs_cfm,
                 self.pgs_beta,
+                self._contact_w,
                 dt,
+                self.contact_speculative_scale,
+                self.restitution_velocity_threshold,
                 self.mf_max_constraints,
             ],
-            outputs=[self.mf_eff_mass_inv, self.mf_MiJt_a, self.mf_MiJt_b, self.mf_rhs],
+            outputs=[self.mf_eff_mass_inv, self.mf_MiJt_a, self.mf_MiJt_b, self.mf_rhs, self.mf_row_w],
             device=model.device,
         )
 
@@ -6297,6 +7128,7 @@ def _get_pgs_solve_mf_gs_kernel(
 
             int row_type = s_meta_dense[i] & {type_mask};
             if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)}) continue;
+            if (freeze_drive_rows != 0 && row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_TARGET)}) continue;
             float denom = s_diag_dense[i];
             if (denom <= 0.0f && row_type != {int(PGS_CONSTRAINT_TYPE_FRICTION)}) continue;
 
@@ -6306,7 +7138,9 @@ def _get_pgs_solve_mf_gs_kernel(
 
             float old_impulse = s_lam_dense[i];
             float residual = jv + s_rhs_dense[i];
-            float delta = denom > 0.0f ? -residual / denom : 0.0f;
+            // Regularized rows (weight w < 1) also relax the impulse toward zero.
+            float w = regularize != 0 ? world_row_w.data[off_dense + i] : 1.0f;
+            float delta = denom > 0.0f ? -residual / denom * w - (1.0f - w) * old_impulse : 0.0f;
             float new_impulse = old_impulse + omega * delta;
 
 {drive_update}
@@ -6319,7 +7153,14 @@ def _get_pgs_solve_mf_gs_kernel(
                 }} else {{
                     int sib = parent_idx + 2;
                     int sib_row_base = jy_world_base + sib * {D};
-                    float radius = fmaxf(s_mu_dense[i] * s_lam_dense[parent_idx], 0.0f);
+                    // A patch's normal rows form a cycle through their parent links; its
+                    // anchors share the pooled normal load (a point contact links to -1).
+                    float lambda_n = s_lam_dense[parent_idx];
+                    for (int patch_row = ((s_meta_dense[parent_idx] >> {type_bits}) - 1);
+                         patch_row >= 0 && patch_row != parent_idx;
+                         patch_row = ((s_meta_dense[patch_row] >> {type_bits}) - 1))
+                        lambda_n += s_lam_dense[patch_row];
+                    float radius = fmaxf(s_mu_dense[i] * lambda_n, 0.0f);
                     float sibling_residual = 0.0f;
                     float cross = 0.0f;
                     for (int d = lane; d < {D}; d += 32) {{
@@ -6398,7 +7239,12 @@ def _get_pgs_solve_mf_gs_kernel(
             if (mf_diag <= 0.0f && mf_rt != {int(PGS_CONSTRAINT_TYPE_FRICTION)}) continue;
             float radius = 0.0f;
             if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)}) {{
-                radius = fmaxf(mf_row_mu.data[off_mf + i] * s_lam_mf[mf_par], 0.0f);
+                float lambda_n = s_lam_mf[mf_par];
+                for (int patch_row = (mf_meta.data[off_meta + mf_par * 4 + 3] >> 16);
+                     patch_row >= 0 && patch_row != mf_par;
+                     patch_row = (mf_meta.data[off_meta + patch_row * 4 + 3] >> 16))
+                    lambda_n += s_lam_mf[patch_row];
+                radius = fmaxf(mf_row_mu.data[off_mf + i] * lambda_n, 0.0f);
                 // A zero disk with no carried impulse cannot change the velocity.
                 if (radius == 0.0f && s_lam_mf[i] == 0.0f && s_lam_mf[i + 1] == 0.0f) continue;
             }}
@@ -6411,6 +7257,10 @@ def _get_pgs_solve_mf_gs_kernel(
             float residual = jv + __int_as_float(meta.z);
             float old_impulse = s_lam_mf[i];
             float delta = -residual * mf_diag;
+            if (mf_rt == {int(PGS_CONSTRAINT_TYPE_CONTACT)}) {{
+                float w = regularize != 0 ? mf_row_w.data[off_mf + i] : 1.0f;
+                delta = -residual * mf_diag * w - (1.0f - w) * old_impulse;
+            }}
             float new_impulse = old_impulse + omega * delta;
             if (mf_rt == {int(PGS_CONSTRAINT_TYPE_CONTACT)}) {{
                 if (new_impulse < 0.0f) new_impulse = 0.0f;
@@ -6530,6 +7380,11 @@ def _get_pgs_solve_mf_gs_kernel(
             snippet,
         )
         snippet = re.sub(
+            r"\(\(s_meta_dense\[(\w+)\] >> \d+\) - 1\)",
+            r"world_row_parent.data[off_dense + \1]",
+            snippet,
+        )
+        snippet = re.sub(
             r"\(s_meta_dense\[i\] >> \d+\) - 1",
             "world_row_parent.data[off_dense + i]",
             snippet,
@@ -6576,8 +7431,12 @@ def _get_pgs_solve_mf_gs_kernel(
         mf_MiJt_a: wp.array3d[float],
         mf_MiJt_b: wp.array3d[float],
         mf_row_mu: wp.array2d[float],
+        world_row_w: wp.array2d[float],
+        mf_row_w: wp.array2d[float],
         iterations: int,
         omega: float,
+        regularize: int,
+        freeze_drive_rows: int,
         v_out: wp.array[float],
     ): ...
 
@@ -6606,8 +7465,12 @@ def _get_pgs_solve_mf_gs_kernel(
         mf_MiJt_a: wp.array3d[float],
         mf_MiJt_b: wp.array3d[float],
         mf_row_mu: wp.array2d[float],
+        world_row_w: wp.array2d[float],
+        mf_row_w: wp.array2d[float],
         iterations: int,
         omega: float,
+        regularize: int,
+        freeze_drive_rows: int,
         v_out: wp.array[float],
     ):
         world, _lane = wp.tid()
@@ -6637,8 +7500,12 @@ def _get_pgs_solve_mf_gs_kernel(
             mf_MiJt_a,
             mf_MiJt_b,
             mf_row_mu,
+            world_row_w,
+            mf_row_w,
             iterations,
             omega,
+            regularize,
+            freeze_drive_rows,
             v_out,
         )
 

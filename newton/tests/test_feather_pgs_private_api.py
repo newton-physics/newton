@@ -76,7 +76,7 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
             "contact_compliance",
             "articulated_contact_response",
             "friction_mode",
-            "pgs_warmstart",
+            "enable_restitution",
         ):
             with self.subTest(option=removed):
                 self.assertNotIn(removed, parameters)

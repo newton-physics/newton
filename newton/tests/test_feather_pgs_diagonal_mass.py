@@ -173,7 +173,13 @@ def test_fixed_base_sibling_branches_use_diagonal_mass_path(test, device):
 
 def test_diagonal_mass_rows_match_dense_and_sparse_factors(test, device):
     """Match the dense loop kernels bitwise, and the sparse factors, with contact and limit rows."""
-    options = {"dense_max_constraints": 64, "enable_joint_limits": True, "pgs_iterations": 8}
+    # Point friction: the sparse factors compared against solve hard point-friction contacts.
+    options = {
+        "dense_max_constraints": 64,
+        "enable_joint_limits": True,
+        "pgs_iterations": 8,
+        "friction_anchor_beta": 0.0,
+    }
     for with_chain in (False, True):
         with test.subTest(with_chain=with_chain):
             model = _build_fixed_base_star_model(

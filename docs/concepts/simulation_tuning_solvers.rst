@@ -229,20 +229,36 @@ repository examples spend tuning effort, not a shared solver API.
        ``dense_max_constraints``, ``mf_max_constraints``,
        ``warn_constraint_overflow``, ``drive_mode``,
        ``fuse_joint_velocity_limits``, ``enable_bilateral_preelimination``,
-       ``bilateral_preelimination_include_mimics``, ``parallel_tree``.
+       ``bilateral_preelimination_include_mimics``, ``friction_anchor_beta``,
+       ``pgs_contact_regularization``, ``pgs_velocity_iterations``,
+       ``pgs_warmstart``, ``restitution_velocity_threshold``,
+       ``contact_speculative_scale``, ``contact_gap_gate``, ``parallel_tree``.
      - Experimental. The default ``pgs_mode="split"`` runs on CPU and CUDA and
        stores a dense ``dense_max_constraints`` squared Delassus matrix per world;
        ``pgs_mode="matrix_free"`` requires CUDA and is needed for joint velocity
-       limits, ``drive_mode="physx_pgs"``, mimic joints and loop-closing joints.
-       Joint limits are enforced only with
+       limits, ``drive_mode="physx_pgs"``, mimic joints, loop-closing joints,
+       friction patches, contact regularization, velocity-only iterations, warm
+       start and restitution. Joint limits are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``pgs_iterations`` reduce residual penetration and
        slip, and ``pgs_beta`` sets how much position error is corrected per
-       step. Joint drives are integrated implicitly by default, which keeps
-       large drive gains stable at ordinary ``dt``; ``drive_mode="physx_pgs"``
-       solves them as PGS rows together with contacts and limits instead, and
-       each driven DOF then uses one row of ``dense_max_constraints``. Rows beyond ``dense_max_constraints``
+       step. In the matrix-free solve, friction acts through persistent patches by
+       default (``friction_anchor_beta``), which hold static loads without creep;
+       ``friction_anchor_beta=0`` selects point friction, which the split solve
+       always uses. A small
+       ``pgs_contact_regularization`` (for example ``0.02``) makes the
+       normal-force split of redundant contacts unique and helps stacks hold at
+       low iteration counts, at the cost of a small resting sag.
+       ``pgs_velocity_iterations`` remove the velocity that position correction
+       adds, and ``pgs_warmstart`` (with contact matching in the
+       :class:`~newton.CollisionPipeline`) reuses the previous step's
+       impulses. ``contact_gap_gate`` and ``contact_speculative_scale`` bound
+       the work and the closing allowance of speculative contacts. Joint drives
+       are integrated implicitly by default, which keeps large drive gains
+       stable at ordinary ``dt``; ``drive_mode="physx_pgs"`` solves them as PGS
+       rows together with contacts and limits instead, and each driven DOF then
+       uses one row of ``dense_max_constraints``. Rows beyond ``dense_max_constraints``
        (articulated bodies) or ``mf_max_constraints`` (free bodies) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world
        and a final entry for global articulations); call
@@ -263,8 +279,10 @@ repository examples spend tuning effort, not a shared solver API.
        disables elimination for the whole solver with a warning. In the
        matrix-free solve, branched articulations of one shared
        topology select sparse mass factors automatically from the model's
-       structure, not from a performance estimate (depending on the topology
-       and the world count they can be faster or markedly slower);
+       structure when contacts use hard point friction
+       (``friction_anchor_beta=0``), not from a performance estimate
+       (depending on the topology and the world count they can be faster or
+       markedly slower);
        ``parallel_tree`` traverses independent tree branches in parallel and is
        worth measuring on broad trees such as hands.
    * - :class:`~newton.solvers.SolverSemiImplicit`
