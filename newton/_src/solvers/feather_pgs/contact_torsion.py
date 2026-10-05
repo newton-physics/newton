@@ -102,6 +102,8 @@ def _validate_torsion_mode(solver):
     """Reject unsupported construction and runtime mode combinations."""
     if not solver.model.device.is_cuda or solver.model.requires_grad or solver.pgs_warmstart:
         raise ValueError("Contact torsion requires a non-differentiable CUDA model and pgs_warmstart=False")
+    if solver.friction_mode != "current":
+        raise ValueError(f"Contact torsion requires friction_mode='current', got {solver.friction_mode!r}")
 
 
 @dataclass

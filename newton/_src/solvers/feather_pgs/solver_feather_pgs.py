@@ -1305,6 +1305,7 @@ class SolverFeatherPGS(SolverBase):
         pgs_velocity_iterations: int = 0,
         pgs_velocity_drive_mode: Literal["freeze", "active"] = "freeze",
         pgs_schedule: Literal["interleaved", "contact_then_internal", "physx_grasp"] = "interleaved",
+        friction_mode: Literal["current", "bisection", "bisection_desaxce", "coulomb_newton"] = "current",
         pgs_warmstart: bool = False,
         pgs_warmstart_decay: float = 1.0,
         restitution_velocity_threshold: float = 0.5,
@@ -1493,6 +1494,21 @@ class SolverFeatherPGS(SolverBase):
                 velocity-only iterations: ``"freeze"`` keeps the drive impulses of the
                 position solve, ``"active"`` keeps solving the drive rows. Implicit
                 (mass-matrix) drives have no rows, so the option has no effect for them.
+            friction_mode: Experimental Coulomb friction update of the matrix-free solve
+                (``pgs_mode="matrix_free"`` only). ``"current"`` updates both tangent impulses
+                together on the friction disk of the current normal impulse: sticking uses the
+                inverse of their 2x2 block, sliding a bounded scalar solve that keeps isotropic
+                maximum dissipation. ``"bisection"`` bisects the normal impulse of each contact
+                and re-solves the 2x2 tangent problem at every probe, so normal and friction
+                impulses are updated together. ``"bisection_desaxce"`` adds the de Saxce
+                maximum-dissipation bias ``mu * |c_T|`` to the normal target velocity of
+                free-body contacts (Le Lidec and Carpentier, 2024). ``"coulomb_newton"`` solves
+                each free-body contact's Coulomb cone exactly with a bracketed scalar Newton
+                iteration on the tangential-force ratio; articulated contacts keep the
+                ``"current"`` update. The other modes use point friction: an omitted
+                ``friction_anchor_beta`` selects it with a warning, and friction patches,
+                contact torsion, contact compliance and the propagation responses require
+                ``"current"``. This option may change without the normal deprecation period.
             pgs_schedule: Row order of the matrix-free sweeps (``pgs_mode="matrix_free"`` only).
                 ``"interleaved"`` sweeps every row family in each iteration: the dense rows,
                 the free-body contact rows, then the velocity limits. ``"contact_then_internal"``
@@ -1679,8 +1695,15 @@ class SolverFeatherPGS(SolverBase):
                     "pgs_contact_regularization": float(pgs_contact_regularization),
                     "contact_shared_anchor": bool(contact_shared_anchor),
                     "contact_friction_shared_anchor": bool(contact_friction_shared_anchor),
+                    "friction_mode": friction_mode,
                 }
             )
+        if friction_mode not in ("current", "bisection", "bisection_desaxce", "coulomb_newton"):
+            raise ValueError(
+                "friction_mode must be 'current', 'bisection', 'bisection_desaxce' or 'coulomb_newton', "
+                f"got {friction_mode!r}"
+            )
+        self.friction_mode = friction_mode
         if friction_anchor_beta is None:
             if contact_compliance:
                 friction_anchor_beta = 0.0
@@ -1691,6 +1714,16 @@ class SolverFeatherPGS(SolverBase):
                     UserWarning,
                     stacklevel=2,
                 )
+            elif (
+                friction_mode != "current" and pgs_mode == "matrix_free" and articulated_contact_response == "immediate"
+            ):
+                friction_anchor_beta = 0.0
+                warnings.warn(
+                    f"friction_mode={friction_mode!r} uses point friction; it does not support persistent "
+                    "friction patches. Set friction_anchor_beta=0 to select point friction without this warning.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             else:
                 # The split solve and the propagation responses have no friction patches.
                 friction_anchor_beta = (
@@ -1698,6 +1731,11 @@ class SolverFeatherPGS(SolverBase):
                 )
         elif contact_compliance and float(friction_anchor_beta) > 0.0:
             raise ValueError("contact_compliance is not validated with friction_anchor_beta > 0")
+        elif friction_mode != "current" and float(friction_anchor_beta) > 0.0:
+            raise ValueError(
+                f"Friction patches require friction_mode='current', got {friction_mode!r}; "
+                "set friction_anchor_beta=0 for point friction"
+            )
         self.contact_compliance = bool(contact_compliance)
         self.compliance_contact_count = 0
         """Compliant contacts consumed by the last step (``contact_compliance`` only)."""
@@ -1836,6 +1874,7 @@ class SolverFeatherPGS(SolverBase):
                     ("contact_compliance=True", self.contact_compliance),
                     ("enable_sleeping=True", bool(enable_sleeping)),
                     (f"pgs_schedule={self.pgs_schedule!r}", self.pgs_schedule != "interleaved"),
+                    (f"friction_mode={self.friction_mode!r}", self.friction_mode != "current"),
                 )
                 if requested
             ]
@@ -1894,6 +1933,7 @@ class SolverFeatherPGS(SolverBase):
                     ("contact_torsion_radius > 0", self._contact_torsion_enabled),
                     ("contact_compliance=True", self.contact_compliance),
                     ("enable_sleeping=True", bool(enable_sleeping)),
+                    (f"friction_mode={self.friction_mode!r}", self.friction_mode != "current"),
                 )
                 if requested
             ]
@@ -3358,10 +3398,12 @@ class SolverFeatherPGS(SolverBase):
         They solve hard point-friction contacts (one normal and two tangent rows per
         contact) without restitution, so friction patches, warm start, regularization,
         velocity-only iterations, normal-only contacts, restitution, contact torsion,
-        contact compliance and the propagation responses keep the dense path.
+        contact compliance, the propagation responses and the other friction modes keep
+        the dense path.
         """
         if (
             self.articulated_contact_response != "immediate"
+            or self.friction_mode != "current"
             or self._contact_torsion_enabled
             or self.contact_compliance
             or self._friction_anchors_enabled
@@ -4170,6 +4212,7 @@ class SolverFeatherPGS(SolverBase):
                 fuse_vel_limits=self.fuse_joint_velocity_limits,
                 contact_torsion=self._contact_torsion_enabled,
                 row_phases=self._propagation_active or self.pgs_schedule != "interleaved",
+                friction_mode=self.friction_mode,
             )
 
     def _init_split_kernels(self, model):
@@ -8471,6 +8514,7 @@ def _get_pgs_solve_mf_gs_kernel(
     fuse_vel_limits: bool = False,
     contact_torsion: bool = False,
     row_phases: bool = False,
+    friction_mode: str = "current",
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -8522,6 +8566,11 @@ def _get_pgs_solve_mf_gs_kernel(
             (``fuse_joint_velocity_limits``); requires ``has_drive_rows``.
         contact_torsion: Emit the contact torsion pass.
         row_phases: Honor the ``row_phase`` launch argument.
+        friction_mode: Contact update of the friction rows (see ``SolverFeatherPGS``):
+            ``"current"`` solves the two tangents on the friction disk of the current
+            normal impulse; the other modes solve each contact's normal and tangent rows
+            together, once per sweep at its first friction row (dense contacts keep the
+            ``"current"`` update under ``"coulomb_newton"``).
     """
     if fuse_vel_limits and not has_drive_rows:
         raise ValueError("fuse_vel_limits requires has_drive_rows")
@@ -8667,6 +8716,111 @@ def _get_pgs_solve_mf_gs_kernel(
     if torsion_sweep:
         torsion_sweep = f"        if (contact_rows) {{\n{torsion_sweep}\n        }}"
 
+    friction_type = int(PGS_CONSTRAINT_TYPE_FRICTION)
+    dense_friction_update = f"""                // The first tangent row solves both tangents of its contact; the second
+                // row's impulse was written by the first.
+                int parent_idx = (s_meta_dense[i] >> {type_bits}) - 1;
+                if (i != parent_idx + 1) {{
+                    new_impulse = old_impulse;
+                }} else {{
+                    int sib = parent_idx + 2;
+                    int sib_row_base = jy_world_base + sib * {D};
+                    // A patch's normal rows form a cycle through their parent links; its
+                    // anchors share the pooled normal load (a point contact links to -1).
+                    float lambda_n = s_lam_dense[parent_idx];
+                    for (int patch_row = ((s_meta_dense[parent_idx] >> {type_bits}) - 1);
+                         patch_row >= 0 && patch_row != parent_idx;
+                         patch_row = ((s_meta_dense[patch_row] >> {type_bits}) - 1))
+                        lambda_n += s_lam_dense[patch_row];
+                    float radius = fmaxf(s_mu_dense[i] * lambda_n, 0.0f);
+                    float sibling_residual = 0.0f;
+                    float cross = 0.0f;
+                    for (int d = lane; d < {D}; d += 32) {{
+                        sibling_residual += J_world.data[sib_row_base + d] * s_v[d];
+                        cross += J_world.data[jy_world_base + i * {D} + d] * Y_world.data[sib_row_base + d];
+                    }}
+                    sibling_residual = warp_sum(sibling_residual) + s_rhs_dense[sib];
+                    cross = warp_sum(cross);
+                    float2 pair = friction_pair_candidate(denom, cross, s_diag_dense[sib],
+                        residual, sibling_residual, old_impulse, s_lam_dense[sib], radius, omega);
+                    float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
+                    float scale = mag > radius ? radius / mag : 1.0f;
+                    new_impulse = pair.x * scale;
+                    float sib_delta = pair.y * scale - s_lam_dense[sib];
+                    s_lam_dense[sib] = pair.y * scale;
+                    if (sib_delta != 0.0f) {{
+                        iteration_changed = 1;
+                        for (int d = lane; d < {D}; d += 32) s_v[d] += Y_world.data[sib_row_base + d] * sib_delta;
+                    }}
+                }}"""
+    if friction_mode == "current":
+        mf_friction_update = """                int sib = mf_par + 2;
+                int sib_mf6 = mf6_base + sib * 6;
+                float2 pair = make_float2(0.0f, 0.0f);
+                // Zero load gives a zero disk; avoid the unused tangent reductions.
+                if (radius > 0.0f) {
+                    float sibling_residual = 0.0f;
+                    float cross = 0.0f;
+                    if (lane < 6 && dof_a >= 0) {
+                        sibling_residual = mf_J_a.data[sib_mf6 + lane] * s_v[dof_a + lane];
+                        cross = cur_Ja * mf_MiJt_a.data[sib_mf6 + lane];
+                    }
+                    if (lane >= 6 && lane < 12 && dof_b >= 0) {
+                        sibling_residual = mf_J_b.data[sib_mf6 + lane - 6] * s_v[dof_b + lane - 6];
+                        cross = cur_Jb * mf_MiJt_b.data[sib_mf6 + lane - 6];
+                    }
+                    sibling_residual = warp_sum(sibling_residual) + __int_as_float(mf_meta.data[off_meta + sib * 4 + 2]);
+                    cross = warp_sum(cross);
+                    float inv_sib = __int_as_float(mf_meta.data[off_meta + sib * 4 + 1]);
+                    pair = friction_pair_candidate(mf_diag > 0.0f ? 1.0f / mf_diag : 0.0f, cross,
+                        inv_sib > 0.0f ? 1.0f / inv_sib : 0.0f, residual, sibling_residual, old_impulse,
+                        s_lam_mf[sib], radius, omega);
+                }
+                float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
+                float scale = mag > radius ? radius / mag : 1.0f;
+                new_impulse = pair.x * scale;
+                float sib_delta = pair.y * scale - s_lam_mf[sib];
+                s_lam_mf[sib] = pair.y * scale;
+                if (sib_delta != 0.0f) {
+                    iteration_changed = 1;
+                    if (lane < 6 && dof_a >= 0) s_v[dof_a + lane] += mf_MiJt_a.data[sib_mf6 + lane] * sib_delta;
+                    if (lane >= 6 && lane < 12 && dof_b >= 0)
+                        s_v[dof_b + lane - 6] += mf_MiJt_b.data[sib_mf6 + lane - 6] * sib_delta;
+                }"""
+        mf_friction_radius = f"""            float radius = 0.0f;
+            if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)}) {{
+                float lambda_n = s_lam_mf[mf_par];
+                for (int patch_row = (mf_meta.data[off_meta + mf_par * 4 + 3] >> 16);
+                     patch_row >= 0 && patch_row != mf_par;
+                     patch_row = (mf_meta.data[off_meta + patch_row * 4 + 3] >> 16))
+                    lambda_n += s_lam_mf[patch_row];
+                radius = fmaxf(mf_row_mu.data[off_mf + i] * lambda_n, 0.0f);
+                // A zero disk with no carried impulse cannot change the velocity.
+                if (radius == 0.0f && s_lam_mf[i] == 0.0f && s_lam_mf[i + 1] == 0.0f) continue;
+            }}"""
+        dense_friction_denominator_guard = f" && row_type != {friction_type}"
+        mf_friction_denominator_guard = f" && mf_rt != {friction_type}"
+    else:
+        # The other modes solve each contact's three rows together; their friction rows may
+        # have no diagonal of their own.
+        if friction_mode in ("bisection", "bisection_desaxce"):
+            dense_friction_update = (
+                _DENSE_BISECTION_FRICTION_SOURCE.replace("__D__", str(D))
+                .replace("__DENSE_META_ROW_TYPE_BITS__", str(type_bits))
+                .replace("// __DENSE_DESAXCE_BIAS__", "")
+            )
+            mf_friction_update = _MF_BISECTION_FRICTION_SOURCE.replace(
+                "// __DESAXCE_BIAS__",
+                _MF_DESAXCE_BIAS_SOURCE if friction_mode == "bisection_desaxce" else "",
+            )
+        elif friction_mode == "coulomb_newton":
+            mf_friction_update = _MF_COULOMB_NEWTON_FRICTION_SOURCE
+        else:
+            raise ValueError(f"Unknown friction_mode {friction_mode!r}")
+        mf_friction_radius = ""
+        dense_friction_denominator_guard = ""
+        mf_friction_denominator_guard = ""
+
     snippet = f"""
 #if defined(__CUDA_ARCH__)
     const unsigned MASK = 0xFFFFFFFF;
@@ -8744,7 +8898,7 @@ def _get_pgs_solve_mf_gs_kernel(
             if (freeze_drive_rows != 0 && row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_TARGET)}) continue;
 {dense_phase_filter}
             float denom = s_diag_dense[i];
-            if (denom <= 0.0f && row_type != {int(PGS_CONSTRAINT_TYPE_FRICTION)}) continue;
+            if (denom <= 0.0f{dense_friction_denominator_guard}) continue;
 
             float my_sum = 0.0f;
 {dense_dot}
@@ -8759,42 +8913,7 @@ def _get_pgs_solve_mf_gs_kernel(
 
 {drive_update}
             if (row_type == {int(PGS_CONSTRAINT_TYPE_FRICTION)}) {{
-                // The first tangent row solves both tangents of its contact; the second
-                // row's impulse was written by the first.
-                int parent_idx = (s_meta_dense[i] >> {type_bits}) - 1;
-                if (i != parent_idx + 1) {{
-                    new_impulse = old_impulse;
-                }} else {{
-                    int sib = parent_idx + 2;
-                    int sib_row_base = jy_world_base + sib * {D};
-                    // A patch's normal rows form a cycle through their parent links; its
-                    // anchors share the pooled normal load (a point contact links to -1).
-                    float lambda_n = s_lam_dense[parent_idx];
-                    for (int patch_row = ((s_meta_dense[parent_idx] >> {type_bits}) - 1);
-                         patch_row >= 0 && patch_row != parent_idx;
-                         patch_row = ((s_meta_dense[patch_row] >> {type_bits}) - 1))
-                        lambda_n += s_lam_dense[patch_row];
-                    float radius = fmaxf(s_mu_dense[i] * lambda_n, 0.0f);
-                    float sibling_residual = 0.0f;
-                    float cross = 0.0f;
-                    for (int d = lane; d < {D}; d += 32) {{
-                        sibling_residual += J_world.data[sib_row_base + d] * s_v[d];
-                        cross += J_world.data[jy_world_base + i * {D} + d] * Y_world.data[sib_row_base + d];
-                    }}
-                    sibling_residual = warp_sum(sibling_residual) + s_rhs_dense[sib];
-                    cross = warp_sum(cross);
-                    float2 pair = friction_pair_candidate(denom, cross, s_diag_dense[sib],
-                        residual, sibling_residual, old_impulse, s_lam_dense[sib], radius, omega);
-                    float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
-                    float scale = mag > radius ? radius / mag : 1.0f;
-                    new_impulse = pair.x * scale;
-                    float sib_delta = pair.y * scale - s_lam_dense[sib];
-                    s_lam_dense[sib] = pair.y * scale;
-                    if (sib_delta != 0.0f) {{
-                        iteration_changed = 1;
-                        for (int d = lane; d < {D}; d += 32) s_v[d] += Y_world.data[sib_row_base + d] * sib_delta;
-                    }}
-                }}
+{dense_friction_update}
             }} else if (new_impulse < 0.0f && (row_type == {int(PGS_CONSTRAINT_TYPE_CONTACT)} ||
                                                row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_LIMIT)})) {{
                 // Contact and joint-limit rows are unilateral; mimic and connect rows are bilateral.
@@ -8850,18 +8969,8 @@ def _get_pgs_solve_mf_gs_kernel(
             int mf_rt = packed_tp & 0xFFFF;
             int mf_par = packed_tp >> 16;
             if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && i != mf_par + 1) continue;
-            if (mf_diag <= 0.0f && mf_rt != {int(PGS_CONSTRAINT_TYPE_FRICTION)}) continue;
-            float radius = 0.0f;
-            if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)}) {{
-                float lambda_n = s_lam_mf[mf_par];
-                for (int patch_row = (mf_meta.data[off_meta + mf_par * 4 + 3] >> 16);
-                     patch_row >= 0 && patch_row != mf_par;
-                     patch_row = (mf_meta.data[off_meta + patch_row * 4 + 3] >> 16))
-                    lambda_n += s_lam_mf[patch_row];
-                radius = fmaxf(mf_row_mu.data[off_mf + i] * lambda_n, 0.0f);
-                // A zero disk with no carried impulse cannot change the velocity.
-                if (radius == 0.0f && s_lam_mf[i] == 0.0f && s_lam_mf[i + 1] == 0.0f) continue;
-            }}
+            if (mf_diag <= 0.0f{mf_friction_denominator_guard}) continue;
+{mf_friction_radius}
 
             float my_sum = 0.0f;
             if (lane < 6 && dof_a >= 0) my_sum = cur_Ja * s_v[dof_a + lane];
@@ -8879,39 +8988,7 @@ def _get_pgs_solve_mf_gs_kernel(
             if (mf_rt == {int(PGS_CONSTRAINT_TYPE_CONTACT)}) {{
                 if (new_impulse < 0.0f) new_impulse = 0.0f;
             }} else if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)}) {{
-                int sib = mf_par + 2;
-                int sib_mf6 = mf6_base + sib * 6;
-                float2 pair = make_float2(0.0f, 0.0f);
-                // Zero load gives a zero disk; avoid the unused tangent reductions.
-                if (radius > 0.0f) {{
-                    float sibling_residual = 0.0f;
-                    float cross = 0.0f;
-                    if (lane < 6 && dof_a >= 0) {{
-                        sibling_residual = mf_J_a.data[sib_mf6 + lane] * s_v[dof_a + lane];
-                        cross = cur_Ja * mf_MiJt_a.data[sib_mf6 + lane];
-                    }}
-                    if (lane >= 6 && lane < 12 && dof_b >= 0) {{
-                        sibling_residual = mf_J_b.data[sib_mf6 + lane - 6] * s_v[dof_b + lane - 6];
-                        cross = cur_Jb * mf_MiJt_b.data[sib_mf6 + lane - 6];
-                    }}
-                    sibling_residual = warp_sum(sibling_residual) + __int_as_float(mf_meta.data[off_meta + sib * 4 + 2]);
-                    cross = warp_sum(cross);
-                    float inv_sib = __int_as_float(mf_meta.data[off_meta + sib * 4 + 1]);
-                    pair = friction_pair_candidate(mf_diag > 0.0f ? 1.0f / mf_diag : 0.0f, cross,
-                        inv_sib > 0.0f ? 1.0f / inv_sib : 0.0f, residual, sibling_residual, old_impulse,
-                        s_lam_mf[sib], radius, omega);
-                }}
-                float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
-                float scale = mag > radius ? radius / mag : 1.0f;
-                new_impulse = pair.x * scale;
-                float sib_delta = pair.y * scale - s_lam_mf[sib];
-                s_lam_mf[sib] = pair.y * scale;
-                if (sib_delta != 0.0f) {{
-                    iteration_changed = 1;
-                    if (lane < 6 && dof_a >= 0) s_v[dof_a + lane] += mf_MiJt_a.data[sib_mf6 + lane] * sib_delta;
-                    if (lane >= 6 && lane < 12 && dof_b >= 0)
-                        s_v[dof_b + lane - 6] += mf_MiJt_b.data[sib_mf6 + lane - 6] * sib_delta;
-                }}
+{mf_friction_update}
             }}
             float delta_impulse = new_impulse - old_impulse;
             s_lam_mf[i] = new_impulse;
@@ -9141,6 +9218,7 @@ def _get_pgs_solve_mf_gs_kernel(
         f"{'' if shared_metadata else '_gmeta'}"
         f"{'_torsion' if contact_torsion else ''}"
         f"{'_phased' if row_phases else ''}"
+        f"{'' if friction_mode == 'current' else '_' + friction_mode}"
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
@@ -12502,3 +12580,577 @@ def _synchronize_streams(streams: list) -> None:
     """Wait for the work queued on ``streams``."""
     for stream in streams:
         wp.synchronize_stream(stream)
+
+
+# Contact updates of the non-default friction modes, spliced into the matrix-free kernel.
+_DENSE_BISECTION_FRICTION_SOURCE = """
+                int parent_idx = (s_meta_dense[i] >> __DENSE_META_ROW_TYPE_BITS__) - 1;
+                int i_t1 = parent_idx + 1;
+                int i_t2 = parent_idx + 2;
+
+                if (i != i_t1) {
+                    new_impulse = s_lam_dense[i];
+                } else {
+                    int n_row_base = jy_world_base + parent_idx * __D__;
+                    int t1_row_base = jy_world_base + i_t1 * __D__;
+                    int t2_row_base = jy_world_base + i_t2 * __D__;
+
+                    float target_vel_n = -s_rhs_dense[parent_idx];
+                    float mu = s_mu_dense[i];
+                    float old_lambda_n = s_lam_dense[parent_idx];
+                    float old_lambda_t1 = s_lam_dense[i_t1];
+                    float old_lambda_t2 = s_lam_dense[i_t2];
+
+                    float new_lambda_n = old_lambda_n;
+                    float new_lambda_t1 = old_lambda_t1;
+                    float new_lambda_t2 = old_lambda_t2;
+                    float d_n_total = 0.0f;
+                    float d_t2_total = 0.0f;
+
+                    if (lane == 0) {
+                        float u_n = 0.0f, u_t1 = 0.0f, u_t2 = 0.0f;
+                        float G_nn = 0.0f, G_nt1 = 0.0f, G_nt2 = 0.0f;
+                        float G_t1t1 = 0.0f, G_t1t2 = 0.0f, G_t2t2 = 0.0f;
+
+                        for (int k = 0; k < __D__; k++) {
+                            float vk = s_v[k];
+                            float Jn = J_world.data[n_row_base + k];
+                            float Jt1 = J_world.data[t1_row_base + k];
+                            float Jt2 = J_world.data[t2_row_base + k];
+                            float Yn = Y_world.data[n_row_base + k];
+                            float Yt1 = Y_world.data[t1_row_base + k];
+                            float Yt2 = Y_world.data[t2_row_base + k];
+
+                            u_n += Jn * vk;
+                            u_t1 += Jt1 * vk;
+                            u_t2 += Jt2 * vk;
+
+                            G_nn += Jn * Yn;
+                            G_nt1 += Jn * Yt1;
+                            G_nt2 += Jn * Yt2;
+                            G_t1t1 += Jt1 * Yt1;
+                            G_t1t2 += Jt1 * Yt2;
+                            G_t2t2 += Jt2 * Yt2;
+                        }
+
+                        // __DENSE_DESAXCE_BIAS__
+
+                        if (G_nn >= 1.0e-20f) {
+                            float u_n_at_zero = u_n + G_nn * (0.0f - old_lambda_n);
+                            if (u_n_at_zero >= target_vel_n) {
+                                new_lambda_n = 0.0f;
+                                new_lambda_t1 = 0.0f;
+                                new_lambda_t2 = 0.0f;
+                            } else {
+                                float lo = 0.0f;
+                                float hi = fmaxf(
+                                    old_lambda_n * 2.0f,
+                                    (target_vel_n - u_n) / G_nn + old_lambda_n);
+                                hi = fmaxf(hi, 1.0f);
+
+                                for (int _bi = 0; _bi < 20; _bi++) {
+                                    float mid = 0.5f * (lo + hi);
+                                    float d_n = mid - old_lambda_n;
+                                    float ut1_eff = u_t1 + G_nt1 * d_n;
+                                    float ut2_eff = u_t2 + G_nt2 * d_n;
+
+                                    float det = G_t1t1 * G_t2t2 - G_t1t2 * G_t1t2;
+                                    float d_t1 = 0.0f, d_t2 = 0.0f;
+                                    if (fabsf(det) > 1.0e-20f) {
+                                        d_t1 = (-ut1_eff * G_t2t2 + ut2_eff * G_t1t2) / det;
+                                        d_t2 = ( ut1_eff * G_t1t2 - ut2_eff * G_t1t1) / det;
+                                    }
+
+                                    float trial_t1 = old_lambda_t1 + d_t1;
+                                    float trial_t2 = old_lambda_t2 + d_t2;
+                                    float flimit = mu * mid;
+                                    float tmag = sqrtf(trial_t1 * trial_t1 + trial_t2 * trial_t2);
+                                    if (tmag > flimit && tmag > 1.0e-20f) {
+                                        float sc = flimit / tmag;
+                                        trial_t1 *= sc;
+                                        trial_t2 *= sc;
+                                    }
+
+                                    float d_t1_actual = trial_t1 - old_lambda_t1;
+                                    float d_t2_actual = trial_t2 - old_lambda_t2;
+                                    float u_n_trial = u_n + G_nn * d_n
+                                        + G_nt1 * d_t1_actual
+                                        + G_nt2 * d_t2_actual;
+                                    if (u_n_trial < target_vel_n) lo = mid;
+                                    else hi = mid;
+                                }
+
+                                new_lambda_n = 0.5f * (lo + hi);
+                                float d_n_final = new_lambda_n - old_lambda_n;
+                                float ut1_f = u_t1 + G_nt1 * d_n_final;
+                                float ut2_f = u_t2 + G_nt2 * d_n_final;
+                                float det_f = G_t1t1 * G_t2t2 - G_t1t2 * G_t1t2;
+                                float d_t1_f = 0.0f, d_t2_f = 0.0f;
+                                if (fabsf(det_f) > 1.0e-20f) {
+                                    d_t1_f = (-ut1_f * G_t2t2 + ut2_f * G_t1t2) / det_f;
+                                    d_t2_f = ( ut1_f * G_t1t2 - ut2_f * G_t1t1) / det_f;
+                                }
+
+                                new_lambda_t1 = old_lambda_t1 + d_t1_f;
+                                new_lambda_t2 = old_lambda_t2 + d_t2_f;
+                                float flimit_f = mu * new_lambda_n;
+                                float tmag_f = sqrtf(new_lambda_t1 * new_lambda_t1 + new_lambda_t2 * new_lambda_t2);
+                                if (tmag_f > flimit_f && tmag_f > 1.0e-20f) {
+                                    float sc_f = flimit_f / tmag_f;
+                                    new_lambda_t1 *= sc_f;
+                                    new_lambda_t2 *= sc_f;
+                                }
+                            }
+
+                            d_n_total = new_lambda_n - old_lambda_n;
+                            d_t2_total = new_lambda_t2 - old_lambda_t2;
+                            s_lam_dense[parent_idx] = new_lambda_n;
+                            s_lam_dense[i_t2] = new_lambda_t2;
+                        }
+                    }
+
+                    __syncwarp();
+                    new_lambda_t1 = __shfl_sync(MASK, new_lambda_t1, 0);
+                    d_n_total = __shfl_sync(MASK, d_n_total, 0);
+                    d_t2_total = __shfl_sync(MASK, d_t2_total, 0);
+                    if (d_n_total != 0.0f || d_t2_total != 0.0f) iteration_changed = 1;
+
+                    if (d_n_total != 0.0f) {
+                        for (int d = lane; d < __D__; d += 32) {
+                            s_v[d] += Y_world.data[n_row_base + d] * d_n_total;
+                        }
+                    }
+                    if (d_t2_total != 0.0f) {
+                        for (int d = lane; d < __D__; d += 32) {
+                            s_v[d] += Y_world.data[t2_row_base + d] * d_t2_total;
+                        }
+                    }
+                    __syncwarp();
+                    new_impulse = new_lambda_t1;
+                }
+"""
+_MF_BISECTION_FRICTION_SOURCE = """
+                int i_t1 = mf_par + 1;
+                int i_t2 = mf_par + 2;
+
+                if (i != i_t1) {
+                    new_impulse = s_lam_mf[i];
+                } else {
+                    int n_mf6 = mf6_base + mf_par * 6;
+                    int t1_mf6 = mf6_base + i_t1 * 6;
+                    int t2_mf6 = mf6_base + i_t2 * 6;
+
+                    int parent_packed_dofs = mf_meta.data[off_meta + mf_par * 4];
+                    int dof_a_par = parent_packed_dofs >> 16;
+                    int dof_b_par = (parent_packed_dofs << 16) >> 16;
+                    float target_vel_n = -__int_as_float(
+                        mf_meta.data[off_meta + mf_par * 4 + 2]);
+                    float mu = mf_row_mu.data[off_mf + i];
+
+                    float old_lambda_n = s_lam_mf[mf_par];
+                    float old_lambda_t1 = s_lam_mf[i_t1];
+                    float old_lambda_t2 = s_lam_mf[i_t2];
+
+                    float new_lambda_n = old_lambda_n;
+                    float new_lambda_t1 = old_lambda_t1;
+                    float new_lambda_t2 = old_lambda_t2;
+                    float d_n_total = 0.0f;
+                    float d_t2_total = 0.0f;
+
+                    if (lane == 0) {
+                        float u_n = 0.0f, u_t1 = 0.0f, u_t2 = 0.0f;
+                        if (dof_a_par >= 0) {
+                            for (int k = 0; k < 6; k++) {
+                                float va = s_v[dof_a_par + k];
+                                u_n  += mf_J_a.data[n_mf6  + k] * va;
+                                u_t1 += mf_J_a.data[t1_mf6 + k] * va;
+                                u_t2 += mf_J_a.data[t2_mf6 + k] * va;
+                            }
+                        }
+                        if (dof_b_par >= 0) {
+                            for (int k = 0; k < 6; k++) {
+                                float vb = s_v[dof_b_par + k];
+                                u_n  += mf_J_b.data[n_mf6  + k] * vb;
+                                u_t1 += mf_J_b.data[t1_mf6 + k] * vb;
+                                u_t2 += mf_J_b.data[t2_mf6 + k] * vb;
+                            }
+                        }
+
+                        // __DESAXCE_BIAS__
+
+                        float G_nn = 0.0f, G_nt1 = 0.0f, G_nt2 = 0.0f;
+                        float G_t1t1 = 0.0f, G_t1t2 = 0.0f, G_t2t2 = 0.0f;
+                        if (dof_a_par >= 0) {
+                            for (int k = 0; k < 6; k++) {
+                                float Jna = mf_J_a.data[n_mf6  + k];
+                                float Jt1a = mf_J_a.data[t1_mf6 + k];
+                                float Jt2a = mf_J_a.data[t2_mf6 + k];
+                                float Mna = mf_MiJt_a.data[n_mf6  + k];
+                                float Mt1a = mf_MiJt_a.data[t1_mf6 + k];
+                                float Mt2a = mf_MiJt_a.data[t2_mf6 + k];
+                                G_nn   += Jna * Mna;
+                                G_nt1  += Jna * Mt1a;
+                                G_nt2  += Jna * Mt2a;
+                                G_t1t1 += Jt1a * Mt1a;
+                                G_t1t2 += Jt1a * Mt2a;
+                                G_t2t2 += Jt2a * Mt2a;
+                            }
+                        }
+                        if (dof_b_par >= 0) {
+                            for (int k = 0; k < 6; k++) {
+                                float Jnb = mf_J_b.data[n_mf6  + k];
+                                float Jt1b = mf_J_b.data[t1_mf6 + k];
+                                float Jt2b = mf_J_b.data[t2_mf6 + k];
+                                float Mnb = mf_MiJt_b.data[n_mf6  + k];
+                                float Mt1b = mf_MiJt_b.data[t1_mf6 + k];
+                                float Mt2b = mf_MiJt_b.data[t2_mf6 + k];
+                                G_nn   += Jnb * Mnb;
+                                G_nt1  += Jnb * Mt1b;
+                                G_nt2  += Jnb * Mt2b;
+                                G_t1t1 += Jt1b * Mt1b;
+                                G_t1t2 += Jt1b * Mt2b;
+                                G_t2t2 += Jt2b * Mt2b;
+                            }
+                        }
+
+                        if (G_nn >= 1.0e-20f) {
+                            float u_n_at_zero = u_n + G_nn * (0.0f - old_lambda_n);
+                            if (u_n_at_zero >= target_vel_n) {
+                                new_lambda_n = 0.0f;
+                                new_lambda_t1 = 0.0f;
+                                new_lambda_t2 = 0.0f;
+                            } else {
+                                float lo = 0.0f;
+                                float hi = fmaxf(
+                                    old_lambda_n * 2.0f,
+                                    (target_vel_n - u_n) / G_nn + old_lambda_n);
+                                hi = fmaxf(hi, 1.0f);
+
+                                for (int _bi = 0; _bi < 20; _bi++) {
+                                    float mid = 0.5f * (lo + hi);
+                                    float d_n = mid - old_lambda_n;
+                                    float ut1_eff = u_t1 + G_nt1 * d_n;
+                                    float ut2_eff = u_t2 + G_nt2 * d_n;
+
+                                    float det = G_t1t1 * G_t2t2 - G_t1t2 * G_t1t2;
+                                    float d_t1 = 0.0f, d_t2 = 0.0f;
+                                    if (fabsf(det) > 1.0e-20f) {
+                                        d_t1 = (-ut1_eff * G_t2t2 + ut2_eff * G_t1t2) / det;
+                                        d_t2 = ( ut1_eff * G_t1t2 - ut2_eff * G_t1t1) / det;
+                                    }
+                                    float trial_t1 = old_lambda_t1 + d_t1;
+                                    float trial_t2 = old_lambda_t2 + d_t2;
+
+                                    float flimit = mu * mid;
+                                    float tmag = sqrtf(
+                                        trial_t1 * trial_t1 + trial_t2 * trial_t2);
+                                    if (tmag > flimit && tmag > 1.0e-20f) {
+                                        float sc = flimit / tmag;
+                                        trial_t1 *= sc;
+                                        trial_t2 *= sc;
+                                    }
+                                    float d_t1_actual = trial_t1 - old_lambda_t1;
+                                    float d_t2_actual = trial_t2 - old_lambda_t2;
+                                    float u_n_trial = u_n + G_nn * d_n
+                                        + G_nt1 * d_t1_actual
+                                        + G_nt2 * d_t2_actual;
+                                    if (u_n_trial < target_vel_n) lo = mid;
+                                    else hi = mid;
+                                }
+                                new_lambda_n = 0.5f * (lo + hi);
+
+                                float d_n_final = new_lambda_n - old_lambda_n;
+                                float ut1_f = u_t1 + G_nt1 * d_n_final;
+                                float ut2_f = u_t2 + G_nt2 * d_n_final;
+                                float det_f = G_t1t1 * G_t2t2 - G_t1t2 * G_t1t2;
+                                float d_t1_f = 0.0f, d_t2_f = 0.0f;
+                                if (fabsf(det_f) > 1.0e-20f) {
+                                    d_t1_f = (-ut1_f * G_t2t2 + ut2_f * G_t1t2) / det_f;
+                                    d_t2_f = ( ut1_f * G_t1t2 - ut2_f * G_t1t1) / det_f;
+                                }
+                                new_lambda_t1 = old_lambda_t1 + d_t1_f;
+                                new_lambda_t2 = old_lambda_t2 + d_t2_f;
+
+                                float flimit_f = mu * new_lambda_n;
+                                float tmag_f = sqrtf(
+                                    new_lambda_t1 * new_lambda_t1
+                                    + new_lambda_t2 * new_lambda_t2);
+                                if (tmag_f > flimit_f && tmag_f > 1.0e-20f) {
+                                    float sc_f = flimit_f / tmag_f;
+                                    new_lambda_t1 *= sc_f;
+                                    new_lambda_t2 *= sc_f;
+                                }
+                            }
+                            d_n_total = new_lambda_n - old_lambda_n;
+                            d_t2_total = new_lambda_t2 - old_lambda_t2;
+                            s_lam_mf[mf_par] = new_lambda_n;
+                            s_lam_mf[i_t2]   = new_lambda_t2;
+                        }
+                    }
+
+                    __syncwarp();
+                    new_lambda_t1 = __shfl_sync(MASK, new_lambda_t1, 0);
+                    d_n_total = __shfl_sync(MASK, d_n_total, 0);
+                    d_t2_total = __shfl_sync(MASK, d_t2_total, 0);
+                    if (d_n_total != 0.0f || d_t2_total != 0.0f) iteration_changed = 1;
+
+                    if (d_n_total != 0.0f) {
+                        if (lane < 6 && dof_a_par >= 0) {
+                            s_v[dof_a_par + lane] +=
+                                mf_MiJt_a.data[n_mf6 + lane] * d_n_total;
+                        }
+                        if (lane >= 6 && lane < 12 && dof_b_par >= 0) {
+                            s_v[dof_b_par + lane - 6] +=
+                                mf_MiJt_b.data[n_mf6 + lane - 6] * d_n_total;
+                        }
+                    }
+                    if (d_t2_total != 0.0f) {
+                        if (lane < 6 && dof_a_par >= 0) {
+                            s_v[dof_a_par + lane] +=
+                                mf_MiJt_a.data[t2_mf6 + lane] * d_t2_total;
+                        }
+                        if (lane >= 6 && lane < 12 && dof_b_par >= 0) {
+                            s_v[dof_b_par + lane - 6] +=
+                                mf_MiJt_b.data[t2_mf6 + lane - 6] * d_t2_total;
+                        }
+                    }
+                    __syncwarp();
+                    new_impulse = new_lambda_t1;
+                }
+"""
+# de Saxce maximum-dissipation bias: mu * |c_T| raises the normal target velocity.
+_MF_DESAXCE_BIAS_SOURCE = """{
+                                float c_T_mag = sqrtf(u_t1 * u_t1 + u_t2 * u_t2);
+                                target_vel_n = target_vel_n + mu * c_T_mag;
+                            }"""
+_MF_COULOMB_NEWTON_FRICTION_SOURCE = """
+                int i_t1 = mf_par + 1;
+                int i_t2 = mf_par + 2;
+
+                if (i != i_t1) {
+                    new_impulse = s_lam_mf[i];
+                } else {
+                    int n_mf6 = mf6_base + mf_par * 6;
+                    int t1_mf6 = mf6_base + i_t1 * 6;
+                    int t2_mf6 = mf6_base + i_t2 * 6;
+
+                    int parent_packed_dofs = mf_meta.data[off_meta + mf_par * 4];
+                    int dof_a_par = parent_packed_dofs >> 16;
+                    int dof_b_par = (parent_packed_dofs << 16) >> 16;
+                    float target_vel_n = -__int_as_float(
+                        mf_meta.data[off_meta + mf_par * 4 + 2]);
+                    float mu = mf_row_mu.data[off_mf + i];
+
+                    float old_lambda_n = s_lam_mf[mf_par];
+                    float old_lambda_t1 = s_lam_mf[i_t1];
+                    float old_lambda_t2 = s_lam_mf[i_t2];
+
+                    float new_lambda_n = old_lambda_n;
+                    float new_lambda_t1 = old_lambda_t1;
+                    float new_lambda_t2 = old_lambda_t2;
+                    float d_n_total = 0.0f;
+                    float d_t2_total = 0.0f;
+
+                    if (lane == 0) {
+                        float u_n = 0.0f, u_t1 = 0.0f, u_t2 = 0.0f;
+                        if (dof_a_par >= 0) {
+                            for (int k = 0; k < 6; k++) {
+                                float va = s_v[dof_a_par + k];
+                                u_n  += mf_J_a.data[n_mf6  + k] * va;
+                                u_t1 += mf_J_a.data[t1_mf6 + k] * va;
+                                u_t2 += mf_J_a.data[t2_mf6 + k] * va;
+                            }
+                        }
+                        if (dof_b_par >= 0) {
+                            for (int k = 0; k < 6; k++) {
+                                float vb = s_v[dof_b_par + k];
+                                u_n  += mf_J_b.data[n_mf6  + k] * vb;
+                                u_t1 += mf_J_b.data[t1_mf6 + k] * vb;
+                                u_t2 += mf_J_b.data[t2_mf6 + k] * vb;
+                            }
+                        }
+
+                        float G_nn = 0.0f, G_nt1 = 0.0f, G_nt2 = 0.0f;
+                        float G_t1t1 = 0.0f, G_t1t2 = 0.0f, G_t2t2 = 0.0f;
+                        if (dof_a_par >= 0) {
+                            for (int k = 0; k < 6; k++) {
+                                float Jna = mf_J_a.data[n_mf6  + k];
+                                float Jt1a = mf_J_a.data[t1_mf6 + k];
+                                float Jt2a = mf_J_a.data[t2_mf6 + k];
+                                float Mna = mf_MiJt_a.data[n_mf6  + k];
+                                float Mt1a = mf_MiJt_a.data[t1_mf6 + k];
+                                float Mt2a = mf_MiJt_a.data[t2_mf6 + k];
+                                G_nn   += Jna * Mna;
+                                G_nt1  += Jna * Mt1a;
+                                G_nt2  += Jna * Mt2a;
+                                G_t1t1 += Jt1a * Mt1a;
+                                G_t1t2 += Jt1a * Mt2a;
+                                G_t2t2 += Jt2a * Mt2a;
+                            }
+                        }
+                        if (dof_b_par >= 0) {
+                            for (int k = 0; k < 6; k++) {
+                                float Jnb = mf_J_b.data[n_mf6  + k];
+                                float Jt1b = mf_J_b.data[t1_mf6 + k];
+                                float Jt2b = mf_J_b.data[t2_mf6 + k];
+                                float Mnb = mf_MiJt_b.data[n_mf6  + k];
+                                float Mt1b = mf_MiJt_b.data[t1_mf6 + k];
+                                float Mt2b = mf_MiJt_b.data[t2_mf6 + k];
+                                G_nn   += Jnb * Mnb;
+                                G_nt1  += Jnb * Mt1b;
+                                G_nt2  += Jnb * Mt2b;
+                                G_t1t1 += Jt1b * Mt1b;
+                                G_t1t2 += Jt1b * Mt2b;
+                                G_t2t2 += Jt2b * Mt2b;
+                            }
+                        }
+
+                        if (G_nn >= 1.0e-20f) {
+                            float u_free_n = u_n - (G_nn * old_lambda_n
+                                + G_nt1 * old_lambda_t1
+                                + G_nt2 * old_lambda_t2);
+                            float u_free_t1 = u_t1 - (G_nt1 * old_lambda_n
+                                + G_t1t1 * old_lambda_t1
+                                + G_t1t2 * old_lambda_t2);
+                            float u_free_t2 = u_t2 - (G_nt2 * old_lambda_n
+                                + G_t1t2 * old_lambda_t1
+                                + G_t2t2 * old_lambda_t2);
+
+                            if (u_free_n < target_vel_n) {
+                                float bN = u_free_n - target_vel_n;
+                                float bT0 = u_free_t1;
+                                float bT1 = u_free_t2;
+
+                                float WN = G_nn;
+                                float wNT0 = G_nt1;
+                                float wNT1 = G_nt2;
+                                float AT00 = G_t1t1 - (wNT0 * wNT0) / WN;
+                                float AT01 = G_t1t2 - (wNT0 * wNT1) / WN;
+                                float AT10 = G_t1t2 - (wNT1 * wNT0) / WN;
+                                float AT11 = G_t2t2 - (wNT1 * wNT1) / WN;
+                                float cT0 = bT0 - (bN / WN) * wNT0;
+                                float cT1 = bT1 - (bN / WN) * wNT1;
+
+                                float inv_det0 = 1.0f /
+                                    (AT00 * AT11 - AT01 * AT10);
+                                float s0_0 = (AT11 * cT0 - AT01 * cT1) * inv_det0;
+                                float s0_1 = (AT00 * cT1 - AT10 * cT0) * inv_det0;
+                                float norm_s0 = sqrtf(s0_0 * s0_0 + s0_1 * s0_1);
+                                float phi0 = norm_s0 - mu *
+                                    (wNT0 * s0_0 + wNT1 * s0_1 - bN) / WN;
+
+                                float last_s0 = 0.0f, last_s1 = 0.0f;
+                                float alpha = 0.0f;
+
+                                if (phi0 <= 0.0f) {
+                                    last_s0 = s0_0;
+                                    last_s1 = s0_1;
+                                    alpha = 0.0f;
+                                } else {
+                                    float hi = 1.0f;
+                                    for (int _e = 0; _e < 30; _e++) {
+                                        float a_hi = AT00 + hi;
+                                        float d_hi = AT11 + hi;
+                                        float idet_hi = 1.0f /
+                                            (a_hi * d_hi - AT01 * AT10);
+                                        float sh0 = (d_hi * cT0 - AT01 * cT1) * idet_hi;
+                                        float sh1 = (a_hi * cT1 - AT10 * cT0) * idet_hi;
+                                        float ns_hi = sqrtf(sh0 * sh0 + sh1 * sh1);
+                                        float phi_hi = ns_hi - mu *
+                                            (wNT0 * sh0 + wNT1 * sh1 - bN) / WN;
+                                        if (phi_hi < 0.0f) break;
+                                        hi *= 2.0f;
+                                    }
+
+                                    float lo = 0.0f;
+                                    float x = 0.5f * (lo + hi);
+                                    float tol = 1.0e-6f + 1.0e-6f * phi0;
+
+                                    for (int _it = 0; _it < 50; _it++) {
+                                        float ax = AT00 + x;
+                                        float dx = AT11 + x;
+                                        float idet = 1.0f /
+                                            (ax * dx - AT01 * AT10);
+                                        float s0 = (dx * cT0 - AT01 * cT1) * idet;
+                                        float s1 = (ax * cT1 - AT10 * cT0) * idet;
+                                        float t0 = (dx * s0 - AT01 * s1) * idet;
+                                        float t1 = (ax * s1 - AT10 * s0) * idet;
+                                        float ns = sqrtf(s0 * s0 + s1 * s1);
+                                        float fx = ns - mu *
+                                            (wNT0 * s0 + wNT1 * s1 - bN) / WN;
+                                        float dfx = -(s0 * t0 + s1 * t1) / ns
+                                            + mu * (wNT0 * t0 + wNT1 * t1) / WN;
+
+                                        last_s0 = s0;
+                                        last_s1 = s1;
+
+                                        if (fabsf(fx) < tol
+                                            || fabsf(hi - lo) < 1.0e-6f * (1.0f + hi)) {
+                                            alpha = x;
+                                            break;
+                                        }
+
+                                        if (fx > 0.0f) lo = x;
+                                        else hi = x;
+
+                                        float x_new = 0.5f * (lo + hi);
+                                        if (dfx != 0.0f) {
+                                            float x_newton = x - fx / dfx;
+                                            if (x_newton > lo && x_newton < hi) {
+                                                x_new = x_newton;
+                                            }
+                                        }
+                                        x = x_new;
+                                        alpha = x;
+                                    }
+                                }
+
+                                float rT0 = -last_s0;
+                                float rT1 = -last_s1;
+                                float rN = -(wNT0 * rT0 + wNT1 * rT1 + bN) / WN;
+                                new_lambda_n = rN;
+                                new_lambda_t1 = rT0;
+                                new_lambda_t2 = rT1;
+                            } else {
+                                new_lambda_n = 0.0f;
+                                new_lambda_t1 = 0.0f;
+                                new_lambda_t2 = 0.0f;
+                            }
+
+                            d_n_total = new_lambda_n - old_lambda_n;
+                            d_t2_total = new_lambda_t2 - old_lambda_t2;
+                            s_lam_mf[mf_par] = new_lambda_n;
+                            s_lam_mf[i_t2]   = new_lambda_t2;
+                        }
+                    }
+
+                    __syncwarp();
+                    new_lambda_t1 = __shfl_sync(MASK, new_lambda_t1, 0);
+                    d_n_total = __shfl_sync(MASK, d_n_total, 0);
+                    d_t2_total = __shfl_sync(MASK, d_t2_total, 0);
+                    if (d_n_total != 0.0f || d_t2_total != 0.0f) iteration_changed = 1;
+
+                    if (d_n_total != 0.0f) {
+                        if (lane < 6 && dof_a_par >= 0) {
+                            s_v[dof_a_par + lane] +=
+                                mf_MiJt_a.data[n_mf6 + lane] * d_n_total;
+                        }
+                        if (lane >= 6 && lane < 12 && dof_b_par >= 0) {
+                            s_v[dof_b_par + lane - 6] +=
+                                mf_MiJt_b.data[n_mf6 + lane - 6] * d_n_total;
+                        }
+                    }
+                    if (d_t2_total != 0.0f) {
+                        if (lane < 6 && dof_a_par >= 0) {
+                            s_v[dof_a_par + lane] +=
+                                mf_MiJt_a.data[t2_mf6 + lane] * d_t2_total;
+                        }
+                        if (lane >= 6 && lane < 12 && dof_b_par >= 0) {
+                            s_v[dof_b_par + lane - 6] +=
+                                mf_MiJt_b.data[t2_mf6 + lane - 6] * d_t2_total;
+                        }
+                    }
+                    __syncwarp();
+                    new_impulse = new_lambda_t1;
+                }
+"""
