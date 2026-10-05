@@ -25,10 +25,6 @@ from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 DT = 1.0 / 240.0
 
 
-def _solver_accepts(option: str) -> bool:
-    return option in inspect.signature(SolverFeatherPGS).parameters
-
-
 class TestPreeliminationSignature(unittest.TestCase):
     def test_options_are_keyword_only(self):
         """The pre-elimination options are keyword-only with an off-by-default switch."""
@@ -513,7 +509,7 @@ def test_warmstart_with_preelimination_holds_a_loaded_closure(test, device):
     test.assertAlmostEqual(float(state.body_q.numpy()[box, 2]), 0.47, delta=1.0e-3)
 
 
-# -- Other solve paths (propagation is cumulative: it needs the propagation responses) --
+# -- Other solve paths --
 
 
 def test_split_rejects_bilateral_rows(test, device):
@@ -525,16 +521,17 @@ def test_split_rejects_bilateral_rows(test, device):
                 SolverFeatherPGS(model, pgs_mode="split", enable_bilateral_preelimination=enabled)
 
 
-def test_propagation_uses_iterative_bilateral_fallback(test, device):
-    """Bilateral rows stay iterative when propagation lacks a projected response."""
+def test_propagation_rejects_bilateral_rows(test, device):
+    """Reject mimic rows with the propagation responses, with or without pre-elimination."""
     builder, _, _ = _build_two_revolute_chain(0.0, 1.0)
     model = builder.finalize(device=device)
-    with test.assertWarnsRegex(UserWarning, "propagation"):
-        solver = SolverFeatherPGS(
-            model, articulated_contact_response="propagation", enable_bilateral_preelimination=True
-        )
-    test.assertFalse(solver._preelim_active)
-    test.assertGreater(solver._mimic_count, 0)
+    for response in ("propagation", "propagation-fused"):
+        for enabled in (False, True):
+            with test.subTest(response=response, enable_bilateral_preelimination=enabled):
+                with test.assertRaisesRegex(NotImplementedError, "articulated_contact_response"):
+                    SolverFeatherPGS(
+                        model, articulated_contact_response=response, enable_bilateral_preelimination=enabled
+                    )
 
 
 class TestFeatherPGSPreelimination(unittest.TestCase):
@@ -545,9 +542,6 @@ class TestFeatherPGSPreeliminationSplit(unittest.TestCase):
     pass
 
 
-@unittest.skipUnless(
-    _solver_accepts("articulated_contact_response"), "requires the FeatherPGS propagation contact responses"
-)
 class TestFeatherPGSPreeliminationPropagation(unittest.TestCase):
     pass
 
@@ -574,8 +568,8 @@ add_function_test(
 )
 add_function_test(
     TestFeatherPGSPreeliminationPropagation,
-    "test_propagation_uses_iterative_bilateral_fallback",
-    test_propagation_uses_iterative_bilateral_fallback,
+    "test_propagation_rejects_bilateral_rows",
+    test_propagation_rejects_bilateral_rows,
     devices=cuda_devices,
 )
 

@@ -747,6 +747,12 @@ solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
     "feather_pgs_matrix_free": lambda model: newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free"),
     "feather_pgs_split": lambda model: newton.solvers.SolverFeatherPGS(model, pgs_mode="split"),
+    "feather_pgs_propagation": lambda model: newton.solvers.SolverFeatherPGS(
+        model, articulated_contact_response="propagation"
+    ),
+    "feather_pgs_propagation_fused": lambda model: newton.solvers.SolverFeatherPGS(
+        model, articulated_contact_response="propagation-fused"
+    ),
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=5, angular_damping=0.0),
@@ -757,7 +763,12 @@ for device in devices:
     for solver_name, solver_fn in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
-        if device.is_cpu and solver_name in ("mujoco_warp", "feather_pgs_matrix_free"):
+        if device.is_cpu and solver_name in (
+            "mujoco_warp",
+            "feather_pgs_matrix_free",
+            "feather_pgs_propagation",
+            "feather_pgs_propagation_fused",
+        ):
             continue
 
         add_function_test(
@@ -767,7 +778,7 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
-        if solver_name in ("feather_pgs_matrix_free", "feather_pgs_split"):
+        if solver_name.startswith("feather_pgs"):
             add_function_test(
                 TestKinematicLinksCanonical,
                 f"test_kinematic_prescribed_response_lifetime_{solver_name}",

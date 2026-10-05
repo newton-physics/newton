@@ -148,6 +148,7 @@ def _solve_contact_block(device, tangent_mass, rhs, initial, capacity=32):
             1.0,
             0,
             0,
+            0,
         ],
         outputs=[v_out],
         block_dim=32,

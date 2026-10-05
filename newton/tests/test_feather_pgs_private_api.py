@@ -27,6 +27,12 @@ _KERNEL_FACTORIES = (
     "_get_delassus_kernel",
     "_get_pgs_solve_tiled_row_kernel",
     "_get_pgs_solve_mf_kernel",
+    "_get_pgs_solve_propagation_contact_kernel",
+    "_get_pgs_solve_propagation_full_iteration_kernel",
+    "_get_factor_propagation_tree_revolute_kernel",
+    "_get_propagation_tree_body_response_revolute_kernel",
+    "_get_propagate_tree_impulses_revolute_kernel",
+    "_get_refresh_propagation_tree_body_qd_warp_kernel",
 )
 
 
@@ -76,7 +82,6 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
         for removed in (
             "angular_damping",
             "enable_contact_friction",
-            "articulated_contact_response",
             "friction_mode",
             "enable_restitution",
         ):

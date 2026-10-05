@@ -2032,8 +2032,10 @@ def compute_contact_linear_force_from_impulses(
     contact_slots_needed: wp.array[wp.int32],
     world_impulses: wp.array2d[wp.float32],
     mf_impulses: wp.array2d[wp.float32],
+    propagation_impulses: wp.array2d[wp.float32],
     world_constraint_count: wp.array[wp.int32],
     mf_constraint_count: wp.array[wp.int32],
+    propagation_constraint_count: wp.array[wp.int32],
     inv_dt: float,
     # outputs
     rigid_contact_force: wp.array[wp.vec3],
@@ -2058,6 +2060,8 @@ def compute_contact_linear_force_from_impulses(
         count = mf_constraint_count[world]
         if path == 0:
             count = world_constraint_count[world]
+        elif path == 2:
+            count = propagation_constraint_count[world]
         has_friction = contact_slots_needed[c] == 3 and slot + 2 < count
         lam_n = float(0.0)
         lam_t0 = float(0.0)
@@ -2068,11 +2072,16 @@ def compute_contact_linear_force_from_impulses(
                 if has_friction:
                     lam_t0 = world_impulses[world, slot + 1]
                     lam_t1 = world_impulses[world, slot + 2]
-            else:
+            elif path == 1:
                 lam_n = mf_impulses[world, slot]
                 if has_friction:
                     lam_t0 = mf_impulses[world, slot + 1]
                     lam_t1 = mf_impulses[world, slot + 2]
+            else:
+                lam_n = propagation_impulses[world, slot]
+                if has_friction:
+                    lam_t0 = propagation_impulses[world, slot + 1]
+                    lam_t1 = propagation_impulses[world, slot + 2]
         tangent0, tangent1 = contact_tangent_basis(normal)
         force = lam_n * normal
         force += lam_t0 * tangent0 + lam_t1 * tangent1
@@ -3343,8 +3352,12 @@ def _allocate_world_contact_slot(
     body_has_response_dofs: wp.array[int],
     is_free_rigid: wp.array[int],
     has_free_rigid: int,
+    propagation_articulated: int,
+    propagation_same_articulation: int,
+    propagation_free_free: int,
     max_constraints: int,
     mf_max_constraints: int,
+    propagation_max_constraints: int,
     art_model_world: wp.array[int],
     contact_gap_gate: float,
     same_articulation_contact_gap_gate: float,
@@ -3361,10 +3374,14 @@ def _allocate_world_contact_slot(
     world_slot_counter: wp.array[int],
     contact_path: wp.array[int],
     mf_slot_counter: wp.array[int],
+    propagation_slot_counter: wp.array[int],
+    dense_contact_world_flag: wp.array[int],
     dense_dropped_contact_rows: wp.array[int],
     mf_dropped_contact_rows: wp.array[int],
+    propagation_dropped_contact_rows: wp.array[int],
     dense_first_rejected_slot: wp.array[int],
     mf_first_rejected_slot: wp.array[int],
+    propagation_first_rejected_slot: wp.array[int],
     cross_world_contacts: wp.array[int],
 ):
     """Classify one contact and reserve its normal row and, when it has friction, two friction rows.
@@ -3379,6 +3396,13 @@ def _allocate_world_contact_slot(
     is within the friction gap threshold and, with friction patches, when it is one
     of its region's friction anchors. ``contact_slots_needed`` records the reservation
     (1 or 3), which every later row builder follows.
+
+    With a propagation response (``propagation_articulated``), contacts touching an
+    articulation that is not a free body go to the body-space propagation rows
+    (``contact_path == 2``) instead, except contacts between two links of the same
+    articulation unless ``propagation_same_articulation`` is set.
+    ``propagation_free_free`` also moves the free-body contacts to the propagation
+    rows. ``dense_contact_world_flag`` marks the worlds that keep dense contact rows.
 
     The solve world comes from the responding sides only, so a global (world ``-1``)
     kinematic or prescribed body touches the bodies of every world; its motion enters
@@ -3481,6 +3505,16 @@ def _allocate_world_contact_slot(
         a_is_mf_compatible = not a_has_dofs or is_free_rigid[art_a] != 0
         b_is_mf_compatible = not b_has_dofs or is_free_rigid[art_b] != 0
         is_mf = a_is_mf_compatible and b_is_mf_compatible
+    is_propagation = False
+    if propagation_free_free != 0 and is_mf:
+        is_mf = False
+        is_propagation = True
+    if propagation_articulated != 0 and not is_mf and not is_propagation:
+        a_non_free = art_a >= 0 and is_free_rigid[art_a] == 0
+        b_non_free = art_b >= 0 and is_free_rigid[art_b] == 0
+        same_articulation = a_non_free and b_non_free and art_a == art_b
+        if (a_non_free or b_non_free) and (propagation_same_articulation != 0 or not same_articulation):
+            is_propagation = True
 
     # Every normal row survives; only the selected patch anchors receive friction rows.
     slots_needed = 1
@@ -3504,6 +3538,15 @@ def _allocate_world_contact_slot(
             contact_path[c] = -1
             return
         contact_path[c] = 1
+    elif is_propagation:
+        slot = wp.atomic_add(propagation_slot_counter, world, 3)
+        if slot + 3 > propagation_max_constraints:
+            wp.atomic_min(propagation_first_rejected_slot, world, slot)
+            wp.atomic_add(propagation_dropped_contact_rows, world, 3)
+            contact_slot[c] = -1
+            contact_path[c] = -1
+            return
+        contact_path[c] = 2
     else:
         slot = wp.atomic_add(world_slot_counter, world, slots_needed)
         if slot + slots_needed > max_constraints:
@@ -3513,6 +3556,7 @@ def _allocate_world_contact_slot(
             contact_path[c] = -1
             return
         contact_path[c] = 0
+        dense_contact_world_flag[world] = 1
     contact_world[c] = world
     contact_slot[c] = slot
     contact_art_a[c] = art_a
@@ -3539,8 +3583,12 @@ def allocate_world_contact_slots(
     body_has_response_dofs: wp.array[int],
     is_free_rigid: wp.array[int],
     has_free_rigid: int,
+    propagation_articulated: int,
+    propagation_same_articulation: int,
+    propagation_free_free: int,
     max_constraints: int,
     mf_max_constraints: int,
+    propagation_max_constraints: int,
     art_model_world: wp.array[int],
     contact_gap_gate: float,
     same_articulation_contact_gap_gate: float,
@@ -3557,10 +3605,14 @@ def allocate_world_contact_slots(
     world_slot_counter: wp.array[int],
     contact_path: wp.array[int],
     mf_slot_counter: wp.array[int],
+    propagation_slot_counter: wp.array[int],
+    dense_contact_world_flag: wp.array[int],
     dense_dropped_contact_rows: wp.array[int],
     mf_dropped_contact_rows: wp.array[int],
+    propagation_dropped_contact_rows: wp.array[int],
     dense_first_rejected_slot: wp.array[int],
     mf_first_rejected_slot: wp.array[int],
+    propagation_first_rejected_slot: wp.array[int],
     cross_world_contacts: wp.array[int],
 ):
     """Allocate the rows of every active contact with a grid-stride loop.
@@ -3599,8 +3651,12 @@ def allocate_world_contact_slots(
             body_has_response_dofs,
             is_free_rigid,
             has_free_rigid,
+            propagation_articulated,
+            propagation_same_articulation,
+            propagation_free_free,
             max_constraints,
             mf_max_constraints,
+            propagation_max_constraints,
             art_model_world,
             contact_gap_gate,
             same_articulation_contact_gap_gate,
@@ -3616,10 +3672,14 @@ def allocate_world_contact_slots(
             world_slot_counter,
             contact_path,
             mf_slot_counter,
+            propagation_slot_counter,
+            dense_contact_world_flag,
             dense_dropped_contact_rows,
             mf_dropped_contact_rows,
+            propagation_dropped_contact_rows,
             dense_first_rejected_slot,
             mf_first_rejected_slot,
+            propagation_first_rejected_slot,
             cross_world_contacts,
         )
 
@@ -6680,3 +6740,1015 @@ def compute_delta_and_accumulate(
     delta = v_out[i] - v_snap[i]
     v_accum[i] = v_accum[i] + delta
     v_snap[i] = delta
+
+
+# ---------------------------------------------------------------------------
+# Propagation contact response
+#
+# Contacts touching an articulated (non-free) body are solved as fixed-size
+# body-space rows ``J = [d, r x d]`` at the body's center of mass. The row solve
+# accumulates each impulse on the touched bodies, and the articulated-body
+# factorization of the tree (Featherstone's articulated-body algorithm) carries
+# the accumulated impulses to the joint velocities once per iteration. Body
+# twists and wrenches are world-aligned and referenced at each body's center of
+# mass, whose position relative to the articulation origin is
+# ``propagation_body_com_rel``.
+# ---------------------------------------------------------------------------
+
+
+@wp.func
+def translate_twist_between_parallel_frames(twist: wp.spatial_vector, dest_minus_source: wp.vec3):
+    """Translate a world-aligned twist from one origin to another."""
+    lin = wp.spatial_top(twist)
+    ang = wp.spatial_bottom(twist)
+    return wp.spatial_vector(lin + wp.cross(ang, dest_minus_source), ang)
+
+
+@wp.func
+def translate_wrench_between_parallel_frames(wrench: wp.spatial_vector, source_minus_dest: wp.vec3):
+    """Translate a world-aligned wrench from one origin to another."""
+    force = wp.spatial_top(wrench)
+    torque = wp.spatial_bottom(wrench)
+    return wp.spatial_vector(force, torque + wp.cross(source_minus_dest, force))
+
+
+@wp.func
+def _spatial_row(values: wp.array2d[float], row: int):
+    """Load one row of a ``[n, 6]`` array as a spatial vector."""
+    return wp.spatial_vector(
+        values[row, 0], values[row, 1], values[row, 2], values[row, 3], values[row, 4], values[row, 5]
+    )
+
+
+@wp.func
+def _com_edge(propagation_body_com_rel: wp.array2d[float], child: int, parent: int):
+    """Return the vector from the parent's to the child's center of mass."""
+    return wp.vec3(
+        propagation_body_com_rel[child, 0] - propagation_body_com_rel[parent, 0],
+        propagation_body_com_rel[child, 1] - propagation_body_com_rel[parent, 1],
+        propagation_body_com_rel[child, 2] - propagation_body_com_rel[parent, 2],
+    )
+
+
+@wp.func
+def _unit_spatial_vector(k: int):
+    """Return the ``k``-th spatial basis vector."""
+    e = wp.spatial_vector()
+    e[k] = 1.0
+    return e
+
+
+@wp.kernel
+def build_propagation_contact_rows(
+    contact_count: wp.array[int],
+    total_num_threads: int,
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_thickness0: wp.array[float],
+    contact_thickness1: wp.array[float],
+    contact_world: wp.array[int],
+    contact_slot: wp.array[int],
+    contact_path: wp.array[int],
+    contact_art_a: wp.array[int],
+    contact_art_b: wp.array[int],
+    articulation_response_dof_count: wp.array[int],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_v_s: wp.array[wp.spatial_vector],
+    prescribed_articulation: wp.array[int],
+    articulation_origin: wp.array[wp.vec3],
+    shape_material_mu: wp.array[float],
+    # outputs
+    propagation_body_a: wp.array2d[int],
+    propagation_body_b: wp.array2d[int],
+    propagation_J_a: wp.array3d[float],
+    propagation_J_b: wp.array3d[float],
+    propagation_row_type: wp.array2d[int],
+    propagation_row_parent: wp.array2d[int],
+    propagation_row_mu: wp.array2d[float],
+    propagation_phi: wp.array2d[float],
+    propagation_target_velocity: wp.array2d[float],
+):
+    """Build the body-space normal and two friction rows of every propagation contact.
+
+    Each side's row is ``J = [d, r x d]`` with ``r`` the contact point relative to the
+    body's center of mass. A side without response DOFs (ground, a zero-DOF articulation
+    or a prescribed kinematic body) gets body ``-1``; its prescribed motion enters
+    through the row target velocity.
+    """
+    total_contacts = wp.min(contact_count[0], contact_point0.shape[0])
+    for c in range(wp.tid(), total_contacts, total_num_threads):
+        if contact_path[c] != 2:
+            continue
+        slot = contact_slot[c]
+        if slot < 0:
+            continue
+
+        world = contact_world[c]
+        art_a = contact_art_a[c]
+        art_b = contact_art_b[c]
+        shape_a = contact_shape0[c]
+        shape_b = contact_shape1[c]
+        # The contact normal is stored A-to-B; rows use B-to-A.
+        normal = -contact_normal[c]
+        body_a = -1
+        body_b = -1
+        if shape_a >= 0:
+            body_a = shape_body[shape_a]
+        if shape_b >= 0:
+            body_b = shape_body[shape_b]
+        response_body_a = -1
+        response_body_b = -1
+        if body_a >= 0 and art_a >= 0 and articulation_response_dof_count[art_a] > 0:
+            response_body_a = body_a
+        if body_b >= 0 and art_b >= 0 and articulation_response_dof_count[art_b] > 0:
+            response_body_b = body_b
+
+        point_a_world, point_b_world = _contact_points_world(
+            c, body_a, body_b, normal, contact_point0, contact_point1, contact_thickness0, contact_thickness1, body_q
+        )
+        phi = wp.dot(normal, point_a_world - point_b_world)
+        mu = _contact_mu(shape_a, shape_b, shape_material_mu)
+        tangent0, tangent1 = contact_tangent_basis(normal)
+        com_a = wp.vec3(0.0)
+        com_b = wp.vec3(0.0)
+        if response_body_a >= 0:
+            com_a = wp.transform_point(body_q[response_body_a], body_com[response_body_a])
+        if response_body_b >= 0:
+            com_b = wp.transform_point(body_q[response_body_b], body_com[response_body_b])
+
+        for row_offset in range(3):
+            row = slot + row_offset
+            d = normal
+            if row_offset == 1:
+                d = tangent0
+            elif row_offset == 2:
+                d = tangent1
+            if response_body_a >= 0:
+                ang_a = wp.cross(point_a_world - com_a, d)
+                for k in range(3):
+                    propagation_J_a[world, row, k] = d[k]
+                    propagation_J_a[world, row, 3 + k] = ang_a[k]
+            if response_body_b >= 0:
+                ang_b = wp.cross(point_b_world - com_b, d)
+                for k in range(3):
+                    propagation_J_b[world, row, k] = -d[k]
+                    propagation_J_b[world, row, 3 + k] = -ang_b[k]
+            propagation_body_a[world, row] = response_body_a
+            propagation_body_b[world, row] = response_body_b
+            propagation_row_mu[world, row] = mu
+            if row_offset == 0:
+                propagation_row_type[world, row] = PGS_CONSTRAINT_TYPE_CONTACT
+                propagation_row_parent[world, row] = -1
+                propagation_phi[world, row] = phi
+            else:
+                propagation_row_type[world, row] = PGS_CONSTRAINT_TYPE_FRICTION
+                propagation_row_parent[world, row] = slot
+                propagation_phi[world, row] = 0.0
+            propagation_target_velocity[world, row] = prescribed_relative_contact_target(
+                body_a,
+                art_a,
+                body_b,
+                art_b,
+                point_a_world,
+                point_b_world,
+                d,
+                prescribed_articulation,
+                articulation_origin,
+                body_v_s,
+            )
+
+
+@wp.kernel
+def copy_free_rigid_propagation_body_response(
+    free_rigid_body_indices: wp.array[int],
+    mf_body_Hinv: wp.array[wp.spatial_matrix],
+    # outputs
+    propagation_body_response: wp.array3d[float],
+):
+    """Seed the 6x6 propagation response of free bodies with their inverse inertia.
+
+    Articulated links get their response from the tree factorization; a free body's
+    response is the same inverse spatial inertia its free-body rows use.
+    """
+    body = free_rigid_body_indices[wp.tid()]
+    Hinv = mf_body_Hinv[body]
+    for r in range(6):
+        for c in range(6):
+            propagation_body_response[body, r, c] = Hinv[r, c]
+
+
+@wp.kernel
+def compute_propagation_effective_mass_and_rhs(
+    propagation_constraint_count: wp.array[int],
+    propagation_body_a: wp.array2d[int],
+    propagation_body_b: wp.array2d[int],
+    propagation_J_a: wp.array3d[float],
+    propagation_J_b: wp.array3d[float],
+    propagation_body_response: wp.array3d[float],
+    propagation_phi: wp.array2d[float],
+    propagation_row_type: wp.array2d[int],
+    propagation_target_velocity: wp.array2d[float],
+    rigid_body_max_depenetration_velocity: wp.array[float],
+    pgs_cfm: float,
+    pgs_beta: float,
+    dt: float,
+    propagation_max_constraints: int,
+    # outputs
+    propagation_eff_mass_inv: wp.array2d[float],
+    propagation_MiJt_a: wp.array3d[float],
+    propagation_MiJt_b: wp.array3d[float],
+    propagation_rhs: wp.array2d[float],
+):
+    """Compute the response ``M^-1 J^T``, inverse effective mass and bias of each propagation row.
+
+    ``M^-1`` is each touched body's own 6x6 response, so a row between two links of one
+    articulation misses their cross term here; see
+    :func:`refine_same_articulation_propagation_rows`. The bias follows the free-body
+    rows: penetrating contacts get the Baumgarte term, bounded by the bodies' maximum
+    depenetration velocity, and separated contacts may close their gap during the step.
+    """
+    tid = wp.tid()
+    world = tid // propagation_max_constraints
+    i = tid - world * propagation_max_constraints
+    if i >= propagation_constraint_count[world]:
+        return
+
+    ba = propagation_body_a[world, i]
+    bb = propagation_body_b[world, i]
+    d = pgs_cfm
+    if ba >= 0:
+        for r in range(6):
+            value = float(0.0)
+            for c in range(6):
+                value += propagation_body_response[ba, r, c] * propagation_J_a[world, i, c]
+            propagation_MiJt_a[world, i, r] = value
+            d += propagation_J_a[world, i, r] * value
+    if bb >= 0:
+        for r in range(6):
+            value = float(0.0)
+            for c in range(6):
+                value += propagation_body_response[bb, r, c] * propagation_J_b[world, i, c]
+            propagation_MiJt_b[world, i, r] = value
+            d += propagation_J_b[world, i, r] * value
+    if d > 0.0:
+        propagation_eff_mass_inv[world, i] = 1.0 / d
+    else:
+        propagation_eff_mass_inv[world, i] = 0.0
+
+    bias = float(0.0)
+    if propagation_row_type[world, i] == PGS_CONSTRAINT_TYPE_CONTACT:
+        phi = propagation_phi[world, i]
+        if phi < 0.0:
+            bias = pgs_beta * phi / dt
+            max_depen = 1.0e20
+            if ba >= 0:
+                max_depen = rigid_body_max_depenetration_velocity[ba]
+            if bb >= 0:
+                max_depen_b = rigid_body_max_depenetration_velocity[bb]
+                if max_depen_b > 0.0 and wp.isfinite(max_depen_b):
+                    if max_depen_b < max_depen:
+                        max_depen = max_depen_b
+            if max_depen > 0.0 and wp.isfinite(max_depen):
+                bias = wp.max(bias, -max_depen)
+        else:
+            bias = phi / dt
+    propagation_rhs[world, i] = bias - propagation_target_velocity[world, i]
+
+
+@wp.kernel
+def build_propagation_body_map(
+    propagation_constraint_count: wp.array[int],
+    propagation_body_a: wp.array2d[int],
+    propagation_body_b: wp.array2d[int],
+    propagation_max_constraints: int,
+    max_propagation_bodies: int,
+    propagation_body_seen: wp.array[int],
+    # outputs
+    propagation_body_list: wp.array2d[int],
+    propagation_body_count: wp.array[int],
+    propagation_body_local_slot: wp.array[int],
+):
+    """List the distinct bodies touched by each world's propagation rows."""
+    tid = wp.tid()
+    world = tid // propagation_max_constraints
+    i = tid - world * propagation_max_constraints
+    m = wp.min(propagation_constraint_count[world], propagation_max_constraints)
+    if i >= m:
+        return
+
+    for side in range(2):
+        body = propagation_body_a[world, i]
+        if side == 1:
+            body = propagation_body_b[world, i]
+        if body < 0:
+            continue
+        if wp.atomic_add(propagation_body_seen, body, 1) == 0:
+            slot = wp.atomic_add(propagation_body_count, world, 1)
+            if slot < max_propagation_bodies:
+                propagation_body_list[world, slot] = body
+                propagation_body_local_slot[body] = slot
+
+
+@wp.kernel
+def compute_propagation_body_com_rel(
+    body_to_articulation: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    articulation_origin: wp.array[wp.vec3],
+    # outputs
+    propagation_body_com_rel: wp.array2d[float],
+):
+    """Store each articulated body's center of mass relative to its articulation origin."""
+    body = wp.tid()
+    art = body_to_articulation[body]
+    if art < 0:
+        return
+    rel = wp.transform_point(body_q[body], body_com[body]) - articulation_origin[art]
+    for k in range(3):
+        propagation_body_com_rel[body, k] = rel[k]
+
+
+@wp.kernel
+def flatten_propagation_joint_S(
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_S_s: wp.array[wp.spatial_vector],
+    propagation_body_com_rel: wp.array2d[float],
+    # outputs
+    propagation_joint_S_flat: wp.array2d[float],
+):
+    """Re-reference each joint motion subspace from the articulation origin to the child's center of mass."""
+    joint = wp.tid()
+    child = joint_child[joint]
+    if child < 0:
+        return
+    child_rel = wp.vec3(
+        propagation_body_com_rel[child, 0], propagation_body_com_rel[child, 1], propagation_body_com_rel[child, 2]
+    )
+    for dof in range(joint_qd_start[joint], joint_qd_start[joint + 1]):
+        S = joint_S_s[dof]
+        ang = wp.spatial_bottom(S)
+        lin_child = wp.spatial_top(S) + wp.cross(ang, child_rel)
+        for k in range(3):
+            propagation_joint_S_flat[dof, k] = lin_child[k]
+            propagation_joint_S_flat[dof, 3 + k] = ang[k]
+
+
+@wp.kernel
+def factor_propagation_tree_for_size(
+    group_to_art: wp.array[int],
+    articulation_start: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    propagation_joint_S_flat: wp.array2d[float],
+    joint_armature: wp.array[float],
+    max_dofs: int,
+    aug_row_counts: wp.array[int],
+    aug_row_dof_index: wp.array[int],
+    aug_row_K: wp.array[float],
+    body_I_m: wp.array[wp.spatial_matrix],
+    body_q_com: wp.array[wp.transform],
+    propagation_body_com_rel: wp.array2d[float],
+    # outputs
+    propagation_tree_Ia: wp.array3d[float],
+    propagation_tree_U: wp.array2d[float],
+    propagation_tree_D_chol: wp.array3d[float],
+    propagation_tree_D_inv: wp.array3d[float],
+):
+    """Factor the articulations of one size group into articulated-body inertia terms.
+
+    One thread per articulation, for any joint DOF count. Stores the articulated
+    inertia ``I_a`` of each link, ``U = I_a S`` and ``D^-1 = (S^T U + armature + K)^-1``
+    of each inbound joint, where ``K`` is the implicit drive term folded into the mass
+    matrix. ``joint_armature`` is the effective armature, so kinematic DOFs do not
+    respond.
+    """
+    group_idx = wp.tid()
+    art = group_to_art[group_idx]
+    joint_start = articulation_start[art]
+    joint_end = articulation_start[art + 1]
+
+    for joint in range(joint_start, joint_end):
+        body = joint_child[joint]
+        X_com_world = wp.transform(wp.vec3(), wp.transform_get_rotation(body_q_com[body]))
+        I = transform_spatial_inertia(X_com_world, body_I_m[body])
+        for r in range(6):
+            for c in range(6):
+                propagation_tree_Ia[body, r, c] = I[r, c]
+        for dof in range(joint_qd_start[joint], joint_qd_start[joint + 1]):
+            for r in range(6):
+                propagation_tree_U[dof, r] = 0.0
+        for r in range(6):
+            for c in range(6):
+                propagation_tree_D_chol[joint, r, c] = 0.0
+                propagation_tree_D_inv[joint, r, c] = 0.0
+
+    for offset in range(joint_end - joint_start):
+        joint = joint_end - 1 - offset
+        child = joint_child[joint]
+        parent = joint_parent[joint]
+        dof_start = joint_qd_start[joint]
+        dof_count = joint_dof_dim[joint, 0] + joint_dof_dim[joint, 1]
+
+        for a in range(dof_count):
+            gdof = dof_start + a
+            for r in range(6):
+                value = float(0.0)
+                for c in range(6):
+                    value += propagation_tree_Ia[child, r, c] * propagation_joint_S_flat[gdof, c]
+                propagation_tree_U[gdof, r] = value
+
+        for a in range(dof_count):
+            gdof_a = dof_start + a
+            for b in range(dof_count):
+                gdof_b = dof_start + b
+                value = float(0.0)
+                for r in range(6):
+                    value += propagation_joint_S_flat[gdof_a, r] * propagation_tree_U[gdof_b, r]
+                if a == b:
+                    value += joint_armature[gdof_a]
+                    for aug_i in range(aug_row_counts[art]):
+                        row_index = art * max_dofs + aug_i
+                        if aug_row_dof_index[row_index] == gdof_a:
+                            K = aug_row_K[row_index]
+                            if K > 0.0:
+                                value += K
+                propagation_tree_D_chol[joint, a, b] = value
+
+        # Cholesky factorization of the joint-space block D.
+        for j in range(dof_count):
+            s = propagation_tree_D_chol[joint, j, j]
+            for k in range(j):
+                chol_jk = propagation_tree_D_chol[joint, j, k]
+                s -= chol_jk * chol_jk
+            if s <= 1.0e-12:
+                s = 1.0e-12
+            s = wp.sqrt(s)
+            propagation_tree_D_chol[joint, j, j] = s
+            inv_s = 1.0 / s
+            for i in range(j + 1, dof_count):
+                v = propagation_tree_D_chol[joint, i, j]
+                for k in range(j):
+                    v -= propagation_tree_D_chol[joint, i, k] * propagation_tree_D_chol[joint, j, k]
+                propagation_tree_D_chol[joint, i, j] = v * inv_s
+
+        # Invert D one column at a time with forward and backward solves.
+        for col in range(dof_count):
+            for i in range(dof_count):
+                v = float(0.0)
+                if i == col:
+                    v = 1.0
+                for k in range(i):
+                    v -= propagation_tree_D_chol[joint, i, k] * propagation_tree_D_inv[joint, k, col]
+                propagation_tree_D_inv[joint, i, col] = v / propagation_tree_D_chol[joint, i, i]
+            for i_rev in range(dof_count):
+                i = dof_count - 1 - i_rev
+                v = propagation_tree_D_inv[joint, i, col]
+                for k in range(i + 1, dof_count):
+                    v -= propagation_tree_D_chol[joint, k, i] * propagation_tree_D_inv[joint, k, col]
+                propagation_tree_D_inv[joint, i, col] = v / propagation_tree_D_chol[joint, i, i]
+
+        # Reduce the child's articulated inertia across this joint.
+        for r in range(6):
+            for c in range(6):
+                reduced = propagation_tree_Ia[child, r, c]
+                for a in range(dof_count):
+                    U_ar = propagation_tree_U[dof_start + a, r]
+                    for b in range(dof_count):
+                        reduced -= U_ar * propagation_tree_D_inv[joint, a, b] * propagation_tree_U[dof_start + b, c]
+                propagation_tree_Ia[child, r, c] = reduced
+
+        if parent >= 0:
+            # Add the reduced child inertia to the parent, referenced at the parent's COM.
+            edge = _com_edge(propagation_body_com_rel, child, parent)
+            I_child = wp.spatial_matrix()
+            for r in range(6):
+                for c in range(6):
+                    I_child[r, c] = propagation_tree_Ia[child, r, c]
+            for c in range(6):
+                v_child = translate_twist_between_parallel_frames(_unit_spatial_vector(c), edge)
+                w_parent = translate_wrench_between_parallel_frames(I_child * v_child, edge)
+                for r in range(6):
+                    propagation_tree_Ia[parent, r, c] = propagation_tree_Ia[parent, r, c] + w_parent[r]
+
+
+@wp.func
+def _propagation_tree_backward(
+    joint_start: int,
+    joint_end: int,
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    propagation_joint_S_flat: wp.array2d[float],
+    propagation_body_com_rel: wp.array2d[float],
+    propagation_tree_U: wp.array2d[float],
+    propagation_tree_D_inv: wp.array3d[float],
+    propagation_tree_pA: wp.array2d[float],
+    propagation_tree_u: wp.array[float],
+):
+    """Leaf-to-root pass: articulated bias forces and joint terms ``u`` of the impulses in ``pA``."""
+    for offset in range(joint_end - joint_start):
+        joint = joint_end - 1 - offset
+        child = joint_child[joint]
+        parent = joint_parent[joint]
+        dof_start = joint_qd_start[joint]
+        dof_count = joint_dof_dim[joint, 0] + joint_dof_dim[joint, 1]
+
+        for a in range(dof_count):
+            gdof = dof_start + a
+            v = float(0.0)
+            for r in range(6):
+                v -= propagation_joint_S_flat[gdof, r] * propagation_tree_pA[child, r]
+            propagation_tree_u[gdof] = v
+
+        if parent >= 0:
+            propagated_child = _spatial_row(propagation_tree_pA, child)
+            for a in range(dof_count):
+                coeff = float(0.0)
+                for b in range(dof_count):
+                    coeff += propagation_tree_D_inv[joint, a, b] * propagation_tree_u[dof_start + b]
+                propagated_child += _spatial_row(propagation_tree_U, dof_start + a) * coeff
+            propagated_parent = translate_wrench_between_parallel_frames(
+                propagated_child, _com_edge(propagation_body_com_rel, child, parent)
+            )
+            for r in range(6):
+                propagation_tree_pA[parent, r] = propagation_tree_pA[parent, r] + propagated_parent[r]
+
+
+@wp.func
+def _propagation_joint_qdd(
+    joint: int,
+    child: int,
+    parent: int,
+    dof_start: int,
+    dof_count: int,
+    propagation_body_com_rel: wp.array2d[float],
+    propagation_tree_U: wp.array2d[float],
+    propagation_tree_D_inv: wp.array3d[float],
+    propagation_tree_u: wp.array[float],
+    propagation_tree_body_delta: wp.array2d[float],
+    propagation_tree_qdd: wp.array[float],
+):
+    """Root-to-leaf step of one joint: store its ``qdd`` and return the parent's twist change at the child."""
+    parent_delta_child = wp.spatial_vector()
+    if parent >= 0:
+        parent_delta_child = translate_twist_between_parallel_frames(
+            _spatial_row(propagation_tree_body_delta, parent), _com_edge(propagation_body_com_rel, child, parent)
+        )
+    for a in range(dof_count):
+        qdd = float(0.0)
+        for b in range(dof_count):
+            gdof_b = dof_start + b
+            parent_term = float(0.0)
+            if parent >= 0:
+                parent_term = wp.dot(_spatial_row(propagation_tree_U, gdof_b), parent_delta_child)
+            qdd += propagation_tree_D_inv[joint, a, b] * (propagation_tree_u[gdof_b] - parent_term)
+        propagation_tree_qdd[dof_start + a] = qdd
+    return parent_delta_child
+
+
+@wp.kernel
+def refine_same_articulation_propagation_rows(
+    is_free_rigid: wp.array[int],
+    art_to_world: wp.array[int],
+    body_to_articulation: wp.array[int],
+    articulation_start: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    propagation_joint_S_flat: wp.array2d[float],
+    propagation_body_com_rel: wp.array2d[float],
+    propagation_tree_U: wp.array2d[float],
+    propagation_tree_D_inv: wp.array3d[float],
+    propagation_constraint_count: wp.array[int],
+    propagation_body_a: wp.array2d[int],
+    propagation_body_b: wp.array2d[int],
+    propagation_J_a: wp.array3d[float],
+    propagation_J_b: wp.array3d[float],
+    pgs_cfm: float,
+    propagation_max_constraints: int,
+    # scratch
+    propagation_tree_pA: wp.array2d[float],
+    propagation_tree_u: wp.array[float],
+    propagation_tree_qdd: wp.array[float],
+    propagation_tree_body_delta: wp.array2d[float],
+    # outputs
+    propagation_eff_mass_inv: wp.array2d[float],
+    propagation_MiJt_a: wp.array3d[float],
+    propagation_MiJt_b: wp.array3d[float],
+):
+    """Exact response of rows whose two bodies are links of one articulation.
+
+    The per-link responses miss the cross term ``J_a (X_a H^-1 X_b^T) J_b^T``. The
+    row's combined test impulse (``J_a`` at body a, ``J_b`` at body b) is propagated
+    once through the articulated-body factorization and the resulting link velocity
+    changes replace ``M^-1 J^T`` of both sides, so the effective mass includes the cross
+    term. One thread per articulation, serial over its same-articulation rows.
+    """
+    art = wp.tid()
+    if is_free_rigid[art] != 0:
+        return
+    world = art_to_world[art]
+    m_count = wp.min(propagation_constraint_count[world], propagation_max_constraints)
+    joint_start = articulation_start[art]
+    joint_end = articulation_start[art + 1]
+
+    for i in range(m_count):
+        ba = propagation_body_a[world, i]
+        bb = propagation_body_b[world, i]
+        if ba < 0 or bb < 0:
+            continue
+        if body_to_articulation[ba] != art or body_to_articulation[bb] != art:
+            continue
+
+        for joint in range(joint_start, joint_end):
+            body = joint_child[joint]
+            for r in range(6):
+                propagation_tree_pA[body, r] = 0.0
+                propagation_tree_body_delta[body, r] = 0.0
+            for dof in range(joint_qd_start[joint], joint_qd_start[joint + 1]):
+                propagation_tree_u[dof] = 0.0
+                propagation_tree_qdd[dof] = 0.0
+        for r in range(6):
+            propagation_tree_pA[ba, r] = propagation_tree_pA[ba, r] - propagation_J_a[world, i, r]
+            propagation_tree_pA[bb, r] = propagation_tree_pA[bb, r] - propagation_J_b[world, i, r]
+
+        _propagation_tree_backward(
+            joint_start,
+            joint_end,
+            joint_parent,
+            joint_child,
+            joint_qd_start,
+            joint_dof_dim,
+            propagation_joint_S_flat,
+            propagation_body_com_rel,
+            propagation_tree_U,
+            propagation_tree_D_inv,
+            propagation_tree_pA,
+            propagation_tree_u,
+        )
+        for joint in range(joint_start, joint_end):
+            child = joint_child[joint]
+            dof_start = joint_qd_start[joint]
+            dof_count = joint_dof_dim[joint, 0] + joint_dof_dim[joint, 1]
+            value = _propagation_joint_qdd(
+                joint,
+                child,
+                joint_parent[joint],
+                dof_start,
+                dof_count,
+                propagation_body_com_rel,
+                propagation_tree_U,
+                propagation_tree_D_inv,
+                propagation_tree_u,
+                propagation_tree_body_delta,
+                propagation_tree_qdd,
+            )
+            for a in range(dof_count):
+                value += _spatial_row(propagation_joint_S_flat, dof_start + a) * propagation_tree_qdd[dof_start + a]
+            for r in range(6):
+                propagation_tree_body_delta[child, r] = value[r]
+
+        d = pgs_cfm
+        for r in range(6):
+            mi_a = propagation_tree_body_delta[ba, r]
+            mi_b = propagation_tree_body_delta[bb, r]
+            propagation_MiJt_a[world, i, r] = mi_a
+            propagation_MiJt_b[world, i, r] = mi_b
+            d += propagation_J_a[world, i, r] * mi_a
+            d += propagation_J_b[world, i, r] * mi_b
+        if d > 0.0:
+            propagation_eff_mass_inv[world, i] = 1.0 / d
+        else:
+            propagation_eff_mass_inv[world, i] = 0.0
+
+
+@wp.kernel
+def compute_propagation_tree_body_response_for_size(
+    propagation_body_count: wp.array[int],
+    propagation_body_list: wp.array2d[int],
+    body_to_articulation: wp.array[int],
+    body_to_joint: wp.array[int],
+    group_to_art: wp.array[int],
+    art_to_world: wp.array[int],
+    articulation_start: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    propagation_joint_S_flat: wp.array2d[float],
+    max_propagation_bodies: int,
+    propagation_body_com_rel: wp.array2d[float],
+    propagation_tree_U: wp.array2d[float],
+    propagation_tree_D_inv: wp.array3d[float],
+    # scratch
+    propagation_tree_pA: wp.array2d[float],
+    propagation_tree_u: wp.array[float],
+    propagation_tree_qdd: wp.array[float],
+    propagation_tree_body_delta: wp.array2d[float],
+    # outputs
+    propagation_body_response: wp.array3d[float],
+):
+    """Compute the 6x6 center-of-mass response of each contact-touched link by tree solves.
+
+    For any joint DOF count. A unit wrench at a link only couples to the joints on its
+    path to the root, so each of the six basis solves walks that path only. The walk is
+    capped at the articulation's joint count.
+    """
+    group_idx = wp.tid()
+    art = group_to_art[group_idx]
+    world = art_to_world[art]
+    joint_start = articulation_start[art]
+    joint_end = articulation_start[art + 1]
+
+    for local_body in range(wp.min(propagation_body_count[world], max_propagation_bodies)):
+        target_body = propagation_body_list[world, local_body]
+        if target_body < 0 or body_to_articulation[target_body] != art:
+            continue
+
+        path_len = int(0)
+        walk = body_to_joint[target_body]
+        for _cap in range(joint_end - joint_start):
+            if walk < 0:
+                break
+            path_len += 1
+            walk_parent = joint_parent[walk]
+            if walk_parent >= 0:
+                walk = body_to_joint[walk_parent]
+            else:
+                walk = int(-1)
+
+        for basis in range(6):
+            walk = body_to_joint[target_body]
+            for _k in range(path_len):
+                joint = walk
+                walk_parent = joint_parent[joint]
+                if walk_parent >= 0:
+                    walk = body_to_joint[walk_parent]
+                else:
+                    walk = int(-1)
+                body = joint_child[joint]
+                for r in range(6):
+                    propagation_tree_pA[body, r] = 0.0
+                    propagation_tree_body_delta[body, r] = 0.0
+                for dof in range(joint_qd_start[joint], joint_qd_start[joint + 1]):
+                    propagation_tree_u[dof] = 0.0
+                    propagation_tree_qdd[dof] = 0.0
+            for r in range(6):
+                propagation_tree_pA[target_body, r] = 0.0
+            propagation_tree_pA[target_body, basis] = -1.0
+
+            # Backward sweep, target to root along the path.
+            walk = body_to_joint[target_body]
+            for _k in range(path_len):
+                joint = walk
+                walk_parent = joint_parent[joint]
+                if walk_parent >= 0:
+                    walk = body_to_joint[walk_parent]
+                else:
+                    walk = int(-1)
+                child = joint_child[joint]
+                parent = joint_parent[joint]
+                dof_start = joint_qd_start[joint]
+                dof_count = joint_dof_dim[joint, 0] + joint_dof_dim[joint, 1]
+                for a in range(dof_count):
+                    gdof = dof_start + a
+                    v = float(0.0)
+                    for r in range(6):
+                        v -= propagation_joint_S_flat[gdof, r] * propagation_tree_pA[child, r]
+                    propagation_tree_u[gdof] = v
+                if parent >= 0:
+                    propagated_child = _spatial_row(propagation_tree_pA, child)
+                    for a in range(dof_count):
+                        coeff = float(0.0)
+                        for b in range(dof_count):
+                            coeff += propagation_tree_D_inv[joint, a, b] * propagation_tree_u[dof_start + b]
+                        propagated_child += _spatial_row(propagation_tree_U, dof_start + a) * coeff
+                    propagated_parent = translate_wrench_between_parallel_frames(
+                        propagated_child, _com_edge(propagation_body_com_rel, child, parent)
+                    )
+                    for r in range(6):
+                        propagation_tree_pA[parent, r] = propagation_tree_pA[parent, r] + propagated_parent[r]
+
+            # Forward sweep, root to target: level i visits the (path_len - 1 - i)-th ancestor.
+            for level in range(path_len):
+                joint = body_to_joint[target_body]
+                for _s in range(path_len - 1 - level):
+                    joint = body_to_joint[joint_parent[joint]]
+                child = joint_child[joint]
+                dof_start = joint_qd_start[joint]
+                dof_count = joint_dof_dim[joint, 0] + joint_dof_dim[joint, 1]
+                value = _propagation_joint_qdd(
+                    joint,
+                    child,
+                    joint_parent[joint],
+                    dof_start,
+                    dof_count,
+                    propagation_body_com_rel,
+                    propagation_tree_U,
+                    propagation_tree_D_inv,
+                    propagation_tree_u,
+                    propagation_tree_body_delta,
+                    propagation_tree_qdd,
+                )
+                for a in range(dof_count):
+                    value += _spatial_row(propagation_joint_S_flat, dof_start + a) * propagation_tree_qdd[dof_start + a]
+                for r in range(6):
+                    propagation_tree_body_delta[child, r] = value[r]
+
+            for r in range(6):
+                propagation_body_response[target_body, r, basis] = propagation_tree_body_delta[target_body, r]
+
+
+@wp.kernel
+def refresh_propagation_tree_body_qd_for_size(
+    group_to_art: wp.array[int],
+    art_to_world: wp.array[int],
+    dense_contact_world_flag: wp.array[int],
+    force_refresh: int,
+    articulation_start: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    propagation_joint_S_flat: wp.array2d[float],
+    propagation_body_com_rel: wp.array2d[float],
+    v_out: wp.array[float],
+    # outputs
+    propagation_body_qd: wp.array2d[float],
+):
+    """Recompute the center-of-mass twists of an articulation's links from ``v_out``.
+
+    One root-to-leaf pass. Without ``force_refresh`` the pass is skipped for worlds
+    without dense contact rows, whose generalized velocities only change through the
+    propagation solve (which leaves the twists consistent).
+    """
+    group_idx = wp.tid()
+    art = group_to_art[group_idx]
+    if force_refresh == 0:
+        world = art_to_world[art]
+        if world >= 0 and dense_contact_world_flag[world] == 0:
+            return
+
+    for joint in range(articulation_start[art], articulation_start[art + 1]):
+        child = joint_child[joint]
+        parent = joint_parent[joint]
+        value = wp.spatial_vector()
+        if parent >= 0:
+            value = translate_twist_between_parallel_frames(
+                _spatial_row(propagation_body_qd, parent), _com_edge(propagation_body_com_rel, child, parent)
+            )
+        for dof in range(joint_qd_start[joint], joint_qd_start[joint + 1]):
+            value += _spatial_row(propagation_joint_S_flat, dof) * v_out[dof]
+        for r in range(6):
+            propagation_body_qd[child, r] = value[r]
+
+
+@wp.kernel
+def flush_propagation_free_body_qd_to_vout(
+    free_rigid_body_indices: wp.array[int],
+    body_to_articulation: wp.array[int],
+    articulation_dof_start: wp.array[int],
+    # in/out
+    propagation_body_qd: wp.array2d[float],
+    propagation_body_impulses: wp.array2d[float],
+    v_out: wp.array[float],
+):
+    """Write the solved free-body twists back to ``v_out`` and clear their impulses.
+
+    A free body's generalized velocity and its propagation twist are both referenced at
+    its center of mass, so the write-back is a copy.
+    """
+    body = free_rigid_body_indices[wp.tid()]
+    dof_start = articulation_dof_start[body_to_articulation[body]]
+    for r in range(6):
+        v_out[dof_start + r] = propagation_body_qd[body, r]
+        propagation_body_impulses[body, r] = 0.0
+
+
+@wp.kernel
+def refresh_propagation_free_body_qd_from_vout(
+    free_rigid_body_indices: wp.array[int],
+    body_to_articulation: wp.array[int],
+    articulation_dof_start: wp.array[int],
+    v_out: wp.array[float],
+    # outputs
+    propagation_body_qd: wp.array2d[float],
+):
+    """Copy the free-body generalized velocities in ``v_out`` to their propagation twists."""
+    body = free_rigid_body_indices[wp.tid()]
+    dof_start = articulation_dof_start[body_to_articulation[body]]
+    for r in range(6):
+        propagation_body_qd[body, r] = v_out[dof_start + r]
+
+
+@wp.kernel
+def propagate_tree_impulses_for_size(
+    group_to_art: wp.array[int],
+    articulation_start: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    propagation_joint_S_flat: wp.array2d[float],
+    propagation_body_com_rel: wp.array2d[float],
+    propagation_tree_U: wp.array2d[float],
+    propagation_tree_D_inv: wp.array3d[float],
+    # scratch
+    propagation_tree_pA: wp.array2d[float],
+    propagation_tree_u: wp.array[float],
+    propagation_tree_qdd: wp.array[float],
+    propagation_tree_body_delta: wp.array2d[float],
+    # in/out
+    propagation_body_impulses: wp.array2d[float],
+    propagation_body_qd: wp.array2d[float],
+    v_out: wp.array[float],
+):
+    """Apply an articulation's accumulated link impulses to its joint velocities.
+
+    For any joint DOF count. Runs the articulated-body backward and forward passes on
+    the impulses the row solve accumulated, adds the joint velocity change to ``v_out``,
+    recomputes the links' twists from ``v_out`` (replacing the row solve's per-link
+    estimates) and clears the accumulated impulses. Articulations without impulses are
+    already consistent and are skipped.
+    """
+    group_idx = wp.tid()
+    art = group_to_art[group_idx]
+    joint_start = articulation_start[art]
+    joint_end = articulation_start[art + 1]
+
+    has_impulse = int(0)
+    for joint in range(joint_start, joint_end):
+        body = joint_child[joint]
+        for r in range(6):
+            impulse = propagation_body_impulses[body, r]
+            if impulse != 0.0:
+                has_impulse = int(1)
+            propagation_tree_pA[body, r] = -impulse
+            propagation_tree_body_delta[body, r] = 0.0
+        for dof in range(joint_qd_start[joint], joint_qd_start[joint + 1]):
+            propagation_tree_u[dof] = 0.0
+            propagation_tree_qdd[dof] = 0.0
+    if has_impulse == 0:
+        return
+
+    _propagation_tree_backward(
+        joint_start,
+        joint_end,
+        joint_parent,
+        joint_child,
+        joint_qd_start,
+        joint_dof_dim,
+        propagation_joint_S_flat,
+        propagation_body_com_rel,
+        propagation_tree_U,
+        propagation_tree_D_inv,
+        propagation_tree_pA,
+        propagation_tree_u,
+    )
+    for joint in range(joint_start, joint_end):
+        child = joint_child[joint]
+        dof_start = joint_qd_start[joint]
+        dof_count = joint_dof_dim[joint, 0] + joint_dof_dim[joint, 1]
+        value = _propagation_joint_qdd(
+            joint,
+            child,
+            joint_parent[joint],
+            dof_start,
+            dof_count,
+            propagation_body_com_rel,
+            propagation_tree_U,
+            propagation_tree_D_inv,
+            propagation_tree_u,
+            propagation_tree_body_delta,
+            propagation_tree_qdd,
+        )
+        for a in range(dof_count):
+            gdof = dof_start + a
+            qdd = propagation_tree_qdd[gdof]
+            v_out[gdof] = v_out[gdof] + qdd
+            value += _spatial_row(propagation_joint_S_flat, gdof) * qdd
+        for r in range(6):
+            propagation_tree_body_delta[child, r] = value[r]
+
+    for joint in range(joint_start, joint_end):
+        child = joint_child[joint]
+        parent = joint_parent[joint]
+        value = wp.spatial_vector()
+        if parent >= 0:
+            value = translate_twist_between_parallel_frames(
+                _spatial_row(propagation_body_qd, parent), _com_edge(propagation_body_com_rel, child, parent)
+            )
+        for dof in range(joint_qd_start[joint], joint_qd_start[joint + 1]):
+            value += _spatial_row(propagation_joint_S_flat, dof) * v_out[dof]
+        for r in range(6):
+            propagation_body_qd[child, r] = value[r]
+            propagation_body_impulses[child, r] = 0.0

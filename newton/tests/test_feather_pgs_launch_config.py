@@ -577,6 +577,110 @@ def test_non_default_tile_threads_compiles_and_steps(test, device):
     test.assertTrue(np.isfinite(state_0.joint_qd.numpy()).all())
 
 
+def test_articulated_contact_response_validation(test, device):
+    """Accept the propagation responses, size their rows, and reject unsupported combinations."""
+    model = _build_chain_model(device, num_links=2, num_worlds=1)
+    solver = SolverFeatherPGS(model)
+    test.assertEqual(solver.articulated_contact_response, "immediate")
+    test.assertFalse(solver.propagation_same_articulation_rows)
+    solver = SolverFeatherPGS(model, articulated_contact_response="propagation", dense_max_constraints=16)
+    test.assertEqual(solver.articulated_contact_response, "propagation")
+    # Every contact row, free-body rows included, uses the propagation family.
+    test.assertEqual(solver.propagation_max_constraints, 512 + 16)
+    solver = SolverFeatherPGS(model, articulated_contact_response="propagation-fused", dense_max_constraints=16)
+    test.assertEqual(solver.articulated_contact_response, "propagation-fused")
+    test.assertEqual(solver.propagation_max_constraints, 16)
+
+    with test.assertRaisesRegex(ValueError, "articulated_contact_response"):
+        SolverFeatherPGS(model, articulated_contact_response="bad")
+    for response in ("immediate", "propagation-fused"):
+        with test.subTest(response=response):
+            with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
+                SolverFeatherPGS(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
+
+    # The fused kernel runs the tree passes of a single articulation size.
+    mixed = newton.ModelBuilder()
+    for num_links in (2, 3):
+        chain = newton.ModelBuilder()
+        joints = []
+        parent = -1
+        for _ in range(num_links):
+            link = chain.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joints.append(chain.add_joint_revolute(parent, link, axis=newton.Axis.Y))
+            parent = link
+        chain.add_articulation(joints)
+        mixed.add_world(chain)
+    mixed_model = mixed.finalize(device=device)
+    with test.assertRaisesRegex(NotImplementedError, "propagation-fused"):
+        SolverFeatherPGS(mixed_model, articulated_contact_response="propagation-fused")
+    test.assertEqual(
+        SolverFeatherPGS(mixed_model, articulated_contact_response="propagation").articulated_contact_response,
+        "propagation",
+    )
+
+
+def test_propagation_rejects_unsupported_options(test, device):
+    """Reject the split solve and every option the propagation rows do not implement."""
+    model = _build_chain_model(device, num_links=2, num_worlds=1)
+    for response in ("propagation", "propagation-fused"):
+        with test.subTest(response=response, option="pgs_mode"):
+            with test.assertRaisesRegex(NotImplementedError, "requires pgs_mode='matrix_free'"):
+                SolverFeatherPGS(model, pgs_mode="split", articulated_contact_response=response)
+        # The default friction resolves to point friction with the propagation rows.
+        test.assertEqual(SolverFeatherPGS(model, articulated_contact_response=response).friction_anchor_beta, 0.0)
+        options = (
+            ({"drive_mode": "physx_pgs"}, "physx_pgs"),
+            ({"friction_anchor_beta": 0.2}, "friction_anchor_beta"),
+            ({"pgs_contact_regularization": 0.02}, "pgs_contact_regularization"),
+            ({"pgs_velocity_iterations": 2}, "pgs_velocity_iterations"),
+            ({"pgs_warmstart": True}, "pgs_warmstart"),
+            ({"contact_torsion_radius": 0.01}, "contact_torsion_radius"),
+            ({"contact_compliance": True, "friction_anchor_beta": 0.0}, "contact_compliance"),
+            ({"enable_sleeping": True}, "enable_sleeping"),
+        )
+        for kwargs, name in options:
+            with test.subTest(response=response, option=name):
+                with test.assertRaisesRegex(NotImplementedError, f"{name}.*articulated_contact_response"):
+                    SolverFeatherPGS(model, articulated_contact_response=response, **kwargs)
+        restitution = model.shape_material_restitution.numpy().copy()
+        model.shape_material_restitution.fill_(0.5)
+        with test.subTest(response=response, option="restitution"):
+            with test.assertRaisesRegex(NotImplementedError, "restitution"):
+                SolverFeatherPGS(model, articulated_contact_response=response)
+            threshold = float(np.finfo(np.float32).max)
+            SolverFeatherPGS(model, articulated_contact_response=response, restitution_velocity_threshold=threshold)
+        model.shape_material_restitution.assign(restitution)
+        solver = SolverFeatherPGS(model, articulated_contact_response=response)
+        model.shape_material_restitution.fill_(0.5)
+        with test.subTest(response=response, option="restitution notify"):
+            with test.assertRaisesRegex(NotImplementedError, "restitution"):
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        model.shape_material_restitution.assign(restitution)
+
+
+def test_propagation_matrix_free_compiles_and_steps_with_velocity_limit_rows(test, device):
+    """Step both propagation responses with dense joint velocity-limit rows."""
+    model = _build_chain_model(device, num_links=3, num_worlds=1)
+    model.joint_velocity_limit.assign(np.full(model.joint_dof_count, 0.1, dtype=np.float32))
+    for response in ("propagation", "propagation-fused"):
+        with test.subTest(response=response):
+            solver = SolverFeatherPGS(
+                model,
+                articulated_contact_response=response,
+                enable_joint_velocity_limits=True,
+                pgs_iterations=2,
+                dense_max_constraints=16,
+                mf_max_constraints=16,
+            )
+            state_0, state_1 = model.state(), model.state()
+            state_0.joint_qd.assign(np.full(model.joint_dof_count, 1.0, dtype=np.float32))
+            newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+            solver.step(state_0, state_1, model.control(), None, 1.0 / 600.0)
+            test.assertGreater(int(solver.constraint_count.numpy()[0]), 0)
+            test.assertTrue(np.isfinite(state_1.joint_q.numpy()).all())
+            test.assertTrue(np.isfinite(state_1.joint_qd.numpy()).all())
+
+
 class TestFeatherPGSLaunchConfig(unittest.TestCase):
     def test_cpu_construction_raises(self):
         """Reject the default CUDA-only matrix-free solve on CPU, naming the split solve, which constructs."""
@@ -814,6 +918,12 @@ for _name, _func in (
     (
         "test_fuse_joint_velocity_limits_clamps_driven_dofs_without_rows",
         test_fuse_joint_velocity_limits_clamps_driven_dofs_without_rows,
+    ),
+    ("test_articulated_contact_response_validation", test_articulated_contact_response_validation),
+    ("test_propagation_rejects_unsupported_options", test_propagation_rejects_unsupported_options),
+    (
+        "test_propagation_matrix_free_compiles_and_steps_with_velocity_limit_rows",
+        test_propagation_matrix_free_compiles_and_steps_with_velocity_limit_rows,
     ),
 ):
     add_function_test(TestFeatherPGSLaunchConfig, _name, _func, devices=devices)

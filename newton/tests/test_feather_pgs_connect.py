@@ -4,7 +4,6 @@
 """Connect (loop-closure) rows of SolverFeatherPGS."""
 
 import functools
-import inspect
 import unittest
 import warnings
 
@@ -13,11 +12,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
-
-
-def _solver_accepts(option: str) -> bool:
-    return option in inspect.signature(SolverFeatherPGS).parameters
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 
 def _build_four_bar():
@@ -643,9 +638,6 @@ class TestFeatherPGSPrescribedParentConnect(unittest.TestCase):
     pass
 
 
-@unittest.skipUnless(
-    _solver_accepts("articulated_contact_response"), "requires the FeatherPGS propagation contact responses"
-)
 class TestFeatherPGSConnectPropagation(unittest.TestCase):
     pass
 
@@ -677,7 +669,7 @@ add_function_test(
     TestFeatherPGSConnectPropagation,
     "test_propagation_standalone_world_root_is_not_loop_joint",
     test_propagation_standalone_world_root_is_not_loop_joint,
-    devices=get_test_devices(),
+    devices=cuda_devices,
 )
 
 

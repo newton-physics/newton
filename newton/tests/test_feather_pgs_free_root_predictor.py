@@ -81,7 +81,7 @@ def _build_slider(device):
     return _undamped(builder.finalize(device=device))
 
 
-def _slide_heights(model, omega_y, pgs_mode="matrix_free"):
+def _slide_heights(model, omega_y, pgs_mode="matrix_free", response="immediate"):
     """Slide the sphere at ``SLIDE_VX`` while spinning at ``omega_y``; return heights and peak contacts."""
     state_0, state_1 = model.state(), model.state()
     joint_qd = state_0.joint_qd.numpy()
@@ -90,7 +90,7 @@ def _slide_heights(model, omega_y, pgs_mode="matrix_free"):
     state_0.joint_qd.assign(joint_qd)
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, articulated_contact_response=response)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
     contacts = pipeline.contacts()
     control = model.control()
@@ -118,15 +118,15 @@ def _world_com(model, state):
     return np.asarray(q[0:3]) + np.asarray(wp.quat_rotate(rot, wp.vec3(*com_local)))
 
 
-def test_frictionless_slide_is_spin_invariant(test, device, pgs_mode="matrix_free"):
+def test_frictionless_slide_is_spin_invariant(test, device, pgs_mode="matrix_free", response="immediate"):
     """Keep a frictionless sliding sphere's height trajectory independent of its spin.
 
     Without friction the spin exerts no force. A predictor missing the ``omega x v`` term feeds
     the normal rows a phantom vertical velocity of ``dt * omega_y * vx`` (0.2 m/s here) and the
     heights diverge by millimetres within the run.
     """
-    still, contacts_still = _slide_heights(_build_slider(device), 0.0, pgs_mode)
-    spinning, contacts_spin = _slide_heights(_build_slider(device), OMEGA_Y, pgs_mode)
+    still, contacts_still = _slide_heights(_build_slider(device), 0.0, pgs_mode, response)
+    spinning, contacts_spin = _slide_heights(_build_slider(device), OMEGA_Y, pgs_mode, response)
     test.assertGreater(min(contacts_still, contacts_spin), 0, "no contacts were generated")
     for label, heights in (("still", still), ("spinning", spinning)):
         test.assertLess(float(np.abs(heights - RADIUS).max()), 2e-3, f"{label} run left the ground support band")
@@ -374,6 +374,14 @@ add_function_test(
     "test_integrator_transport_identities",
     test_integrator_transport_identities,
     devices=[d for d in get_test_devices() if d.is_cpu],
+)
+# The propagation response solves the free sphere's contact as a body-space row.
+add_function_test(
+    TestFeatherPgsFreeRootPredictor,
+    "test_frictionless_slide_is_spin_invariant_propagation",
+    test_frictionless_slide_is_spin_invariant,
+    devices=devices,
+    response="propagation",
 )
 
 

@@ -15,7 +15,7 @@ import warp as wp
 
 from newton._src.solvers.feather_pgs.friction_patches import FrictionPatches
 from newton._src.solvers.feather_pgs.kernels import allocate_world_contact_slots, finalize_mf_constraint_counts
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 _UNBOUNDED = 2**31 - 1
 
@@ -32,13 +32,17 @@ def _point_friction(device):
     return patches
 
 
-def _allocate_overflowing_contacts(device, contact_count, row_capacity):
-    """Route ``contact_count`` free-body contacts into one world with ``row_capacity`` rows."""
+def _allocate_overflowing_contacts(device, contact_count, row_capacity, propagation=False):
+    """Route ``contact_count`` free-body contacts into one world with ``row_capacity`` rows.
+
+    With ``propagation`` the contacts go to the propagation rows of the propagation response.
+    """
     contact_slot = wp.full((contact_count,), -1, dtype=wp.int32, device=device)
     contact_path = wp.full((contact_count,), -1, dtype=wp.int32, device=device)
-    counter = wp.zeros((1,), dtype=wp.int32, device=device)
-    dropped = wp.zeros((1,), dtype=wp.int32, device=device)
-    first_rejected = wp.full((1,), _UNBOUNDED, dtype=wp.int32, device=device)
+    counters = [wp.zeros((1,), dtype=wp.int32, device=device) for _ in range(3)]
+    dropped = [wp.zeros((1,), dtype=wp.int32, device=device) for _ in range(3)]
+    first_rejected = [wp.full((1,), _UNBOUNDED, dtype=wp.int32, device=device) for _ in range(3)]
+    family = 2 if propagation else 1
     count = wp.zeros((1,), dtype=wp.int32, device=device)
     wp.launch(
         allocate_world_contact_slots,
@@ -62,6 +66,10 @@ def _allocate_overflowing_contacts(device, contact_count, row_capacity):
             wp.ones((1,), dtype=wp.int32, device=device),
             wp.ones((1,), dtype=wp.int32, device=device),
             1,
+            int(propagation),
+            0,
+            int(propagation),
+            row_capacity,
             row_capacity,
             row_capacity,
             wp.zeros((1,), dtype=wp.int32, device=device),
@@ -78,13 +86,17 @@ def _allocate_overflowing_contacts(device, contact_count, row_capacity):
             wp.full((contact_count,), -1, dtype=wp.int32, device=device),
             wp.full((contact_count,), -1, dtype=wp.int32, device=device),
             wp.zeros((contact_count,), dtype=wp.int32, device=device),
-            wp.zeros((1,), dtype=wp.int32, device=device),
+            counters[0],
             contact_path,
-            counter,
+            counters[1],
+            counters[2],
             wp.zeros((1,), dtype=wp.int32, device=device),
-            dropped,
-            wp.full((1,), _UNBOUNDED, dtype=wp.int32, device=device),
-            first_rejected,
+            dropped[0],
+            dropped[1],
+            dropped[2],
+            first_rejected[0],
+            first_rejected[1],
+            first_rejected[2],
             wp.zeros((2,), dtype=wp.int32, device=device),
         ],
         device=device,
@@ -92,7 +104,7 @@ def _allocate_overflowing_contacts(device, contact_count, row_capacity):
     wp.launch(
         finalize_mf_constraint_counts,
         dim=1,
-        inputs=[counter, row_capacity, 3, first_rejected],
+        inputs=[counters[family], row_capacity, 3, first_rejected[family]],
         outputs=[count],
         device=device,
     )
@@ -100,18 +112,18 @@ def _allocate_overflowing_contacts(device, contact_count, row_capacity):
         contact_slot.numpy(),
         contact_path.numpy(),
         int(count.numpy()[0]),
-        int(counter.numpy()[0]),
-        int(dropped.numpy()[0]),
+        int(counters[family].numpy()[0]),
+        int(dropped[family].numpy()[0]),
     )
 
 
-def test_overflow_keeps_every_accepted_contact_below_the_count(test, device):
+def test_overflow_keeps_every_accepted_contact_below_the_count(test, device, propagation=False):
     """Keep every accepted contact's rows inside the finalized count while thousands overflow."""
     row_capacity = 48
     for _ in range(20):
-        slot, path, count, counter, dropped = _allocate_overflowing_contacts(device, 3000, row_capacity)
+        slot, path, count, counter, dropped = _allocate_overflowing_contacts(device, 3000, row_capacity, propagation)
         accepted = slot >= 0
-        test.assertTrue(np.all(path[accepted] == 1))
+        test.assertTrue(np.all(path[accepted] == (2 if propagation else 1)))
         test.assertTrue(np.all(path[~accepted] == -1))
         test.assertEqual(count, 3 * int(accepted.sum()))
         test.assertLessEqual(count, row_capacity)
@@ -129,6 +141,13 @@ add_function_test(
     "test_overflow_keeps_every_accepted_contact_below_the_count",
     test_overflow_keeps_every_accepted_contact_below_the_count,
     devices=get_test_devices(),
+)
+add_function_test(
+    TestFeatherPGSRowAllocation,
+    "test_overflow_keeps_every_accepted_contact_below_the_count_propagation",
+    test_overflow_keeps_every_accepted_contact_below_the_count,
+    devices=get_cuda_test_devices(),
+    propagation=True,
 )
 
 

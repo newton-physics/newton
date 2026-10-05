@@ -1,13 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Link-link contacts between links of one articulation (dense articulated rows).
+"""Link-link contacts between links of one articulation (dense and propagation rows).
 
 A row whose two bodies are links of one articulation needs the cross response
 J_a (X_a H^-1 X_b^T) J_b^T in its effective mass. These tests build a "scissor"
 (two sibling links overlapping through their common parent), check that the
 contact is routed to the dense articulated rows, and compare the dense row
-diagonal against an analytic joint-space reference.
+diagonal against an analytic joint-space reference. With
+``propagation_same_articulation_rows`` the contact becomes a propagation row whose
+effective mass must include the same cross term.
 """
 
 import unittest
@@ -20,6 +22,7 @@ from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DENSE_PATH = 0
+PROPAGATION_PATH = 2
 PGS_CFM = 1.0e-6
 
 
@@ -180,13 +183,110 @@ def test_scissor_dense_diagonal_matches_reference(test, device, pgs_mode="matrix
     np.testing.assert_allclose(got, reference, rtol=1.0e-3, atol=1.0e-6)
 
 
+def _routed_slots(solver, contact_count, path):
+    """Map each contact routed to ``path`` in world 0 to its normal-row slot."""
+    paths = solver.contact_path.numpy()[:contact_count]
+    slots = solver.contact_slot.numpy()[:contact_count]
+    worlds = solver.contact_world.numpy()[:contact_count]
+    return {c: int(slots[c]) for c in range(contact_count) if paths[c] == path and slots[c] >= 0 and worlds[c] == 0}
+
+
+def test_default_routing_keeps_same_articulation_rows_dense(test, device):
+    """Keep same-articulation contacts on the dense rows under the default propagation response."""
+    model = _build_scissor_model(device)
+    solver = SolverFeatherPGS(model, pgs_iterations=0, pgs_cfm=PGS_CFM, articulated_contact_response="propagation")
+    _, contact_count = _step_once(model, solver)
+    test.assertGreater(len(_routed_slots(solver, contact_count, DENSE_PATH)), 0)
+    test.assertEqual(int(solver.propagation_constraint_count.numpy()[0]), 0)
+
+
+def test_flag_requires_propagation_mode(test, device):
+    """Reject same-articulation propagation rows without the response that solves them."""
+    model = _build_scissor_model(device)
+    for response in ("immediate", "propagation-fused"):
+        with test.subTest(response=response):
+            with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
+                SolverFeatherPGS(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
+
+
+def test_cross_response_effective_mass_matches_reference_operator(test, device):
+    """Match each same-articulation propagation row's ``J M^-1 J^T`` to the analytic operator.
+
+    The generalized row Jacobian is ``g = X_a^T j_a + X_b^T j_b`` from the solver's own
+    body-space rows; the reference effective mass is ``g^T H^-1 g``. Per-link responses
+    alone would miss the cross term between the two links.
+    """
+    model = _build_scissor_model(device)
+    reference = SolverFeatherPGS(model, pgs_iterations=0, pgs_cfm=PGS_CFM)
+    _, contact_count = _step_once(model, reference)
+    dense_slots = _routed_slots(reference, contact_count, DENSE_PATH)
+    test.assertGreater(len(dense_slots), 0)
+
+    solver = SolverFeatherPGS(
+        model,
+        pgs_iterations=0,
+        pgs_cfm=PGS_CFM,
+        articulated_contact_response="propagation",
+        propagation_same_articulation_rows=True,
+    )
+    state, routed_count = _step_once(model, solver)
+    test.assertEqual(routed_count, contact_count)
+    rows = _routed_slots(solver, contact_count, PROPAGATION_PATH)
+    test.assertEqual(set(rows), set(dense_slots), "same-articulation contacts were not routed to propagation rows")
+
+    count = int(solver.propagation_constraint_count.numpy()[0])
+    J_a = solver.propagation_J_a.numpy()[0, :count].astype(np.float64)
+    J_b = solver.propagation_J_b.numpy()[0, :count].astype(np.float64)
+    MiJt_a = solver.propagation_MiJt_a.numpy()[0, :count].astype(np.float64)
+    MiJt_b = solver.propagation_MiJt_b.numpy()[0, :count].astype(np.float64)
+    body_a = solver.propagation_body_a.numpy()[0, :count]
+    body_b = solver.propagation_body_b.numpy()[0, :count]
+    eff_mass_inv = solver.propagation_eff_mass_inv.numpy()[0, :count].astype(np.float64)
+    H, X = _analytic_H_and_X(model, state)
+    width = int(reference.world_dof_count.numpy()[0])
+    Y = reference.Y_world.numpy()[0].astype(np.float64)
+
+    checked = 0
+    for contact, row in sorted(rows.items()):
+        test.assertGreaterEqual(int(body_a[row]), 0)
+        test.assertGreaterEqual(int(body_b[row]), 0)
+        g = X[body_a[row]].T @ J_a[row] + X[body_b[row]].T @ J_b[row]
+        y_ref = np.linalg.solve(H, g)
+        # Pin frames and ordering first: the dense row response is H^-1 g up to the row sign.
+        y_got = Y[dense_slots[contact], :width]
+        err = min(np.linalg.norm(y_got - y_ref), np.linalg.norm(y_got + y_ref))
+        test.assertLess(err / max(np.linalg.norm(y_ref), 1.0e-12), 1.0e-3)
+
+        expected = float(g @ y_ref)
+        diagonal = float(J_a[row] @ MiJt_a[row] + J_b[row] @ MiJt_b[row])
+        test.assertAlmostEqual(1.0 / eff_mass_inv[row], diagonal + PGS_CFM, delta=1.0e-6 * (diagonal + 1.0))
+        if expected < 1.0e-6:
+            # Kinematically locked direction: the true diagonal is zero.
+            test.assertLess(abs(diagonal), 1.0e-6)
+            continue
+        checked += 1
+        test.assertLess(abs(diagonal - expected) / expected, 1.0e-3, f"contact {contact}: cross response term missing")
+    test.assertGreater(checked, 0, "no non-degenerate same-articulation rows were checked")
+
+
 class TestPropagationSameArticulation(unittest.TestCase):
     pass
 
 
 devices = get_cuda_test_devices()
-for _name in ("test_scissor_scene_produces_same_articulation_contact", "test_scissor_dense_diagonal_matches_reference"):
+for _name in (
+    "test_scissor_scene_produces_same_articulation_contact",
+    "test_scissor_dense_diagonal_matches_reference",
+    "test_default_routing_keeps_same_articulation_rows_dense",
+    "test_flag_requires_propagation_mode",
+    "test_cross_response_effective_mass_matches_reference_operator",
+):
     add_function_test(TestPropagationSameArticulation, _name, globals()[_name], devices=devices)
+# The dense reference rows also run in the split solve; the propagation responses are matrix-free only.
+for _name in (
+    "test_scissor_scene_produces_same_articulation_contact",
+    "test_scissor_dense_diagonal_matches_reference",
+):
     add_function_test(
         TestPropagationSameArticulation,
         f"{_name}_split",
