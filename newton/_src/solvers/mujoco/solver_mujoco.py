@@ -844,6 +844,102 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ]
 
     @staticmethod
+    def _mjc_tendon_type(prim) -> int:
+        """Resolve the USD tendon type, including the schema's spatial default."""
+        attr = prim.GetAttribute("mjc:type")
+        value = attr.Get() if attr else None
+        return {"fixed": 0, "spatial": 1}.get(str(value).lower() if value is not None else "spatial", -1)
+
+    @staticmethod
+    def _parse_mjc_spatial_tendon_wrap_rows(prim, context: dict[str, Any]) -> list[dict[str, Any]]:
+        """Decode a spatial path into wrap rows, rejecting invalid paths as a whole.
+
+        Path indices may repeat relationship targets. Segments and side-site indices
+        address this expanded path, while divisors are indexed by segment number.
+        """
+        if SolverMuJoCo._mjc_tendon_type(prim) != 1:
+            return []
+
+        def read_array(name: str) -> list:
+            attr = prim.GetAttribute(name)
+            value = attr.Get() if attr else None
+            return list(value) if value is not None else []
+
+        path_rel = prim.GetRelationship("mjc:path")
+        targets = list(path_rel.GetTargets()) if path_rel else []
+        indices = read_array("mjc:path:indices") or list(range(len(targets)))
+        segments = read_array("mjc:path:segments")
+        divisors = read_array("mjc:path:divisors")
+        side_rel = prim.GetRelationship("mjc:sideSites")
+        side_targets = list(side_rel.GetTargets()) if side_rel else []
+        side_indices = read_array("mjc:sideSites:indices")
+
+        if not indices:
+            raise ValueError("mjc:path has no wrap targets")
+        if segments and len(segments) != len(indices):
+            raise ValueError("mjc:path:segments must have one entry per path index")
+        if side_indices and len(side_indices) != len(indices):
+            raise ValueError("mjc:sideSites:indices must have one entry per path index")
+
+        builder = context["builder"]
+        shape_map = context["result"]["path_shape_map"]
+        rows = []
+        last_segment = 0
+        for i, path_index in enumerate(indices):
+            if path_index < 0 or path_index >= len(targets):
+                raise ValueError(f"mjc:path:indices entry {path_index} is out of range")
+
+            if segments:
+                segment = segments[i]
+                if segment < last_segment:
+                    raise ValueError("mjc:path:segments must be non-negative and non-decreasing")
+                if segment >= len(divisors):
+                    raise ValueError(f"mjc:path:divisors has no entry for segment {segment}")
+                divisor = float(divisors[segment])
+                if not math.isfinite(divisor) or divisor <= 0.0:
+                    raise ValueError(f"mjc:path:divisors entry for segment {segment} must be finite and positive")
+                if segment > last_segment:
+                    rows.append({"mujoco:tendon_wrap_type": 2, "mujoco:tendon_wrap_prm": divisor})
+                last_segment = segment
+
+            shape_path = str(targets[path_index])
+            shape_index = shape_map.get(shape_path)
+            if shape_index is None:
+                raise ValueError(f"wrap target {shape_path} is not an imported shape")
+            is_site = bool(builder.shape_flags[shape_index] & ShapeFlags.SITE)
+            if not is_site and builder.shape_type[shape_index] not in (GeoType.SPHERE, GeoType.CYLINDER):
+                raise ValueError(f"wrap geometry {shape_path} must be a sphere or cylinder")
+
+            side_shape = -1
+            if side_indices:
+                side_index = side_indices[i]
+                if side_index < -1 or side_index >= len(side_targets):
+                    raise ValueError(f"mjc:sideSites:indices entry {side_index} is out of range")
+                if not is_site and side_index >= 0:
+                    side_path = str(side_targets[side_index])
+                    side_shape = shape_map.get(side_path, -1)
+                    if side_shape < 0 or not builder.shape_flags[side_shape] & ShapeFlags.SITE:
+                        raise ValueError(f"side site {side_path} is not an imported site")
+
+            rows.append(
+                {
+                    "mujoco:tendon_wrap_type": 0 if is_site else 1,
+                    "mujoco:tendon_wrap_shape": shape_index,
+                    "mujoco:tendon_wrap_sidesite": side_shape,
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _expand_mjc_tendon_wrap_rows(prim, context: dict[str, Any]) -> Iterable[dict[str, Any]]:
+        """Expand one spatial MjcTendon into wrap rows, warning if its path is invalid."""
+        try:
+            return SolverMuJoCo._parse_mjc_spatial_tendon_wrap_rows(prim, context)
+        except ValueError as error:
+            warnings.warn(f"Skipping spatial MjcTendon {prim.GetPath()}: {error}.", stacklevel=2)
+            return []
+
+    @staticmethod
     def _dense_custom_attribute_values(builder: ModelBuilder, key: str) -> list[Any]:
         """Return a default-filled list for one custom-frequency attribute."""
         attribute = builder.custom_attributes[key]
@@ -1131,6 +1227,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ModelBuilder.CustomFrequency(
                 name="tendon_wrap",
                 namespace="mujoco",
+                usd_prim_filter=cls._is_mjc_tendon_prim,
+                usd_entry_expander=cls._expand_mjc_tendon_wrap_rows,
                 articulation_owner_attribute="mujoco:tendon_wrap_articulation",
                 articulation_owner_resolver=cls._resolve_mujoco_tendon_wrap_owners,
             )
@@ -2654,6 +2752,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             joint_entries = cls._parse_mjc_fixed_tendon_joint_entries(context["prim"], context_builder)
             return len(joint_entries)
 
+        def resolve_tendon_wrap_adr(_: Any, context: dict[str, Any]) -> int:
+            return resolve_context_builder(context)._custom_frequency_counts.get("mujoco:tendon_wrap", 0)
+
+        def resolve_tendon_wrap_num(_: Any, context: dict[str, Any]) -> int:
+            try:
+                return len(cls._parse_mjc_spatial_tendon_wrap_rows(context["prim"], context))
+            except ValueError:
+                # The wrap-row expander emits the warning once per invalid tendon.
+                return 0
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_articulation",
@@ -2888,6 +2996,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
+                usd_attribute_name="*",
+                usd_value_transformer=lambda _, context: cls._mjc_tendon_type(context["prim"]),
             )
         )
         # Addressing into wrap path arrays (one per tendon, used by spatial tendons)
@@ -2899,6 +3009,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 default=0,
                 namespace="mujoco",
                 references="mujoco:tendon_wrap",
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_tendon_wrap_adr,
             )
         )
         builder.add_custom_attribute(
@@ -2908,6 +3020,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_tendon_wrap_num,
             )
         )
 
@@ -3288,8 +3402,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 joint_start = int(tendon_joint_adr[i])
                 joint_num = int(tendon_joint_num[i])
                 if joint_num <= 0:
-                    if wp.config.log_level <= wp.LOG_DEBUG:
-                        print(f"Warning: Skipping tendon {i} during MuJoCo export because it has no joint wraps.")
+                    warnings.warn(
+                        f"Skipping fixed tendon '{tendon_label}' during MuJoCo export because it has no joint wraps.",
+                        stacklevel=2,
+                    )
                     continue
 
                 if joint_start < 0 or joint_start + joint_num > joint_entry_count:
@@ -3330,11 +3446,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     fixed_wraps.append((joint_name, coef))
 
                 if len(fixed_wraps) == 0:
-                    if wp.config.log_level <= wp.LOG_DEBUG:
-                        print(
-                            f"Warning: Skipping tendon {i} during MuJoCo export "
-                            "because no valid joint wraps were resolved."
-                        )
+                    warnings.warn(
+                        f"Skipping fixed tendon '{tendon_label}' during MuJoCo export "
+                        "because no valid joint wraps were resolved.",
+                        stacklevel=2,
+                    )
                     continue
 
             elif ttype == 1:
