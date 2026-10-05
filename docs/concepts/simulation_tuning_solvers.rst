@@ -237,15 +237,19 @@ repository examples spend tuning effort, not a shared solver API.
        ``contact_compliance``, ``parallel_tree``, ``enable_sleeping``,
        ``sleep_linear_threshold``, ``sleep_angular_threshold``,
        ``sleep_quiet_time``, ``sleep_skip_constraints``,
-       ``articulated_contact_response``, ``propagation_same_articulation_rows``.
+       ``articulated_contact_response``, ``propagation_same_articulation_rows``,
+       ``contact_shared_anchor``, ``contact_friction_shared_anchor``,
+       ``row_watermark``, ``pgs_schedule``, ``use_parallel_streams``,
+       ``double_buffer``.
      - Experimental. The default ``pgs_mode="matrix_free"`` requires CUDA and
        implements every option. ``pgs_mode="split"`` runs on CPU and CUDA (pass it
        explicitly on CPU) and stores a dense ``dense_max_constraints`` squared
        Delassus matrix per world; it raises for joint velocity limits,
        ``drive_mode="physx_pgs"``, mimic joints, loop-closing joints, friction
        patches, contact regularization, velocity-only iterations, warm start,
-       restitution, contact torsion, contact compliance, sleeping and the
-       propagation contact responses. Joint limits are enforced only with
+       restitution, contact torsion, contact compliance, sleeping, the
+       propagation contact responses and the non-interleaved ``pgs_schedule``
+       values. Joint limits are enforced only with
        ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``pgs_iterations`` reduce residual penetration and
@@ -311,6 +315,9 @@ repository examples spend tuning effort, not a shared solver API.
        articulation tree. In ``"propagation"`` every contact row, free bodies
        included, shares one family of ``mf_max_constraints +
        dense_max_constraints`` rows per world.
+       ``use_parallel_streams`` and ``double_buffer`` overlap the work of
+       articulation-size groups and of consecutive steps without changing results;
+       measure the full step before relying on them.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.
