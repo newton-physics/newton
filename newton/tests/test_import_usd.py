@@ -10636,6 +10636,36 @@ def Xform "Body" (
             self.assertAlmostEqual(channel, want, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_rigid_shape_invalid_display_color_is_clamped_or_ignored(self):
+        """Clamp an out-of-range rigid-shape displayColor and ignore a non-finite one."""
+        from pxr import Usd, UsdGeom
+
+        cases = (
+            ("out_of_range", (1.5, -0.25, 0.5), "Clamping imported color", color_linear_to_srgb((1.0, 0.0, 0.5))),
+            # A dropped color falls back to the neutral unmaterialed color.
+            (
+                "non_finite",
+                (float("nan"), 0.5, 0.5),
+                "Ignoring non-finite imported color",
+                color_linear_to_srgb((0.18, 0.18, 0.18)),
+            ),
+        )
+        for name, authored_color, message, expected_color in cases:
+            with self.subTest(name=name):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.Xform.Define(stage, "/World")
+                cube = UsdGeom.Cube.Define(stage, "/World/Colored")
+                cube.GetDisplayColorAttr().Set([authored_color])
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, message):
+                    result = builder.add_usd(stage, load_visual_shapes=True)
+
+                color = builder.shape_color[result["path_shape_map"]["/World/Colored"]]
+                np.testing.assert_allclose(color, expected_color, atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_display_color_inherited_from_ancestor(self):
         """Verify a constant displayColor authored on an ancestor reaches its descendants.
 
@@ -11008,6 +11038,34 @@ def Xform "Body" (
         loaded_mesh = usd.get_mesh(mesh.GetPrim())
 
         self.assertIsNone(loaded_mesh.opacity)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_invalid_display_color_is_clamped_or_ignored(self):
+        """Clamp an out-of-range displayColor in the mesh from get_mesh and drop a non-finite one."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        cases = (
+            ("out_of_range", (1.5, -0.25, 0.5), "Clamping imported color", color_linear_to_srgb((1.0, 0.0, 0.5))),
+            ("non_finite", (float("nan"), 0.5, 0.5), "Ignoring non-finite imported color", None),
+        )
+        for name, authored_color, message, expected_color in cases:
+            with self.subTest(name=name):
+                stage = Usd.Stage.CreateInMemory()
+                mesh = UsdGeom.Mesh.Define(stage, "/VisualMesh")
+                mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
+                mesh.CreateFaceVertexCountsAttr().Set([3])
+                mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+                UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+                    "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
+                ).Set([authored_color])
+
+                with self.assertWarnsRegex(UserWarning, message):
+                    loaded_mesh = usd.get_mesh(mesh.GetPrim())
+
+                if expected_color is None:
+                    self.assertIsNone(loaded_mesh.color)
+                else:
+                    np.testing.assert_allclose(loaded_mesh.color, expected_color, atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_varying_display_opacity_uses_first_value_and_warns(self):

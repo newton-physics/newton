@@ -78,6 +78,48 @@ class TestUSDDeformableCloth(unittest.TestCase):
         np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (2, 1)), atol=1e-6, rtol=1e-6)
         np.testing.assert_allclose(builder.tri_opacity, np.full(2, 0.44), atol=1e-6, rtol=1e-6)
 
+    def test_cloth_material_appearance_imports_to_triangles(self):
+        """Import bound material color and opacity onto every generated triangle."""
+        from pxr import Sdf, UsdShade
+
+        stage = _deformable_stage()
+        mesh = _add_cloth_mesh(stage, "/World/Cloth")
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+        material = UsdShade.Material.Define(stage, "/World/ClothLook")
+        shader = UsdShade.Shader.Define(stage, "/World/ClothLook/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.8, 0.2, 0.1))
+        shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(0.37)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(builder.tri_count, 2)
+        expected_color = newton.utils.color_linear_to_srgb((0.8, 0.2, 0.1))
+        np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (2, 1)), atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(builder.tri_opacity, np.full(2, 0.37), atol=1e-6, rtol=1e-6)
+
+    def test_cloth_out_of_range_display_color_is_clamped(self):
+        """Clamp an HDR cloth display color instead of aborting the import."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        mesh = _add_cloth_mesh(stage, "/World/Cloth")
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
+        ).Set([(1.5, 0.5, 0.5)])
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "Clamping imported color"):
+            builder.add_usd(stage)
+
+        self.assertEqual(builder.tri_count, 2)
+        expected_color = newton.utils.color_linear_to_srgb((1.0, 0.5, 0.5))
+        np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (2, 1)), atol=1e-6, rtol=1e-6)
+
     def test_cloth_left_handed_orientation_flips_winding(self):
         """Verify that left-handed cloth flips winding like the rigid-mesh path."""
         from pxr import UsdGeom
