@@ -1298,6 +1298,8 @@ class SolverFeatherPGS(SolverBase):
         enable_bilateral_preelimination: bool = False,
         bilateral_preelimination_include_mimics: bool = True,
         parallel_tree: bool = False,
+        use_parallel_streams: bool = False,
+        double_buffer: bool = False,
         friction_anchor_beta: float | None = None,
         pgs_contact_regularization: float = 0.0,
         pgs_velocity_iterations: int = 0,
@@ -1446,6 +1448,15 @@ class SolverFeatherPGS(SolverBase):
                 Unbranched articulations, models whose joints are not ordered parent before
                 child, and CPU devices keep the serial traversal. Broad trees can benefit; narrow trees can be
                 slower, so measure the full step before enabling it.
+            use_parallel_streams: Run the factorization, unconstrained solve and response
+                kernels of each articulation-size group on a CUDA stream of its own, so groups
+                of different sizes overlap. Results are unchanged; CPU devices and models with
+                one size group ignore it.
+            double_buffer: Keep two sets of the grouped mass-matrix and Jacobian buffers and
+                clear the set a step used on a separate CUDA stream while the next step runs
+                on the other set. Results are unchanged; CPU devices and the sparse mass
+                factors ignore it. To capture :meth:`step` in a CUDA graph, call
+                :meth:`seed_double_buffer_events` inside the capture before the first step.
             friction_anchor_beta: Position-correction gain of persistent friction patches;
                 ``0`` selects point friction. ``None`` selects ``0.2`` with
                 ``pgs_mode="matrix_free"``, and point friction with ``pgs_mode="split"``,
@@ -1989,6 +2000,8 @@ class SolverFeatherPGS(SolverBase):
         self._setup_passive_joint_forces(model)
         self._compute_world_response_dof_mapping(model)
         self.parallel_tree = bool(parallel_tree)
+        self.use_parallel_streams = bool(use_parallel_streams)
+        self.double_buffer = bool(double_buffer)
         # The cooperative traversal synchronizes warp lanes, so CPU devices keep the serial one.
         self._tree_plan = (
             _FeatherPGSTreePlan.build(model, self.articulation_joint_end.numpy())
@@ -2055,6 +2068,7 @@ class SolverFeatherPGS(SolverBase):
         )
         self._scatter_armature_to_groups()
         self._init_tiled_kernels(model)
+        self._init_streams(model)
         # Free-body groups read their body inertia directly; every other responding
         # articulation reads composite inertias.
         response_dof_count = self._model_plan.response_dof_count
@@ -3847,6 +3861,15 @@ class SolverFeatherPGS(SolverBase):
                 self.Linv_by_size[size] = wp.zeros((n_arts, size, size), dtype=wp.float32, device=device)
             self.tau_by_size[size] = wp.zeros((n_arts, size, 1), dtype=wp.float32, device=device)
             self.qdd_by_size[size] = wp.zeros((n_arts, size, 1), dtype=wp.float32, device=device)
+        # Double buffering ping-pongs H and J; sparse factors keep their own storage.
+        self._double_buffered = bool(
+            self.double_buffer and device.is_cuda and self.size_groups and self._sparse_mass_matrix_size is None
+        )
+        self._H_bufs = None
+        self._J_bufs = None
+        if self._double_buffered:
+            self._H_bufs = (self.H_by_size, {size: wp.zeros_like(h) for size, h in self.H_by_size.items()})
+            self._J_bufs = (self.J_by_size, {size: wp.zeros_like(j) for size, j in self.J_by_size.items()})
 
         max_contacts = int(model.rigid_contact_max)
         if max_contacts <= 0:
@@ -4459,6 +4482,8 @@ class SolverFeatherPGS(SolverBase):
             ):
                 raise ValueError("Experimental sleeping requires distinct input/output states")
             self.sleeping.begin(state_in, control, contacts)
+        if self._double_buffered:
+            self._select_double_buffer()
         state_aug = self._prepare_augmented_state(state_in)
         self._begin_dense_rows()
 
@@ -4468,7 +4493,7 @@ class SolverFeatherPGS(SolverBase):
         self._stage1_crba(state_aug)
 
         # Stage 2: factor the augmented mass matrix of every articulation group.
-        for size in self.size_groups:
+        for size in self._for_sizes():
             if size == self._sparse_mass_matrix_size:
                 continue
             if self._execution_plan.use_diagonal_mass(size):
@@ -4488,7 +4513,7 @@ class SolverFeatherPGS(SolverBase):
 
         # Stage 3: unconstrained acceleration and velocity prediction.
         state_aug.joint_qdd.zero_()
-        for size in self.size_groups:
+        for size in self._for_sizes():
             if size == self._sparse_mass_matrix_size:
                 wp.launch(
                     solve_sparse_mass_matrix,
@@ -4603,6 +4628,8 @@ class SolverFeatherPGS(SolverBase):
                 self._friction_patches.previous.valid.zero_()
         if self.pgs_warmstart:
             self._snapshot_warmstart(contacts, dt)
+        if self._double_buffered:
+            self._clear_double_buffer()
         if self.row_watermark:
             self._accumulate_row_watermarks(contacts)
         if self._device_torsion is not None:
@@ -4611,6 +4638,93 @@ class SolverFeatherPGS(SolverBase):
                 self.validate_contact_torsion()
         self._step += 1
         return state_out
+
+    def _init_streams(self, model: Model) -> None:
+        """Create the per-size-group streams and the double-buffer memset stream."""
+        self._size_streams = (
+            {size: wp.Stream(model.device) for size in self.size_groups}
+            if self.use_parallel_streams and model.device.is_cuda and len(self.size_groups) > 1
+            else {}
+        )
+        self._memset_stream = wp.Stream(model.device) if self._double_buffered else None
+        self._buffer_index = 0
+        # Per buffer set: the event that ends its clearing and the capture it was recorded in.
+        self._memset_done_event = [None, None]
+        self._memset_done_capture = [None, None]
+        streams = [*self._size_streams.values(), self._memset_stream]
+        # Kernels on these streams can still run when the solver is released; wait for them first.
+        weakref.finalize(self, _synchronize_streams, [stream for stream in streams if stream is not None])
+
+    def _for_sizes(self):
+        """Yield every size group, each on its own stream with ``use_parallel_streams``.
+
+        The groups' streams wait for the work enqueued so far, and the main stream waits for
+        every group's stream once the loop ends.
+        """
+        if not self._size_streams:
+            yield from self.size_groups
+            return
+        main_stream = wp.get_stream(self.model.device)
+        start = main_stream.record_event()
+        try:
+            for size in self.size_groups:
+                stream = self._size_streams[size]
+                stream.wait_event(start)
+                with wp.ScopedStream(stream, sync_enter=False):
+                    yield size
+        finally:
+            for stream in self._size_streams.values():
+                main_stream.wait_event(stream.record_event())
+
+    def seed_double_buffer_events(self) -> None:
+        """Seed the double-buffer waits of the first two steps of a CUDA graph capture.
+
+        With ``double_buffer``, call this inside the capture before the first :meth:`step`;
+        each step waits for the clearing of its buffer set, which the seeded events stand in
+        for. Without double buffering it does nothing.
+        """
+        if self._memset_stream is None:
+            return
+        main_stream = wp.get_stream(self.model.device)
+        self._memset_done_event = [main_stream.record_event(), main_stream.record_event()]
+        self._memset_done_capture = [self._current_capture()] * 2
+
+    def _current_capture(self):
+        """Return the graph the current stream captures into, or ``None`` outside a capture."""
+        stream = wp.get_stream(self.model.device)
+        return self.model.device.captures.get(stream) if stream.is_capturing else None
+
+    def _select_double_buffer(self) -> None:
+        """Make the current buffer set active and wait until it was cleared."""
+        index = self._buffer_index
+        self.H_by_size = self._H_bufs[index]
+        self.J_by_size = self._J_bufs[index]
+        if self._jy_world_aliased:
+            self.J_world = self.J_by_size[self.size_groups[0]]
+        event = self._memset_done_event[index]
+        capture = self._current_capture()
+        if event is not None and self._memset_done_capture[index] is not capture:
+            if capture is not None:
+                raise RuntimeError(
+                    "double_buffer requires seed_double_buffer_events() inside the capture before the first step"
+                )
+            # The capture's clearing ran in its graph launches, ordered before this step.
+            event = None
+        if event is not None:
+            wp.get_stream(self.model.device).wait_event(event)
+
+    def _clear_double_buffer(self) -> None:
+        """Clear the buffer set of this step on the memset stream and switch to the other set."""
+        index = self._buffer_index
+        with wp.ScopedStream(self._memset_stream):
+            for size in self.size_groups:
+                # A step without a global mass refresh wrote no mass matrices.
+                if self._mass_update_global_flag:
+                    self._H_bufs[index][size].zero_()
+                self._J_bufs[index][size].zero_()
+        self._memset_done_event[index] = self._memset_stream.record_event()
+        self._memset_done_capture[index] = self._current_capture()
+        self._buffer_index = 1 - index
 
     def _accumulate_row_watermarks(self, contacts: Contacts | None) -> None:
         """Fold this step's row counts into the high-water marks."""
@@ -4860,7 +4974,7 @@ class SolverFeatherPGS(SolverBase):
         """Build the matrix-free responses and right-hand sides and run the fused solve into ``v_out``."""
         model = self.model
         if self._sparse_mass_matrix_size is None:
-            for size in self.size_groups:
+            for size in self._for_sizes():
                 if self._execution_plan.use_diagonal_mass(size):
                     self._stage4_hinv_jt_diagonal(size)
                 elif self._execution_plan.use_tiled_hinv_jt(size):
@@ -5075,7 +5189,7 @@ class SolverFeatherPGS(SolverBase):
         else:
             self.C.zero_()
             self.diag.zero_()
-            for size in self.size_groups:
+            for size in self._for_sizes():
                 if self._execution_plan.use_tiled_hinv_jt(size):
                     self._stage4_hinv_jt_tiled(size)
                 else:
@@ -5757,6 +5871,7 @@ class SolverFeatherPGS(SolverBase):
         """Build the joint-space mass matrix of articulations due for a refresh and add drive terms."""
         model = self.model
         global_flag = 1 if ((self._step % self.update_mass_matrix_interval) == 0 or self._force_mass_update) else 0
+        self._mass_update_global_flag = global_flag
         wp.launch(
             build_mass_update_mask,
             dim=model.articulation_count,
@@ -5829,7 +5944,7 @@ class SolverFeatherPGS(SolverBase):
             if size == self._sparse_mass_matrix_size:
                 self._stage1_sparse_factor(state_aug, size)
                 continue
-            if global_flag:
+            if global_flag and not self._double_buffered:
                 self.H_by_size[size].zero_()
             wp.launch(
                 crba_fill_par_dof,
@@ -6234,7 +6349,8 @@ class SolverFeatherPGS(SolverBase):
             contact_response = sleeping.contact_response_mask
             frozen_bodies = sleeping.patch_frozen_bodies
         # Rows are rebuilt every step; clear the grouped Jacobians once before any family writes.
-        if sparse_size is None:
+        # Double-buffered Jacobians were cleared on the memset stream after their last use.
+        if sparse_size is None and not self._double_buffered:
             for size in self.size_groups:
                 self.J_by_size[size].zero_()
 
@@ -12380,3 +12496,9 @@ def _get_refresh_propagation_tree_body_qd_warp_kernel(size: int, max_joints: int
     refresh_propagation_tree_body_qd_warp_template.__name__ = name
     refresh_propagation_tree_body_qd_warp_template.__qualname__ = name
     return wp.kernel(enable_backward=False, module="unique")(refresh_propagation_tree_body_qd_warp_template)
+
+
+def _synchronize_streams(streams: list) -> None:
+    """Wait for the work queued on ``streams``."""
+    for stream in streams:
+        wp.synchronize_stream(stream)
