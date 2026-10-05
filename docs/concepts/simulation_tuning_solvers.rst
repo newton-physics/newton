@@ -227,17 +227,20 @@ repository examples spend tuning effort, not a shared solver API.
        ``joint_limit_activation_gap``, ``enable_joint_velocity_limits``,
        ``velocity_limit_activation_fraction``,
        ``dense_max_constraints``, ``mf_max_constraints``,
-       ``warn_constraint_overflow``.
+       ``warn_constraint_overflow``, ``drive_mode``,
+       ``fuse_joint_velocity_limits``.
      - Experimental. The default ``pgs_mode="split"`` runs on CPU and CUDA and
        stores a dense ``dense_max_constraints`` squared Delassus matrix per world;
        ``pgs_mode="matrix_free"`` requires CUDA and is needed for joint velocity
-       limits. Joint limits are enforced only with ``enable_joint_limits=True``
-       (off by default). Contacts and joint limits are hard
+       limits and ``drive_mode="physx_pgs"``. Joint limits are enforced only with
+       ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``pgs_iterations`` reduce residual penetration and
        slip, and ``pgs_beta`` sets how much position error is corrected per
-       step. Joint drives are integrated implicitly, which keeps large drive
-       gains stable at ordinary ``dt``. Rows beyond ``dense_max_constraints``
+       step. Joint drives are integrated implicitly by default, which keeps
+       large drive gains stable at ordinary ``dt``; ``drive_mode="physx_pgs"``
+       solves them as PGS rows together with contacts and limits instead, and
+       each driven DOF then uses one row of ``dense_max_constraints``. Rows beyond ``dense_max_constraints``
        (articulated bodies) or ``mf_max_constraints`` (free bodies) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world
        and a final entry for global articulations); call

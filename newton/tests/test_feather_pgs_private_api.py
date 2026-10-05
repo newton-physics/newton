@@ -75,7 +75,6 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
             "enable_contact_friction",
             "contact_compliance",
             "articulated_contact_response",
-            "drive_mode",
             "friction_mode",
             "pgs_warmstart",
         ):

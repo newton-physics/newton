@@ -39,6 +39,8 @@ def _allocated_joint_velocity_slots(device, qd: float, *, fraction: float, qdot_
             wp.array([qdot_max], dtype=wp.float32, device=device),
             wp.array([qd], dtype=wp.float32, device=device),
             fraction,
+            wp.array([-1], dtype=wp.int32, device=device),
+            0,
             wp.array([0], dtype=wp.int32, device=device),
             8,
         ],

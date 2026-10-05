@@ -21,10 +21,12 @@ from .kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
+    PGS_CONSTRAINT_TYPE_JOINT_TARGET,
     PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
     _compute_body_net_wrench,
     accumulate_group_diag_worlds,
     allocate_joint_velocity_limit_slots,
+    allocate_physx_drive_slots,
     allocate_rigid_velocity_limit_slots,
     allocate_world_contact_slots,
     apply_augmented_mass_diagonal_grouped,
@@ -43,6 +45,7 @@ from .kernels import (
     compute_mf_body_Hinv,
     compute_mf_effective_mass_and_rhs,
     compute_mf_world_dof_offsets,
+    compute_physx_pgs_drive_desc,
     compute_spatial_inertia,
     compute_velocity_predictor,
     compute_world_contact_bias,
@@ -64,6 +67,7 @@ from .kernels import (
     pgs_solve_loop,
     pgs_solve_mf_loop,
     populate_joint_velocity_limit_J_for_size,
+    populate_physx_drive_J_for_size,
     populate_rigid_velocity_limit_rows,
     populate_world_J_for_compact_size,
     populate_world_J_for_size,
@@ -488,14 +492,19 @@ def _use_resident_mfgs_metadata(
     mf_max_constraints: int,
     max_world_dofs: int,
     max_shared_memory: int,
+    *,
+    has_drive_rows: bool = False,
+    fuse_vel_limits: bool = False,
 ) -> bool:
     """Select resident dense-row metadata for compact solver shapes.
 
     Resident row metadata removes repeated global loads across PGS iterations,
     but larger shapes lose more throughput from the resulting occupancy drop.
     Keep at most one 4-KiB metadata working set resident and stream larger sets.
+    Drive rows add four per-row arrays and the fused velocity-limit clamp one more.
     """
-    metadata_bytes = 4 * max_constraints * 4
+    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
+    metadata_bytes = 4 * max_constraints * metadata_arrays
     base_shared_bytes = 4 * (max_world_dofs + max_constraints + mf_max_constraints)
     total_shared_bytes = _MFGS_TILE_SHARED_STORAGE_BYTES + base_shared_bytes + metadata_bytes
     return metadata_bytes <= _MFGS_RESIDENT_METADATA_MAX_BYTES and total_shared_bytes <= max_shared_memory
@@ -682,12 +691,16 @@ class SolverFeatherPGS(SolverBase):
 
     - Joints: PRISMATIC, REVOLUTE, BALL, FIXED, D6 and root FREE / DISTANCE joints.
     - Joint drives: :attr:`~newton.Model.joint_target_ke` and
-      :attr:`~newton.Model.joint_target_kd` on PRISMATIC, REVOLUTE and D6 DOFs are
-      integrated implicitly by folding ``dt * kd + dt^2 * ke`` into the mass matrix.
-      Only the explicit drive force is clamped to :attr:`~newton.Model.joint_effort_limit`;
-      the implicit stiffness and damping response is unbounded, so under a large external
-      load the drive reaction can exceed the limit. :attr:`~newton.Model.joint_armature`
-      and :attr:`~newton.Model.joint_damping` are applied.
+      :attr:`~newton.Model.joint_target_kd` on PRISMATIC, REVOLUTE and D6 DOFs. By
+      default (``drive_mode="augmented"``) they are integrated implicitly by folding
+      ``dt * kd + dt^2 * ke`` into the mass matrix; only the explicit drive force is
+      clamped to :attr:`~newton.Model.joint_effort_limit`, and the implicit stiffness and
+      damping response is unbounded, so under a large external load the drive reaction
+      can exceed the limit. ``drive_mode="physx_pgs"`` (``pgs_mode="matrix_free"`` only)
+      instead solves one PGS row per driven DOF with the PhysX articulation force-drive
+      update and clamps its impulse, which bounds the complete reaction.
+      :attr:`~newton.Model.joint_armature` and :attr:`~newton.Model.joint_damping` are
+      applied.
     - Joint limits: with ``enable_joint_limits=True``, every finite
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
@@ -865,6 +878,8 @@ class SolverFeatherPGS(SolverBase):
         dense_max_constraints: int = 32,
         mf_max_constraints: int = 512,
         warn_constraint_overflow: bool = True,
+        drive_mode: Literal["augmented", "physx_pgs"] = "augmented",
+        fuse_joint_velocity_limits: bool = True,
     ):
         """Create a FeatherPGS solver for a finalized model.
 
@@ -885,7 +900,8 @@ class SolverFeatherPGS(SolverBase):
             pgs_beta: Baumgarte position-correction factor of contact and joint-limit rows,
                 as a fraction of the position error removed per step.
             pgs_cfm: Constraint force mixing added to every row's effective-mass diagonal,
-                which regularizes redundant rows.
+                which regularizes redundant rows. Drive rows of ``drive_mode="physx_pgs"`` use
+                their exact unit response instead.
             pgs_omega: Successive over-relaxation factor of the PGS sweep.
             update_mass_matrix_interval: Rebuild and refactor the mass matrix every this many
                 calls to :meth:`step`; ``1`` rebuilds it every step. Larger values reuse a
@@ -921,15 +937,37 @@ class SolverFeatherPGS(SolverBase):
                 samples the velocity before the solve, so a DOF that crosses the threshold
                 during a step is clamped one step later. Must be in ``[0, 1]`` or ``inf``.
             dense_max_constraints: Capacity of rows involving articulated bodies (contacts,
-                enabled joint limits and joint velocity limits) per world. Rows beyond it are
-                dropped and reported, see :attr:`constraint_overflow`. The split solve also
-                stores a ``dense_max_constraints x dense_max_constraints`` Delassus matrix
-                per world.
+                enabled joint limits, joint velocity limits and, with ``drive_mode="physx_pgs"``,
+                joint drives) per world. Rows beyond it are dropped and reported, see
+                :attr:`constraint_overflow`. The split solve also stores a
+                ``dense_max_constraints x dense_max_constraints`` Delassus matrix per world.
             mf_max_constraints: Capacity of free-body contact rows per world. Rows beyond it
                 are dropped and reported, see :attr:`constraint_overflow`.
             warn_constraint_overflow: Print a device-side warning the first time a world
                 exceeds a row capacity. The warning does not synchronize the host and is
                 compatible with CUDA graph capture.
+            drive_mode: Joint drive formulation. ``"augmented"`` integrates drives
+                implicitly in the mass matrix. ``"physx_pgs"`` (``pgs_mode="matrix_free"``
+                only) adds one dense PGS row per driven DOF (positive ``joint_target_ke`` or
+                ``joint_target_kd``) whose impulse
+                follows the PhysX articulation force-drive update in every iteration, so
+                drives are solved together with contacts and limits instead of before them.
+                Without contacts or limits and below the effort limit, the converged row
+                reproduces the implicit drive of ``"augmented"``. Under effort saturation
+                the two differ: ``"augmented"`` clamps the explicit drive force before the
+                implicit solve, while the row clamps its accumulated impulse at
+                ``joint_effort_limit * dt``. Drive rows are allocated first in each world, count against
+                ``dense_max_constraints``, and a drive whose row does not fit is not applied
+                (the world is flagged in :attr:`constraint_overflow`).
+            fuse_joint_velocity_limits: With ``drive_mode="physx_pgs"`` and
+                ``enable_joint_velocity_limits``, enforce the velocity limit of each driven DOF
+                with a clamp of its velocity at the end of every iteration (after the
+                contact rows, like the velocity-limit rows it replaces) instead of two
+                velocity-limit rows, and exclude it from the pre-solve velocity scaling.
+                Limited DOFs without a drive row keep their rows. In every other
+                configuration, including ``velocity_limit_activation_fraction=inf``, the
+                option has no effect; :attr:`fuse_joint_velocity_limits` reports whether
+                the clamp is active.
         """
         super().__init__(model)
         if pgs_mode not in ("matrix_free", "split"):
@@ -941,6 +979,8 @@ class SolverFeatherPGS(SolverBase):
             )
         if pgs_mode == "split" and enable_joint_velocity_limits:
             raise NotImplementedError("enable_joint_velocity_limits=True requires pgs_mode='matrix_free'")
+        if pgs_mode == "split" and drive_mode == "physx_pgs":
+            raise NotImplementedError("drive_mode='physx_pgs' requires pgs_mode='matrix_free'")
         if model.requires_grad:
             raise NotImplementedError("SolverFeatherPGS does not support gradients (model.requires_grad=True).")
         _validate_supported_model(model)
@@ -974,6 +1014,18 @@ class SolverFeatherPGS(SolverBase):
         if self.mf_max_constraints < 1:
             raise ValueError("mf_max_constraints must be >= 1")
         self.warn_constraint_overflow = bool(warn_constraint_overflow)
+        if drive_mode not in ("augmented", "physx_pgs"):
+            raise ValueError(f"drive_mode must be 'augmented' or 'physx_pgs', got {drive_mode!r}")
+        self.drive_mode = drive_mode
+        self._has_drive_rows = drive_mode == "physx_pgs" and model.joint_dof_count > 0
+        # The fused clamp replaces the velocity-limit rows of driven DOFs, so it only
+        # engages where both exist; an inf activation fraction disables velocity limits.
+        self.fuse_joint_velocity_limits = (
+            bool(fuse_joint_velocity_limits)
+            and self._has_drive_rows
+            and self.enable_joint_velocity_limits
+            and not np.isinf(self.velocity_limit_activation_fraction)
+        )
 
         self.rigid_body_angular_damping = getattr(model, "rigid_body_angular_damping", None)
         if self.rigid_body_angular_damping is None:
@@ -1892,6 +1944,13 @@ class SolverFeatherPGS(SolverBase):
             self.velocity_limit_slot = None
             self.velocity_limit_sign = None
 
+        # Dense drive row of each DOF (drive_mode="physx_pgs"), or -1. Allocated with the
+        # constraint rows; the pre-solve velocity scaling reads the current step's slots.
+        if self._has_drive_rows:
+            self.drive_slot = wp.full((model.joint_dof_count,), -1, dtype=wp.int32, device=device)
+        else:
+            self.drive_slot = wp.full((1,), -1, dtype=wp.int32, device=device)
+
     def _allocate_world_buffers(self, model):
         """Allocate the per-world dense row system (response, metadata and impulses)."""
         device = model.device
@@ -1920,6 +1979,20 @@ class SolverFeatherPGS(SolverBase):
         self.phi = wp.zeros(shape, dtype=wp.float32, device=device)
         self.target_velocity = wp.zeros(shape, dtype=wp.float32, device=device)
         self.constraint_count = wp.zeros((self.world_count,), dtype=wp.int32, device=device)
+        # Drive-row parameters and their per-step force-drive coefficients; (1, 1)
+        # placeholders keep the kernel signatures fixed when there are no drive rows.
+        drive_shape = shape if self._has_drive_rows else (1, 1)
+        self.drive_stiffness = wp.zeros(drive_shape, dtype=wp.float32, device=device)
+        self.drive_damping = wp.zeros(drive_shape, dtype=wp.float32, device=device)
+        self.drive_geom_error = wp.zeros(drive_shape, dtype=wp.float32, device=device)
+        self.drive_max_force = wp.zeros(drive_shape, dtype=wp.float32, device=device)
+        self.drive_target_vel_bias = wp.zeros(drive_shape, dtype=wp.float32, device=device)
+        self.drive_vel_multiplier = wp.zeros(drive_shape, dtype=wp.float32, device=device)
+        self.drive_impulse_multiplier = wp.zeros(drive_shape, dtype=wp.float32, device=device)
+        self.drive_max_impulse = wp.zeros(drive_shape, dtype=wp.float32, device=device)
+        self.drive_vel_limit = wp.zeros(
+            shape if self.fuse_joint_velocity_limits else (1, 1), dtype=wp.float32, device=device
+        )
 
     def _allocate_mf_buffers(self, model):
         """Allocate the per-world free-body row system.
@@ -2064,6 +2137,8 @@ class SolverFeatherPGS(SolverBase):
                 mf_rows,
                 self.max_world_dofs,
                 int(getattr(model.device, "max_shared_memory_per_block", 0)),
+                has_drive_rows=self._has_drive_rows,
+                fuse_vel_limits=self.fuse_joint_velocity_limits,
             )
             self._pgs_solve_mf_gs_kernel = _get_pgs_solve_mf_gs_kernel(
                 self.dense_max_constraints,
@@ -2072,6 +2147,8 @@ class SolverFeatherPGS(SolverBase):
                 device_arch,
                 has_dense_velocity_limit_rows=self.enable_joint_velocity_limits,
                 shared_metadata=shared_metadata,
+                has_drive_rows=self._has_drive_rows,
+                fuse_vel_limits=self.fuse_joint_velocity_limits,
             )
 
     def _init_split_kernels(self, model):
@@ -2159,6 +2236,11 @@ class SolverFeatherPGS(SolverBase):
                 self.row_type,
                 self.row_parent,
                 self.row_mu,
+                self.drive_target_vel_bias,
+                self.drive_vel_multiplier,
+                self.drive_impulse_multiplier,
+                self.drive_max_impulse,
+                self.drive_vel_limit,
                 self.mf_constraint_count,
                 self.mf_contact_rows_end,
                 self.mf_meta_packed,
@@ -2219,6 +2301,7 @@ class SolverFeatherPGS(SolverBase):
             self._step += 1
             return state_out
         state_aug = self._prepare_augmented_state(state_in)
+        self._begin_dense_rows()
 
         # Stage 1: forward kinematics, inverse dynamics with implicit drives, and CRBA.
         stage3_qd = self._stage1_fk_id(state_in, state_aug, state_out)
@@ -2245,7 +2328,7 @@ class SolverFeatherPGS(SolverBase):
         self._stage3_compute_v_hat(state_in, state_aug, dt, stage3_qd)
 
         # Stage 4: constraint rows, responses Y = H^-1 J^T, diagonals and right-hand sides.
-        self._stage4_build_rows(state_in, state_aug, contacts)
+        self._stage4_build_rows(state_in, state_aug, control, contacts)
         if self.pgs_mode == "split":
             self._solve_split(state_aug, dt)
         else:
@@ -2311,10 +2394,33 @@ class SolverFeatherPGS(SolverBase):
         wp.launch(
             finalize_world_diag_cfm,
             dim=self.world_count,
-            inputs=[self.constraint_count, self.pgs_cfm],
+            inputs=[self.constraint_count, self.row_type, self.pgs_cfm],
             outputs=[self.diag],
             device=model.device,
         )
+        if self._has_drive_rows:
+            wp.launch(
+                compute_physx_pgs_drive_desc,
+                dim=self.world_count,
+                inputs=[
+                    self.constraint_count,
+                    self.row_type,
+                    self.diag,
+                    self.target_velocity,
+                    self.drive_stiffness,
+                    self.drive_damping,
+                    self.drive_geom_error,
+                    self.drive_max_force,
+                    dt,
+                ],
+                outputs=[
+                    self.drive_target_vel_bias,
+                    self.drive_vel_multiplier,
+                    self.drive_impulse_multiplier,
+                    self.drive_max_impulse,
+                ],
+                device=model.device,
+            )
         # The right-hand side holds only the bias; J v is recomputed every iteration.
         wp.launch(
             compute_world_contact_bias,
@@ -2417,7 +2523,7 @@ class SolverFeatherPGS(SolverBase):
             wp.launch(
                 finalize_world_diag_cfm,
                 dim=self.world_count,
-                inputs=[self.constraint_count, self.pgs_cfm],
+                inputs=[self.constraint_count, self.row_type, self.pgs_cfm],
                 outputs=[self.diag],
                 device=model.device,
             )
@@ -2775,6 +2881,8 @@ class SolverFeatherPGS(SolverBase):
                     model.joint_dof_dim,
                     model.joint_velocity_limit,
                     model.body_flags,
+                    self.drive_slot,
+                    int(self.fuse_joint_velocity_limits),
                 ],
                 outputs=[self.qd_work],
                 device=model.device,
@@ -2849,7 +2957,9 @@ class SolverFeatherPGS(SolverBase):
         explicit part ``u0`` of each drive, clamped to :attr:`~newton.Model.joint_effort_limit`
         (an actuator-only clamp, as MuJoCo's ``actuatorfrcrange`` and PhysX's drive
         ``maxForce``). The implicit part ``K = dt * kd + dt^2 * ke`` is stored in
-        ``aug_row_K`` and added to the mass-matrix diagonal by :meth:`_stage1_crba`.
+        ``aug_row_K`` and added to the mass-matrix diagonal by :meth:`_stage1_crba`. With
+        ``drive_mode="physx_pgs"`` drives contribute nothing here; their rows are solved
+        with the constraints.
         """
         model = self.model
         body_f = state_in.body_f if state_in.body_count else None
@@ -2880,7 +2990,7 @@ class SolverFeatherPGS(SolverBase):
             model.body_com,
             self.articulation_origin,
         ]
-        if self.articulation_max_dofs > 0:
+        if self.drive_mode == "augmented" and self.articulation_max_dofs > 0:
             wp.launch(
                 eval_rigid_tau_and_augmented_drives,
                 dim=model.articulation_count,
@@ -3005,6 +3115,8 @@ class SolverFeatherPGS(SolverBase):
                 device=model.device,
                 block_dim=128,
             )
+            if self.drive_mode != "augmented":
+                continue
             wp.launch(
                 apply_augmented_mass_diagonal_grouped,
                 dim=n_arts,
@@ -3155,20 +3267,13 @@ class SolverFeatherPGS(SolverBase):
                 device=model.device,
             )
 
-    def _stage4_build_rows(self, state_in: State, state_aug: State, contacts: Contacts | None):
-        """Allocate and fill the joint-limit, velocity-limit, contact and friction rows of every world.
+    def _begin_dense_rows(self) -> None:
+        """Start the step's dense row allocation and reserve the drive rows first.
 
-        Dense rows (rows touching an articulated body) are laid out per world as
-        ``[joint limits][joint velocity limits][contacts and friction]``; free-body rows
-        hold ``[contacts and friction][free-body velocity limits]``. Rows past a capacity
-        are dropped, counted and latched into :attr:`constraint_overflow`.
+        Drive slots are reserved before the pre-solve velocity scaling, which skips the
+        DOFs whose velocity limit the fused clamp enforces.
         """
         model = self.model
-        max_constraints = self.dense_max_constraints
-        mf_active = self._has_free_rigid_bodies
-        if self._has_prescribed_response:
-            self.mf_target_velocity.zero_()
-
         wp.launch(
             _clear_dense_row_state,
             dim=self.world_count,
@@ -3176,6 +3281,42 @@ class SolverFeatherPGS(SolverBase):
             device=model.device,
         )
         self._dense_first_rejected_slot.fill_(_ROW_SLOT_UNBOUNDED)
+        if self._has_drive_rows:
+            wp.launch(
+                allocate_physx_drive_slots,
+                dim=model.articulation_count,
+                inputs=[
+                    model.articulation_start,
+                    self.articulation_dof_start,
+                    self.articulation_H_rows,
+                    model.joint_type,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    model.joint_target_ke,
+                    model.joint_target_kd,
+                    self.art_to_world,
+                    self.dense_max_constraints,
+                ],
+                outputs=[self.drive_slot, self.slot_counter],
+                device=model.device,
+            )
+
+    def _stage4_build_rows(self, state_in: State, state_aug: State, control: Control, contacts: Contacts | None):
+        """Allocate and fill the drive, joint-limit, velocity-limit, contact and friction rows of every world.
+
+        Dense rows (rows touching an articulated body) are laid out per world as
+        ``[joint drives][joint limits][joint velocity limits][contacts and friction]``, where
+        drive rows exist only with ``drive_mode="physx_pgs"`` and were reserved by
+        :meth:`_begin_dense_rows`; free-body rows hold ``[contacts and friction][free-body
+        velocity limits]``. Rows past a capacity are dropped, counted and latched into
+        :attr:`constraint_overflow`.
+        """
+        model = self.model
+        max_constraints = self.dense_max_constraints
+        mf_active = self._has_free_rigid_bodies
+        if self._has_prescribed_response:
+            self.mf_target_velocity.zero_()
+
         self._cross_world_contacts.zero_()
         if mf_active:
             self.mf_slot_counter.zero_()
@@ -3191,6 +3332,47 @@ class SolverFeatherPGS(SolverBase):
         # Rows are rebuilt every step; clear the grouped Jacobians once before any family writes.
         for size in self.size_groups:
             self.J_by_size[size].zero_()
+
+        if self._has_drive_rows:
+            for size in self.size_groups:
+                wp.launch(
+                    populate_physx_drive_J_for_size,
+                    dim=self.n_arts_by_size[size],
+                    inputs=[
+                        model.articulation_start,
+                        self.articulation_dof_start,
+                        model.joint_type,
+                        model.joint_q_start,
+                        model.joint_qd_start,
+                        model.joint_dof_dim,
+                        model.joint_target_ke,
+                        model.joint_target_kd,
+                        model.joint_effort_limit,
+                        state_in.joint_q,
+                        control.joint_target_q,
+                        model.joint_target_q_start,
+                        control.joint_target_qd,
+                        model.joint_velocity_limit,
+                        int(self.fuse_joint_velocity_limits),
+                        self.art_to_world,
+                        self.drive_slot,
+                        self.group_to_art[size],
+                    ],
+                    outputs=[
+                        self.J_by_size[size],
+                        self.row_type,
+                        self.row_parent,
+                        self.row_mu,
+                        self.phi,
+                        self.target_velocity,
+                        self.drive_stiffness,
+                        self.drive_damping,
+                        self.drive_geom_error,
+                        self.drive_max_force,
+                        self.drive_vel_limit,
+                    ],
+                    device=model.device,
+                )
 
         # Disabled joint limits create no rows (and use no capacity), as in the reference solver.
         limit_sizes = self._joint_limit_sizes if self.enable_joint_limits else frozenset()
@@ -3266,6 +3448,8 @@ class SolverFeatherPGS(SolverBase):
                     model.joint_velocity_limit,
                     self.v_hat,
                     self.velocity_limit_activation_fraction,
+                    self.drive_slot,
+                    int(self.fuse_joint_velocity_limits),
                     self.art_to_world,
                     max_constraints,
                 ],
@@ -4165,18 +4349,25 @@ def _get_pgs_solve_mf_gs_kernel(
     *,
     has_dense_velocity_limit_rows: bool,
     shared_metadata: bool,
+    has_drive_rows: bool = False,
+    fuse_vel_limits: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
     One warp (32 threads) solves one world. Every iteration sweeps, in order:
 
-    1. the dense rows (joint limits, contacts and friction of articulated bodies): a
-       warp-parallel ``J v`` over the world's ``D`` response DOFs and a ``Y`` update of
-       the world velocity, software-pipelined one row ahead;
+    1. the dense rows (joint drives, joint limits, contacts and friction of articulated
+       bodies): a warp-parallel ``J v`` over the world's ``D`` response DOFs and a ``Y``
+       update of the world velocity, software-pipelined one row ahead;
     2. the free-body contact and friction rows: lanes 0-5 handle body A and lanes 6-11
        body B;
-    3. the dense joint velocity-limit rows and the free-body velocity-limit rows, so
-       velocity limits have the last word in each iteration.
+    3. the dense joint velocity-limit rows, the fused velocity clamp of driven DOFs and
+       the free-body velocity-limit rows, so velocity limits have the last word in each
+       iteration.
+
+    A drive row's impulse is not projected: each visit replaces it with the force-drive
+    update ``lambda * (1 - x) + (J v) * (-x a) + bias`` precomputed per row by
+    :func:`compute_physx_pgs_drive_desc`, clamped to the row's maximum impulse.
 
     Friction rows follow their normal row and solve the two tangent impulses together on
     the Coulomb disk of the current normal impulse (``FRICTION_PAIR_CUDA``). A
@@ -4195,7 +4386,12 @@ def _get_pgs_solve_mf_gs_kernel(
         device_arch: CUDA architecture; part of the cache key.
         has_dense_velocity_limit_rows: Emit the dense velocity-limit pass.
         shared_metadata: Keep the dense row metadata in shared memory.
+        has_drive_rows: Emit the drive-row update (``drive_mode="physx_pgs"``).
+        fuse_vel_limits: Emit the end-of-iteration velocity clamp of driven DOFs
+            (``fuse_joint_velocity_limits``); requires ``has_drive_rows``.
     """
+    if fuse_vel_limits and not has_drive_rows:
+        raise ValueError("fuse_vel_limits requires has_drive_rows")
     M_D = max_constraints
     M_MF = mf_max_constraints
     D = max_world_dofs
@@ -4248,6 +4444,69 @@ def _get_pgs_solve_mf_gs_kernel(
         else ""
     )
 
+    # Stateless clamp of driven DOFs (PhysX PxClamp on the joint velocity): an overshoot
+    # gets the impulse that returns the DOF exactly to its limit. It runs where the
+    # velocity-limit rows run, after the contact rows, so the limit keeps the last word
+    # in an under-converged sweep; the drive impulse itself is left unchanged.
+    fused_velocity_clamp_pass = (
+        f"""
+        for (int i = 0; i < m_dense; i++) {{
+            if ((s_meta_dense[i] & {type_mask}) != {int(PGS_CONSTRAINT_TYPE_JOINT_TARGET)}) continue;
+            float denom = s_diag_dense[i];
+            if (denom <= 0.0f) continue;
+            float qdot_max = s_drive_vel_limit_dense[i];
+            int row_base = jy_world_base + i * {D};
+            float my_sum = 0.0f;
+            for (int d = lane; d < {D}; d += 32) my_sum += J_world.data[row_base + d] * s_v[d];
+            float jv = warp_sum(my_sum);
+            if (fabsf(jv) > qdot_max) {{
+                float delta_impulse = (fminf(fmaxf(jv, -qdot_max), qdot_max) - jv) / denom;
+                if (delta_impulse != 0.0f) {{
+                    iteration_changed = 1;
+                    for (int d = lane; d < {D}; d += 32) s_v[d] += Y_world.data[row_base + d] * delta_impulse;
+                }}
+            }}
+            __syncwarp();
+        }}"""
+        if fuse_vel_limits
+        else ""
+    )
+    drive_shared_declarations = (
+        f"""
+    __shared__ float s_drive_target_dense[{M_D}];
+    __shared__ float s_drive_vel_mul_dense[{M_D}];
+    __shared__ float s_drive_imp_mul_dense[{M_D}];
+    __shared__ float s_drive_max_imp_dense[{M_D}];"""
+        if has_drive_rows
+        else ""
+    )
+    drive_loads = (
+        """
+        s_drive_target_dense[i] = world_drive_target_vel_bias.data[off_dense + i];
+        s_drive_vel_mul_dense[i] = world_drive_vel_multiplier.data[off_dense + i];
+        s_drive_imp_mul_dense[i] = world_drive_impulse_multiplier.data[off_dense + i];
+        s_drive_max_imp_dense[i] = world_drive_max_impulse.data[off_dense + i];"""
+        if has_drive_rows
+        else ""
+    )
+    if fuse_vel_limits:
+        drive_shared_declarations += f"""
+    __shared__ float s_drive_vel_limit_dense[{M_D}];"""
+        drive_loads += """
+        s_drive_vel_limit_dense[i] = world_drive_vel_limit.data[off_dense + i];"""
+    drive_update = (
+        f"""
+            if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_TARGET)}) {{
+                // PhysX force-drive update; not relaxed by omega.
+                float max_impulse = s_drive_max_imp_dense[i];
+                new_impulse = old_impulse * s_drive_imp_mul_dense[i] + jv * s_drive_vel_mul_dense[i]
+                    + s_drive_target_dense[i];
+                new_impulse = fminf(fmaxf(new_impulse, -max_impulse), max_impulse);
+            }} else"""
+        if has_drive_rows
+        else ""
+    )
+
     snippet = f"""
 #if defined(__CUDA_ARCH__)
     const unsigned MASK = 0xFFFFFFFF;
@@ -4276,6 +4535,7 @@ def _get_pgs_solve_mf_gs_kernel(
     // Low bits: row type. Remaining bits: parent + 1 (-1 maps to 0).
     __shared__ int   s_meta_dense[{M_D}];
     __shared__ float s_mu_dense[{M_D}];
+{drive_shared_declarations}
     __shared__ float s_lam_mf[{M_MF}];
 
     for (int i = lane; i < m_dense; i += 32) {{
@@ -4286,6 +4546,7 @@ def _get_pgs_solve_mf_gs_kernel(
         int row_parent = world_row_parent.data[off_dense + i];
         s_meta_dense[i] = (row_type & {type_mask}) | ((row_parent + 1) << {type_bits});
         s_mu_dense[i] = world_row_mu.data[off_dense + i];
+{drive_loads}
     }}
     for (int i = lane; i < m_mf; i += 32) s_lam_mf[i] = mf_impulses.data[off_mf + i];
     for (int d = lane; d < {D}; d += 32) {{
@@ -4324,6 +4585,7 @@ def _get_pgs_solve_mf_gs_kernel(
             float delta = denom > 0.0f ? -residual / denom : 0.0f;
             float new_impulse = old_impulse + omega * delta;
 
+{drive_update}
             if (row_type == {int(PGS_CONSTRAINT_TYPE_FRICTION)}) {{
                 // The first tangent row solves both tangents of its contact; the second
                 // row's impulse was written by the first.
@@ -4472,8 +4734,10 @@ def _get_pgs_solve_mf_gs_kernel(
             __syncwarp();
         }}
 
-        // Velocity limits last: dense joint velocity limits, then free-body velocity limits.
+        // Velocity limits last: dense joint velocity limits, the fused clamp of driven DOFs,
+        // then free-body velocity limits.
 {dense_velocity_limit_pass}
+{fused_velocity_clamp_pass}
         for (int i = mf_contact_end; i < m_mf; i++) {{
             int4 meta = *reinterpret_cast<const int4*>(&mf_meta.data[off_meta + i * 4]);
             if ((meta.w & 0xFFFF) != {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)}) continue;
@@ -4514,11 +4778,21 @@ def _get_pgs_solve_mf_gs_kernel(
         # Larger shapes stream the read-only row metadata from global memory instead of
         # holding it in shared memory, which would otherwise limit occupancy. Values are
         # identical; only the storage class changes.
-        for sname, gname in (
+        streamed = [
             ("s_rhs_dense", "rhs_bias"),
             ("s_diag_dense", "world_diag"),
             ("s_mu_dense", "world_row_mu"),
-        ):
+        ]
+        if has_drive_rows:
+            streamed += [
+                ("s_drive_target_dense", "world_drive_target_vel_bias"),
+                ("s_drive_vel_mul_dense", "world_drive_vel_multiplier"),
+                ("s_drive_imp_mul_dense", "world_drive_impulse_multiplier"),
+                ("s_drive_max_imp_dense", "world_drive_max_impulse"),
+            ]
+        if fuse_vel_limits:
+            streamed.append(("s_drive_vel_limit_dense", "world_drive_vel_limit"))
+        for sname, gname in streamed:
             snippet = re.sub(rf"    __shared__ float\s+{sname}\[{M_D}\];\n", "", snippet)
             snippet = re.sub(rf"\s*{sname}\[i\] = {gname}\.data\[off_dense \+ i\];", "", snippet, count=1)
             snippet = re.sub(rf"{sname}\[([^\]]*)\]", rf"{gname}.data[off_dense + (\1)]", snippet)
@@ -4563,6 +4837,11 @@ def _get_pgs_solve_mf_gs_kernel(
         world_row_type: wp.array2d[int],
         world_row_parent: wp.array2d[int],
         world_row_mu: wp.array2d[float],
+        world_drive_target_vel_bias: wp.array2d[float],
+        world_drive_vel_multiplier: wp.array2d[float],
+        world_drive_impulse_multiplier: wp.array2d[float],
+        world_drive_max_impulse: wp.array2d[float],
+        world_drive_vel_limit: wp.array2d[float],
         mf_constraint_count: wp.array[int],
         mf_contact_rows_end: wp.array[int],
         mf_meta: wp.array2d[int],
@@ -4588,6 +4867,11 @@ def _get_pgs_solve_mf_gs_kernel(
         world_row_type: wp.array2d[int],
         world_row_parent: wp.array2d[int],
         world_row_mu: wp.array2d[float],
+        world_drive_target_vel_bias: wp.array2d[float],
+        world_drive_vel_multiplier: wp.array2d[float],
+        world_drive_impulse_multiplier: wp.array2d[float],
+        world_drive_max_impulse: wp.array2d[float],
+        world_drive_vel_limit: wp.array2d[float],
         mf_constraint_count: wp.array[int],
         mf_contact_rows_end: wp.array[int],
         mf_meta: wp.array2d[int],
@@ -4614,6 +4898,11 @@ def _get_pgs_solve_mf_gs_kernel(
             world_row_type,
             world_row_parent,
             world_row_mu,
+            world_drive_target_vel_bias,
+            world_drive_vel_multiplier,
+            world_drive_impulse_multiplier,
+            world_drive_max_impulse,
+            world_drive_vel_limit,
             mf_constraint_count,
             mf_contact_rows_end,
             mf_meta,
@@ -4630,7 +4919,8 @@ def _get_pgs_solve_mf_gs_kernel(
 
     name = (
         f"pgs_solve_mf_gs_{max_constraints}_{mf_max_constraints}_{max_world_dofs}"
-        f"_vlim{int(has_dense_velocity_limit_rows)}{'' if shared_metadata else '_gmeta'}"
+        f"_vlim{int(has_dense_velocity_limit_rows)}_drive{int(has_drive_rows)}_fvl{int(fuse_vel_limits)}"
+        f"{'' if shared_metadata else '_gmeta'}"
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
