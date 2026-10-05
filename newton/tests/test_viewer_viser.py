@@ -3,6 +3,7 @@
 
 import importlib.util
 import io
+import socket
 import unittest
 
 import numpy as np
@@ -41,6 +42,22 @@ class TestViewerViser(unittest.TestCase):
         """Keep textured meshes nonmetallic after glTF applies material defaults."""
         material = self._roundtrip_textured_mesh(3)
         self.assertEqual(material.metallicFactor, 0.0)
+
+    @unittest.skipUnless(importlib.util.find_spec("viser") is not None, "Requires viser")
+    def test_port_falls_back_to_bound_port_when_requested_port_is_occupied(self):
+        """Viewer URLs must track the port Viser actually bound, not the requested one."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            occupied.bind(("0.0.0.0", 0))
+            occupied.listen()
+            requested_port = occupied.getsockname()[1]
+            viewer = ViewerViser(port=requested_port)
+            try:
+                actual_port = viewer._server.get_port()
+                self.assertNotEqual(actual_port, requested_port)
+                self.assertEqual(viewer.url, f"http://localhost:{actual_port}")
+            finally:
+                viewer._server.stop()
 
 
 if __name__ == "__main__":

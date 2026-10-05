@@ -147,7 +147,9 @@ class ViewerViser(ViewerBase):
         self._server.on_client_disconnect(self._handle_client_disconnect)
 
         # Store configuration before any URL generation.
-        self._port = port
+        # Viser may bind a different port when the requested one is occupied;
+        # report the actually bound port everywhere URLs are built.
+        self._port = self._server.get_port()
         self.is_jupyter_notebook = is_jupyter_notebook()
 
         if share:
