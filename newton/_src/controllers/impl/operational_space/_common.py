@@ -130,13 +130,13 @@ def _rotate_jacobian_to_frame_kernel(
 # Operational-space mass matrix: Lambda = (J M^-1 J^T)^-1.
 #
 # Both M (the joint-space mass matrix) and Lambda^-1 = J M^-1 J^T are
-# symmetric positive-definite, so _invert_spd_block_kernel below is used
+# symmetric positive-definite, so _make_invert_spd_block_kernel below is used
 # twice: once to invert M (block_dim = each robot's controlled-DOF count),
 # once to invert Lambda^-1 (block_dim = 6, the fixed task dimension).
 #
 # Lambda^-1 = J M^-1 J^T only has rank min(6, controlled_dof_count). For a
 # robot with fewer than 6 controlled DOFs, it is genuinely singular, not
-# just ill-conditioned — the Cholesky pivot floor in _invert_spd_block_kernel
+# just ill-conditioned — the Cholesky pivot floor in _make_invert_spd_block_kernel
 # keeps that from producing NaN, but it produces a huge, physically
 # meaningless Lambda entry along the uncontrollable directions instead
 # (verified empirically: eigenvalues up to ~1e8 for a 2-DOF arm, ~1e6 for a
@@ -163,7 +163,7 @@ def _operational_space_mass_matrix_inverse_kernel(
 ):
     """The inverse operational-space mass matrix, ``Lambda^-1 = J M^-1 J^T``.
 
-    Still needs a 6x6 inverse (via :func:`_invert_spd_block_kernel`) to become
+    Still needs a 6x6 inverse (via :func:`_make_invert_spd_block_kernel`) to become
     the operational-space mass matrix Lambda that maps a desired task-space
     acceleration to the task-space force that would produce it.
     """
@@ -321,7 +321,7 @@ def _jacobian_times_jacobian_transpose_kernel(
 ):
     """``J @ J^T``, the purely kinematic (inertia-blind) analogue of ``Lambda^-1 = J M^-1 J^T``.
 
-    Its inverse (via :func:`_invert_spd_block_kernel`) gives the 6x6 factor
+    Its inverse (via :func:`_make_invert_spd_block_kernel`) gives the 6x6 factor
     the Moore-Penrose pseudo-inverse transpose needs, ``(J @ J^T)^-1 @ J``.
     """
     robot_idx, row, col = wp.tid()

@@ -484,7 +484,10 @@ class TestViewerRTXLogImage(unittest.TestCase):
         if UsdGeom is None:
             self.skipTest("usd-core is required")
         # Neither OVRTX nor the window is created before the first rendered frame.
-        with wp.ScopedDevice("cpu"), mock.patch.dict("sys.modules", {"ovrtx": types.SimpleNamespace()}):
+        with (
+            wp.ScopedDevice("cpu"),
+            mock.patch.dict("sys.modules", {"ovrtx": types.SimpleNamespace(__version__="0.3.0")}),
+        ):
             viewer = ViewerRTX(headless=headless)
         self.addCleanup(viewer.close)
         viewer._image_logger = mock.Mock()

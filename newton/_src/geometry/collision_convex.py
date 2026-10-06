@@ -20,7 +20,7 @@ import warp as wp
 from .contact_data import ContactData
 from .mpr import create_solve_mpr, create_support_map_function
 from .multicontact import create_build_manifold
-from .simplex_solver import create_solve_closest_distance
+from .simplex_solver import GJK_CUTOFF_TOLERANCE, coordinate_scale, create_solve_closest_distance
 
 
 @wp.struct
@@ -31,6 +31,21 @@ class ConvexQueryResult:
     point_b: wp.vec3
     normal: wp.vec3
     signed_distance: float
+
+
+@wp.func
+def gjk_separation_cutoff(contact_threshold: float, position_a: wp.vec3, position_b: wp.vec3) -> float:
+    """Return the GJK separation cutoff [m] for a contact threshold, or zero to disable it.
+
+    Contact writers re-derive the distance from world-space points, so the cutoff is
+    widened by an empirical float32 rounding margin (``GJK_CUTOFF_TOLERANCE`` times the
+    coordinate scale) so that pairs a writer could still accept are refined to the exact
+    distance. The margin is an engineering allowance, not a proven error bound.
+    """
+    if contact_threshold <= 0.0:
+        return 0.0
+    world_scale = coordinate_scale(position_a) + coordinate_scale(position_b)
+    return contact_threshold + GJK_CUTOFF_TOLERANCE * world_scale
 
 
 def create_write_convex_query_result(
@@ -197,6 +212,8 @@ def create_solve_convex_multi_contact(
             point_b = point_b + normal * half_enlarge
         else:
             # GJK fallback for separated shapes -- no Minkowski inflate; accurate normals/distances.
+            # Pairs whose support-plane bound clears contact_threshold plus the rounding margin stop early;
+            # no contact is kept for them.
             _separated, point_a, point_b, normal, signed_distance = wp.static(solve_gjk.core)(
                 geom_a,
                 geom_b,
@@ -204,6 +221,7 @@ def create_solve_convex_multi_contact(
                 relative_position_b,
                 0.0,
                 data_provider,
+                max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
 
         if skip_multi_contact or signed_distance > contact_threshold:
@@ -331,6 +349,8 @@ def create_solve_convex_single_contact(
             point_b = point_b + normal * half_enlarge
         else:
             # GJK fallback for separated shapes -- no Minkowski inflate; accurate normals/distances.
+            # Pairs whose support-plane bound clears contact_threshold plus the rounding margin stop early;
+            # no contact is kept for them.
             _separated, point_a, point_b, normal, signed_distance = wp.static(solve_gjk.core)(
                 geom_a,
                 geom_b,
@@ -338,6 +358,7 @@ def create_solve_convex_single_contact(
                 relative_position_b,
                 0.0,
                 data_provider,
+                max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
 
         # Transform results back to world space (once).
