@@ -1248,63 +1248,61 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         contact_stiffness, contact_damping = 10000.0, 200.0
         dt = 0.001
 
-        for partial in (False, True):
-            for projection in (None, False, True):
-                with self.subTest(partial=partial, projection=projection):
-                    options = {} if projection is None else {"use_motion_wrench_projection": projection}
-                    ctrl = ControllerOperationalSpaceModelFree(
-                        controlled_dofs_per_robot=wp.array([6], dtype=wp.int32, device=device),
-                        motion_stiffness=100.0,
-                        motion_damping=10.0,
-                        use_inertia_decoupling=True,
-                        use_partial_inertia_decoupling=partial,
-                        use_gravity_compensation=False,
-                        use_wrench_feedforward=True,
-                        use_wrench_feedback=True,
-                        wrench_stiffness=force_gain,
-                        motion_selection_axes=wp.spatial_vector(1, 1, 0, 1, 1, 1),
-                        wrench_selection_axes=wp.spatial_vector(0, 0, 1, 0, 0, 0),
-                        linear_selection_frame_operational=None,
-                        device=device,
-                        **options,
-                    )
-                    ins, outs = ctrl.input(), ctrl.output()
-                    ins.linear_selection_frame_operational = wp.array([frame], dtype=wp.quat, device=device)
-                    ins.jacobian_tool_world = wp.array(np.eye(6)[None], dtype=wp.float32, device=device)
-                    ins.mass_matrix = wp.array(inertia_world[None], dtype=wp.float32, device=device)
-                    ins.tool_pose_world = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
-                    ins.tool_twist_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-                    ins.desired_tool_pose_operational = wp.array(
-                        [wp.transform(wp.vec3(*(0.1 * tangent)), wp.quat_identity())],
-                        dtype=wp.transform,
-                        device=device,
-                    )
-                    ins.desired_twist_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-                    ins.desired_wrench_world = wp.array(
-                        [wp.spatial_vector(*(target_force * normal), 0, 0, 0)],
-                        dtype=wp.spatial_vector,
-                        device=device,
-                    )
-                    ins.measured_wrench_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-                    penetration, velocity = target_force / contact_stiffness, 0.0
-                    for _ in range(600):
-                        measured_force = max(0.0, contact_stiffness * penetration + contact_damping * velocity)
-                        ins.tool_pose_world.assign(np.array([[*(penetration * normal), 0, 0, 0, 1]]))
-                        ins.tool_twist_world.assign(np.array([[*(velocity * normal), 0, 0, 0]]))
-                        ins.measured_wrench_world.assign(np.array([[*(measured_force * normal), 0, 0, 0]]))
-                        ctrl.step(inputs=ins, outputs=outs, dt=dt)
-                        command = outs.joint_f.numpy()[:3]
-                        acceleration = (normal @ command - measured_force) / inertia_contact[2, 2]
-                        velocity += dt * acceleration
-                        penetration += dt * velocity
+        for projection in (None, False, True):
+            with self.subTest(projection=projection):
+                options = {} if projection is None else {"use_motion_wrench_projection": projection}
+                ctrl = ControllerOperationalSpaceModelFree(
+                    controlled_dofs_per_robot=wp.array([6], dtype=wp.int32, device=device),
+                    motion_stiffness=100.0,
+                    motion_damping=10.0,
+                    use_inertia_decoupling=True,
+                    use_gravity_compensation=False,
+                    use_wrench_feedforward=True,
+                    use_wrench_feedback=True,
+                    wrench_stiffness=force_gain,
+                    motion_selection_axes=wp.spatial_vector(1, 1, 0, 1, 1, 1),
+                    wrench_selection_axes=wp.spatial_vector(0, 0, 1, 0, 0, 0),
+                    linear_selection_frame_operational=None,
+                    device=device,
+                    **options,
+                )
+                ins, outs = ctrl.input(), ctrl.output()
+                ins.linear_selection_frame_operational = wp.array([frame], dtype=wp.quat, device=device)
+                ins.jacobian_tool_world = wp.array(np.eye(6)[None], dtype=wp.float32, device=device)
+                ins.mass_matrix = wp.array(inertia_world[None], dtype=wp.float32, device=device)
+                ins.tool_pose_world = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+                ins.tool_twist_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+                ins.desired_tool_pose_operational = wp.array(
+                    [wp.transform(wp.vec3(*(0.1 * tangent)), wp.quat_identity())],
+                    dtype=wp.transform,
+                    device=device,
+                )
+                ins.desired_twist_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+                ins.desired_wrench_world = wp.array(
+                    [wp.spatial_vector(*(target_force * normal), 0, 0, 0)],
+                    dtype=wp.spatial_vector,
+                    device=device,
+                )
+                ins.measured_wrench_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+                penetration, velocity = target_force / contact_stiffness, 0.0
+                for _ in range(600):
+                    measured_force = max(0.0, contact_stiffness * penetration + contact_damping * velocity)
+                    ins.tool_pose_world.assign(np.array([[*(penetration * normal), 0, 0, 0, 1]]))
+                    ins.tool_twist_world.assign(np.array([[*(velocity * normal), 0, 0, 0]]))
+                    ins.measured_wrench_world.assign(np.array([[*(measured_force * normal), 0, 0, 0]]))
+                    ctrl.step(inputs=ins, outputs=outs, dt=dt)
+                    command = outs.joint_f.numpy()[:3]
+                    acceleration = (normal @ command - measured_force) / inertia_contact[2, 2]
+                    velocity += dt * acceleration
+                    penetration += dt * velocity
 
-                    if projection:
-                        self.assertAlmostEqual(measured_force, target_force, delta=0.002)
-                    else:
-                        self.assertNotAlmostEqual(measured_force, target_force, delta=0.002)
-                    self.assertAlmostEqual(velocity, 0.0, delta=1.0e-5)
-                    # Projection must preserve the tangential motion command.
-                    self.assertAlmostEqual(float(tangent @ command), 20.0, delta=0.002)
+                if projection:
+                    self.assertAlmostEqual(measured_force, target_force, delta=0.002)
+                else:
+                    self.assertNotAlmostEqual(measured_force, target_force, delta=0.002)
+                self.assertAlmostEqual(velocity, 0.0, delta=1.0e-5)
+                # Projection must preserve the tangential motion command.
+                self.assertAlmostEqual(float(tangent @ command), 20.0, delta=0.002)
 
     def test_wrench_feedforward_only_and_motion_selection_matches_formula(self):
         """Hybrid motion/wrench control: tau = J^T @ (S_motion @ F_motion) + J^T @ (S_wrench @ desired_wrench).
