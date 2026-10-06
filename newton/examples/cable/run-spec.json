@@ -23,7 +23,7 @@
   "init_angles": null,
   "init_bend_stiffness": 5.0,
   "init_twist_stiffness": null,
-  "init_bend_damping": 0.1,
+  "init_bend_damping": 0.04,
   "init_twist_damping": null,
   "settle_mode": "dynamic",
   "settle_frames": 500,
@@ -31,7 +31,7 @@
   "optimizer": {
     "kind": "cma",
     "seed": 42,
-    "sigma0": 0.3,
+    "sigma0": 0.1,
     "maxiter": 120,
     "popsize": 24
   },
