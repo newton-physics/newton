@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Normalized measurement evidence for cable tuning.
+"""Normalized measurement evidence for cable calibration.
 
-A :class:`CableEvidenceBundle` is the input boundary of the tuning workflow. It
+A :class:`CableEvidenceBundle` is the input boundary of the calibration workflow. It
 holds one or more :class:`CableRecording` entries, each a camera's view of one
 recording, with the RGB and mask sequences already materialized on disk and the
 camera, timing and attachment data captured as plain JSON.

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""The outcome of a cable tuning run.
+"""The outcome of a cable calibration run.
 
 :class:`CableCalibrationResult` records what a run produced and enough context
 to judge whether to trust it: the fitted values, the metrics they scored, the
