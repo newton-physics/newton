@@ -204,8 +204,10 @@ def _null_space_projector_kernel(
 
 
 @functools.cache
-def _make_invert_spd_block_kernel(max_dim: int) -> wp.Kernel:
-    """Build the batched inverse of small SPD matrices, via Cholesky factorization.
+def _make_invert_spd_block_kernel(
+    max_dim: int, *, factor_only: bool = False, serial_columns: bool = False
+) -> wp.Kernel:
+    """Build a batched SPD inverse or Cholesky factor kernel.
 
     Launch the returned kernel with ``dim=(block_count, max_dim)``. Thread ``(b, c)`` factors block
     ``b`` into a thread-local Cholesky factor ``L`` and solves column ``c`` of its inverse,
@@ -222,11 +224,16 @@ def _make_invert_spd_block_kernel(max_dim: int) -> wp.Kernel:
 
     Args:
         max_dim: Padded matrix size, the second and third dimension of the kernel's arrays.
+        factor_only: Write only the lower-triangular Cholesky factor. Launch with
+            ``dim=(block_count, 1)`` and solve columns in a separate launch.
+        serial_columns: Factor once and solve every column on one thread per block.
+            Launch with ``dim=(block_count, 1)`` on CPU.
 
     Returns:
         A kernel taking ``spd_matrix`` (``(block_count, max_dim, max_dim)`` SPD blocks, read only),
         ``block_dim`` (``(block_count,)`` size of the used top-left submatrix of each block), and
-        writing ``spd_matrix_inv`` (the inverse of each used submatrix; untouched elsewhere).
+        writing ``spd_matrix_inv`` (the inverse, or the lower-triangular factor when
+        ``factor_only=True``, of each used submatrix; untouched elsewhere).
     """
     matrix_type = wp.types.matrix(shape=(max_dim, max_dim), dtype=float)
     vector_type = wp.types.vector(length=max_dim, dtype=float)
@@ -258,25 +265,97 @@ def _make_invert_spd_block_kernel(max_dim: int) -> wp.Kernel:
                     off_diagonal_term -= factor[row, prior_col] * factor[col, prior_col]
                 factor[row, col] = off_diagonal_term / diagonal_value
 
-        # Forward substitution: factor @ y = e_column.
-        solution = vector_type()
-        for row in range(block_size):
-            right_hand_side = wp.where(row == column, float(1.0), float(0.0))
-            for prior_row in range(row):
-                right_hand_side -= factor[row, prior_row] * solution[prior_row]
-            solution[row] = right_hand_side / factor[row, row]
-        # Back substitution: factor^T @ x = y, overwriting y with x in place.
-        for reverse_row in range(block_size):
-            row = block_size - 1 - reverse_row
-            right_hand_side = solution[row]
-            for later_row in range(row + 1, block_size):
-                right_hand_side -= factor[later_row, row] * solution[later_row]
-            solution[row] = right_hand_side / factor[row, row]
+        if wp.static(factor_only):
+            for row in range(block_size):
+                for col in range(row + 1):
+                    spd_matrix_inv[block_idx, row, col] = factor[row, col]
+            return
 
-        for row in range(block_size):
-            spd_matrix_inv[block_idx, row, column] = solution[row]
+        for solve_column in range(column, block_size, wp.static(1 if serial_columns else max_dim)):
+            # Forward substitution: factor @ y = e_column.
+            solution = vector_type()
+            for row in range(block_size):
+                right_hand_side = wp.where(row == solve_column, float(1.0), float(0.0))
+                for prior_row in range(row):
+                    right_hand_side -= factor[row, prior_row] * solution[prior_row]
+                solution[row] = right_hand_side / factor[row, row]
+            # Back substitution: factor^T @ x = y, overwriting y with x in place.
+            for reverse_row in range(block_size):
+                row = block_size - 1 - reverse_row
+                right_hand_side = solution[row]
+                for later_row in range(row + 1, block_size):
+                    right_hand_side -= factor[later_row, row] * solution[later_row]
+                solution[row] = right_hand_side / factor[row, row]
+
+            for row in range(block_size):
+                spd_matrix_inv[block_idx, row, solve_column] = solution[row]
 
     return invert_spd_block
+
+
+@wp.kernel(enable_backward=False)
+def _solve_cholesky_block_kernel(
+    cholesky_factor: wp.array3d[float],
+    block_dim: wp.array[wp.int32],
+    spd_matrix_inv: wp.array3d[float],
+):
+    """Solve one inverse column per thread using a shared Cholesky factor."""
+    block_idx, column = wp.tid()
+    block_size = block_dim[block_idx]
+    if column >= block_size:
+        return
+    for row in range(block_size):
+        right_hand_side = wp.where(row == column, float(1.0), float(0.0))
+        for prior_row in range(row):
+            right_hand_side -= cholesky_factor[block_idx, row, prior_row] * spd_matrix_inv[block_idx, prior_row, column]
+        spd_matrix_inv[block_idx, row, column] = right_hand_side / cholesky_factor[block_idx, row, row]
+    for reverse_row in range(block_size):
+        row = block_size - 1 - reverse_row
+        right_hand_side = spd_matrix_inv[block_idx, row, column]
+        for later_row in range(row + 1, block_size):
+            right_hand_side -= cholesky_factor[block_idx, later_row, row] * spd_matrix_inv[block_idx, later_row, column]
+        spd_matrix_inv[block_idx, row, column] = right_hand_side / cholesky_factor[block_idx, row, row]
+
+
+class _SPDInverse:
+    """Own kernels and optional scratch for repeated batched SPD inversions.
+
+    CUDA matrices of size at most 10 use a single launch. Larger matrices factor once per
+    block so a few high-DOF robots do not impose a large local-memory frame on
+    every column thread. CPU inversions factor once and solve every column on
+    one thread per block in the same launch, avoiding redundant factorization
+    work and a second launch.
+    """
+
+    def __init__(self, block_count: int, max_dim: int, device: wp.context.Device):
+        self._device = device
+        self._block_count = block_count
+        self._column_count = max_dim if device.is_cuda else 1
+        self._factor_once = device.is_cuda and max_dim > 10
+        self._kernel = _make_invert_spd_block_kernel(
+            max_dim, factor_only=self._factor_once, serial_columns=device.is_cpu
+        )
+        self._factor = (
+            wp.empty((block_count, max_dim, max_dim), dtype=float, device=device) if self._factor_once else None
+        )
+
+    def launch(self, matrix: wp.array3d[float], block_dim: wp.array[wp.int32], inverse: wp.array3d[float]):
+        """Write each used inverse submatrix, leaving its padding untouched."""
+        wp.launch(
+            self._kernel,
+            dim=(self._block_count, 1 if self._factor_once else self._column_count),
+            inputs=[matrix, block_dim],
+            outputs=[self._factor if self._factor_once else inverse],
+            device=self._device,
+        )
+        if self._factor_once:
+            wp.launch(
+                _solve_cholesky_block_kernel,
+                dim=(self._block_count, self._column_count),
+                inputs=[self._factor, block_dim],
+                outputs=[inverse],
+                device=self._device,
+            )
 
 
 @wp.kernel

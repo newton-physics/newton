@@ -27,6 +27,7 @@ from newton._src.controllers.impl._common import (
     _null_space_projector_kernel,
     _pose_error_kernel,
     _shift_jacobian_to_tool_kernel,
+    _SPDInverse,
     _task_matrix_times_jacobian_kernel,
 )
 from newton._src.controllers.impl.operational_space._common import (
@@ -218,6 +219,51 @@ def test_invert_spd_block_matches_numpy_inverse(test, device):
         np.testing.assert_allclose(
             spd_matrix_inv.numpy()[block_idx, :n, :n], expected_inv_np[block_idx, :n, :n], atol=1e-4
         )
+
+
+def test_spd_inverse_heterogeneous_strided_blocks_and_replay(test, device):
+    """Match NumPy for mixed block sizes and preserve padding across repeated inversions.
+
+    Exercise small and large matrices, strided submatrix views used by partial
+    inertia decoupling, empty blocks, and CUDA capture of the first launch.
+    """
+    rng = np.random.default_rng(4302)
+    for max_dim in (3, 6, 7, 10, 11, 30):
+        with test.subTest(max_dim=max_dim):
+            block_sizes = [0, 1, min(7, max_dim), max_dim]
+            shape = (len(block_sizes), max_dim + 2, max_dim + 2)
+            matrix_np = np.full(shape, np.nan, dtype=np.float32)
+            expected = np.full(shape, -123.0, dtype=np.float32)
+            for block_idx, n in enumerate(block_sizes):
+                if n == 0:
+                    continue
+                a = rng.standard_normal((n, n)).astype(np.float32)
+                block = a @ a.T + n * np.eye(n, dtype=np.float32)
+                matrix_np[block_idx, 1 : n + 1, 1 : n + 1] = block
+                expected[block_idx, 1 : n + 1, 1 : n + 1] = np.linalg.inv(block)
+            matrix = wp.array(matrix_np, device=device)
+            inverse = wp.full(shape, -123.0, dtype=float, device=device)
+            block_dim = wp.array(block_sizes, dtype=wp.int32, device=device)
+            operation = _SPDInverse(len(block_sizes), max_dim, wp.get_device(device))
+            matrix_view = matrix[:, 1:-1, 1:-1]
+            inverse_view = inverse[:, 1:-1, 1:-1]
+            if wp.get_device(device).is_cuda:
+                with wp.ScopedCapture(device=device) as capture:
+                    operation.launch(matrix_view, block_dim, inverse_view)
+                wp.capture_launch(capture.graph)
+            else:
+                operation.launch(matrix_view, block_dim, inverse_view)
+            np.testing.assert_allclose(inverse.numpy(), expected, atol=1e-6, rtol=1e-5)
+
+            # Reuse the same storage with changed inputs, including on graph replay.
+            matrix.assign(matrix_np * 2.0)
+            for block_idx, n in enumerate(block_sizes):
+                expected[block_idx, 1 : n + 1, 1 : n + 1] *= 0.5
+            if wp.get_device(device).is_cuda:
+                wp.capture_launch(capture.graph)
+            else:
+                operation.launch(matrix_view, block_dim, inverse_view)
+            np.testing.assert_allclose(inverse.numpy(), expected, atol=1e-6, rtol=1e-5)
 
 
 def test_jacobian_tool_shift_matches_twist(test, device):
@@ -664,6 +710,12 @@ class TestOperationalSpaceKernels(unittest.TestCase):
     pass
 
 
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_spd_inverse_heterogeneous_strided_blocks_and_replay",
+    test_spd_inverse_heterogeneous_strided_blocks_and_replay,
+    devices=devices,
+)
 add_function_test(
     TestOperationalSpaceKernels,
     "test_invert_spd_block_matches_numpy_inverse",
