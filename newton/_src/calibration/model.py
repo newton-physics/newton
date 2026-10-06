@@ -289,9 +289,9 @@ class CableWorld:
 
     :meth:`run_sequence` scores all worlds in one solver and render pass.
 
-    Parameters documented as required have no fallback value and raise
-    :class:`ValueError` when they are ``None``: every value that changes what a
-    fit means comes from the caller.
+    Every value that changes what a fit means comes from the caller. Only
+    ``cable_axis``, ``fps``, ``sim_substeps``, ``settle_check_every`` and
+    ``settle_move_tol`` have defaults.
 
     The world frame is the robot base frame of the goals (see
     :class:`~.goal.CableGoal`).
@@ -325,19 +325,19 @@ class CableWorld:
             :data:`SETTLE_MODES`.
         clamp_position: Arc length [m] from the node-0 end of the cable to the
             grasp point, in ``[0, num_elements * segment_length]``. 0.0 clamps the
-            end of the cable. An interior value lets both sides hang. Required.
-        bend_damping_list: Bend damping [N·m·s/rad] per world. Required.
-        twist_stiffness_list: Twist stiffness [N·m/rad] per world. Required.
-        twist_damping_list: Twist damping [N·m·s/rad] per world. Required.
-        stretch_stiffness: Stretch stiffness of every joint [N/m]. Required.
-        num_elements: Number of capsules in the cable. Required.
-        segment_length: Length of each capsule [m]. Required.
-        cable_radius: Capsule radius [m]. Required.
-        cable_mass: Total mass of the cable [kg]. Required.
-        angle_parametrization: Parametrization of ``angles_list``. Required, and
-            must be :data:`ANGLE_PARAM_EXP`.
+            end of the cable. An interior value lets both sides hang.
+        bend_damping_list: Bend damping [N·m·s/rad] per world.
+        twist_stiffness_list: Twist stiffness [N·m/rad] per world.
+        twist_damping_list: Twist damping [N·m·s/rad] per world.
+        stretch_stiffness: Stretch stiffness of every joint [N/m].
+        num_elements: Number of capsules in the cable.
+        segment_length: Length of each capsule [m].
+        cable_radius: Capsule radius [m].
+        cable_mass: Total mass of the cable [kg].
+        angle_parametrization: Parametrization of ``angles_list``. Must be
+            :data:`ANGLE_PARAM_EXP`.
         attachment_transform: TCP-to-attachment transform
-            ``((x, y, z), (qx, qy, qz, qw))``, translation [m]. Required.
+            ``((x, y, z), (qx, qy, qz, qw))``, translation [m].
         cable_axis: Direction ``(x, y, z)`` of the cable at the grasp, in the TCP
             frame. Replaces the rotation of ``attachment_transform``; its
             translation still applies. ``None`` keeps the attachment rotation.
@@ -353,7 +353,7 @@ class CableWorld:
             which :meth:`settle` counts the cable as settled.
 
     Raises:
-        ValueError: If a required parameter is ``None``, a per-world list length
+        ValueError: If a per-world list length
             differs from ``len(angles_list)``, ``angle_parametrization`` is not
             supported, ``settle_mode`` is not in :data:`SETTLE_MODES`,
             ``attachment_transform`` or ``cable_axis`` has the wrong shape,
@@ -376,16 +376,16 @@ class CableWorld:
         sim_iterations: int,
         settle_mode: str,
         clamp_position: float,
-        bend_damping_list: Sequence[float] | None = None,
-        twist_stiffness_list: Sequence[float] | None = None,
-        twist_damping_list: Sequence[float] | None = None,
-        stretch_stiffness: float | None = None,
-        num_elements: int | None = None,
-        segment_length: float | None = None,
-        cable_radius: float | None = None,
-        cable_mass: float | None = None,
-        angle_parametrization: str | None = None,
-        attachment_transform: Sequence[Sequence[float]] | None = None,
+        bend_damping_list: Sequence[float],
+        twist_stiffness_list: Sequence[float],
+        twist_damping_list: Sequence[float],
+        stretch_stiffness: float,
+        num_elements: int,
+        segment_length: float,
+        cable_radius: float,
+        cable_mass: float,
+        angle_parametrization: str,
+        attachment_transform: Sequence[Sequence[float]],
         cable_axis: Sequence[float] | None = None,
         fps: int = 60,
         sim_substeps: int = 20,
@@ -401,27 +401,7 @@ class CableWorld:
         self.settle_check_every = settle_check_every
         self.settle_move_tol = settle_move_tol
         self.n = len(angles_list)
-        if bend_damping_list is None or twist_stiffness_list is None or twist_damping_list is None:
-            raise ValueError(
-                "CableWorld requires bend_damping_list, twist_stiffness_list and "
-                "twist_damping_list explicitly; there is no fallback value."
-            )
-        # Not fitted, but it changes the solve, so it is required too.
-        if stretch_stiffness is None:
-            raise ValueError("CableWorld requires stretch_stiffness explicitly; there is no fallback value.")
-        # The geometry sets the size of the decision vector, so all worlds of one
-        # instance share it.
-        geometry = {
-            "num_elements": num_elements,
-            "segment_length": segment_length,
-            "cable_radius": cable_radius,
-            "cable_mass": cable_mass,
-            "angle_parametrization": angle_parametrization,
-        }
-        missing = sorted(name for name, value in geometry.items() if value is None)
-        if missing:
-            raise ValueError(f"CableWorld requires {', '.join(missing)} explicitly; there is no fallback value.")
-        # Required, so that rest angles in another parametrization are refused, not misread.
+        # Rest angles in another parametrization are refused, not misread.
         if angle_parametrization != ANGLE_PARAM_EXP:
             raise ValueError(
                 f"angle_parametrization {angle_parametrization!r} is not supported; only "
@@ -448,10 +428,6 @@ class CableWorld:
 
         # The build and the drive apply the same attachment transform, so the anchor
         # does not jump at frame 0.
-        if attachment_transform is None:
-            raise ValueError("attachment_transform is required; no attachment pose is assumed.")
-        if clamp_position is None:
-            raise ValueError("clamp_position is required; no grasp point is assumed.")
         attachment_pos, attachment_quat = attachment_transform
         if len(attachment_pos) != 3 or len(attachment_quat) != 4:
             raise ValueError(

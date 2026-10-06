@@ -1081,20 +1081,12 @@ class TestTuningCableWorld(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, name):
                     make_world(population=2, **{name: [1.0]})
 
-    def test_unset_model_inputs_are_refused(self):
-        """Verify a missing or unsupported model input is refused, naming the input.
+    def test_unsupported_model_inputs_are_refused(self):
+        """Verify an unsupported angle parametrization or settle mode, or a settle check interval below 1, is refused.
 
-        The inputs are a missing damping, stretch, geometry, attachment or clamp
-        input, an unsupported angle parametrization or settle mode, and a settle
-        check interval below 1. No default replaces a value the caller did not give.
+        The error names the input.
         """
         cases = {
-            "twist_damping_list": None,
-            "stretch_stiffness": None,
-            "segment_length": None,
-            "cable_mass": None,
-            "attachment_transform": None,
-            "clamp_position": None,
             "angle_parametrization": "euler_xy",
             "settle_mode": "static",
             "settle_check_every": 0,
