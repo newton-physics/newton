@@ -117,6 +117,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
         triangle_mesh_group_roots: wp.array[wp.int32],
+        triangle_colors: wp.array[wp.vec3f],
         # Meshes
         mesh_data: wp.array[MeshData],
         # Gaussians
@@ -277,6 +278,9 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             albedo_color = wp.vec3f(1.0)
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 albedo_color = srgb_to_linear_wp(shape_colors[closest_hit.shape_index])
+            elif closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID:
+                if closest_hit.face_idx >= 0 and closest_hit.face_idx < triangle_colors.shape[0]:
+                    albedo_color = srgb_to_linear_wp(triangle_colors[closest_hit.face_idx])
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]
