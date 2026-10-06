@@ -27,6 +27,12 @@ from .state import State
 
 logger = logging.getLogger(__name__)
 
+_JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
+    "Model.joint_twist_lower and Model.joint_twist_upper are deprecated in Newton 1.7 and will be removed "
+    "in a future release. They were never populated or used by any solver; limit joint rotations with the "
+    "per-DOF Model.joint_limit_lower and Model.joint_limit_upper instead."
+)
+
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
@@ -426,8 +432,8 @@ class Model:
         "joint_X_c": AttributeSpec(AttributeFrequency.JOINT),
         "joint_dof_dim": AttributeSpec(AttributeFrequency.JOINT),
         "joint_enabled": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_twist_lower": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_twist_upper": AttributeSpec(AttributeFrequency.JOINT),
+        "joint_twist_lower": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
+        "joint_twist_upper": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
         "joint_label": AttributeSpec(AttributeFrequency.JOINT),
         "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD),
         "joint_q_start": AttributeSpec(
@@ -1010,7 +1016,12 @@ class Model:
         self.joint_child: wp.array[wp.int32] | None = None
         """Joint child body indices, shape [joint_count], int."""
         self.joint_ancestor: wp.array[wp.int32] | None = None
-        """Maps from joint index to the index of the joint that has the current joint parent body as child (-1 if no such joint ancestor exists), shape [joint_count], int."""
+        """Incoming joint of each joint's parent body (-1 if none exists), shape [joint_count], int.
+
+        Articulated joints resolve ancestors only within their own articulation,
+        terminating at external roots. For unarticulated joints, articulation
+        tree joints take precedence over loop-closing joints.
+        """
         self.joint_X_p: wp.array[wp.transform] | None = None
         """Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float."""
         self.joint_X_c: wp.array[wp.transform] | None = None
@@ -1045,10 +1056,8 @@ class Model:
         """Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_limit_kd: wp.array[wp.float32] | None = None
         """Joint position limit damping [N·s/m or N·m·s/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
-        self.joint_twist_lower: wp.array[wp.float32] | None = None
-        """Joint lower twist limit [rad], shape [joint_count], float."""
-        self.joint_twist_upper: wp.array[wp.float32] | None = None
-        """Joint upper twist limit [rad], shape [joint_count], float."""
+        self._deprecated_joint_twist_lower: wp.array[wp.float32] | None = None
+        self._deprecated_joint_twist_upper: wp.array[wp.float32] | None = None
         self.joint_q_start: wp.array[wp.int32] | None = None
         """Start index of the first position coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_qd_start: wp.array[wp.int32] | None = None
@@ -1450,26 +1459,6 @@ class Model:
         else:
             self.attribute_assignment[name] = spec.assignment
 
-    def _resolve_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str | None:
-        """Return explicitly registered frequency metadata."""
-        spec = self._attribute_spec(name)
-        return None if spec is None else spec.frequency
-
-    def _attribute_reference_frequency(self, name: str) -> Model.AttributeFrequency | str | None:
-        """Return the entity domain indexed by an attribute's values."""
-        spec = self._attribute_spec(name)
-        return None if spec is None else spec.references
-
-    def _attribute_row_width(self, name: str) -> int:
-        """Return the number of flattened values stored per frequency row."""
-        spec = self._attribute_spec(name)
-        return 1 if spec is None else spec.row_width
-
-    def _attribute_requires_empty_sentinel(self, name: str) -> bool:
-        """Return whether an empty attribute retains one sentinel value."""
-        spec = self._attribute_spec(name)
-        return False if spec is None else spec.requires_empty_sentinel
-
     def _normalize_attribute_reference(self, references: str | None) -> Model.AttributeFrequency | str | None:
         """Return the frequency domain addressed by a builder reference declaration."""
         if references is None:
@@ -1482,7 +1471,6 @@ class Model:
             "joint_coord": Model.AttributeFrequency.JOINT_COORD,
             "joint_constraint": Model.AttributeFrequency.JOINT_CONSTRAINT,
             "articulation": Model.AttributeFrequency.ARTICULATION,
-            "equality_constraint": "mujoco:equality_constraint",
             "constraint_mimic": Model.AttributeFrequency.CONSTRAINT_MIMIC,
             "particle": Model.AttributeFrequency.PARTICLE,
             "edge": Model.AttributeFrequency.EDGE,
@@ -1505,6 +1493,36 @@ class Model:
 
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
+
+    @property
+    def joint_twist_lower(self) -> wp.array[wp.float32] | None:
+        """Joint lower twist limit [rad], shape [joint_count], float. Never populated.
+
+        .. deprecated:: 1.7
+            Limit joint rotations with the per-DOF :attr:`joint_limit_lower` instead.
+        """
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self._deprecated_joint_twist_lower
+
+    @joint_twist_lower.setter
+    def joint_twist_lower(self, value: wp.array[wp.float32] | None) -> None:
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self._deprecated_joint_twist_lower = value
+
+    @property
+    def joint_twist_upper(self) -> wp.array[wp.float32] | None:
+        """Joint upper twist limit [rad], shape [joint_count], float. Never populated.
+
+        .. deprecated:: 1.7
+            Limit joint rotations with the per-DOF :attr:`joint_limit_upper` instead.
+        """
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self._deprecated_joint_twist_upper
+
+    @joint_twist_upper.setter
+    def joint_twist_upper(self, value: wp.array[wp.float32] | None) -> None:
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self._deprecated_joint_twist_upper = value
 
     @property
     def joint_target_q_start(self) -> wp.array | None:

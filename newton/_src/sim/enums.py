@@ -269,40 +269,6 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
         return cts_count
 
 
-class _DeprecatedEqTypeMeta(EnumMeta):
-    def __getattribute__(cls, name: str):
-        value = super().__getattribute__(name)
-        if not name.startswith("_"):
-            member_map = super().__getattribute__("_member_map_")
-            if name in member_map:
-                _warn_eq_type_deprecated()
-        return value
-
-    def __call__(cls, *args, **kwargs):
-        _warn_eq_type_deprecated()
-        return super().__call__(*args, **kwargs)
-
-
-def _warn_eq_type_deprecated() -> None:
-    warnings.warn(
-        "newton.EqType is deprecated in Newton 1.4; use newton.solvers.SolverMuJoCo.EqType instead.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
-
-
-class EqType(IntEnum, metaclass=_DeprecatedEqTypeMeta):
-    """Deprecated alias for :class:`~newton.solvers.SolverMuJoCo.EqType`.
-
-    .. deprecated:: 1.4
-        Use :class:`~newton.solvers.SolverMuJoCo.EqType` instead.
-    """
-
-    CONNECT = 0
-    WELD = 1
-    JOINT = 2
-
-
 class JointTargetMode(IntEnum):
     """
     Enumeration of actuator modes for joint degrees of freedom.
@@ -374,7 +340,6 @@ class JointTargetMode(IntEnum):
 
 __all__ = [
     "BodyFlags",
-    "EqType",
     "JointTargetMode",
     "JointType",
     "ModelFlags",

@@ -25,7 +25,7 @@ from ..geometry.contact_data import (
 from ..geometry.contact_match import ContactMatcher
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.differentiable_contacts import launch_differentiable_contact_augment
-from ..geometry.flags import ShapeFlags
+from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
@@ -248,6 +248,83 @@ def write_contact_speculative(
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
 
     _write_contact_at_index(contact_data, writer_data, index, point_a_world, point_b_world, normal)
+
+
+@wp.func
+def _mesh_surface_velocity(
+    shape: int,
+    point_world: wp.vec3,
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_transform: wp.array[wp.transform],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_mesh_properties: wp.array[int],
+) -> wp.vec3:
+    """Interpolate a mesh shape's local surface velocity at a world-space point."""
+    if shape_type[shape] != GeoType.MESH or not (shape_mesh_properties[shape] & int(MeshProperties.SURFACE_VELOCITY)):
+        return wp.vec3(0.0)
+
+    mesh_id = shape_source_ptr[shape]
+    if mesh_id == wp.uint64(0):
+        return wp.vec3(0.0)
+
+    scale = shape_scale[shape]
+    X_ws = shape_transform[shape]
+    point_local = wp.cw_div(wp.transform_point(wp.transform_inverse(X_ws), point_world), scale)
+    query = wp.mesh_query_point_no_sign(mesh_id, point_local, 1.0e11)
+    if not query.result:
+        return wp.vec3(0.0)
+
+    velocity_local = wp.mesh_eval_velocity(mesh_id, query.face, query.u, query.v)
+    return wp.transform_vector(X_ws, wp.cw_mul(velocity_local, scale))
+
+
+@wp.kernel(enable_backward=False)
+def eval_rigid_contact_surface_velocities(
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_transform: wp.array[wp.transform],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_mesh_properties: wp.array[int],
+    contact_surface_velocity: wp.array[wp.vec3],
+):
+    """Evaluate world-space relative mesh surface velocity for active rigid contacts."""
+    tid = wp.tid()
+    if tid >= contact_count[0]:
+        return
+
+    shape0 = contact_shape0[tid]
+    shape1 = contact_shape1[tid]
+    body0 = shape_body[shape0]
+    body1 = shape_body[shape1]
+    X_wb0 = wp.transform_identity() if body0 < 0 else body_q[body0]
+    X_wb1 = wp.transform_identity() if body1 < 0 else body_q[body1]
+    point0_world = wp.transform_point(X_wb0, contact_point0[tid])
+    point1_world = wp.transform_point(X_wb1, contact_point1[tid])
+    velocity0_world = _mesh_surface_velocity(
+        shape0, point0_world, shape_type, shape_scale, shape_transform, shape_source_ptr, shape_mesh_properties
+    )
+    velocity1_world = _mesh_surface_velocity(
+        shape1, point1_world, shape_type, shape_scale, shape_transform, shape_source_ptr, shape_mesh_properties
+    )
+    contact_surface_velocity[tid] = velocity1_world - velocity0_world
+
+
+@wp.kernel(enable_backward=False)
+def _record_reduction_overflow(
+    insert_failures: wp.array[wp.int32],
+    buffer_overflows: wp.array[wp.int32],
+    overflow: wp.array[wp.int32],
+):
+    """Copy the reducer's loss counters into the contact stream's overflow flag."""
+    overflow[0] = wp.where(insert_failures[0] > 0 or buffer_overflows[0] > 0, 1, 0)
 
 
 @wp.kernel(enable_backward=False)
@@ -764,11 +841,11 @@ def _compute_per_world_shape_pairs_max(model: Model) -> int:
         colliding = np.ones(len(sw), dtype=bool)
 
     global_count = int(np.count_nonzero((sw == -1) & colliding))
-    world_ids = np.unique(sw[(sw >= 0) & colliding])
+    _, world_counts = np.unique(sw[(sw >= 0) & colliding], return_counts=True)
 
     total = 0
-    for wid in world_ids:
-        n = int(np.count_nonzero((sw == wid) & colliding)) + global_count
+    for count in world_counts:
+        n = int(count) + global_count
         total += (n * (n - 1)) // 2
 
     # Dedicated global-vs-global segment (appended by precompute_world_map).
@@ -793,20 +870,21 @@ def _compute_per_world_mask_pair_max(
 
     sw = shape_world.numpy()
     colliding = _shape_collide_mask(model, len(sw))
-    global_shapes = sw == -1
-    world_ids = np.unique(sw[(sw >= 0) & colliding])
+    # Group once instead of scanning all shapes for every world's segment.
+    # Compact indices also avoid allocating by the largest (possibly sparse) world ID.
+    world_ids, inverse = np.unique(sw, return_inverse=True)
+    active = (world_ids >= 0) & (np.bincount(inverse[colliding], minlength=len(world_ids)) > 0)
 
-    def count_pairs(segment: np.ndarray) -> int:
-        first_count = int(np.count_nonzero(segment & first_mask))
-        second_count = int(np.count_nonzero(segment & second_mask))
-        overlap = int(np.count_nonzero(segment & first_mask & second_mask))
-        return first_count * second_count - overlap * (overlap + 1) // 2
+    def segment_counts(mask: np.ndarray) -> np.ndarray:
+        counts = np.bincount(inverse[mask], minlength=len(world_ids)).astype(np.int64, copy=False)
+        global_count = counts[world_ids == -1].sum()
+        return np.append(counts[active] + global_count, global_count)
 
-    total = 0
-    for world_id in world_ids:
-        total += count_pairs(global_shapes | (sw == world_id))
-    total += count_pairs(global_shapes)
-    return max(0, total)
+    first_counts = segment_counts(first_mask)
+    second_counts = segment_counts(second_mask)
+    overlaps = segment_counts(first_mask & second_mask)
+    pairs = first_counts * second_counts - overlaps * (overlaps + 1) // 2
+    return max(0, int(pairs.sum()))
 
 
 def _resolve_shape_pairs_max(model: Model, override: int | None) -> int:
@@ -1269,6 +1347,8 @@ class CollisionPipeline:
                 a prebuilt broad phase instance for expert usage.
             narrow_phase: Optional prebuilt narrow phase instance. Must be
                 provided together with a broad phase instance for expert usage.
+                If its voxel-resolution table is omitted, use the model's table.
+                A supplied table must match the model's shape count and device.
             shape_pairs_filtered: Precomputed shape pairs for EXPLICIT mode.
                 When broad_phase is "explicit", uses model.shape_contact_pairs if not provided. For
                 "nxn"/"sap" modes, ignored. The pair count and shape-type routing are used to size
@@ -1310,8 +1390,10 @@ class CollisionPipeline:
             contact_matching_pos_threshold: World-space distance threshold [m]
                 between the previous and current contact midpoints
                 ``0.5 * (world(point0) + world(point1))``.  Contacts whose
-                midpoint moves more than this are considered broken.  Defaults
-                to ``0.0005``.
+                midpoint moves more than this are considered broken. In sticky mode,
+                keep fresh geometry when either saved witness moves farther than this
+                from its fresh contact point under the current body transforms.
+                Defaults to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between
                 old and new contact normals for a match.
             contact_report: Allocate ``rigid_contact_new_indices`` /
@@ -1377,6 +1459,11 @@ class CollisionPipeline:
                 broad_phase_instance = broad_phase
 
         shape_count = model.shape_count
+        shape_mesh_properties = getattr(model, "_shape_mesh_properties", None)
+        self._rigid_contact_surface_velocity = bool(
+            shape_mesh_properties is not None
+            and np.any(shape_mesh_properties.numpy() & int(MeshProperties.SURFACE_VELOCITY))
+        )
         self._contact_sort_shape_index_bits = contact_sort_shape_index_bits(shape_count)
         device = model.device
         using_expert_components = broad_phase_instance is not None or narrow_phase is not None
@@ -1575,17 +1662,17 @@ class CollisionPipeline:
                         & ((shape_types == int(GeoType.MESH)) | (shape_edge_range[:, 1] > 0))
                     )
                     coarse_textures = getattr(model, "_texture_sdf_coarse_textures", None)
-                    has_texture_sdf = np.array(
-                        [
-                            sdf_idx >= 0
-                            and coarse_textures is not None
-                            and sdf_idx < len(coarse_textures)
-                            and coarse_textures[sdf_idx] is not None
-                            for sdf_idx in shape_sdf_index
-                        ],
-                        dtype=bool,
-                    )
-                    mesh_sdf_texture_only = bool(np.any(mesh_sdf_shapes) and np.all(has_texture_sdf[mesh_sdf_shapes]))
+                    if coarse_textures is not None and len(coarse_textures) > 0:
+                        has_texture_sdf = np.array(
+                            [
+                                sdf_idx >= 0 and sdf_idx < len(coarse_textures) and coarse_textures[sdf_idx] is not None
+                                for sdf_idx in shape_sdf_index
+                            ],
+                            dtype=bool,
+                        )
+                        mesh_sdf_texture_only = bool(
+                            np.any(mesh_sdf_shapes) and np.all(has_texture_sdf[mesh_sdf_shapes])
+                        )
                     if mesh_sdf_texture_only:
                         texture_sdf_data = model._texture_sdf_data.numpy()
                         scale_baked = texture_sdf_data["scale_baked"]
@@ -1598,11 +1685,12 @@ class CollisionPipeline:
                 if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
                     # Explicit pair types are fixed at pipeline construction, including
                     # intentional cross-world pairs, so size only the stages they can reach.
-                    explicit_pairs = self.shape_pairs_filtered.numpy().reshape(-1, 2)
-                    if len(explicit_pairs) == 0:
+                    # Both stages require a mesh or planar SDF, even in heightfield scenes.
+                    if not has_meshes or self.shape_pairs_max == 0:
                         max_mesh_mesh_pairs = 0
                         max_mesh_plane_pairs = 0
                     else:
+                        explicit_pairs = self.shape_pairs_filtered.numpy().reshape(-1, 2)
                         shape_a = explicit_pairs[:, 0]
                         shape_b = explicit_pairs[:, 1]
                         box_mask = colliding_mask & (shape_types == int(GeoType.BOX))
@@ -1643,9 +1731,10 @@ class CollisionPipeline:
                 }
                 use_lean_gjk_mpr = not bool(lean_unsupported & set(colliding_shape_types.tolist()))
 
-            candidate_pair_work_estimate = min(self.shape_pairs_max, _compute_per_world_shape_pairs_max(model))
             if self.broad_phase_mode == "explicit":
                 candidate_pair_work_estimate = self.shape_pairs_max
+            else:
+                candidate_pair_work_estimate = min(self.shape_pairs_max, _compute_per_world_shape_pairs_max(model))
             has_generic_convex_pairs, generic_convex_pair_work_estimate = _compute_generic_convex_pair_stats(
                 model,
                 broad_phase_mode=self.broad_phase_mode,
@@ -1746,6 +1835,21 @@ class CollisionPipeline:
             raise ValueError(
                 "narrow_phase.shape_aabb_upper must have one entry per model shape "
                 f"(expected {shape_count}, got {self.narrow_phase.shape_aabb_upper.shape[0]})"
+            )
+
+        # Mesh/SDF contact reduction indexes this table even for custom components.
+        voxel_resolution = getattr(self.narrow_phase, "shape_voxel_resolution", None)
+        if voxel_resolution is None:
+            self.narrow_phase.shape_voxel_resolution = model._shape_voxel_resolution
+        elif voxel_resolution.shape[0] != shape_count:
+            raise ValueError(
+                "narrow_phase.shape_voxel_resolution must have one entry per model shape "
+                f"(expected {shape_count}, got {voxel_resolution.shape[0]})"
+            )
+        elif voxel_resolution.device != model.device:
+            raise ValueError(
+                "narrow_phase.shape_voxel_resolution must be on the model device "
+                f"(expected {model.device}, got {voxel_resolution.device})"
             )
 
         # Built here (not in finalize) so models/tasks that never collide don't pay for it.
@@ -1923,6 +2027,7 @@ class CollisionPipeline:
             requested_attributes=self.model.get_requested_contact_attributes(),
             contact_matching=self._matching_enabled,
             contact_report=self.contact_report,
+            rigid_contact_surface_velocity=self._rigid_contact_surface_velocity,
         )
         contacts._contact_matching_mode = self.contact_matching
         # Flag the buffer so solvers that only consume particle contacts can refuse it (see
@@ -2432,6 +2537,17 @@ class CollisionPipeline:
             **narrow_phase_extension_kwargs,
         )
 
+        # The reducer's counters are reused by the next pass, so latch losses on this contact stream.
+        reducer = self.narrow_phase.global_contact_reducer
+        if reducer is not None:
+            wp.launch(
+                _record_reduction_overflow,
+                dim=1,
+                inputs=[reducer.ht_insert_failures, reducer.buffer_overflows, contacts._reduction_overflow],
+                device=self.device,
+                record_tape=False,
+            )
+
         # Match contacts against previous frame before sorting.
         if self._contact_matcher is not None:
             if contacts.rigid_contact_match_index is None:
@@ -2496,6 +2612,36 @@ class CollisionPipeline:
                 body_q=state.body_q,
                 shape_body=writer_data.shape_body,
                 device=self.device,
+            )
+
+        if self._rigid_contact_surface_velocity and contacts.rigid_contact_max > 0:
+            if (
+                contacts.rigid_contact_surface_velocity is None
+                or len(contacts.rigid_contact_surface_velocity) < contacts.rigid_contact_max
+            ):
+                raise ValueError(
+                    "contacts must allocate rigid surface velocities for this model; use CollisionPipeline.contacts()"
+                )
+            wp.launch(
+                kernel=eval_rigid_contact_surface_velocities,
+                dim=contacts.rigid_contact_max,
+                inputs=[
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    state.body_q,
+                    model.shape_body,
+                    model.shape_type,
+                    model.shape_scale,
+                    self.geom_transform,
+                    model.shape_source_ptr,
+                    model._shape_mesh_properties,
+                ],
+                outputs=[contacts.rigid_contact_surface_velocity],
+                device=self.device,
+                record_tape=False,
             )
 
         # Build the contact report before saving state, because save

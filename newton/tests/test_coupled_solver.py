@@ -4,7 +4,6 @@
 """Smoke tests for the coupled solver prototype."""
 
 import unittest
-import warnings
 from typing import ClassVar
 from unittest import mock
 
@@ -918,15 +917,10 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                 for name, expected in parent_before.items():
                     np.testing.assert_array_equal(getattr(parent, name).numpy(), expected)
 
-        legacy_mask = wp.array((True, False), dtype=wp.bool, device=model.device)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", DeprecationWarning)
-            coupled.reset(parent, world_mask=legacy_mask, flags=0)
-        deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
-        self.assertEqual(len(deprecations), 1)
-        forwarded_mask = entry.solver.reset_calls[-1][1]
-        self.assertIsNot(forwarded_mask, legacy_mask)
-        np.testing.assert_array_equal(forwarded_mask.numpy(), (True, False, False))
+        reset_call_count = len(entry.solver.reset_calls)
+        with self.assertRaisesRegex(ValueError, "world_count \\+ 1"):
+            coupled.reset(parent, world_mask=wp.array((True, False), dtype=wp.bool, device=model.device), flags=0)
+        self.assertEqual(len(entry.solver.reset_calls), reset_call_count)
 
         model = newton.ModelBuilder().finalize(device="cpu")
         with self.assertRaises(ValueError):
@@ -1196,6 +1190,14 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 model=self.model,
                 entries=[SolverCoupled.Entry(name="unsupported", solver=SolverBase, bodies=[0])],
             )
+
+    def test_entry_contact_buffer_detects_surface_velocity_layout_change(self):
+        """Recreate filtered contacts when surface-velocity allocation changes."""
+        contacts = newton.Contacts(1, 0, device="cpu")
+        filtered = newton.Contacts(1, 0, device="cpu", rigid_contact_surface_velocity=True)
+
+        self.assertFalse(SolverCoupled._entry_contact_buffer_matches(filtered, contacts))
+        self.assertFalse(SolverCoupled._entry_contact_buffer_matches(contacts, filtered))
 
     def test_entry_contacts_preserves_contact_matching_mode(self):
         """Preserve matching mode metadata when coupled entry buffers are reused."""
@@ -3672,13 +3674,13 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         model.test.namespace_marker = "parent"
 
         self.assertEqual(
-            model._attribute_reference_frequency("test:linkage_body0"),
+            model._attribute_spec("test:linkage_body0").references,
             newton.Model.AttributeFrequency.BODY,
         )
         linkage_spec = model._attribute_spec("test:linkage_bodies")
         self.assertEqual(linkage_spec.frequency, "test:linkage")
         self.assertEqual(linkage_spec.references, newton.Model.AttributeFrequency.BODY)
-        self.assertEqual(model._attribute_reference_frequency("test:link_entity"), "test:entity")
+        self.assertEqual(model._attribute_spec("test:link_entity").references, "test:entity")
         self.assertEqual(
             model.attribute_assignment.get("test:linkage_body0", newton.Model.AttributeAssignment.MODEL),
             newton.Model.AttributeAssignment.MODEL,
@@ -3691,9 +3693,9 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
             ("tri_materials", newton.Model.AttributeFrequency.TRIANGLE),
         ):
             with self.subTest(core_attribute=name):
-                self.assertEqual(model._resolve_attribute_frequency(name), frequency)
+                self.assertEqual(model.get_attribute_frequency(name), frequency)
         self.assertEqual(
-            model._resolve_attribute_frequency("joint_q"),
+            model.get_attribute_frequency("joint_q"),
             newton.Model.AttributeFrequency.JOINT_COORD,
         )
 

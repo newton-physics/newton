@@ -515,6 +515,27 @@ def concat6d(X1: wp.mat33f, X2: wp.mat33f) -> wp.spatial_matrixf:
 
 
 @wp.func
+def compute_gyroscopic_torque(
+    dt: wp.float32,
+    I_i: wp.mat33f,
+    omega_i: wp.vec3f,
+) -> wp.vec3f:
+    """Compute the effective gyroscopic torque over a time step.
+
+    Takes an explicit Euler step of the angular momentum ``L = I ω`` and
+    rescales the result back to ``|L|``. Explicit Euler only ever lengthens
+    ``L`` and steadily gains energy; restoring the conserved momentum
+    magnitude keeps torque-free rotation bounded, as in PhysX.
+    """
+    L_i = I_i @ omega_i
+    L_i_n = L_i - dt * wp.cross(omega_i, L_i)
+    L_i_n_len = wp.length(L_i_n)
+    if L_i_n_len > 0.0:
+        L_i_n *= wp.length(L_i) / L_i_n_len
+    return (L_i_n - L_i) / dt
+
+
+@wp.func
 def compute_body_twist_update_with_eom(
     dt: wp.float32,
     g: wp.vec3f,
@@ -527,14 +548,13 @@ def compute_body_twist_update_with_eom(
     # Extract linear and angular parts
     v_i = wp.spatial_top(u_i)
     omega_i = wp.spatial_bottom(u_i)
-    S_i = wp.skew(omega_i)
     f_i = wp.spatial_top(w_i)
     tau_i = wp.spatial_bottom(w_i)
 
     # Compute velocity update equations
     # Disable gravity acceleration for massless bodies because inv_m * m i = 0.0 for such bodies, not 1.0.
     v_i_n = v_i + dt * (g * wp.nonzero(inv_m_i) + inv_m_i * f_i)
-    omega_i_n = omega_i + dt * inv_I_i @ (-S_i @ (I_i @ omega_i) + tau_i)
+    omega_i_n = omega_i + dt * inv_I_i @ (compute_gyroscopic_torque(dt, I_i, omega_i) + tau_i)
 
     # Return the updated velocities
     return v_i_n, omega_i_n

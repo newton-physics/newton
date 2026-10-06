@@ -3,7 +3,6 @@
 
 import os
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
@@ -27,20 +26,6 @@ def _eq_value(builder, name, idx):
 
 
 class TestEqualityConstraints(unittest.TestCase):
-    def test_eq_type_deprecation(self):
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            legacy_type = newton.EqType.CONNECT
-            scoped_type = newton.solvers.SolverMuJoCo.EqType.CONNECT
-
-        self.assertEqual(legacy_type, scoped_type)
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertIn(
-            "newton.EqType is deprecated in Newton 1.4; use newton.solvers.SolverMuJoCo.EqType instead",
-            str(caught[0].message),
-        )
-
     def test_equality_constraint_references_use_namespaced_frequency(self):
         def make_builder(references):
             builder = newton.ModelBuilder()
