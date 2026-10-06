@@ -1462,9 +1462,9 @@ void main() {
             self._init_ovrtx()
 
         with wp.ScopedTimer("ViewerRTX::end_frame", active=PROFILE_ENABLED, use_nvtx=True):
-            if self._use_ovstage and self._async and self._render_result is not None:
+            if self._use_ovstage and self._render_result is not None:
                 # OVRTX reads the shared stage asynchronously, so finish that
-                # read before publishing changes for the next frame.
+                # read before publishing changes, even after switching modes.
                 self._render_result.wait()
             if self._use_ovstage:
                 self._ovstage_ordinal += 1
@@ -2294,14 +2294,14 @@ void main() {
         with wp.ScopedTimer("ViewerRTX::render_and_display", active=PROFILE_ENABLED, use_nvtx=True):
             from ovrtx import Device
 
+            # UI changes made while presenting take effect on the next frame.
+            async_rendering = self._async
             self._render_products = None
 
-            if self._async:
-                # wait for async rendering to complete
+            if self._render_result is not None:
                 with wp.ScopedTimer("ViewerRTX::rtx_wait", active=PROFILE_ENABLED, use_nvtx=True):
-                    if self._render_result is not None:
-                        self._render_products = self._render_result.wait().fetch()
-            else:
+                    self._render_products = self._render_result.wait().fetch()
+            if not async_rendering:
                 # render synchronously
                 with wp.ScopedTimer("ViewerRTX::rtx_step", active=PROFILE_ENABLED, use_nvtx=True):
                     step_kwargs = {
@@ -2311,6 +2311,7 @@ void main() {
                     if self._use_ovstage:
                         step_kwargs["ordinal"] = self._ovstage_ordinal
                     self._render_products = self._rtx.step(**step_kwargs)
+                    self._render_result = None
 
             # blit to window if not headless
             if self._render_products is not None and self._window is not None and self._window.context is not None:
@@ -2327,7 +2328,7 @@ void main() {
                                         self._blit_to_window(pixels)
                                     mapping.unmap(stream=pixels.device.stream.cuda_stream)
 
-            if self._async:
+            if async_rendering:
                 # kick off next async rendering frame
                 with wp.ScopedTimer("ViewerRTX::rtx_step_async", active=PROFILE_ENABLED, use_nvtx=True):
                     step_kwargs = {

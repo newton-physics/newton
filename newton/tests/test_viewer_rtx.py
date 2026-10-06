@@ -5,6 +5,7 @@
 
 import builtins
 import importlib.util
+import subprocess
 import tempfile
 import unittest
 import warnings
@@ -15,6 +16,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerRTX
 
@@ -26,7 +28,7 @@ OVSTAGE_AVAILABLE = importlib.util.find_spec("ovstage") is not None
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestViewerRTXGetFrame(unittest.TestCase):
     def test_headless_frame_capture(self):
-        """Capture the latest moving scene in sync and async modes and save screenshots."""
+        """Capture the latest moving scene across render mode changes and save screenshots."""
         if not wp.is_cuda_available():
             self.skipTest("Requires an NVIDIA RTX-capable GPU")
 
@@ -43,7 +45,10 @@ class TestViewerRTXGetFrame(unittest.TestCase):
                 try:
                     viewer.set_model(model)
                     viewer.set_camera(pos=wp.vec3(2.0, 0.0, 0.0), pitch=0.0, yaw=180.0)
-                    for frame_index, y in enumerate((-0.5, 0.5, -0.5)):
+                    modes = (async_rendering, not async_rendering, async_rendering)
+                    for frame_index, (render_async, y) in enumerate(zip(modes, (-0.5, 0.5, -0.5), strict=True)):
+                        # Exercise the same mode flag exposed by the viewer UI.
+                        viewer._async = render_async
                         state.body_q.assign([wp.transform((0.0, y, 0.0), wp.quat_identity())])
                         viewer.begin_frame(frame_index / 60)
                         viewer.log_state(state)
@@ -71,6 +76,47 @@ class TestViewerRTXGetFrame(unittest.TestCase):
                             np.testing.assert_array_equal(np.asarray(screenshot.convert("RGB")), rgb)
                 finally:
                     viewer.close()
+
+    @unittest.skipUnless(importlib.util.find_spec("imageio_ffmpeg") is not None, "Requires imageio-ffmpeg")
+    def test_headless_video_recording(self):
+        """Encode and decode a real RTX recording without OpenGL renderer attributes."""
+        if not wp.is_cuda_available():
+            self.skipTest("Requires an NVIDIA RTX-capable GPU")
+
+        import imageio_ffmpeg as ffmpeg  # noqa: PLC0415
+        from PIL import Image
+
+        viewer = ViewerRTX(width=64, height=48, headless=True)
+        try:
+            self.assertTrue(enable_recording(viewer))
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "recording.mp4"
+                viewer.start_clip(str(path), max_frames=2, video_folder=str(Path(directory) / "frames"))
+                for frame_index in range(2):
+                    viewer.begin_frame(frame_index / 60)
+                    self.assertTrue(viewer.should_step())
+                    viewer.end_frame()
+
+                self.assertTrue(path.is_file())
+                subprocess.run(
+                    [
+                        ffmpeg.get_ffmpeg_exe(),
+                        "-v",
+                        "error",
+                        "-i",
+                        str(path),
+                        str(Path(directory) / "decoded-%02d.png"),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                decoded = sorted(Path(directory).glob("decoded-*.png"))
+                self.assertEqual(len(decoded), 2)
+                for frame_path in decoded:
+                    with Image.open(frame_path) as frame:
+                        self.assertEqual(frame.size, (64, 48))
+        finally:
+            viewer.close()
 
 
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
@@ -343,6 +389,7 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
         viewer._rtx = mock.Mock()
         viewer._should_close = False
         viewer._async = False
+        viewer._render_result = None
         viewer._use_ovstage = True
         viewer._ovstage_ordinal = 1
         viewer._render_product_path = "/Render/Product"
