@@ -2742,10 +2742,11 @@ def parse_usd(
         builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
 
     # Parse Newton actuator prims from the USD stage.
-    from ..actuators.delay import Delay  # noqa: PLC0415
+    from ..actuators.input_processors.base import InputProcessorBase  # noqa: PLC0415
     from ..actuators.usd_parser import parse_actuator_prim  # noqa: PLC0415
 
     actuator_count = 0
+    add_actuator_params = set(inspect.signature(builder.add_actuator).parameters) - {"kwargs"}
     path_to_dof = {
         path: builder.joint_qd_start[idx] + merged_dof_offset.get(path, 0)
         for path, idx in path_joint_map.items()
@@ -2784,21 +2785,32 @@ def parse_usd(
         coord_index = path_to_coord.get(target_path)
         pos_index = coord_index if coord_index is not None and coord_index != dof_index else None
 
-        delay_val = None
+        input_processor_specs = []
         clamping_specs = []
         for comp_class, comp_kwargs in parsed.component_specs:
-            if comp_class is Delay:
-                delay_val = comp_kwargs.get("delay_steps")
+            if issubclass(comp_class, InputProcessorBase):
+                proc_kwargs = dict(comp_kwargs)
+                for name in comp_class.JOINT_PARAMS:
+                    path = proc_kwargs.get(name)
+                    if isinstance(path, str):
+                        if path not in path_joint_map:
+                            raise ValueError(
+                                f"Actuator prim {prim.GetPath()}: '{name}' references '{path}', "
+                                "which is not a known joint"
+                            )
+                        proc_kwargs[name] = path_joint_map[path]
+                input_processor_specs.append((comp_class, proc_kwargs))
             else:
                 clamping_specs.append((comp_class, comp_kwargs))
 
+        drive_kwargs = {name: value for name, value in parsed.drive_kwargs.items() if name not in add_actuator_params}
         builder.add_actuator(
             parsed.drive_class,
             index=dof_index,
             clamping=clamping_specs if clamping_specs else None,
-            delay_steps=delay_val,
             pos_index=pos_index,
-            **parsed.drive_kwargs,
+            input_processors=input_processor_specs,
+            **drive_kwargs,
         )
         actuator_count += 1
     if verbose and actuator_count > 0:

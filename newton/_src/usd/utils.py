@@ -114,18 +114,16 @@ def _get_raw_api_schemas(prim: Usd.Prim) -> list[str]:
     listop = prim.GetMetadata("apiSchemas")
     if listop is None:
         return []
-    return (
-        list(getattr(listop, "prependedItems", []))
-        + list(getattr(listop, "appendedItems", []))
-        + list(getattr(listop, "explicitItems", []))
-    )
+    return list(listop.GetAppliedItems())
 
 
 def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
-    """Return the API schema tokens applied to *prim*.
+    """Return the API schema tokens applied to *prim*, in authored order.
 
-    Falls back to raw ``apiSchemas`` list-op metadata when the schema plugin
-    is not loaded and :meth:`pxr.Usd.Prim.GetAppliedSchemas` returns nothing.
+    Combines the raw ``apiSchemas`` list-op metadata, which also holds tokens
+    whose schema plugin is not loaded, with
+    :meth:`pxr.Usd.Prim.GetAppliedSchemas`, which returns only schemas
+    registered with USD and adds the schemas they include.
 
     Args:
         prim: Prim to query.
@@ -133,8 +131,8 @@ def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
     Returns:
         Applied API schema tokens (e.g. ``["NewtonPDControlAPI"]``).
     """
-    schemas = list(prim.GetAppliedSchemas())
-    return schemas if schemas else _get_raw_api_schemas(prim)
+    schemas = _get_raw_api_schemas(prim)
+    return schemas + [name for name in prim.GetAppliedSchemas() if name not in schemas]
 
 
 def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:

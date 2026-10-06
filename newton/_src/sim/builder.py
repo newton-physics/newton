@@ -18,7 +18,7 @@ from bisect import bisect_left
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
@@ -80,6 +80,7 @@ if TYPE_CHECKING:
 
     from ..actuators.clamping.base import ClampingBase
     from ..actuators.drives.base import DriveBase
+    from ..actuators.input_processors.base import InputProcessorBase
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -141,6 +142,13 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
 _DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
+_ACTUATOR_DELAY_STEPS_DEPRECATION_MSG = (
+    "ModelBuilder.add_actuator(delay_steps=...) is deprecated in Newton 1.7; "
+    "use input_processors=[(InputProcessorDelay, {'delay_steps': ...})] instead."
+)
+_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG = (
+    "ModelBuilder.ActuatorEntry.delay_args is deprecated in Newton 1.7; use input_processor_args instead."
+)
 _ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
     "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
 )
@@ -760,10 +768,10 @@ class ModelBuilder:
         """Stores accumulated specs for one group of compatible composed actuators.
 
         Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(drive_class, delay_steps is not None, clamping_key, drive_shared_key)``
+        ``(drive_class, input_processor_key, clamping_key, drive_shared_key)``
         where shared params (e.g. ``model_path``, lookup tables) must
-        be identical across all actuators in a group.  Delay step values
-        are per-DOF; the buffer is sized to ``max(delay_step_values) + 1``.
+        be identical across all actuators in a group.  Per-DOF params such
+        as delay step values may differ within a group.
         """
 
         drive_class: type  # DriveBase subclass (e.g. DrivePD)
@@ -773,8 +781,25 @@ class ModelBuilder:
         indices: list[int]  # Per-actuator DOF indices (joint_qd layout)
         pos_indices: list[int]  # Per-actuator position indices (joint_q layout)
         drive_args: list[dict[str, Any]]  # Per-actuator drive array params
-        delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
+        input_processor_classes: tuple = ()  # Tuple of InputProcessorBase subclass types (in order)
+        input_processor_shared_kwargs: tuple = ()  # Tuple of dicts: shared kwargs per input processor class
+        input_processor_args: list[list[dict[str, Any]]] = field(default_factory=list)  # Per-actuator params
+
+        @property
+        def delay_args(self) -> list[dict[str, Any]]:
+            """Deprecated alias for the delay entries of :attr:`input_processor_args`.
+
+            .. deprecated:: 1.7
+                Use :attr:`input_processor_args` instead.
+            """
+            from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
+
+            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            for i, proc_class in enumerate(self.input_processor_classes):
+                if issubclass(proc_class, InputProcessorDelay):
+                    return [per_actuator[i] for per_actuator in self.input_processor_args]
+            return []
 
     @dataclass
     class BvhConfig:
@@ -2818,6 +2843,7 @@ class ModelBuilder:
         delay_steps: int | None = None,
         pos_index: int | None = None,
         *,
+        input_processors: list[tuple[type[InputProcessorBase], dict[str, Any]]] | None = None,
         controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
         **kwargs: Any,
     ) -> None:
@@ -2827,9 +2853,8 @@ class ModelBuilder:
         Multiple calls with the same *drive_class*, *clamping*
         types, and identical shared parameters are accumulated into one
         :class:`~newton.actuators.Actuator` instance during
-        :meth:`finalize <ModelBuilder.finalize>`.  Different delay
-        values are supported within the same group; the buffer is
-        sized to ``max(delay_step_values)``.
+        :meth:`finalize <ModelBuilder.finalize>`.  Per-DOF parameters,
+        such as delay step values, may differ within the same group.
 
         Args:
             drive_class: Drive class (e.g. :class:`~newton.actuators.DrivePD`).
@@ -2837,11 +2862,18 @@ class ModelBuilder:
                 velocity targets, feedforward, forces).
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
                 post-drive. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
-            delay_steps: Optional number of timesteps [timesteps] to delay inputs.
+            delay_steps: Deprecated in Newton 1.7; use
+                ``input_processors=[(InputProcessorDelay, {"delay_steps": ...})]`` instead.
             pos_index: DOF index into ``joint_q``-shaped arrays (positions,
                 position targets). Defaults to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
                 where ``joint_q`` and ``joint_qd`` have different layouts.
+            input_processors: Optional list of ``(InputProcessorClass, kwargs)``
+                tuples applied in order before the drive. E.g.
+                ``[(InputProcessorDelay, {"delay_steps": 3})]``. Parameters listed in the
+                class's :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`
+                take a joint index or a joint label; ``None`` selects the
+                actuated joint.
             controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
         """
@@ -2857,6 +2889,12 @@ class ModelBuilder:
             raise TypeError("add_actuator() missing required argument: 'index'")
 
         clamping = clamping or []
+        input_processors = list(input_processors or [])
+        if delay_steps is not None:
+            from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
+
+            warnings.warn(_ACTUATOR_DELAY_STEPS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            input_processors.insert(0, (InputProcessorDelay, {"delay_steps": delay_steps}))
 
         # --- Resolve drive kwargs and separate shared from per-DOF ---
         resolved_drive = drive_class.resolve_arguments(kwargs)
@@ -2885,10 +2923,32 @@ class ModelBuilder:
 
         clamping_shared_kwargs = tuple(clamping_shared_list)
 
+        # --- Resolve per-input-processor kwargs and separate shared from per-DOF ---
+        input_processor_classes = tuple(pc for pc, _ in input_processors)
+        input_processor_shared_list = []
+        input_processor_array_params_list = []
+        for proc_class, proc_kwargs in input_processors:
+            resolved_proc = proc_class.resolve_arguments(proc_kwargs)
+            for name in proc_class.JOINT_PARAMS:
+                joint = resolved_proc.pop(name)
+                if joint is None:
+                    resolved_proc[f"{name}_indices"] = index
+                    resolved_proc[f"{name}_pos_indices"] = pos_index if pos_index is not None else index
+                    continue
+                joint = self._resolve_actuator_joint(joint, proc_class, name)
+                resolved_proc[f"{name}_indices"] = self.joint_qd_start[joint]
+                resolved_proc[f"{name}_pos_indices"] = self.joint_q_start[joint]
+            proc_shared_names = getattr(proc_class, "SHARED_PARAMS", set())
+            proc_shared = {k: resolved_proc[k] for k in proc_shared_names if k in resolved_proc}
+            proc_array = {k: v for k, v in resolved_proc.items() if k not in proc_shared_names}
+            input_processor_shared_list.append(proc_shared)
+            input_processor_array_params_list.append(proc_array)
+
+        input_processor_shared_kwargs = tuple(input_processor_shared_list)
+
         # --- Build entry key: identifies a group of compatible actuators ---
-        # Groups differ when drive class, presence of delay, clamping
-        # types/shared-params, or drive shared params differ.
-        # Delay values are per-DOF; the buffer is sized to max(delays).
+        # Groups differ when drive class, input processor types/shared-params,
+        # clamping types/shared-params, or drive shared params differ.
         def _make_hashable(v: Any) -> Any:
             if isinstance(v, list):
                 return tuple(v)
@@ -2899,7 +2959,11 @@ class ModelBuilder:
             (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
             for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
         )
-        entry_key = (drive_class, delay_steps is not None, clamping_key, drive_shared_key)
+        input_processor_key = tuple(
+            (pc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
+            for pc, shared in zip(input_processor_classes, input_processor_shared_list, strict=True)
+        )
+        entry_key = (drive_class, input_processor_key, clamping_key, drive_shared_key)
 
         entry = self.actuator_entries.setdefault(
             entry_key,
@@ -2911,17 +2975,36 @@ class ModelBuilder:
                 indices=[],
                 pos_indices=[],
                 drive_args=[],
-                delay_args=[],
                 clamping_args=[],
+                input_processor_classes=input_processor_classes,
+                input_processor_shared_kwargs=input_processor_shared_kwargs,
+                input_processor_args=[],
             ),
         )
 
         entry.indices.append(index)
         entry.pos_indices.append(pos_index if pos_index is not None else index)
         entry.drive_args.append(drive_array_params)
-        if delay_steps is not None:
-            entry.delay_args.append({"delay_steps": delay_steps})
         entry.clamping_args.append(clamping_array_params_list)
+        entry.input_processor_args.append(input_processor_array_params_list)
+
+    def _resolve_actuator_joint(self, joint: int | str, component_class: type, name: str) -> int:
+        """Resolve a joint index or joint label to a single-DOF joint index."""
+        if isinstance(joint, str):
+            matches = [i for i, label in enumerate(self.joint_label) if label == joint]
+            if len(matches) != 1:
+                problem = "unknown" if not matches else f"ambiguous ({len(matches)} joints with this)"
+                raise ValueError(f"{component_class.__name__}: '{name}' references {problem} joint label '{joint}'")
+            joint = matches[0]
+        if not 0 <= joint < self.joint_count:
+            raise ValueError(f"{component_class.__name__}: '{name}' joint index {joint} is out of range")
+        next_start = self.joint_qd_start[joint + 1] if joint + 1 < self.joint_count else self.joint_dof_count
+        if next_start - self.joint_qd_start[joint] != 1:
+            raise ValueError(
+                f"{component_class.__name__}: '{name}' must reference a single-DOF joint, "
+                f"but joint '{self.joint_label[joint]}' has {next_start - self.joint_qd_start[joint]} DOFs"
+            )
+        return joint
 
     def _stack_args_to_arrays(
         self,
@@ -5102,15 +5185,25 @@ class ModelBuilder:
                     indices=[],
                     pos_indices=[],
                     drive_args=[],
-                    delay_args=[],
                     clamping_args=[],
+                    input_processor_classes=sub_entry.input_processor_classes,
+                    input_processor_shared_kwargs=sub_entry.input_processor_shared_kwargs,
+                    input_processor_args=[],
                 ),
             )
             entry.indices.extend(idx + joint_dof_offset for idx in sub_entry.indices)
             entry.pos_indices.extend(idx + joint_coord_offset for idx in sub_entry.pos_indices)
             entry.drive_args.extend(sub_entry.drive_args)
-            entry.delay_args.extend(sub_entry.delay_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
+            for per_actuator in sub_entry.input_processor_args:
+                offset_args = []
+                for proc_class, sub_args in zip(sub_entry.input_processor_classes, per_actuator, strict=True):
+                    proc_args = dict(sub_args)
+                    for name in proc_class.JOINT_PARAMS:
+                        proc_args[f"{name}_indices"] += joint_dof_offset
+                        proc_args[f"{name}_pos_indices"] += joint_coord_offset
+                    offset_args.append(proc_args)
+                entry.input_processor_args.append(offset_args)
 
     def add_builder(
         self,
@@ -14276,7 +14369,6 @@ class ModelBuilder:
 
             # Create actuators from accumulated entries
             from ..actuators.actuator import Actuator  # noqa: PLC0415
-            from ..actuators.delay import Delay  # noqa: PLC0415
 
             m.actuators = []
             for entry in self.actuator_entries.values():
@@ -14290,11 +14382,22 @@ class ModelBuilder:
                 drive_arrays = self._stack_args_to_arrays(entry.drive_args, device=device, requires_grad=requires_grad)
                 drive = entry.drive_class(**drive_arrays, **entry.drive_shared_kwargs)
 
-                delay_obj = None
-                if entry.delay_args:
-                    delay_arrays = self._stack_args_to_arrays(entry.delay_args, device=device, default_dtype=wp.int32)
-                    max_delay = max(d["delay_steps"] for d in entry.delay_args)
-                    delay_obj = Delay(**delay_arrays, max_delay=max_delay)
+                # Build input processors from per-DOF arrays + shared kwargs
+                input_processor_objs = []
+                for i, (proc_class, shared_kw) in enumerate(
+                    zip(entry.input_processor_classes, entry.input_processor_shared_kwargs, strict=True)
+                ):
+                    proc_args_per_actuator = [dict(per_act[i]) for per_act in entry.input_processor_args]
+                    index_arrays = {}
+                    for name in proc_class.JOINT_PARAMS:
+                        for key in (f"{name}_indices", f"{name}_pos_indices"):
+                            index_arrays[key] = self._build_index_array(
+                                [args.pop(key) for args in proc_args_per_actuator], device
+                            )
+                    proc_arrays = self._stack_args_to_arrays(
+                        proc_args_per_actuator, device=device, default_dtype=wp.int32
+                    )
+                    input_processor_objs.append(proc_class(**proc_arrays, **index_arrays, **shared_kw))
 
                 # Build clamping objects from per-DOF arrays + shared kwargs
                 clamping_objs = []
@@ -14313,11 +14416,11 @@ class ModelBuilder:
                 actuator = Actuator(
                     indices=indices,
                     drive=drive,
-                    delay=delay_obj,
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
                     target_pos_indices=target_pos_indices_arg,
                     requires_grad=requires_grad,
+                    input_processors=input_processor_objs,
                 )
 
                 m.actuators.append(actuator)
