@@ -57,7 +57,7 @@ class CableGoal:
     """Cable attachment point in the robot base frame [m]."""
 
     sensor_pos: Vec3
-    """Camera optical-frame origin in base [m]."""
+    """Camera origin in the robot base frame [m]."""
 
     crop: list[int]
     """``[x0, y0, x1, y1]`` region scored in this view [px]."""
@@ -76,7 +76,7 @@ class CableGoal:
     """
 
     sensor_quat: list[float] | None = None
-    """Camera optical-frame orientation in base, ``(qx, qy, qz, qw)``."""
+    """Camera orientation in the robot base frame, ``(qx, qy, qz, qw)``."""
 
     camera_intrinsics: tuple[float, ...] | None = None
     """``(width, height, fx, fy, cx, cy)`` [px], or ``None`` when uncalibrated."""
