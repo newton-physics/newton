@@ -1237,21 +1237,6 @@ class SolverFeatherPGS(SolverBase):
                 state_in, state_out = state_out, state_in
     """
 
-    joint_qd_public_convention: bool = True
-    """Whether free-joint ``joint_qd`` uses Newton's public twist convention.
-
-    FeatherPGS stores free-joint ``joint_qd`` as ``(v_com_world, omega_world)`` [m/s, rad/s],
-    matching :func:`newton.eval_fk`. The vanilla Featherstone solver instead uses an internal
-    world-origin-referenced spatial twist, which requires
-    ``eval_fk_with_velocity_conversion``.
-
-    Integration layers that refresh maximal body state from joint state (for example after
-    reset writes) must dispatch on this attribute. Applying the Featherstone-internal helper
-    to public-convention ``joint_qd`` re-references the free-joint twist to the world origin,
-    adding ``omega x x_com_world`` of phantom linear velocity to :attr:`newton.State.body_qd`
-    that grows with the body's distance from the world origin.
-    """
-
     # Test hook: pin a kernel implementation regardless of the size heuristic
     # (keys: cholesky_kernel, trisolve_kernel, hinv_jt_kernel; split mode also
     # delassus_kernel and pgs_kernel, which selects the native or scalar Gauss-Seidel
