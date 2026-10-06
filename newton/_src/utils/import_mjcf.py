@@ -2144,7 +2144,7 @@ def parse_mjcf(
                     joint_type = JointType.REVOLUTE
                 elif convert_3d_hinge_to_ball_joints and len(angular_axes) == 3:
                     joint_type = JointType.BALL
-                    if any(axis.stiffness != 0.0 and axis.rest_q != 0.0 for axis in angular_axes):
+                    if any(axis.stiffness != 0.0 and axis.rest_q not in (None, 0.0) for axis in angular_axes):
                         approximated_spring_rest = True
                     for axis in angular_axes:
                         axis.rest_q = 0.0

@@ -195,7 +195,7 @@ class TestJointSprings(unittest.TestCase):
                     -1,
                     body,
                     stiffness=0 if legacy else 2,
-                    rest_q=0 if legacy else 0.25,
+                    rest_q=None if legacy else 0.25,
                     custom_attributes=attributes,
                 )
                 builder.add_articulation([joint])
@@ -326,16 +326,16 @@ class TestJointSprings(unittest.TestCase):
         """Hold a MuJoCo ball joint at its rest orientation with an authored or runtime-edited child frame."""
         rest = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4)
         child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5))
-        for runtime_edit in (False, True):
-            with self.subTest(runtime_edit=runtime_edit):
+        for device, runtime_edit in product(wp.get_devices(), (False, True)):
+            with self.subTest(device=device, runtime_edit=runtime_edit):
                 builder = newton.ModelBuilder(gravity=(0, 0, 0))
                 body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
                 authored = wp.transform_identity() if runtime_edit else child_xform
                 builder.add_articulation([builder.add_joint_ball(-1, body, child_xform=authored, stiffness=25.0)])
                 builder.joint_q[0:4] = list(rest)
                 builder.joint_rest_q[0:4] = list(rest)
-                model = builder.finalize(device="cpu")
-                solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+                model = builder.finalize(device=device)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=device.is_cpu)
                 if runtime_edit:
                     model.joint_X_c.assign([child_xform])
                     solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
@@ -343,6 +343,92 @@ class TestJointSprings(unittest.TestCase):
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
                 solver.step(state, out, model.control(), None, 0.001)
                 np.testing.assert_allclose(out.joint_qd.numpy(), [0.0, 0.0, 0.0], atol=1e-6)
+
+    def test_ball_frame_update_preserves_pending_rest(self):
+        """Publish child-frame edits separately from reference-pose edits on both backends."""
+        rest = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4)
+        pending_rest = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.6)
+        child_rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5)
+        for device in wp.get_devices():
+            with self.subTest(device=device):
+                builder = newton.ModelBuilder(gravity=(0, 0, 0))
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+                builder.add_articulation([builder.add_joint_ball(-1, body, stiffness=25.0)])
+                builder.joint_rest_q[:] = list(rest)
+                model = builder.finalize(device=device)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=device.is_cpu)
+                model.joint_rest_q.assign(list(pending_rest))
+                model.joint_X_c.assign([wp.transform((0.0, 0.0, 0.0), child_rotation)])
+                for flags, published_rest in (
+                    (newton.ModelFlags.JOINT_PROPERTIES, rest),
+                    (newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES, pending_rest),
+                ):
+                    solver.notify_model_changed(flags)
+                    expected = np.array(child_rotation * published_rest * wp.quat_inverse(child_rotation))[[3, 0, 1, 2]]
+                    np.testing.assert_allclose(solver.mjw_model.qpos_spring.numpy()[0], expected, atol=1e-6)
+                    if device.is_cpu:
+                        np.testing.assert_allclose(solver.mj_model.qpos_spring, expected, atol=1e-6)
+
+    def test_angular_spring_quaternion_sign_and_preload(self):
+        """Equivalent body quaternions produce the same scalar spring force without wrapping preload."""
+        for device, joint_type, negative, (angle, rest) in product(
+            wp.get_devices(), ("revolute", "d6"), (False, True), ((0.4, 0.4), (-2.8, 3.0), (2.8, -3.0), (0.4, 7.0))
+        ):
+            with self.subTest(device=device, joint_type=joint_type, negative=negative, angle=angle, rest=rest):
+                builder = newton.ModelBuilder(gravity=(0, 0, 0))
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+                if joint_type == "revolute":
+                    joint = builder.add_joint_revolute(-1, body, axis=newton.Axis.Z, stiffness=10.0, rest_q=rest)
+                else:
+                    joint = builder.add_joint_d6(
+                        -1,
+                        body,
+                        angular_axes=[
+                            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, stiffness=10.0, rest_q=rest)
+                        ],
+                    )
+                builder.add_articulation([joint])
+                builder.joint_q[:] = [angle]
+                model = builder.finalize(device=device)
+                solver = SolverSemiImplicit(model, angular_damping=0.0)
+                state, out = model.state(), model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                if negative:
+                    poses = state.body_q.numpy()
+                    poses[:, 3:] *= -1.0
+                    state.body_q.assign(poses)
+                solver.step(state, out, model.control(), None, 0.001)
+                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
+                np.testing.assert_allclose(out.joint_qd.numpy(), [0.01 * (rest - angle)], atol=1e-6)
+
+    def test_explicit_zero_rest_conflicts(self):
+        """Distinguish an authored zero from an omitted rest value during legacy conversion."""
+        for use_default, springref in product((False, True), (0.2, 0.5)):
+            with self.subTest(use_default=use_default, springref=springref):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                if use_default:
+                    builder.default_joint_cfg.rest_q = 0.0
+                parent = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                fixed = builder.add_joint_fixed(-1, parent)
+                joint = builder.add_joint_prismatic(
+                    parent,
+                    body,
+                    rest_q=None if use_default else 0.0,
+                    custom_attributes={"mujoco:dof_ref": 0.2, "mujoco:dof_springref": springref},
+                )
+                builder.add_articulation([fixed, joint])
+                builder.collapse_fixed_joints()
+                combined = newton.ModelBuilder()
+                combined.replicate(builder, 2)
+                with self.assertWarns(DeprecationWarning):
+                    if springref == 0.5:
+                        with self.assertRaisesRegex(ValueError, "Conflicting core joint spring value"):
+                            combined.finalize(device="cpu")
+                    else:
+                        model = combined.finalize(device="cpu")
+                        np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.0, 0.0], atol=1e-7)
 
     @unittest.skipUnless(wp.is_cuda_available(), "CUDA is required for graph capture")
     def test_cuda_graph_runtime_updates(self):
@@ -393,7 +479,7 @@ class TestJointSprings(unittest.TestCase):
                 -1,
                 body,
                 stiffness=5 if conflict == "stiffness" else 0,
-                rest_q=0.25 if conflict == "rest_q" else 0,
+                rest_q=0.25 if conflict == "rest_q" else None,
                 custom_attributes={
                     "mujoco:dof_passive_stiffness": 3.0,
                     "mujoco:dof_springref": 0.7,
@@ -427,7 +513,7 @@ class TestJointSprings(unittest.TestCase):
 
     def test_legacy_springref_default(self):
         """Default legacy springref to zero without changing core-authored rest coordinates."""
-        for joint_type, legacy, rest_q in product(("revolute", "prismatic"), (False, True), (0.0, 0.4)):
+        for joint_type, legacy, rest_q in product(("revolute", "prismatic"), (False, True), (None, 0.0, 0.4)):
             with self.subTest(joint_type=joint_type, legacy=legacy, rest_q=rest_q):
                 builder = newton.ModelBuilder()
                 SolverMuJoCo.register_custom_attributes(builder)
@@ -441,7 +527,7 @@ class TestJointSprings(unittest.TestCase):
                     -1, body, stiffness=0 if legacy else 3, rest_q=rest_q, custom_attributes=attributes
                 )
                 builder.add_articulation([joint])
-                expected_rest = -0.2 if legacy and rest_q == 0 else rest_q
+                expected_rest = (-0.2 if legacy else 0.0) if rest_q is None else rest_q
                 with self.assertWarns(DeprecationWarning) if legacy else nullcontext():
                     model = builder.finalize(device="cpu")
                 np.testing.assert_allclose(model.joint_rest_q.numpy(), [0, 0, 0, 1, expected_rest], atol=1e-7)

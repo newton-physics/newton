@@ -40,7 +40,7 @@ def _resolve_scalar_spring(
     joint_properties: _UsdJointProperties,
     physics_scene_prim: Usd.Prim | None,
     custom_attrs: dict[str, Any],
-) -> tuple[float, float, float]:
+) -> tuple[float, float | None, float]:
     """Resolve scalar stiffness, rest coordinate and reference offset in Newton units."""
     resolver = joint_properties.resolver
     stiffness = resolver.get_value(prim, PrimType.JOINT, "stiffness", default=builder.default_joint_cfg.stiffness)

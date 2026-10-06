@@ -663,6 +663,7 @@ class ModelBuilder:
 
     _BUILDER_ATTRIBUTE_SPECS: ClassVar[dict[str, Model.AttributeSpec]] = {
         "body_lock_inertia": Model.AttributeSpec(Model.AttributeFrequency.BODY),
+        "_joint_rest_q_authored": Model.AttributeSpec(Model.AttributeFrequency.JOINT_COORD),
         "joint_collision_filter_parent": Model.AttributeSpec(Model.AttributeFrequency.JOINT),
         "joint_cts": Model.AttributeSpec(Model.AttributeFrequency.JOINT_CONSTRAINT),
         "joint_cts_start": Model.AttributeSpec(
@@ -1106,7 +1107,7 @@ class ModelBuilder:
             target_kd: float = 0.0,
             damping: float = 0.0,
             stiffness: float = 0.0,
-            rest_q: float = 0.0,
+            rest_q: float | None = None,
             armature: float = 0.0,
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
@@ -1143,7 +1144,10 @@ class ModelBuilder:
             self.stiffness = stiffness
             """Passive spring stiffness [N/m or N·m/rad]. Defaults to zero."""
             self.rest_q = rest_q
-            """Passive spring rest coordinate [m or rad], independent of joint limits. Defaults to zero."""
+            """Passive spring rest coordinate [m or rad], independent of joint limits.
+            None leaves the coordinate unspecified (effectively zero unless a legacy spring input supplies it).
+            An explicit zero takes precedence over legacy defaults.
+            """
             self.armature = armature
             """Artificial inertia added around the joint axis [kg·m² or kg]. Defaults to 0."""
             self.effort_limit = effort_limit
@@ -1894,6 +1898,8 @@ class ModelBuilder:
         """Joint target damping values accumulated for :attr:`Model.joint_target_kd`."""
         self.joint_stiffness: list[float] = []
         """Passive spring stiffness accumulated for :attr:`Model.joint_stiffness`."""
+        # Builder-only authorship distinguishes explicit zero from legacy defaults.
+        self._joint_rest_q_authored: list[bool] = []
         self.joint_rest_q: list[float] = []
         """Spring rest configurations in joint coordinate layout, for :attr:`Model.joint_rest_q`."""
         self.joint_damping: list[float] = []
@@ -5449,7 +5455,7 @@ class ModelBuilder:
             angular_axes = []
 
         if joint_type in (JointType.BALL, JointType.FREE, JointType.DISTANCE):
-            if any(dim.rest_q != 0.0 for dim in angular_axes):
+            if any(dim.rest_q not in (None, 0.0) for dim in angular_axes):
                 raise ValueError(
                     "Quaternion joints require a joint-level rest orientation; scalar rest_q must be zero."
                 )
@@ -5631,7 +5637,8 @@ class ModelBuilder:
             rest = [dim.rest_q for dim in linear_axes] + [0.0, 0.0, 0.0, 1.0]
         else:
             rest = [dim.rest_q for dim in (*linear_axes, *angular_axes)]
-        self.joint_rest_q.extend(rest)
+        self._joint_rest_q_authored.extend(value is not None for value in rest)
+        self.joint_rest_q.extend(0.0 if value is None else value for value in rest)
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
@@ -6887,6 +6894,7 @@ class ModelBuilder:
                 "q": self.joint_q[q_start : q_start + q_dim],
                 "target_q": self.joint_target_q[q_start : q_start + q_dim],
                 "rest_q": self.joint_rest_q[q_start : q_start + q_dim],
+                "rest_q_authored": self._joint_rest_q_authored[q_start : q_start + q_dim],
                 "qd": self.joint_qd[qd_start : qd_start + qd_dim],
                 "target_qd": self.joint_target_qd[qd_start : qd_start + qd_dim],
                 "cts": self.joint_cts[cts_start : cts_start + cts_dim],
@@ -7383,6 +7391,7 @@ class ModelBuilder:
         self.joint_target_kd.clear()
         self.joint_stiffness.clear()
         self.joint_rest_q.clear()
+        self._joint_rest_q_authored.clear()
         self.joint_damping.clear()
         self.joint_limit_lower.clear()
         self.joint_limit_upper.clear()
@@ -7407,6 +7416,7 @@ class ModelBuilder:
             self.joint_q.extend(joint["q"])
             self.joint_target_q.extend(joint["target_q"])
             self.joint_rest_q.extend(joint["rest_q"])
+            self._joint_rest_q_authored.extend(joint["rest_q_authored"])
             self.joint_qd.extend(joint["qd"])
             self.joint_target_qd.extend(joint["target_qd"])
             self.joint_cts.extend(joint["cts"])

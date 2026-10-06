@@ -30,6 +30,7 @@ def joint_force(
     damping: float,
     stiffness: float = 0.0,
     rest_q: float = 0.0,
+    angular: bool = False,
 ) -> float:
     """Joint force evaluation for a single degree of freedom."""
 
@@ -49,7 +50,13 @@ def joint_force(
         damping_f = -limit_kd * qd
         target_f = 0.0
 
-    passive_f = stiffness * (rest_q - q) - damping * qd
+    # Body poses do not retain angular winding. Choose the same principal
+    # coordinate for equivalent quaternion signs, but keep the rest offset
+    # unwrapped so scalar spring preload is preserved.
+    spring_q = q
+    if angular:
+        spring_q = q - 2.0 * wp.pi * wp.floor((q + wp.pi) / (2.0 * wp.pi))
+    passive_f = stiffness * (rest_q - spring_q) - damping * qd
 
     return limit_f + damping_f + target_f + passive_f
 
@@ -344,6 +351,7 @@ def eval_body_joints(
                 joint_damping[qd_start],
                 joint_stiffness[qd_start],
                 joint_rest_q[q_start],
+                True,
             )
         )
 
@@ -492,6 +500,7 @@ def eval_body_joints(
                     joint_damping[i_0],
                     joint_stiffness[i_0],
                     joint_rest_q[q_start + i_0 - qd_start],
+                    True,
                 )
             )
 
@@ -541,6 +550,7 @@ def eval_body_joints(
                     joint_damping[i_0],
                     joint_stiffness[i_0],
                     joint_rest_q[q_start + i_0 - qd_start],
+                    True,
                 )
             )
             t_total += axis_1 * (
@@ -559,6 +569,7 @@ def eval_body_joints(
                     joint_damping[i_1],
                     joint_stiffness[i_1],
                     joint_rest_q[q_start + i_1 - qd_start],
+                    True,
                 )
             )
 
@@ -616,6 +627,7 @@ def eval_body_joints(
                     joint_damping[i_0],
                     joint_stiffness[i_0],
                     joint_rest_q[q_start + i_0 - qd_start],
+                    True,
                 )
             )
             t_total += axis_1 * (
@@ -634,6 +646,7 @@ def eval_body_joints(
                     joint_damping[i_1],
                     joint_stiffness[i_1],
                     joint_rest_q[q_start + i_1 - qd_start],
+                    True,
                 )
             )
             t_total += axis_2 * (
@@ -652,6 +665,7 @@ def eval_body_joints(
                     joint_damping[i_2],
                     joint_stiffness[i_2],
                     joint_rest_q[q_start + i_2 - qd_start],
+                    True,
                 )
             )
 

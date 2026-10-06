@@ -4264,6 +4264,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._notify_physical_meaninertia: wp.array[float] | None = None
         self._notify_body_flags: wp.array[wp.int32] | None = None
         self._notify_joint_armature: wp.array[float] | None = None
+        self._notify_joint_rest_q: wp.array[float] | None = None
         self._joint_limit_solref_snapshot: wp.array[wp.vec2] | None = None
 
         self._viewer = None
@@ -5136,9 +5137,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.dof_solref[:] = self.mjw_model.dof_solref.numpy()[0]
             if update_configuration:
                 self.mj_model.qpos0[:] = self.mjw_model.qpos0.numpy()[0]
-            if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
-                self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
                 self.mj_model.jnt_range[:] = self.mjw_model.jnt_range.numpy()[0]
+            if update_configuration or flags & ModelFlags.JOINT_PROPERTIES:
+                self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
             if update_force:
                 self.mj_model.jnt_solimp[:] = self.mjw_model.jnt_solimp.numpy()[0]
                 self.mj_model.jnt_stiffness[:] = self.mjw_model.jnt_stiffness.numpy()[0]
@@ -8460,6 +8461,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Constant refreshes must use published properties, not pending model edits.
         self._notify_body_flags = wp.clone(self.model.body_flags)
         self._notify_joint_armature = wp.clone(self.model.joint_armature)
+        self._notify_joint_rest_q = wp.clone(self.model.joint_rest_q)
         solref = getattr(getattr(self.model, "mujoco", None), "solreflimit", None)
         self._joint_limit_solref_snapshot = wp.clone(solref) if solref is not None else None
         if not self.use_mujoco_cpu:
@@ -8797,6 +8799,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Refresh reference poses and shift existing limit ranges by the reference change."""
         if self.model.joint_dof_count == 0 or self.newton_dof_to_body is None:
             return
+        wp.copy(self._notify_joint_rest_q, self.model.joint_rest_q)
         mujoco_attrs = getattr(self.model, "mujoco", None)
         dof_ref = getattr(mujoco_attrs, "dof_ref", None)
         nworld = self.mjc_jnt_to_newton_dof.shape[0]
@@ -8834,7 +8837,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.joint_X_c,
                 self.model.body_q,
                 dof_ref,
-                self.model.joint_rest_q,
+                self._notify_joint_rest_q,
                 self.mj_q_start,
             ],
             outputs=[
@@ -8908,7 +8911,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.joint_type,
                 self.model.joint_q_start,
                 self.model.joint_X_c,
-                self.model.joint_rest_q,
+                self._notify_joint_rest_q,
                 self.mj_q_start,
             ],
             outputs=[self.mjw_model.qpos_spring],

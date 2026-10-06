@@ -56,7 +56,8 @@ def finalize_legacy_joint_spring(builder: ModelBuilder, model: Model, attr: Mode
         q = int(coord[d]) if is_rest else d
         if q < 0:
             continue
-        if d not in authored and values[q] != 0.0:
+        core_authored = values[q] != 0.0 or (is_rest and builder._joint_rest_q_authored[q])
+        if d not in authored and core_authored:
             continue  # An explicit core rest coordinate takes precedence over a legacy default.
         offset = 0.0
         if is_rest and ref is not None:
@@ -68,7 +69,7 @@ def finalize_legacy_joint_spring(builder: ModelBuilder, model: Model, attr: Mode
             if offset is None:
                 offset = ref.default
         canonical = float(value) - float(offset)
-        if values[q] != 0.0 and not np.isclose(values[q], canonical, rtol=1e-6, atol=1e-7):
+        if core_authored and not np.isclose(values[q], canonical, rtol=1e-6, atol=1e-7):
             raise ValueError(f"Conflicting core joint spring value and deprecated {attr.key} at DOF {d}")
         values[q] = canonical
     target.assign(values)

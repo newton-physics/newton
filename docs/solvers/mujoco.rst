@@ -121,8 +121,10 @@ custom-attribute inputs remain accepted by registered builders. Finalization
 converts them once into the core arrays and emits a ``DeprecationWarning``,
 using ``rest_q = springref - ref`` for scalar joints. For a legacy stiffness
 input without ``springref``, the default is zero in MuJoCo coordinates
-(``rest_q = -ref``), unless a nonzero core rest coordinate is already set.
-Conflicting nonzero core and explicitly authored legacy values raise an error.
+(``rest_q = -ref``), unless a core rest coordinate is already configured.
+An explicit ``rest_q=0.0`` also takes precedence over that default; use
+``rest_q=None`` to leave it unspecified. Conflicting explicitly configured
+core rest coordinates and authored legacy rest values raise an error.
 The finalized model exposes only the core spring arrays. The old runtime
 arrays are removed without a deprecation period: their absolute, DOF-indexed
 rest values cannot directly alias the relative, coordinate-indexed core array.
@@ -131,8 +133,17 @@ Runtime reads and writes through those attributes must be migrated.
 To change a spring at runtime, edit :attr:`~newton.Model.joint_stiffness`
 or :attr:`~newton.Model.joint_rest_q` and notify the solver with
 :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`. Subsequent ``dof_ref``
-changes preserve the physical spring rest pose, regardless of whether the
-spring was authored through core fields, legacy builder inputs, MJCF, or USD.
+changes leave the Newton rest coordinate fixed and export
+``qpos_spring = joint_rest_q + ref``, regardless of whether the spring was
+authored through core fields, legacy builder inputs, MJCF, or USD. This replaces
+the legacy rule that kept the absolute MuJoCo spring reference fixed.
+
+BALL rest quaternions are transformed from the child joint frame to MuJoCo's
+body frame. A :attr:`~newton.ModelFlags.JOINT_PROPERTIES` notification refreshes
+this conversion after child-frame edits, using the last published rest pose.
+Use :attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES` to publish rest
+edits separately, or :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` for a full
+joint DOF update.
 
 
 Geometry types
