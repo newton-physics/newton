@@ -323,20 +323,26 @@ class TestJointSprings(unittest.TestCase):
         np.testing.assert_allclose(solver.mj_model.qpos_spring, rest[[3, 0, 1, 2]], atol=1e-6)
 
     def test_ball_spring_rest_with_rotated_child_frame(self):
-        """Hold a MuJoCo ball joint at its rest orientation when the child joint frame is rotated."""
+        """Hold a MuJoCo ball joint at its rest orientation with an authored or runtime-edited child frame."""
         rest = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4)
-        builder = newton.ModelBuilder(gravity=(0, 0, 0))
-        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
         child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5))
-        builder.add_articulation([builder.add_joint_ball(-1, body, child_xform=child_xform, stiffness=25.0)])
-        builder.joint_q[0:4] = list(rest)
-        builder.joint_rest_q[0:4] = list(rest)
-        model = builder.finalize(device="cpu")
-        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
-        state, out = model.state(), model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        solver.step(state, out, model.control(), None, 0.001)
-        np.testing.assert_allclose(out.joint_qd.numpy(), [0.0, 0.0, 0.0], atol=1e-6)
+        for runtime_edit in (False, True):
+            with self.subTest(runtime_edit=runtime_edit):
+                builder = newton.ModelBuilder(gravity=(0, 0, 0))
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+                authored = wp.transform_identity() if runtime_edit else child_xform
+                builder.add_articulation([builder.add_joint_ball(-1, body, child_xform=authored, stiffness=25.0)])
+                builder.joint_q[0:4] = list(rest)
+                builder.joint_rest_q[0:4] = list(rest)
+                model = builder.finalize(device="cpu")
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+                if runtime_edit:
+                    model.joint_X_c.assign([child_xform])
+                    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+                state, out = model.state(), model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                solver.step(state, out, model.control(), None, 0.001)
+                np.testing.assert_allclose(out.joint_qd.numpy(), [0.0, 0.0, 0.0], atol=1e-6)
 
     @unittest.skipUnless(wp.is_cuda_available(), "CUDA is required for graph capture")
     def test_cuda_graph_runtime_updates(self):
