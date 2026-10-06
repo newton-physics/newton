@@ -97,6 +97,22 @@ class TestJointSprings(unittest.TestCase):
         np.testing.assert_allclose(model.joint_rest_q.numpy(), [0, 0, 0, 1])
         np.testing.assert_allclose(model.joint_stiffness.numpy(), [2, 2, 2])
 
+    def test_mjcf_scaled_spring_rest_coordinates(self):
+        """Scale imported linear spring rest coordinates while preserving angular coordinates."""
+        for scale in (0.25, 2.0):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(
+                    """<mujoco><compiler angle="degree"/><worldbody><body>
+                        <joint type="slide" axis="1 0 0" ref="0.1" springref="0.35" stiffness="2"/>
+                        <joint type="hinge" axis="0 0 1" ref="30" springref="45" stiffness="3"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body></worldbody></mujoco>""",
+                    scale=scale,
+                )
+                model = builder.finalize(device="cpu")
+                np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.25 * scale, np.pi / 12], atol=1e-7)
+
     def test_mjcf_hinge_to_ball_without_springs(self):
         """Avoid spring approximation warnings for hinges without passive stiffness."""
         builder = newton.ModelBuilder()

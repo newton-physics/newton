@@ -2061,6 +2061,15 @@ def parse_mjcf(
                                 f"but actuatorfrclimited='{actuatorfrclimited}'. Force clamping will be disabled."
                             )
 
+                rest_q = builder.default_joint_cfg.rest_q
+                if "springref" in joint_attrib or "ref" in joint_attrib:
+                    rest_q = parse_float(joint_attrib, "springref", 0.0) - parse_float(joint_attrib, "ref", 0.0)
+                    if is_angular:
+                        if use_degrees:
+                            rest_q = np.deg2rad(rest_q)
+                    else:
+                        rest_q *= scale
+
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
@@ -2071,12 +2080,7 @@ def parse_mjcf(
                     target_kd=default_joint_target_kd,
                     damping=parse_float(joint_attrib, "damping", default_joint_damping),
                     stiffness=parse_float(joint_attrib, "stiffness", builder.default_joint_cfg.stiffness),
-                    rest_q=(
-                        (parse_float(joint_attrib, "springref", 0.0) - parse_float(joint_attrib, "ref", 0.0))
-                        * (np.pi / 180.0 if is_angular and use_degrees else 1.0)
-                        if "springref" in joint_attrib or "ref" in joint_attrib
-                        else builder.default_joint_cfg.rest_q
-                    ),
+                    rest_q=rest_q,
                     armature=joint_armature[-1],
                     friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,
