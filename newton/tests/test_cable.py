@@ -4033,14 +4033,16 @@ def _rod_control_target_q_does_not_override_structural_rest_impl(test: unittest.
 
 
 def _rod_notify_joint_properties_refreshes_structural_rest_impl(test: unittest.TestCase, device):
-    """Verify both joint-property flags refresh Model-owned Rod structural rest."""
+    """Refresh Rod rest through reference-pose and compatible broad flags."""
     original_layout = newton.use_coord_layout_targets
     try:
         for use_coord_layout, flags in (
             (False, newton.ModelFlags.JOINT_PROPERTIES),
             (False, newton.ModelFlags.JOINT_DOF_PROPERTIES),
+            (False, newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES),
             (True, newton.ModelFlags.JOINT_PROPERTIES),
             (True, newton.ModelFlags.JOINT_DOF_PROPERTIES),
+            (True, newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES),
         ):
             newton.use_coord_layout_targets = use_coord_layout
             builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
@@ -4068,6 +4070,11 @@ def _rod_notify_joint_properties_refreshes_structural_rest_impl(test: unittest.T
             else:
                 target[target_start + 3 : target_start + 6] = np.asarray(wp.quat_to_euler(rest_rotation, 2, 1, 0))
             model.joint_target_q.assign(target)
+            if flags == newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES:
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+                np.testing.assert_array_equal(solver.joint_rod_rest_kb_local.numpy(), bend_before)
+                np.testing.assert_array_equal(solver.joint_rod_rest_twist.numpy(), twist_before)
             solver.notify_model_changed(flags)
 
             bend_after = solver.joint_rod_rest_kb_local.numpy()
@@ -6761,8 +6768,9 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     dof_start = int(model.joint_qd_start.numpy()[joint])
     target_ke[dof_start + 1] = 41.0
     model.joint_target_ke.assign(target_ke)
-    with test.assertRaisesRegex(ValueError, "requires isotropic ROD shear and bend"):
-        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+    for flags in (newton.ModelFlags.JOINT_DOF_PROPERTIES, newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
+        with test.assertRaisesRegex(ValueError, "requires isotropic ROD shear and bend"):
+            solver.notify_model_changed(flags)
     with test.assertRaisesRegex(ValueError, "requires isotropic ROD shear and bend"):
         newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
 
@@ -6923,6 +6931,12 @@ def _notify_without_joint_dof_properties_leaves_rod_material_k_stale(test, devic
     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
     after_refresh = solver.joint_material_k.numpy()[start : start + 4]
     np.testing.assert_allclose(after_refresh[2:], [999.0, 999.0])
+
+    model.joint_target_ke.fill_(1001.0)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+    np.testing.assert_allclose(solver.joint_material_k.numpy()[start + 2 : start + 4], [999.0, 999.0])
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+    np.testing.assert_allclose(solver.joint_material_k.numpy()[start + 2 : start + 4], [1001.0, 1001.0])
 
 
 def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
