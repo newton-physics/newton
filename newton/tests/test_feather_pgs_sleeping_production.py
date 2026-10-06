@@ -318,10 +318,7 @@ def test_mimic_articulation_stays_awake(test, device):
             box = builder.add_body(xform=wp.transform((2.0, 0.0, 0.1), wp.quat_identity()))
             builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1)
             model = builder.finalize(device=device)
-            try:
-                solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", **PROFILE)
-            except NotImplementedError:
-                test.skipTest("this solver does not support mimic relationships")
+            solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", **PROFILE)
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
             _advance(pipeline, solver, [model.state(), model.state()], model.control(), 400)
             awake = solver.sleeping.art_awake.numpy()
