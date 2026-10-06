@@ -13,6 +13,7 @@ import warp as wp
 
 import newton
 import newton._src.solvers.kamino.config as kamino_config
+from newton._src.sim.shape_contact_pairs import _ShapeContactPairs
 from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType
@@ -438,6 +439,61 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         SolverKamino.register_custom_attributes(builder)
         builder.replicate(source_builder, world_count=3)
         return builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+    def test_pair_tables_match_collision_mode(self):
+        """Retain pair identities only for collision modes that consume them."""
+        for mode, use_detector, pipeline, broadphase, needs_pairs in (
+            ("external", False, "unified", "explicit", False),
+            ("unified_sap", True, "unified", "sap", False),
+            ("unified_nxn", True, "unified", "nxn", False),
+            ("default", True, None, None, True),
+            ("unified_explicit", True, "unified", "explicit", True),
+            ("primitive_sap", True, "primitive", "sap", True),
+        ):
+            with self.subTest(mode=mode):
+                if pipeline == "primitive":
+                    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                    SolverKamino.register_custom_attributes(builder)
+                    builder.begin_world()
+                    for height in (0.0, 0.15):
+                        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, height)))
+                        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+                    builder.end_world()
+                    model = builder.finalize(device=self.default_device)
+                else:
+                    model = self._make_three_world_model()
+                self.assertIsNone(model._shape_contact_pairs)
+                detector_config = (
+                    None
+                    if pipeline is None
+                    else kamino_config.CollisionDetectorConfig(pipeline=pipeline, broadphase=broadphase)
+                )
+                config = SolverKamino.Config(use_collision_detector=use_detector, collision_detector=detector_config)
+                with mock.patch.object(
+                    _ShapeContactPairs,
+                    "build_pairs",
+                    autospec=True,
+                    side_effect=_ShapeContactPairs.build_pairs if needs_pairs else AssertionError("Enumerated pairs"),
+                ) as build:
+                    solver = SolverKamino(model, config=config)
+                    self.assertEqual(solver._model_kamino.geoms.collidable_pairs is not None, needs_pairs)
+                    self.assertEqual(model._shape_contact_pairs is not None, needs_pairs)
+                    if needs_pairs:
+                        build.assert_called_once()
+                        np.testing.assert_array_equal(
+                            solver._model_kamino.geoms.collidable_pairs.numpy(), model.shape_contact_pairs.numpy()
+                        )
+                    if use_detector:
+                        solver._collision_detector_kamino.collide(
+                            data=solver._solver_kamino._data, contacts=solver._contacts_kamino
+                        )
+                    else:
+                        collision_pipeline = newton.CollisionPipeline(model, broad_phase="sap", shape_pairs_max=64)
+                        contacts = collision_pipeline.contacts()
+                        state = model.state()
+                        collision_pipeline.collide(state, contacts)
+                        solver.update_contacts(contacts, state)
+                    self.assertEqual(model._shape_contact_pairs is not None, needs_pairs)
 
     def test_capacity_allocation_for_pipeline_allocated_after_kamino(self):
         """Verify capacity allocation for a pipeline allocated after Kamino."""

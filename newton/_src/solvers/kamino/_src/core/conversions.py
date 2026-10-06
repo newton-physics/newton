@@ -13,6 +13,7 @@ import warp as wp
 
 from .....geometry import ShapeFlags
 from .....sim.model import Model
+from .....sim.shape_contact_pairs import _shape_contact_pair_override, _shape_contact_pair_topology
 from ....coupled.model_view import ModelView
 from ..utils import logger as msg
 from .bodies import (
@@ -171,7 +172,7 @@ def world_max_contacts_kernel(
     model_shape_world: wp.array[wp.int32],
     model_shape_contact_pair: wp.array[wp.vec2i],
     # Outputs:
-    world_max_contacts: wp.array[wp.int32],
+    world_max_contacts: wp.array[wp.int64],
 ):
     # Retrieve the shape pair index from the thread grid
     shape_pair_id = wp.tid()
@@ -181,25 +182,19 @@ def world_max_contacts_kernel(
     shape_type_a = model_shape_type[shape_pair[0]]
     shape_type_b = model_shape_type[shape_pair[1]]
 
-    # Determine the world for this pair — fall back to other shape if one is global
-    world_id_a = model_shape_world[shape_pair[0]]
-    world_id_b = model_shape_world[shape_pair[1]]
-    world_id = world_id_a if world_id_a >= 0 else world_id_b
+    # Assign global-local pairs to the local world and skip global-global pairs.
+    world_id = max(model_shape_world[shape_pair[0]], model_shape_world[shape_pair[1]])
     if world_id < 0:
-        return  # Both shapes are global — skip
+        return
 
-    # Compute max contact count for this pair and add to world total,
-    # ensuring shapes are ordered by type for consistent contact counts.
+    # Order types for consistent contact counts.
     if shape_type_a > shape_type_b:
         shape_type_a, shape_type_b = shape_type_b, shape_type_a
-    num_contacts_a, num_contacts_b = max_contacts_for_shape_pair(
-        type_a=shape_type_a,
-        type_b=shape_type_b,
-    )
+    num_contacts_a, num_contacts_b = max_contacts_for_shape_pair(shape_type_a, shape_type_b)
     num_contacts = num_contacts_a + num_contacts_b
     if max_contacts_per_pair >= 0:
         num_contacts = min(num_contacts, max_contacts_per_pair)
-    wp.atomic_add(world_max_contacts, world_id, num_contacts)
+    wp.atomic_add(world_max_contacts, world_id, wp.int64(num_contacts))
 
 
 @wp.kernel
@@ -1096,9 +1091,11 @@ def write_coeff_kernel(a: wp.array[wp.int32], idx: int, v: int):
 
 
 def compute_required_contact_capacity(
-    model: Model,
+    model: Model | ModelView,
     max_contacts_per_pair: int | None = None,
     max_contacts_per_world: int | None = None,
+    *,
+    include_shape_contact_pairs: bool = False,
 ) -> tuple[int, list[int]]:
     """
     Computes the required contact capacity for a given Newton model.
@@ -1113,6 +1110,7 @@ def compute_required_contact_capacity(
         max_contacts_per_world: Optional maximum number of contacts to allocate per world.
             If `None`, no per-world limit is applied, otherwise caps the computed
             per-world requirements at this value.
+        include_shape_contact_pairs: Whether geometry conversion also requires the pair table.
 
     Returns:
         (model_required_contacts, world_required_contacts):
@@ -1126,24 +1124,56 @@ def compute_required_contact_capacity(
 
     """
     # First check if there are any collision geometries
-    if model.shape_count == 0:
+    if model.shape_count == 0 or model.shape_contact_pair_count == 0:
         return 0, [0] * model.world_count
 
-    # Compute maximum contacts per world
-    world_max_contacts_wp = wp.zeros((model.world_count,), dtype=wp.int32, device=model.device)
-    wp.launch(
-        kernel=world_max_contacts_kernel,
-        dim=model.shape_contact_pair_count,
-        inputs=[
-            max_contacts_per_pair if max_contacts_per_pair is not None else -1,
-            model.shape_type,
-            model.shape_world,
-            model.shape_contact_pairs,
-        ],
-        outputs=[world_max_contacts_wp],
-        device=model.device,
-    )
-    world_max_contacts = world_max_contacts_wp.numpy()
+    supplied_pairs, _ = _shape_contact_pair_override(model)
+    topology = None if supplied_pairs else _shape_contact_pair_topology(model)
+    shape_world = model.shape_world
+    # Single-world conversion folds global shapes into world zero without changing pairs.
+    normalized_worlds = topology is not None and model.world_count == 1 and np.all(shape_world.numpy() == 0)
+    if (
+        include_shape_contact_pairs
+        or supplied_pairs
+        or (isinstance(model, Model) and model._shape_contact_pairs is not None)
+        or model.shape_contact_pair_count != int(topology.counts.sum())
+    ):
+        # Active prefixes need the exact pair order, which topology summaries omit.
+        if topology is not None and not normalized_worlds:
+            shape_world = wp.array(topology.shape_world, dtype=wp.int32, device=model.device)
+        world_max_contacts_wp = wp.zeros(model.world_count, dtype=wp.int64, device=model.device)
+        wp.launch(
+            kernel=world_max_contacts_kernel,
+            dim=model.shape_contact_pair_count,
+            inputs=[
+                max_contacts_per_pair if max_contacts_per_pair is not None else -1,
+                model.shape_type,
+                shape_world,
+                model.shape_contact_pairs,
+            ],
+            outputs=[world_max_contacts_wp],
+            device=model.device,
+        )
+        world_max_contacts = world_max_contacts_wp.numpy()
+    else:
+        shape_types = model.shape_type.numpy()[: model.shape_count]
+        key = (shape_types.tobytes(), max_contacts_per_pair)
+        cache = model._shape_contact_pair_counts if isinstance(model, Model) else None
+        if cache is not None and key in cache:
+            counts = cache[key]
+        else:
+            types, categories = np.unique(shape_types, return_inverse=True)
+            weights = np.array(
+                [[sum(max_contacts_for_shape_pair(int(a), int(b))) for b in types] for a in types], dtype=np.int64
+            )
+            if max_contacts_per_pair is not None and max_contacts_per_pair >= 0:
+                np.minimum(weights, max_contacts_per_pair, out=weights)
+            counts = topology.count_pairs(categories=categories, weights=weights)
+            counts.setflags(write=False)
+            if cache is not None:
+                cache[key] = counts
+        # Global-global pairs contribute only when conversion renumbers their shapes.
+        world_max_contacts = np.array([counts.sum()], dtype=np.int64) if normalized_worlds else counts[1:]
 
     # Cap per-world totals when a per-world maximum is specified
     if max_contacts_per_world is not None:
@@ -2224,6 +2254,8 @@ def convert_geometries(
     model_size: SizeKamino,
     model_bodies: RigidBodiesModel,
     materials_manager: MaterialManager,
+    *,
+    include_shape_contact_pairs: bool = True,
 ) -> GeometriesModel:
     # Set up materials
     geom_material_np = register_materials(model, materials_manager)
@@ -2263,7 +2295,9 @@ def convert_geometries(
         min_contacts_per_world = model.rigid_contact_max // model.world_count
         world_min_contacts = [min_contacts_per_world] * model.world_count
     else:
-        model_min_contacts, world_min_contacts = compute_required_contact_capacity(model)
+        model_min_contacts, world_min_contacts = compute_required_contact_capacity(
+            model, include_shape_contact_pairs=include_shape_contact_pairs
+        )
 
     # Convert shape offsets from body-frame-relative to COM-relative
     offset = wp.zeros_like(model.shape_transform)
@@ -2298,7 +2332,7 @@ def convert_geometries(
         group=model.shape_collision_group,
         gap=model.shape_gap,
         margin=model.shape_margin,
-        collidable_pairs=model.shape_contact_pairs,
+        collidable_pairs=model.shape_contact_pairs if include_shape_contact_pairs else None,
         excluded_pairs=excluded_pairs,
         heightfield_index=model.shape_heightfield_index,
         heightfield_data=model.heightfield_data,

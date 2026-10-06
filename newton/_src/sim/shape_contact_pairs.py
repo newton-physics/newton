@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compact collision topology and on-demand explicit shape pairs."""
+"""Collision topology summaries and on-demand explicit shape pairs."""
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 from functools import cached_property
 
 import numpy as np
@@ -14,38 +14,8 @@ from ..geometry.flags import ShapeFlags
 _PAIR_CHUNK_SIZE = 262144
 
 
-def _group_counts_by_world(groups_by_world: dict[int, Counter]) -> dict[int, int]:
-    """Count compatible groups within worlds and against global shapes."""
-
-    def within(groups):
-        positive = negative = pairs = 0
-        for group, count in groups.items():
-            same_group_pairs = count * (count - 1) // 2
-            if group > 0:
-                positive += count
-                pairs += same_group_pairs
-            else:
-                negative += count
-                pairs -= same_group_pairs
-        return pairs + positive * negative + negative * (negative - 1) // 2
-
-    globals_ = groups_by_world.get(-1, {})
-    global_total = sum(globals_.values())
-    global_negative = sum(count for group, count in globals_.items() if group < 0)
-    result = {-1: within(globals_)}
-    for world, groups in groups_by_world.items():
-        if world < 0:
-            continue
-        cross = sum(
-            count * (global_negative + globals_.get(group, 0) if group > 0 else global_total - globals_.get(group, 0))
-            for group, count in groups.items()
-        )
-        result[world] = within(groups) + cross
-    return result
-
-
 class _ShapeContactPairs:
-    """Own a builder-independent snapshot until explicit pairs are requested."""
+    """Finalized collision topology for counting and enumerating collision pairs."""
 
     def __init__(self, shape_body, shape_world, shape_group, shape_flags, filter_pairs, world_count):
         self.shape_body = np.maximum(np.asarray(shape_body, dtype=np.int32), -1)
@@ -82,61 +52,84 @@ class _ShapeContactPairs:
         """Exact pair counts: globals in slot zero, local world w in slot w + 1."""
         return self.count_pairs()
 
-    def count_pairs(self, shape_mask: np.ndarray | None = None) -> np.ndarray:
-        """Count from group and body cardinalities without enumerating pairs."""
+    def count_pairs(
+        self,
+        shape_mask: np.ndarray | None = None,
+        *,
+        categories: np.ndarray | None = None,
+        weights: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Count pairs or sum symmetric category weights without enumerating pairs."""
         active = self._active(shape_mask)
-        groups_array = self.shape_group[active]
-        if len(groups_array) > 256 and groups_array[0] > 0 and np.all(groups_array == groups_array[0]):
-            # The common unpartitioned collision group needs only per-world and
-            # per-body cardinalities. Keep large replicated scenes in NumPy.
-            slots = self.shape_world[active].astype(np.int64) + 1
-            sizes = np.bincount(slots, minlength=self.world_count + 1).astype(np.int64)
-            counts = sizes * (sizes - 1) // 2
-            counts[1:] += sizes[0] * sizes[1:]
-            codes = (slots << 32) | (self.shape_body[active].astype(np.int64) + 1)
-            codes, sizes = np.unique(codes, return_counts=True)
-            slots = codes >> 32
-            np.subtract.at(counts, slots, sizes * (sizes - 1) // 2)
-            global_count = int(np.count_nonzero(slots == 0))
-            if global_count:
-                body_codes = codes & 0xFFFFFFFF
-                positions = np.searchsorted(body_codes[:global_count], body_codes[global_count:])
-                clipped = np.minimum(positions, global_count - 1)
-                matches = (positions < global_count) & (body_codes[clipped] == body_codes[global_count:])
-                np.subtract.at(
-                    counts,
-                    slots[global_count:][matches],
-                    sizes[global_count:][matches] * sizes[clipped[matches]],
-                )
-            first, second = self._active_filters(active)
-            counts -= np.bincount(
-                np.maximum(self.shape_world[first], self.shape_world[second]) + 1, minlength=len(counts)
-            )
-            return counts
-
-        bodies = self.shape_body[active].tolist()
-        worlds = self.shape_world[active].tolist()
-        groups = self.shape_group[active].tolist()
-        body_counts = Counter(bodies)
-        world_groups = defaultdict(Counter)
-        body_world_groups = defaultdict(lambda: defaultdict(Counter))
-        for body, world, group in zip(bodies, worlds, groups, strict=True):
-            world_groups[world][group] += 1
-            if body_counts[body] > 1:
-                body_world_groups[body][world][group] += 1
-
+        indices = np.flatnonzero(active)
         counts = np.zeros(self.world_count + 1, dtype=np.int64)
-        for world, count in _group_counts_by_world(world_groups).items():
-            counts[world + 1] = count
-        # Use sparse world maps per body: a dense world-by-body intermediate
-        # would reintroduce quadratic memory for replicated scenes.
-        for body_groups in body_world_groups.values():
-            for world, count in _group_counts_by_world(body_groups).items():
-                counts[world + 1] -= count
+        if not len(indices):
+            return counts
+        categories = np.zeros(len(self.shape_body), dtype=np.int32) if categories is None else categories
+        weights = np.ones((1, 1), dtype=np.int64) if weights is None else weights
 
+        bodies = self.shape_body[indices]
+        body_values, body_sizes = np.unique(bodies, return_counts=True)
+        repeated = np.isin(bodies, body_values[body_sizes > 1])
+        # Owner zero counts all shapes; other owners subtract same-body pairs.
+        indices = np.concatenate((indices, indices[repeated]))
+        owners = np.concatenate((np.zeros(len(bodies), dtype=np.int64), bodies[repeated].astype(np.int64) + 2))
+        slots = self.shape_world[indices].astype(np.int64) + 1
+        kinds = categories[indices]
+        groups, group_ids = np.unique(self.shape_group[indices], return_inverse=True)
+        group_count, kind_count = len(groups), len(weights)
+        if not np.any(repeated):
+            context_codes, contexts = np.arange(len(counts), dtype=np.int64), slots
+        else:
+            context_codes, contexts = np.unique(owners * len(counts) + slots, return_inverse=True)
+        context_slots = context_codes % len(counts)
+        context_owners = context_codes // len(counts)
+        # Bound dense group histograms by the number of shapes; sparse groups
+        # must not allocate a world-by-group Cartesian product.
+        if len(context_codes) * group_count <= 2 * len(indices):
+            group_codes = np.arange(len(context_codes) * group_count, dtype=np.int64)
+            group_rows = contexts * group_count + group_ids
+        else:
+            group_codes, group_rows = np.unique(contexts * group_count + group_ids, return_inverse=True)
+        group_contexts, group_types = np.divmod(group_codes, group_count)
+        kind_codes = contexts * kind_count + kinds
+        total = np.bincount(kind_codes, minlength=len(context_codes) * kind_count).reshape(-1, kind_count)
+        positive = groups[group_ids] > 0
+        pos = np.bincount(kind_codes[positive], minlength=total.size).reshape(total.shape)
+        grouped = np.bincount(group_rows * kind_count + kinds, minlength=len(group_codes) * kind_count).reshape(
+            -1, kind_count
+        )
+        signs = np.where(groups[group_types] > 0, 1, -1)
+
+        # Subtract positive-only pairs, then add matching positives and remove
+        # matching negatives. Apply the same rules within worlds and to globals.
+        rows = np.arange(len(context_codes), dtype=np.int64)
+        values = np.zeros(len(context_codes), dtype=np.int64)
+        contributions = (
+            (total, rows, context_owners, 1),
+            (pos, rows, context_owners, -1),
+            (grouped, group_contexts, context_owners[group_contexts] * group_count + group_types, signs),
+        )
+        for hist, rows, keys, sign in contributions:
+            coefficients = np.broadcast_to(sign, len(hist))
+            weighted = hist @ weights
+            within = (np.sum(weighted * hist, axis=1) - hist @ weights.diagonal()) // 2
+            np.add.at(values, rows, coefficients * within)
+            globals_ = context_slots[rows] == 0
+            global_keys = keys[globals_]
+            if len(global_keys):
+                positions = np.searchsorted(global_keys, keys)
+                clipped = np.minimum(positions, len(global_keys) - 1)
+                valid = (positions < len(global_keys)) & (global_keys[clipped] == keys) & ~globals_
+                cross = np.sum(weighted[valid] * hist[globals_][clipped[valid]], axis=1)
+                np.add.at(values, rows[valid], coefficients[valid] * cross)
+        np.add.at(counts, context_slots, np.where(context_owners == 0, values, -values))
         first, second = self._active_filters(active)
-        pair_world = np.maximum(self.shape_world[first], self.shape_world[second])
-        counts -= np.bincount(pair_world + 1, minlength=len(counts))
+        np.subtract.at(
+            counts,
+            np.maximum(self.shape_world[first], self.shape_world[second]) + 1,
+            weights[categories[first], categories[second]],
+        )
         return counts
 
     def _store_pairs(self, output, a, b) -> int:
@@ -366,21 +359,82 @@ class _ShapeContactPairs:
         return pairs
 
 
+def _shape_contact_pair_counts(model, *, shape_mask: np.ndarray | None = None) -> np.ndarray:
+    """Cache read-only counts for globals (slot zero) and each local world.
+
+    Default pairs use finalized topology; supplied tables use their active prefix.
+    A mask selects pairs whose two shapes are selected.
+    """
+    if shape_mask is not None:
+        shape_mask = np.asarray(shape_mask)
+        if shape_mask.dtype != np.bool_ or shape_mask.shape != (model.shape_count,):
+            raise ValueError("shape_mask must be a boolean array of length shape_count")
+    key = None if shape_mask is None else np.packbits(shape_mask).tobytes()
+    supplied, pairs = _shape_contact_pair_override(model)
+    use_pairs = supplied or model.shape_contact_pair_count != int(model._shape_contact_pair_data.counts.sum())
+    # Supplied arrays and active prefixes can change without invalidating summaries.
+    cache = None if use_pairs else model._shape_contact_pair_counts
+    if cache is not None and key in cache:
+        return cache[key]
+    if use_pairs:
+        counts = np.zeros(model.world_count + 1, dtype=np.int64)
+        if not supplied and model.shape_contact_pair_count:
+            pairs = model.shape_contact_pairs
+        if pairs is not None:
+            pairs = pairs.numpy().reshape((-1, 2))[: model.shape_contact_pair_count]
+            if shape_mask is not None:
+                pairs = pairs[shape_mask[pairs].all(axis=1)]
+            if len(pairs):
+                worlds = model.shape_world.numpy() if supplied else model._shape_contact_pair_data.shape_world
+                counts = np.bincount(np.max(worlds[pairs], axis=1) + 1, minlength=model.world_count + 1)
+    else:
+        counts = _shape_contact_pair_topology(model).count_pairs(shape_mask)
+    counts.setflags(write=False)
+    if cache is not None:
+        cache[key] = counts
+    return counts
+
+
+def _shape_contact_pair_topology(model) -> _ShapeContactPairs:
+    """Use the finalized Model topology inherited alongside the default pair list."""
+    return model._shape_contact_pair_data
+
+
+def _shape_contact_pair_override(model):
+    """Distinguish authored pair lists from a cache of model-derived pairs."""
+    overrides = vars(model).get("_overrides")
+    if overrides is not None:
+        if "shape_contact_pairs" in overrides:
+            return True, model.shape_contact_pairs
+        supplied, _ = _shape_contact_pair_override(vars(model)["_parent"])
+        return supplied, model.shape_contact_pairs if supplied else None
+    if model._shape_contact_pair_data is None:
+        return True, model.shape_contact_pairs
+    return False, None
+
+
 def _shape_contact_pairs_for_mask(model, shape_mask: np.ndarray, *, shape_pairs=None) -> np.ndarray:
     """Get a subset without materializing the model's full explicit pair cache."""
-    data = model._shape_contact_pair_data
-    if shape_pairs is None and data is not None:
-        return data.build_pairs(shape_mask)
-    pairs = model.shape_contact_pairs if shape_pairs is None else shape_pairs
+    supplied, pairs = _shape_contact_pair_override(model)
+    if shape_pairs is None and not supplied:
+        topology = _shape_contact_pair_topology(model)
+        if model.shape_contact_pair_count == int(topology.counts.sum()):
+            return topology.build_pairs(shape_mask)
+        if model.shape_contact_pair_count == 0:
+            return np.empty((0, 2), dtype=np.int32)
+        pairs = model.shape_contact_pairs
+    pairs = pairs if shape_pairs is None else shape_pairs
     if pairs is None:
         return np.empty((0, 2), dtype=np.int32)
     pairs = pairs.numpy().reshape((-1, 2))
+    if shape_pairs is None:
+        pairs = pairs[: model.shape_contact_pair_count]
     return pairs[shape_mask[pairs[:, 0]] & shape_mask[pairs[:, 1]]]
 
 
 def _shape_contact_pair_count_for_mask(model, shape_mask: np.ndarray, *, shape_pairs=None) -> int:
     """Count a subset without triggering lazy pair construction."""
-    data = model._shape_contact_pair_data
-    if shape_pairs is None and data is not None:
-        return int(data.count_pairs(shape_mask).sum())
-    return len(_shape_contact_pairs_for_mask(model, shape_mask, shape_pairs=shape_pairs))
+    if shape_pairs is None:
+        return int(_shape_contact_pair_counts(model, shape_mask=shape_mask).sum())
+    pairs = shape_pairs.numpy().reshape((-1, 2))
+    return int(np.count_nonzero(shape_mask[pairs[:, 0]] & shape_mask[pairs[:, 1]]))

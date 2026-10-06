@@ -4,13 +4,15 @@
 """NxN (all-pairs) broad phase collision detection.
 
 Provides O(N^2) broad phase using AABB overlap tests. Simple and effective
-for small scenes (<100 shapes). For larger scenes, use SAP broad phase.
+for worlds with few shapes. For larger worlds, consider SAP broad phase.
 
 See Also:
     :class:`BroadPhaseSAP` in ``broad_phase_sap.py`` for O(N log N) performance.
 """
 
 from __future__ import annotations
+
+import warnings
 
 import numpy as np
 import warp as wp
@@ -25,6 +27,9 @@ from .broad_phase_common import (
     test_world_and_group_pair,
     write_pair,
 )
+
+_EXPLICIT_LARGE_PAIR_COUNT_PER_WORLD = 20_000
+_EXPLICIT_LARGE_PAIR_COUNT_TOTAL = 1_000_000
 
 
 @wp.kernel(enable_backward=False)
@@ -444,6 +449,31 @@ class BroadPhaseExplicit:
     The class checks for axis-aligned bounding box (AABB) overlaps between the specified geometry pairs,
     taking into account per-geometry cutoff distances.
     """
+
+    def _warn_large_pair_count(
+        self,
+        shape_pairs: wp.array[wp.vec2i] | np.ndarray,
+        shape_world: wp.array[wp.int32] | np.ndarray,
+        world_count: int,
+    ) -> None:
+        """Warn during setup when explicit pair testing is large per world."""
+        shape_pair_count = len(shape_pairs)
+        if shape_pair_count <= _EXPLICIT_LARGE_PAIR_COUNT_TOTAL:
+            return
+        if world_count <= 1:
+            busiest_world = shape_pair_count
+        else:
+            pairs = shape_pairs.numpy() if isinstance(shape_pairs, wp.array) else shape_pairs
+            worlds = shape_world.numpy() if isinstance(shape_world, wp.array) else shape_world
+            pair_counts = np.bincount(np.maximum(worlds[pairs[:, 0]], worlds[pairs[:, 1]]) + 1)
+            busiest_world = int(pair_counts[0] + np.max(pair_counts[1:], initial=0))
+        if busiest_world >= _EXPLICIT_LARGE_PAIR_COUNT_PER_WORLD:
+            warnings.warn(
+                f"Explicit broad phase tests {shape_pair_count:,} shape pairs per collision call "
+                f"({busiest_world:,} in the busiest world). Consider broad_phase='sap' for large worlds.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
 
     def launch(
         self,

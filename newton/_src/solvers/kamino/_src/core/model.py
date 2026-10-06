@@ -774,12 +774,14 @@ class ModelKamino:
         return control
 
     @staticmethod
-    def from_newton(model: Model | ModelView) -> ModelKamino:
+    def from_newton(model: Model | ModelView, *, include_shape_contact_pairs: bool = True) -> ModelKamino:
         """
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
 
         Args:
             model: The source :class:`newton.Model` instance to be converted.
+            include_shape_contact_pairs: Include explicit collision-pair identities.
+                Required for primitive or explicit collision detection. Defaults to `True`.
 
         Returns:
             Kamino model converted from the input Newton model.
@@ -864,6 +866,7 @@ class ModelKamino:
                 model_size=model_size,
                 model_bodies=model_bodies,
                 materials_manager=materials_manager,
+                include_shape_contact_pairs=include_shape_contact_pairs,
             )
 
             # Materials

@@ -24,6 +24,7 @@ from benchmark_mujoco import Example
 
 import newton
 from newton.sensors import SensorTiledCamera
+from newton.solvers import SolverXPBD
 from newton.viewer import ViewerGL
 
 
@@ -79,6 +80,47 @@ class KpiInitializeSolver:
     def teardown(self, robot, world_count):
         del self._solver
         del self._model
+
+
+class KpiInitializeModelLargeWorld:
+    """Initialize a large single-world model, SAP collision pipeline, and XPBD solver."""
+
+    rounds = 1
+    repeat = 3
+    number = 1
+    min_run_count = 1
+    timeout = 3600
+
+    def setup(self):
+        self._initialize(4)
+        wp.synchronize_device()
+
+    @staticmethod
+    def _initialize(shape_count):
+        builder = newton.ModelBuilder()
+        mesh = newton.Mesh.create_box(0.1)
+        for i in range(shape_count):
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.5 * (i % 200), 0.5 * (i // 200), 1.0)))
+            if i % 4 == 0:
+                builder.add_shape_mesh(body, mesh=mesh)
+            elif i % 4 == 1:
+                builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+            elif i % 4 == 2:
+                builder.add_shape_sphere(body, radius=0.1)
+            else:
+                builder.add_shape_capsule(body, radius=0.1, half_height=0.1)
+        model = builder.finalize()
+        # Bound runtime collision buffers independently of the model's pair count.
+        pipeline = newton.CollisionPipeline(
+            model, broad_phase="sap", shape_pairs_max=256, rigid_contact_max=128, max_triangle_pairs=128
+        )
+        solver = SolverXPBD(model)
+        return model, pipeline, solver
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_initialize_model(self):
+        _model, _pipeline, _solver = self._initialize(10000)
+        wp.synchronize_device()
 
 
 class KpiInitializeViewerGL:
@@ -267,6 +309,7 @@ if __name__ == "__main__":
         "KpiInitializeModel": KpiInitializeModel,
         "FastInitializeModel": FastInitializeModel,
         "KpiInitializeSolver": KpiInitializeSolver,
+        "KpiInitializeModelLargeWorld": KpiInitializeModelLargeWorld,
         "FastInitializeSolver": FastInitializeSolver,
         "KpiInitializeViewerGL": KpiInitializeViewerGL,
         "FastInitializeViewerGL": FastInitializeViewerGL,

@@ -3575,6 +3575,36 @@ def test_hydroelastic_pair_buffer_grid_selection(test, device):
     test.assertEqual(int(hydro.block_broad_collide_count.numpy()[0]), blocks_b)
 
 
+def test_hydroelastic_subset_grid_order(test, device):
+    """Match runtime traversal-grid selection after narrow-phase type sorting."""
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True, sdf_max_resolution=64, sdf_narrow_band_range=(-0.01, 0.01), sdf_padding=0.02, gap=0.01
+    )
+    builder.add_shape_box(builder.add_body(), hx=0.5, hy=0.5, hz=0.5, cfg=cfg)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.4, 0.0, 0.0)))
+    builder.add_shape_sphere(body, radius=0.5, cfg=cfg)
+    model = builder.finalize(device=device)
+    indices = model._shape_sdf_index.numpy()
+    sdf_data = model._texture_sdf_data.numpy()
+    # Exercise the tie rule independently of primitive SDF padding/resolution
+    # rounding: type sorting routes this pair as (sphere, box), retaining box B.
+    sdf_data["voxel_radius"] = sdf_data["voxel_radius"].max()
+    model._texture_sdf_data.assign(sdf_data)
+    expected_active = int(sdf_data[indices[0]]["num_subgrids"])
+    tex = model._texture_sdf_coarse_textures[indices[0]]
+    expected_tiles = (tex.width - 1) * (tex.height - 1) * (tex.depth - 1)
+    for broad_phase in ("sap", "explicit"):
+        with test.subTest(broad_phase=broad_phase):
+            pairs = wp.array([[0, 1]], dtype=wp.vec2i, device=device) if broad_phase == "explicit" else None
+            pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase, shape_pairs_filtered=pairs)
+            hydro = pipeline.hydroelastic_sdf
+            test.assertEqual(hydro.total_num_tiles, expected_tiles)
+            test.assertEqual(hydro.total_num_active_tiles, expected_active)
+            pipeline.collide(model.state(), pipeline.contacts())
+            test.assertEqual(int(hydro.normalized_shape_pairs.numpy()[0, 1]), 0)
+
+
 add_function_test(
     TestHydroelastic,
     "test_hydroelastic_replica_buffers_scale_with_traversed_grids",
@@ -3587,6 +3617,14 @@ add_function_test(
     TestHydroelastic,
     "test_hydroelastic_pair_buffer_grid_selection",
     test_hydroelastic_pair_buffer_grid_selection,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_subset_grid_order",
+    test_hydroelastic_subset_grid_order,
     devices=cuda_devices,
     check_output=False,
 )

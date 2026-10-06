@@ -708,18 +708,11 @@ class Model:
         self._shape_collision_filter_pairs = _ShapeCollisionFilterPairs(np.empty(0, dtype=np.int64))
         self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
-        self.shape_contact_pairs: wp.array[wp.vec2i] | None = None
-        """Pairs of shape indices that may collide, shape [shape_contact_pair_count], vec2i.
-
-        Static-static pairs are omitted. Kinematic-kinematic and static-kinematic pairs
-        are retained so consumers can opt into them during contact generation.
-
-        Constructed and cached on first access. Reading :attr:`shape_contact_pair_count`
-        does not construct the table. Assigning this attribute replaces the cache.
-        """
+        self._shape_contact_pairs: wp.array[wp.vec2i] | None = None
         self._shape_contact_pair_data: _ShapeContactPairs | None = None
-        self.shape_contact_pair_count: int = 0
-        """Number of shape contact pairs."""
+        """Finalized collision topology for lazy pair construction and statistics."""
+        self._shape_contact_pair_count: int = 0
+        self._shape_contact_pair_counts: dict[bytes | tuple[bytes, int | None] | None, np.ndarray] = {}
         self.shape_world: wp.array[wp.int32] | None = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
         self.shape_world_start: wp.array[wp.int32] | None = None
@@ -1308,34 +1301,46 @@ class Model:
     def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
         """Pairs of shape indices that may collide, shape [shape_contact_pair_count], vec2i.
 
-        Constructed and cached on first access from the finalized collision topology.
+        Constructed from finalized collision topology and cached on first access.
         Reading :attr:`shape_contact_pair_count` does not construct the table.
-        Assigning this attribute replaces the cache without changing the count.
+        Assigning an array replaces the table, updates the count to its length,
+        and clears cached statistics. Assigning ``None`` removes the table and
+        sets the count to zero.
         Access this attribute before CUDA graph capture, normally by constructing
         the explicit collision pipeline before capture.
 
         Static-static pairs are omitted. Kinematic-kinematic and static-kinematic
         pairs are retained so consumers can opt into them during contact generation.
         """
-        pairs = self.__dict__["shape_contact_pairs"]
+        pairs = self._shape_contact_pairs
         if pairs is None and self._shape_contact_pair_data is not None:
-            if self.device.is_cuda and self.device.is_capturing and self._shape_contact_pair_data.counts.any():
+            topology = self._shape_contact_pair_data
+            if self.device.is_cuda and self.device.is_capturing and topology.counts.any():
                 raise RuntimeError(
                     "Initialize model.shape_contact_pairs before CUDA graph capture, "
                     "for example by constructing the explicit CollisionPipeline before capture."
                 )
-            pairs = wp.array(
-                self._shape_contact_pair_data.build_pairs(), dtype=wp.vec2i, device=self.device, copy=False
-            )
-            self.__dict__["shape_contact_pairs"] = pairs
-            self._shape_contact_pair_data = None
+            pairs = wp.array(topology.build_pairs(), dtype=wp.vec2i, device=self.device, copy=False)
+            self._shape_contact_pairs = pairs
         return pairs
 
     @shape_contact_pairs.setter
     def shape_contact_pairs(self, pairs: wp.array[wp.vec2i] | None) -> None:
-        # Preserve the public storage key for attribute introspection and recordings.
-        self.__dict__["shape_contact_pairs"] = pairs
+        self._shape_contact_pairs = pairs
         self._shape_contact_pair_data = None
+        self._shape_contact_pair_count = len(pairs) if pairs is not None else 0
+        self._shape_contact_pair_counts.clear()
+
+    @property
+    def shape_contact_pair_count(self) -> int:
+        """Number of eligible shape pairs, computed without constructing their table."""
+        return self._shape_contact_pair_count
+
+    @shape_contact_pair_count.setter
+    def shape_contact_pair_count(self, count: int) -> None:
+        self._shape_contact_pair_count = count
+        if self._shape_contact_pair_data is None:
+            self._shape_contact_pair_counts.clear()
 
     def _set_shape_collision_filter_packed(self, packed: np.ndarray) -> None:
         """Install the canonical filter store: sorted unique packed pair codes."""

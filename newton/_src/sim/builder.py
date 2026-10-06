@@ -14025,7 +14025,10 @@ class ModelBuilder:
                 shape_collision_filter_packed,
                 self.world_count,
             )
-            m.shape_contact_pair_count = int(m._shape_contact_pair_data.counts.sum())
+            pair_counts = m._shape_contact_pair_data.counts
+            pair_counts.setflags(write=False)
+            m._shape_contact_pair_counts[None] = pair_counts
+            m.shape_contact_pair_count = int(pair_counts.sum())
 
             # enable ground plane
             m.up_axis = self.up_axis
