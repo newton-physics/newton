@@ -794,6 +794,28 @@ class TestCollisionPipeline(unittest.TestCase):
             CollisionPipeline.create_from_usd(selected_scene, model)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_create_from_usd_deprecated_soft_contact_margin_override(self):
+        """A deprecated soft_contact_margin override replaces the authored softContactGap."""
+        from pxr import Usd, UsdPhysics
+
+        builder = newton.ModelBuilder()
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.5), vel=wp.vec3(0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+
+        stage = Usd.Stage.CreateInMemory()
+        scene_prim = UsdPhysics.Scene.Define(stage, "/physicsScene").GetPrim()
+        scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
+        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(0.05)
+
+        with self.assertWarnsRegex(DeprecationWarning, "soft_contact_margin"):
+            pipeline = CollisionPipeline.create_from_usd(scene_prim, model, soft_contact_margin=0.2)
+        self.assertAlmostEqual(pipeline.soft_contact_gap, 0.2)
+
+        # Naming both aliases in the overrides is still an error.
+        with self.assertRaisesRegex(ValueError, "deprecated alias"):
+            CollisionPipeline.create_from_usd(scene_prim, model, soft_contact_margin=0.2, soft_contact_gap=0.1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_reports_errors(self):
         """Raise a descriptive, path-prefixed error for each invalid create_from_usd input."""
         from pxr import Usd, UsdGeom, UsdPhysics

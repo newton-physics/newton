@@ -2176,6 +2176,11 @@ class CollisionPipeline:
             if gap_max is not None:
                 kwargs["speculative_contact_gap_max"] = gap_max * linear_unit
 
+        # A deprecated soft_contact_margin override replaces the USD-authored soft_contact_gap;
+        # passing both names to __init__ would raise instead of honoring override precedence.
+        if overrides.get("soft_contact_margin") is not None and overrides.get("soft_contact_gap") is None:
+            kwargs.pop("soft_contact_gap", None)
+
         kwargs.update(overrides)
 
         if kwargs.get("contact_report", False) and kwargs.get("contact_matching", "disabled") == "disabled":
