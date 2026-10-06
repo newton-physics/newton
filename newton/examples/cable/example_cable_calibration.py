@@ -1,16 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tune a cable from a portable bundle using an explicitly configured optimizer.
+"""Calibrate a cable from a portable bundle using an explicitly configured optimizer.
 
 Run with::
 
-    uv run --extra tuning -m newton.examples cable_tuning
+    uv run --extra calibration -m newton.examples cable_calibration
 
 Without --bundle, the example downloads its bundle from newton-assets.
 Without --run-spec, the example reads run-spec.json from the bundle directory.
-Use optimizer.kind="cma" for CMA-ES. Install newton[tuning]; rendered traces
-also need newton[tuning-trace]. A null output.directory writes no files.
+Use optimizer.kind="cma" for CMA-ES. Install newton[calibration]; rendered traces
+also need newton[calibration-trace]. A null output.directory writes no files.
 Trace masks come from visible cable shape IDs, independently of material color;
 the Chamfer objective uses projected cable geometry and needs no simulation mask.
 The run spec separates physical setup from fitting configuration.
@@ -40,20 +40,20 @@ class Example:
         self.result = None
 
     def run(self):
-        """Fit the configured problem through the public tuning API."""
-        from newton.tuning import (  # noqa: PLC0415 -- keep CLI help lightweight
+        """Fit the configured problem through the public calibration API."""
+        from newton.calibration import (  # noqa: PLC0415 -- keep CLI help lightweight
+            CableCalibrationProblem,
             CableEvidenceBundle,
             CableRunSpec,
-            CableTuningProblem,
+            calibrate,
             optimizer_from_spec,
-            tune,
         )
 
         import newton.utils  # noqa: PLC0415 -- keep CLI help lightweight
 
         # Physical setup is independent of objective, search, and solver policy.
         # This driver selects the optimizer and output explicitly.
-        bundle_dir = self.args.bundle or newton.utils.download_asset("cable_tuning_demo")
+        bundle_dir = self.args.bundle or newton.utils.download_asset("cable_calibration_demo")
         bundle = CableEvidenceBundle.load(bundle_dir)
         run_spec_path = self.args.run_spec or Path(bundle_dir) / "run-spec.json"
         with run_spec_path.open(encoding="utf-8") as stream:
@@ -61,11 +61,11 @@ class Example:
 
         optimizer = optimizer_from_spec(run_spec.optimizer)
 
-        problem = CableTuningProblem.from_bundle(bundle, bundle_dir, run_spec)
+        problem = CableCalibrationProblem.from_bundle(bundle, bundle_dir, run_spec)
         self._scalar_names = problem.search_space.searched_scalars()
         self._header_printed = False
         self._t0 = time.perf_counter()
-        self.result = tune(
+        self.result = calibrate(
             problem,
             optimizer=optimizer,
             output_dir=run_spec.output.directory,
@@ -93,7 +93,7 @@ class Example:
     def test_final(self):
         """Check that the driver received a valid result."""
         if self.result is None:
-            raise AssertionError("run the tuning example before checking its output")
+            raise AssertionError("run the calibration example before checking its output")
         self.result.validate()
 
 
