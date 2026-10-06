@@ -1952,7 +1952,9 @@ class CollisionPipeline:
         Only authored USD values override the :meth:`__init__`
         defaults, so unauthored attributes fall back to the same defaults as
         constructing :class:`CollisionPipeline` directly. ``overrides`` take
-        precedence over both USD-authored and default values. Length values
+        precedence over both USD-authored and default values. Authored values
+        are validated before ``overrides`` are applied, so an invalid authored
+        value is still reported even if an override replaces it. Length values
         (``softContactGap``, ``contactMatchingPosThreshold``,
         ``maxSpeculativeContactGap``) are authored in stage units and converted
         to meters. Following :meth:`ModelBuilder.add_usd`, unauthored stage
