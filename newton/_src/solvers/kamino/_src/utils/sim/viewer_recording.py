@@ -45,6 +45,7 @@ from types import MethodType
 import warp as wp
 
 from newton._src.solvers.kamino._src.utils import logger as msg
+from newton.viewer import ViewerBase
 
 __all__ = ["enable_recording"]
 
@@ -121,8 +122,11 @@ def enable_recording(
     if not record_video:
         return False
 
-    if not hasattr(viewer, "get_frame"):
-        msg.warning(f"enable_recording: viewer {type(viewer).__name__} has no get_frame(); recording disabled.")
+    get_frame = getattr(viewer, "get_frame", None)
+    if get_frame is None or getattr(get_frame, "__func__", None) is ViewerBase.get_frame:
+        msg.warning(
+            f"enable_recording: viewer {type(viewer).__name__} does not support frame capture; recording disabled."
+        )
         return False
 
     if getattr(viewer, "_recording", False):

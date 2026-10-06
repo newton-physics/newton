@@ -12,8 +12,24 @@ import warp as wp
 
 import newton
 import newton.viewer
+from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
+
+
+class TestViewerBaseGetFrame(unittest.TestCase):
+    def test_null_viewer_rejects_capture_and_recording(self):
+        """Reject frame capture and recording on a real non-rendering viewer."""
+        viewer = newton.viewer.ViewerNull()
+        try:
+            viewer.begin_frame(0.0)
+            viewer.end_frame()
+            with self.assertRaisesRegex(NotImplementedError, "ViewerNull.*frame capture"):
+                viewer.get_frame()
+            self.assertFalse(enable_recording(viewer))
+            self.assertNotIn("_recording", vars(viewer))
+        finally:
+            viewer.close()
 
 
 def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
@@ -147,6 +163,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
         viewer = _make_headless_viewer_gl_or_skip(self)
 
         try:
+            self.assertTrue(enable_recording(viewer))
             cpu_device = wp.get_device("cpu")
             cpu_model = _make_box_model(cpu_device)
             viewer.set_model(cpu_model)
