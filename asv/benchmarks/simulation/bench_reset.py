@@ -3,8 +3,9 @@
 
 """CUDA ASV timings for RL-style MuJoCo Warp resets and the first step.
 
-Cartpole uses 128 worlds and humanoid uses 2048. Full reset selects all worlds;
-partial reset selects every fourth world (32/128 or 512/2048). Prepared
+Humanoid uses 2048 worlds. Full reset selects all worlds; partial reset selects
+every fourth world (512/2048). The PR gate measures partial reset plus the first
+step; full reset-only remains available to ordinary ASV collection. Prepared
 nondefault joint positions and velocities are written through ArticulationView,
 selected solver buffers are cleared without restoring model joint defaults,
 and FK updates selected body state. Step series also clear Newton forces and
@@ -24,8 +25,6 @@ import warp as wp
 from asv_runner.benchmarks.mark import SkipNotImplemented
 
 import newton
-import newton.examples
-from newton.examples.selection.example_selection_cartpole import Example as CartpoleExample
 from newton.selection import ArticulationView
 
 wp.config.enable_backward = False
@@ -43,67 +42,50 @@ class _Reset:
     # asv_runner 0.2.x repeats warm-up calls without re-running setup.
     warmup_time = 0
     param_names = ["world_count", "reset_count"]
-    robot = None
     _buffer_names = ("qacc_warmstart", "qfrc_applied", "xfrc_applied", "act", "ctrl")
 
     def _create_example(self, world_count):
-        if self.robot == "cartpole":
-            args = newton.examples.default_args(CartpoleExample.create_parser())
-            args.world_count = world_count
-            args.solver = "mujoco"
-            example = CartpoleExample(newton.viewer.ViewerNull(), args)
-            view = example.cartpoles
-        else:
-            from benchmark_mujoco import Example as MujocoExample  # noqa: PLC0415
+        from benchmark_mujoco import Example as MujocoExample  # noqa: PLC0415
 
-            example = MujocoExample(
-                robot="humanoid",
-                world_count=world_count,
-                headless=True,
-                randomize=False,
-                actuation="random",
-                use_cuda_graph=False,
-            )
-            view = ArticulationView(example.model, "*")
+        example = MujocoExample(
+            robot="humanoid",
+            world_count=world_count,
+            headless=True,
+            randomize=False,
+            actuation="random",
+            use_cuda_graph=False,
+        )
+        view = ArticulationView(example.model, "*")
         example.step()
         return example, view
 
     def _make_joint_states(self, model, world_count):
         initial_q = self.view.get_dof_positions(model).numpy().copy()
         initial_qd = self.view.get_dof_velocities(model).numpy().copy()
-        if self.robot == "cartpole":
-            target_q = initial_q + np.array([0.2, 0.125, -0.125], dtype=np.float32)
-            target_q[:, :, 0] += np.linspace(-0.4, 0.4, world_count, dtype=np.float32)[:, None]
-            target_qd = initial_qd + np.array([0.05, -0.075, 0.1], dtype=np.float32)
-            q_offset = np.arange(target_q.size, dtype=np.float32).reshape(target_q.shape) * 0.001 + 0.25
-            qd_offset = np.arange(target_qd.size, dtype=np.float32).reshape(target_qd.shape) * 0.001 + 0.25
-            dirty_q = target_q + q_offset
-            dirty_qd = target_qd + qd_offset
-        else:
-            assert initial_q.shape == (world_count, 1, 28)
-            assert initial_qd.shape == (world_count, 1, 27)
-            lower = model.joint_limit_lower.numpy().reshape((world_count, 27))[:, 6:]
-            upper = model.joint_limit_upper.numpy().reshape((world_count, 27))[:, 6:]
-            offset = np.arange(world_count, dtype=np.float32) * 0.0001
-            target_q = initial_q.copy()
-            target_q[:, 0, 0] += 0.04 + offset
-            target_q[:, 0, 2] += 0.03
-            target_q[:, 0, 7:] = np.clip(target_q[:, 0, 7:] + 0.04, lower + 0.005, upper - 0.005)
-            target_qd = initial_qd.copy()
-            target_qd[:, 0, 0] = 0.05
-            target_qd[:, 0, 6:] = 0.02
+        assert initial_q.shape == (world_count, 1, 28)
+        assert initial_qd.shape == (world_count, 1, 27)
+        lower = model.joint_limit_lower.numpy().reshape((world_count, 27))[:, 6:]
+        upper = model.joint_limit_upper.numpy().reshape((world_count, 27))[:, 6:]
+        offset = np.arange(world_count, dtype=np.float32) * 0.0001
+        target_q = initial_q.copy()
+        target_q[:, 0, 0] += 0.04 + offset
+        target_q[:, 0, 2] += 0.03
+        target_q[:, 0, 7:] = np.clip(target_q[:, 0, 7:] + 0.04, lower + 0.005, upper - 0.005)
+        target_qd = initial_qd.copy()
+        target_qd[:, 0, 0] = 0.05
+        target_qd[:, 0, 6:] = 0.02
 
-            dirty_q = initial_q.copy()
-            dirty_q[:, 0, 0] -= 0.03 + offset
-            dirty_q[:, 0, 2] += 0.01
-            dirty_q[:, 0, 7:] = np.clip(dirty_q[:, 0, 7:] - 0.04, lower + 0.005, upper - 0.005)
-            dirty_qd = initial_qd.copy()
-            dirty_qd[:, 0, 0] = -0.03
-            dirty_qd[:, 0, 6:] = -0.02
-            np.testing.assert_array_equal(target_q[:, 0, 3:7], initial_q[:, 0, 3:7])
-            np.testing.assert_array_equal(dirty_q[:, 0, 3:7], initial_q[:, 0, 3:7])
-            assert np.all(target_q[:, 0, 7:] >= lower) and np.all(target_q[:, 0, 7:] <= upper)
-            assert np.all(dirty_q[:, 0, 7:] >= lower) and np.all(dirty_q[:, 0, 7:] <= upper)
+        dirty_q = initial_q.copy()
+        dirty_q[:, 0, 0] -= 0.03 + offset
+        dirty_q[:, 0, 2] += 0.01
+        dirty_q[:, 0, 7:] = np.clip(dirty_q[:, 0, 7:] - 0.04, lower + 0.005, upper - 0.005)
+        dirty_qd = initial_qd.copy()
+        dirty_qd[:, 0, 0] = -0.03
+        dirty_qd[:, 0, 6:] = -0.02
+        np.testing.assert_array_equal(target_q[:, 0, 3:7], initial_q[:, 0, 3:7])
+        np.testing.assert_array_equal(dirty_q[:, 0, 3:7], initial_q[:, 0, 3:7])
+        assert np.all(target_q[:, 0, 7:] >= lower) and np.all(target_q[:, 0, 7:] <= upper)
+        assert np.all(dirty_q[:, 0, 7:] >= lower) and np.all(dirty_q[:, 0, 7:] <= upper)
 
         return target_q, target_qd, dirty_q, dirty_qd
 
@@ -310,41 +292,9 @@ class _ResetWithStep(_Reset):
                 )
 
 
-class FastFullResetCartpoleMuJoCo(_ResetOnly):
-    robot = "cartpole"
-    params = [[128], [128]]
-
-
-class FastPartialResetCartpoleMuJoCo(_ResetOnly):
-    robot = "cartpole"
-    params = [[128], [32]]
-
-
-class FastFullResetStepCartpoleMuJoCo(_ResetWithStep):
-    robot = "cartpole"
-    params = [[128], [128]]
-
-
-class FastPartialResetStepCartpoleMuJoCo(_ResetWithStep):
-    robot = "cartpole"
-    params = [[128], [32]]
-
-
-class FastFullResetHumanoidMuJoCo(_ResetOnly):
-    robot = "humanoid"
-    params = [[2048], [2048]]
-
-
-class FastPartialResetHumanoidMuJoCo(_ResetOnly):
-    robot = "humanoid"
-    params = [[2048], [512]]
-
-
-class FastFullResetStepHumanoidMuJoCo(_ResetWithStep):
-    robot = "humanoid"
+class FullResetHumanoidMuJoCo(_ResetOnly):
     params = [[2048], [2048]]
 
 
 class FastPartialResetStepHumanoidMuJoCo(_ResetWithStep):
-    robot = "humanoid"
     params = [[2048], [512]]
