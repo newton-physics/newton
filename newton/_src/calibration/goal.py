@@ -62,6 +62,19 @@ class CableGoal:
     crop: list[int]
     """``[x0, y0, x1, y1]`` region scored in this view [px]."""
 
+    attachment_transform: Pose
+    """``T_tcp_attachment`` as ``((x, y, z), (qx, qy, qz, qw))``.
+
+    Views of one recording must agree; see :func:`group_goals`.
+    """
+
+    clamp_position: float
+    """Arc length [m] from the node-0 end of the cable to the TCP grasp point.
+
+    0.0 is the end clamp; an interior value fixes an interior capsule and lets
+    both sides hang. Views of one recording must agree; see :func:`group_goals`.
+    """
+
     sensor_quat: list[float] | None = None
     """Camera optical-frame orientation in base, ``(qx, qy, qz, qw)``."""
 
@@ -85,20 +98,6 @@ class CableGoal:
 
     data_source: CableDataSource | None = None
     """The :class:`~.data_source.CableDataSource` serving the drive, if driven."""
-
-    attachment_transform: Pose | None = None
-    """``T_tcp_attachment`` as ``((x, y, z), (qx, qy, qz, qw))``, or ``None``.
-
-    Required before simulation. Views of one recording must agree; see
-    :func:`group_goals`.
-    """
-
-    clamp_position: float = 0.0
-    """Arc length [m] from the node-0 end of the cable to the TCP grasp point.
-
-    0.0 is the end clamp; an interior value fixes an interior capsule and lets
-    both sides hang. Views of one recording must agree; see :func:`group_goals`.
-    """
 
     cable_axis: Vec3 | None = None
     """Direction ``(x, y, z)`` the cable runs at the grasp, in the TCP (gripper)
@@ -148,10 +147,10 @@ class CableGoalGroup:
     cable_start: Vec3
     """Attachment point, taken from the view that owns the group's origin."""
 
-    attachment_transform: Pose | None = None
+    attachment_transform: Pose
     """``T_tcp_attachment``, agreed by every view; see :class:`CableGoal`."""
 
-    clamp_position: float = 0.0
+    clamp_position: float
     """Clamp position [m], agreed by every view; see :class:`CableGoal`."""
 
     cable_axis: Vec3 | None = None

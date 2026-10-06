@@ -42,7 +42,7 @@ def bundle_to_goals(
     bundle_dir: str | os.PathLike,
     *,
     attachment_transform: Sequence[Sequence[float]],
-    clamp_position: float = 0.0,
+    clamp_position: float,
     cable_axis: Sequence[float] | None = None,
 ) -> list[CableGoal]:
     """Read a bundle's evidence into goals an evaluator can score against.
