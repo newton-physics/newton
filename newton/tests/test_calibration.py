@@ -672,7 +672,7 @@ def capsule_axis(world, capsule):
     return np.array(wp.quat_rotate(wp.quat(*(float(v) for v in q[3:])), wp.vec3(0.0, 0.0, 1.0)))
 
 
-class TestTuningAttachmentTransform(unittest.TestCase):
+class TestCalibrationAttachmentTransform(unittest.TestCase):
     """CableWorld composing attachment_transform into the build and the drive."""
 
     def anchor_pose(self, world):
@@ -709,7 +709,7 @@ class TestTuningAttachmentTransform(unittest.TestCase):
                 )
 
 
-class TestTuningClampPosition(unittest.TestCase):
+class TestCalibrationClampPosition(unittest.TestCase):
     """CableWorld clamping the cable at a point along its length."""
 
     def build(self, clamp_position):
@@ -797,7 +797,7 @@ class TestTuningClampPosition(unittest.TestCase):
             self.build(1.0)
 
 
-class TestTuningCableAxis(unittest.TestCase):
+class TestCalibrationCableAxis(unittest.TestCase):
     """CableWorld orienting the clamp from a direction in the TCP frame."""
 
     def clamp_axis(self, cable_axis, tcp_quat=IDENTITY):
@@ -953,7 +953,7 @@ class LossNodeDistance:
         return float(np.linalg.norm(geom - goal, axis=1).mean())
 
 
-class TestTuningCableWorld(unittest.TestCase):
+class TestCalibrationCableWorld(unittest.TestCase):
     """Building, stepping and rendering a CableWorld."""
 
     def test_mask_lies_where_the_cable_projects(self):
@@ -1124,7 +1124,7 @@ class TestTuningCableWorld(unittest.TestCase):
         )
 
 
-class TestTuningCableMasks(unittest.TestCase):
+class TestCalibrationCableMasks(unittest.TestCase):
     """Binary cable masks rendered from shape indices."""
 
     def scene_with(self, *, occluder=False, cameras=None):
@@ -1163,7 +1163,7 @@ class TestTuningCableMasks(unittest.TestCase):
         np.testing.assert_array_equal(first, expected)
 
 
-class TestTuningRunSequence(unittest.TestCase):
+class TestCalibrationRunSequence(unittest.TestCase):
     """Scoring a rollout with CableWorld.run_sequence."""
 
     def test_pixel_loss_receives_the_binary_mask(self):

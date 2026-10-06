@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""The simulated cable a tuning run scores against.
+"""The simulated cable a calibration run scores against.
 
 :class:`CableWorld` builds a rod from candidate parameters, settles it, drives it
 along a recorded trajectory, and renders it through each camera that observed the
@@ -916,7 +916,7 @@ class CableWorld:
         """Score the current state of every world in one view against some goal frames.
 
         Args:
-            loss: The loss, with the ``TuningLoss`` interface.
+            loss: The loss, with the ``CalibrationLoss`` interface.
             cam: Index of the view in ``cameras``.
             goal_reprs: Representations of the goal frames scored at this frame.
             crop: ``[x0, y0, x1, y1]`` pixel crop for scoring.
@@ -971,7 +971,7 @@ class CableWorld:
             goal_reprs: Goal representations from the loss's ``prepare()``, one per
                 goal frame. The caller computes them once for all candidates.
             crop: ``[x0, y0, x1, y1]`` pixel crop for scoring.
-            loss: The loss, with the ``TuningLoss`` interface. If it
+            loss: The loss, with the ``CalibrationLoss`` interface. If it
                 supports on-device accumulation and the device is CUDA, all worlds
                 are scored on the device and only the per-world totals are copied
                 to the host. Otherwise the frames are read back and each world is
