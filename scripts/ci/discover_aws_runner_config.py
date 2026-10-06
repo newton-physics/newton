@@ -285,7 +285,7 @@ def main() -> int:
     instance_type = os.environ["AWS_INSTANCE_TYPE"]
     tag_key = os.environ["AWS_RUNNER_RESOURCE_TAG"]
 
-    image_name = os.environ.get("AWS_AMI_NAME", DEFAULT_AMI_NAME)
+    image_name = os.environ.get("AWS_AMI_NAME") or DEFAULT_AMI_NAME
     candidates = discover_candidates(regions, instance_type, tag_key, image_name=image_name)
     if not candidates:
         error("No eligible EC2 runner candidates were discovered.")

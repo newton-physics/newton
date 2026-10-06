@@ -56,15 +56,22 @@ class TestRunnerRegionContract(unittest.TestCase):
             "AWS_RUNNER_RESOURCE_TAG": "newton-github-runner",
             "AWS_AMI_NAME": image_name,
         }
-        with (
-            patch.dict("os.environ", environment, clear=True),
-            patch.object(discovery, "discover_candidates", return_value=[{"imageId": "ami-example"}]) as discover,
-            patch.object(discovery, "set_output"),
-            redirect_stdout(StringIO()),
-        ):
-            self.assertEqual(discovery.main(), 0)
+        for selected, expected in ((image_name, image_name), ("", discovery.DEFAULT_AMI_NAME)):
+            with self.subTest(selected=selected):
+                environment["AWS_AMI_NAME"] = selected
+                with (
+                    patch.dict("os.environ", environment, clear=True),
+                    patch.object(
+                        discovery, "discover_candidates", return_value=[{"imageId": "ami-example"}]
+                    ) as discover,
+                    patch.object(discovery, "set_output"),
+                    redirect_stdout(StringIO()),
+                ):
+                    self.assertEqual(discovery.main(), 0)
 
-        discover.assert_called_once_with(["us-east-1"], "g6e.2xlarge", "newton-github-runner", image_name=image_name)
+                discover.assert_called_once_with(
+                    ["us-east-1"], "g6e.2xlarge", "newton-github-runner", image_name=expected
+                )
 
     def test_preserves_supported_region_subsets_in_caller_order(self):
         """Preserve caller ordering when every candidate is supported."""
