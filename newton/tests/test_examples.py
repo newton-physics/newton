@@ -587,6 +587,14 @@ add_basic_example_test(
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 add_basic_example_test(
+    name="basic.example_basic_conveyor",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "kamino"},
+    test_suffix="kamino",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
     name="basic.example_basic_conveyor_forces",
     devices=test_devices,
     use_viewer=True,
@@ -611,6 +619,14 @@ add_basic_example_test(
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 add_basic_example_test(
+    name="basic.example_basic_conveyor_forces",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "kamino"},
+    test_suffix="kamino",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
     name="basic.example_basic_dzhanibekov",
     devices=test_devices,
     use_viewer=True,
@@ -630,6 +646,13 @@ add_basic_example_test(
     use_viewer=True,
     test_options={"num-frames": 230, "solver": "mujoco"},
     test_suffix="mujoco",
+)
+add_basic_example_test(
+    name="basic.example_basic_dzhanibekov",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 230, "solver": "kamino"},
+    test_suffix="kamino",
 )
 
 add_basic_example_test(
@@ -872,6 +895,14 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
+    name="robot.example_robot_anymal_d",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 1, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+)
+add_example_test(
+    TestRobotExamples,
     name="robot.example_robot_g1",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
@@ -891,6 +922,14 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     use_viewer=True,
+)
+add_example_test(
+    TestRobotExamples,
+    name="robot.example_robot_h1",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 4, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
 )
 add_example_test(
     TestRobotExamples,
@@ -924,10 +963,26 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
+    name="robot.example_robot_ur10",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 100, "world-count": 2, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+)
+add_example_test(
+    TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     use_viewer=True,
+)
+add_example_test(
+    TestRobotExamples,
+    name="robot.example_robot_allegro_hand",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 1, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
 )
 add_example_test(
     TestRobotExamples,
@@ -1063,6 +1118,14 @@ add_example_test(
 )
 add_example_test(
     TestSelectionAPIExamples,
+    name="selection.example_selection_articulations",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 100, "world-count": 2, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+)
+add_example_test(
+    TestSelectionAPIExamples,
     name="selection.example_selection_cartpole",
     devices=test_devices,
     test_options={"num-frames": 100},
@@ -1095,11 +1158,27 @@ add_example_test(
 )
 add_example_test(
     TestSelectionAPIExamples,
+    name="selection.example_selection_materials",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 100, "world-count": 2, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+)
+add_example_test(
+    TestSelectionAPIExamples,
     name="selection.example_selection_multiple",
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+)
+add_example_test(
+    TestSelectionAPIExamples,
+    name="selection.example_selection_multiple",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 100, "world-count": 2, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
 )
 
 
@@ -1189,7 +1268,7 @@ add_example_test(
 
 add_example_test(
     TestSensorExamples,
-    name="sensors.example_sensor_tiled_camera",
+    name="sensors.example_sensor_camera",
     devices=cuda_test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
     use_viewer=True,
@@ -1311,6 +1390,43 @@ class TestContactsExamples(NewtonTestCase):
     pass
 
 
+def test_pyramid_kamino_impact(test, device):
+    """Check Kamino pyramid ground clearance through the wrecking-ball impact."""
+    from newton.examples.contacts.example_pyramid import CUBE_HALF, Y_STACK, Example  # noqa: PLC0415
+
+    with contextlib.redirect_stdout(io.StringIO()), wp.ScopedDevice(device):
+        example = Example(
+            ViewerNull(),
+            SimpleNamespace(
+                test=False,
+                world_count=1,
+                solver="kamino",
+                num_pyramids=1,
+                pyramid_size=20,
+                broad_phase="sap",
+            ),
+        )
+        for frame in range(451):
+            poses = example.state_0.body_q.numpy()[: example.box_count]
+            bottom = min(
+                pose[2] - CUBE_HALF * np.abs(np.asarray(wp.quat_to_matrix(wp.quat(*pose[3:7]))).reshape(3, 3)[2]).sum()
+                for pose in poses
+            )
+            test.assertGreater(bottom, -0.1, f"Frame {frame}: a cube penetrated the ground by {-bottom:.3f} m")
+            if frame < 450:
+                example.step()
+        ball_y = example.state_0.body_q.numpy()[example.box_count, 1]
+        test.assertLess(ball_y, Y_STACK - 5.0, "The wrecking ball did not pass through the pyramid")
+
+
+add_function_test(
+    TestContactsExamples,
+    "test_pyramid_kamino_impact",
+    test_pyramid_kamino_impact,
+    devices=cuda_test_devices,
+)
+
+
 _CONTACT_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
 ]
@@ -1349,10 +1465,34 @@ add_contact_example_test(
     allow_output_regexes=[(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
 add_contact_example_test(
+    name="contacts.example_nut_bolt_sdf",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120, "world-count": 1, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+    expect_output_regexes=[
+        (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
+        (_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE, "stdout"),
+    ],
+    allow_output_regexes=[(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
+)
+add_contact_example_test(
     name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
     use_viewer=True,
+    expect_output_regexes=[
+        (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
+        (_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE, "stdout"),
+    ],
+    allow_output_regexes=[(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
+)
+add_contact_example_test(
+    name="contacts.example_nut_bolt_hydro",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120, "world-count": 1, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
     expect_output_regexes=[
         (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
         (_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE, "stdout"),
@@ -1371,6 +1511,14 @@ add_contact_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "num-pyramids": 3, "pyramid-size": 5},
     use_viewer=True,
+    expect_output_regexes=[(_PYRAMID_BUILD_OUTPUT_RE, "stdout")],
+)
+add_contact_example_test(
+    name="contacts.example_pyramid",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120, "num-pyramids": 3, "pyramid-size": 5, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
     expect_output_regexes=[(_PYRAMID_BUILD_OUTPUT_RE, "stdout")],
 )
 
@@ -1616,6 +1764,14 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,
+)
+add_example_test(
+    TestControllersExamples,
+    name="controllers.example_controller_joint_impedance_heterogeneous",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
 )
 add_example_test(
     TestControllersExamples,

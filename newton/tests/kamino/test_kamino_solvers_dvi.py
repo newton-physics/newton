@@ -3370,6 +3370,92 @@ class TestDVISolver(unittest.TestCase):
         self.assertAlmostEqual(evaluate(2.0), 3.0)
         self.assertAlmostEqual(evaluate(-20.0), 0.0)
 
+    def test_sparse_contacts_with_mixed_static_and_kinematic_supports(self):
+        """Keep grouped contact impulses independent of unused Jacobian storage."""
+
+        def i32(values):
+            return wp.array(values, dtype=wp.int32, device=self.device)
+
+        def f32(values):
+            return wp.array(values, dtype=wp.float32, device=self.device)
+
+        # Both supports map to the same immovable body for coloring. The
+        # kinematic support still has three extra (zero inverse-mass) blocks.
+        rows = np.eye(3, 6, dtype=np.float32)
+        for kinematic_first in (True, False):
+            with self.subTest(kinematic_first=kinematic_first):
+                supports = [0, -1] if kinematic_first else [-1, 0]
+                offsets = []
+                coords = []
+                jacobian = []
+                weighted = []
+                for contact, support in enumerate(supports):
+                    offsets.append(len(jacobian))
+                    coords.extend((3 * contact + axis, 6) for axis in range(3))
+                    jacobian.extend(rows)
+                    weighted.extend(rows)
+                    if support >= 0:
+                        coords.extend((3 * contact + axis, 0) for axis in range(3))
+                        jacobian.extend(-rows)
+                        weighted.extend(np.zeros_like(rows))
+                num_blocks = len(jacobian)
+                # Unused capacity must never affect a contact's three rows.
+                jacobian.extend(np.full((3, 6), np.nan, dtype=np.float32))
+                weighted.extend(np.full((3, 6), np.nan, dtype=np.float32))
+                coords.extend([(-1, -1)] * 3)
+                body_space = wp.zeros(12, dtype=wp.float32, device=self.device)
+                impulses = wp.zeros(6, dtype=wp.float32, device=self.device)
+                config = convert_config_to_struct(kamino_config.DVISolverConfig(max_alternating_iterations=1))
+                wp.launch(
+                    _solve_dvi_sparse_contacts_pgs,
+                    dim=1,
+                    inputs=[
+                        i32([num_blocks]),
+                        i32([0]),
+                        i32(coords),
+                        wp.array(weighted, dtype=vec6f, device=self.device),
+                        wp.array(jacobian, dtype=vec6f, device=self.device),
+                        i32([0]),
+                        i32([0]),
+                        i32(offsets),
+                        i32([0, 1]),
+                        wp.array([(support, 1) for support in supports], dtype=wp.vec2i, device=self.device),
+                        i32([0]),
+                        i32([2]),
+                        i32([0]),
+                        i32([0]),
+                        i32([0]),
+                        i32([0]),
+                        f32([0, 0]),
+                        f32([1] * 6),
+                        f32([0, 0, -1] * 2),
+                        f32([0] * 6),
+                        f32([1] * 6),
+                        f32([0] * 6),
+                        i32([1]),
+                        i32([0, 1]),
+                        i32([0, 1]),
+                        i32([0, 2]),
+                        f32([0, 0]),
+                        i32([0]),
+                        False,
+                        -1,
+                        -1,
+                        1,
+                        1,
+                        -1,
+                        wp.array([config], dtype=DVIConfigStruct, device=self.device),
+                        body_space,
+                        impulses,
+                    ],
+                    device=self.device,
+                    block_dim=1,
+                )
+                result = impulses.numpy().reshape(2, 3)
+                self.assertTrue(np.all(np.isfinite(result)), result)
+                self.assertAlmostEqual(float(result[:, 2].sum()), 1.0, places=5)
+                np.testing.assert_allclose(body_space.numpy()[6:], [0, 0, 1, 0, 0, 0], atol=1.0e-5)
+
     def test_03j2_sparse_dvi_refreshes_tangent_cross_cache(self):
         """Refresh tangent coupling before the fused friction phase."""
         model, problem, setup = self._make_box_on_plane_setup(sparse=True)
