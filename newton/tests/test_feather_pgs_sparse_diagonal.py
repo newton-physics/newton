@@ -519,6 +519,48 @@ def test_sparse_diagonal_contact_friction_matches_general_owner(test, device):
                 )
 
 
+def test_sparse_diagonal_contact_compliance_matches_general_owner(test, device):
+    """Solve compliant contacts on the sparse rows like the general sweep."""
+    model = _build_sparse_contact_friction_model(device=device)
+    results = {}
+    for label, streams, compliance in (("sparse", True, True), ("general", False, True), ("rigid", False, False)):
+        solver = SolverFeatherPGS(
+            model,
+            **dict(_PAIR_SOLVER, dense_max_constraints=96, pgs_iterations=16),
+            use_parallel_streams=streams,
+            friction_anchor_beta=0.0,
+            contact_compliance=compliance,
+        )
+        state_in, state_out = model.state(), model.state()
+        joint_qd = state_in.joint_qd.numpy()
+        for art in np.flatnonzero(solver._model_plan.response_dof_count == 16):
+            start = int(solver._model_plan.articulation_dof_start[art])
+            joint_qd[start : start + 16] = -0.3
+        state_in.joint_qd.assign(joint_qd)
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=False, rigid_contact_max=256)
+        contacts = pipeline.contacts()
+        for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+            setattr(contacts, name, wp.zeros(256, dtype=float, device=device))
+        compliant = 0
+        for _ in range(40):
+            state_in.clear_forces()
+            pipeline.collide(state_in, contacts)
+            contacts.rigid_contact_stiffness.fill_(3000.0)
+            contacts.rigid_contact_damping.fill_(20.0)
+            contacts.rigid_contact_friction.fill_(1.0)
+            solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+            state_in, state_out = state_out, state_in
+            compliant = max(compliant, solver.compliance_contact_count)
+        results[label] = (solver, compliant, state_in.joint_qd.numpy())
+    sparse, compliant, joint_qd = results["sparse"]
+    test.assertTrue(sparse._sparse_diagonal_contact_solve)
+    test.assertFalse(results["general"][0]._sparse_diagonal_contact_solve)
+    test.assertGreater(compliant, 0)
+    test.assertGreater(float(np.abs(results["rigid"][2] - results["general"][2]).max()), 1.0e-3)
+    np.testing.assert_allclose(joint_qd, results["general"][2], rtol=0.0, atol=1.0e-6)
+
+
 def test_sparse_diagonal_is_selected_only_where_supported(test, device):
     """Keep the general sweep without streams, on CPU, with a free body or with options it does not solve."""
     model = _build_sparse_diagonal_pair_model(device=device)
@@ -560,6 +602,7 @@ for _fn in (
     test_independent_sparse_contact_groups_exclude_coupled_coordinates,
     test_sparse_diagonal_response_matches_dense_joint_limits,
     test_sparse_diagonal_contact_friction_matches_general_owner,
+    test_sparse_diagonal_contact_compliance_matches_general_owner,
 ):
     add_function_test(TestFeatherPGSSparseDiagonal, _fn.__name__, _fn, devices=cuda_devices)
 add_function_test(

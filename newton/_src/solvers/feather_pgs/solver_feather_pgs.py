@@ -3645,7 +3645,7 @@ class SolverFeatherPGS(SolverBase):
         ``use_parallel_streams``, joint limits enabled, augmented drives, the immediate response,
         the interleaved schedule, ``friction_mode="current"``, no free rigid bodies, mimic or
         loop-closing joints, joint velocity limits, warm start, velocity-only iterations,
-        pre-elimination, contact regularization, torsion or compliance, when every world holds
+        pre-elimination, contact regularization or torsion, when every world holds
         exactly two responding articulations: one whose mass matrix is diagonal and which has
         position limits, and one dense articulation of at most ``_CONTACT_JACOBIAN_MAX_DOF``
         DOFs, with the same two sizes in every world. The diagonal articulation then keeps its
@@ -3673,7 +3673,6 @@ class SolverFeatherPGS(SolverBase):
             and not self._has_free_rigid_bodies
             and not self._regularization_enabled
             and not self._contact_torsion_enabled
-            and not self.contact_compliance
             and self._mimic_count == 0
             and self._connect_count == 0
             and self._has_owned_dof_topology(model)
