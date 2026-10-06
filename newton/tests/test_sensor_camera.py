@@ -15,6 +15,7 @@ from newton._src.sensors.sensor_camera_render.utils import Utils
 from newton.sensors import (
     SensorCamera,
 )
+from newton.tests.unittest_utils import get_test_devices
 
 # Transform placing a camera at the origin looking down -Z (identity pose). A
 # camera with this transform sees a sphere placed at z = -2.
@@ -545,6 +546,148 @@ class TestSensorCamera(unittest.TestCase):
         center = (height // 2, width // 2)
         self.assertTrue(all(float(depth.numpy()[v][center]) > 0.0 for v in range(2)))
 
+    @staticmethod
+    def _cloth_color_scene(device):
+        """Build two overlapping worlds with distinct face colors and views from both sides."""
+        colors = np.array([[0.8, 0.1, 0.2], [0.1, 0.6, 0.3], [0.2, 0.3, 0.7], [0.6, 0.4, 0.1]], dtype=np.float32)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        for world in range(2):
+            cloth = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            cloth.add_cloth_mesh(
+                pos=wp.vec3(0.0, 0.0, 1.0),
+                rot=wp.quat_identity(),
+                scale=1.0,
+                vel=wp.vec3(0.0),
+                vertices=[(x + dx, y, 0.0) for x in (-0.5, 0.5) for dx, y in ((-0.3, -0.3), (0.3, -0.3), (0.0, 0.6))],
+                indices=[0, 1, 2, 3, 4, 5],
+                density=1.0,
+                color=colors[2 * world : 2 * world + 2],
+            )
+            builder.add_world(cloth)
+        model = builder.finalize(device=device)
+        camera = SensorCamera(model)
+        # Orthographic rays hit the two triangle interiors, away from shared edges.
+        rays = np.zeros((1, 2, 2, 3), dtype=np.float32)
+        rays[0, :, 0, 0] = (-0.5, 0.5)
+        rays[0, :, 1, 2] = -1.0
+        rays = wp.array(rays, dtype=wp.vec3f, device=device)
+        flip = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi)
+        poses = wp.array(
+            [wp.transform((0.0, 0.0, z), q) for z, q in ((3.0, wp.quat_identity()), (-1.0, flip)) for _ in range(2)],
+            dtype=wp.transformf,
+            device=device,
+        )
+        world_indices = wp.array([1, 0, 1, 0], dtype=wp.int32, device=device)
+        expected = colors.reshape(2, 1, 2, 3)[[1, 0, 1, 0]]
+        return model, camera, rays, poses, world_indices, expected
+
+    @staticmethod
+    def _unpack_rgb(image):
+        """Unpack RGB channels from a packed RGBA image."""
+        packed = image.numpy()
+        return np.stack([(packed >> shift) & 0xFF for shift in (0, 8, 16)], axis=-1)
+
+    def test_cloth_albedo_uses_per_face_colors(self) -> None:
+        """Verify albedo-only renders select each face's color across worlds and viewing sides."""
+        for device in get_test_devices():
+            model, camera, rays, poses, worlds, expected_srgb = self._cloth_color_scene(device)
+            state = model.state()
+            albedo = camera.create_albedo_image_output(4, 2, 1)
+            for color_space in (newton.utils.ColorSpace.SRGB, newton.utils.ColorSpace.LINEAR):
+                expected = expected_srgb
+                if color_space == newton.utils.ColorSpace.LINEAR:
+                    expected = np.apply_along_axis(newton.utils.color_srgb_to_linear, -1, expected)
+                for textures in (False, True):
+                    with self.subTest(device=device, color_space=color_space, textures=textures):
+                        camera.update(
+                            state,
+                            poses,
+                            rays,
+                            world_indices=worlds,
+                            albedo_image=albedo,
+                            render_config=SensorCamera.RenderConfig(
+                                enable_textures=textures,
+                                output_color_space=color_space,
+                                enable_backface_culling=False,
+                            ),
+                        )
+                        np.testing.assert_allclose(self._unpack_rgb(albedo), expected * 255.0, atol=2)
+
+    def test_cloth_renders_triangle_colors_from_both_sides(self) -> None:
+        """Verify two-sided depth, camera-facing normals, and per-face color under directional light."""
+        for device in get_test_devices():
+            model, camera, rays, poses, worlds, expected = self._cloth_color_scene(device)
+            state = model.state()
+            depth = camera.create_depth_image_output(4, 2, 1)
+            albedo = camera.create_albedo_image_output(4, 2, 1)
+            normal = camera.create_normal_image_output(4, 2, 1)
+            color = camera.create_color_image_output(4, 2, 1)
+            hdr = camera.create_hdr_color_image_output(4, 2, 1)
+            with self.subTest(device=device, output="depth-only"):
+                camera.update(
+                    state,
+                    poses,
+                    rays,
+                    world_indices=worlds,
+                    depth_image=depth,
+                    render_config=SensorCamera.RenderConfig(enable_backface_culling=False),
+                )
+                np.testing.assert_allclose(depth.numpy(), 2.0, atol=1e-5)
+
+            for light_direction in (-1.0, 1.0):
+                camera.create_default_light(enable_shadows=False, direction=wp.vec3(0.0, 0.0, light_direction))
+                with self.subTest(device=device, light_direction=light_direction):
+                    camera.update(
+                        state,
+                        poses,
+                        rays,
+                        world_indices=worlds,
+                        albedo_image=albedo,
+                        normal_image=normal,
+                        color_image=color,
+                        hdr_color_image=hdr,
+                        render_config=SensorCamera.RenderConfig(
+                            enable_ambient_lighting=False, enable_backface_culling=False
+                        ),
+                    )
+                    np.testing.assert_allclose(self._unpack_rgb(albedo), expected * 255.0, atol=2)
+                    expected_normals = np.zeros((4, 1, 2, 3), dtype=np.float32)
+                    expected_normals[:2, :, :, 2] = 1.0
+                    expected_normals[2:, :, :, 2] = -1.0
+                    np.testing.assert_allclose(normal.numpy(), expected_normals, atol=1e-5)
+                    lit = (expected_normals[..., 2:] * light_direction < 0.0).astype(np.float32)
+                    np.testing.assert_allclose(self._unpack_rgb(color), expected * lit * 255.0, atol=2)
+                    np.testing.assert_allclose(
+                        hdr.numpy(),
+                        np.apply_along_axis(newton.utils.color_srgb_to_linear, -1, expected) * lit,
+                        atol=1e-5,
+                    )
+
+    def test_cloth_respects_backface_culling(self) -> None:
+        """Honor default and explicit culling settings in both triangle intersection paths."""
+        for device in get_test_devices():
+            model, camera, rays, poses, worlds, _ = self._cloth_color_scene(device)
+            state = model.state()
+            depth = camera.create_depth_image_output(4, 2, 1)
+            normal = camera.create_normal_image_output(4, 2, 1)
+            for render_normals in (False, True):
+                for culling in (None, False, True):
+                    with self.subTest(device=device, render_normals=render_normals, culling=culling):
+                        config = None if culling is None else SensorCamera.RenderConfig(enable_backface_culling=culling)
+                        camera.update(
+                            state,
+                            poses,
+                            rays,
+                            world_indices=worlds,
+                            depth_image=depth,
+                            normal_image=normal if render_normals else None,
+                            render_config=config,
+                        )
+                        expected_depth = np.full((4, 1, 2), 2.0)
+                        if culling is not False:
+                            expected_depth[2:] = 0.0
+                        np.testing.assert_allclose(depth.numpy(), expected_depth, atol=1e-5)
+
     def test_texture_projection_modes_texture_uvless_shapes(self) -> None:
         """Verify cubic and triplanar projection texture UV-less shapes and differ.
 
@@ -576,6 +719,45 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(len(np.unique(triplanar)), 1)
         # The two projection modes produce distinct results on a curved surface.
         self.assertFalse(np.array_equal(cubic, triplanar))
+
+    def test_mesh_texture_transform_maps_uvs(self) -> None:
+        """Verify ``Mesh.texture_transform`` is applied to mesh UVs, as in the viewers."""
+        width, height = 16, 16
+        # Red for u < 0.5 and green for u >= 0.5.
+        texture = np.zeros((8, 16, 4), dtype=np.uint8)
+        texture[..., 3] = 255
+        texture[:, :8, 0] = 255
+        texture[:, 8:, 1] = 255
+
+        def albedo_at_u_quarter(texture_transform) -> np.ndarray:
+            mesh = newton.Mesh(
+                np.array([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]], dtype=np.float32),
+                np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
+                uvs=np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32),
+                compute_inertia=False,
+                texture=texture,
+                texture_transform=texture_transform,
+            )
+            builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            builder.add_shape_mesh(-1, mesh=mesh, color=(1.0, 1.0, 1.0))
+            model = builder.finalize(device="cpu")
+            camera = SensorCamera(model, default_render_config=SensorCamera.RenderConfig(enable_textures=True))
+            # The quad fills the view of a camera 1.8 m above it; pixel column 4 sees u = 0.25.
+            above = np.array([[0.0, 0.0, 1.8, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+            albedo = camera.create_albedo_image_output(1, width, height)
+            camera.update(
+                model.state(),
+                wp.array(above, dtype=wp.transformf, device="cpu"),
+                self._rays(width, height, math.radians(60.0)),
+                albedo_image=albedo,
+            )
+            packed = int(albedo.numpy()[0, height // 2, 4])
+            return np.array([packed & 0xFF, (packed >> 8) & 0xFF, (packed >> 16) & 0xFF])
+
+        identity = albedo_at_u_quarter(((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)))
+        shifted = albedo_at_u_quarter(((1.0, 0.0, 0.5), (0.0, 1.0, 0.0)))
+        np.testing.assert_allclose(identity, (255, 0, 0), atol=2)
+        np.testing.assert_allclose(shifted, (0, 255, 0), atol=2)
 
     def test_update_uses_default_render_settings(self) -> None:
         """Verify update falls back to the default clear data and render config."""
