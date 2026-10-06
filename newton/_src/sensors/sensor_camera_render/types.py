@@ -58,7 +58,7 @@ class AntiAliasing(enum.IntEnum):
     """Anti-aliasing mode applied to multisampled camera-ray bundles."""
 
     NONE = 0
-    """Resolve a single ray per pixel. Extra samples in the ray bundle are ignored."""
+    """Resolve a single ray per pixel. Multisample ray bundles are rejected."""
 
     SSAA = 1
     """Supersample: trace and shade every ray in the bundle, then average the results.
@@ -67,13 +67,15 @@ class AntiAliasing(enum.IntEnum):
     """
 
     MSAA = 2
-    """Multisample: resolve every ray against its own nearest hit, but shade each distinct
-    surface only once and composite the shaded colors per subsample.
+    """Multisample: resolve every ray against its own nearest hit and reuse shading
+    for subsamples covering the same surface.
 
     Anti-aliases silhouettes against both the background and other objects at a fraction of
-    the :attr:`SSAA` cost, since shading runs once per covered surface (typically one or
-    two at an edge) instead of once per ray. Interior shading is not supersampled: rays
-    landing on the same surface share a single shaded color.
+    the :attr:`SSAA` cost when shading is expensive. Each surface is shaded using
+    the first ray in bundle order that hits it, which may not be the covered ray
+    nearest the pixel center. Interior shading is not supersampled.
+    Standalone particles and deformable triangle meshes use the particle or face index
+    alongside their shared hit IDs, so distinct surfaces are shaded separately.
     """
 
 
@@ -139,9 +141,8 @@ class RenderConfig:
     anti_aliasing: AntiAliasing = AntiAliasing.NONE
     """Anti-aliasing mode applied to multisampled ray bundles (see :class:`AntiAliasing`).
 
-    Has no effect on single-sample ray bundles. Multisampled bundles are only
-    resolved when this is :attr:`AntiAliasing.SSAA` or :attr:`AntiAliasing.MSAA`;
-    :attr:`AntiAliasing.NONE` renders the first sample of each pixel.
+    Has no effect on single-sample ray bundles. Multisampled bundles require
+    :attr:`AntiAliasing.SSAA` or :attr:`AntiAliasing.MSAA`.
     """
 
     tile_width: int = 16

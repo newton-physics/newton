@@ -36,18 +36,17 @@ def _validate_camera_ray_output(
     height: int,
     out_rays: wp.array4d[wp.vec3f] | None,
     device: Devicelike = None,
-    multisamples: int = 0,
+    sample_count: int = 1,
 ) -> tuple[int, int, int, wp.array4d[wp.vec3f], wp.Device]:
     width = int(width)
     height = int(height)
     if width <= 0 or height <= 0:
         raise ValueError("width and height must be positive.")
 
-    multisamples = int(multisamples)
-    if multisamples < 0:
-        raise ValueError("multisamples must be non-negative.")
+    sample_count = int(sample_count)
+    if sample_count < 1:
+        raise ValueError("sample_count must be positive.")
 
-    sample_count = max(multisamples, 1)
     expected_shape = (height, width, sample_count, 2)
     target_device = wp.get_device(device) if device is not None else None
 
@@ -63,7 +62,7 @@ def _validate_camera_ray_output(
         if target_device is not None and out_rays.device != target_device:
             raise ValueError(f"out_rays is on {out_rays.device}, expected {target_device}")
 
-    return width, height, multisamples, out_rays, out_rays.device
+    return width, height, sample_count, out_rays, out_rays.device
 
 
 class SensorCamera:
@@ -269,7 +268,7 @@ class SensorCamera:
         vertical_aperture: float | None = None,
         horizontal_aperture_offset: float = 0.0,
         vertical_aperture_offset: float = 0.0,
-        multisamples: int = 0,
+        sample_count: int = 1,
         out_rays: wp.array4d[wp.vec3f] | None = None,
         device: Devicelike = None,
     ) -> wp.array4d[wp.vec3f]:
@@ -290,23 +289,21 @@ class SensorCamera:
             vertical_aperture: Vertical sensor aperture; must be positive.
             horizontal_aperture_offset: Horizontal principal-point offset.
             vertical_aperture_offset: Vertical principal-point offset.
-            multisamples: Number of rays to generate per pixel. Zero generates
-                one centered ray per pixel.
+            sample_count: Number of rays to generate per pixel. Use one for a
+                centered ray per pixel.
             out_rays: Optional output buffer, shape
-                ``(height, width, max(multisamples, 1), 2)`` of ``vec3f``.
+                ``(height, width, sample_count, 2)`` of ``vec3f``.
             device: Device for the ray bundle. Defaults to the current Warp device.
 
         Returns:
             Ray origins and directions, shape
-            ``(height, width, max(multisamples, 1), 2)`` of ``vec3f``.
+            ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
-        width, height, multisamples, out_rays, device = _validate_camera_ray_output(
-            width, height, out_rays, device, multisamples=multisamples
+        width, height, sample_count, out_rays, device = _validate_camera_ray_output(
+            width, height, out_rays, device, sample_count=sample_count
         )
-        sample_count = max(multisamples, 1)
-
         use_aperture = focal_length is not None or horizontal_aperture is not None or vertical_aperture is not None
         if use_aperture:
             if camera_fov is not None:
@@ -327,7 +324,7 @@ class SensorCamera:
                     float(vertical_aperture),
                     float(horizontal_aperture_offset),
                     float(vertical_aperture_offset),
-                    multisamples,
+                    sample_count,
                     out_rays,
                 ],
                 device=device,
@@ -347,7 +344,7 @@ class SensorCamera:
                 width,
                 height,
                 float(camera_fov),
-                multisamples,
+                sample_count,
                 out_rays,
             ],
             device=device,
@@ -362,7 +359,7 @@ class SensorCamera:
         camera: Any,
         *,
         time: Any | None = None,
-        multisamples: int = 0,
+        sample_count: int = 1,
         out_rays: wp.array4d[wp.vec3f] | None = None,
         device: Devicelike = None,
     ) -> wp.array4d[wp.vec3f]:
@@ -379,20 +376,20 @@ class SensorCamera:
             time: USD time to sample the camera attributes at (a
                 ``Usd.TimeCode`` or a frame number). If ``None``, the default
                 time code is used.
-            multisamples: Number of rays per pixel. Zero produces one center ray.
-            out_rays: Optional output buffer, shape ``(height, width, max(multisamples, 1), 2)`` of
+            sample_count: Number of rays per pixel. Use one for a centered ray.
+            out_rays: Optional output buffer, shape ``(height, width, sample_count, 2)`` of
                 ``vec3f``. If ``None``, a new one is allocated.
             device: Device for the ray bundle. Defaults to the current Warp
                 device.
 
         Returns:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
-            ``(height, width, max(multisamples, 1), 2)`` of ``vec3f``.
+            ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
-        width, height, multisamples, out_rays, device = _validate_camera_ray_output(
-            width, height, out_rays, device, multisamples=multisamples
+        width, height, sample_count, out_rays, device = _validate_camera_ray_output(
+            width, height, out_rays, device, sample_count=sample_count
         )
         camera_utils.compute_camera_rays_usd_pinhole(
             width,
@@ -400,7 +397,7 @@ class SensorCamera:
             camera,
             device=device,
             time=time,
-            multisamples=multisamples,
+            sample_count=sample_count,
             out_rays=out_rays,
         )
         return out_rays
@@ -428,7 +425,7 @@ class SensorCamera:
         s2: float = 0.0,
         s3: float = 0.0,
         s4: float = 0.0,
-        multisamples: int = 0,
+        sample_count: int = 1,
         out_rays: wp.array4d[wp.vec3f] | None = None,
         device: Devicelike = None,
     ) -> wp.array4d[wp.vec3f]:
@@ -462,15 +459,15 @@ class SensorCamera:
             s2: Second thin-prism distortion coefficient.
             s3: Third thin-prism distortion coefficient.
             s4: Fourth thin-prism distortion coefficient.
-            multisamples: Number of rays per pixel. Zero produces one center ray.
-            out_rays: Optional output buffer, shape ``(height, width, max(multisamples, 1), 2)`` of
+            sample_count: Number of rays per pixel. Use one for a centered ray.
+            out_rays: Optional output buffer, shape ``(height, width, sample_count, 2)`` of
                 ``vec3f``. If ``None``, a new one is allocated.
             device: Device for the ray bundle. Defaults to the current Warp
                 device.
 
         Returns:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
-            ``(height, width, max(multisamples, 1), 2)`` of ``vec3f``.
+            ``(height, width, sample_count, 2)`` of ``vec3f``.
 
         Raises:
             ValueError: If any focal length or calibration image dimension is
@@ -478,8 +475,8 @@ class SensorCamera:
         """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
-        width, height, multisamples, out_rays, device = _validate_camera_ray_output(
-            width, height, out_rays, device, multisamples=multisamples
+        width, height, sample_count, out_rays, device = _validate_camera_ray_output(
+            width, height, out_rays, device, sample_count=sample_count
         )
         image_width = float(width) if image_width is None else float(image_width)
         image_height = float(height) if image_height is None else float(image_height)
@@ -494,7 +491,7 @@ class SensorCamera:
 
         wp.launch(
             kernel=camera_utils.compute_camera_rays_pinhole_opencv_kernel,
-            dim=(height, width, max(multisamples, 1)),
+            dim=(height, width, sample_count),
             inputs=[
                 width,
                 height,
@@ -516,7 +513,7 @@ class SensorCamera:
                 s2,
                 s3,
                 s4,
-                multisamples,
+                sample_count,
                 out_rays,
             ],
             device=device,
@@ -540,7 +537,7 @@ class SensorCamera:
         k3: float = 0.0,
         k4: float = 0.0,
         max_fov: float = 2.0 * math.pi,
-        multisamples: int = 0,
+        sample_count: int = 1,
         out_rays: wp.array4d[wp.vec3f] | None = None,
         device: Devicelike = None,
     ) -> wp.array4d[wp.vec3f]:
@@ -566,27 +563,27 @@ class SensorCamera:
             k4: Fourth OpenCV fisheye distortion coefficient.
             max_fov: Maximum field of view [rad]. Pixels whose undistorted angle
                 exceeds ``max_fov / 2`` receive a zero ray.
-            multisamples: Number of rays per pixel. Zero produces one center ray.
-            out_rays: Optional output buffer, shape ``(height, width, max(multisamples, 1), 2)`` of
+            sample_count: Number of rays per pixel. Use one for a centered ray.
+            out_rays: Optional output buffer, shape ``(height, width, sample_count, 2)`` of
                 ``vec3f``. If ``None``, a new one is allocated.
             device: Device for the ray bundle. Defaults to the current Warp
                 device.
 
         Returns:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
-            ``(height, width, max(multisamples, 1), 2)`` of ``vec3f``.
+            ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
-        width, height, multisamples, out_rays, device = _validate_camera_ray_output(
-            width, height, out_rays, device, multisamples=multisamples
+        width, height, sample_count, out_rays, device = _validate_camera_ray_output(
+            width, height, out_rays, device, sample_count=sample_count
         )
         image_width = float(width) if image_width is None else float(image_width)
         image_height = float(height) if image_height is None else float(image_height)
 
         wp.launch(
             kernel=camera_utils.compute_camera_rays_fisheye_opencv_kernel,
-            dim=(height, width, max(multisamples, 1)),
+            dim=(height, width, sample_count),
             inputs=[
                 width,
                 height,
@@ -601,7 +598,7 @@ class SensorCamera:
                 k3,
                 k4,
                 max_fov,
-                multisamples,
+                sample_count,
                 out_rays,
             ],
             device=device,
@@ -624,7 +621,7 @@ class SensorCamera:
         k3: float = 0.0,
         k4: float = 0.0,
         max_fov: float = 2.0 * math.pi,
-        multisamples: int = 0,
+        sample_count: int = 1,
         out_rays: wp.array4d[wp.vec3f] | None = None,
         device: Devicelike = None,
     ) -> wp.array4d[wp.vec3f]:
@@ -650,27 +647,27 @@ class SensorCamera:
             k4: Quartic F-theta polynomial coefficient [px/rad^4].
             max_fov: Maximum field of view [rad]. Pixels whose undistorted angle
                 exceeds ``max_fov / 2`` receive a zero ray.
-            multisamples: Number of rays per pixel. Zero produces one center ray.
-            out_rays: Optional output buffer, shape ``(height, width, max(multisamples, 1), 2)`` of
+            sample_count: Number of rays per pixel. Use one for a centered ray.
+            out_rays: Optional output buffer, shape ``(height, width, sample_count, 2)`` of
                 ``vec3f``. If ``None``, a new one is allocated.
             device: Device for the ray bundle. Defaults to the current Warp
                 device.
 
         Returns:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
-            ``(height, width, max(multisamples, 1), 2)`` of ``vec3f``.
+            ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
-        width, height, multisamples, out_rays, device = _validate_camera_ray_output(
-            width, height, out_rays, device, multisamples=multisamples
+        width, height, sample_count, out_rays, device = _validate_camera_ray_output(
+            width, height, out_rays, device, sample_count=sample_count
         )
         image_width = float(width) if image_width is None else float(image_width)
         image_height = float(height) if image_height is None else float(image_height)
 
         wp.launch(
             kernel=camera_utils.compute_camera_rays_fisheye_ftheta_kernel,
-            dim=(height, width, max(multisamples, 1)),
+            dim=(height, width, sample_count),
             inputs=[
                 width,
                 height,
@@ -684,7 +681,7 @@ class SensorCamera:
                 k3,
                 k4,
                 max_fov,
-                multisamples,
+                sample_count,
                 out_rays,
             ],
             device=device,
@@ -706,7 +703,7 @@ class SensorCamera:
         k2: float = 0.0,
         k3: float = 0.0,
         max_fov: float = 2.0 * math.pi,
-        multisamples: int = 0,
+        sample_count: int = 1,
         out_rays: wp.array4d[wp.vec3f] | None = None,
         device: Devicelike = None,
     ) -> wp.array4d[wp.vec3f]:
@@ -730,27 +727,27 @@ class SensorCamera:
             k3: Fourth Kannala-Brandt polynomial coefficient [px/rad^7].
             max_fov: Maximum field of view [rad]. Pixels whose undistorted angle
                 exceeds ``max_fov / 2`` receive a zero ray.
-            multisamples: Number of rays per pixel. Zero produces one center ray.
-            out_rays: Optional output buffer, shape ``(height, width, max(multisamples, 1), 2)`` of
+            sample_count: Number of rays per pixel. Use one for a centered ray.
+            out_rays: Optional output buffer, shape ``(height, width, sample_count, 2)`` of
                 ``vec3f``. If ``None``, a new one is allocated.
             device: Device for the ray bundle. Defaults to the current Warp
                 device.
 
         Returns:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
-            ``(height, width, max(multisamples, 1), 2)`` of ``vec3f``.
+            ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
-        width, height, multisamples, out_rays, device = _validate_camera_ray_output(
-            width, height, out_rays, device, multisamples=multisamples
+        width, height, sample_count, out_rays, device = _validate_camera_ray_output(
+            width, height, out_rays, device, sample_count=sample_count
         )
         image_width = float(width) if image_width is None else float(image_width)
         image_height = float(height) if image_height is None else float(image_height)
 
         wp.launch(
             kernel=camera_utils.compute_camera_rays_fisheye_kannala_brandt_kernel,
-            dim=(height, width, max(multisamples, 1)),
+            dim=(height, width, sample_count),
             inputs=[
                 width,
                 height,
@@ -763,7 +760,7 @@ class SensorCamera:
                 k2,
                 k3,
                 max_fov,
-                multisamples,
+                sample_count,
                 out_rays,
             ],
             device=device,
@@ -908,11 +905,9 @@ class SensorCamera:
                 shape ``(view_count,)`` of ``transformf``, on the model device.
             camera_rays: Camera-space ray origins and directions, shape
                 ``(height, width, sample_count, 2)`` of ``vec3f``, on the
-                model device. Bundles with ``sample_count > 1`` are only
-                resolved when ``render_config.anti_aliasing`` is
-                :attr:`AntiAliasing.SSAA` or :attr:`AntiAliasing.MSAA`;
-                :attr:`AntiAliasing.NONE` (the default) renders the first
-                sample of each pixel.
+                model device. Bundles with ``sample_count > 1`` require
+                ``render_config.anti_aliasing`` to be :attr:`AntiAliasing.SSAA`
+                or :attr:`AntiAliasing.MSAA`.
             color_image: Output RGBA color buffer (packed ``uint32``).
             depth_image: Output depth buffer [m].
             forward_depth_image: Output forward-depth buffer [m].

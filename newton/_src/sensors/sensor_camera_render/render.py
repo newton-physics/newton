@@ -770,11 +770,13 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             albedo_accum = wp.vec3f(0.0)
 
             slot_shape = wp.vector(length=_MSAA_SURFACE_SLOTS, dtype=wp.uint32)
+            slot_shape_sub_index = wp.vector(length=_MSAA_SURFACE_SLOTS, dtype=wp.int32)
             slot_color = wp.matrix(shape=(_MSAA_SURFACE_SLOTS, 3), dtype=wp.float32)
             slot_albedo = wp.matrix(shape=(_MSAA_SURFACE_SLOTS, 3), dtype=wp.float32)
             if wp.static(state.render_color or state.render_albedo or state.render_hdr_color):
                 for slot in range(_MSAA_SURFACE_SLOTS):
                     slot_shape[slot] = raytrace.NO_HIT_SHAPE_ID
+                    slot_shape_sub_index[slot] = -1
 
             for sample_index in range(sample_count):
                 trace = trace_sample(
@@ -820,14 +822,25 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
 
                 if wp.static(state.render_color or state.render_albedo or state.render_hdr_color):
                     surface_id = trace.closest_hit.shape_index
+                    shape_sub_index = wp.int32(-1)
+                    if surface_id == raytrace.PARTICLES_SHAPE_ID or surface_id == raytrace.TRIANGLE_MESH_SHAPE_ID:
+                        shape_sub_index = trace.closest_hit.face_idx
                     sample_color = wp.vec3f(0.0)
                     sample_albedo = wp.vec3f(0.0)
                     found = wp.bool(False)
-                    for slot in range(_MSAA_SURFACE_SLOTS):
-                        if not found and slot_shape[slot] == surface_id:
-                            sample_color = wp.vec3f(slot_color[slot, 0], slot_color[slot, 1], slot_color[slot, 2])
-                            sample_albedo = wp.vec3f(slot_albedo[slot, 0], slot_albedo[slot, 1], slot_albedo[slot, 2])
-                            found = wp.bool(True)
+                    # Sentinel shape IDs need a particle or face index to distinguish hits.
+                    if surface_id < raytrace.MAX_SHAPE_ID or shape_sub_index >= 0:
+                        for slot in range(_MSAA_SURFACE_SLOTS):
+                            if (
+                                not found
+                                and slot_shape[slot] == surface_id
+                                and slot_shape_sub_index[slot] == shape_sub_index
+                            ):
+                                sample_color = wp.vec3f(slot_color[slot, 0], slot_color[slot, 1], slot_color[slot, 2])
+                                sample_albedo = wp.vec3f(
+                                    slot_albedo[slot, 0], slot_albedo[slot, 1], slot_albedo[slot, 2]
+                                )
+                                found = wp.bool(True)
 
                     if not found:
                         shade = shade_trace(
@@ -863,17 +876,19 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                         )
                         sample_color = shade.color
                         sample_albedo = shade.albedo
-                        inserted = wp.bool(False)
-                        for slot in range(_MSAA_SURFACE_SLOTS):
-                            if not inserted and slot_shape[slot] == raytrace.NO_HIT_SHAPE_ID:
-                                slot_shape[slot] = surface_id
-                                slot_color[slot, 0] = sample_color[0]
-                                slot_color[slot, 1] = sample_color[1]
-                                slot_color[slot, 2] = sample_color[2]
-                                slot_albedo[slot, 0] = sample_albedo[0]
-                                slot_albedo[slot, 1] = sample_albedo[1]
-                                slot_albedo[slot, 2] = sample_albedo[2]
-                                inserted = wp.bool(True)
+                        if surface_id < raytrace.MAX_SHAPE_ID or shape_sub_index >= 0:
+                            inserted = wp.bool(False)
+                            for slot in range(_MSAA_SURFACE_SLOTS):
+                                if not inserted and slot_shape[slot] == raytrace.NO_HIT_SHAPE_ID:
+                                    slot_shape[slot] = surface_id
+                                    slot_shape_sub_index[slot] = shape_sub_index
+                                    slot_color[slot, 0] = sample_color[0]
+                                    slot_color[slot, 1] = sample_color[1]
+                                    slot_color[slot, 2] = sample_color[2]
+                                    slot_albedo[slot, 0] = sample_albedo[0]
+                                    slot_albedo[slot, 1] = sample_albedo[1]
+                                    slot_albedo[slot, 2] = sample_albedo[2]
+                                    inserted = wp.bool(True)
 
                     if wp.static(state.render_color or state.render_hdr_color):
                         shaded_sum += sample_color

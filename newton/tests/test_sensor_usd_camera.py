@@ -462,11 +462,11 @@ class TestSensorCameraRays(unittest.TestCase):
             vertical_aperture=1.0,
             horizontal_aperture_offset=0.1,
             vertical_aperture_offset=0.2,
-            multisamples=4,
+            sample_count=4,
             device="cpu",
         )
         got_multisample = SensorCamera.compute_camera_rays_usd_pinhole(
-            width, height, camera, multisamples=4, device="cpu"
+            width, height, camera, sample_count=4, device="cpu"
         )
 
         self.assertEqual(got_prim.shape, (height, width, 1, 2))

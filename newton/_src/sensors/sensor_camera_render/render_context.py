@@ -287,9 +287,11 @@ class RenderContext:
         if config is None:
             config = RenderContext.DEFAULT_RENDER_CONFIG
         try:
-            AntiAliasing(config.anti_aliasing)
+            anti_aliasing = AntiAliasing(config.anti_aliasing)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid anti_aliasing mode: {config.anti_aliasing!r}") from exc
+        if camera_rays.ndim == 4 and camera_rays.shape[2] > 1 and anti_aliasing == AntiAliasing.NONE:
+            raise ValueError("anti_aliasing must be SSAA or MSAA for camera_rays with more than one sample")
 
         if model.shape_count > 0 and model.bvh_shape_enabled is None:
             raise RuntimeError(

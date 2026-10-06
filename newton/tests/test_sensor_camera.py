@@ -11,6 +11,7 @@ import warp as wp
 import newton
 import newton._src.sensors.sensor_camera_render as internal_render
 import newton.geometry as geometry
+from newton._src.sensors.sensor_camera_render.types import LightType
 from newton._src.sensors.sensor_camera_render.utils import Utils
 from newton.sensors import (
     SensorCamera,
@@ -217,10 +218,10 @@ class TestSensorCamera(unittest.TestCase):
             width, height, camera_fov=math.radians(45.0), device="cpu"
         )
         one_sample_rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), multisamples=1, device="cpu"
+            width, height, camera_fov=math.radians(45.0), sample_count=1, device="cpu"
         )
         multisample_rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), multisamples=4, device="cpu"
+            width, height, camera_fov=math.radians(45.0), sample_count=4, device="cpu"
         )
 
         self.assertEqual(default_rays.shape, (height, width, 1, 2))
@@ -233,16 +234,16 @@ class TestSensorCamera(unittest.TestCase):
 
         calibrated_rays = (
             SensorCamera.compute_camera_rays_pinhole_opencv(
-                width, height, fx=2.0, fy=2.0, cx=2.0, cy=1.5, multisamples=4, device="cpu"
+                width, height, fx=2.0, fy=2.0, cx=2.0, cy=1.5, sample_count=4, device="cpu"
             ),
             SensorCamera.compute_camera_rays_fisheye_opencv(
-                width, height, fx=2.0, fy=2.0, cx=2.0, cy=1.5, multisamples=4, device="cpu"
+                width, height, fx=2.0, fy=2.0, cx=2.0, cy=1.5, sample_count=4, device="cpu"
             ),
             SensorCamera.compute_camera_rays_fisheye_ftheta(
-                width, height, optical_center_x=2.0, optical_center_y=1.5, multisamples=4, device="cpu"
+                width, height, optical_center_x=2.0, optical_center_y=1.5, sample_count=4, device="cpu"
             ),
             SensorCamera.compute_camera_rays_fisheye_kannala_brandt(
-                width, height, optical_center_x=2.0, optical_center_y=1.5, multisamples=4, device="cpu"
+                width, height, optical_center_x=2.0, optical_center_y=1.5, sample_count=4, device="cpu"
             ),
         )
         for rays in calibrated_rays:
@@ -257,19 +258,23 @@ class TestSensorCamera(unittest.TestCase):
             focal_length=1.0,
             horizontal_aperture=2.0,
             vertical_aperture=1.5,
-            multisamples=4,
+            sample_count=4,
             out_rays=out_rays,
         )
         self.assertIs(rays, out_rays)
-        with self.assertRaisesRegex(ValueError, "multisamples must be non-negative"):
-            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=1.0, multisamples=-1, device="cpu")
+        for sample_count in (0, -1):
+            with self.subTest(sample_count=sample_count):
+                with self.assertRaisesRegex(ValueError, "sample_count must be positive"):
+                    SensorCamera.compute_camera_rays_pinhole(
+                        width, height, camera_fov=1.0, sample_count=sample_count, device="cpu"
+                    )
 
     def test_camera_multisample_offsets_center_on_pixel(self) -> None:
         """Keep the mean subpixel position at the pixel center for small sample counts."""
         for sample_count in (2, 3, 4, 8):
             with self.subTest(sample_count=sample_count):
                 rays = SensorCamera.compute_camera_rays_pinhole(
-                    1, 1, camera_fov=1.0, multisamples=sample_count, device="cpu"
+                    1, 1, camera_fov=1.0, sample_count=sample_count, device="cpu"
                 ).numpy()[0, 0, :, 1]
                 ray_slopes = -rays[:, :2] / rays[:, 2, None]
                 np.testing.assert_allclose(ray_slopes.mean(axis=0), (0.0, 0.0), atol=1.0e-6)
@@ -480,36 +485,125 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(msaa_packed & 0xFF, 0)
         self.assertGreater((msaa_packed >> 16) & 0xFF, 0)
 
-    def test_update_none_mode_ignores_extra_samples(self) -> None:
-        """Render only the first sample when anti-aliasing is disabled.
+    def test_msaa_shades_distinct_particles_separately(self) -> None:
+        """Keep shading from adjacent particles independent despite their shared hit ID."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        for x in (-0.3, 0.3):
+            builder.add_particle(pos=wp.vec3(x, 0.0, -2.0), vel=wp.vec3(0.0), mass=1.0, radius=0.25)
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
+        camera.create_default_light()
+        ray_values = np.zeros((1, 1, 2, 2, 3), dtype=np.float32)
+        for sample_index, x in enumerate((-0.3, 0.3)):
+            direction = np.array([x, 0.0, -2.0], dtype=np.float32)
+            ray_values[0, 0, sample_index, 1] = direction / np.linalg.norm(direction)
+        rays = wp.array(ray_values, dtype=wp.vec3f, device="cpu")
+        transforms = self._identity_transforms(1)
+        ssaa_hdr = camera.create_hdr_color_image_output(1, 1, 1)
+        msaa_hdr = camera.create_hdr_color_image_output(1, 1, 1)
 
-        A multisampled bundle whose first sample matches the single-ray baseline must
-        produce identical output under ``AntiAliasing.NONE`` regardless of later
-        samples.
-        """
-        model, camera = self._build_sphere_scene()
+        camera.update(
+            model.state(),
+            transforms,
+            rays,
+            hdr_color_image=ssaa_hdr,
+            render_config=camera.RenderConfig(anti_aliasing=camera.AntiAliasing.SSAA),
+        )
+        camera.update(
+            model.state(),
+            transforms,
+            rays,
+            hdr_color_image=msaa_hdr,
+            render_config=camera.RenderConfig(anti_aliasing=camera.AntiAliasing.MSAA),
+        )
+
+        np.testing.assert_allclose(msaa_hdr.numpy(), ssaa_hdr.numpy(), atol=1.0e-6)
+
+    def test_msaa_reuses_shading_for_one_particle(self) -> None:
+        """Shade repeated hits on one particle using the first covered sample."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, -2.0), vel=wp.vec3(0.0), mass=1.0, radius=0.75)
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
+        camera.create_default_light()
+        transforms = self._identity_transforms(1)
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, sample_count=3, device="cpu")
+        first_rays = wp.array(rays.numpy()[:, :, 0:1].copy(), dtype=wp.vec3f, device="cpu")
+        first_hdr = camera.create_hdr_color_image_output(1, 1, 1)
+        msaa_hdr = camera.create_hdr_color_image_output(1, 1, 1)
+
+        camera.update(model.state(), transforms, first_rays, hdr_color_image=first_hdr)
+        camera.update(
+            model.state(),
+            transforms,
+            rays,
+            hdr_color_image=msaa_hdr,
+            render_config=camera.RenderConfig(anti_aliasing=camera.AntiAliasing.MSAA),
+        )
+
+        np.testing.assert_allclose(msaa_hdr.numpy(), first_hdr.numpy(), atol=1.0e-6)
+
+    def test_msaa_reuses_shading_per_deformable_face(self) -> None:
+        """Group repeated hits on one cloth face without merging different faces."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_cloth_mesh(
+            pos=wp.vec3(0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0),
+            vertices=[
+                wp.vec3(-0.8, -0.3, -2.0),
+                wp.vec3(-0.2, -0.3, -2.0),
+                wp.vec3(-0.5, 0.5, -2.0),
+                wp.vec3(0.2, -0.3, -2.0),
+                wp.vec3(0.8, -0.3, -2.3),
+                wp.vec3(0.5, 0.5, -2.0),
+            ],
+            indices=[0, 1, 2, 3, 4, 5],
+            density=1.0,
+        )
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
+        camera.create_default_light()
+        # A nearby spotlight makes shading vary across one planar face, so this
+        # test can distinguish per-face reuse from per-sample shading.
+        camera._render_context._lights_type = wp.array([LightType.SPOTLIGHT], dtype=wp.int32, device="cpu")
+        camera._render_context._lights_position = wp.array([wp.vec3f(-0.5, 0.0, 0.0)], dtype=wp.vec3f, device="cpu")
+        camera._render_context._lights_orientation = wp.array([wp.vec3f(0.0, 0.0, -1.0)], dtype=wp.vec3f, device="cpu")
         state = model.state()
         transforms = self._identity_transforms(1)
-        single_sample_rays = self._rays(1, 1)
-        ray_values = single_sample_rays.numpy()
-        # First sample reproduces the baseline ray; the second is a forced miss that
-        # ``NONE`` must ignore entirely.
-        multisample_values = np.zeros((1, 1, 2, 2, 3), dtype=np.float32)
-        multisample_values[:, :, 0] = ray_values[:, :, 0]
-        multisample_rays = wp.array(multisample_values, dtype=wp.vec3f, device="cpu")
-
-        baseline_color = camera.create_color_image_output(1, 1, 1)
-        none_color = camera.create_color_image_output(1, 1, 1)
-        camera.update(state, transforms, single_sample_rays, color_image=baseline_color)
+        ray_values = np.zeros((1, 1, 3, 2, 3), dtype=np.float32)
+        for sample_index, target in enumerate(((-0.65, 0.0, -2.0), (-0.45, 0.0, -2.0), (0.5, 0.0, -2.1))):
+            direction = np.array(target, dtype=np.float32)
+            ray_values[0, 0, sample_index, 1] = direction / np.linalg.norm(direction)
+        rays = wp.array(ray_values, dtype=wp.vec3f, device="cpu")
+        msaa_hdr = camera.create_hdr_color_image_output(1, 1, 1)
+        single_hdr = camera.create_hdr_color_image_output(1, 1, 1)
+        single_colors = []
+        for sample_index in range(3):
+            single_ray = wp.array(ray_values[:, :, sample_index : sample_index + 1], dtype=wp.vec3f, device="cpu")
+            camera.update(state, transforms, single_ray, hdr_color_image=single_hdr)
+            single_colors.append(single_hdr.numpy().copy())
         camera.update(
             state,
             transforms,
-            multisample_rays,
-            color_image=none_color,
-            render_config=camera.RenderConfig(anti_aliasing=SensorCamera.AntiAliasing.NONE),
+            rays,
+            hdr_color_image=msaa_hdr,
+            render_config=camera.RenderConfig(anti_aliasing=camera.AntiAliasing.MSAA),
         )
 
-        np.testing.assert_array_equal(none_color.numpy(), baseline_color.numpy())
+        self.assertGreater(np.max(np.abs(single_colors[0] - single_colors[1])), 1.0e-4)
+        self.assertGreater(np.max(np.abs(single_colors[1] - single_colors[2])), 1.0e-4)
+        np.testing.assert_allclose(msaa_hdr.numpy(), (2.0 * single_colors[0] + single_colors[2]) / 3.0, atol=1.0e-6)
+
+    def test_update_rejects_multisample_rays_without_anti_aliasing(self) -> None:
+        """Reject multisampled rays when the resolve mode is left at NONE."""
+        model, camera = self._build_sphere_scene()
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=1.0, sample_count=4, device="cpu")
+        color = camera.create_color_image_output(1, 1, 1)
+
+        with self.assertRaisesRegex(ValueError, "anti_aliasing"):
+            camera.update(model.state(), self._identity_transforms(1), rays, color_image=color)
 
     def test_update_syncs_deformables_by_default(self) -> None:
         """Verify update() syncs deformable meshes by default and skips it with sync_deformables=False."""
