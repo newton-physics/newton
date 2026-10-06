@@ -105,8 +105,8 @@ Pre-release planning
        - Confirm new public API has complete docstrings and is included in
          Sphinx docs (run ``uv run docs/generate_api.py``).
 
-       Run the ``release-audit`` Claude Code skill
-       (``.claude/skills/release-audit``) in **pre-release mode** to automate
+       Run the ``release-audit`` skill
+       (``.agents/skills/release-audit``) in **pre-release mode** to automate
        this audit.
 
 
