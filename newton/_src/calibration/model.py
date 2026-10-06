@@ -17,10 +17,8 @@ from __future__ import annotations
 
 import copy
 import math
-import os
 import warnings
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -907,6 +905,66 @@ class CableWorld:
         n_record = max(1, round(num_frames * record_fps / self.fps))
         return sorted({round(k * (num_frames - 1) / max(1, n_record - 1)) for k in range(n_record)})
 
+    def _goal_frames_at(self, num_frames: int, n_goal: int, goal_times: Sequence[float] | None) -> dict[int, list[int]]:
+        """Map each simulation frame to the goal frames scored at it.
+
+        Args:
+            num_frames: Number of simulation frames.
+            n_goal: Number of goal frames.
+            goal_times: Capture time [s] of each goal frame, or ``None`` to spread
+                the goal frames evenly over the sequence.
+
+        Returns:
+            Goal frame indices per simulation frame, for the frames that score any.
+        """
+        frames: dict[int, list[int]] = {}
+        for j in range(n_goal):
+            if goal_times is not None:
+                f = round(goal_times[j] * self.fps)
+            else:
+                f = round(j / max(1, n_goal - 1) * (num_frames - 1))
+            frames.setdefault(min(num_frames - 1, max(0, f)), []).append(j)
+        return frames
+
+    def _score_view(
+        self,
+        loss: Any,
+        cam: int,
+        goal_reprs: Sequence[Any],
+        crop: Sequence[int],
+        sim_mask: wp.array3d[wp.uint8] | None,
+        masks: list[np.ndarray] | None,
+        accum: Any,
+        totals: list[float],
+    ) -> None:
+        """Score the current state of every world in one view against some goal frames.
+
+        Args:
+            loss: The loss, with the ``TuningLoss`` interface.
+            cam: Index of the view in ``cameras``.
+            goal_reprs: Representations of the goal frames scored at this frame.
+            crop: ``[x0, y0, x1, y1]`` pixel crop for scoring.
+            sim_mask: Device masks of all worlds, or ``None`` without a render.
+            masks: Host masks, one per world, or ``None`` without a readback.
+            accum: The loss's on-device accumulator, or ``None`` to score on the
+                host.
+            totals: Running loss per world. Host scores are added to it.
+        """
+        geom = self.project_cable(cam) if loss.wants_geometry else None
+        if accum is not None:
+            for goal_repr in goal_reprs:
+                loss.accum(goal_repr, sim_mask, crop, accum, geom=geom)
+            return
+        geom_np = geom.numpy() if geom is not None else None
+        for goal_repr in goal_reprs:
+            for i in range(self.n):
+                totals[i] += loss.score(
+                    goal_repr,
+                    masks[i] if masks is not None else None,
+                    crop,
+                    geom=geom_np[i] if geom_np is not None else None,
+                )
+
     def run_sequence(
         self,
         num_frames: int,
@@ -940,8 +998,8 @@ class CableWorld:
             loss: The loss, with the ``TuningLoss`` interface. If it
                 supports on-device accumulation and the device is CUDA, all worlds
                 are scored on the device and only the per-world totals are copied
-                to the host. Otherwise the frames are read back and scored on CPU
-                worker threads.
+                to the host. Otherwise the frames are read back and each world is
+                scored on the host.
             record_fps: Recording rate [Hz]; see :meth:`record_indices`. ``None``
                 records nothing.
             goal_times: Capture time [s] of each goal frame, relative to the start
@@ -985,18 +1043,7 @@ class CableWorld:
         # against the axis interpolated linearly to its capture time between sim
         # frames f and f + 1, instead of against the nearest frame. Interpolate the
         # simulated axis only, never the recorded masks.
-        sim_to_goal: list[dict[int, list[int]]] = []
-        for c in range(self.n_cameras):
-            n_goal_c = len(reprs[c])
-            m: dict[int, list[int]] = {}
-            for j in range(n_goal_c):
-                if times[c] is not None:
-                    f = round(times[c][j] * self.fps)
-                else:
-                    f = round(j / max(1, n_goal_c - 1) * (num_frames - 1))
-                f = min(num_frames - 1, max(0, f))
-                m.setdefault(f, []).append(j)
-            sim_to_goal.append(m)
+        sim_to_goal = [self._goal_frames_at(num_frames, len(reprs[c]), times[c]) for c in range(self.n_cameras)]
 
         # When recording, keep world 0's loss per scored frame, as the increase of
         # its running total.
@@ -1019,74 +1066,46 @@ class CableWorld:
         device = self.model.device
         use_device = loss.supports_accum and device is not None and device.is_cuda
 
-        # Host scoring: score the worlds of a frame on worker threads.
-        pool = None if use_device else ThreadPoolExecutor(max_workers=min(self.n, os.cpu_count() or 1))
-        try:
-            for f in range(num_frames):
-                # Render before stepping, so frame f is the state at time f / fps.
-                if f in render_at:
-                    recording = f in record_indices
-                    # The BVH refit depends only on the state, so only the first view
-                    # rendered at this frame does it.
-                    refit = True
-                    for c in range(self.n_cameras):
-                        js = sim_to_goal[c].get(f, [])
-                        if not (js or recording):
-                            continue  # this view needs nothing from this frame
-                        # Render only for a pixel loss or a recorded frame.
-                        if loss.wants_render or recording:
-                            _, frames, sim_mask, masks = self._render(
-                                readback=recording or not use_device,
-                                cam=c,
-                                refit=refit,
-                                with_mask=loss.wants_render or recording,
-                            )
-                            refit = False
-                        else:
-                            # The projection needs no BVH refit; leave it to the next
-                            # view that renders.
-                            frames, sim_mask, masks = None, None, None
-                        # Projected once per view and frame, not once per goal frame.
-                        geom = self.project_cable(c) if loss.wants_geometry and js else None
-                        if use_device:
-                            if accums[c] is None:
-                                accums[c] = loss.make_accum(self.n, self.model.device)
-                            for j in js:
-                                loss.accum(reprs[c][j], sim_mask, crops[c], accums[c], geom=geom)
-                        else:
-                            geom_np = geom.numpy() if geom is not None else None
-                            for j in js:
-
-                                def _score(
-                                    i: int,
-                                    c: int = c,
-                                    j: int = j,
-                                    masks: list[np.ndarray] | None = masks,
-                                    g: np.ndarray | None = geom_np,
-                                ) -> float:
-                                    return loss.score(
-                                        reprs[c][j],
-                                        masks[i] if masks is not None else None,
-                                        crops[c],
-                                        geom=g[i] if g is not None else None,
-                                    )
-
-                                for i, s in enumerate(pool.map(_score, range(self.n))):
-                                    losses[c][i] += s
-                        if capture and js:
+        for f in range(num_frames):
+            # Render before stepping, so frame f is the state at time f / fps.
+            if f in render_at:
+                recording = f in record_indices
+                # The BVH refit depends only on the state, so only the first view
+                # rendered at this frame does it.
+                refit = True
+                for c in range(self.n_cameras):
+                    js = sim_to_goal[c].get(f, [])
+                    if not (js or recording):
+                        continue  # this view needs nothing from this frame
+                    # Render only for a pixel loss or a recorded frame.
+                    if loss.wants_render or recording:
+                        _, frames, sim_mask, masks = self._render(
+                            readback=recording or not use_device,
+                            cam=c,
+                            refit=refit,
+                            with_mask=loss.wants_render or recording,
+                        )
+                        refit = False
+                    else:
+                        # The projection needs no BVH refit; leave it to the next
+                        # view that renders.
+                        frames, sim_mask, masks = None, None, None
+                    if js:
+                        if use_device and accums[c] is None:
+                            accums[c] = loss.make_accum(self.n, self.model.device)
+                        goals = [reprs[c][j] for j in js]
+                        self._score_view(loss, c, goals, crops[c], sim_mask, masks, accums[c], losses[c])
+                        if capture:
                             # The change of the running total of world 0 is the score
                             # of this frame, summed over the goal frames it matches.
                             cur = accums[c].totals()[0] if use_device else losses[c][0]
                             self.last_frame_losses[c].append((f / self.fps, cur - prev_total[c]))
                             prev_total[c] = cur
-                        if recording:
-                            for i in range(self.n):
-                                recorded_frames[c][i].append(frames[i])
-                                recorded_masks[c][i].append(masks[i])
-                self._step(f)
-        finally:
-            if pool is not None:
-                pool.shutdown()
+                    if recording:
+                        for i in range(self.n):
+                            recorded_frames[c][i].append(frames[i])
+                            recorded_masks[c][i].append(masks[i])
+            self._step(f)
 
         for c in range(self.n_cameras):
             if accums[c] is not None:
