@@ -111,7 +111,7 @@ class CableEvaluator:
 
     Args:
         goals: The :class:`~.goal.CableGoal` entries to score against.
-        loss: The objective, a ``TuningLoss``.
+        loss: The objective, a ``CalibrationLoss``.
         settle_frames: Maximum number of frames spent settling before frame 0.
             0 does not settle, so each rollout starts from the straight initial
             cable.

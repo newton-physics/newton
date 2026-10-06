@@ -1340,7 +1340,7 @@ def make_evaluator(goals, loss, **overrides):
     return CableEvaluator(goals, loss, **values)
 
 
-class TestTuningEvaluation(unittest.TestCase):
+class TestCalibrationEvaluation(unittest.TestCase):
     """Scoring a population against goals with CableEvaluator."""
 
     def test_evaluator_passes_its_settings_to_the_world(self):
