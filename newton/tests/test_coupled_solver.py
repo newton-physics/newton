@@ -128,6 +128,7 @@ class _ControlRecordingSolver(SolverBase, CouplingInterface):
 class _FullSurfaceControlRecordingSolver(_ControlRecordingSolver):
     """Test solver that accepts full-surface soft contacts."""
 
+    @property
     def coupling_supports_full_surface_soft_contacts(self) -> bool:
         return True
 
@@ -428,6 +429,65 @@ class _FakeProxyCollisionPipeline:
         del state
         self.collide_calls += 1
         self.last_contacts = contacts
+
+
+class TestCouplingInterface(unittest.TestCase):
+    """Test capability properties and subclass migration checks."""
+
+    _capabilities = (
+        "coupling_supports_inertial_property_refresh",
+        "coupling_supports_full_surface_soft_contacts",
+    )
+
+    def test_capabilities_are_boolean_properties(self):
+        """Expose the default and solver-specific capabilities as boolean properties."""
+        for solver_type, expected in (
+            (CouplingInterface, (False, False)),
+            (SolverSemiImplicit, (False, False)),
+            (SolverMuJoCo, (False, False)),
+            (SolverImplicitMPM, (False, False)),
+            (SolverXPBD, (True, False)),
+            (SolverVBD, (True, True)),
+        ):
+            # These capabilities need no model initialization or device work.
+            solver = solver_type.__new__(solver_type)
+            for name, value in zip(self._capabilities, expected, strict=True):
+                with self.subTest(solver=solver_type.__name__, capability=name):
+                    self.assertIsInstance(getattr(solver_type, name), property)
+                    self.assertIs(getattr(solver, name), value)
+
+    def test_rejects_legacy_capability_methods(self):
+        """Reject callable capability overrides when a subclass is defined."""
+
+        def unsupported(self):
+            return False
+
+        for name in self._capabilities:
+            for override in (unsupported, staticmethod(lambda: False), classmethod(unsupported)):
+                with self.subTest(capability=name, override=type(override).__name__):
+                    with self.assertRaisesRegex(TypeError, rf"LegacySolver\.{name}.*@property"):
+                        type("LegacySolver", (CouplingInterface,), {name: override})
+
+    def test_rejects_inherited_legacy_capability_methods(self):
+        """Reject callable capabilities inherited from another mixin."""
+
+        class Solver(CouplingInterface):
+            pass
+
+        for name in self._capabilities:
+            with self.subTest(capability=name):
+                legacy_mixin = type("LegacyMixin", (), {name: lambda self: False})
+                with self.assertRaisesRegex(TypeError, rf"LegacySolver\.{name}.*@property"):
+                    type("LegacySolver", (legacy_mixin, Solver), {})
+
+    def test_accepts_inherited_capability_properties(self):
+        """Allow boolean properties and their inheritance through solver subclasses."""
+        for name in self._capabilities:
+            for value in (False, True):
+                with self.subTest(capability=name, value=value):
+                    solver_type = type("Solver", (CouplingInterface,), {name: property(lambda self, v=value: v)})
+                    child_type = type("ChildSolver", (solver_type,), {})
+                    self.assertIs(getattr(child_type(), name), value)
 
 
 class TestModelView(unittest.TestCase):

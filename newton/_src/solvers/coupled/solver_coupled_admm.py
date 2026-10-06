@@ -1054,7 +1054,7 @@ class SolverCoupledADMM(SolverCoupled):
         """Initialize ADMM buffers, constraint groups, and internal collision detection."""
         for entry in self._entries.values():
             buf = _AdmmBuffers()
-            buf.supports_dynamic_inertial_refresh = bool(entry.solver.coupling_supports_inertial_property_refresh())
+            buf.supports_dynamic_inertial_refresh = bool(entry.solver.coupling_supports_inertial_property_refresh)
             s0 = entry.state_0
             if s0.body_q is not None:
                 buf.body_q_n = wp.empty_like(s0.body_q)

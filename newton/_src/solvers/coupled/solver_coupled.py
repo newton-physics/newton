@@ -2924,7 +2924,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         filtered._contact_matching_mode = contacts.contact_matching_mode
         filtered._enable_rigid_soft_full_surface_contact = bool(
             contacts._enable_rigid_soft_full_surface_contact
-            and entry.solver.coupling_supports_full_surface_soft_contacts()
+            and entry.solver.coupling_supports_full_surface_soft_contacts
         )
         return filtered
 

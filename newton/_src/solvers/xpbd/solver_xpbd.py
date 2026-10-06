@@ -261,6 +261,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
             # core module options are stale, so force a complete reapplication.
             self._applied_module_options_revision = -1
 
+    @property
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
         """Return whether inertial properties can be refreshed during graph capture.
