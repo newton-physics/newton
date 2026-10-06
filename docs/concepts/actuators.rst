@@ -277,10 +277,7 @@ extra file:
    torch.export.save(exported, "policy.pt2", extra_files={"metadata.json": json.dumps(metadata)})
 
 :class:`DriveNeuralLSTM` requires ``num_layers`` and ``hidden_size`` in
-the metadata of both pt2 and ONNX checkpoints.  Only legacy Torch checkpoints
-may omit them: they contain the original module, whose ``torch.nn.LSTM``
-submodule is inspected directly, while ``torch.export`` flattens the network
-into a computation graph that no longer exposes it.
+the metadata of both pt2 and ONNX checkpoints.
 
 .. _effort-modes:
 

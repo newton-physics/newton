@@ -98,7 +98,7 @@ class TestSelection(unittest.TestCase):
         model = builder.finalize()
         self.assertRaises(KeyError, ArticulationView, model, pattern="no_match")
 
-    def test_unsorted_include_indices_deprecated(self):
+    def test_unsorted_include_indices_rejected(self):
         builder = newton.ModelBuilder()
         root = builder.add_link(label="root")
         middle = builder.add_link(label="middle")
@@ -109,12 +109,14 @@ class TestSelection(unittest.TestCase):
         builder.add_articulation([root_joint, middle_joint, tip_joint], label="robot")
         model = builder.finalize()
 
-        with self.assertWarnsRegex(DeprecationWarning, "include_joints"):
-            joint_view = ArticulationView(model, "robot", include_joints=[2, 0])
-        self.assertEqual(joint_view.joint_names, ["root_joint", "tip_joint"])
+        with self.assertRaisesRegex(ValueError, r"include_joints.*ascending order"):
+            ArticulationView(model, "robot", include_joints=[2, 0])
+        with self.assertRaisesRegex(ValueError, r"include_links.*ascending order"):
+            ArticulationView(model, "robot", include_links=[2, 0])
 
-        with self.assertWarnsRegex(DeprecationWarning, "include_links"):
-            link_view = ArticulationView(model, "robot", include_links=[2, 0])
+        joint_view = ArticulationView(model, "robot", include_joints=[0, 2])
+        self.assertEqual(joint_view.joint_names, ["root_joint", "tip_joint"])
+        link_view = ArticulationView(model, "robot", include_links=[0, 2])
         self.assertEqual(link_view.link_names, ["root", "tip"])
 
     def test_empty_selection(self):
@@ -1691,6 +1693,30 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
   </actuator>
 </mujoco>
 """
+
+    def test_partial_layout_preserves_builtin_access_with_unequal_actuator_counts(self):
+        """Keep uniform joint data available when custom row counts differ."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.ACTUATOR_MJCF)
+        builder.add_mjcf(
+            self.ACTUATOR_MJCF.replace('model="actuated"', 'model="unactuated"').replace(
+                '<motor name="drive" joint="hinge"/>', ""
+            )
+        )
+        model = builder.finalize()
+        control = model.control()
+
+        with self.assertRaisesRegex(ValueError, "different row counts for custom frequency 'mujoco:actuator'"):
+            ArticulationView(model, "*actuated")
+
+        view = ArticulationView(model, "*actuated", allow_partial_layouts=True)
+        self.assertEqual(view.get_attribute("joint_type", model).shape, (1, 2, 1))
+        self.assertIsNone(view.custom_frequency_counts["mujoco:actuator"])
+        self.assertIsNone(view.custom_frequency_labels["mujoco:actuator"])
+        with self.assertRaises(AttributeError):
+            view.get_attribute("mujoco.ctrl", control)
+        with self.assertRaises(AttributeError):
+            view.set_attribute("mujoco.ctrl", control, wp.zeros((1, 2, 1)))
 
     def test_actuator_frequency_uses_declared_articulation_owner(self):
         """Expose MuJoCo actuator controls through their declared owner metadata."""

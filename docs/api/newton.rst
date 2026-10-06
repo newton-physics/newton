@@ -32,7 +32,6 @@ newton
    CollisionPipeline
    Contacts
    Control
-   EqType
    Gaussian
    GeoType
    Heightfield

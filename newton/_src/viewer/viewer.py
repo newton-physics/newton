@@ -2044,7 +2044,8 @@ class ViewerBase(ABC):
 
         Args:
             name: Stable identifier. Subsequent calls with the same *name*
-                update in place. In :class:`ViewerGL`, each name gets one
+                update in place. In :class:`~newton.viewer.ViewerGL` and
+                :class:`~newton.viewer.ViewerRTX`, each name gets one
                 dockable window.
             image: Image array. Accepted shapes:
 
@@ -2056,12 +2057,14 @@ class ViewerBase(ABC):
                 Accepted dtypes: ``uint8`` (values in ``[0, 255]``) or
                 ``float32`` (values in ``[0, 1]``). Values outside the range
                 are clipped.
-            fullscreen: In :class:`~newton.viewer.ViewerGL`, display the image
-                as the main viewer surface for the current frame instead of
+            fullscreen: In :class:`~newton.viewer.ViewerGL` and
+                :class:`~newton.viewer.ViewerRTX`, display the image as the
+                main viewer surface for the current frame instead of
                 rendering the 3D scene. Other backends ignore this option.
 
         The base implementation is a no-op. Backends that render images
-        (currently only :class:`~newton.viewer.ViewerGL`) override this method.
+        (currently :class:`~newton.viewer.ViewerGL` and
+        :class:`~newton.viewer.ViewerRTX`) override this method.
         """
         return
 
