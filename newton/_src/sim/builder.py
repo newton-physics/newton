@@ -144,6 +144,11 @@ _DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
 _ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
     "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
 )
+_JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
+    "ModelBuilder.joint_twist_lower and ModelBuilder.joint_twist_upper are deprecated in Newton 1.7 and "
+    "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
+    "limits of ModelBuilder.JointDofConfig instead."
+)
 _ADD_ROD_POSITIONS_DEPRECATION_MSG = (
     "ModelBuilder.add_rod(positions=...) is deprecated in Newton 1.6; "
     "construct newton.Rod(...) and pass it with add_rod(rod=...) instead."
@@ -1858,10 +1863,9 @@ class ModelBuilder:
         self.joint_friction: list[float] = []
         """Joint friction values accumulated for :attr:`Model.joint_friction`."""
 
-        self.joint_twist_lower: list[float] = []
-        """Lower twist limits accumulated for :attr:`Model.joint_twist_lower`."""
-        self.joint_twist_upper: list[float] = []
-        """Upper twist limits accumulated for :attr:`Model.joint_twist_upper`."""
+        # Created on first access so a fresh builder has no merge-managed list for them.
+        self._deprecated_joint_twist_lower: list[float] | None = None
+        self._deprecated_joint_twist_upper: list[float] | None = None
 
         self.joint_enabled: list[bool] = []
         """Joint enabled flags accumulated for :attr:`Model.joint_enabled`."""
@@ -3133,6 +3137,42 @@ class ModelBuilder:
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
+    @property
+    def joint_twist_lower(self) -> list[float]:
+        """Lower twist limits, never used by :meth:`finalize` or any solver.
+
+        .. deprecated:: 1.7
+            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
+        """
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        if self._deprecated_joint_twist_lower is None:
+            self._deprecated_joint_twist_lower = []
+        return self._deprecated_joint_twist_lower
+
+    @joint_twist_lower.setter
+    def joint_twist_lower(self, value: list[float]) -> None:
+        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
+        self._deprecated_joint_twist_lower = value
+
+    @property
+    def joint_twist_upper(self) -> list[float]:
+        """Upper twist limits, never used by :meth:`finalize` or any solver.
+
+        .. deprecated:: 1.7
+            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
+        """
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        if self._deprecated_joint_twist_upper is None:
+            self._deprecated_joint_twist_upper = []
+        return self._deprecated_joint_twist_upper
+
+    @joint_twist_upper.setter
+    def joint_twist_upper(self, value: list[float]) -> None:
+        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
+        self._deprecated_joint_twist_upper = value
+
     def _project_target_q_to_dof(self) -> list[float] | np.ndarray:
         """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
         the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped one.
@@ -3336,6 +3376,15 @@ class ModelBuilder:
             transform_mul_cfunc(a, b, ctypes.byref(out))
             return out
 
+        def rotate_vectors(rotation: wp.quat, vectors: np.ndarray) -> None:
+            # In-place SO(3) on (N, 3). Translation is not applied: a pure offset
+            # must leave linear and angular velocity unchanged.
+            q = np.asarray(rotation, dtype=np.float32)
+            xyz = q[:3]
+            w = float(q[3])
+            t = 2.0 * np.cross(xyz, vectors)
+            vectors += np.cross(xyz, t) + w * t
+
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
         attribute_specs = self._builder_merge_attribute_specs()
@@ -3452,10 +3501,15 @@ class ModelBuilder:
 
         attribute_specs.pop("joint_X_p")
         attribute_specs.pop("joint_q")
+        attribute_specs.pop("joint_qd")
         joint_X_p_start = array_starts.get("joint_X_p", int(bases["joint"]))
         if "joint_X_p" not in array_starts:
             self.joint_X_p.extend(source_list("joint_X_p") * world_count)
         joint_q = np.tile(np.asarray(builder.joint_q, dtype=np.float32), world_count)
+        # joint_qd is parent-frame. Free-root twists use the same rotation as joint_q
+        # (xform conjugated by joint_X_p). Other joint velocities are unchanged.
+        joint_qd_source = np.asarray(builder.joint_qd, dtype=np.float32)
+        joint_qd = np.tile(joint_qd_source, world_count)
         if counts["joint"]:
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)
@@ -3475,23 +3529,33 @@ class ModelBuilder:
                 free_root_frames = []
                 for joint in free_roots.tolist():
                     source_q = builder.joint_q_start[joint]
+                    source_qd = builder.joint_qd_start[joint]
                     xform_prev = wp.transform(*builder.joint_q[source_q : source_q + 7])
                     X_pj = wp.transform(*builder.joint_X_p[joint])
-                    free_root_frames.append((source_q, X_pj, wp.transform_inverse(X_pj), xform_prev))
+                    free_root_frames.append((source_q, source_qd, X_pj, wp.transform_inverse(X_pj), xform_prev))
                 for world_index, xform in enumerate(xforms):
                     if xform is None:
                         continue
                     coord_base = world_index * counts["joint_coord"]
-                    for source_q, X_pj, X_pj_inv, xform_prev in free_root_frames:
+                    dof_base = world_index * len(joint_qd_source)
+                    rotate_qd = not np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION)
+                    for source_q, source_qd, X_pj, X_pj_inv, xform_prev in free_root_frames:
                         xform_local = transform_mul(transform_mul(X_pj_inv, xform), X_pj)
                         transformed = transform_mul(xform_local, xform_prev)
                         target_q = coord_base + source_q
                         joint_q[target_q : target_q + 7] = np.asarray(transformed, dtype=np.float32)
+                        if rotate_qd:
+                            twist = joint_qd[dof_base + source_qd : dof_base + source_qd + 6].reshape(2, 3)
+                            rotate_vectors(wp.transform_get_rotation(xform_local), twist)
 
         if "joint_q" in array_starts:
             self.joint_q[array_starts["joint_q"] :] = joint_q
         else:
             self.joint_q.extend(joint_q.tolist())
+        if "joint_qd" in array_starts:
+            self.joint_qd[array_starts["joint_qd"] :] = joint_qd
+        elif len(joint_qd):
+            self.joint_qd.extend(joint_qd.tolist())
 
         for world_index, joint_start in enumerate(joint_starts.tolist()):
             body_start = int(body_starts[world_index])
@@ -3531,6 +3595,24 @@ class ModelBuilder:
                             transform_mul(xform, wp.transform(*source_body_q)) for source_body_q in builder.body_q
                         )
                     body_q_target += counts["body"]
+
+        # body_qd is a world-frame twist (linear, angular). Rotate both parts by the
+        # copy rotation. An identity rotation, including translation-only copies, is
+        # left bit-exact.
+        attribute_specs.pop("body_qd")
+        if counts["body"]:
+            body_qd = np.tile(np.asarray(builder.body_qd, dtype=np.float32).reshape((-1, 6)), (world_count, 1))
+            if not translations_only:
+                for world_index, xform in enumerate(xforms):
+                    if xform is None or np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION):
+                        continue
+                    sl = slice(world_index * counts["body"], (world_index + 1) * counts["body"])
+                    rotate_vectors(xform.q, body_qd[sl, :3])
+                    rotate_vectors(xform.q, body_qd[sl, 3:])
+            if "body_qd" in array_starts:
+                self.body_qd[array_starts["body_qd"] :] = body_qd
+            else:
+                self.body_qd.extend(wp.spatial_vector.from_buffer_copy(row) for row in body_qd)
 
         source_filter_pairs = builder._shape_collision_filter_pairs
         if source_filter_pairs:
@@ -4229,7 +4311,9 @@ class ModelBuilder:
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
             enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
             apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
-            root_path: The USD path to import, defaults to "/".
+            root_path: The USD path to import, defaults to "/". Bound physics materials
+                outside this subtree are resolved without importing unrelated bodies
+                or shapes.
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
@@ -14238,6 +14322,7 @@ class ModelBuilder:
                     requires_grad=requires_grad,
                 )
 
+                actuator.register_custom_attributes(self)
                 m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)
@@ -14819,8 +14904,6 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "joint_limit_upper": wp.float32,
     "joint_limit_ke": wp.float32,
     "joint_limit_kd": wp.float32,
-    "joint_twist_lower": wp.float32,
-    "joint_twist_upper": wp.float32,
     "joint_world": wp.int32,
     "articulation_world": wp.int32,
     "constraint_mimic_joint0": wp.int32,

@@ -87,6 +87,8 @@ class Example:
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
             )
+            # Preserve ground support as nearly touching contacts cross zero separation.
+            solver_config.dynamics.cull_speculative_contacts = False
             solver_config.dvi.max_alternating_iterations = 8
             solver_config.dvi.bilateral_solve_interval = 8
             solver_config.dvi.bilateral_solver_type = "LLTBRCM"
@@ -186,6 +188,16 @@ class Example:
             "all body velocities are small",
             lambda q, qd: max(abs(qd)) < velocity_limit,
         )
+
+    def test_post_step(self):
+        """Verify Kamino remains settled after the initial eight seconds."""
+        if self.solver_type == "kamino" and self.sim_time >= 8.0:
+            newton.examples.test_body_state(
+                self.model,
+                self.state_0,
+                "body velocities remain small after settling",
+                lambda q, qd: max(abs(qd)) < 0.015,
+            )
 
     @staticmethod
     def create_parser():

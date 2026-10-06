@@ -29,6 +29,9 @@ from newton.selection import ArticulationView
 from ..core.types import Axis
 from .gl.gui import UI
 
+# Width of the left sidebar in logical (96-DPI) pixels.
+_SIDEBAR_WIDTH_PX = 300.0
+
 
 class ViewerGui:
     """Shared ImGui rendering for concrete viewers (GL / RTX)."""
@@ -726,6 +729,7 @@ class ViewerGui:
         self._render_left_panel()
         self._render_stats_overlay()
         self._render_scalar_plots()
+        self._render_logged_images()
 
         for callback in self._ui_callbacks["free"]:
             callback(self.ui.imgui)
@@ -749,7 +753,7 @@ class ViewerGui:
         # snapping back on every appearance.
         imgui.set_next_window_pos(imgui.ImVec2(10 * s, 10 * s), imgui.Cond_.first_use_ever)
         imgui.set_next_window_size(
-            imgui.ImVec2(300 * s, io.display_size[1] - 20 * s),
+            imgui.ImVec2(_SIDEBAR_WIDTH_PX * s, io.display_size[1] - 20 * s),
             imgui.Cond_.first_use_ever,
         )
         # Allow generous downsizing while keeping at least one button row plus
@@ -878,6 +882,9 @@ class ViewerGui:
                 # Viewer-specific rendering options (e.g. GL sky/shadows/wireframe)
                 for callback in self._ui_callbacks.get("rendering", []):
                     callback(self.ui.imgui)
+                image_logger = getattr(viewer, "_image_logger", None)
+                if image_logger is not None:
+                    image_logger.draw_controls(imgui)
 
             wind = getattr(viewer, "wind", None)
             if wind is not None:
@@ -1030,6 +1037,12 @@ class ViewerGui:
         plot_logger = getattr(self._viewer, "_plot_logger", None)
         if plot_logger is not None:
             plot_logger.draw(self.ui)
+
+    def _render_logged_images(self):
+        """Render the selected :meth:`~newton.viewer.ViewerBase.log_image` window."""
+        image_logger = getattr(self._viewer, "_image_logger", None)
+        if image_logger is not None:
+            image_logger.draw(self.ui, sidebar_width_px=_SIDEBAR_WIDTH_PX)
 
     def _render_selection_panel(self):
         """Render the articulation selection panel."""
