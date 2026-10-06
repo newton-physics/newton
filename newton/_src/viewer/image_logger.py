@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-name image logging for the OpenGL viewer.
+"""Per-name image logging for the pyglet/ImGui viewers (GL and RTX).
 
 Owns GL textures, PBOs, and Warp GL-interop registrations for images
 logged via :meth:`~newton.viewer.ViewerBase.log_image`. Displays the
@@ -329,50 +329,39 @@ class LoggedImage:
 class ImageLogger:
     """Owns GL resources for images logged via :meth:`~newton.viewer.ViewerBase.log_image`.
 
-    One instance is constructed by :class:`ViewerGL`. This class has no
-    reference to the viewer itself; it takes the viewer's CUDA device at
-    construction and owns only its own GL/Warp state.
+    Shared by :class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX`;
+    GL-touching methods require the viewer's pyglet GL context to be current.
     """
 
-    def __init__(self, device: wp.Device, sidebar_width_px: float = 300.0, dpi_scale: float = 1.0):
+    def __init__(self, device: wp.Device):
         """Create an ``ImageLogger``.
 
         Args:
             device: The CUDA device used by the viewer. Warp arrays on this
                 device are uploaded via the GPU path (PBO + kernel); all
                 others fall back to a CPU copy.
-            sidebar_width_px: Width of the viewer's main sidebar in
-                framebuffer pixels (already DPI-scaled by the caller). Used
-                to avoid placing newly-opened image windows underneath the
-                sidebar on their first appearance.
-            dpi_scale: Framebuffer-pixels-per-logical-pixel scale factor
-                applied to the initial window/tile/padding/spacing sizes so
-                logged image windows render at their intended physical size
-                on HiDPI / Retina displays. The viewer keeps this value in
-                sync via :attr:`dpi_scale` when the window crosses displays.
         """
         self._device = device
-        self._sidebar_width_px = sidebar_width_px
-        self._dpi_scale: float = float(dpi_scale) if dpi_scale > 0 else 1.0
         self._images: dict[str, LoggedImage] = {}
         self._fullscreen_images: dict[str, LoggedImage] = {}
+        self._fullscreen_name: str | None = None
         self._warned_device_mismatch: dict[str, wp.Device] = {}
         self._selected: str | None = None
 
     @property
-    def dpi_scale(self) -> float:
-        """Framebuffer-pixels-per-logical-pixel scale used for initial sizing."""
-        return self._dpi_scale
-
-    @dpi_scale.setter
-    def dpi_scale(self, value: float) -> None:
-        if value > 0:
-            self._dpi_scale = float(value)
-
-    @property
     def device(self) -> wp.Device:
-        """The CUDA device this logger was bound to."""
+        """The CUDA device this logger is bound to."""
         return self._device
+
+    def set_device(self, device: wp.Device) -> None:
+        """Rebind to *device*, releasing all images if it changed.
+
+        PBO interop registrations are tied to the CUDA context they were
+        created on, so they cannot be reused across devices.
+        """
+        if device != self._device:
+            self.clear()
+            self._device = device
 
     def log(self, name: str, image: wp.array[Any] | np.ndarray, *, fullscreen: bool = False) -> None:
         """Validate, convert, and upload an image under *name*.
@@ -409,15 +398,32 @@ class ImageLogger:
         entry.n, entry.h, entry.w, entry.c = n, h, w, c
         entry.atlas_cols, entry.atlas_rows = atlas_cols, atlas_rows
         entry.tile_aspect = h / w
+        if fullscreen:
+            self._fullscreen_name = name
 
-    def draw(self) -> None:
+    def pop_fullscreen(self) -> str | None:
+        """Return the name of the image last logged with ``fullscreen=True`` and reset it.
+
+        Viewers call this once per frame so a fullscreen image only replaces
+        the scene on frames that log it.
+        """
+        name = self._fullscreen_name
+        self._fullscreen_name = None
+        return name
+
+    def draw(self, ui, sidebar_width_px: float = 0.0) -> None:
         """Draw the selected image window (if any).
 
         Called once per frame inside the viewer's ImGui frame block.
         At most one window is visible at a time; selection is driven by
         :meth:`draw_controls`.
+
+        Args:
+            ui: The viewer's ImGui wrapper.
+            sidebar_width_px: Width of the viewer's sidebar in logical
+                pixels, so new image windows don't open underneath it.
         """
-        from imgui_bundle import imgui
+        imgui = ui.imgui
 
         if self._selected is None:
             return
@@ -427,7 +433,8 @@ class ImageLogger:
 
         # Scale layout constants by the current DPI so logged image windows
         # render at their intended physical size on HiDPI / Retina displays.
-        s = self._dpi_scale
+        s = ui.dpi_scale
+        sidebar_px = sidebar_width_px * s
         tile_px = _INITIAL_TILE_PX * s
         spacing_px = _TILE_SPACING_PX * s
         pad_x = _INITIAL_WINDOW_PAD_X * s
@@ -449,8 +456,8 @@ class ImageLogger:
             viewport = imgui.get_main_viewport()
             vp_w = viewport.work_size.x
             vp_h = viewport.work_size.y
-            avail_w = max(0.0, vp_w - self._sidebar_width_px)
-            pos_x = self._sidebar_width_px + max(0.0, (avail_w - w_px) / 2.0)
+            avail_w = max(0.0, vp_w - sidebar_px)
+            pos_x = sidebar_px + max(0.0, (avail_w - w_px) / 2.0)
             pos_y = max(0.0, (vp_h - h_px) / 2.0)
             imgui.set_next_window_pos(imgui.ImVec2(float(pos_x), float(pos_y)), imgui.Cond_.once)
             imgui.set_next_window_size(imgui.ImVec2(float(w_px), float(h_px)), imgui.Cond_.once)
@@ -499,7 +506,7 @@ class ImageLogger:
             # reflects reality and the window can be re-opened via the dropdown.
             self._selected = None
 
-    def draw_controls(self) -> None:
+    def draw_controls(self, imgui) -> None:
         """Render the sidebar dropdown selecting which image window is shown.
 
         Intended to be called from inside the viewer's main sidebar
@@ -508,8 +515,6 @@ class ImageLogger:
         """
         if not self._images:
             return
-
-        from imgui_bundle import imgui
 
         label = f"Logged Images ({len(self._images)})"
         if not imgui.collapsing_header(label, imgui.TreeNodeFlags_.default_open.value):
@@ -549,6 +554,7 @@ class ImageLogger:
             self._free_entry(entry)
         self._images.clear()
         self._fullscreen_images.clear()
+        self._fullscreen_name = None
         self._selected = None
 
     def clear_matching(self, predicate: Callable[[str], bool]) -> None:
@@ -560,6 +566,8 @@ class ImageLogger:
                     images.pop(name, None)
         if self._selected not in self._images:
             self._selected = None
+        if self._fullscreen_name not in self._fullscreen_images:
+            self._fullscreen_name = None
 
     # --- Internals ---
 

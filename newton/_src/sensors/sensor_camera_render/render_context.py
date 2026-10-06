@@ -71,6 +71,7 @@ class RenderContext:
         self._shape_texture_ids: wp.array[wp.int32] | None = None
         self._shape_mesh_data_ids: wp.array[wp.int32] | None = None
         self._shape_render_type: wp.array[wp.int32] | None = None
+        self._empty_triangle_colors: wp.array[wp.vec3f] | None = None
 
         self._mesh_data: wp.array[MeshData] | None = None
         self._texture_data: wp.array[TextureData] | None = None
@@ -137,6 +138,15 @@ class RenderContext:
     @property
     def up_axis(self) -> Axis:
         return Axis.from_any(self.model.up_axis)
+
+    def _get_triangle_colors(self) -> wp.array[wp.vec3f]:
+        """Per-triangle display colors (sRGB) of the deformable triangle mesh; empty without ``Model.tri_color``."""
+        colors = self.model.tri_color
+        if colors is not None and colors.shape[0] == self.model.tri_count:
+            return colors
+        if self._empty_triangle_colors is None:
+            self._empty_triangle_colors = wp.zeros(0, dtype=wp.vec3f, device=self.device)
+        return self._empty_triangle_colors
 
     def _get_shape_render_type(self) -> wp.array[wp.int32] | None:
         if self._shape_render_type is not None:
@@ -436,6 +446,7 @@ class RenderContext:
                     # Triangle Mesh
                     self._triangle_mesh.id if self._triangle_mesh is not None else 0,
                     self._triangle_mesh_group_roots,
+                    self._get_triangle_colors(),
                     # Meshes
                     self._mesh_data,
                     # Gaussians
@@ -572,7 +583,10 @@ class RenderContext:
 
                         data = MeshData()
                         if shape.uvs is not None:
-                            data.uvs = wp.array(shape.uvs, dtype=wp.vec2f, device=self.device)
+                            # Apply the mesh's authored tiling, offset, and rotation, as the viewers do.
+                            transform = np.asarray(shape.texture_transform, dtype=np.float32)
+                            uvs = np.asarray(shape.uvs, dtype=np.float32) @ transform[:, :2].T + transform[:, 2]
+                            data.uvs = wp.array(uvs, dtype=wp.vec2f, device=self.device)
                         if shape.normals is not None:
                             data.normals = wp.array(shape.normals, dtype=wp.vec3f, device=self.device)
                         self._mesh_data_source.append(data)

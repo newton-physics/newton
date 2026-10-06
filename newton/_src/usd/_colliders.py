@@ -181,10 +181,6 @@ def _parse_colliders(
                 )
 
                 shape_contact = _resolve_shape_contact(prim, R, material, builder.default_shape_cfg, verbose=verbose)
-                shape_ke = shape_contact["ke"]
-                shape_kd = shape_contact["kd"]
-                shape_kf = shape_contact["kf"]
-                shape_ka = shape_contact["ka"]
 
                 shape_color = material_props.get("color")
                 carries_texture = material_props.get("texture") is not None and key == UsdPhysics.ObjectType.MeshShape
@@ -228,16 +224,9 @@ def _parse_colliders(
                     "body": body_id,
                     "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
-                        ke=shape_ke,
-                        kd=shape_kd,
-                        kf=shape_kf,
-                        ka=shape_ka,
+                        **shape_contact,
                         margin=inertia_margin,
                         gap=gap_val,
-                        mu=material.dynamicFriction,
-                        restitution=material.restitution,
-                        mu_torsional=material.torsionalFriction,
-                        mu_rolling=material.rollingFriction,
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
