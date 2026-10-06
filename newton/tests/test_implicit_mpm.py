@@ -1297,6 +1297,19 @@ def test_single_world_global_particles_supported(test, device):
     np.testing.assert_array_equal(stress.numpy(), np.zeros_like(stress_values))
 
 
+def test_pic_strain_basis_with_empty_cells(test, device):
+    """Verify particle-based strain bases support grids containing cells without particles."""
+    model = _make_mpm_particle_builder().finalize(device=device)
+    for max_active_cell_count in (-1, 4096):
+        with test.subTest(max_active_cell_count=max_active_cell_count):
+            config = _make_mpm_config(grid_type="fixed", solver="gauss-seidel")
+            config.strain_basis = "pic8"
+            config.grid_padding = 1
+            config.max_active_cell_count = max_active_cell_count
+            _solver, state = _step_mpm(model, config, step_count=1)
+            test.assertTrue(np.isfinite(state.particle_q.numpy()).all())
+
+
 def test_multiworld_default_shared_grid_accepts_global_particles(test, device):
     """Verify multi-world default shared grid accepts global particles."""
     builder = _make_mpm_particle_builder()
@@ -2228,6 +2241,13 @@ add_function_test(
     TestImplicitMPM,
     "test_single_world_global_particles_supported",
     test_single_world_global_particles_supported,
+    devices=basic_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_pic_strain_basis_with_empty_cells",
+    test_pic_strain_basis_with_empty_cells,
     devices=basic_devices,
 )
 
