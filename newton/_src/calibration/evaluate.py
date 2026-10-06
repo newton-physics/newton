@@ -83,41 +83,27 @@ class CableTraceView:
     frame_losses: list[tuple[float, float]]
     """``(time [s], loss)`` of each scored frame, taken from the rollout.
 
-    They add up to the objective the search minimizes, which a loss recomputed
-    from the saved masks need not do.
+    Their sum divided by the number of reference frames is :attr:`loss`. A loss
+    recomputed from the saved masks need not match.
     """
 
 
-def _goal_index_for_sim_frame(
-    f: int,
-    num_frames: int,
-    frame_times: Sequence[float] | None,
-    n_goal: int,
-    fps: float,
-) -> int:
-    """Return the reference frame that pairs with simulation frame ``f``.
+def _goal_index_for_sim_frame(f: int, frame_times: Sequence[float], fps: float) -> int:
+    """Return the reference frame captured nearest to simulation frame ``f``.
 
-    With ``frame_times``, this is the reference captured nearest to ``f / fps``.
-    Without them, the references are spread evenly over the simulated frames.
     This is the reverse of the pairing :meth:`~.model.CableWorld.run_sequence`
     uses.
 
     Args:
         f: Simulation frame index.
-        num_frames: Number of simulated frames.
-        frame_times: Capture time of each reference frame [s], or ``None``.
-        n_goal: Number of reference frames.
+        frame_times: Capture time of each reference frame [s].
         fps: Simulation frame rate [Hz].
 
     Returns:
         Index of the reference frame.
     """
-    if n_goal <= 1:
-        return 0
-    if frame_times is None:
-        return round(f / max(1, num_frames - 1) * (n_goal - 1))
     t = f / fps
-    return min(range(n_goal), key=lambda j: abs(frame_times[j] - t))
+    return min(range(len(frame_times)), key=lambda j: abs(frame_times[j] - t))
 
 
 class CableEvaluator:
@@ -149,8 +135,9 @@ class CableEvaluator:
             :class:`~.model.CableWorld`.
 
     Raises:
-        ValueError: If a goal fails :meth:`~.goal.CableGoal.validate` or has no
-            ``sensor_quat``, or if :func:`~.goal.group_goals` rejects the goals.
+        ValueError: If ``goals`` is empty, a goal fails
+            :meth:`~.goal.CableGoal.validate` or has no ``sensor_quat``, or
+            :func:`~.goal.group_goals` rejects the goals.
     """
 
     def __init__(
@@ -172,6 +159,8 @@ class CableEvaluator:
         settle_check_every: int = 25,
         settle_move_tol: float = 1.0e-3,
     ) -> None:
+        if not goals:
+            raise ValueError("CableEvaluator needs at least one goal.")
         for goal in goals:
             goal.validate()
             if goal.sensor_quat is None:
@@ -229,7 +218,7 @@ class CableEvaluator:
                     totals[i] += weight * value
         return totals
 
-    def record(self, candidate: CableCandidate, record_fps: float = math.inf) -> list[CableTraceView]:
+    def record(self, candidate: CableCandidate, *, record_fps: float = math.inf) -> list[CableTraceView]:
         """Roll out one candidate and keep its frames and per-frame losses.
 
         Runs a full rollout per goal group and renders every recorded frame,
@@ -265,8 +254,15 @@ class CableEvaluator:
                 goal_times=times,
             )
             rec_idx = world.record_indices(group.num_frames, record_fps)
-            for ci, (view, weight, per_world_frames, per_world_loss) in enumerate(
-                zip(group.views, group.weights, group.per_view(recorded), group.per_view(losses), strict=True)
+            for ci, (view, weight, per_world_frames, per_world_masks, per_world_loss) in enumerate(
+                zip(
+                    group.views,
+                    group.weights,
+                    group.per_view(recorded),
+                    group.per_view(recorded_masks),
+                    group.per_view(losses),
+                    strict=True,
+                )
             ):
                 views.append(
                     CableTraceView(
@@ -275,11 +271,8 @@ class CableEvaluator:
                         weight=weight,
                         loss=per_world_loss[0],
                         frames=per_world_frames[0],
-                        masks=group.per_view(recorded_masks)[ci][0],
-                        goal_indices=[
-                            _goal_index_for_sim_frame(f, group.num_frames, view.frame_times, len(view.masks), self.fps)
-                            for f in rec_idx
-                        ],
+                        masks=per_world_masks[0],
+                        goal_indices=[_goal_index_for_sim_frame(f, view.frame_times, self.fps) for f in rec_idx],
                         frame_losses=[(float(t), float(v)) for t, v in world.last_frame_losses[ci]],
                     )
                 )

@@ -21,7 +21,7 @@ import warp as wp
 import newton
 from newton._src.calibration import evaluate as evaluate_module
 from newton._src.calibration.data_source import CableDataSource
-from newton._src.calibration.evaluate import CableCandidate, CableEvaluator, CableTraceView, _goal_index_for_sim_frame
+from newton._src.calibration.evaluate import CableCandidate, CableEvaluator, _goal_index_for_sim_frame
 from newton._src.calibration.evidence import CableEvidenceBundle, CableRecording
 from newton._src.calibration.goal import CableGoal, group_goals
 from newton._src.calibration.model import ANGLE_PARAM_EXP, CableWorld
@@ -1376,11 +1376,18 @@ class TestTuningEvaluation(unittest.TestCase):
             "settle_check_every": 5,
             "settle_move_tol": 2.0e-3,
             "stretch_stiffness": 500.0,
+            "settle_mode": "dynamic",
+            "num_elements": 3,
+            "segment_length": 0.06,
+            "cable_radius": 0.01,
+            "cable_mass": 0.02,
+            "angle_parametrization": ANGLE_PARAM_EXP,
         }
         evaluator = make_evaluator([goal], LossNodeDistance(), settle_frames=3, **settings)
         self.assertEqual(evaluator.groups[0].num_frames, 3)
+        angles = [(0.1, 0.0), (0.0, 0.2), (0.3, 0.0)]
         candidate = CableCandidate(
-            angles=[(0.0, 0.0)] * 3, bend_stiffness=1.5, twist_stiffness=2.5, bend_damping=0.03, twist_damping=0.04
+            angles=angles, bend_stiffness=1.5, twist_stiffness=2.5, bend_damping=0.03, twist_damping=0.04
         )
         with patch.object(evaluate_module, "CableWorld", CableWorldRecorded):
             evaluator.evaluate([candidate])
@@ -1391,9 +1398,11 @@ class TestTuningEvaluation(unittest.TestCase):
         for args, kwargs in built:
             self.assertEqual({name: kwargs[name] for name in settings}, settings)
             self.assertEqual({name: kwargs[name] for name in grasp}, grasp)
-            # The bend stiffness and the drive are the third and fourth positional arguments.
+            # The angles, bend stiffness and drive are the second to fourth positional arguments.
+            self.assertEqual(args[1], [angles])
             self.assertEqual(args[2], [1.5])
             self.assertIs(args[3], drive)
+            self.assertEqual(kwargs["cameras"], evaluator.groups[0].cameras())
             self.assertEqual(kwargs["twist_stiffness_list"], [2.5])
             self.assertEqual(kwargs["bend_damping_list"], [0.03])
             self.assertEqual(kwargs["twist_damping_list"], [0.04])
@@ -1403,7 +1412,9 @@ class TestTuningEvaluation(unittest.TestCase):
 
         Candidates that differ only in rest angles get different values, equal
         candidates get equal values, and a candidate scores the same alone as in
-        the population. An empty population scores nothing.
+        the population. An empty population scores nothing. With two recordings,
+        each with its own goal mask, the value is the sum of the two recordings'
+        values.
         """
         evaluator = make_evaluator([make_scene_goal()], LossNodeDistance())
         self.assertEqual(evaluator.evaluate([]), [])
@@ -1423,6 +1434,16 @@ class TestTuningEvaluation(unittest.TestCase):
         self.assertEqual(len(set(values[:3])), 3)
         self.assertAlmostEqual(values[3], values[0], places=5)
         self.assertAlmostEqual(evaluator.evaluate([candidates[2]])[0], values[2], places=3)
+
+        shifted = make_scene_goal(label="shifted", recording_key="rec1", masks=[np.roll(scene_mask(), 4, axis=1)] * 2)
+        single = [
+            make_evaluator([goal], LossNodeDistance()).evaluate([candidates[2]])[0]
+            for goal in (make_scene_goal(), shifted)
+        ]
+        both = make_evaluator([make_scene_goal(), shifted], LossNodeDistance()).evaluate([candidates[2]])[0]
+        # The recordings score differently, so a mix-up of their goals changes the sum.
+        self.assertNotAlmostEqual(single[0], single[1], places=1)
+        self.assertAlmostEqual(both, sum(single), places=3)
 
     def test_record_returns_one_trace_per_view(self):
         """Verify record() returns one trace per view, with every frame paired with its reference frame.
@@ -1446,7 +1467,6 @@ class TestTuningEvaluation(unittest.TestCase):
         self.assertGreater(abs(views[0].loss - views[1].loss), 0.05)
         for view in views:
             with self.subTest(view.label):
-                self.assertIsInstance(view, CableTraceView)
                 self.assertEqual(view.weight, 0.5)
                 self.assertEqual(view.crop, SCENE_CROP)
                 self.assertEqual([f.shape for f in view.frames], [(24, 32, 4)] * 4)
@@ -1474,8 +1494,7 @@ class TestTuningEvaluation(unittest.TestCase):
         The references at 0 s, 0.01 s and 0.05 s are not evenly spaced. At 60 fps
         they fall on frames 0, 1 and 3 (0.6 frames rounds to 1). Pairing by index
         would score frames 0, 2 and 3. record() also pairs each simulated frame
-        with the nearest reference: frame 2 (0.033 s) is nearest 0.05 s. The
-        candidate is bent, so the cable moves and frames 1 and 2 score differently.
+        with the nearest reference: frame 2 (0.033 s) is nearest 0.05 s.
         """
         goal = make_scene_goal(masks=[scene_mask()] * 3, frame_times=[0.0, 0.01, 0.05])
         evaluator = make_evaluator([goal], LossNodeDistance())
@@ -1490,27 +1509,18 @@ class TestTuningEvaluation(unittest.TestCase):
         """Verify a simulated frame pairs with the reference frame nearest to it in capture time.
 
         This is the inverse of the reference-to-simulation matching in
-        run_sequence. Without capture times, the reference frames are spread
-        evenly over the timeline.
+        run_sequence.
         """
         fps = 60.0
         # References at 0.0, 0.5 and 1.0 s; simulated frame 30 is at 0.5 s.
         times = [0.0, 0.5, 1.0]
-        self.assertEqual(_goal_index_for_sim_frame(0, 61, times, 3, fps), 0)
-        self.assertEqual(_goal_index_for_sim_frame(30, 61, times, 3, fps), 1)
-        self.assertEqual(_goal_index_for_sim_frame(60, 61, times, 3, fps), 2)
+        self.assertEqual(_goal_index_for_sim_frame(0, times, fps), 0)
+        self.assertEqual(_goal_index_for_sim_frame(30, times, fps), 1)
+        self.assertEqual(_goal_index_for_sim_frame(60, times, fps), 2)
         # Nearest, not preceding: frame 25 (0.417 s) is closer to 0.5 s than to 0.0 s.
-        self.assertEqual(_goal_index_for_sim_frame(25, 61, times, 3, fps), 1)
-
-        self.assertEqual(_goal_index_for_sim_frame(0, 61, None, 3, fps), 0)
-        self.assertEqual(_goal_index_for_sim_frame(30, 61, None, 3, fps), 1)
-        self.assertEqual(_goal_index_for_sim_frame(60, 61, None, 3, fps), 2)
-        # Nearest, not preceding: frame 20 is 2/3 of the way to the second reference.
-        self.assertEqual(_goal_index_for_sim_frame(20, 61, None, 3, fps), 1)
-
-        # Every frame pairs with a single reference, with or without capture times.
-        self.assertEqual(_goal_index_for_sim_frame(42, 61, None, 1, fps), 0)
-        self.assertEqual(_goal_index_for_sim_frame(42, 61, times[:1], 1, fps), 0)
+        self.assertEqual(_goal_index_for_sim_frame(25, times, fps), 1)
+        # Every frame pairs with a single reference.
+        self.assertEqual(_goal_index_for_sim_frame(42, times[:1], fps), 0)
 
 
 if __name__ == "__main__":
