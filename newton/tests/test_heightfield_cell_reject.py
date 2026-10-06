@@ -309,6 +309,42 @@ def test_explicit_mesh_pair_route(test, device):
             test.assertEqual(bool(np.any(shapes == mesh_sphere)), not packed)
 
 
+def test_explicit_mesh_stage_capacity(test, device):
+    """Size listed mesh-mesh and mesh-plane stages for meshes with shape collision disabled."""
+    builder = newton.ModelBuilder()
+    on_cfg = builder.ShapeConfig(margin=0.01, gap=0.01)
+    off_cfg = builder.ShapeConfig(margin=0.01, gap=0.01, has_shape_collision=False)
+    cube = newton.Mesh.create_box(0.5, compute_inertia=False)
+
+    def add_cube(pos, cfg):
+        return builder.add_shape_mesh(builder.add_body(xform=wp.transform(pos, wp.quat_identity())), mesh=cube, cfg=cfg)
+
+    plane = builder.add_shape_plane(width=0.0, length=0.0, cfg=on_cfg)
+    terrain = newton.Heightfield(data=np.zeros((5, 5), dtype=np.float32), nrow=5, ncol=5, hx=2.0, hy=2.0)
+    heightfield = builder.add_shape_heightfield(
+        heightfield=terrain, xform=wp.transform((10.0, 0.0, 0.0), wp.quat_identity()), cfg=on_cfg
+    )
+    pairs = [
+        [add_cube((0.0, 0.0, 2.0), off_cfg), add_cube((0.0, 0.0, 2.95), on_cfg)],
+        [add_cube((5.0, 0.0, 0.45), off_cfg), plane],
+        [add_cube((10.0, 0.0, 0.45), off_cfg), heightfield],
+    ]
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="explicit", shape_pairs_filtered=wp.array(pairs, dtype=wp.vec2i, device=device)
+    )
+    test.assertEqual(pipeline.narrow_phase.max_mesh_mesh_pairs, 2)
+    test.assertEqual(pipeline.narrow_phase.max_mesh_plane_pairs, 1)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    shapes = np.sort(
+        np.stack((contacts.rigid_contact_shape0.numpy(), contacts.rigid_contact_shape1.numpy()), 1)[:count]
+    )
+    for pair in pairs:
+        test.assertTrue(np.any(np.all(shapes == sorted(pair), axis=1)), pair)
+
+
 def test_near_below_transformed_and_scaled(test, device):
     """Keep margin contacts, downward prisms, scaled terrain and reversed endpoints."""
     for z, rotation, reverse, scale in (
@@ -487,6 +523,7 @@ for _test in (
     test_packed_and_tiled_rejection,
     test_mixed_mesh_route,
     test_explicit_mesh_pair_route,
+    test_explicit_mesh_stage_capacity,
     test_near_below_transformed_and_scaled,
     test_primitive_contact_geometry,
     test_speculative_search_gap,

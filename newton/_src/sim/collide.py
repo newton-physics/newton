@@ -1642,7 +1642,8 @@ class CollisionPipeline:
                 heightfield_mask = colliding_mask & (shape_types == int(GeoType.HFIELD))
                 plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
                 mesh_sdf_pair_mask = mesh_mask | heightfield_mask
-                planar_sdf_mask = np.zeros(len(shape_types), dtype=bool)
+                planar_sdf_shapes = np.zeros(len(shape_types), dtype=bool)
+                planar_sdf_mask = planar_sdf_shapes
                 has_meshes = bool(np.any(mesh_mask))
                 if (
                     hasattr(model, "_shape_sdf_index")
@@ -1652,7 +1653,8 @@ class CollisionPipeline:
                 ):
                     shape_sdf_index = model._shape_sdf_index.numpy()
                     shape_edge_range = model.shape_edge_range.numpy()
-                    planar_sdf_mask = colliding_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
+                    planar_sdf_shapes = (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
+                    planar_sdf_mask = colliding_mask & planar_sdf_shapes
                     has_planar_sdf_shapes = bool(np.any(planar_sdf_mask))
                     has_meshes = has_meshes or has_planar_sdf_shapes
                     mesh_sdf_pair_mask |= planar_sdf_mask
@@ -1695,21 +1697,28 @@ class CollisionPipeline:
                     else:
                         shape_a = explicit_pairs_host[:, 0]
                         shape_b = explicit_pairs_host[:, 1]
-                        box_mask = colliding_mask & (shape_types == int(GeoType.BOX))
+                        # Count routes by geometry type alone, as the narrow phase routes listed pairs.
+                        mesh_shapes = shape_types == int(GeoType.MESH)
+                        heightfield_shapes = shape_types == int(GeoType.HFIELD)
+                        box_shapes = shape_types == int(GeoType.BOX)
                         mesh_mesh_routes = (
-                            (mesh_mask[shape_a] & mesh_mask[shape_b])
-                            | (heightfield_mask[shape_a] & mesh_mask[shape_b])
-                            | (mesh_mask[shape_a] & heightfield_mask[shape_b])
+                            (mesh_shapes[shape_a] & mesh_shapes[shape_b])
+                            | (heightfield_shapes[shape_a] & mesh_shapes[shape_b])
+                            | (mesh_shapes[shape_a] & heightfield_shapes[shape_b])
                             | (
-                                planar_sdf_mask[shape_a]
-                                & planar_sdf_mask[shape_b]
-                                & ~(box_mask[shape_a] & box_mask[shape_b])
+                                planar_sdf_shapes[shape_a]
+                                & planar_sdf_shapes[shape_b]
+                                & ~(box_shapes[shape_a] & box_shapes[shape_b])
                             )
                         )
                         shape_scale = model.shape_scale.numpy()
-                        infinite_plane_mask = plane_mask & (shape_scale[:, 0] == 0.0) & (shape_scale[:, 1] == 0.0)
-                        mesh_plane_routes = (mesh_mask[shape_a] & infinite_plane_mask[shape_b]) | (
-                            infinite_plane_mask[shape_a] & mesh_mask[shape_b]
+                        infinite_plane_shapes = (
+                            (shape_types == int(GeoType.PLANE))
+                            & (shape_scale[:, 0] == 0.0)
+                            & (shape_scale[:, 1] == 0.0)
+                        )
+                        mesh_plane_routes = (mesh_shapes[shape_a] & infinite_plane_shapes[shape_b]) | (
+                            infinite_plane_shapes[shape_a] & mesh_shapes[shape_b]
                         )
                         max_mesh_mesh_pairs = int(np.count_nonzero(mesh_mesh_routes))
                         max_mesh_plane_pairs = int(np.count_nonzero(mesh_plane_routes))
