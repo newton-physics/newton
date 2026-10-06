@@ -173,6 +173,7 @@ def _initialize_bodies(
 def _initialize_world_convergence(
     # Inputs:
     world_mask: wp.array[wp.bool],
+    keep_failed: wp.bool,
     # Outputs:
     world_active: wp.array[wp.bool],
     world_converged: wp.array[wp.bool],
@@ -191,13 +192,17 @@ def _initialize_world_convergence(
     effort_residual: wp.array[wp.float32],
     solver_status: wp.array[LOXStatus],
 ):
-    """Reset the per-world convergence state: iteration flags and count, residuals and reported status."""
+    """Reset the per-world convergence state: iteration flags and count, residuals and reported status.
+
+    With ``keep_failed``, a failed world stays failed and inactive until a reset clears it.
+    """
     wid = wp.tid()
     if world_mask and not world_mask[wid]:
         return
-    world_active[wid] = True
+    failed = keep_failed and world_failed[wid]
+    world_active[wid] = not failed
     world_converged[wid] = False
-    world_failed[wid] = False
+    world_failed[wid] = failed
     iteration_count[wid] = 0
     residual_change[wid] = 0.0
     residual_split[wid] = 0.0

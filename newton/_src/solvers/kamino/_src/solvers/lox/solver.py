@@ -347,8 +347,11 @@ class LOXSolver:
         del contacts
         self._begin_time_step()
 
-        # Reset the per-world solver state from the inertial velocity guess and assemble the smooth system
-        self._initialize_splitting(inertial_warmstart_fraction=self._config.inertial_warmstart_fraction)
+        # Reset the per-world solver state from the inertial velocity guess and assemble the smooth system.
+        # A failed world stays failed until a reset
+        self._initialize_splitting(
+            inertial_warmstart_fraction=self._config.inertial_warmstart_fraction, keep_failed=True
+        )
         self._update_system()
         self._restore_dual()
 
@@ -367,7 +370,6 @@ class LOXSolver:
         self._write_final_status_and_residuals()
         self._store_dual_wrench()
         self._write_accepted_dynamics()
-        self._discard_failed_warm_starts()
 
     def build_dual_solution(
         self,
@@ -419,6 +421,7 @@ class LOXSolver:
         self,
         inertial_warmstart_fraction: float = 0.0,
         world_mask: wp.array[wp.bool] | None = None,
+        keep_failed: bool = False,
     ) -> None:
         """Initialize the splitting iterates of the masked worlds, or of all worlds.
 
@@ -426,6 +429,7 @@ class LOXSolver:
             inertial_warmstart_fraction: Fraction of the unconstrained velocity increment added to the
                 begin-step body velocities to seed the body twists.
             world_mask: Worlds to initialize, or ``None`` for all worlds.
+            keep_failed: Whether the failed worlds stay failed; a reset clears them.
         """
         state = self._data.state
         residuals = self._data.residuals
@@ -460,7 +464,7 @@ class LOXSolver:
         wp.launch(
             _initialize_world_convergence,
             dim=state.num_worlds,
-            inputs=[world_mask],
+            inputs=[world_mask, keep_failed],
             outputs=[
                 state.world_active,
                 state.world_converged,
@@ -939,14 +943,3 @@ class LOXSolver:
             outputs=[problem.kamino_data.bodies.w_i, problem.kamino_data.bodies.u_i],
             device=self._device,
         )
-
-    def _discard_failed_warm_starts(self) -> None:
-        """Clear the structural, actuator, and angular contact warm starts of the failed worlds.
-
-        The next time step of a failed world starts from the same warm starts as after a reset;
-        the output kernels already wrote zero joint, limit, and contact reactions for it.
-        """
-        world_failed = self._data.state.world_failed
-        self._problem.reset_structural_multipliers(world_mask=world_failed)
-        self._problem.reset_effort_counters(world_mask=world_failed)
-        self._problem.reset_angular_contact_reactions(world_failed)
