@@ -1058,7 +1058,6 @@ def _solve_dvi_sparse_contacts_pgs(
                 local_body_1 = vec6f(0.0)
                 first_cid = inequality_ids_by_color[uio + color_slot]
                 first_contact_id = contact_indices[cio + first_cid]
-                block_count = int32(3)
                 if first_contact_id >= int32(0):
                     # Contact Jacobians store B's three rows first, followed by A's when present.
                     first_bids = contact_bid_AB[first_contact_id]
@@ -1066,7 +1065,6 @@ def _solve_dvi_sparse_contacts_pgs(
                     for j in range(6):
                         local_body_0[j] = body_space[local_x_idx_0 + j]
                     if first_bids[0] >= int32(0):
-                        block_count = int32(6)
                         local_x_idx_1 = col_start + int32(6) * (first_bids[0] - bodies_offset)
                         for j in range(6):
                             local_body_1[j] = body_space[local_x_idx_1 + j]
@@ -1077,6 +1075,9 @@ def _solve_dvi_sparse_contacts_pgs(
                         row = ccgo + int32(3) * cid
                         vec_idx = vio + row
                         nzb_offset = contact_nzb_offsets[contact_id]
+                        # Coloring groups static and kinematic supports together,
+                        # but only kinematic supports have an A-side Jacobian block.
+                        block_count = int32(6) if contact_bid_AB[contact_id][0] >= int32(0) else int32(3)
 
                         # Contact rows are B(t0, t1, n), optionally followed by A.
                         # Keep the fixed topology explicit so Jacobian rows load with
