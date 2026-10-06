@@ -709,6 +709,90 @@ class TestCollisionPipeline(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not supported for models with rigid shapes"):
             CollisionPipeline.create_from_usd(scene_prim, model)
 
+    @staticmethod
+    def _define_usd_sphere_on_box(
+        stage, meters_per_unit=1.0, sphere_radius=0.5, sphere_height=1.4, sphere_velocity_z=0.0
+    ):
+        """Author a physics scene, a static box (half extent 1) and a dynamic sphere above it.
+
+        The sphere moves with ``sphere_velocity_z`` along the up axis.
+        """
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, meters_per_unit)
+        scene_prim = UsdPhysics.Scene.Define(stage, "/physicsScene").GetPrim()
+        scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
+
+        box = UsdGeom.Cube.Define(stage, "/ground")
+        box.GetSizeAttr().Set(2.0)
+        UsdPhysics.CollisionAPI.Apply(box.GetPrim())
+
+        sphere = UsdGeom.Sphere.Define(stage, "/ball")
+        sphere.GetRadiusAttr().Set(sphere_radius)
+        sphere.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, sphere_height))
+        rigid_body = UsdPhysics.RigidBodyAPI.Apply(sphere.GetPrim())
+        rigid_body.GetVelocityAttr().Set(Gf.Vec3f(0.0, 0.0, sphere_velocity_z))
+        UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+        UsdPhysics.MassAPI.Apply(sphere.GetPrim()).GetMassAttr().Set(1.0)
+        return scene_prim
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_stage_to_contacts(self):
+        """Run stage -> add_usd -> finalize -> create_from_usd -> collide and check
+        that the pipeline uses the scene add_usd() selected and produces contacts."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        # The sphere is 0.4 m above the box, beyond the default 0.2 m contact margin, and
+        # approaches at 60 m/s (1 m per 1/60 s step). Only the authored speculative gap of
+        # 0.5 m can detect that contact.
+        scene_prim = self._define_usd_sphere_on_box(stage, sphere_height=1.9, sphere_velocity_z=-60.0)
+        scene_prim.GetAttribute("newton:collisionPipeline:maxSpeculativeContactGap").Set(0.5)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        model = builder.finalize(device="cpu")
+
+        # Use the scene add_usd() selected, rather than choosing one independently.
+        selected_scene = stage.GetPrimAtPath(result["physics_scene_path"])
+        self.assertEqual(str(selected_scene.GetPath()), "/physicsScene")
+        pipeline = CollisionPipeline.create_from_usd(selected_scene, model)
+
+        # None means the authored maxSpeculativeContactGap was not parsed.
+        self.assertIsNotNone(pipeline.speculative_contact_gap_max)
+        self.assertAlmostEqual(pipeline.speculative_contact_gap_max, 0.5)
+
+        # The sphere is separated from the box, so a contact exists only if the
+        # authored speculative gap was applied.
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts, dt=1.0 / 60.0)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_nonunit_stage_with_rigid_shapes_is_rejected(self):
+        """A non-unit stage keeps rigid geometry in stage units in add_usd(), so
+        create_from_usd() must refuse to build a mixed-scale pipeline from it."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        scene_prim = self._define_usd_sphere_on_box(
+            stage, meters_per_unit=0.01, sphere_radius=100.0, sphere_height=140.0
+        )
+        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(2.0)
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "non-unit linear units are not supported"):
+            result = builder.add_usd(stage)
+        model = builder.finalize(device="cpu")
+
+        # Rigid geometry stays in stage units (100, not 1.0 m).
+        self.assertAlmostEqual(float(model.shape_scale.numpy()[:, 0].max()), 100.0)
+
+        selected_scene = stage.GetPrimAtPath(result["physics_scene_path"])
+        with self.assertRaisesRegex(ValueError, "not supported for models with rigid shapes"):
+            CollisionPipeline.create_from_usd(selected_scene, model)
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_reports_errors(self):
         """Raise a descriptive, path-prefixed error for each invalid create_from_usd input."""
