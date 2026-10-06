@@ -1348,13 +1348,24 @@ class SolverVBD(SolverBase, CouplingInterface):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         self._apply_module_options()
         refresh_structural_k = (
-            bool(flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES))
+            bool(
+                flags
+                & (
+                    ModelFlags.JOINT_PROPERTIES
+                    | ModelFlags.JOINT_DOF_PROPERTIES
+                    | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+                )
+            )
             and self._integrates_rigid_bodies
             and self.model.joint_count > 0
         )
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
-        if flags & ModelFlags.JOINT_DOF_PROPERTIES and self._integrates_rigid_bodies and self.model.joint_count > 0:
+        if (
+            flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+            and self._integrates_rigid_bodies
+            and self.model.joint_count > 0
+        ):
             if self.rigid_compliant_alm:
                 self._validate_compliant_joint_dof_materials()
             # Must run before _refresh_structural_k() below: that summary reads
