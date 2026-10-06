@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the calibration contracts, goals and bundle rehydration."""
+"""Tests for the calibration contracts, goals, bundle rehydration and cable evaluation."""
 
 from __future__ import annotations
 
@@ -12,21 +12,29 @@ import math
 import os
 import tempfile
 import unittest
+import warnings
+from unittest.mock import patch
 
 import numpy as np
+import warp as wp
 
+import newton
+from newton._src.calibration import evaluate as evaluate_module
 from newton._src.calibration.data_source import CableDataSource
+from newton._src.calibration.evaluate import CableCandidate, CableEvaluator, CableTraceView, _goal_index_for_sim_frame
 from newton._src.calibration.evidence import CableEvidenceBundle, CableRecording
 from newton._src.calibration.goal import CableGoal, group_goals
+from newton._src.calibration.model import ANGLE_PARAM_EXP, PROJ_INVALID, CableWorld
 from newton._src.calibration.rehydrate import bundle_to_goals
 from newton._src.calibration.result import STATUS_OK, CableCalibrationResult
 from newton._src.calibration.schema import SCHEMA_VERSION
 from newton._src.calibration.trajectory import MaterializedTrajectorySource
 
-# Quaternions are (qx, qy, qz, qw). A turn by angle a about z is (0, 0, sin(a/2), cos(a/2)).
+# Quaternions are (qx, qy, qz, qw). A turn by angle a about the unit axis u is (u sin(a/2), cos(a/2)).
 IDENTITY = (0.0, 0.0, 0.0, 1.0)
 QUARTER_TURN_Z = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))
 EIGHTH_TURN_Z = (0.0, 0.0, math.sin(math.pi / 8), math.cos(math.pi / 8))
+QUARTER_TURN_X = (math.sin(math.pi / 4), 0.0, 0.0, math.cos(math.pi / 4))
 
 
 def make_recording(**overrides):
@@ -332,14 +340,15 @@ def make_goal(**overrides):
 
 
 class DriveRecorder:
-    """A data source that records the drive it is asked for instead of sampling one."""
+    """A data source that records the drive it is asked for and returns ``drive`` instead of sampling one."""
 
-    def __init__(self):
+    def __init__(self, drive="drive"):
         self.calls = []
+        self.drive = drive
 
     def drive_buffer(self, start_ns, num_frames, substep_rate, sim_substeps):
         self.calls.append((start_ns, num_frames, substep_rate, sim_substeps))
-        return "drive"
+        return self.drive
 
 
 class TestCalibrationGoals(unittest.TestCase):
@@ -602,6 +611,914 @@ class TestCalibrationRehydrate(unittest.TestCase):
             os.remove(os.path.join(tmp, "trajectories", "rec0.json"))
             with self.assertRaisesRegex(ValueError, r"cam0.*trajectories/rec0\.json"):
                 bundle_to_goals(bundle, tmp, attachment_transform=self.ATTACHMENT, clamp_position=0.0)
+
+
+ORIGIN = (0.0, 0.0, 0.0)
+TCP_POS = (0.3, 0.1, 0.4)
+SIM_SUBSTEPS = 20
+
+
+def fixed_drive(tcp_quat=IDENTITY, num_frames=2):
+    """A drive that holds the TCP at ``TCP_POS`` with orientation ``tcp_quat``."""
+    pose = wp.transform(TCP_POS, tcp_quat)
+    return wp.array([pose] * (num_frames * SIM_SUBSTEPS), dtype=wp.transform)
+
+
+def make_camera(**overrides):
+    """A calibrated camera descriptor for CableWorld, for tests that do not look at the image."""
+    values = {
+        "sensor_pos": (1.0, 0.0, 0.5),
+        "sensor_quat": IDENTITY,
+        "camera_intrinsics": (32, 24, 40.0, 40.0, 16.0, 12.0),
+        "render_size": None,
+        "fov_deg": None,
+    }
+    values.update(overrides)
+    return values
+
+
+def make_world(population=1, num_elements=3, **overrides):
+    """A CableWorld of ``population`` straight, undriven cables of ``num_elements`` capsules each."""
+    values = {
+        "cable_start": ORIGIN,
+        "angles_list": [[(0.0, 0.0)] * num_elements] * population,
+        "bend_stiffness_list": [1.0] * population,
+        "transform_buffer": None,
+        "cameras": [make_camera()],
+        "sim_iterations": 10,
+        "settle_mode": "dynamic",
+        "clamp_position": 0.0,
+        "sim_substeps": SIM_SUBSTEPS,
+        "bend_damping_list": [0.1] * population,
+        "twist_stiffness_list": [1.0] * population,
+        "twist_damping_list": [0.1] * population,
+        "stretch_stiffness": 1000.0,
+        "num_elements": num_elements,
+        "segment_length": 0.05,
+        "cable_radius": 0.005,
+        "cable_mass": 0.02,
+        "angle_parametrization": ANGLE_PARAM_EXP,
+        "attachment_transform": (ORIGIN, IDENTITY),
+    }
+    values.update(overrides)
+    return CableWorld(**values)
+
+
+def body_pose(world, body):
+    """``(x, y, z, qx, qy, qz, qw)`` of ``body`` in ``state_0``."""
+    return world.state_0.body_q.numpy()[body].copy()
+
+
+def capsule_axis(world, capsule):
+    """World direction of the local +Z axis of capsule ``capsule`` in world 0."""
+    q = body_pose(world, world.cable_bodies_list[0][capsule])
+    return np.array(wp.quat_rotate(wp.quat(*(float(v) for v in q[3:])), wp.vec3(0.0, 0.0, 1.0)))
+
+
+class TestTuningAttachmentTransform(unittest.TestCase):
+    """CableWorld composing attachment_transform into the build and the drive."""
+
+    def anchor_pose(self, world):
+        """Pose of the clamp capsule of world 0."""
+        return body_pose(world, world.cable_bodies_list[0][world.clamp_capsule])
+
+    def test_frame_zero_is_continuous_for_non_identity_attachment(self):
+        """Verify the built anchor pose equals the pose the drive imposes at frame 0.
+
+        Otherwise the anchor jumps on the first substep. The TCP is rotated, so
+        the attachment translation must be rotated with it. The TCP turns about z
+        and the attachment about x, so the order of the two rotations matters.
+        """
+        world = make_world(
+            transform_buffer=fixed_drive(EIGHTH_TURN_Z), attachment_transform=((0.02, -0.01, 0.03), QUARTER_TURN_X)
+        )
+        built = self.anchor_pose(world)
+        world._apply_drive(0)
+        np.testing.assert_allclose(self.anchor_pose(world), built, atol=1e-6)
+
+    def test_nonzero_translation_offsets_the_anchor_from_the_tcp(self):
+        """Verify the attachment translation moves the anchor by that offset.
+
+        With a drive, the offset is from the TCP. Without a drive, it is from
+        cable_start.
+        """
+        offset = (0.05, 0.0, 0.0)
+        for name, drive in (("driven", fixed_drive()), ("undriven", None)):
+            with self.subTest(name):
+                plain = make_world(transform_buffer=drive)
+                shifted = make_world(transform_buffer=drive, attachment_transform=(offset, IDENTITY))
+                np.testing.assert_allclose(
+                    self.anchor_pose(shifted)[:3] - self.anchor_pose(plain)[:3], offset, atol=1e-6
+                )
+
+
+class TestTuningClampPosition(unittest.TestCase):
+    """CableWorld clamping the cable at a point along its length."""
+
+    def build(self, clamp_position):
+        """A six-capsule, 0.3 m cable clamped at ``clamp_position`` [m] and held at ``TCP_POS``."""
+        return make_world(num_elements=6, transform_buffer=fixed_drive(), clamp_position=clamp_position)
+
+    def grasp_point(self, world):
+        """World position of the grasp: ``clamp_offset`` along the clamp capsule from its start."""
+        start = body_pose(world, world.cable_bodies_list[0][world.clamp_capsule])[:3]
+        return start + world.clamp_offset * capsule_axis(world, world.clamp_capsule)
+
+    def test_interior_clamp_drives_an_interior_capsule(self):
+        """Verify an interior clamp_position drives the capsule that starts there, not the end one.
+
+        0.15 m is exactly three capsule lengths, which the floating-point
+        division puts just below 3.
+        """
+        world = self.build(0.15)
+        self.assertEqual(world.clamp_capsule, 3)
+        self.assertEqual(int(world.kinematic_bodies.numpy()[0]), world.cable_bodies_list[0][3])
+
+    def test_interior_clamp_is_the_only_massless_capsule(self):
+        """Verify only the clamp capsule is massless, and every other capsule carries an equal share of the cable mass.
+
+        The share is 0.02 kg over six capsules.
+        """
+        world = self.build(0.15)
+        bodies = world.cable_bodies_list[0]
+        mass = world.model.body_mass.numpy()
+        expected = [0.02 / 6] * 6
+        expected[world.clamp_capsule] = 0.0
+        np.testing.assert_allclose(mass[bodies], expected, atol=1e-7)
+
+    def test_grasp_point_lands_on_the_tcp_for_a_sub_capsule_offset(self):
+        """Verify a clamp inside a capsule puts the grasp point, not the capsule start, on the TCP."""
+        world = self.build(0.17)
+        self.assertEqual(world.clamp_capsule, 3)
+        self.assertAlmostEqual(world.clamp_offset, 0.02, places=6)
+        np.testing.assert_allclose(self.grasp_point(world), TCP_POS, atol=1e-6)
+
+    def test_interior_clamp_holds_the_bent_rest_shape_at_the_clamp(self):
+        """Verify an interior clamp capsule's rest pose equals its built pose for a bent cable.
+
+        The rest shape is built from the bend angles and then moved so that the
+        clamp capsule lands on the clamp pose; the straight initial state must
+        place the clamp capsule at the same pose. The TCP is rotated, so the clamp
+        rotation does not commute with the bent capsule's rotation.
+        """
+        world = make_world(
+            num_elements=6,
+            transform_buffer=fixed_drive(QUARTER_TURN_Z),
+            clamp_position=0.15,
+            angles_list=[[(0.2, 0.1)] * 6],
+        )
+        body = world.cable_bodies_list[0][world.clamp_capsule]
+        rest = world.model.body_q.numpy()[body]
+        built = body_pose(world, body)
+        np.testing.assert_allclose(rest[:3], built[:3], atol=1e-6)
+        # q and -q are the same rotation.
+        sign = 1.0 if np.dot(rest[3:], built[3:]) >= 0.0 else -1.0
+        np.testing.assert_allclose(rest[3:], sign * built[3:], atol=1e-5)
+
+    def test_clamp_follows_a_moving_drive(self):
+        """Verify the clamp capsule holds the frame 0 drive while settling, then follows the TCP frame by frame.
+
+        The drive index advances with the frame, also when the substeps replay as
+        one CUDA graph. After frame f the clamp is at the last substep sample of
+        that frame. After the last recorded frame, the clamp holds the last sample.
+        """
+        substeps = SIM_SUBSTEPS
+        recorded_frames = 3
+        samples = [wp.transform((0.3 + 0.001 * k, 0.1, 0.4), IDENTITY) for k in range(recorded_frames * substeps)]
+        world = make_world(transform_buffer=wp.array(samples, dtype=wp.transform))
+        clamp = int(world.kinematic_bodies.numpy()[0])
+        world.settle(3)
+        np.testing.assert_allclose(body_pose(world, clamp)[:3], (0.3 + 0.001 * (substeps - 1), 0.1, 0.4), atol=1e-6)
+        for frame in range(recorded_frames + 2):
+            world._step(frame)
+            sample = min(frame * substeps + substeps - 1, len(samples) - 1)
+            np.testing.assert_allclose(body_pose(world, clamp)[:3], (0.3 + 0.001 * sample, 0.1, 0.4), atol=1e-6)
+
+    def test_clamp_position_beyond_the_cable_is_refused(self):
+        """Verify a clamp_position beyond the 0.3 m cable is refused, naming the field."""
+        with self.assertRaisesRegex(ValueError, "clamp_position"):
+            self.build(1.0)
+
+
+class TestTuningCableAxis(unittest.TestCase):
+    """CableWorld orienting the clamp from a direction in the TCP frame."""
+
+    def clamp_axis(self, cable_axis, tcp_quat=IDENTITY):
+        world = make_world(transform_buffer=fixed_drive(tcp_quat), cable_axis=cable_axis)
+        return capsule_axis(world, 0)
+
+    def test_cable_axis_rotates_with_the_tcp(self):
+        """Verify cable_axis is relative to the TCP: a quarter turn of the TCP about z turns x into y."""
+        np.testing.assert_allclose(self.clamp_axis((1.0, 0.0, 0.0), QUARTER_TURN_Z), (0.0, 1.0, 0.0), atol=1e-6)
+
+    def test_zero_or_malformed_direction_is_refused(self):
+        """Verify a zero-length cable_axis, or one without three components, is refused."""
+        for name, cable_axis in (("zero", ORIGIN), ("two components", (1.0, 0.0))):
+            with self.subTest(name):
+                with self.assertRaisesRegex(ValueError, "cable_axis"):
+                    self.clamp_axis(cable_axis)
+
+
+# The scene for rendering and scoring: three 0.05 m capsules hang straight down
+# from HANG_START. The scene camera looks along +y at the middle of the cable
+# from 0.5 m, so the cable nodes project to column 16, rows 3, 9, 15 and 21 of
+# a 32x24 image.
+HANG_START = (0.0, 0.0, 0.5)
+HANG_DOWN = (ORIGIN, (1.0, 0.0, 0.0, 0.0))  # A half turn about x points local +Z along -z.
+CABLE_MIDDLE = (0.0, 0.0, 0.425)
+SCENE_INTRINSICS = (32, 24, 60.0, 60.0, 16.0, 12.0)
+SCENE_CROP = [0, 0, 32, 24]
+NODE_ROWS = [3.0, 9.0, 15.0, 21.0]
+
+
+def viewing_dir_to_ros_optical_quat(viewing_dir):
+    """Orientation ``(qx, qy, qz, qw)`` of an upright camera that looks along ``viewing_dir``.
+
+    The camera frame is the ROS optical frame (x right, y down, z forward), and
+    world Z maps to image up. For a near-vertical direction, world Y is the
+    reference, because the cross product with Z is ill-conditioned there.
+    """
+    fwd = np.asarray(viewing_dir, dtype=np.float64)
+    fwd = fwd / np.linalg.norm(fwd)
+    ref = np.array([0.0, 1.0, 0.0]) if abs(fwd[2]) > 0.9 else np.array([0.0, 0.0, 1.0])
+    right = np.cross(fwd, ref)
+    right /= np.linalg.norm(right)
+    down = np.cross(fwd, right)
+    down /= np.linalg.norm(down)
+    rot = np.column_stack([right, down, fwd])
+    return tuple(float(v) for v in wp.quat_from_matrix(wp.mat33(*rot.flatten().tolist())))
+
+
+def scene_camera(viewing_dir=(0.0, 1.0, 0.0), distance=0.5):
+    """A camera descriptor for CableWorld, ``distance`` [m] from the cable middle and looking along ``viewing_dir``."""
+    pos = tuple(m - distance * d for m, d in zip(CABLE_MIDDLE, viewing_dir, strict=True))
+    return {
+        "sensor_pos": pos,
+        "sensor_quat": viewing_dir_to_ros_optical_quat(viewing_dir),
+        "camera_intrinsics": SCENE_INTRINSICS,
+    }
+
+
+def make_scene(population=1, cameras=None, **overrides):
+    """A CableWorld of the hanging scene, seen by the scene camera unless ``cameras`` is given."""
+    return make_world(
+        population,
+        cable_start=HANG_START,
+        attachment_transform=HANG_DOWN,
+        cable_radius=0.01,
+        cameras=cameras or [scene_camera()],
+        **overrides,
+    )
+
+
+def scene_mask():
+    """A goal mask covering the hanging cable in the scene camera: columns 15 to 17, rows 3 to 21."""
+    mask = np.zeros((24, 32), np.uint8)
+    mask[3:22, 15:18] = 255
+    return mask
+
+
+def make_scene_goal(viewing_dir=(0.0, 1.0, 0.0), **overrides):
+    """A goal of the hanging scene with two reference frames, at 0 s and 0.05 s."""
+    camera = scene_camera(viewing_dir)
+    values = {
+        "masks": [scene_mask()] * 2,
+        "frame_times": [0.0, 0.05],
+        "cable_start": HANG_START,
+        "sensor_pos": camera["sensor_pos"],
+        "sensor_quat": list(camera["sensor_quat"]),
+        "camera_intrinsics": SCENE_INTRINSICS,
+        "crop": list(SCENE_CROP),
+        "start_ns": 0,
+        "attachment_transform": HANG_DOWN,
+        "clamp_position": 0.0,
+    }
+    values.update(overrides)
+    return make_goal(**values)
+
+
+class LossPixelCount:
+    """A pixel loss: the number of cable pixels inside the crop of the rendered mask. Keeps every mask it receives."""
+
+    wants_geometry = False
+    wants_render = True
+    supports_accum = False
+
+    def __init__(self):
+        self.sim_masks = []
+
+    def prepare(self, goal_mask):
+        return goal_mask
+
+    def score(self, goal, sim_mask, crop, *, geom=None):
+        self.sim_masks.append(sim_mask)
+        x0, y0, x1, y1 = crop
+        return float(np.count_nonzero(sim_mask[y0:y1, x0:x1]))
+
+
+class PerWorldTotals:
+    """The accumulator of LossPixelCountOnDevice: one running total per world."""
+
+    def __init__(self, n):
+        self.values = np.zeros(n)
+
+    def totals(self):
+        return self.values.tolist()
+
+
+class LossPixelCountOnDevice(LossPixelCount):
+    """LossPixelCount with on-device accumulation: each call scores the device masks of all worlds."""
+
+    supports_accum = True
+
+    def make_accum(self, n, device):
+        return PerWorldTotals(n)
+
+    def accum(self, goal, sim_mask, crop, totals, *, geom=None):
+        x0, y0, x1, y1 = crop
+        totals.values += np.count_nonzero(sim_mask.numpy()[:, y0:y1, x0:x1], axis=(1, 2))
+
+
+class LossGoalValue:
+    """A loss that scores each goal frame with its prepared value, so the loss shows which goal frames were scored."""
+
+    wants_geometry = False
+    wants_render = False
+    supports_accum = False
+
+    def prepare(self, value):
+        return value
+
+    def score(self, goal, sim_mask, crop, *, geom=None):
+        return goal
+
+
+class LossNodeDistance:
+    """A geometry loss: the mean distance [px] of the projected cable nodes from the goal mask centroid.
+
+    Keeps the ``(sim_mask, geom)`` pair of every call.
+    """
+
+    wants_geometry = True
+    wants_render = False
+    supports_accum = False
+
+    def __init__(self):
+        self.calls = []
+
+    def prepare(self, goal_mask):
+        rows, cols = np.nonzero(goal_mask)
+        return np.array([cols.mean(), rows.mean()])
+
+    def score(self, goal, sim_mask, crop, *, geom=None):
+        self.calls.append((sim_mask, geom))
+        return float(np.linalg.norm(geom - goal, axis=1).mean())
+
+
+class TestTuningCableWorld(unittest.TestCase):
+    """Building, stepping and rendering a CableWorld."""
+
+    def test_mask_lies_where_the_cable_projects(self):
+        """Verify the rendered cable mask lies where project_cable puts the cable.
+
+        The camera is off-axis and off-centre, so a sign error in the rays or in
+        the camera orientation would move the mask away from the projection.
+        """
+        camera = {**scene_camera((-1.0, 0.0, 0.0)), "sensor_pos": (0.5, 0.04, 0.45)}
+        world = make_scene(cameras=[camera])
+        uv = world.project_cable(0).numpy()[0]
+        _, _, _, masks = world._render(with_mask=True)
+        rows, cols = np.nonzero(masks[0])
+        self.assertAlmostEqual(cols.mean(), uv[:, 0].mean(), delta=1.0)
+        self.assertAlmostEqual(rows.min(), uv[:, 1].min(), delta=2.0)
+        self.assertAlmostEqual(rows.max(), uv[:, 1].max(), delta=2.0)
+
+    def test_image_axes_follow_their_own_focal_length(self):
+        """Verify project_cable and the mask scale image x by fx and image y by fy about the principal point.
+
+        The scene camera moves 0.05 m to the left and gets fy = 2/3 fx.
+        """
+        fx, fy, cx, cy = 60.0, 40.0, 16.0, 12.0
+        left, distance = 0.05, 0.5
+        camera = scene_camera(distance=distance)
+        x, y, z = camera["sensor_pos"]
+        camera.update(sensor_pos=(x - left, y, z), camera_intrinsics=(32, 24, fx, fy, cx, cy))
+        world = make_scene(cameras=[camera])
+        column = cx + fx * left / distance  # 22
+        rows = [cy + (r - cy) * fy / SCENE_INTRINSICS[3] for r in NODE_ROWS]  # 6, 10, 14, 18
+        uv = world.project_cable(0).numpy()[0]
+        np.testing.assert_allclose(uv[:, 0], column, atol=1e-3)
+        np.testing.assert_allclose(uv[:, 1], rows, atol=1e-3)
+        _, _, _, masks = world._render(with_mask=True)
+        mask_rows, mask_cols = np.nonzero(masks[0])
+        # The cable is mirror symmetric about its centre, so the mask centroid is there.
+        np.testing.assert_allclose((mask_cols.mean(), mask_rows.mean()), (column, cy), atol=0.1)
+        # The 0.01 m radius at 0.5 m reaches fy / 50 = 0.8 px beyond the end nodes, so the
+        # mask spans the projected rows, and a render with fx in place of fy spans more.
+        self.assertEqual((mask_rows.min(), mask_rows.max()), (rows[0], rows[-1]))
+
+    def test_field_of_view_is_vertical_about_the_image_centre(self):
+        """Verify a render_size and fov_deg camera renders like intrinsics with fy from the vertical field of view.
+
+        The principal point of such a camera is the image centre.
+        """
+        width, height, focal = 32, 24, 60.0
+        fov_deg = math.degrees(2.0 * math.atan(0.5 * height / focal))
+        centred = (width, height, focal, focal, 0.5 * (width - 1), 0.5 * (height - 1))
+        cameras = [
+            {**scene_camera(), "camera_intrinsics": None, "render_size": (width, height), "fov_deg": fov_deg},
+            {**scene_camera(), "camera_intrinsics": centred},
+        ]
+        world = make_scene(cameras=cameras)
+        _, _, _, fov_masks = world._render(cam=0, with_mask=True)
+        _, _, _, intrinsics_masks = world._render(cam=1, with_mask=True)
+        self.assertGreater(np.count_nonzero(intrinsics_masks[0]), 0)
+        np.testing.assert_array_equal(fov_masks[0], intrinsics_masks[0])
+
+    def test_node_behind_the_camera_is_invalid(self):
+        """Verify a cable behind the camera projects to PROJ_INVALID."""
+        world = make_scene(cameras=[scene_camera((0.0, -1.0, 0.0), distance=-0.5)])
+        self.assertTrue(np.all(world.project_cable(0).numpy() == PROJ_INVALID))
+
+    def test_settle_moves_a_cable_with_a_bent_rest_shape(self):
+        """Verify the cable starts straight and settle() moves a cable with a bent rest shape, under gravity along -z.
+
+        The model has one gravity entry per world and one for the global world.
+        """
+        world = make_scene(angles_list=[[(0.3, 0.0)] * 3])
+        np.testing.assert_allclose(world.model.gravity.numpy(), [(0.0, 0.0, -9.81)] * (world.n + 1), atol=1e-6)
+        np.testing.assert_allclose(capsule_axis(world, 2), capsule_axis(world, 0), atol=1e-6)
+        tip = world.cable_bodies_list[0][-1]
+        before = body_pose(world, tip)[:3]
+        world.settle(3)
+        self.assertGreater(np.linalg.norm(body_pose(world, tip)[:3] - before), 1e-3)
+
+    def settle_until_frozen(self, world, settle_frames, moving_frames):
+        """Settle ``world``, simulating only its first ``moving_frames`` steps. Return the step count and the warnings."""
+        step, frames = world._step, []
+
+        def step_until_frozen(frame_idx):
+            frames.append(frame_idx)
+            if len(frames) <= moving_frames:
+                step(frame_idx)
+
+        with patch.object(world, "_step", step_until_frozen), warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            world.settle(settle_frames)
+        return len(frames), caught
+
+    def test_settle_stops_at_the_first_check_within_the_tolerance(self):
+        """Verify settle() stops at the first check within settle_move_tol, and warns only when it stops at its cap.
+
+        The 0.15 m cable cannot move 1 m, so a 1 m tolerance is met at the first
+        check. Each check measures the movement since the previous check, so once
+        the steps stop simulating, the next check is within a small tolerance. A
+        zero tolerance is never met. A settle shorter than one check interval does
+        no check, so it does not warn. The warning points at the caller of settle().
+        """
+        check_every, cap = 2, 5
+        cases = {
+            # name: (settle_move_tol, settle_frames, simulated frames, expected steps, warns)
+            "converges at the first check": (1.0, cap, cap, check_every, False),
+            "stops once the cable stops moving": (1.0e-6, cap, check_every, 2 * check_every, False),
+            "reaches the cap": (0.0, cap, cap, cap, True),
+            "shorter than one check interval": (0.0, check_every - 1, cap, check_every - 1, False),
+        }
+        for name, (move_tol, settle_frames, moving_frames, expected_steps, warns) in cases.items():
+            with self.subTest(name):
+                world = make_world(
+                    angles_list=[[(0.3, 0.0)] * 3], settle_check_every=check_every, settle_move_tol=move_tol
+                )
+                steps, caught = self.settle_until_frozen(world, settle_frames, moving_frames)
+                self.assertEqual(steps, expected_steps)
+                self.assertEqual(len(caught), int(warns))
+                for w in caught:
+                    self.assertIn(f"cap of {settle_frames} frame(s) without converging", str(w.message))
+                    self.assertEqual(w.filename, __file__)
+
+    def test_per_world_lists_must_match_the_population(self):
+        """Verify a per-world list of another length than the population is refused, naming the list."""
+        for name in ("bend_stiffness_list", "bend_damping_list", "twist_stiffness_list", "twist_damping_list"):
+            with self.subTest(name):
+                with self.assertRaisesRegex(ValueError, name):
+                    make_world(population=2, **{name: [1.0]})
+
+    def test_unset_model_inputs_are_refused(self):
+        """Verify a missing or unsupported model input is refused, naming the input.
+
+        The inputs are a missing damping, stretch, geometry, attachment or clamp
+        input, an unsupported angle parametrization or settle mode, and a settle
+        check interval below 1. No default replaces a value the caller did not give.
+        """
+        cases = {
+            "twist_damping_list": None,
+            "stretch_stiffness": None,
+            "segment_length": None,
+            "cable_mass": None,
+            "attachment_transform": None,
+            "clamp_position": None,
+            "angle_parametrization": "euler_xy",
+            "settle_mode": "static",
+            "settle_check_every": 0,
+        }
+        for name, value in cases.items():
+            with self.subTest(name):
+                with self.assertRaisesRegex(ValueError, name):
+                    make_world(**{name: value})
+
+    def test_incomplete_camera_is_refused(self):
+        """Verify an incomplete camera, or no camera at all, is refused.
+
+        A camera without a position or orientation, without a size and field of
+        view, or with a fractional size is refused. No default replaces a missing
+        value. Sizes stored as whole floats, as JSON can give them, are accepted.
+        """
+        with self.assertRaisesRegex(ValueError, "camera"):
+            make_world(cameras=[])
+        cases = {
+            "no position": {"sensor_pos": None},
+            "no orientation": {"sensor_quat": None},
+            "no field of view": {"camera_intrinsics": None, "render_size": (32, 24)},
+            "no size": {"camera_intrinsics": None, "fov_deg": 60.0},
+            "fractional size": {"camera_intrinsics": (32.5, 24.0, 40.0, 40.0, 16.0, 12.0)},
+        }
+        for name, overrides in cases.items():
+            with self.subTest(name):
+                with self.assertRaisesRegex(ValueError, "camera"):
+                    make_world(cameras=[make_camera(**overrides)])
+        make_world(
+            cameras=[
+                make_camera(camera_intrinsics=(32.0, 24.0, 40.0, 40.0, 16.0, 12.0)),
+                make_camera(camera_intrinsics=None, render_size=(32.0, 24.0), fov_deg=60.0),
+            ]
+        )
+
+
+class TestTuningCableMasks(unittest.TestCase):
+    """Binary cable masks rendered from shape indices."""
+
+    def scene_with(self, *, occluder=False, cameras=None):
+        """The hanging scene of two worlds, with an optional occluding box."""
+        finalize = newton.ModelBuilder.finalize
+
+        def finalize_scene(builder, *args, **kwargs):
+            if occluder:
+                # A static box between the scene camera and the cable that fills the view.
+                builder.add_shape_box(
+                    body=-1,
+                    xform=wp.transform(wp.vec3(0.0, -0.25, 0.425), wp.quat_identity()),
+                    hx=0.2,
+                    hy=0.02,
+                    hz=0.2,
+                )
+            return finalize(builder, *args, **kwargs)
+
+        with patch.object(newton.ModelBuilder, "finalize", finalize_scene):
+            return make_scene(population=2, cameras=cameras)
+
+    def test_occluder_is_excluded_and_hides_the_cable(self):
+        """Verify a shape in front of the cable is not part of the mask and hides the cable."""
+        _, _, _, masks = self.scene_with(occluder=True)._render(with_mask=True)
+        self.assertEqual(np.count_nonzero(masks), 0)
+
+    def test_views_keep_their_masks_when_buffers_are_reused(self):
+        """Verify a view's returned masks stay unchanged after another view of equal size renders."""
+        cameras = [scene_camera(), {**scene_camera(), "sensor_pos": (0.04, -0.5, 0.425)}]
+        world = self.scene_with(cameras=cameras)
+        _, _, _, first = world._render(cam=0, with_mask=True)
+        expected = np.array(first, copy=True)
+        _, _, _, second = world._render(cam=1, with_mask=True)
+        self.assertEqual(len(world._mask_buffers), 1)
+        self.assertFalse(np.array_equal(first, second))
+        np.testing.assert_array_equal(first, expected)
+
+
+class TestTuningRunSequence(unittest.TestCase):
+    """Scoring a rollout with CableWorld.run_sequence."""
+
+    def test_pixel_loss_receives_the_binary_mask(self):
+        """Verify run_sequence gives a pixel loss each world's mask of the current state, with or without recording.
+
+        The cable starts straight and has a bent rest shape, so a mask of the built shape is different.
+        The expected masks come from a cable whose rest shape is straight, where the built shape is
+        the current state.
+        """
+        bent = [[(0.3, 0.0)] * 3] * 2
+        _, _, _, expected = make_scene(population=2)._render(with_mask=True)
+        loss = LossPixelCount()
+        recorded_world = make_scene(population=2, angles_list=bent)
+        values, _, masks = recorded_world.run_sequence(1, [None], SCENE_CROP, loss, record_fps=recorded_world.fps)
+        unrecorded, _, _ = make_scene(population=2, angles_list=bent).run_sequence(
+            1, [None], SCENE_CROP, LossPixelCount()
+        )
+        self.assertGreater(values[0], 0)
+        self.assertEqual(values, [np.count_nonzero(mask) for mask in expected])
+        self.assertEqual(unrecorded, values)
+        for recorded, mask in zip(masks, expected, strict=True):
+            np.testing.assert_array_equal(recorded[0], mask)
+        self.assertEqual(len(loss.sim_masks), 2)
+        for mask in loss.sim_masks:
+            self.assertEqual(mask.shape, (24, 32))
+            self.assertEqual(set(np.unique(mask)), {0, 255})
+
+    def test_goal_frames_are_scored_at_their_simulation_frames(self):
+        """Verify each goal frame is scored at the simulation frame nearest its capture time.
+
+        The loss is the mean over goal frames. Goal frame j has the value 10**j,
+        so each frame loss shows which goal frames it contains. Without capture
+        times, the middle goal frame of three over four frames lies at frame 1.5,
+        which rounds to 2.
+        """
+        goals = [1.0, 10.0, 100.0]
+        cases = {
+            # name: (fps, num_frames, goal_times, [(simulation frame, frame loss)])
+            "evenly spaced without capture times": (60, 4, None, [(0, 1.0), (2, 10.0), (3, 100.0)]),
+            "two goal frames nearest one frame": (60, 5, [0.0, 0.001, 2 / 60], [(0, 11.0), (2, 100.0)]),
+            "at another frame rate": (30, 5, [0.0, 1 / 30, 2 / 30], [(0, 1.0), (1, 10.0), (2, 100.0)]),
+            "after the last frame": (60, 3, [0.0, 1 / 60, 1.0], [(0, 1.0), (1, 10.0), (2, 100.0)]),
+        }
+        # The loss does not read the cable, so one world per frame rate serves every case.
+        worlds = {fps: make_world(fps=fps) for fps in (60, 30)}
+        for name, (fps, num_frames, goal_times, frame_losses) in cases.items():
+            with self.subTest(name):
+                world = worlds[fps]
+                values, _, _ = world.run_sequence(
+                    num_frames, goals, SCENE_CROP, LossGoalValue(), record_fps=fps, goal_times=goal_times
+                )
+                self.assertEqual(world.last_frame_losses, [[(f / fps, v) for f, v in frame_losses]])
+                self.assertEqual(values, [sum(goals) / len(goals)])
+
+    def test_each_view_is_scored_with_its_own_goal_frames_and_crop(self):
+        """Verify run_sequence scores each view against its own goal frames and crop.
+
+        Two views see the cable through the same camera. The crop of the second view is left of the cable.
+        """
+        world = make_scene(cameras=[scene_camera(), scene_camera()])
+        left_of_cable = [0, 0, 12, 24]
+        pixels, _, _ = world.run_sequence(1, [[None], [None]], [SCENE_CROP, left_of_cable], LossPixelCount())
+        self.assertGreater(pixels[0][0], 0)
+        self.assertEqual(pixels[1], [0.0])
+
+        goals = [[1.0, 10.0, 100.0], [1000.0]]
+        values, _, _ = world.run_sequence(1, goals, [SCENE_CROP] * 2, LossGoalValue())
+        self.assertEqual(values, [[sum(g) / len(g)] for g in goals])
+
+    def test_on_device_scoring_agrees_with_host_scoring(self):
+        """Verify a loss that accumulates on the device gives the same losses and frame losses as host scoring.
+
+        The goal frames are at simulation frames 0 and 2, and only frame 0 is recorded.
+        """
+        if not wp.get_device().is_cuda:
+            self.skipTest("On-device scoring needs CUDA")
+        on_host, on_device = LossPixelCount(), LossPixelCountOnDevice()
+        results = []
+        for loss in (on_host, on_device):
+            world = make_scene(population=2)
+            values, _, _ = world.run_sequence(3, [None, None], SCENE_CROP, loss, record_fps=1, goal_times=[0.0, 2 / 60])
+            results.append((values, world.last_frame_losses))
+        self.assertEqual(results[1], results[0])
+        self.assertGreater(results[0][0][0], 0)
+        self.assertEqual([t for t, _ in results[0][1][0]], [0.0, 2 / 60])
+        # On the device path, the host score() is not called.
+        self.assertEqual(on_device.sim_masks, [])
+
+    def test_geometry_loss_needs_no_mask_or_mask_allocation(self):
+        """Verify a geometry loss gets the projected cable and no mask, and nothing is rendered.
+
+        Recording the frames renders masks but leaves the loss values unchanged.
+        """
+        loss = LossNodeDistance()
+        goals = [loss.prepare(scene_mask())]
+        world = make_scene(population=2)
+        with patch.object(world, "_render", side_effect=AssertionError("a geometry loss needs no render")):
+            plain, _, _ = world.run_sequence(1, goals, SCENE_CROP, loss)
+        self.assertFalse(world._mask_buffers)
+        self.assertEqual(len(loss.calls), 2)
+        for sim_mask, geom in loss.calls:
+            self.assertIsNone(sim_mask)
+            self.assertEqual(geom.shape, (4, 2))
+        # The straight cable's nodes are 9, 3, 3 and 9 px from the goal centroid at (16, 12).
+        np.testing.assert_allclose(plain, [6.0, 6.0], atol=1e-3)
+
+        recorded_world = make_scene(population=2)
+        recorded, frames, masks = recorded_world.run_sequence(1, goals, SCENE_CROP, loss, record_fps=recorded_world.fps)
+        np.testing.assert_allclose(recorded, plain)
+        self.assertEqual(len(frames), 2)
+        self.assertEqual(len(masks[0]), 1)
+        self.assertGreater(np.count_nonzero(masks[0][0]), 0)
+
+    def test_recording_rate_spreads_frames_over_the_sequence(self):
+        """Verify record_indices gives num_frames * record_fps / fps frames, evenly spaced from first to last.
+
+        Nine frames at 30 fps recorded at 10 fps give three frames: 0, 4 and 8.
+        Recording at the simulation rate or faster gives every frame. A rate that rounds to
+        no frame still gives one. A rate that is not positive is refused.
+        """
+        num_frames, fps = 9, 30
+        world = make_world(fps=fps)
+        self.assertEqual(world.record_indices(num_frames, 10.0), [0, 4, 8])
+        self.assertEqual(world.record_indices(num_frames, float(fps)), list(range(num_frames)))
+        self.assertEqual(world.record_indices(num_frames, math.inf), list(range(num_frames)))
+        self.assertEqual(world.record_indices(num_frames, 1.0), [0])
+        with self.assertRaisesRegex(ValueError, "record_fps"):
+            world.record_indices(num_frames, 0.0)
+
+
+def make_candidate(angles=(0.0, 0.0)):
+    """A candidate whose three joints all have rest angles ``angles`` [rad]."""
+    return CableCandidate(
+        angles=[angles] * 3, bend_stiffness=1.0, twist_stiffness=1.0, bend_damping=0.01, twist_damping=0.01
+    )
+
+
+def make_evaluator(goals, loss, **overrides):
+    """A CableEvaluator over three-capsule cables, without settling."""
+    values = {
+        "settle_frames": 0,
+        "settle_mode": "dynamic",
+        "sim_iterations": 10,
+        "stretch_stiffness": 1000.0,
+        "num_elements": 3,
+        "segment_length": 0.05,
+        "cable_radius": 0.01,
+        "cable_mass": 0.02,
+        "angle_parametrization": ANGLE_PARAM_EXP,
+    }
+    values.update(overrides)
+    return CableEvaluator(goals, loss, **values)
+
+
+class TestTuningEvaluation(unittest.TestCase):
+    """Scoring a population against goals with CableEvaluator."""
+
+    def test_evaluator_passes_its_settings_to_the_world(self):
+        """Verify evaluate() and record() build and settle the world with the evaluator's settings.
+
+        The world also gets the goal's grasp and drive, and each candidate's
+        values. The frame rate also sets the goal timeline: the last reference
+        frame at 0.05 s is frame 1.5, which rounds to 2, so the timeline has 3
+        frames at 30 fps.
+        """
+        built, settled = [], []
+
+        class CableWorldRecorded(CableWorld):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                built.append((args, kwargs))
+
+            def settle(self, settle_frames):
+                settled.append(settle_frames)
+
+        drive = fixed_drive()
+        # A clamp one capsule from the end, 0.01 m along the TCP z axis, with the cable along the TCP x axis.
+        grasp = {
+            "attachment_transform": ((0.0, 0.0, 0.01), HANG_DOWN[1]),
+            "clamp_position": 0.05,
+            "cable_axis": (1.0, 0.0, 0.0),
+        }
+        goal = make_scene_goal(driven=True, data_source=DriveRecorder(drive), **grasp)
+        settings = {
+            "fps": 30,
+            "sim_substeps": 7,
+            "sim_iterations": 11,
+            "settle_check_every": 5,
+            "settle_move_tol": 2.0e-3,
+            "stretch_stiffness": 500.0,
+        }
+        evaluator = make_evaluator([goal], LossNodeDistance(), settle_frames=3, **settings)
+        self.assertEqual(evaluator.groups[0].num_frames, 3)
+        candidate = CableCandidate(
+            angles=[(0.0, 0.0)] * 3, bend_stiffness=1.5, twist_stiffness=2.5, bend_damping=0.03, twist_damping=0.04
+        )
+        with patch.object(evaluate_module, "CableWorld", CableWorldRecorded):
+            evaluator.evaluate([candidate])
+            evaluator.record(candidate)
+
+        self.assertEqual(len(built), 2)
+        self.assertEqual(settled, [3, 3])
+        for args, kwargs in built:
+            self.assertEqual({name: kwargs[name] for name in settings}, settings)
+            self.assertEqual({name: kwargs[name] for name in grasp}, grasp)
+            # The bend stiffness and the drive are the third and fourth positional arguments.
+            self.assertEqual(args[2], [1.5])
+            self.assertIs(args[3], drive)
+            self.assertEqual(kwargs["twist_stiffness_list"], [2.5])
+            self.assertEqual(kwargs["bend_damping_list"], [0.03])
+            self.assertEqual(kwargs["twist_damping_list"], [0.04])
+
+    def test_population_is_scored_in_one_pass(self):
+        """Verify a population is scored in one CableWorld and each candidate gets its own value.
+
+        Candidates that differ only in rest angles get different values, equal
+        candidates get equal values, and a candidate scores the same alone as in
+        the population. An empty population scores nothing.
+        """
+        evaluator = make_evaluator([make_scene_goal()], LossNodeDistance())
+        self.assertEqual(evaluator.evaluate([]), [])
+
+        candidates = [make_candidate(), make_candidate((0.3, 0.0)), make_candidate((0.0, 0.3)), make_candidate()]
+        built = []
+
+        class CableWorldCounted(CableWorld):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                built.append(self.n)
+
+        with patch.object(evaluate_module, "CableWorld", CableWorldCounted):
+            values = evaluator.evaluate(candidates)
+        self.assertEqual(built, [4])
+        self.assertEqual(len(values), 4)
+        self.assertEqual(len(set(values[:3])), 3)
+        self.assertAlmostEqual(values[3], values[0], places=5)
+        self.assertAlmostEqual(evaluator.evaluate([candidates[2]])[0], values[2], places=3)
+
+    def test_record_returns_one_trace_per_view(self):
+        """Verify record() returns one trace per view, with every frame paired with its reference frame.
+
+        Two cameras see one recording, so each view has half the weight. The
+        reference frames at 0 s and 0.05 s span four simulated frames; frames 0
+        and 1 are nearest the first reference, frames 2 and 3 the second. The
+        per-frame losses add up to the view's loss, and the weighted view losses
+        add up to the value evaluate() gives. Each view keeps its own frames,
+        masks and loss.
+        """
+        goals = [make_scene_goal(label="front"), make_scene_goal(label="side", viewing_dir=(-1.0, 0.0, 0.0))]
+        evaluator = make_evaluator(goals, LossNodeDistance())
+        candidate = make_candidate((0.0, 0.3))
+        views = evaluator.record(candidate)
+
+        self.assertEqual([v.label for v in views], ["front", "side"])
+        # At frame 0 both views see the same straight cable; the bent cable then looks different from each side.
+        self.assertFalse(np.array_equal(views[0].masks[-1], views[1].masks[-1]))
+        self.assertFalse(np.array_equal(views[0].frames[-1], views[1].frames[-1]))
+        self.assertGreater(abs(views[0].loss - views[1].loss), 0.05)
+        for view in views:
+            with self.subTest(view.label):
+                self.assertIsInstance(view, CableTraceView)
+                self.assertEqual(view.weight, 0.5)
+                self.assertEqual(view.crop, SCENE_CROP)
+                self.assertEqual([f.shape for f in view.frames], [(24, 32, 4)] * 4)
+                self.assertEqual([m.shape for m in view.masks], [(24, 32)] * 4)
+                self.assertEqual(view.goal_indices, [0, 0, 1, 1])
+                np.testing.assert_allclose([t for t, _ in view.frame_losses], [0.0, 0.05])
+                self.assertAlmostEqual(sum(v for _, v in view.frame_losses) / 2, view.loss, places=5)
+        self.assertAlmostEqual(evaluator.evaluate([candidate])[0], sum(v.weight * v.loss for v in views), places=4)
+
+    def test_record_keeps_frames_at_the_record_rate(self):
+        """Verify record() keeps only the frames of record_fps and pairs each with its reference frame.
+
+        The references at 0 s and 0.05 s span four frames at 60 fps. At half that
+        rate, record() keeps two frames, the first and the last.
+        """
+        evaluator = make_evaluator([make_scene_goal()], LossNodeDistance())
+        (view,) = evaluator.record(make_candidate(), record_fps=evaluator.fps / 2)
+        self.assertEqual(len(view.frames), 2)
+        self.assertEqual(len(view.masks), 2)
+        self.assertEqual(view.goal_indices, [0, 1])
+
+    def test_record_pairs_frames_by_capture_time(self):
+        """Verify evaluate() and record() score each reference frame at the simulated frame of its capture time.
+
+        The references at 0 s, 0.01 s and 0.05 s are not evenly spaced. At 60 fps
+        they fall on frames 0, 1 and 3 (0.6 frames rounds to 1). Pairing by index
+        would score frames 0, 2 and 3. record() also pairs each simulated frame
+        with the nearest reference: frame 2 (0.033 s) is nearest 0.05 s. The
+        candidate is bent, so the cable moves and frames 1 and 2 score differently.
+        """
+        goal = make_scene_goal(masks=[scene_mask()] * 3, frame_times=[0.0, 0.01, 0.05])
+        evaluator = make_evaluator([goal], LossNodeDistance())
+        candidate = make_candidate((0.0, 0.3))
+        (view,) = evaluator.record(candidate)
+        self.assertEqual(view.goal_indices, [0, 1, 2, 2])
+        fps = evaluator.fps
+        np.testing.assert_allclose([t for t, _ in view.frame_losses], [0.0, 1 / fps, 3 / fps])
+        self.assertAlmostEqual(evaluator.evaluate([candidate])[0], view.loss, places=5)
+
+    def test_recorded_frames_pair_with_the_reference_nearest_in_time(self):
+        """Verify a simulated frame pairs with the reference frame nearest to it in capture time.
+
+        This is the inverse of the reference-to-simulation matching in
+        run_sequence. Without capture times, the reference frames are spread
+        evenly over the timeline.
+        """
+        fps = 60.0
+        # References at 0.0, 0.5 and 1.0 s; simulated frame 30 is at 0.5 s.
+        times = [0.0, 0.5, 1.0]
+        self.assertEqual(_goal_index_for_sim_frame(0, 61, times, 3, fps), 0)
+        self.assertEqual(_goal_index_for_sim_frame(30, 61, times, 3, fps), 1)
+        self.assertEqual(_goal_index_for_sim_frame(60, 61, times, 3, fps), 2)
+        # Nearest, not preceding: frame 25 (0.417 s) is closer to 0.5 s than to 0.0 s.
+        self.assertEqual(_goal_index_for_sim_frame(25, 61, times, 3, fps), 1)
+
+        self.assertEqual(_goal_index_for_sim_frame(0, 61, None, 3, fps), 0)
+        self.assertEqual(_goal_index_for_sim_frame(30, 61, None, 3, fps), 1)
+        self.assertEqual(_goal_index_for_sim_frame(60, 61, None, 3, fps), 2)
+        # Nearest, not preceding: frame 20 is 2/3 of the way to the second reference.
+        self.assertEqual(_goal_index_for_sim_frame(20, 61, None, 3, fps), 1)
+
+        # Every frame pairs with a single reference, with or without capture times.
+        self.assertEqual(_goal_index_for_sim_frame(42, 61, None, 1, fps), 0)
+        self.assertEqual(_goal_index_for_sim_frame(42, 61, times[:1], 1, fps), 0)
 
 
 if __name__ == "__main__":
