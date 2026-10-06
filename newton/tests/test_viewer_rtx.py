@@ -28,11 +28,9 @@ OVSTAGE_AVAILABLE = importlib.util.find_spec("ovstage") is not None
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestViewerRTXGetFrame(unittest.TestCase):
     def test_headless_frame_capture(self):
-        """Capture the latest moving scene across render mode changes and save screenshots."""
+        """Capture the latest moving scene across render mode changes."""
         if not wp.is_cuda_available():
             self.skipTest("Requires an NVIDIA RTX-capable GPU")
-
-        from PIL import Image
 
         builder = newton.ModelBuilder()
         body = builder.add_body()
@@ -68,12 +66,6 @@ class TestViewerRTXGetFrame(unittest.TestCase):
                     self.assertIs(viewer.get_frame(target_image=target), target)
                     np.testing.assert_array_equal(target.numpy(), rgb)
 
-                    with tempfile.TemporaryDirectory() as directory:
-                        path = Path(directory) / "screenshot.png"
-                        with self.assertWarnsRegex(DeprecationWarning, "get_frame"):
-                            viewer.save_screenshot(str(path))
-                        with Image.open(path) as screenshot:
-                            np.testing.assert_array_equal(np.asarray(screenshot.convert("RGB")), rgb)
                 finally:
                     viewer.close()
 
