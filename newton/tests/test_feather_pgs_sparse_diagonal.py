@@ -436,8 +436,10 @@ def test_sparse_diagonal_response_matches_dense_joint_limits(test, device):
     test.assertIsNone(optimized._pgs_solve_mf_gs_kernel)
     test.assertFalse(reference._sparse_diagonal_contact_solve)
 
-    q = np.tile(np.concatenate((np.full(16, -0.105), np.full(3, 0.205))).astype(np.float32), 2)
-    qd = np.tile(np.concatenate((np.full(16, -0.2), np.full(3, 0.1))).astype(np.float32), 2)
+    # Alternate branches start past the lower and the upper limit, moving further out.
+    side = np.where(np.arange(16) % 2 == 0, -1.0, 1.0)
+    q = np.tile(np.concatenate((0.105 * side, np.full(3, 0.205))).astype(np.float32), 2)
+    qd = np.tile(np.concatenate((0.2 * side, np.full(3, 0.1))).astype(np.float32), 2)
     trajectories = []
     for solver in (optimized, reference):
         state_in, state_out = model.state(), model.state()
@@ -454,8 +456,9 @@ def test_sparse_diagonal_response_matches_dense_joint_limits(test, device):
         trajectories.append(history)
 
     first_q, first_qd = trajectories[0][0]
-    np.testing.assert_allclose(first_q.reshape(2, 19)[:, :16], -0.104, rtol=0.0, atol=2.0e-6)
-    np.testing.assert_allclose(first_qd.reshape(2, 19)[:, :16], 0.12, rtol=0.0, atol=2.0e-6)
+    # Each branch recovers pgs_beta of its violation in one step, on both sides.
+    np.testing.assert_allclose(first_q.reshape(2, 19)[:, :16], np.tile(0.104 * side, (2, 1)), rtol=0.0, atol=2.0e-6)
+    np.testing.assert_allclose(first_qd.reshape(2, 19)[:, :16], np.tile(-0.12 * side, (2, 1)), rtol=0.0, atol=2.0e-6)
     for sparse, dense in zip(*trajectories, strict=True):
         np.testing.assert_allclose(sparse[0], dense[0], rtol=2.0e-5, atol=2.0e-6)
         np.testing.assert_allclose(sparse[1], dense[1], rtol=2.0e-5, atol=2.0e-6)
