@@ -2375,22 +2375,22 @@ class SolverFeatherPGS(SolverBase):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Refresh cached solver data after model changes.
 
-        Joint (frames), joint DOF (armature, drive gains), body (kinematic flags) and
-        inertial changes request a mass-matrix refresh of every articulation on the next
-        step, independent of ``update_mass_matrix_interval``. Body flags (kinematic
-        membership), joint DOF properties (armature, damping) and shape friction and
-        restitution coefficients are re-read. Other model data, such as gravity, limits and
-        shape transforms, is read every step. A kinematic free
+        Joint (frames), joint DOF, DOF force (drive gains), DOF inertial (armature), body
+        (kinematic flags) and inertial changes request a mass-matrix refresh of every
+        articulation on the next step, independent of ``update_mass_matrix_interval``. Body
+        flags (kinematic membership), armature, joint damping (joint DOF or DOF force changes)
+        and shape friction and restitution coefficients are re-read. Other model data, such
+        as gravity, limits and shape transforms, is read every step. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
         equality rows: enabling one that is not converted to a Newton loop joint or mimic
         constraint raises :class:`NotImplementedError`. Capacity status in
         :attr:`constraint_overflow` is not cleared, see :meth:`reset`.
 
-        Body, inertial, joint DOF and shape changes discard the warm-start impulses. With
-        friction patches, shape changes also discard the anchors of the bodies whose
-        collision geometry changed; this copies the shape geometry to the host, so issue
-        such notifications outside CUDA graph capture.
+        Body, inertial, joint DOF, DOF inertial and shape changes discard the warm-start
+        impulses. With friction patches, shape changes also discard the anchors of the
+        bodies whose collision geometry changed; this copies the shape geometry to the host,
+        so issue such notifications outside CUDA graph capture.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -2399,12 +2399,15 @@ class SolverFeatherPGS(SolverBase):
             _validate_equality_constraints(self.model)
         if self.sleeping is not None:
             self.sleeping.notify(flags)
-        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
+        dof_inertial = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        if flags & (ModelFlags.BODY_PROPERTIES | dof_inertial):
             self._update_kinematic_state()
             self._scatter_armature_to_groups()
             self._mass_update_requested.fill_(1)
-        if flags & ModelFlags.JOINT_DOF_PROPERTIES:
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
             self._refresh_passive_joint_damping()
+            # Augmented drive gains enter the factored mass-matrix diagonal.
+            self._mass_update_requested.fill_(1)
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_shape_materials()
             self._check_restitution_support()
@@ -2443,7 +2446,7 @@ class SolverFeatherPGS(SolverBase):
         if flags & (
             ModelFlags.BODY_PROPERTIES
             | ModelFlags.BODY_INERTIAL_PROPERTIES
-            | ModelFlags.JOINT_DOF_PROPERTIES
+            | dof_inertial
             | ModelFlags.SHAPE_PROPERTIES
         ):
             self._clear_warmstart_history(None)
