@@ -73,7 +73,9 @@ class AntiAliasing(enum.IntEnum):
     Anti-aliases silhouettes against both the background and other objects at a fraction of
     the :attr:`SSAA` cost when shading is expensive. Each surface is shaded using
     the first ray in bundle order that hits it, which may not be the covered ray
-    nearest the pixel center. Interior shading is not supersampled.
+    nearest the pixel center. The built-in ray helpers put a center ray first for
+    three or more samples, but surfaces missed by that ray can still be shaded
+    off-center. Interior shading is not supersampled.
     Standalone particles and deformable triangle meshes use the particle or face index
     alongside their shared hit IDs, so distinct surfaces are shaded separately.
     """

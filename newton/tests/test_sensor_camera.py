@@ -270,14 +270,26 @@ class TestSensorCamera(unittest.TestCase):
                     )
 
     def test_camera_multisample_offsets_center_on_pixel(self) -> None:
-        """Keep the mean subpixel position at the pixel center for small sample counts."""
-        for sample_count in (2, 3, 4, 8):
+        """Center the pattern and place its first ray at the center when possible."""
+        center_ray = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=1.0, device="cpu").numpy()[0, 0, 0, 1]
+        for sample_count in (2, 3, 4, 5, 6, 8, 16):
             with self.subTest(sample_count=sample_count):
                 rays = SensorCamera.compute_camera_rays_pinhole(
                     1, 1, camera_fov=1.0, sample_count=sample_count, device="cpu"
                 ).numpy()[0, 0, :, 1]
                 ray_slopes = -rays[:, :2] / rays[:, 2, None]
                 np.testing.assert_allclose(ray_slopes.mean(axis=0), (0.0, 0.0), atol=1.0e-6)
+                self.assertEqual(len(np.unique(np.round(ray_slopes, 6), axis=0)), sample_count)
+                if sample_count == 2:
+                    self.assertFalse(np.allclose(rays[0], center_ray))
+                else:
+                    np.testing.assert_allclose(rays[0], center_ray, atol=1.0e-6)
+                    ring = ray_slopes[1:]
+                    radii = np.linalg.norm(ring, axis=1)
+                    np.testing.assert_allclose(radii, radii[0], atol=1.0e-6)
+                    angles = np.sort(np.mod(np.arctan2(ring[:, 1], ring[:, 0]), 2.0 * math.pi))
+                    gaps = np.diff(np.append(angles, angles[0] + 2.0 * math.pi))
+                    np.testing.assert_allclose(gaps, 2.0 * math.pi / (sample_count - 1), atol=1.0e-6)
 
     def test_camera_ray_helpers_reject_batched_inputs(self) -> None:
         """Verify camera ray helpers accept only single-camera parameters."""
@@ -484,6 +496,35 @@ class TestSensorCamera(unittest.TestCase):
         # The red and blue channels are both present in the blend.
         self.assertGreater(msaa_packed & 0xFF, 0)
         self.assertGreater((msaa_packed >> 16) & 0xFF, 0)
+
+    def test_msaa_shades_fully_covered_shape_at_center(self) -> None:
+        """Use the center ray first when generated rays all hit one surface."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -4.0), q=wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=2.0, color=(1.0, 0.5, 0.2))
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
+        camera.create_default_light()
+        state = model.state()
+        transforms = self._identity_transforms(1)
+        center_rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device="cpu")
+        center_hdr = camera.create_hdr_color_image_output(1, 1, 1)
+        camera.update(state, transforms, center_rays, hdr_color_image=center_hdr)
+
+        for sample_count in (3, 4, 8):
+            with self.subTest(sample_count=sample_count):
+                rays = SensorCamera.compute_camera_rays_pinhole(
+                    1, 1, camera_fov=0.8, sample_count=sample_count, device="cpu"
+                )
+                msaa_hdr = camera.create_hdr_color_image_output(1, 1, 1)
+                camera.update(
+                    state,
+                    transforms,
+                    rays,
+                    hdr_color_image=msaa_hdr,
+                    render_config=camera.RenderConfig(anti_aliasing=camera.AntiAliasing.MSAA),
+                )
+                np.testing.assert_allclose(msaa_hdr.numpy(), center_hdr.numpy(), atol=1.0e-6)
 
     def test_msaa_shades_distinct_particles_separately(self) -> None:
         """Keep shading from adjacent particles independent despite their shared hit ID."""

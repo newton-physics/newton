@@ -293,17 +293,20 @@ def _multisample_offset(sample_index: int, sample_count: int):
     if sample_count <= 1:
         return wp.vec2f(0.5, 0.5)
 
-    # Pair offsets across the pixel center so every sample count has zero mean.
-    # The golden-ratio sequence spreads each pair without requiring RNG state.
-    u = (float(sample_index) + 0.5) / float(sample_count)
-    opposite_index = sample_count - 1 - sample_index
-    pair_index = wp.min(sample_index, opposite_index)
-    v = wp.mod((float(pair_index) + 0.5) * 0.61803398875, 1.0)
-    if sample_index == opposite_index:
-        v = 0.5
-    elif sample_index > opposite_index:
-        v = 1.0 - v
-    return wp.vec2f(u, v)
+    # Two distinct samples cannot include the center and retain a centered mean.
+    if sample_count == 2:
+        v = wp.mod(0.5 * 0.61803398875, 1.0)
+        if sample_index == 1:
+            return wp.vec2f(0.75, 1.0 - v)
+        return wp.vec2f(0.25, v)
+
+    if sample_index == 0:
+        return wp.vec2f(0.5, 0.5)
+
+    # Equally spaced points on a ring have a centered mean for any ring size.
+    angle = 0.7853981633974483 + 6.283185307179586 * float(sample_index - 1) / float(sample_count - 1)
+    radius = 0.42
+    return wp.vec2f(0.5 + radius * wp.cos(angle), 0.5 + radius * wp.sin(angle))
 
 
 @wp.kernel(enable_backward=False)

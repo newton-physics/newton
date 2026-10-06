@@ -171,6 +171,9 @@ subpixel rays and select ``SensorCamera.AntiAliasing.SSAA`` or ``MSAA`` through
 or deformable-mesh face using the first ray in bundle order that hits it. That
 shaded color is reused for the other rays hitting the same surface, so shading
 may come from an off-center subpixel ray. Use ``SSAA`` to shade every ray.
+The built-in ray helpers put the pixel-center ray first when ``sample_count`` is
+at least three, with the remaining rays evenly spaced around it. With two samples,
+they use an off-center pair so the sample pattern remains centered on the pixel.
 
 Extended Attributes
 -------------------
