@@ -4,6 +4,7 @@
 import inspect
 import unittest
 import warnings
+from contextlib import nullcontext
 from typing import Any
 
 import numpy as np
@@ -834,7 +835,8 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device, rigid_compliant_
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -981,7 +983,8 @@ def _cable_twist_response_impl(test: unittest.TestCase, device, rigid_compliant_
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     # Disable gravity to isolate twist response
     model.set_gravity((0.0, 0.0, 0.0))
@@ -1192,12 +1195,13 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device, rigid_
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(
-        model,
-        iterations=10,
-        friction_epsilon=0.1,
-        rigid_compliant_alm=rigid_compliant_alm,
-    )
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(
+            model,
+            iterations=10,
+            friction_epsilon=0.1,
+            rigid_compliant_alm=rigid_compliant_alm,
+        )
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
     sim_dt = frame_dt / sim_substeps
@@ -3222,7 +3226,8 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device, rigid_compliant_
     tp[qd_s + 1] = target_angle
     control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -4273,7 +4278,8 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device, rigid_compliant_
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     sim_dt = 1.0 / 60.0 / 4
 
@@ -6377,7 +6383,8 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     builder.add_articulation([j_revolute, j_prismatic, j_d6])
     builder.color()
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+    with test.assertWarns(DeprecationWarning):
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
 
     def material_k_at(joint, slot_offset):
         start = int(solver.joint_constraint_start.numpy()[joint])
@@ -6444,7 +6451,8 @@ def _notify_joint_dof_properties_preserves_unchanged_penalty_ramp(test, device):
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
     # beta > 0 enables the legacy AVBD ramp; it is the state this selective reseed protects.
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False, rigid_avbd_beta=5.0)
+    with test.assertWarns(DeprecationWarning):
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False, rigid_avbd_beta=5.0)
 
     sim_substeps = 10
     sim_dt = (1.0 / 60.0) / sim_substeps

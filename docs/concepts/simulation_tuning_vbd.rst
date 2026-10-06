@@ -42,7 +42,7 @@ math, how the solver converges and why it fails:
   configurations the hard case;
 - how joint and contact constraints are enforced inside the same VBD loop
   through an augmented-Lagrangian (ALM) formulation
-  (``rigid_compliant_alm=True``, recommended; the legacy path is deprecated),
+  (compliant ALM by default; the legacy path is deprecated),
   and what roles ``rigid_avbd_alpha``, ``rigid_avbd_beta``, and
   ``rigid_avbd_gamma`` play;
 - how the penetration-free Divide and Truncate (DAT) scheme bounds and

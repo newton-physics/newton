@@ -263,10 +263,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         collision_pipeline = newton.CollisionPipeline(model)
         contacts = collision_pipeline.contacts()
 
-        solver = newton.solvers.SolverVBD(
-            model,
-            rigid_compliant_alm=True,
-        )
+        solver = newton.solvers.SolverVBD(model)
 
         # Initialize states and control
         state_in = model.state()
@@ -437,12 +434,16 @@ class SolverVBD(SolverBase, CouplingInterface):
             rigid_compliant_alm: Unified compliant-ALM mode for body-body contacts,
                 structural joints, drives, and limits. This is the recommended path.
                 Defaults to ``True``. Pass ``False`` to keep the deprecated legacy
-                penalty/AVBD path during its migration window (deprecated as of
-                Newton 1.6; it will be removed in a future release). Finite authored
+                penalty/AVBD path during its migration window. Finite authored
                 coefficients define the material response, while ``SolverVBD`` selects
                 ``rho`` internally for numerical conditioning. Values used with legacy
                 hard constraints may require retuning for the desired deformation.
                 Values must be finite and representable in float32; infinity is unsupported.
+
+                .. deprecated:: 1.6
+                    The legacy path selected by ``False`` will be removed in a future
+                    release. Using it emits a :class:`DeprecationWarning` when VBD
+                    integrates rigid bodies. Use the default compliant ALM path instead.
             rigid_avbd_alpha: C0 stabilization strength (``C_stab = C - alpha * C0``). Range: [0, 1].
                 Controls both joints and body-body contacts when neither class-specific
                 override (``rigid_avbd_joint_alpha`` / ``rigid_avbd_contact_alpha``) is set.
@@ -493,7 +494,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 and ``False`` selects legacy penalty-only contact.
 
                 .. deprecated:: 1.6
-                    Use ``rigid_compliant_alm=True`` and author finite contact stiffness.
+                    Use the default compliant ALM path and author finite contact stiffness.
             rigid_contact_history: Whether to persist body-body numeric contact state
                 across steps using ``Contacts.rigid_contact_match_index``. Compliant ALM
                 restores the normal multiplier for matched rows. With latest
@@ -907,6 +908,15 @@ class SolverVBD(SolverBase, CouplingInterface):
         # the Contacts buffer or reuses the current rigid/body-particle contact state.
         # Defaults to True and is reset to True when consumed by step().
         self._update_rigid_history = True
+
+        # Warn after validation so warnings-as-errors do not mask invalid inputs.
+        if self._integrates_rigid_bodies and not self.rigid_compliant_alm:
+            warnings.warn(
+                "rigid_compliant_alm=False is deprecated as of Newton 1.6 and will be removed in a future release. "
+                "Omit the argument to use compliant ALM and author finite material stiffness.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
     def _init_particle_system(
         self,
@@ -1626,10 +1636,10 @@ class SolverVBD(SolverBase, CouplingInterface):
     def _validate_compliant_contact_materials(self) -> None:
         """Validate physical contact coefficients consumed by compliant ALM.
 
-        Skip when an external rigid solver owns the bodies or there are none:
-        VBD then evaluates no body-body contact rows.
+        Particle-shape contacts also use these materials, even when VBD
+        does not integrate rigid bodies.
         """
-        if not self._integrates_rigid_bodies or self.model.shape_count == 0:
+        if self.model.shape_count == 0 or (not self._integrates_rigid_bodies and self.model.particle_count == 0):
             return
         for attribute in ("shape_material_ke", "shape_material_kd", "shape_material_mu"):
             values = self._to_numpy(getattr(self.model, attribute), dtype=float)
@@ -2280,7 +2290,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         .. deprecated:: 1.6
             Per-slot joint hard/soft mode is deprecated. Under compliant ALM (the
-            future default) all structural slots use the unified scheme, so this
+            default) all structural slots use the unified scheme, so this
             has no solver-mode effect; it will be removed with the legacy path.
 
         Non-rod structural slots are LINEAR (slot 0) and ANGULAR (slot 1).

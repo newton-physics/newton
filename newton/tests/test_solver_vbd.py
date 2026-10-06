@@ -7,6 +7,7 @@ import gc
 import math
 import unittest
 import warnings
+from contextlib import nullcontext
 
 import numpy as np
 import warp as wp
@@ -1642,7 +1643,7 @@ def _rigid_contact_stick_eps_are_deprecated(test, device):
 
 
 def _rigid_compliant_alm_defaults_to_compliant(test, device):
-    """Use compliant ALM by default, preserve explicit False, and reject None."""
+    """Use compliant ALM by default, warn for legacy False, and reject None."""
     builder = newton.ModelBuilder()
     builder.add_body()
     builder.color()
@@ -1652,7 +1653,10 @@ def _rigid_compliant_alm_defaults_to_compliant(test, device):
         warnings.simplefilter("error", DeprecationWarning)
         solver = newton.solvers.SolverVBD(model)
     test.assertTrue(solver.rigid_compliant_alm)
-    test.assertFalse(newton.solvers.SolverVBD(model, rigid_compliant_alm=False).rigid_compliant_alm)
+    with test.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False") as warning:
+        legacy_solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+    test.assertFalse(legacy_solver.rigid_compliant_alm)
+    test.assertEqual(warning.filename, __file__)
     with test.assertRaisesRegex(TypeError, "rigid_compliant_alm"):
         newton.solvers.SolverVBD(model, rigid_compliant_alm=None)
 
@@ -3142,7 +3146,7 @@ def _rigid_compliant_alm_validates_drive_limit_damping(test, device):
 
 
 def _rigid_compliant_alm_validates_contact_materials(test, device):
-    """Reject invalid contact stiffness, damping, and friction only for VBD-owned rigid bodies."""
+    """Reject invalid shape materials whenever VBD can consume them."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -3160,6 +3164,13 @@ def _rigid_compliant_alm_validates_contact_materials(test, device):
                 newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
             newton.solvers.SolverVBD(model, integrate_with_external_rigid_solver=True)
         array.assign(original)
+
+    builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.2), vel=wp.vec3(0.0), mass=1.0)
+    builder.color()
+    model = builder.finalize(device=device)
+    model.shape_material_ke.fill_(np.nan)
+    with test.assertRaisesRegex(ValueError, "model.shape_material_ke"):
+        newton.solvers.SolverVBD(model, integrate_with_external_rigid_solver=True)
 
 
 def _joint_hard_soft_deprecation_describes_legacy_behavior(test, device):
@@ -3198,7 +3209,8 @@ def _rigid_velocity_drive_preserves_legacy_damping_and_adds_compliant_support(te
     builder.color()
     model = builder.finalize(device=device)
 
-    legacy_solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=False)
+    with test.assertWarns(DeprecationWarning):
+        legacy_solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=False)
     legacy_state_0 = model.state()
     legacy_state_1 = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, legacy_state_0)
@@ -3990,14 +4002,15 @@ def _rigid_contact_reset_lifecycle(test, device):
     # alone; contact_alpha=gamma=1 disable the per-step lambda decay so a seeded
     # dual survives a step unchanged. Compliant ALM uses a different retention /
     # rho live gate, so this contract is legacy-only.
-    solver = newton.solvers.SolverVBD(
-        model,
-        iterations=0,
-        rigid_compliant_alm=False,
-        rigid_contact_history=True,
-        rigid_avbd_contact_alpha=1.0,
-        rigid_avbd_gamma=1.0,
-    )
+    with test.assertWarns(DeprecationWarning):
+        solver = newton.solvers.SolverVBD(
+            model,
+            iterations=0,
+            rigid_compliant_alm=False,
+            rigid_contact_history=True,
+            rigid_avbd_contact_alpha=1.0,
+            rigid_avbd_gamma=1.0,
+        )
     state_in = model.state()
     state_out = model.state()
 
@@ -4267,12 +4280,13 @@ def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True,
 
     with wp.ScopedDevice(device):
         model = builder.finalize()
-        solver = newton.solvers.SolverVBD(
-            model,
-            iterations=10,
-            rigid_compliant_alm=rigid_compliant_alm,
-            rigid_contact_hard=hard_contact,
-        )
+        with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+            solver = newton.solvers.SolverVBD(
+                model,
+                iterations=10,
+                rigid_compliant_alm=rigid_compliant_alm,
+                rigid_contact_hard=hard_contact,
+            )
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -4349,12 +4363,13 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True, rigid_c
 
     with wp.ScopedDevice(device):
         model = builder.finalize()
-        solver = newton.solvers.SolverVBD(
-            model,
-            iterations=20,
-            rigid_compliant_alm=rigid_compliant_alm,
-            rigid_contact_hard=hard_contact,
-        )
+        with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+            solver = newton.solvers.SolverVBD(
+                model,
+                iterations=20,
+                rigid_compliant_alm=rigid_compliant_alm,
+                rigid_contact_hard=hard_contact,
+            )
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -4925,7 +4940,8 @@ def _rigid_hinge_multiturn_drive(test, device):
     dt = 0.02
 
     for compliant_alm in (True, False) if device.is_cpu else (True,):
-        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=compliant_alm, iterations=10)
+        with test.assertWarns(DeprecationWarning) if not compliant_alm else nullcontext():
+            solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=compliant_alm, iterations=10)
         state_in, state_out = model.state(), model.state()
         control = model.control()
         target_values = np.zeros(control.joint_target_q.shape[0], dtype=np.float32)
@@ -4963,7 +4979,8 @@ def _rigid_hinge_multiturn_limits(test, device):
     )
 
     for compliant_alm in (True, False) if device.is_cpu else (True,):
-        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=compliant_alm, iterations=10)
+        with test.assertWarns(DeprecationWarning) if not compliant_alm else nullcontext():
+            solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=compliant_alm, iterations=10)
         state_in, state_out = model.state(), model.state()
         control = model.control()
         joint_forces = np.zeros(control.joint_f.shape[0], dtype=np.float32)
@@ -7050,13 +7067,14 @@ def test_rigid_phase_applies_joint_dat_truncation(test, device):
         broad_phase="nxn",
         soft_contact_gap=2.0,
     )
-    solver = newton.solvers.SolverVBD(
-        model,
-        iterations=1,
-        rigid_compliant_alm=False,
-        collision_pipeline=pipeline,
-        rigid_soft_enable_dat=True,
-    )
+    with test.assertWarns(DeprecationWarning):
+        solver = newton.solvers.SolverVBD(
+            model,
+            iterations=1,
+            rigid_compliant_alm=False,
+            collision_pipeline=pipeline,
+            rigid_soft_enable_dat=True,
+        )
     state = model.state()
     pipeline.collide(state, solver.contacts)
     test.assertEqual(int(solver.contacts.soft_contact_count.numpy()[0]), 1)

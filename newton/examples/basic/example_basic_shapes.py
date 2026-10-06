@@ -108,7 +108,6 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=5,
-                rigid_compliant_alm=True,
             )
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(

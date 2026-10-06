@@ -9251,11 +9251,11 @@ class ModelBuilder:
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
                 capsule shapes. If None, the rod uses the default rod color.
             body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
-                the legacy convention where the body origin is at the segment start position
+                the convention where the body origin is at the segment start position
                 (``positions[i]`` for segment ``i``), and the COM/shape are offset by half the
                 segment length. ``"com"`` places the body origin at the segment midpoint so the
-                body origin and COM coincide. Defaults to ``"com"``; pass ``"start"`` to keep
-                the legacy start-node body frame.
+                body origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
+                a supported option.
             rod: Geometry, frame, topology, and constitutive-data source for
                 the prepared-object form. Mutually exclusive with ``positions``.
             junction_collision_filter: Whether to suppress self-collisions
@@ -9463,11 +9463,11 @@ class ModelBuilder:
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
                 capsule shapes. If None, the graph uses the default rod color.
             body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
-                the legacy convention where the body origin is at the edge start node
+                the convention where the body origin is at the edge start node
                 (``node_positions[u]`` for edge ``(u, v)``), and the COM/shape are offset by half
                 the edge length. ``"com"`` places the body origin at the edge midpoint so the body
-                origin and COM coincide. Defaults to ``"com"``; pass ``"start"`` to keep
-                the legacy start-node body frame.
+                origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
+                a supported option.
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
