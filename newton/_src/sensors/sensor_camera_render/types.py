@@ -125,7 +125,11 @@ class RenderConfig:
     """
 
     enable_backface_culling: bool = True
-    """Cull back-facing triangles."""
+    """Cull back-facing triangles of rigid meshes and deformable surfaces.
+
+    When disabled, deformable triangle surfaces render from both sides with
+    normals oriented toward the camera.
+    """
 
     enable_fast_math: bool = True
     """Compile render kernels with CUDA fast math."""

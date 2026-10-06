@@ -230,6 +230,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         topology_particle_mask: wp.array[wp.bool],
         triangle_mesh_id: wp.uint64,
         triangle_mesh_group_roots: wp.array[wp.int32],
+        triangle_colors: wp.array[wp.vec3f],
         mesh_data: wp.array[MeshData],
         texture_data: wp.array[TextureData],
         light_active: wp.array[wp.bool],
@@ -255,6 +256,9 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             albedo_color = wp.vec3f(1.0)
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 albedo_color = srgb_to_linear_wp(shape_colors[closest_hit.shape_index])
+            elif closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID:
+                if closest_hit.face_idx >= 0 and closest_hit.face_idx < triangle_colors.shape[0]:
+                    albedo_color = srgb_to_linear_wp(triangle_colors[closest_hit.face_idx])
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]
@@ -352,6 +356,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         topology_particle_mask: wp.array[wp.bool],
         triangle_mesh_id: wp.uint64,
         triangle_mesh_group_roots: wp.array[wp.int32],
+        triangle_colors: wp.array[wp.vec3f],
         mesh_data: wp.array[MeshData],
         gaussians_data: wp.array[Gaussian.Data],
         texture_data: wp.array[TextureData],
@@ -437,6 +442,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             topology_particle_mask,
             triangle_mesh_id,
             triangle_mesh_group_roots,
+            triangle_colors,
             mesh_data,
             texture_data,
             light_active,
@@ -485,6 +491,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
         triangle_mesh_group_roots: wp.array[wp.int32],
+        triangle_colors: wp.array[wp.vec3f],
         # Meshes
         mesh_data: wp.array[MeshData],
         # Gaussians
@@ -588,6 +595,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                 topology_particle_mask,
                 triangle_mesh_id,
                 triangle_mesh_group_roots,
+                triangle_colors,
                 mesh_data,
                 gaussians_data,
                 texture_data,
@@ -686,6 +694,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     topology_particle_mask,
                     triangle_mesh_id,
                     triangle_mesh_group_roots,
+                    triangle_colors,
                     mesh_data,
                     gaussians_data,
                     texture_data,
@@ -866,6 +875,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                             topology_particle_mask,
                             triangle_mesh_id,
                             triangle_mesh_group_roots,
+                            triangle_colors,
                             mesh_data,
                             texture_data,
                             light_active,
