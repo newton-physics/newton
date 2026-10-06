@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the tuning contracts."""
+"""Tests for the calibration contracts."""
 
 from __future__ import annotations
 
@@ -13,11 +13,11 @@ import unittest
 
 import numpy as np
 
-from newton._src.tuning.data_source import CableDataSource
-from newton._src.tuning.evidence import CableEvidenceBundle, CableRecording
-from newton._src.tuning.result import STATUS_OK, CableCalibrationResult
-from newton._src.tuning.schema import SCHEMA_VERSION
-from newton._src.tuning.trajectory import MaterializedTrajectorySource
+from newton._src.calibration.data_source import CableDataSource
+from newton._src.calibration.evidence import CableEvidenceBundle, CableRecording
+from newton._src.calibration.result import STATUS_OK, CableCalibrationResult
+from newton._src.calibration.schema import SCHEMA_VERSION
+from newton._src.calibration.trajectory import MaterializedTrajectorySource
 
 # Quaternions are (qx, qy, qz, qw). A turn by angle a about z is (0, 0, sin(a/2), cos(a/2)).
 IDENTITY = (0.0, 0.0, 0.0, 1.0)
@@ -73,8 +73,8 @@ def json_round_trip(d):
     return json.loads(json.dumps(d))
 
 
-class TestTuningContracts(unittest.TestCase):
-    """Serialization and validation of the tuning contracts."""
+class TestCalibrationContracts(unittest.TestCase):
+    """Serialization and validation of the calibration contracts."""
 
     def test_contracts_round_trip_through_json(self):
         """Verify every contract survives to_dict/from_dict via a JSON round trip."""
@@ -213,7 +213,7 @@ class TestTuningContracts(unittest.TestCase):
             make_result(fit={}).validate()
 
 
-class TestTuningDataSource(unittest.TestCase):
+class TestCalibrationDataSource(unittest.TestCase):
     """The drive-trajectory interface and its stored form."""
 
     def test_interface_cannot_be_instantiated(self):
@@ -248,7 +248,7 @@ class TestTuningDataSource(unittest.TestCase):
             RecordingSource(drop=1).drive_buffer(start_ns=1_000, num_frames=2, substep_rate=600, sim_substeps=3)
 
 
-class TestTuningTrajectory(unittest.TestCase):
+class TestCalibrationTrajectory(unittest.TestCase):
     """Interpolation and validation of a materialized trajectory."""
 
     def test_interpolates_between_samples(self):

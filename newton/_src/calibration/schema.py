@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared schema versioning for the tuning contracts.
+"""Shared schema versioning for the calibration contracts.
 
-The tuning contracts are written to disk and read back by other tools, so they
+The calibration contracts are written to disk and read back by other tools, so they
 are public API: a run recorded today must stay readable after the schema moves
 on. Every contract therefore carries ``schema_version`` and refuses a version it
 does not understand, rather than silently misreading fields that changed
