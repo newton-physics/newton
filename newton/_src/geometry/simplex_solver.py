@@ -38,7 +38,17 @@ from .mpr import Vert, create_support_map_function
 
 EPSILON = 1e-8
 
+# Relative float32 rounding margin of the separation cutoff (64 machine epsilons).
+# Scales with the coordinate magnitudes [m] involved in a query.
+GJK_CUTOFF_TOLERANCE = 64.0 * 1.1920929e-7
+
 Mat83f = wp.types.matrix(shape=(8, 3), dtype=wp.float32)
+
+
+@wp.func
+def coordinate_scale(x: wp.vec3) -> float:
+    """Return the sum of absolute coordinates, an upper bound on the length [m]."""
+    return wp.abs(x[0]) + wp.abs(x[1]) + wp.abs(x[2])
 
 
 def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None):
@@ -326,6 +336,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         data_provider: Any,
         MAX_ITER: int = 30,
         COLLIDE_EPSILON: float = 1e-4,
+        max_dist: float = 0.0,
     ) -> tuple[bool, wp.vec3, wp.vec3, wp.vec3, float]:
         """
         Core GJK distance algorithm implementation.
@@ -347,6 +358,18 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             MAX_ITER: Maximum number of GJK iterations (default: 30)
             COLLIDE_EPSILON: Relative duality-gap tolerance, also used as an absolute distance
                 threshold [m] for overlap and duplicate vertices (default: 1e-4).
+            max_dist: Separation cutoff [m]. When positive, iteration stops once a
+                support-plane lower bound exceeds ``max_dist`` plus a float32 rounding
+                margin (``GJK_CUTOFF_TOLERANCE`` times the support-point coordinate scale).
+                The bound is exact in real arithmetic; the margin is an empirical allowance
+                chosen so the exact query (``max_dist=0.0``) also returns a distance above
+                ``max_dist`` in tested cases, not a proven float32 error bound. The
+                returned distance is then an upper bound on the true distance that
+                still exceeds ``max_dist``, and the witness points are the
+                current simplex estimate rather than the closest points. Queries the
+                cutoff does not stop follow the exact query's iteration path.
+                Independently compiled call sites can differ in floating-point rounding.
+                ``0.0`` (default) disables the cutoff.
 
         Returns:
             Tuple of:
@@ -378,6 +401,8 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
 
         last_search_dir = wp.vec3(1.0, 0.0, 0.0)
         certified_near = bool(False)
+        # Largest support-point coordinate scale seen, for the cutoff's rounding margin.
+        cutoff_scale = float(0.0)
 
         while iter_count > 0:
             iter_count -= 1
@@ -423,6 +448,17 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             # Check for convergence using Frank-Wolfe duality gap
             # Use BtoA directly (Minkowski difference)
             w_v = w.BtoA
+            # The support plane orthogonal to v lower-bounds the distance by
+            # dot(v, w_v) / |v|. The exact query's float32 distance can fall a few
+            # rounding errors below that bound, so exit only once the bound clears
+            # max_dist by a margin relative to the coordinates involved. The exit below
+            # then returns |v| >= bound > max_dist; the margin is empirical, chosen so the
+            # exact query also returns a distance above max_dist in tested cases.
+            if max_dist > 0.0:
+                cutoff_scale = wp.max(cutoff_scale, coordinate_scale(w.B) + coordinate_scale(w_v))
+                cutoff = max_dist + GJK_CUTOFF_TOLERANCE * (cutoff_scale + max_dist)
+                if simplex_usage_mask != wp.uint32(0) and wp.dot(v, w_v) > cutoff * wp.sqrt(dist_sq):
+                    break
             delta_dist = wp.dot(v, v - w_v)
             # Compare the gap relative to squared distance; an absolute cutoff is too loose at small gaps.
             # An empty simplex cannot supply surface witnesses, even when the center offset passes this test.
