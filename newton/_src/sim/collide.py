@@ -1951,7 +1951,10 @@ class CollisionPipeline:
         (``softContactGap``, ``contactMatchingPosThreshold``,
         ``maxSpeculativeExtension``) are authored in stage units and converted
         to meters. Following :meth:`ModelBuilder.add_usd`, unauthored stage
-        unit metadata is interpreted as one meter per stage unit.
+        unit metadata is interpreted as one meter per stage unit. Because
+        :meth:`ModelBuilder.add_usd` does not yet convert rigid/collider
+        geometry to meters, a non-unit ``metersPerUnit`` is rejected for models
+        that contain shapes.
 
         Args:
             scene_prim: A ``UsdPhysics.Scene`` prim with ``NewtonCollisionPipelineAPI``
@@ -1965,7 +1968,8 @@ class CollisionPipeline:
 
         Raises:
             TypeError: If ``scene_prim`` is not a USD physics scene prim.
-            ValueError: If the API is absent or an authored value is invalid.
+            ValueError: If the API is absent, an authored value is invalid, or
+                the stage has non-unit ``metersPerUnit`` and ``model`` contains shapes.
         """
         try:
             from pxr import UsdGeom, UsdPhysics
@@ -1991,6 +1995,13 @@ class CollisionPipeline:
         )
         if not math.isfinite(linear_unit) or linear_unit <= 0.0:
             raise ValueError(f"{path}: metersPerUnit must be finite and positive, got {linear_unit!r}.")
+        if model.shape_count > 0 and not math.isclose(linear_unit, 1.0):
+            raise ValueError(
+                f"{path}: metersPerUnit={linear_unit!r} is not supported for models with rigid shapes. "
+                "ModelBuilder.add_usd() keeps rigid/collider geometry in stage units, so converting the "
+                "collision pipeline lengths to meters would produce a mixed-scale pipeline. "
+                "Set metersPerUnit to 1.0 before import."
+            )
 
         def authored(name: str) -> Any:
             attr = prim.GetAttribute(name)

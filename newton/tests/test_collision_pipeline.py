@@ -665,14 +665,12 @@ class TestCollisionPipeline(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_converts_length_attributes_to_meters(self):
         """Convert softContactGap, contactMatchingPosThreshold, and
-        maxSpeculativeExtension from stage units to meters, matching the geometry
+        maxSpeculativeExtension from stage units to meters, matching the particles
         ModelBuilder.add_usd() would import from the same stage."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         builder = newton.ModelBuilder()
-        builder.add_ground_plane()
-        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
-        builder.add_shape_sphere(body, radius=1.0)
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.5), vel=wp.vec3(0.0), mass=1.0)
         model = builder.finalize(device="cpu")
 
         stage = Usd.Stage.CreateInMemory()
@@ -689,6 +687,26 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertAlmostEqual(pipeline.soft_contact_gap, 0.02)
         self.assertAlmostEqual(pipeline._contact_matcher._pos_threshold_sq, 0.01**2)
         self.assertAlmostEqual(pipeline.speculative_config.max_speculative_extension, 0.15)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_create_from_usd_rejects_nonunit_stage_with_rigid_shapes(self):
+        """Reject non-unit metersPerUnit when the model has rigid shapes, since
+        ModelBuilder.add_usd() keeps rigid geometry in stage units."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        builder = newton.ModelBuilder()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+        builder.add_shape_sphere(body, radius=1.0)
+        model = builder.finalize(device="cpu")
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+        scene_prim = UsdPhysics.Scene.Define(stage, "/World/physicsScene").GetPrim()
+        scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
+        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(2.0)
+
+        with self.assertRaisesRegex(ValueError, "not supported for models with rigid shapes"):
+            CollisionPipeline.create_from_usd(scene_prim, model)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_reports_errors(self):
