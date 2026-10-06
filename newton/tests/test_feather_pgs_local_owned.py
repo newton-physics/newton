@@ -313,7 +313,6 @@ class TestFeatherPGSLocalOwners(unittest.TestCase):
             "preelimination": False,
             "inactive_joint_limit_capacity": True,
             "friction": 0.7,
-            "restitution": 0.3,
             "tangential_velocity": 2.0,
             "contact_regularization": 1.0,
             "model_kwargs": {"static_support": True},
@@ -332,6 +331,10 @@ class TestFeatherPGSLocalOwners(unittest.TestCase):
             any(sample[7] > 0 and sample[5] != PGS_LOCAL_SOLVE_OWNER_GENERAL for sample in local),
             "no local owner solved matrix-free rows",
         )
+        # Penetrating contact rows carry a weight below one in both the dense and matrix-free rows.
+        constraint_count, mf_count = local[-1][0], local[-1][7]
+        self.assertTrue((local_solver.row_w.numpy()[0, :constraint_count] < 1.0).any())
+        self.assertTrue((local_solver.mf_row_w.numpy()[0, :mf_count] < 1.0).any())
         _assert_owner_parity(self, general, local)
 
     @unittest.skipUnless(wp.is_cuda_available(), "articulation-local mixed-world parity requires CUDA")
