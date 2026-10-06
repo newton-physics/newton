@@ -89,38 +89,13 @@ def _drive_clamp_kernel(
     body_q1[body_id] = T
 
 
-def camera_pose_from_ros_optical(pos: Sequence[float], q_ros_optical: Sequence[float]) -> wp.transformf:
-    """Build an OpenGL camera-to-world pose from a ROS optical-frame pose.
-
-    The ROS optical frame has +Z forward and +Y down. The sensor expects the
-    OpenGL convention, -Z forward and +Y up. The rotation from the OpenGL camera
-    frame to the optical frame flips Y and Z, which is Rx(π), the quaternion
-    ``(qx=1, qy=0, qz=0, qw=0)``.
-
-    Args:
-        pos: Camera origin ``(x, y, z)`` in the world frame [m].
-        q_ros_optical: Orientation ``(qx, qy, qz, qw)`` of the optical frame in
-            the world frame.
-
-    Returns:
-        The camera pose for :class:`~newton.sensors.SensorTiledCamera`.
-    """
-    q_optical_to_gl = wp.quat(1.0, 0.0, 0.0, 0.0)
-    q = wp.mul(wp.quat(*q_ros_optical), q_optical_to_gl)
-    return wp.transformf(wp.vec3f(*pos), q)
-
-
-PROJ_INVALID = wp.constant(-1.0e9)
-"""Pixel coordinate :func:`project_cable_kernel` writes for a node at or behind the image plane."""
-
-
 @wp.kernel
 def project_cable_kernel(
     body_q: wp.array[wp.transform],
     bodies: wp.array2d[wp.int32],  # (n_worlds, n_capsules)
     seg_len: float,
     cam_pos: wp.vec3,
-    cam_quat: wp.quat,  # ROS optical frame in the world frame
+    cam_quat: wp.quat,  # camera frame in the world frame: looks along -z, +y up
     fx: float,
     fy: float,
     cx: float,
@@ -133,7 +108,7 @@ def project_cable_kernel(
     geometry does not synchronize with the host during a sequence. Each capsule
     runs from its body origin along local +Z for ``seg_len`` [m]. Node ``i < n``
     is the origin of capsule ``i``, and node ``n`` is the far end of the last
-    capsule. A node at or behind the image plane gets :data:`PROJ_INVALID`.
+    capsule. A node at or behind the image plane gets NaN.
     """
     w, i = wp.tid()
     n = bodies.shape[1]
@@ -142,14 +117,16 @@ def project_cable_kernel(
     p = wp.transform_get_translation(tb)
     if i == n:  # far end of the final capsule
         p = p + wp.quat_rotate(wp.transform_get_rotation(tb), wp.vec3(0.0, 0.0, seg_len))
-    # p_opt = R^T (p - t): express the world-frame offset in optical-frame axes.
+    # d = R^T (p - t): the world-frame offset in camera axes.
     d = wp.quat_rotate_inv(cam_quat, p - cam_pos)
-    if d[2] <= 1.0e-6:  # at or behind the image plane
-        out[w, i, 0] = PROJ_INVALID
-        out[w, i, 1] = PROJ_INVALID
+    depth = -d[2]  # the camera looks along -z
+    if depth <= 1.0e-6:  # at or behind the image plane
+        out[w, i, 0] = wp.nan
+        out[w, i, 1] = wp.nan
     else:
-        out[w, i, 0] = fx * d[0] / d[2] + cx
-        out[w, i, 1] = fy * d[1] / d[2] + cy
+        # Image v grows downward, camera y upward.
+        out[w, i, 0] = cx + fx * d[0] / depth
+        out[w, i, 1] = cy - fy * d[1] / depth
 
 
 # The only supported rest-angle parametrization: a joint's (alpha, beta) pair is the
@@ -312,8 +289,8 @@ class CableWorld:
 
             - ``"sensor_pos"``: camera position ``(x, y, z)`` [m] in the world frame.
               Required.
-            - ``"sensor_quat"``: orientation ``(qx, qy, qz, qw)`` of the ROS optical
-              frame in the world frame. Required.
+            - ``"sensor_quat"``: camera orientation ``(qx, qy, qz, qw)`` in the
+              world frame. Required.
             - ``"camera_intrinsics"``: pinhole intrinsics
               ``(width, height, fx, fy, cx, cy)`` [px], or ``None``.
             - ``"render_size"``: image size ``(width, height)`` [px]; required when
@@ -571,7 +548,7 @@ class CableWorld:
             cam_pos, cam_quat = cam.get("sensor_pos"), cam.get("sensor_quat")
             if cam_pos is None or cam_quat is None:
                 raise ValueError("each camera needs sensor_pos and sensor_quat.")
-            pose = camera_pose_from_ros_optical(cam_pos, cam_quat)
+            pose = wp.transformf(wp.vec3f(*cam_pos), wp.quatf(*cam_quat))
             if intrinsics is not None:
                 # project_cable_kernel and the masks put the centre of pixel i at
                 # coordinate i. The sensor puts it at i + 0.5, so shift the principal
@@ -758,7 +735,7 @@ class CableWorld:
 
         Returns:
             Device array of ``(u, v)`` [px], shape ``(n_worlds, num_elements + 1, 2)``,
-            with :data:`PROJ_INVALID` for a node at or behind the image plane. The
+            with NaN for a node at or behind the image plane. The
             next call overwrites the same array.
 
         Raises:

@@ -22,7 +22,7 @@ import newton
 from newton._src.calibration.data_source import CableDataSource
 from newton._src.calibration.evidence import CableEvidenceBundle, CableRecording
 from newton._src.calibration.goal import CableGoal, group_goals
-from newton._src.calibration.model import ANGLE_PARAM_EXP, PROJ_INVALID, CableWorld
+from newton._src.calibration.model import ANGLE_PARAM_EXP, CableWorld
 from newton._src.calibration.rehydrate import bundle_to_goals
 from newton._src.calibration.result import STATUS_OK, CableCalibrationResult
 from newton._src.calibration.schema import SCHEMA_VERSION
@@ -828,11 +828,11 @@ SCENE_CROP = [0, 0, 32, 24]
 NODE_ROWS = [3.0, 9.0, 15.0, 21.0]
 
 
-def viewing_dir_to_ros_optical_quat(viewing_dir):
+def viewing_dir_to_camera_quat(viewing_dir):
     """Orientation ``(qx, qy, qz, qw)`` of an upright camera that looks along ``viewing_dir``.
 
-    The camera frame is the ROS optical frame (x right, y down, z forward), and
-    world Z maps to image up. For a near-vertical direction, world Y is the
+    The camera looks along its local -z axis, with x right and y up, and world Z
+    maps to image up. For a near-vertical direction, world Y is the
     reference, because the cross product with Z is ill-conditioned there.
     """
     fwd = np.asarray(viewing_dir, dtype=np.float64)
@@ -840,9 +840,9 @@ def viewing_dir_to_ros_optical_quat(viewing_dir):
     ref = np.array([0.0, 1.0, 0.0]) if abs(fwd[2]) > 0.9 else np.array([0.0, 0.0, 1.0])
     right = np.cross(fwd, ref)
     right /= np.linalg.norm(right)
-    down = np.cross(fwd, right)
-    down /= np.linalg.norm(down)
-    rot = np.column_stack([right, down, fwd])
+    up = np.cross(right, fwd)
+    up /= np.linalg.norm(up)
+    rot = np.column_stack([right, up, -fwd])
     return tuple(float(v) for v in wp.quat_from_matrix(wp.mat33(*rot.flatten().tolist())))
 
 
@@ -851,7 +851,7 @@ def scene_camera(viewing_dir=(0.0, 1.0, 0.0), distance=0.5):
     pos = tuple(m - distance * d for m, d in zip(CABLE_MIDDLE, viewing_dir, strict=True))
     return {
         "sensor_pos": pos,
-        "sensor_quat": viewing_dir_to_ros_optical_quat(viewing_dir),
+        "sensor_quat": viewing_dir_to_camera_quat(viewing_dir),
         "camera_intrinsics": SCENE_INTRINSICS,
     }
 
@@ -1014,9 +1014,9 @@ class TestCalibrationCableWorld(unittest.TestCase):
         np.testing.assert_array_equal(fov_masks[0], intrinsics_masks[0])
 
     def test_node_behind_the_camera_is_invalid(self):
-        """Verify a cable behind the camera projects to PROJ_INVALID."""
+        """Verify a cable behind the camera projects to NaN."""
         world = make_scene(cameras=[scene_camera((0.0, -1.0, 0.0), distance=-0.5)])
-        self.assertTrue(np.all(world.project_cable(0).numpy() == PROJ_INVALID))
+        self.assertTrue(np.all(np.isnan(world.project_cable(0).numpy())))
 
     def test_settle_moves_a_cable_with_a_bent_rest_shape(self):
         """Verify the cable starts straight and settle() moves a cable with a bent rest shape, under gravity along -z.
