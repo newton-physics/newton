@@ -380,6 +380,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
         ).reshape(-1)
         fake_gl = _FakeGL(pixels)
         viewer = ViewerGL.__new__(ViewerGL)
+        viewer._rendering_paused = False
         viewer.device = wp.get_device("cpu")
         viewer.renderer = SimpleNamespace(
             _screen_width=2,

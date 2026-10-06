@@ -96,7 +96,51 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
 - :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
 - :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise; prefer this over composing ``is_paused()`` manually
+- :meth:`~newton.viewer.ViewerBase.set_rendering_paused` / :meth:`~newton.viewer.ViewerBase.is_rendering_paused` — freeze or resume the displayed image independently of simulation stepping in GL and RTX
 - :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
+
+**Rendering pause (GL and RTX):**
+
+Click **Pause Rendering**, or call ``viewer.set_rendering_paused(True)``, to
+freeze the last displayed image while simulation may continue. UI controls,
+plots, window resize, and close events remain active. Camera navigation and
+scene picking/gizmos are disabled while the image is frozen. The ordinary
+**Pause** and **Step** controls still govern simulation independently.
+
+Continue calling ``begin_frame()``, logging updates, and ``end_frame()`` during
+rendering pause. The viewer retains the latest scene updates, including
+transforms, visibility, debug geometry, and programmatic camera changes.
+Resuming renders the current state without replaying intervening frames.
+Frame-scoped UI annotations and fullscreen-image requests keep their normal
+per-frame lifetime. A fullscreen image already displayed stays frozen too.
+
+.. code-block:: python
+
+    viewer.set_rendering_paused(True)
+    while viewer.is_running():
+        if viewer.should_step():
+            simulation.step()
+        viewer.begin_frame(simulation.time)
+        viewer.log_state(simulation.state)
+        viewer.end_frame()  # Keep servicing the window and Resume control.
+
+Rendering pause also works programmatically in headless mode. ``num_frames``
+continues to count viewer-loop frames during pause; windowed viewers continue
+to ignore that budget. GL frame capture and RTX screenshots return the frozen
+image while paused. With no previously displayed image, the background is
+empty and capture raises ``RuntimeError``; headless RTX uses the last image
+accepted by the viewer. Clearing or replacing the model invalidates the image
+but preserves the rendering-pause setting. Other backends report ``False``
+and raise ``NotImplementedError`` if asked to enable rendering pause.
+
+RTX retains any outstanding asynchronous operation and polls both completion
+and result retrieval without blocking. A pause invalidates that operation's
+image; it cannot replace the frozen image even after a quick resume. Resume
+waits through polling before submitting the latest state. Windowed asynchronous
+rendering also presents the cache and UI while waiting for a new image.
+Initial renderer/model loading, explicit lifecycle cleanup (``clear_model()``
+and ``close()``), and an already executing synchronous render can still wait
+for GPU work. Rendering pause does not interrupt those operations.
 
 **Camera and layout:**
 

@@ -344,6 +344,9 @@ class TestImageLoggerCleanup(_ImageLoggerFixture):
 
 class _FakeRenderer:
     def __init__(self):
+        self._frame_texture = 1
+        self._screen_width = 64
+        self._screen_height = 48
         self.render_calls = []
         self.render_texture_calls = []
         self.present_count = 0
@@ -386,6 +389,8 @@ class TestViewerGLFullscreenMainImage(unittest.TestCase):
         from newton._src.viewer import viewer_gl  # noqa: PLC0415
 
         viewer = viewer_gl.ViewerGL.__new__(viewer_gl.ViewerGL)
+        viewer._rendering_paused = False
+        viewer._displayed_frame = mock.Mock()
         viewer.renderer = _FakeRenderer()
         viewer._image_logger = _FakeFullscreenImageLogger(texture)
         viewer._last_time = 0.0
@@ -521,13 +526,21 @@ class TestViewerRTXLogImage(unittest.TestCase):
                 viewer._image_logger.get_texture.return_value = texture
                 viewer._rtx = mock.Mock()
                 viewer._should_close = False
-                viewer._window = object()
+                viewer._window = mock.Mock()
+                viewer._headless = False
+                viewer._rendering_paused = False
+                viewer._render_result = None
+                viewer._displayed_frame = mock.Mock(texture=expected[0], width=expected[1], height=expected[2])
                 viewer._present = mock.Mock()
 
                 ViewerRTX._render_and_display(viewer)
 
                 viewer._image_logger.get_texture.assert_called_once_with("color", fullscreen=True)
                 viewer._present.assert_called_once_with(*expected)
+                if texture is not None:
+                    viewer._displayed_frame.store.assert_called_once_with(*texture)
+                else:
+                    viewer._displayed_frame.clear.assert_called_once()
                 viewer._rtx.step.assert_not_called()
                 viewer._rtx.step_async.assert_not_called()
 

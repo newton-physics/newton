@@ -128,6 +128,7 @@ class ViewerBase(ABC):
         self.device = wp.get_device()
         self.picking_enabled = True
         self._camera_speed = 4.0
+        self._rendering_paused = False
 
         # Layer registry. The default layer is always present and has an
         # empty name prefix to keep backward compatibility for code that
@@ -480,6 +481,46 @@ class ViewerBase(ABC):
             bool: True when the simulation should step forward.
         """
         return not self.is_paused()
+
+    def is_rendering_paused(self) -> bool:
+        """Report whether updates to the displayed image are paused.
+
+        This is independent of simulation pause (:meth:`is_paused`). Backends
+        without rendering-pause support always return ``False``.
+        """
+        return self._rendering_paused
+
+    def set_rendering_paused(self, paused: bool) -> None:
+        """Freeze or resume the displayed image without changing simulation pause.
+
+        Supported by :class:`ViewerGL` and :class:`ViewerRTX`, including
+        headless mode. Continue calling :meth:`begin_frame`, logging state,
+        and :meth:`end_frame` while paused to process events and UI. Resume
+        displays the latest state, without replaying intermediate updates.
+
+        Paused capture returns the frozen image; before an image exists it
+        raises ``RuntimeError``. Frame budgets still count viewer-loop frames.
+        Clearing the model invalidates the image but preserves rendering pause.
+
+        Args:
+            paused: Whether to pause rendering.
+
+        Raises:
+            NotImplementedError: Enabling pause on an unsupported backend.
+        """
+        if paused:
+            raise NotImplementedError(f"{type(self).__name__} does not support rendering pause")
+
+    def _set_rendering_paused(self, paused: bool) -> None:
+        """Update interactive-viewer state and release scene interaction."""
+        self._rendering_paused = bool(paused)
+        if paused:
+            if getattr(self, "picking", None) is not None:
+                self.picking.release()
+            if getattr(self, "gui", None) is not None:
+                self.gui._cam_vel.fill(0.0)
+                self.gui._gizmo_active.clear()
+            self.gizmo_is_using = False
 
     def is_key_down(self, key: str | int) -> bool:
         """Default key query API. Concrete viewers can override.

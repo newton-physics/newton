@@ -180,10 +180,9 @@ class TestViewerRTXMarkers(unittest.TestCase):
         with (
             mock.patch.object(self.viewer, "_update_ovrtx_camera"),
             mock.patch.object(self.viewer, "_update_ovrtx_transforms"),
-            mock.patch.object(self.viewer, "_render_and_display"),
         ):
-            self.viewer.end_frame()
-            self.viewer.end_frame()
+            self.viewer._update_scene()
+            self.viewer._update_scene()
         self.viewer._rtx.reset.assert_called_once_with(time=0.0)
 
     def test_arrows_have_heads_and_correct_endpoints(self):

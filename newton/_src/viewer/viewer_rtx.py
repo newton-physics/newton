@@ -38,6 +38,7 @@ except ImportError:
     Gf = UsdGeom = None
 
 from .camera import Camera
+from .gl.frame_cache import FrameCache
 from .gl.icon import set_window_icon
 from .image_logger import ImageLogger, _validate
 from .picking import Picking
@@ -160,9 +161,9 @@ class ViewerRTX(ViewerUSD):
             paused: Start the viewer in paused mode.
             fps: Stage frames-per-second metadata used by OVRTX.
             up_axis: Scene up axis (``"X"``, ``"Y"`` or ``"Z"``).
-            num_frames: Number of frames to render in headless mode before
+            num_frames: Number of viewer-loop frames in headless mode before
                 :meth:`is_running` returns ``False``. ``None`` means run
-                indefinitely. Ignored when a window is visible.
+                indefinitely. Includes rendering-paused frames. Ignored when a window is visible.
             scaling: Uniform world-scale applied at the ``/root`` xform.
             environment: Lighting preset; one of :attr:`ENVIRONMENTS`.
             async_rendering: Submit OVRTX render work asynchronously and
@@ -201,6 +202,10 @@ class ViewerRTX(ViewerUSD):
         self._rtx = None
         self._render_result = None
         self._render_products = None
+        self._render_generation = 0
+        self._pending_render_generation = 0
+        self._displayed_frame = FrameCache()
+        self._displayed_pixels = None
         self._uses_fractional_opacity = False
         self._transform_binding = None
         self._async = async_rendering
@@ -829,6 +834,8 @@ void main() {
 
     def _bind_runtime_transforms(self, name: str) -> None:
         """Bind only one runtime-created or replaced instance batch."""
+        if self._get_path(name) in self._deferred_prims:
+            return
         from ovrtx import PrimMode, Semantic
 
         binding = self._runtime_transform_bindings.pop(name, None)
@@ -845,6 +852,11 @@ void main() {
 
     def _replace_runtime_prim(self, path: str) -> str:
         """Publish a self-contained USD subtree, including its bound materials."""
+        if self.is_rendering_paused() or self._render_result is not None:
+            # Keep the latest USD subtree; never enqueue one replacement per
+            # simulation step or mutate OVRTX while a render is outstanding.
+            self._deferred_prims.add(path)
+            return path
         from pxr import Sdf, Usd, UsdShade
 
         mask = Usd.StagePopulationMask([path])
@@ -895,6 +907,22 @@ void main() {
         self._runtime_prim_paths[path] = runtime_path
         self._runtime_scene_changed = True
         return runtime_path
+
+    def _flush_deferred_prims(self) -> None:
+        """Publish the latest versions of runtime geometry before rendering."""
+        paths = self._deferred_prims
+        self._deferred_prims = set()
+        for path in paths:
+            runtime_path = self._replace_runtime_prim(path)
+            for name in self._instance_prim_paths:
+                if self._get_path(name) == path:
+                    count = len(self._instance_prim_paths[name])
+                    self._instance_prim_paths[name] = [f"{runtime_path}/instance_{i}" for i in range(count)]
+                    self._bind_runtime_transforms(name)
+            for batches in (self._mesh_prim_paths, self._point_batch_paths):
+                for name in batches:
+                    if self._get_path(name) == path:
+                        batches[name] = runtime_path
 
     # ------------------------------------------------ ViewerUSD overrides
 
@@ -1312,13 +1340,6 @@ void main() {
         """
         with wp.ScopedTimer("ViewerRTX::begin_frame", active=PROFILE_ENABLED, use_nvtx=True):
             super().begin_frame(time)
-            self._pending_xforms.clear()
-            self._pending_instance_visibility.clear()
-            self._pending_mesh_points.clear()
-            self._pending_mesh_normals.clear()
-            self._pending_mesh_topology.clear()
-            self._pending_mesh_visibility.clear()
-            self._pending_point_batches.clear()
             self._gizmo_log = {}
 
             if self._window and not self._headless:
@@ -1350,20 +1371,34 @@ void main() {
         built up during the build phase; subsequent calls update transforms
         and dispatch the next ray-traced render.
         """
+        if self._should_close:
+            return
         if self._phase == self._PHASE_BUILD:
             self._init_ovrtx()
 
         with wp.ScopedTimer("ViewerRTX::end_frame", active=PROFILE_ENABLED, use_nvtx=True):
-            self._update_ovrtx_camera()
-            self._update_ovrtx_transforms()
-            self._update_ovrtx_instance_visibility()
-            self._update_ovrtx_point_batches()
-            self._update_ovrtx_mesh_points()
-            if self._runtime_scene_changed:
-                # Discard accumulated samples of removed geometry and old colors.
-                self._rtx.reset(time=self._frame_index / self.fps)
-                self._runtime_scene_changed = False
+            if self.gui:
+                self.gui.prepare_frame()
             self._render_and_display()
+
+    def _update_scene(self) -> None:
+        """Apply retained updates only after the outstanding render completes."""
+        self._flush_deferred_prims()
+        self._update_ovrtx_camera()
+        self._update_ovrtx_transforms()
+        self._update_ovrtx_instance_visibility()
+        self._update_ovrtx_point_batches()
+        self._update_ovrtx_mesh_points()
+        if self._runtime_scene_changed:
+            self._rtx.reset(time=self._frame_index / self.fps)
+            self._runtime_scene_changed = False
+        self._pending_xforms.clear()
+        self._pending_instance_visibility.clear()
+        self._pending_mesh_points.clear()
+        self._pending_mesh_normals.clear()
+        self._pending_mesh_topology.clear()
+        self._pending_mesh_visibility.clear()
+        self._pending_point_batches.clear()
 
     # ViewerUSD authors PreviewSurface materials while ViewerRTX is in the
     # build phase. RTX fractional opacity is evaluated per ray hit, so the
@@ -1694,6 +1729,12 @@ void main() {
             return self._point_batch_paths[name]
 
         if name in self._point_batch_paths:
+            previous = self._pending_point_batches.get(name)
+            if previous is not None:
+                if radii is None:
+                    radii = previous[1]
+                if colors is None:
+                    colors = previous[2]
             self._pending_point_batches[name] = (points, radii, colors, bool(hidden))
             return self._point_batch_paths[name]
 
@@ -1956,66 +1997,85 @@ void main() {
 
     # ------------------------------------------------------- render + display
 
+    def _collect_render(self, *, block: bool) -> bool:
+        """Collect both async phases, retaining ownership until each succeeds."""
+        if self._render_result is None:
+            return True
+        timeout = None if block else 0
+        pending = self._render_result.wait(timeout_ns=timeout)
+        if pending is None:
+            return False
+        products = pending.fetch(timeout_ns=timeout)
+        if products is None:
+            return False
+        self._render_result = None
+        if not self.is_rendering_paused() and self._pending_render_generation == self._render_generation:
+            self._accept_render(products)
+        return True
+
+    def _accept_render(self, products) -> None:
+        """Retain a displayed image independently of subsequent renderer work."""
+        from ovrtx import Device
+
+        self._render_products = products
+        for product in products.values():
+            for frame in product.frames:
+                if "LdrColor" not in frame.render_vars:
+                    continue
+                with frame.render_vars["LdrColor"].map(device=Device.CUDA) as mapping:
+                    pixels = wp.from_dlpack(mapping, dtype=wp.vec4ub)
+                    if self._headless:
+                        if self._displayed_pixels is None or self._displayed_pixels.shape != pixels.shape:
+                            self._displayed_pixels = wp.empty_like(pixels)
+                        wp.copy(self._displayed_pixels, pixels)
+                    elif self._window is not None and self._window.context is not None:
+                        self._blit_to_window(pixels)
+                    mapping.unmap(stream=pixels.device.stream.cuda_stream)
+                return
+
     def _render_and_display(self):
         fullscreen_name = self._image_logger.pop_fullscreen()
         if self._rtx is None or self._should_close:
             return
 
-        if fullscreen_name is not None and self._window is not None:
-            # Like ViewerGL, a fullscreen image replaces the scene, so skip the RTX render.
+        # Interactive rendering polls; finite headless runs retain their existing
+        # completed-frame cadence. Even headless pause/resume never waits for an
+        # invalidated pre-pause result.
+        block = (
+            self._headless
+            and not self.is_rendering_paused()
+            and self._pending_render_generation == self._render_generation
+        )
+        ready = self._collect_render(block=block)
+        if not self.is_rendering_paused() and fullscreen_name is not None and self._window is not None:
             texture = self._image_logger.get_texture(fullscreen_name, fullscreen=True)
-            self._present(*(texture or (None, 0, 0)))
-            return
-
-        with wp.ScopedTimer("ViewerRTX::render_and_display", active=PROFILE_ENABLED, use_nvtx=True):
-            from ovrtx import Device
-
-            self._render_products = None
-
-            if self._async:
-                # wait for async rendering to complete
-                with wp.ScopedTimer("ViewerRTX::rtx_wait", active=PROFILE_ENABLED, use_nvtx=True):
-                    if self._render_result is not None:
-                        self._render_products = self._render_result.wait().fetch()
+            if texture is not None:
+                self._displayed_frame.store(*texture)
             else:
-                # render synchronously
-                with wp.ScopedTimer("ViewerRTX::rtx_step", active=PROFILE_ENABLED, use_nvtx=True):
-                    self._render_products = self._rtx.step(
-                        render_products={self._render_product_path},
-                        delta_time=1.0 / self.fps,
-                    )
-
-            # blit to window if not headless
-            if self._render_products is not None and self._window is not None and self._window.context is not None:
-                for _pname, product in self._render_products.items():
-                    for frame in product.frames:
-                        if "LdrColor" in frame.render_vars:
-                            with wp.ScopedTimer("ViewerRTX::fb_map", active=PROFILE_ENABLED, use_nvtx=True):
-                                with frame.render_vars["LdrColor"].map(device=Device.CUDA) as mapping:
-                                    pixels = wp.from_dlpack(mapping, dtype=wp.vec4ub)
-                                    with wp.ScopedTimer(
-                                        "ViewerRTX::blit_to_window", active=PROFILE_ENABLED, use_nvtx=True
-                                    ):
-                                        self._blit_to_window(pixels)
-                                    mapping.unmap(stream=pixels.device.stream.cuda_stream)
-
+                self._displayed_frame.clear()
+        elif ready and not self.is_rendering_paused():
+            self._update_scene()
             if self._async:
-                # kick off next async rendering frame
-                with wp.ScopedTimer("ViewerRTX::rtx_step_async", active=PROFILE_ENABLED, use_nvtx=True):
-                    self._render_result = self._rtx.step_async(
-                        render_products={self._render_product_path},
-                        delta_time=1.0 / self.fps,
-                    )
+                self._pending_render_generation = self._render_generation
+                self._render_result = self._rtx.step_async(
+                    render_products={self._render_product_path}, delta_time=1.0 / self.fps
+                )
+            else:
+                self._accept_render(
+                    self._rtx.step(render_products={self._render_product_path}, delta_time=1.0 / self.fps)
+                )
+
+        if self._window is not None and self._window.context is not None and not self._should_close:
+            frame = self._displayed_frame
+            self._present(frame.texture or None, frame.width, frame.height)
 
     def _blit_to_window(self, pixels: wp.array | wp.Texture2D):
-        """Upload *pixels* to the window's GL texture and present it."""
+        """Copy RTX output into the independently owned presentation cache."""
         with wp.ScopedTimer("ViewerRTX::gl_tex_copy", active=PROFILE_ENABLED, use_nvtx=True):
-            # copy OVRTX output to OpenGL texture
             frame_tex = self._tex_resource.map()
             frame_tex.copy_from(pixels)
             self._tex_resource.unmap()
-
-        self._present(self._gl_texture, self.camera.width, self.camera.height)
+        self._displayed_frame.store(self._gl_texture, self._render_width, self._render_height)
 
     def _present(self, texture_id: int | None, width: int, height: int):
         """Draw a top-row-first RGBA texture letterboxed into the window, then the UI, and swap buffers.
@@ -2066,12 +2126,20 @@ void main() {
 
         if self.gui:
             with wp.ScopedTimer("ViewerRTX::gui_render", active=PROFILE_ENABLED, use_nvtx=True):
-                self.gui.render_frame(update_fps=True)
+                self.gui.render_prepared_frame()
 
         with wp.ScopedTimer("ViewerRTX::swap_buffers", active=PROFILE_ENABLED, use_nvtx=True):
             self._window.flip()
 
     def _capture_screenshot_pixels(self) -> np.ndarray:
+        if self.is_rendering_paused():
+            if self._headless:
+                if self._displayed_pixels is None:
+                    raise RuntimeError("Frame capture requires at least one displayed frame")
+                return self._displayed_pixels.numpy()
+            if self._window is not None:
+                self._window.switch_to()
+            return self._displayed_frame.pixels()
         if self._render_products is not None:
             products = self._render_products
         elif self._render_result is not None:
@@ -2095,7 +2163,9 @@ void main() {
 
         The file format is inferred from the extension (e.g. ``.png``, ``.jpg``).
         Call this after at least one completed frame has been rendered (e.g.
-        after the simulation loop). Works in headless mode.
+        after the simulation loop). Works in headless mode. While rendering is
+        paused, capture returns the frozen image without waiting for an
+        outstanding render; it raises ``RuntimeError`` if no image exists yet.
         """
         from PIL import Image
 
@@ -2227,6 +2297,11 @@ void main() {
         if self._rtx is not None:
             self._rtx = None
 
+        self._render_generation += 1
+        self._displayed_pixels = None
+        self._displayed_frame.clear()
+        self._deferred_prims = set()
+
         # Return to build phase so the next example creates fresh USD prims
         self._phase = self._PHASE_BUILD
 
@@ -2329,6 +2404,19 @@ void main() {
             self._pending_splash = (False, None)
 
     @override
+    def set_rendering_paused(self, paused: bool) -> None:
+        """See :meth:`ViewerBase.set_rendering_paused`.
+
+        An outstanding render is retained and polled, then discarded without
+        replacing the frozen image. Resume submits the latest state only after
+        that operation has been collected.
+        """
+        if bool(paused) == self.is_rendering_paused():
+            return
+        self._render_generation += 1
+        self._set_rendering_paused(paused)
+
+    @override
     def is_paused(self) -> bool:
         """Check if the simulation is paused.
 
@@ -2391,6 +2479,8 @@ void main() {
 
         # release render products
         self._render_products = None
+        self._displayed_pixels = None
+        self._displayed_frame.clear()
 
         # release transform binding
         if self._transform_binding is not None:
