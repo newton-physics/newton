@@ -463,7 +463,6 @@ def parse_usd(
     )
     from ..usd._mass_properties import _is_enabled_collider, _UsdMassProperties  # noqa: PLC0415
     from ..usd._visuals import _UsdVisuals  # noqa: PLC0415
-    from .topology import topological_sort_undirected  # noqa: PLC0415
 
     # Capture material defaults at the start of this import.
     default_material = _PhysicsMaterial(
@@ -1618,6 +1617,7 @@ def parse_usd(
         stage=stage,
         root_prim=root_prim,
         resolver=R,
+        material_specs=material_specs,
         collect_schema_attrs=collect_schema_attrs,
         deformable_read=deformable_read,
         get_prim_world_mat=_get_prim_world_mat,
@@ -1726,7 +1726,6 @@ def parse_usd(
             parse_joint=parse_joint,
             parse_merged_joints=parse_merged_joints,
             import_attached_cables=import_attached_cables,
-            topological_sort_undirected=topological_sort_undirected,
         )
     no_articulations = UsdPhysics.ObjectType.Articulation not in ret_dict
     has_joints = any(

@@ -132,9 +132,9 @@ Standard observables
 
 :class:`~newton.solvers.SolverKamino` computes acceleration as the discrete
 step-average ``(body_qd_out - body_qd_in) / dt``. Across an impact, this includes
-the velocity impulse divided by ``dt``. MuJoCo Warp requires sensors to remain
-enabled when requesting ``BODY_QDD`` or ``BODY_PARENT_F``; stepping with
-``disable_sensors=True`` and either observable raises an error.
+the velocity impulse divided by ``dt``. MuJoCo Warp computes ``BODY_QDD`` and
+``BODY_PARENT_F`` even with ``disable_sensors=True`` by enabling the
+post-constraint RNE stage independently of sensors.
 The native MuJoCo CPU backend (``use_mujoco_cpu=True``) supports only
 ``SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR``; body and contact observable
 requests are rejected. MuJoCo Warp supports body observables on both CPU and GPU.

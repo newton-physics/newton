@@ -115,7 +115,6 @@ PARAMS = {
     "camera_pitch": -8.0,
     "camera_yaw": 121.0,
     "draw_wireframe": False,
-    "initial_paused": False,
 }
 
 
@@ -175,15 +174,12 @@ class Example:
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = self.params["draw_wireframe"]
-        if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = self.params["initial_paused"]
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(
-                wp.vec3(*self.params["camera_pos"]),
-                self.params["camera_pitch"],
-                self.params["camera_yaw"],
-            )
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+        self.viewer.set_camera(
+            wp.vec3(*self.params["camera_pos"]),
+            self.params["camera_pitch"],
+            self.params["camera_yaw"],
+        )
+        if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = self.params["camera_fov"]
 
     # ── model construction ──────────────────────────────────────────────
