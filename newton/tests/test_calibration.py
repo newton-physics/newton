@@ -321,6 +321,8 @@ def make_goal(**overrides):
         "cable_start": (0.0, 0.0, 0.5),
         "sensor_pos": (1.0, 0.0, 0.5),
         "crop": [0, 0, 20, 20],
+        "attachment_transform": ((0.0, 0.0, 0.0), IDENTITY),
+        "clamp_position": 0.0,
         "sensor_quat": [0.0, 0.0, 0.0, 1.0],
         "camera_intrinsics": (20, 20, 10.0, 10.0, 10.0, 10.0),
         "start_ns": 1_000_000_000,
@@ -561,14 +563,14 @@ class TestTuningRehydrate(unittest.TestCase):
         """Verify a malformed bundle or stored trajectory is refused before any goal is built."""
         duplicate = CableEvidenceBundle(recordings=[make_recording(), make_recording()])
         with self.assertRaisesRegex(ValueError, "duplicate label"):
-            bundle_to_goals(duplicate, ".", attachment_transform=self.ATTACHMENT)
+            bundle_to_goals(duplicate, ".", attachment_transform=self.ATTACHMENT, clamp_position=0.0)
 
         with tempfile.TemporaryDirectory() as tmp:
             bundle = self.write_bundle(tmp, [make_recording()])
             with open(os.path.join(tmp, "trajectories", "rec0.json"), "w") as fh:
                 json.dump(make_trajectory(timestamps_ns=[0, 10, 10]).to_dict(), fh)
             with self.assertRaisesRegex(ValueError, "strictly increasing"):
-                bundle_to_goals(bundle, tmp, attachment_transform=self.ATTACHMENT)
+                bundle_to_goals(bundle, tmp, attachment_transform=self.ATTACHMENT, clamp_position=0.0)
 
     def test_masks_must_match_each_other_and_the_camera(self):
         """Verify masks of different sizes, or of another size than the camera describes, are refused.
@@ -580,12 +582,12 @@ class TestTuningRehydrate(unittest.TestCase):
             bundle = self.write_bundle(tmp, [make_recording()])
             write_mask(os.path.join(tmp, "masks", "cam0", "2.png"), 30, shape=(12, 16))
             with self.assertRaisesRegex(ValueError, r"cam0.*masks/cam0/2\.png.*16x12"):
-                bundle_to_goals(bundle, tmp, attachment_transform=self.ATTACHMENT)
+                bundle_to_goals(bundle, tmp, attachment_transform=self.ATTACHMENT, clamp_position=0.0)
 
         with tempfile.TemporaryDirectory() as tmp:
             bundle = self.write_bundle(tmp, [make_recording(camera_intrinsics=[64, 48, 80.0, 80.0, 32.0, 24.0])])
             with self.assertRaisesRegex(ValueError, "cam0.*32x24.*64x48"):
-                bundle_to_goals(bundle, tmp, attachment_transform=self.ATTACHMENT)
+                bundle_to_goals(bundle, tmp, attachment_transform=self.ATTACHMENT, clamp_position=0.0)
 
     def test_missing_files_are_reported_with_the_recording(self):
         """Verify a missing mask or trajectory raises, naming the recording and the file."""
@@ -593,13 +595,13 @@ class TestTuningRehydrate(unittest.TestCase):
             bundle = self.write_bundle(tmp, [make_recording()])
             os.remove(os.path.join(tmp, "masks", "cam0", "1.png"))
             with self.assertRaisesRegex(ValueError, r"cam0.*masks/cam0/1\.png"):
-                bundle_to_goals(bundle, tmp, attachment_transform=self.ATTACHMENT)
+                bundle_to_goals(bundle, tmp, attachment_transform=self.ATTACHMENT, clamp_position=0.0)
 
         with tempfile.TemporaryDirectory() as tmp:
             bundle = self.write_bundle(tmp, [make_recording()])
             os.remove(os.path.join(tmp, "trajectories", "rec0.json"))
             with self.assertRaisesRegex(ValueError, r"cam0.*trajectories/rec0\.json"):
-                bundle_to_goals(bundle, tmp, attachment_transform=self.ATTACHMENT)
+                bundle_to_goals(bundle, tmp, attachment_transform=self.ATTACHMENT, clamp_position=0.0)
 
 
 if __name__ == "__main__":
