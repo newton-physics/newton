@@ -1918,7 +1918,7 @@ class CollisionPipeline:
         constructing :class:`CollisionPipeline` directly. ``overrides`` take
         precedence over both USD-authored and default values. Length values
         (``softContactGap``, ``contactMatchingPosThreshold``,
-        ``speculativeMaxExtension``) are authored in stage units and converted
+        ``maxSpeculativeExtension``) are authored in stage units and converted
         to meters. Following :meth:`ModelBuilder.add_usd`, unauthored stage
         unit metadata is interpreted as one meter per stage unit.
 
@@ -2041,9 +2041,9 @@ class CollisionPipeline:
                 "newton:collisionPipeline:maxTrianglePairs", value, disallow_zero=True
             )
 
-        value = authored("newton:collisionPipeline:rigidContactMax")
+        value = authored("newton:collisionPipeline:maxRigidContacts")
         if value is not None:
-            result = integer("newton:collisionPipeline:rigidContactMax", value, allow_minus_one=True)
+            result = integer("newton:collisionPipeline:maxRigidContacts", value, allow_minus_one=True)
             if result != -1:
                 kwargs["rigid_contact_max"] = result
 
@@ -2051,9 +2051,9 @@ class CollisionPipeline:
         if value is not None:
             kwargs["reduce_contacts"] = bool(value)
 
-        value = authored("newton:collisionPipeline:softContactMax")
+        value = authored("newton:collisionPipeline:maxSoftContacts")
         if value is not None:
-            result = integer("newton:collisionPipeline:softContactMax", value, allow_minus_one=True)
+            result = integer("newton:collisionPipeline:maxSoftContacts", value, allow_minus_one=True)
             if result != -1:
                 kwargs["soft_contact_max"] = result
 
@@ -2081,9 +2081,9 @@ class CollisionPipeline:
         if value is not None:
             kwargs["include_static_kinematic_pairs"] = bool(value)
 
-        value = authored("newton:collisionPipeline:shapePairsMax")
+        value = authored("newton:collisionPipeline:maxShapePairs")
         if value is not None:
-            result = integer("newton:collisionPipeline:shapePairsMax", value, allow_minus_one=True, disallow_zero=True)
+            result = integer("newton:collisionPipeline:maxShapePairs", value, allow_minus_one=True, disallow_zero=True)
             if result != -1:
                 kwargs["shape_pairs_max"] = result
 
@@ -2123,9 +2123,9 @@ class CollisionPipeline:
                 )
             kwargs["contact_reduction_hashtable_size_factor"] = result
 
-        value = authored("newton:collisionPipeline:speculativeMaxExtension")
+        value = authored("newton:collisionPipeline:maxSpeculativeExtension")
         if value is not None:
-            extension = optional_finite_float("newton:collisionPipeline:speculativeMaxExtension", value, minimum=0.0)
+            extension = optional_finite_float("newton:collisionPipeline:maxSpeculativeExtension", value, minimum=0.0)
             if extension is not None:
                 kwargs["speculative_config"] = cls.SpeculativeContactConfig(
                     max_speculative_extension=extension * linear_unit
