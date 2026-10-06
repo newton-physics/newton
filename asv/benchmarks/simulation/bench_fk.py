@@ -46,6 +46,7 @@ class ForwardKinematics:
     rounds = 2
 
     def setup(self, topology, joint_count, world_count, requires_grad):
+        """Build the model and capture repeated FK calls before timing."""
         device = wp.get_device()
         if not device.is_cuda or not wp.is_mempool_enabled(device):
             raise SkipNotImplemented
@@ -63,9 +64,11 @@ class ForwardKinematics:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_fk(self, topology, joint_count, world_count, requires_grad):
+        """Replay and synchronize the captured FK calls."""
         wp.capture_launch(self.graph)
         wp.synchronize_device(self.model.device)
 
     def teardown(self, topology, joint_count, world_count, requires_grad):
+        """Check the final poses and velocities for finite values."""
         if not all(np.isfinite(array.numpy()).all() for array in (self.state.body_q, self.state.body_qd)):
             raise RuntimeError("Forward kinematics produced non-finite body state")

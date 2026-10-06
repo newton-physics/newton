@@ -99,21 +99,23 @@ def _build_heterogeneous_model(device):
 
 
 def _build_gradient_model(device):
+    """Build two six-joint articulations for batched FK differentiation."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    joints = []
-    parent = -1
-    for axis in (newton.Axis.X, newton.Axis.Y, newton.Axis.Z):
-        child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        joints.append(
-            builder.add_joint_revolute(
-                parent=parent,
-                child=child,
-                axis=axis,
-                parent_xform=wp.transform(wp.vec3(0.2, 0.1, 0.3), wp.quat_identity()),
+    for _ in range(2):
+        joints = []
+        parent = -1
+        for axis in (newton.Axis.X, newton.Axis.Y, newton.Axis.Z) * 2:
+            child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joints.append(
+                builder.add_joint_revolute(
+                    parent=parent,
+                    child=child,
+                    axis=axis,
+                    parent_xform=wp.transform(wp.vec3(0.2, 0.1, 0.3), wp.quat_identity()),
+                )
             )
-        )
-        parent = child
-    builder.add_articulation(joints)
+            parent = child
+        builder.add_articulation(joints)
     return builder.finalize(device=device, requires_grad=True), parent
 
 
@@ -205,6 +207,7 @@ def _eval_fk_parallel(model, state, mask=None, indices=None, body_flag_filter=ne
 
 
 def test_heterogeneous_wide_articulations(test, device):
+    """Compare tiled and gradient-enabled public FK on selected heterogeneous articulations."""
     model = _build_heterogeneous_model(device)
     joint_child = model.joint_child.numpy()
     child_to_joint = {child: joint for joint, child in enumerate(joint_child)}
@@ -230,10 +233,14 @@ def test_heterogeneous_wide_articulations(test, device):
     for mask, indices in variants:
         state_reference = model.state()
         state_parallel = model.state()
+        state_public = model.state(requires_grad=True)
         _eval_fk_serial(model, state_reference, mask=mask, indices=indices)
         _eval_fk_parallel(model, state_parallel, mask=mask, indices=indices)
+        newton.eval_fk(model, state_public.joint_q, state_public.joint_qd, state_public, mask=mask, indices=indices)
         assert_np_equal(state_parallel.body_q.numpy(), state_reference.body_q.numpy(), tol=1.0e-6)
         assert_np_equal(state_parallel.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
+        assert_np_equal(state_public.body_q.numpy(), state_reference.body_q.numpy(), tol=1.0e-6)
+        assert_np_equal(state_public.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
 
 
 def test_deep_articulation(test, device):
@@ -442,10 +449,11 @@ def test_wide_level_serial_fallback(test, device):
 
 
 def _eval_fk_gradients(device, use_public):
+    """Differentiate the last articulation through public or reference serial FK."""
     model, body = _build_gradient_model(device)
     state = model.state(requires_grad=True)
-    state.joint_q.assign(np.array([0.2, -0.4, 0.7], dtype=np.float32))
-    state.joint_qd.assign(np.array([0.5, -0.3, 0.8], dtype=np.float32))
+    state.joint_q.assign(np.linspace(0.2, -0.4, model.joint_coord_count, dtype=np.float32))
+    state.joint_qd.assign(np.linspace(0.5, -0.3, model.joint_dof_count, dtype=np.float32))
     loss = wp.zeros(1, dtype=float, device=device, requires_grad=True)
 
     with wp.Tape() as tape:
@@ -459,6 +467,7 @@ def _eval_fk_gradients(device, use_public):
 
 
 def test_public_gradients(test, device):
+    """Compare public and reference serial FK gradients across multiple articulations."""
     serial_q, serial_qd = _eval_fk_gradients(device, use_public=False)
     public_q, public_qd = _eval_fk_gradients(device, use_public=True)
     assert_np_equal(public_q, serial_q, tol=2.0e-5)

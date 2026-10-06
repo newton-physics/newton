@@ -537,18 +537,19 @@ def eval_articulation_fk(
 
 
 def _fk_block_dim(articulation_count: int, sm_count: int, max_joints: int) -> int:
-    """Expose at least two blocks per SM for the serial FK path when possible.
+    """Choose serial FK blocks from the articulation workload and SM count.
 
-    Tiny articulations retain packed launches to avoid excessive block overhead.
-    Use host metadata without timing or device-array reads. CPU and
-    single-articulation calls retain their existing block size.
+    For more than four joints per articulation, target two blocks per SM with
+    at most eight threads per block. Shorter articulations use 16 threads when
+    the batch exceeds 16 articulations, and 256 otherwise. CPU and singleton
+    launches retain 256 threads. Use host metadata without profiling or readback.
     """
     if articulation_count <= 1 or sm_count <= 0:
         return 256
     if max_joints <= 4:
         return 16 if articulation_count > 16 else 256
     articulations_per_block = max(1, articulation_count // (2 * sm_count))
-    return min(16, 1 << (articulations_per_block.bit_length() - 1))
+    return min(8, 1 << (articulations_per_block.bit_length() - 1))
 
 
 def eval_fk(
@@ -680,7 +681,7 @@ def eval_fk(
             state.body_qd,
         ],
         device=model.device,
-        # Each thread traverses one articulation; distribute work across the GPU.
+        # Small blocks spread independent articulations across more SMs.
         block_dim=_fk_block_dim(
             num_articulations,
             model.device.sm_count if model.device.is_cuda else 0,
