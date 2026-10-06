@@ -188,8 +188,8 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
         np.testing.assert_array_equal(solver.status.numpy()["failed"], [0, 1])
         self.assertTrue(np.isfinite(state_out.body_qd.numpy()[0]).all())
 
-    def test_failed_world_recovers_from_finite_input(self):
-        """Do not warm start a failed world from its non-finite reactions."""
+    def test_failed_world_recovers_after_reset(self):
+        """Keep a world failed with a finite input until a reset recovers it."""
         for method in _PROJECTION_SCHEDULES:
             with self.subTest(method=method):
                 model = self._sphere(worlds=2)
@@ -201,7 +201,10 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                 velocity[1] = np.nan
                 pipeline = newton.CollisionPipeline(model)
                 contacts = pipeline.contacts()
-                for qd, failed in ((velocity, [0, 1]), (finite, [0, 0])):
+                for qd, failed, reset in ((velocity, [0, 1], False), (finite, [0, 1], False), (finite, [0, 0], True)):
+                    if reset:
+                        world_mask = wp.array([False, True, False], dtype=wp.bool, device=model.device)
+                        solver.reset(state_in, world_mask=world_mask)
                     state_in.body_qd.assign(qd)
                     pipeline.collide(state_in, contacts)
                     solver.step(state_in, state_out, model.control(), contacts, dt=0.01)

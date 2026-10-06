@@ -926,8 +926,8 @@ class TestSolverKaminoLOX(unittest.TestCase):
                                 atol=2.0e-3,
                             )
 
-    def test_failed_jointed_world_discards_its_warm_starts(self):
-        """Zero the outputs and discard the joint and actuator warm starts of a failed world."""
+    def test_failed_jointed_world_stays_failed_until_reset(self):
+        """Zero the outputs of a failed world, keep it failed, and recover it after a reset."""
         model = _build_driven_chain_model(world_count=2, device=self.default_device)
         solver = SolverKamino(model, config=self.make_config())
         state_in, state_out, control = model.state(), model.state(), model.control()
@@ -948,13 +948,19 @@ class TestSolverKaminoLOX(unittest.TestCase):
         state_in.body_qd.assign(velocity)
         solver.step(state_in, state_out, control, contacts=None, dt=0.01)
         np.testing.assert_array_equal(solver.status.numpy()["failed"], [0, 1])
-        np.testing.assert_array_equal(joints.lambda_kin_j.numpy()[half_rows:], 0.0)
         np.testing.assert_array_equal(joints.lambda_tau_j.numpy()[1], 0.0)
         np.testing.assert_array_equal(bodies.w_j_i.numpy()[half_bodies:], 0.0)
         self.assertTrue(np.isfinite(joints.lambda_kin_j.numpy()[:half_rows]).all())
 
-        # A finite input recovers the failed world
+        # The failed world stays failed with a finite input
         state_in.body_qd.assign(finite)
+        solver.step(state_in, state_out, control, contacts=None, dt=0.01)
+        np.testing.assert_array_equal(solver.status.numpy()["failed"], [0, 1])
+        np.testing.assert_array_equal(bodies.w_j_i.numpy()[half_bodies:], 0.0)
+
+        # A reset of the failed world clears its failure and its joint warm starts
+        solver.reset(state_in, world_mask=wp.array([False, True, False], dtype=wp.bool, device=self.default_device))
+        np.testing.assert_array_equal(joints.lambda_kin_j.numpy()[half_rows:], 0.0)
         solver.step(state_in, state_out, control, contacts=None, dt=0.01)
         np.testing.assert_array_equal(solver.status.numpy()["failed"], [0, 0])
         self.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
