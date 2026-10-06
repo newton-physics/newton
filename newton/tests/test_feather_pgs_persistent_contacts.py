@@ -176,7 +176,7 @@ class TestFeatherPGSPersistentContacts(unittest.TestCase):
 
 
 def test_matching_retains_world_distance_policy(test, device):
-    """Moving beyond the existing world-distance threshold must cold-start."""
+    """Cold-start contacts that move beyond the world-distance threshold."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     for z in (0.1, 0.29):
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()))

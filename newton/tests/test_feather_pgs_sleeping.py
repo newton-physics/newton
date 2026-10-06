@@ -71,7 +71,7 @@ def test_separated_boxes_sleep_and_force_wakes_one(test, device):
 
 
 def test_nonfinite_force_wakes_and_propagates(test, device):
-    """A NaN external force on a sleeping body wakes its island instead of publishing a frozen state."""
+    """Wake the island of a sleeping body hit by a NaN external force instead of publishing a frozen state."""
     _model, pipeline, solver, states, control = _scene(device)
     _advance(pipeline, solver, states, control, 120)
     np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])

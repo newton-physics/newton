@@ -72,7 +72,7 @@ def _one_step(device, **solver_kwargs):
 
 @unittest.skipUnless(_HAS_DRIVE_ROWS, "PGS joint-drive rows (drive_mode='physx_pgs') are not available")
 def test_frozen_drive_rows_keep_the_position_solve_impulse(test, device):
-    """``"freeze"`` keeps the drive impulse of the position solve; ``"active"`` keeps solving the drive rows."""
+    """Keep the position solve's drive impulse under ``"freeze"`` and keep solving the drive rows under ``"active"``."""
     position_drive, position_contact = _one_step(device, pgs_velocity_iterations=0)
     frozen_drive, frozen_contact = _one_step(device, pgs_velocity_iterations=8, pgs_velocity_drive_mode="freeze")
     active_drive, _active_contact = _one_step(device, pgs_velocity_iterations=8, pgs_velocity_drive_mode="active")

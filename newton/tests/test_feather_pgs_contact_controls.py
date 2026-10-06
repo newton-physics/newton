@@ -649,7 +649,7 @@ def test_solver_validates_and_stores_contact_controls(test, device):
 
 
 def test_scoped_gap_gate_only_drops_distant_same_articulation_contact(test, device):
-    """The scoped gate retains near self-contact while bounding its speculative tail."""
+    """Retain near self-contact under the scoped gate while bounding its speculative tail."""
     test.assertEqual(
         _launch_articulation_pair_contact_allocator(device, gap=0.002, scoped_gate=0.003),
         (0, PATH_DENSE, 1),
@@ -674,7 +674,7 @@ def test_scoped_gap_gate_preserves_other_contact_routes(test, device):
 
 
 def test_articulation_pair_gap_gate_drops_distant_pair_contact(test, device):
-    """The pair gate includes same- and cross-articulation contacts without touching free bodies."""
+    """Gate same- and cross-articulation contacts with the pair gate, leaving free bodies untouched."""
     for cross_articulation in (False, True):
         with test.subTest(cross_articulation=cross_articulation):
             test.assertEqual(
@@ -751,7 +751,7 @@ def test_speculative_scale_controls_every_position_rhs_family(test, device):
 
 
 def test_dense_restitution_removes_the_scaled_position_bias(test, device):
-    """The rebound target replaces the position bias, independently of the speculative scale."""
+    """Replace the position bias with the rebound target, independently of the speculative scale."""
     test.assertAlmostEqual(_dense_restitution_rhs(device, 0.0), -1.5, places=6)
     test.assertAlmostEqual(_dense_restitution_rhs(device, 1.0), -1.5, places=6)
 

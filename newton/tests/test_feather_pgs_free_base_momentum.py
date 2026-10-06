@@ -260,7 +260,7 @@ def test_offset_root_com_conserves_com_velocity(test, device, pgs_mode="matrix_f
 
 
 def test_matches_featherstone_reference(test, device, pgs_mode="matrix_free"):
-    """FeatherPGS tracks SolverFeatherstone on chains deep enough to expose the free base.
+    """Track SolverFeatherstone on chains deep enough to expose the free base.
 
     Featherstone solves the same dynamics without FeatherPGS's frame re-centring machinery, so
     it is an independent reference. A depth-2 serial chain is the shallowest case that

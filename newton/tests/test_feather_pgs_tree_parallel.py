@@ -199,7 +199,7 @@ class TestFeatherPGSTreePlan(unittest.TestCase):
 
 
 def test_serial_selection_skips_tree_setup(test, device):
-    """Default and explicit serial execution build no tree plan and no branch scratch."""
+    """Build no tree plan and no branch scratch under default or explicit serial execution."""
     model = _build_fingers(device, articulations=1)
     states = []
     for options in ({}, {"parallel_tree": False}):

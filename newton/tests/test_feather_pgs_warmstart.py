@@ -138,7 +138,7 @@ def _gather_rows(
 
 
 def test_noncontact_dense_cache_is_cold_initialized(test, device):
-    """The warm-started dense initializer clears every row, so no row without an identity carries."""
+    """Clear every row in the warm-started dense initializer, so no row without an identity carries."""
     impulses = wp.array([[1.0, 2.0, 3.0, 4.0]], dtype=wp.float32, device=device)
     wp.launch(
         prepare_world_impulses,
@@ -151,7 +151,7 @@ def test_noncontact_dense_cache_is_cold_initialized(test, device):
 
 
 def test_two_contact_friction_span_transitions_do_not_cross_seed(test, device):
-    """A neighboring contact never owns the source or destination tangent row."""
+    """Never let a neighboring contact own the source or destination tangent row."""
     c, f, dead = PGS_CONSTRAINT_TYPE_CONTACT, PGS_CONSTRAINT_TYPE_FRICTION, -1
 
     # A: 3 -> 1 rows, B: 1 -> 3 rows. A's previous second tangent lands at
@@ -190,7 +190,7 @@ def test_two_contact_friction_span_transitions_do_not_cross_seed(test, device):
 
 
 def test_slot_churn_uses_identity_and_scales_dt(test, device):
-    """Contact-order and slot churn follows match identity, not row index."""
+    """Follow match identity, not row index, through contact-order and slot churn."""
     c, dead = PGS_CONSTRAINT_TYPE_CONTACT, -1
     got = _gather_rows(
         device,
@@ -211,7 +211,7 @@ def test_slot_churn_uses_identity_and_scales_dt(test, device):
 
 
 def test_mf_and_propagation_share_friction_ownership_rule(test, device):
-    """The free-body row family rejects A's old tangent from B's new span like the dense family."""
+    """Reject A's old tangent from B's new span in the free-body row family, as in the dense family."""
     c, f, dead = PGS_CONSTRAINT_TYPE_CONTACT, PGS_CONSTRAINT_TYPE_FRICTION, -1
     got = _gather_rows(
         device,
@@ -230,7 +230,7 @@ def test_mf_and_propagation_share_friction_ownership_rule(test, device):
 
 
 def test_current_slot_is_bounded_by_constraint_count(test, device):
-    """A contact whose current slot lies at or past the row count is not seeded."""
+    """Skip seeding a contact whose current slot lies at or past the row count."""
     got = _gather_rows(
         device,
         route=_ROUTE_DENSE,
@@ -248,7 +248,7 @@ def test_current_slot_is_bounded_by_constraint_count(test, device):
 
 
 def test_constructor_layout_and_decay_validation(test, device):
-    """The warm-start decay must be finite and non-negative."""
+    """Require a finite, non-negative warm-start decay."""
     model = _build_press(device)
     for value in (-1.0, float("inf"), float("nan")):
         with test.subTest(value=value), test.assertRaises(ValueError):
@@ -261,7 +261,7 @@ def test_constructor_layout_and_decay_validation(test, device):
 
 
 def test_contacts_none_is_valid(test, device):
-    """A warm-started solver steps without a contact buffer and carries nothing."""
+    """Step a warm-started solver without a contact buffer, carrying nothing."""
     model = _build_press(device)
     solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_warmstart=True)
     state_0, state_1 = model.state(), model.state()
@@ -271,7 +271,7 @@ def test_contacts_none_is_valid(test, device):
 
 
 def test_real_contact_insertion_moves_slots_without_cross_seeding(test, device):
-    """A newly inserted lower-key contact shifts a persistent contact's real free-body slot."""
+    """Shift a persistent contact's real free-body slot when a lower-key contact is inserted."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0.0, 1.0), wp.quat_identity()))
     shape_a = builder.add_shape_sphere(body_a, radius=0.1)
@@ -393,7 +393,7 @@ def _seeded_sphere_impulses(solver, contacts, shapes, state_in, state_out, model
 
 
 def test_replaced_contact_buffer_starts_cold(test, device):
-    """A fresh Contacts buffer whose generation equals the solved one never reuses its history.
+    """Never reuse history for a fresh Contacts buffer whose generation equals the solved one.
 
     Generations count collision passes per buffer, so the new buffer's first pass has the
     same number as the old buffer's; treating it as the solved contact set would seed
@@ -413,7 +413,7 @@ def test_replaced_contact_buffer_starts_cold(test, device):
 
 
 def test_skipped_collision_pass_starts_cold(test, device):
-    """Two collision passes between solves match against an unsolved contact set, so start cold."""
+    """Start cold after two collision passes between solves, which match against an unsolved contact set."""
     model, pipeline, contacts, solver, state_in, state_out, shapes, carried = _insertion_after_solved_single_contact(
         device
     )
@@ -427,7 +427,7 @@ def test_skipped_collision_pass_starts_cold(test, device):
 
 
 def test_interleaved_contact_buffers_start_cold(test, device):
-    """A pass into the solved buffer after a pass into another buffer starts cold.
+    """Start cold on a pass into the solved buffer after a pass into another buffer.
 
     The pipeline matches against its last pass, whichever buffer it wrote. The second
     pass into the solved buffer advances its generation by one, but its match indices
@@ -459,7 +459,7 @@ def test_interleaved_contact_buffers_start_cold(test, device):
 
 
 def test_interleaved_contact_buffers_start_cold_under_graph_replay(test, device):
-    """Alternating captured collision passes keep the interleaved-buffer cold start."""
+    """Keep the interleaved-buffer cold start under alternating captured collision passes."""
     for articulated in (False, True):
         with test.subTest(articulated=articulated):
             model, pipeline, contacts, solver, state_in, state_out, shapes, carried = (
@@ -498,7 +498,7 @@ def test_interleaved_contact_buffers_start_cold_under_graph_replay(test, device)
 
 
 def test_substeps_reuse_contacts_with_their_own_history(test, device):
-    """Solver substeps on one contact set seed each contact from its own last solve.
+    """Seed each contact from its own last solve across solver substeps on one contact set.
 
     Match indices refer to the contact set before the last collision pass, while the
     history is saved every solver step. Inserting and deleting a contact moves the
@@ -577,7 +577,7 @@ def test_substeps_reuse_contacts_with_their_own_history(test, device):
 
 
 def test_graph_replay_rescales_history_once_after_a_timestep_change(test, device):
-    """Captured steps rescale carried impulses by the step ratio once, like eager steps.
+    """Rescale carried impulses by the step ratio once in captured steps, as in eager steps.
 
     The previous step lives on the device. A ratio fixed at capture would rescale the
     history again on every replay: after settling at 1/120 s, replays at 1/240 s would
@@ -616,7 +616,7 @@ def test_graph_replay_rescales_history_once_after_a_timestep_change(test, device
 
 
 def test_identity_warmstart_holds_static_press(test, device):
-    """Identity warm start keeps a stalled press at the cold equilibrium.
+    """Keep a stalled press at the cold equilibrium under identity warm start.
 
     Carried impulses must be installed into the starting velocity exactly once: a
     missing install accumulates the impulse ledger, a duplicated install halves it.
@@ -642,20 +642,20 @@ def test_identity_warmstart_holds_static_press(test, device):
 
 
 def test_identity_warmstart_matches_cold_equilibrium(test, device):
-    """The matched warm start converges to the cold solve's stall pose, not a new one."""
+    """Converge the matched warm start to the cold solve's stall pose, not a new one."""
     _, _, state_cold = _run_press(device, 240, {})
     _, _, state_warm = _run_press(device, 240, {"pgs_warmstart": True})
     test.assertAlmostEqual(float(state_warm.joint_q.numpy()[0]), float(state_cold.joint_q.numpy()[0]), delta=1.0e-3)
 
 
 def test_identity_warmstart_requires_contact_matching(test, device):
-    """Stepping warm start with unmatched contacts raises instead of reusing impulses by slot index."""
+    """Reject stepping warm start with unmatched contacts instead of reusing impulses by slot index."""
     with test.assertRaisesRegex(ValueError, "contact matching"):
         _run_press(device, 3, {"pgs_warmstart": True}, contact_matching=None)
 
 
 def test_single_flag_enables_dense_and_mf_carry(test, device):
-    """``pgs_warmstart=True`` is the single all-contact warm-start mode."""
+    """Enable the single all-contact warm-start mode with ``pgs_warmstart=True``."""
     model = _build_press(device)
     solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_warmstart=True, pgs_iterations=4)
     test.assertTrue(solver.pgs_warmstart)

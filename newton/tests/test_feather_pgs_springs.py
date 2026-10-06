@@ -105,7 +105,7 @@ def test_zero_or_absent_spring_stiffness_does_not_warn(test, device, pgs_mode="m
 
 
 def test_spring_attribute_edits_leave_damping_refresh_intact(test, device, pgs_mode="matrix_free"):
-    """A JOINT_DOF_PROPERTIES notify refreshes damping and still applies no spring torque."""
+    """Refresh damping on a JOINT_DOF_PROPERTIES notify while still applying no spring torque."""
     model = _hinge_model(device, damping=0.0, spring_k=0.0, spring_ref=0.5)
     solver = _construct(test, model, pgs_mode=pgs_mode, expect_warning=False)
     model.mujoco.dof_passive_stiffness.assign([4.0])

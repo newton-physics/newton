@@ -41,6 +41,7 @@ class TestFeatherPGSLocalInternalSolve(unittest.TestCase):
         ]
 
     def test_local_owner_classifier_rejects_unsupported_worlds(self):
+        """Route worlds the local solve cannot own to the general owner, and compact only active pair candidates."""
         device = "cpu"
         constraint_count = wp.array([5, 8, 21, 8, 8, 8, 0, 41], dtype=wp.int32, device=device)
         # Rows before each world's bound are internal rows, the rest contact rows.
@@ -125,6 +126,7 @@ class TestFeatherPGSLocalInternalSolve(unittest.TestCase):
 
     @unittest.skipUnless(wp.is_cuda_available(), "local internal solve requires CUDA")
     def test_local_kernel_matches_sequential_pgs_and_respects_world_ownership(self):
+        """Match a sequential PGS reference in every kernel variant, leaving unowned worlds unchanged."""
         device = wp.get_cuda_device()
         dof_count = 3
         max_constraints = 4
@@ -306,6 +308,7 @@ class TestFeatherPGSLocalInternalSolve(unittest.TestCase):
 
     @unittest.skipUnless(wp.is_cuda_available(), "local internal solve requires CUDA")
     def test_local_kernel_waits_for_delayed_friction_activation(self):
+        """Solve delayed friction rows even when the normal rows converge before friction starts."""
         device = wp.get_cuda_device()
         dof_count = 3
         max_constraints = 3
@@ -430,6 +433,7 @@ class TestFeatherPGSLocalInternalSolve(unittest.TestCase):
 
     @unittest.skipUnless(wp.is_cuda_available(), "local internal solve requires CUDA")
     def test_local_residual_queue_matches_sequential_dense_and_matrix_free_pgs(self):
+        """Match a sequential dense and matrix-free PGS reference with the residual pair queue."""
         device = wp.get_cuda_device()
         primary_dofs = 3
         secondary_dofs = 6

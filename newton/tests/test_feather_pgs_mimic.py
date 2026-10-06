@@ -178,7 +178,7 @@ def test_invalid_legacy_mimic_keeps_precedence(test, device):
 
 
 def test_cross_articulation_mimic_is_rejected(test, device):
-    """A mimic between two articulations raises instead of being ignored."""
+    """Reject a mimic between two articulations instead of ignoring it."""
     template, j_leader, j_follower = _build_two_revolute_chain(0.0, 1.0)
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     builder.add_builder(template)
@@ -195,20 +195,20 @@ def test_cross_articulation_mimic_is_rejected(test, device):
 
 
 def test_identity_mimic_tracks_leader(test, device):
-    """A 1:1 mimic makes the undriven follower joint track the driven leader."""
+    """Track the driven leader with the undriven follower joint under a 1:1 mimic."""
     _, q = _run_chain(device, coef0=0.0, coef1=1.0, leader_target=0.5)
     test.assertAlmostEqual(q[0], 0.5, delta=0.05)
     test.assertAlmostEqual(q[1], q[0], delta=0.02)
 
 
 def test_legacy_constraint_mimic_tracks_leader(test, device):
-    """The deprecated mimic constraints couple the follower."""
+    """Couple the follower through the deprecated mimic constraints."""
     _, q = _run_chain(device, coef0=0.1, coef1=-0.5, leader_target=0.6, legacy=True)
     test.assertAlmostEqual(q[1], 0.1 - 0.5 * q[0], delta=0.02)
 
 
 def test_legacy_constraint_overrides_joint_mimic(test, device):
-    """A legacy constraint on the same follower replaces its joint-owned mimic, as in SolverMuJoCo."""
+    """Replace the follower's joint-owned mimic with a legacy constraint on it, as in SolverMuJoCo."""
     builder, j_leader, j_follower = _build_two_revolute_chain(coef0=0.0, coef1=1.0)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
@@ -220,13 +220,13 @@ def test_legacy_constraint_overrides_joint_mimic(test, device):
 
 
 def test_scaled_offset_mimic(test, device):
-    """q_follower converges to coef0 + coef1 * q_leader for a scaled, offset mimic."""
+    """Converge q_follower to coef0 + coef1 * q_leader for a scaled, offset mimic."""
     _, q = _run_chain(device, coef0=0.1, coef1=-0.5, leader_target=0.6)
     test.assertAlmostEqual(q[1], 0.1 - 0.5 * q[0], delta=0.02)
 
 
 def test_runtime_coefficient_change(test, device):
-    """Joint-owned coefficients are read every step, also from a captured graph."""
+    """Read joint-owned coefficients every step, also from a captured graph."""
     builder, _, follower = _build_two_revolute_chain(0.0, 1.0)
     model = builder.finalize(device=device)
     solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.1)
@@ -260,7 +260,7 @@ def test_runtime_coefficient_change(test, device):
 
 
 def test_mimic_row_is_assembled(test, device):
-    """The solver assembles a mimic row that carries the coupling."""
+    """Assemble a mimic row that carries the coupling."""
     solver, _ = _run_chain(device, coef0=0.0, coef1=1.0, leader_target=0.5, steps=10)
     row_types = solver.row_type.numpy()
     counts = solver.constraint_count.numpy()
@@ -269,7 +269,7 @@ def test_mimic_row_is_assembled(test, device):
 
 
 def test_replicated_mimics_have_articulation_local_ranges(test, device):
-    """Replicated mimic rows use one compact lookup range per articulation."""
+    """Use one compact lookup range per articulation for replicated mimic rows."""
     template, _, _ = _build_two_revolute_chain(coef0=0.0, coef1=1.0)
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     builder.replicate(template, world_count=4)
@@ -279,7 +279,7 @@ def test_replicated_mimics_have_articulation_local_ranges(test, device):
 
 
 def test_disabled_mimic_is_ignored(test, device):
-    """A disabled legacy mimic constraint leaves the follower joint uncoupled."""
+    """Leave the follower joint uncoupled under a disabled legacy mimic constraint."""
     builder, _, _ = _build_two_revolute_chain(0.0, 1.0, legacy=True)
     builder.constraint_mimic_enabled[0] = False
     _, q = _run_model(builder.finalize(device=device), leader_target=0.5, steps=600)
@@ -289,7 +289,7 @@ def test_disabled_mimic_is_ignored(test, device):
 
 
 def test_mimic_row_overflow_is_reported(test, device):
-    """A mimic row beyond dense_max_constraints is dropped and flagged, not partially kept."""
+    """Drop and flag a mimic row beyond dense_max_constraints rather than keep part of it."""
     builder, _, _ = _build_two_revolute_chain(0.0, 1.0)
     model = builder.finalize(device=device)
     # A zero activation gap keeps the (far) joint-limit rows out of the single row slot.

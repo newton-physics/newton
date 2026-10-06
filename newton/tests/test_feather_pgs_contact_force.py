@@ -142,7 +142,7 @@ def _impact(model, solver, joint_qd):
 
 
 def test_free_body_contact_response_includes_armature(test, device, pgs_mode="matrix_free", response="immediate"):
-    """Free-body rows respond with the same armature-augmented inertia as articulated rows."""
+    """Respond on free-body rows with the same armature-augmented inertia as on articulated rows."""
     stop = (0.0, 0.0, -1.0, 0.0, 0.0, 0.0)
     for armature, expected in ((0.0, 100.0), (9.0, 1000.0)):
         with test.subTest(armature=armature):
@@ -178,7 +178,7 @@ def test_free_body_contact_response_includes_armature(test, device, pgs_mode="ma
 
 
 def test_free_body_impact_shares_armature_momentum(test, device, pgs_mode="matrix_free", response="immediate"):
-    """A frictionless plastic impact between free bodies conserves the armature-augmented momentum."""
+    """Conserve the armature-augmented momentum in a frictionless plastic impact between free bodies."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.0)
     for x in (0.0, 0.1999):

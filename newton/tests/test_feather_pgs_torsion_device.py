@@ -625,7 +625,7 @@ def test_cuda_preparation_graph_changes_and_failure(test, device):
 
 
 def test_cuda_captured_capacity_errors(test, device):
-    """Graph replay must not turn an input, dense or spin overflow into success."""
+    """Report an input, dense or spin overflow from graph replay instead of turning it into success."""
     for failure in ("input", "dense", "spin"):
         solver, state, augmented, contacts = synthetic_fixture(device=device)
         preparer = DeviceTorsionPreparation(solver, deferred_errors=True)
@@ -667,7 +667,7 @@ def test_cuda_captured_capacity_errors(test, device):
 
 
 def test_public_api_noop_and_fail_stop(test, device):
-    """No radius means no new state; active host torsion cannot be captured."""
+    """Allocate no new state without a radius, and refuse to capture active host torsion."""
     _, plain, model, state, _ = fixture(0.0, device=device, contact_torsion_device=True, pgs_iterations=16)
     plain.prepare_contact_torsion_capture(state, model.state())
     plain.validate_contact_torsion()

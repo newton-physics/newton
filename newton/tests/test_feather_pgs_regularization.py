@@ -133,8 +133,10 @@ def _scissor_step(device, g, velocity_iterations):
 
 
 def test_regularization_documented_sag(test: unittest.TestCase, device):
-    """The regularizer is a numerical damped compliance: a resting box sags by
-    ``g * a * dt^2 / beta`` (6.8 mm at g = 0.5 and 60 Hz, 0.43 mm at 240 Hz)."""
+    """Sag a resting box by the regularizer's damped-compliance law.
+
+    The sag is ``g * a * dt^2 / beta``: 6.8 mm at g = 0.5 and 60 Hz, 0.43 mm at 240 Hz.
+    """
     for rate in (60, 240):
         sag = _resting_box(device, 0.5, rate, 3 * rate, pgs_warmstart=True)
         expected = _sag_formula(0.5, rate)
@@ -142,7 +144,7 @@ def test_regularization_documented_sag(test: unittest.TestCase, device):
 
 
 def test_regularization_documented_sag_on_dense_rows(test: unittest.TestCase, device):
-    """Dense (articulated) contact rows follow the same law.
+    """Apply the same sag law to dense (articulated) contact rows.
 
     At rest each row satisfies ``beta * phi / dt = -g * d * lambda``. A box on a vertical
     prismatic joint has ``d = 1 / m`` per contact and its four contacts share the weight,
@@ -157,8 +159,10 @@ def test_regularization_documented_sag_on_dense_rows(test: unittest.TestCase, de
 
 
 def test_regularization_velocity_pass_exempt(test: unittest.TestCase, device):
-    """The velocity-only pass solves the exact rigid law: a settled stack holds
-    its height to well under a millimetre over the last second."""
+    """Solve the exact rigid law in the velocity-only pass.
+
+    A settled stack holds its height to well under a millimetre over the last second.
+    """
     model, pipeline, solver, _bodies = _stack_scene(device, g=0.05, velocity_iterations=4)
     _, zs = _run(model, pipeline, solver, 240)
     drift = abs(zs[-1] - zs[179])
@@ -166,7 +170,7 @@ def test_regularization_velocity_pass_exempt(test: unittest.TestCase, device):
 
 
 def test_dense_contact_rows_carry_the_regularization_weight(test: unittest.TestCase, device):
-    """Penetrating articulated (dense) contact rows get the weight ``1 / (1 + g)``."""
+    """Give penetrating articulated (dense) contact rows the weight ``1 / (1 + g)``."""
     solver, count, _ = _scissor_step(device, 0.5, 0)
     rows = _contact_rows(solver, PATH_DENSE, count)
     test.assertGreater(len(rows), 0, "scene produced no dense self-contact row")
@@ -178,8 +182,10 @@ def test_dense_contact_rows_carry_the_regularization_weight(test: unittest.TestC
 
 
 def test_velocity_pass_is_rigid_on_dense_rows(test: unittest.TestCase, device):
-    """The velocity-only pass ignores the regularizer on dense rows: after it, the joint
-    velocity is the same as with ``g = 0``, since the rigid law does not depend on ``g``."""
+    """Ignore the regularizer on dense rows in the velocity-only pass.
+
+    After the pass the joint velocity is the same as with ``g = 0``, since the rigid law does not depend on ``g``.
+    """
     solver, count, qd_soft = _scissor_step(device, 0.5, 8)
     test.assertGreater(len(_contact_rows(solver, PATH_DENSE, count)), 0)
     _, _, qd_rigid = _scissor_step(device, 0.0, 8)
@@ -190,8 +196,10 @@ def test_velocity_pass_is_rigid_on_dense_rows(test: unittest.TestCase, device):
 
 
 def test_regularization_indeterminate_split(test: unittest.TestCase, device):
-    """A plank on three identical supports has no unique rigid force split;
-    the regularizer must select the symmetric one (outer supports equal)."""
+    """Select the symmetric force split for a plank on three identical supports.
+
+    The rigid split is not unique; the regularizer must make the outer supports equal.
+    """
     builder = newton.ModelBuilder()
     builder.rigid_gap = 0.003
     cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, mu=0.7)
@@ -248,7 +256,7 @@ def test_regularization_indeterminate_split(test: unittest.TestCase, device):
 
 
 def test_regularization_validation(test: unittest.TestCase, device):
-    """Parameter contract: finite non-negative values up to 1e6 only."""
+    """Accept only finite, non-negative regularization values up to 1e6."""
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
     b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
@@ -262,7 +270,7 @@ def test_regularization_validation(test: unittest.TestCase, device):
 
 
 def test_zero_regularization_shares_one_weight_slot(test: unittest.TestCase, device):
-    """The exact-rigid path carries no capacity-sized per-row weight buffers."""
+    """Allocate no capacity-sized per-row weight buffers on the exact-rigid path."""
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
@@ -279,7 +287,7 @@ def test_zero_regularization_shares_one_weight_slot(test: unittest.TestCase, dev
 
 
 def test_exact_surface_contact_is_regularized(test: unittest.TestCase, device):
-    """A zero-gap contact is active; only a strictly positive gap is speculative."""
+    """Treat a zero-gap contact as active and only a strictly positive gap as speculative."""
     row_w = wp.zeros((1, 1), dtype=wp.float32, device=device)
     wp.launch(
         compute_world_contact_bias,
@@ -302,7 +310,7 @@ def test_exact_surface_contact_is_regularized(test: unittest.TestCase, device):
 
 
 def test_compliance_parameters_removed(test: unittest.TestCase, device):
-    """The no-op dense compliance knobs are gone; passing them fails loudly."""
+    """Reject the dense compliance knobs as unknown keyword arguments."""
     names = tuple(inspect.signature(newton.solvers.SolverFeatherPGS).parameters)
     test.assertNotIn("dense_contact_compliance", names)
     test.assertNotIn("speculative_dense_contact_compliance", names)
@@ -316,9 +324,10 @@ def test_compliance_parameters_removed(test: unittest.TestCase, device):
 
 
 def test_restitution_rows_stay_rigid(test: unittest.TestCase, device):
-    """A row whose rebound target fires is solved rigid, so the rebound is
-    e * v_in whatever the regularizer. Without the exemption the regularized
-    fixed point would be (e - g)/(1 + g) * v_in and vanish at g = e."""
+    """Solve a row whose rebound target fires rigidly, so the rebound is e * v_in for any regularizer.
+
+    Without the exemption the regularized fixed point would be (e - g)/(1 + g) * v_in and vanish at g = e.
+    """
 
     def rebound(g):
         builder = newton.ModelBuilder()

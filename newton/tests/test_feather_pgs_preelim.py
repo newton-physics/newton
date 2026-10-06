@@ -27,7 +27,7 @@ DT = 1.0 / 240.0
 
 class TestPreeliminationSignature(unittest.TestCase):
     def test_options_are_keyword_only(self):
-        """The pre-elimination options are keyword-only with an off-by-default switch."""
+        """Expose the pre-elimination options as keyword-only, with the switch off by default."""
         parameters = inspect.signature(SolverFeatherPGS).parameters
         for name, default in (
             ("enable_bilateral_preelimination", False),
@@ -207,7 +207,7 @@ def _build_overcapacity_mixed_bilateral_model(device):
 
 
 def test_default_preserves_all_bilateral_trajectory(test, device):
-    """The implicit default matches explicitly eliminating every bilateral row."""
+    """Match explicit elimination of every bilateral row with the implicit default."""
     builder = _build_four_bar()
     builder.set_joint_mimic(1, 0)
     model = builder.finalize(device=device)
@@ -282,7 +282,7 @@ def test_mimics_can_remain_iterative_when_total_rows_exceed_capacity(test, devic
 
 
 def test_closure_held_at_low_iterations(test, device):
-    """Pre-elimination keeps the loop closure tight at a low iteration count.
+    """Hold the loop closure tight at a low iteration count with pre-elimination.
 
     At 2 iterations the iterative connect rows cannot converge (the anchor gap stays
     near half a millimetre); the regularized elimination holds the closure 100x tighter
@@ -301,7 +301,7 @@ def test_closure_held_at_low_iterations(test, device):
 
 
 def test_mimic_held_at_low_iterations(test, device):
-    """An eliminated mimic row coupled to a closure holds at one iteration.
+    """Hold an eliminated mimic row coupled to a closure at one iteration.
 
     In the parallel four-bar the coupler joint angle is minus the crank angle; a mimic row
     stating the same relationship competes with the connect rows in an iterative sweep.
@@ -334,7 +334,7 @@ def test_mimic_held_at_low_iterations(test, device):
 
 
 def test_preelimination_with_free_body_in_world(test, device):
-    """A free body elsewhere in the world does not change an eliminated, contacting four-bar.
+    """Leave an eliminated, contacting four-bar unchanged by a free body elsewhere in its world.
 
     The four-bar's coupler rests on the ground, so its contact rows are corrected by the
     elimination. Adding a separate free box gives the world two size groups and the
@@ -379,7 +379,7 @@ def test_preelimination_with_free_body_in_world(test, device):
 
 
 def test_mechanism_behavior_preserved(test, device):
-    """The rocker still tracks the crank through the closed loop (parallel four-bar)."""
+    """Keep the rocker tracking the crank through the closed loop (parallel four-bar)."""
     _, _, state, _ = _run_four_bar(device, enable_bilateral_preelimination=True, pgs_iterations=16)
     q = state.joint_q.numpy()
     test.assertAlmostEqual(q[2], q[0], delta=0.08)
@@ -387,7 +387,7 @@ def test_mechanism_behavior_preserved(test, device):
 
 
 def test_rows_remain_allocated(test, device):
-    """Eliminated rows keep their dense slots and stay in the sweep."""
+    """Keep eliminated rows in their dense slots and in the sweep."""
     solver, _, _, _ = _run_four_bar(device, steps=60, enable_bilateral_preelimination=True)
     counts = solver.constraint_count.numpy()
     rows = solver.row_type.numpy()
@@ -398,7 +398,7 @@ def test_rows_remain_allocated(test, device):
 
 
 def test_prescribed_parent_closure_warns_and_falls_back(test, device):
-    """A closure with a kinematic or world parent disables elimination for the whole solver."""
+    """Disable elimination for the whole solver when a closure has a kinematic or world parent."""
     b, _, _, _ = _build_carried_load()
     with test.assertWarnsRegex(UserWarning, "kinematic or world parent.*whole solver"):
         solver = SolverFeatherPGS(
@@ -428,7 +428,7 @@ def test_prescribed_parent_closure_warns_and_falls_back(test, device):
 
 
 def test_preelimination_capture_matches_eager(test, device):
-    """The pre-eliminated four-bar replays its eager trajectory from a CUDA graph."""
+    """Replay the pre-eliminated four-bar's eager trajectory from a CUDA graph."""
     model = _build_four_bar().finalize(device=device)
     control = model.control()
     targets = model.joint_target_q.numpy().copy()

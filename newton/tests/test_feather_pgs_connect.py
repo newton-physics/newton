@@ -177,14 +177,14 @@ def _build_standalone_world_root():
 
 
 def test_loop_joint_presence_is_stable(test, device):
-    """A trailing BALL loop joint stays out of the tree solve and does not destabilize it."""
+    """Keep a trailing BALL loop joint out of the tree solve without destabilizing it."""
     _, _, state = _run(device, steps=120, crank_target=0.0)
     test.assertTrue(np.isfinite(state.body_q.numpy()).all())
     test.assertTrue(np.isfinite(state.joint_qd.numpy()).all())
 
 
 def test_loop_closure_is_enforced(test, device):
-    """The connect rows hold the four-bar's loop anchors together under drive."""
+    """Hold the four-bar's loop anchors together with the connect rows under drive."""
     _, model, state = _run(device, steps=720, crank_target=0.6)
     test.assertTrue(np.isfinite(state.body_q.numpy()).all())
     gap = _loop_anchor_gap(model, state)
@@ -192,7 +192,7 @@ def test_loop_closure_is_enforced(test, device):
 
 
 def test_rocker_follows_crank(test, device):
-    """The undriven rocker moves coherently with the driven crank through the loop."""
+    """Move the undriven rocker coherently with the driven crank through the loop."""
     _, _, state = _run(device, steps=720, crank_target=0.6)
     q = state.joint_q.numpy()
     # Parallel four-bar (equal crank and rocker lengths): the rocker angle tracks the crank angle.
@@ -201,7 +201,7 @@ def test_rocker_follows_crank(test, device):
 
 
 def test_four_bar_capture_matches_eager(test, device):
-    """A captured four-bar step replays the eager trajectory."""
+    """Replay the eager four-bar trajectory from a captured step."""
     model = _build_four_bar().finalize(device=device)
     control = model.control()
     targets = model.joint_target_q.numpy().copy()
@@ -229,7 +229,7 @@ def test_four_bar_capture_matches_eager(test, device):
 
 
 def test_connect_ownership_survives_interleaved_articulation(test, device):
-    """A deferred closure stays with its child body's articulation."""
+    """Keep a deferred closure with its child body's articulation."""
     b = newton.ModelBuilder(up_axis=newton.Axis.Z)
     left = b.add_link()
     b.add_shape_box(left, hx=0.05, hy=0.05, hz=0.1)
@@ -301,7 +301,7 @@ def test_connect_survives_foreign_joint_between_tree_and_loop(test, device):
 
 
 def test_unsupported_loop_joints_are_rejected(test, device):
-    """Non-BALL loop joints and closures between two dynamic articulations raise."""
+    """Reject non-BALL loop joints and closures between two dynamic articulations."""
     b = _build_four_bar()
     _expect_one_warning(
         test, UserWarning, "another joint already connects these bodies", lambda: b.add_joint_fixed(parent=1, child=2)
@@ -322,7 +322,7 @@ def test_unsupported_loop_joints_are_rejected(test, device):
 
 
 def test_closure_row_overflow_is_reported(test, device):
-    """A closure that does not fit is dropped whole and flagged."""
+    """Drop a closure that does not fit whole, and flag the overflow."""
     model = _build_four_bar().finalize(device=device)
     solver = SolverFeatherPGS(
         model,
@@ -418,7 +418,7 @@ def _prescribe_carrier(model, state, articulation, t, v, omega):
 
 
 def test_kinematic_parent_closure_carries_load(test, device):
-    """A load pinned to a moving kinematic carrier rides along with it.
+    """Carry a load pinned to a moving kinematic carrier along with it.
 
     The three point closures hold the load at its relative pose while the carrier
     translates and spins; the closure target carries the carrier's anchor velocity.
@@ -470,7 +470,7 @@ def test_world_parent_closure_holds_hanging_load(test, device):
 
 
 def test_runtime_enable_and_anchor_update(test, device):
-    """Closures can be released, re-anchored at the measured pose and engaged again."""
+    """Release closures, re-anchor them at the measured pose and engage them again."""
     b, carrier, load, joints = _build_carried_load()
     model = b.finalize(device=device)
     solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
@@ -514,7 +514,7 @@ def test_runtime_enable_and_anchor_update(test, device):
 
 
 def test_disabled_loop_joint_starts_released(test, device):
-    """A loop joint disabled in Model.joint_enabled starts released and can be engaged."""
+    """Start a loop joint disabled in Model.joint_enabled released, and engage it later."""
     b, _, load, joints = _build_carried_load(enabled=False, world_parent=True)
     model = b.finalize(device=device)
     solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)

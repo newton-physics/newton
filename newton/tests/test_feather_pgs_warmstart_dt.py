@@ -48,8 +48,10 @@ def _normal_impulse_total(solver):
 
 
 def test_warm_carry_kernel_scales_rows_exactly(test: unittest.TestCase, device):
-    """The gather kernel scales matched normal and friction rows before any
-    solver iteration can conceal a missing or incorrect carry scale."""
+    """Scale matched normal and friction rows exactly in the gather kernel.
+
+    The kernel is checked before any solver iteration can conceal a missing or incorrect carry scale.
+    """
     with wp.ScopedDevice(device):
         max_c = 8
         prev_impulses = np.zeros((1, max_c), dtype=np.float32)
@@ -108,9 +110,11 @@ def test_warm_carry_kernel_scales_rows_exactly(test: unittest.TestCase, device):
 
 
 def test_warm_carry_fixed_dt_identity(test: unittest.TestCase, device):
-    """At fixed dt the carry ratio is exactly 1: a settled stack's converged
-    contact impulses are a fixed point (steady step to step), and the stack
-    holds its height."""
+    """Carry impulses with a ratio of exactly 1 at fixed dt.
+
+    A settled stack's converged contact impulses are a fixed point (steady step to step), and the stack holds its
+    height.
+    """
     with wp.ScopedDevice(device):
         model, pipeline, solver = _stack(device)
         contacts = pipeline.contacts()
@@ -147,10 +151,11 @@ def test_warm_carry_fixed_dt_identity(test: unittest.TestCase, device):
 
 
 def test_warm_carry_scales_with_dt(test: unittest.TestCase, device):
-    """Across a step-size change the carried impulses rescale by exactly
-    dt_new/dt_old: a stack settled at dt/4 keeps its height through a switch
-    to dt, and the converged contact impulses scale by ~4x (support impulse
-    is force x dt)."""
+    """Rescale carried impulses by exactly dt_new/dt_old across a step-size change.
+
+    A stack settled at dt/4 keeps its height through a switch to dt, and the converged contact impulses scale by ~4x
+    (support impulse is force x dt).
+    """
     with wp.ScopedDevice(device):
         model, pipeline, solver = _stack(device)
         contacts = pipeline.contacts()
@@ -180,9 +185,11 @@ def test_warm_carry_scales_with_dt(test: unittest.TestCase, device):
 
 
 def test_warm_carry_no_kick_after_dt_change_on_impact(test: unittest.TestCase, device):
-    """Impact impulses are not proportional to dt. Check both timestep
-    directions, especially small-to-large where the carry scales a cached
-    impact impulse upward, and reject any resulting energy gain."""
+    """Reject any energy gain from a carried impact impulse after a timestep change.
+
+    Impact impulses are not proportional to dt. Check both timestep directions, especially small-to-large, where the
+    carry scales a cached impact impulse upward.
+    """
     with wp.ScopedDevice(device):
         for dt_before, dt_after in (
             (1.0 / 240.0, 1.0 / 60.0),

@@ -110,12 +110,12 @@ def test_property_notification_wakes_only_changed_islands(test, device):
 
 
 def test_frozen_patch_carry_matches_rebuild(test, device):
-    """Carrying frozen friction patches matches rebuilding them through sleep, wake and resettle."""
+    """Match rebuilt friction patches by carrying frozen ones through sleep, wake and resettle."""
     _check_carry(test, device, tiles=False)
 
 
 def test_frozen_patch_carry_matches_rebuild_for_flooded_pairs(test, device):
-    """Pairs large enough for the warp flood skip it while frozen and rebuild identically on wake."""
+    """Skip the warp flood for large pairs while frozen and rebuild them identically on wake."""
     _check_carry(test, device, tiles=True)
 
 
@@ -172,7 +172,7 @@ def _check_carry(test, device, tiles):
 
 
 def test_frozen_patch_carry_copies_the_previous_history(test, device):
-    """A sleeping pair's anchor history comes from the previous step, not from the current frame's storage."""
+    """Take a sleeping pair's anchor history from the previous step, not from the current frame's storage."""
     _model, pipeline, solver, states, control = _articulations(device)
     contacts = pipeline.contacts()
     _advance(pipeline, solver, states, control, 400, contacts=contacts)
@@ -192,7 +192,7 @@ def test_frozen_patch_carry_copies_the_previous_history(test, device):
 
 
 def test_successive_notifications_keep_every_wake(test, device):
-    """A second notification before the next step keeps the first notification's wake."""
+    """Keep the first notification's wake through a second notification before the next step."""
     model, pipeline, solver, states = _two_world_boxes(device)
     _advance(pipeline, solver, states, model.control(), 400)
     np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
@@ -209,7 +209,7 @@ def test_successive_notifications_keep_every_wake(test, device):
 
 
 def test_replaced_property_array_wakes_its_island(test, device):
-    """A model array replaced rather than assigned in place still wakes the island it changed."""
+    """Wake the island changed by a model array that is replaced rather than assigned in place."""
     model, pipeline, solver, states = _two_world_boxes(device)
     _advance(pipeline, solver, states, model.control(), 400)
     np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
@@ -222,7 +222,7 @@ def test_replaced_property_array_wakes_its_island(test, device):
 
 
 def test_resized_property_array_is_rejected(test, device):
-    """A model array replaced with a different entity count cannot be diffed and raises."""
+    """Reject a model array replaced with a different entity count, which cannot be diffed."""
     model, pipeline, solver, states = _two_world_boxes(device)
     _advance(pipeline, solver, states, model.control(), 1)
     model.body_mass = wp.zeros(model.body_count + 1, dtype=float, device=model.device)
@@ -231,7 +231,7 @@ def test_resized_property_array_is_rejected(test, device):
 
 
 def test_coincident_entity_counts_keep_property_owners(test, device):
-    """A body array is diffed only as a body property when body and joint counts coincide."""
+    """Diff a body array only as a body property when body and joint counts coincide."""
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
     bodies = []
@@ -264,7 +264,7 @@ def test_coincident_entity_counts_keep_property_owners(test, device):
 
 
 def test_solver_body_attribute_notification_wakes_its_island(test, device):
-    """A FeatherPGS custom body attribute assigned to the model is diffed like a core body property."""
+    """Diff a FeatherPGS custom body attribute assigned to the model like a core body property."""
     box = newton.ModelBuilder()
     body = box.add_body(xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
     box.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)

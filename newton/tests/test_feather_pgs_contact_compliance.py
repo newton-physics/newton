@@ -279,7 +279,7 @@ def test_native_hydro_free_body_manifold(test, device):
 
 
 def test_compliance_opt_in_selects_point_friction(test, device):
-    """An omitted friction_anchor_beta selects point friction under compliance, with a warning."""
+    """Select point friction, with a warning, when friction_anchor_beta is omitted under compliance."""
     for articulated in (False, True):
         with test.subTest(articulated=articulated):
             options = {"articulated": articulated, "enabled": True, "steps": 20, "friction_scale": 0.4}
@@ -298,7 +298,7 @@ def test_compliance_opt_in_selects_point_friction(test, device):
 
 
 def test_omitted_friction_anchor_beta_keeps_patches_without_compliance(test, device):
-    """An omitted friction_anchor_beta keeps the default patch friction when compliance is off."""
+    """Keep the default patch friction when friction_anchor_beta is omitted and compliance is off."""
     builder = newton.ModelBuilder()
     body = builder.add_body()
     builder.add_shape_sphere(body, radius=0.05)

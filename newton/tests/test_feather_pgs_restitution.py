@@ -438,7 +438,7 @@ def test_restitution_velocity_threshold_uses_incident_relative_speed(test, devic
 
 
 def test_largest_finite_threshold_disables_restitution_without_material_edits(test, device):
-    """A float32-maximum threshold gives the zero-restitution result with materials unchanged.
+    """Give the zero-restitution result with a float32-maximum threshold, leaving materials unchanged.
 
     This is the solver-wide way to turn restitution off; an infinite threshold is
     rejected, and zeroing one shape's coefficient still leaves the average.

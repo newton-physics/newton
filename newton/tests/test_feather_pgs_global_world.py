@@ -58,7 +58,7 @@ def _step_once(model, solver, floor_velocity=0.0, box_velocity=-1.0):
 
 
 def test_global_kinematic_floor_supports_every_world(test, device, pgs_mode="matrix_free", response="immediate"):
-    """A global kinematic floor stops the boxes of every world exactly like world geometry does."""
+    """Stop the boxes of every world on a global kinematic floor exactly as on world geometry."""
     static_model = _floor_model(device, "static")
     static_v = _step_once(
         static_model, SolverFeatherPGS(static_model, pgs_mode=pgs_mode, articulated_contact_response=response)
@@ -102,7 +102,7 @@ def test_global_kinematic_floor_supports_every_world(test, device, pgs_mode="mat
 
 
 def test_global_kinematic_floor_capture_replay(test, device, pgs_mode="matrix_free", response="immediate"):
-    """Captured collide + step matches eager stepping for both worlds on a global kinematic floor."""
+    """Match eager stepping for both worlds on a global kinematic floor with captured collide and step."""
     model = _floor_model(device, "kinematic")
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
@@ -188,7 +188,7 @@ def _expect_one_warning(test, category, pattern, call):
 def test_jointed_global_kinematic_flags_other_world_contacts(
     test, device, pgs_mode="matrix_free", response="immediate"
 ):
-    """A kinematic global articulation with joints is solved in world 0; its other-world contacts are flagged."""
+    """Solve a jointed kinematic global articulation in world 0 and flag its other-world contacts."""
     model = _jointed_kinematic_floor_model(device)
     solver = _construct(
         test, model, True, pgs_mode=pgs_mode, warn_constraint_overflow=False, articulated_contact_response=response
@@ -218,7 +218,7 @@ def test_jointed_global_kinematic_flags_other_world_contacts(
 def test_construction_warns_about_unsolvable_global_contacts(
     test, device, pgs_mode="matrix_free", response="immediate"
 ):
-    """The constructor warns once when shapes allow contacts that couple a global articulation with another world."""
+    """Warn once at construction when shapes allow contacts coupling a global articulation with another world."""
     kwargs = {"pgs_mode": pgs_mode, "articulated_contact_response": response}
     # Dynamic global bodies and jointed kinematic global articulations warn.
     _construct(test, _floor_model(device, "dynamic"), True, **kwargs)
@@ -256,7 +256,7 @@ def _lift_box(model, world):
 
 
 def test_dynamic_global_body_flags_other_world_contacts(test, device, pgs_mode="matrix_free", response="immediate"):
-    """A dynamic global body interacts with world 0; its contacts with another world are dropped and flagged."""
+    """Let a dynamic global body interact with world 0, and drop and flag its contacts with another world."""
     # Only world 1's box touches the global dynamic floor.
     model = _floor_model(device, "dynamic")
     _lift_box(model, 0)
@@ -315,7 +315,7 @@ def _place(model, state, z):
 
 
 def test_global_overflow_has_its_own_reset_slot(test, device, pgs_mode="matrix_free", response="immediate"):
-    """Global row loss latches the global entry; each reset-mask entry clears only its own status."""
+    """Latch global row loss in the global entry, and clear only its own status with each reset-mask entry."""
     model = _global_overflow_model(device)
     # One contact's rows fit; the propagation response holds every contact row in a family
     # of mf_max_constraints + dense_max_constraints rows.
@@ -484,7 +484,7 @@ def _check_global_slot_reset(test, device, model, z_contact, z_free, pgs_mode, r
 
 
 def test_global_slot_reset_with_few_articulations(test, device, pgs_mode="matrix_free", response="immediate"):
-    """Every reset mask clears the global entry even when articulations do not outnumber the status entries."""
+    """Clear the global entry on every reset mask, even when articulations do not outnumber the status entries."""
     for name, model, z_contact, z_free in _few_articulation_models(device):
         with test.subTest(model=name):
             test.assertLessEqual(model.articulation_count, model.world_count)
