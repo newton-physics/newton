@@ -72,7 +72,7 @@ class CableGoal:
     """``(width, height)`` [px] to render at when :attr:`camera_intrinsics` is ``None``."""
 
     fov_deg: float | None = None
-    """Horizontal field of view [deg], required when :attr:`camera_intrinsics` is ``None``."""
+    """Vertical field of view [deg], required when :attr:`camera_intrinsics` is ``None``."""
 
     start_ns: int | None = None
     """Absolute timestamp [ns] :attr:`frame_times` is relative to.
