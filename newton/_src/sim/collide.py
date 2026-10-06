@@ -318,6 +318,16 @@ def eval_rigid_contact_surface_velocities(
 
 
 @wp.kernel(enable_backward=False)
+def _record_reduction_overflow(
+    insert_failures: wp.array[wp.int32],
+    buffer_overflows: wp.array[wp.int32],
+    overflow: wp.array[wp.int32],
+):
+    """Copy the reducer's loss counters into the contact stream's overflow flag."""
+    overflow[0] = wp.where(insert_failures[0] > 0 or buffer_overflows[0] > 0, 1, 0)
+
+
+@wp.kernel(enable_backward=False)
 def compute_shape_aabbs(
     body_q: wp.array[wp.transform],
     shape_transform: wp.array[wp.transform],
@@ -831,11 +841,11 @@ def _compute_per_world_shape_pairs_max(model: Model) -> int:
         colliding = np.ones(len(sw), dtype=bool)
 
     global_count = int(np.count_nonzero((sw == -1) & colliding))
-    world_ids = np.unique(sw[(sw >= 0) & colliding])
+    _, world_counts = np.unique(sw[(sw >= 0) & colliding], return_counts=True)
 
     total = 0
-    for wid in world_ids:
-        n = int(np.count_nonzero((sw == wid) & colliding)) + global_count
+    for count in world_counts:
+        n = int(count) + global_count
         total += (n * (n - 1)) // 2
 
     # Dedicated global-vs-global segment (appended by precompute_world_map).
@@ -860,20 +870,21 @@ def _compute_per_world_mask_pair_max(
 
     sw = shape_world.numpy()
     colliding = _shape_collide_mask(model, len(sw))
-    global_shapes = sw == -1
-    world_ids = np.unique(sw[(sw >= 0) & colliding])
+    # Group once instead of scanning all shapes for every world's segment.
+    # Compact indices also avoid allocating by the largest (possibly sparse) world ID.
+    world_ids, inverse = np.unique(sw, return_inverse=True)
+    active = (world_ids >= 0) & (np.bincount(inverse[colliding], minlength=len(world_ids)) > 0)
 
-    def count_pairs(segment: np.ndarray) -> int:
-        first_count = int(np.count_nonzero(segment & first_mask))
-        second_count = int(np.count_nonzero(segment & second_mask))
-        overlap = int(np.count_nonzero(segment & first_mask & second_mask))
-        return first_count * second_count - overlap * (overlap + 1) // 2
+    def segment_counts(mask: np.ndarray) -> np.ndarray:
+        counts = np.bincount(inverse[mask], minlength=len(world_ids)).astype(np.int64, copy=False)
+        global_count = counts[world_ids == -1].sum()
+        return np.append(counts[active] + global_count, global_count)
 
-    total = 0
-    for world_id in world_ids:
-        total += count_pairs(global_shapes | (sw == world_id))
-    total += count_pairs(global_shapes)
-    return max(0, total)
+    first_counts = segment_counts(first_mask)
+    second_counts = segment_counts(second_mask)
+    overlaps = segment_counts(first_mask & second_mask)
+    pairs = first_counts * second_counts - overlaps * (overlaps + 1) // 2
+    return max(0, int(pairs.sum()))
 
 
 def _resolve_shape_pairs_max(model: Model, override: int | None) -> int:
@@ -2525,6 +2536,17 @@ class CollisionPipeline:
             device=self.device,
             **narrow_phase_extension_kwargs,
         )
+
+        # The reducer's counters are reused by the next pass, so latch losses on this contact stream.
+        reducer = self.narrow_phase.global_contact_reducer
+        if reducer is not None:
+            wp.launch(
+                _record_reduction_overflow,
+                dim=1,
+                inputs=[reducer.ht_insert_failures, reducer.buffer_overflows, contacts._reduction_overflow],
+                device=self.device,
+                record_tape=False,
+            )
 
         # Match contacts against previous frame before sorting.
         if self._contact_matcher is not None:
