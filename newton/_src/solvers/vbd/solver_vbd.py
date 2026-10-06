@@ -51,6 +51,7 @@ from .particle_vbd_kernels import (
     gather_particle_body_contact_force_and_hessian,
     make_solve_elasticity_tile,
     reset_particle_state,
+    scatter_particle_body_contact_force_and_hessian,
     solve_elasticity,
     update_velocity,
 )
@@ -67,6 +68,8 @@ from .rigid_vbd_kernels import (
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
     check_contact_overflow,
+    compute_body_body_contact_forces,
+    compute_body_particle_contact_forces,
     compute_rigid_contact_forces,
     compute_rod_dahl_parameters,
     forward_step_rigid_bodies,
@@ -98,6 +101,17 @@ from .vbd_coupling_kernels import (
 __all__ = ["SolverVBD"]
 
 _PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
+
+
+def _particle_contact_scatter_worker_count(soft_contact_max: int, particle_count: int, device) -> int:
+    """Return the host-static worker grid for the per-record body-particle contact accumulation.
+
+    Enough workers to fill the device (two 256-thread blocks per SM) or one per particle, whichever
+    is larger, but never more than the contact capacity. Each worker strides over the active contact
+    prefix, so the launch size is fixed for CUDA-graph capture while the work follows the active count.
+    """
+    sm_count = device.sm_count if device.is_cuda else 1
+    return max(1, min(soft_contact_max, max(2 * 256 * sm_count, particle_count)))
 
 
 def _is_tet_only_elasticity_model(model: Model) -> bool:
@@ -228,6 +242,15 @@ class SolverVBD(SolverBase, CouplingInterface):
         warm-start buffers on every replay. With ``rigid_contact_history=True``,
         construct :class:`~newton.CollisionPipeline` before ``SolverVBD``, or run
         one uncaptured solver step before capture.
+
+    Contact force export:
+        Allocating :attr:`~newton.Contacts.force` (request the ``"force"`` extended contact
+        attribute) on the ``Contacts`` passed to :meth:`step` makes the step evaluate one wrench
+        per body-body contact (when this solver integrates the rigid bodies) and per rigid-soft
+        contact record -- particle, edge, and face -- at its final configuration;
+        :meth:`update_contacts` then publishes them into ``contacts.force``. The evaluation
+        reads the solve's result and never changes it, and its buffers follow the contact state
+        sizing rules above. Soft self-contact forces are not exported.
 
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.
@@ -602,7 +625,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
-                ``wp.config.deterministic`` mode.
+                ``wp.config.deterministic`` mode. Body-particle contact forces
+                are accumulated per contact record with atomics in
+                ``NOT_GUARANTEED`` mode and gathered per particle without
+                atomics in every other mode.
 
             Collision pipeline ownership:
 
@@ -812,6 +838,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         # set_collision_frequency() changes take effect at the next step.
         self._self_contact_mode_this_step, self._self_contact_freq_this_step = self._resolve_self_contact_schedule()
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
+        # Body-particle contact accumulation: per-record atomics over the active prefix by default;
+        # deterministic modes use the per-particle gather, which needs no atomics.
+        self._particle_contact_use_gather = effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED
         particle_deterministic_max_records = 0
         coupling_deterministic_max_records = 0
         if particle_enable_self_contact and effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
@@ -1272,8 +1301,16 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._particle_contact_head = wp.full(model.particle_count, -1, dtype=wp.int32, device=self.device)
         self._particle_contact_next = wp.empty(0, dtype=wp.int32, device=self.device)
         self._particle_contact_adjacency_initialized = False
+        self._particle_contact_worker_count = 0
         # Zero-length body poses for static-shape contact kernels when State.body_q is absent.
         self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
+        # Opt-in contact force export (``Contacts.force``): one wrench per body-body and per
+        # soft-contact record, evaluated at the end of step() and published by update_contacts().
+        # Each buffer is allocated with its contact state when the model already requests "force",
+        # otherwise on the first step that receives a force-enabled Contacts buffer.
+        self._body_body_contact_force: wp.array | None = None
+        self._body_particle_contact_force: wp.array | None = None
+        self._contact_force_layout: tuple[int, int] | None = None
         if model.particle_count > 0 and model.shape_count > 0:
             # Not shape_count * particle_count: that counts cross-world pairs, so it is quadratic in
             # world count and can exceed Warp's int32 array shape limit. A hint only -- the first step
@@ -1317,13 +1354,24 @@ class SolverVBD(SolverBase, CouplingInterface):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         self._apply_module_options()
         refresh_structural_k = (
-            bool(flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES))
+            bool(
+                flags
+                & (
+                    ModelFlags.JOINT_PROPERTIES
+                    | ModelFlags.JOINT_DOF_PROPERTIES
+                    | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+                )
+            )
             and self._integrates_rigid_bodies
             and self.model.joint_count > 0
         )
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
-        if flags & ModelFlags.JOINT_DOF_PROPERTIES and self._integrates_rigid_bodies and self.model.joint_count > 0:
+        if (
+            flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+            and self._integrates_rigid_bodies
+            and self.model.joint_count > 0
+        ):
             if self.rigid_compliant_alm:
                 self._validate_compliant_joint_dof_materials()
             # Must run before _refresh_structural_k() below: that summary reads
@@ -1638,6 +1686,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_body_contact_tangent_rho = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_lambda = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
         self.body_body_contact_C0 = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
+        if self._body_body_contact_force is not None or "force" in self.model.get_requested_contact_attributes():
+            self._body_body_contact_force = wp.zeros(rigid_contact_max, dtype=wp.spatial_vector, device=self.device)
 
     def _validate_compliant_contact_materials(self) -> None:
         """Validate physical contact coefficients consumed by compliant ALM."""
@@ -1666,7 +1716,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_particle_contact_material_kd = wp.zeros(soft_contact_max, dtype=float, device=self.device)
         self.body_particle_contact_material_mu = wp.zeros(soft_contact_max, dtype=float, device=self.device)
         self._particle_contact_next = wp.empty(3 * soft_contact_max, dtype=wp.int32, device=self.device)
+        if self._body_particle_contact_force is not None or "force" in self.model.get_requested_contact_attributes():
+            self._body_particle_contact_force = wp.zeros(soft_contact_max, dtype=wp.spatial_vector, device=self.device)
         self._particle_contact_adjacency_initialized = False
+        self._particle_contact_worker_count = _particle_contact_scatter_worker_count(
+            soft_contact_max, self.model.particle_count, self.device
+        )
 
     def _init_rigid_contact_warmstart(self, rigid_contact_max: int) -> None:
         """Allocate fresh contact-history buffers."""
@@ -2401,7 +2456,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             contacts: Contact data produced by :meth:`~newton.CollisionPipeline.collide` (rigid-rigid and
                 rigid-particle contacts), allocated with :meth:`~newton.CollisionPipeline.contacts`.
                 If None, rigid contact handling is skipped. Note that particle self-contact (if enabled) does not
-                depend on this argument.
+                depend on this argument. If ``contacts.force`` is allocated, the step also evaluates one wrench
+                per body-body and rigid-soft contact record at its final configuration for
+                :meth:`update_contacts`.
             dt: Time step size.
 
         Raises:
@@ -2446,6 +2503,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt)
+
+        # Opt-in contact force export: evaluate at the final iterate while the pose history the
+        # iterations used is still intact (finalization advances it below).
+        self._export_contact_forces(state_in, state_out, contacts, dt)
 
         # Snapshot solved rigid contact state for next-frame warm-start.
         self._snapshot_rigid_contact_history(contacts)
@@ -3288,20 +3349,21 @@ class SolverVBD(SolverBase, CouplingInterface):
         )
 
         if model.particle_count > 0:
-            self._particle_contact_head.fill_(-1)
-            if contacts.soft_contact_max > 0:
-                wp.launch(
-                    kernel=build_particle_body_contact_adjacency_active,
-                    dim=contacts.soft_contact_max,
-                    inputs=[
-                        contacts.soft_contact_indices,
-                        contacts.soft_contact_count,
-                        contacts.soft_contact_max,
-                        self._particle_contact_head,
-                        self._particle_contact_next,
-                    ],
-                    device=self.device,
-                )
+            if self._particle_contact_use_gather:
+                self._particle_contact_head.fill_(-1)
+                if contacts.soft_contact_max > 0:
+                    wp.launch(
+                        kernel=build_particle_body_contact_adjacency_active,
+                        dim=contacts.soft_contact_max,
+                        inputs=[
+                            contacts.soft_contact_indices,
+                            contacts.soft_contact_count,
+                            contacts.soft_contact_max,
+                            self._particle_contact_head,
+                            self._particle_contact_next,
+                        ],
+                        device=self.device,
+                    )
             self._particle_contact_adjacency_initialized = True
 
     def _step_body_body_contact_frame(
@@ -3608,42 +3670,74 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Iterate over color groups
         for color in range(len(self.model.particle_color_groups)):
             if contacts is not None and contacts.soft_contact_max > 0:
-                wp.launch(
-                    kernel=gather_particle_body_contact_force_and_hessian,
-                    dim=self.model.particle_color_groups[color].size,
-                    block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
-                    inputs=[
-                        dt,
-                        self.model.particle_color_groups[color],
-                        self.particle_q_prev,
-                        state_in.particle_q,
-                        self.friction_epsilon,
-                        self.rigid_soft_contact_use_log_barrier,
-                        model.particle_radius,
-                        contacts.soft_contact_indices,
-                        self._particle_contact_head,
-                        self._particle_contact_next,
-                        self.body_particle_contact_penalty_k,
-                        self.body_particle_contact_material_kd,
-                        self.body_particle_contact_material_mu,
-                        model.shape_body,
-                        body_q_for_particles,
-                        body_q_prev_for_particles,
-                        body_qd_for_particles,
-                        model.body_com,
-                        contacts.soft_contact_shape,
-                        contacts.soft_contact_body_pos,
-                        contacts.soft_contact_body_vel,
-                        contacts.soft_contact_normal,
-                        model.shape_margin,
-                        contacts.soft_contact_barycentric,
-                    ],
-                    outputs=[
-                        self.particle_forces,
-                        self.particle_hessians,
-                    ],
-                    device=self.device,
-                )
+                contact_material_and_body_inputs = [
+                    self.body_particle_contact_penalty_k,
+                    self.body_particle_contact_material_kd,
+                    self.body_particle_contact_material_mu,
+                    model.shape_body,
+                    body_q_for_particles,
+                    body_q_prev_for_particles,
+                    body_qd_for_particles,
+                    model.body_com,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_body_vel,
+                    contacts.soft_contact_normal,
+                    model.shape_margin,
+                    contacts.soft_contact_barycentric,
+                ]
+                if self._particle_contact_use_gather:
+                    # Deterministic modes: one thread per colored particle, no output atomics.
+                    wp.launch(
+                        kernel=gather_particle_body_contact_force_and_hessian,
+                        dim=self.model.particle_color_groups[color].size,
+                        block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
+                        inputs=[
+                            dt,
+                            self.model.particle_color_groups[color],
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            self.friction_epsilon,
+                            self.rigid_soft_contact_use_log_barrier,
+                            model.particle_radius,
+                            contacts.soft_contact_indices,
+                            self._particle_contact_head,
+                            self._particle_contact_next,
+                            *contact_material_and_body_inputs,
+                        ],
+                        outputs=[
+                            self.particle_forces,
+                            self.particle_hessians,
+                        ],
+                        device=self.device,
+                    )
+                else:
+                    # Default: one record per thread over the active prefix, atomics into the
+                    # active color's corners. The worker grid is host-static (graph-safe).
+                    wp.launch(
+                        kernel=scatter_particle_body_contact_force_and_hessian,
+                        dim=self._particle_contact_worker_count,
+                        inputs=[
+                            dt,
+                            color,
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            self.model.particle_colors,
+                            self.friction_epsilon,
+                            self.rigid_soft_contact_use_log_barrier,
+                            model.particle_radius,
+                            contacts.soft_contact_indices,
+                            contacts.soft_contact_count,
+                            contacts.soft_contact_max,
+                            self._particle_contact_worker_count,
+                            *contact_material_and_body_inputs,
+                        ],
+                        outputs=[
+                            self.particle_forces,
+                            self.particle_hessians,
+                        ],
+                        device=self.device,
+                    )
 
             if model.spring_count:
                 wp.launch(
@@ -4104,6 +4198,132 @@ class SolverVBD(SolverBase, CouplingInterface):
                 device=self.device,
             )
 
+    def _export_contact_forces(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float) -> None:
+        """Evaluate the contact wrenches that :meth:`update_contacts` publishes.
+
+        Runs only when ``contacts.force`` is allocated (the export opt-in). Both evaluations read
+        the final iterate together with the pose history the last iteration used and write
+        solver-owned buffers, so they never change the solve. Must run before rigid finalization
+        advances ``body_q_prev``.
+        """
+        if contacts is None or contacts.force is None:
+            return
+        self._export_body_body_contact_forces(state_in, contacts, dt)
+        self._export_body_particle_contact_forces(state_in, state_out, contacts, dt)
+        self._contact_force_layout = (contacts.rigid_contact_max, contacts.soft_contact_max)
+
+    def _export_body_body_contact_forces(self, state_in: State, contacts: Contacts, dt: float) -> None:
+        """Evaluate one wrench per body-body contact record when this solver integrates the bodies."""
+        if not self._integrates_rigid_bodies:
+            return
+
+        model = self.model
+        rigid_contact_max = contacts.rigid_contact_max
+        capacity = 0 if self._body_body_contact_force is None else self._body_body_contact_force.shape[0]
+        if capacity < rigid_contact_max:
+            self._raise_if_capturing_resize("body-body contact force output", capacity, rigid_contact_max)
+            self._body_body_contact_force = wp.zeros(rigid_contact_max, dtype=wp.spatial_vector, device=self.device)
+        if rigid_contact_max == 0:
+            return
+
+        # The rigid prologue sized the per-contact state to this buffer; the iterate poses live in
+        # state_in.body_q and body_q_prev still holds the step-start history the iterations used.
+        wp.launch(
+            kernel=compute_body_body_contact_forces,
+            dim=rigid_contact_max,
+            inputs=[
+                float(dt),
+                contacts.rigid_contact_count,
+                contacts.rigid_contact_shape0,
+                contacts.rigid_contact_shape1,
+                contacts.rigid_contact_point0,
+                contacts.rigid_contact_point1,
+                contacts.rigid_contact_surface_velocity,
+                contacts.rigid_contact_offset0,
+                contacts.rigid_contact_offset1,
+                contacts.rigid_contact_normal,
+                contacts.rigid_contact_margin0,
+                contacts.rigid_contact_margin1,
+                model.shape_body,
+                state_in.body_q,
+                self.body_q_prev,
+                model.body_com,
+                self.body_body_contact_penalty_k,
+                self.body_body_contact_normal_rho,
+                self.body_body_contact_material_ke,
+                self.body_body_contact_material_kd,
+                self.body_body_contact_material_mu,
+                self.body_body_contact_tangent_rho,
+                self.body_body_contact_lambda,
+                self.body_body_contact_C0,
+                self.rigid_contact_alpha,
+                self.rigid_contact_hard,
+                self.rigid_compliant_alm,
+                float(self.friction_epsilon),
+            ],
+            outputs=[self._body_body_contact_force],
+            device=self.device,
+        )
+
+    def _export_body_particle_contact_forces(
+        self, state_in: State, state_out: State, contacts: Contacts, dt: float
+    ) -> None:
+        """Evaluate one wrench per body-particle contact record."""
+        model = self.model
+        soft_contact_max = contacts.soft_contact_max
+        capacity = 0 if self._body_particle_contact_force is None else self._body_particle_contact_force.shape[0]
+        if capacity < soft_contact_max:
+            self._raise_if_capturing_resize("body-particle contact force output", capacity, soft_contact_max)
+            self._body_particle_contact_force = wp.zeros(soft_contact_max, dtype=wp.spatial_vector, device=self.device)
+        if soft_contact_max == 0:
+            return
+        if model.particle_count == 0:
+            # Without particles no soft contact can exist and the per-contact material state is unsized.
+            self._body_particle_contact_force.zero_()
+            return
+
+        # Same body pose selection as _solve_particle_iteration: the particle side evaluated these
+        # contacts against exactly these arrays in the last iteration.
+        if self.integrate_with_external_rigid_solver:
+            body_q = state_out.body_q
+            body_q_prev = state_in.body_q
+            body_qd = state_out.body_qd
+        else:
+            body_q = state_in.body_q
+            body_q_prev = self.body_q_prev if model.body_count > 0 else None
+            body_qd = state_in.body_qd
+
+        wp.launch(
+            kernel=compute_body_particle_contact_forces,
+            dim=soft_contact_max,
+            inputs=[
+                dt,
+                state_in.particle_q,
+                self.particle_q_prev,
+                model.particle_radius,
+                model.shape_body,
+                body_q,
+                body_q_prev,
+                body_qd,
+                model.body_com,
+                self.friction_epsilon,
+                self.rigid_soft_contact_use_log_barrier,
+                self.body_particle_contact_penalty_k,
+                self.body_particle_contact_material_kd,
+                self.body_particle_contact_material_mu,
+                contacts.soft_contact_count,
+                contacts.soft_contact_indices,
+                contacts.soft_contact_shape,
+                contacts.soft_contact_body_pos,
+                contacts.soft_contact_body_vel,
+                contacts.soft_contact_normal,
+                contacts.soft_contact_barycentric,
+                model.shape_margin,
+            ],
+            outputs=[self._body_particle_contact_force],
+            device=self.device,
+        )
+
     def collect_rigid_contact_forces(
         self,
         body_q: wp.array[wp.transform],
@@ -4254,6 +4474,83 @@ class SolverVBD(SolverBase, CouplingInterface):
             contacts.rigid_contact_force,
             contacts.rigid_contact_count,
         )
+
+    @override
+    def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
+        """Populate ``contacts.force`` with the contact wrenches of the last :meth:`step`.
+
+        ``SolverVBD`` exports the contact forces it evaluated at the end of the preceding
+        :meth:`step`. The export is enabled by allocating ``contacts.force`` (request the
+        ``"force"`` extended contact attribute) on the buffer passed to :meth:`step`; the step then
+        evaluates one wrench per active contact record at its final configuration, and this method
+        copies them into ``contacts.force``:
+
+        - Rows ``[0, rigid_contact_max)`` hold the body-body contacts, written only when this
+          solver integrates the rigid bodies. With ``integrate_with_external_rigid_solver=True``
+          they are left untouched for the external solver's ``update_contacts`` (call it before
+          this method, because :meth:`~newton.solvers.SolverXPBD.update_contacts` clears the whole
+          array). Each row is the force [N] on body 0 (the body of shape 0) and its torque [N·m]
+          about body 0's center of mass, the same evaluation :meth:`collect_rigid_contact_forces`
+          reports as the force on body 1.
+        - Row ``rigid_contact_max + i`` holds soft contact ``i`` (particle, edge, or face record)
+          for ``i < soft_contact_count``. The contacted shape
+          (:attr:`~newton.Contacts.soft_contact_shape`) plays shape 0 and the soft feature shape
+          1: the linear part is the force [N] exerted on the shape's body by the soft feature,
+          applied at the shape-side contact point (:attr:`~newton.Contacts.soft_contact_body_pos`
+          mapped to world space); the angular part is the torque [N·m] of that force about the
+          body's center of mass. Negating the linear part gives the force on the soft contact
+          point, which the solve distributes to the record's particles with
+          :attr:`~newton.Contacts.soft_contact_barycentric`.
+
+        All rows are in world frame; a static shape in the role of shape 0 uses the world origin
+        as its torque reference. Rows past the active counts are zero. The values are the
+        solver's own contact forces -- for soft contacts the penalty law at the per-contact
+        stiffness in effect at the end of the step, damping while the contact point approaches
+        the surface, and regularized Coulomb friction on the slip over the step bounded by the
+        elastic normal load; for body-body contacts the compliant ALM or legacy AVBD contact law
+        with its multipliers -- evaluated once at the final configuration of the step with the
+        same step-start history the iterations used. They are the forces the last iteration
+        balanced, not time-step averages; records without penetration report zero. Soft
+        self-contact forces are not exported. See :ref:`vbd_contact_forces` for a usage guide.
+
+        Args:
+            contacts: Buffer whose :attr:`~newton.Contacts.force` rows are written. Must have been
+                created with ``"force"`` requested and must have the same rigid and soft capacities
+                as the buffer passed to the preceding :meth:`step`.
+            state: Unused (accepted for API compatibility with :class:`~newton.solvers.SolverBase`).
+
+        Raises:
+            ValueError: If ``contacts.force`` is ``None``, if no :meth:`step` has run with a
+                force-enabled ``Contacts`` buffer, or if the capacities differ from that buffer.
+        """
+        self._apply_module_options()
+        if contacts.force is None:
+            raise ValueError(
+                "contacts.force is not allocated. Call model.request_contact_attributes('force') "
+                "before creating the Contacts object."
+            )
+        if self._contact_force_layout is None:
+            raise ValueError(
+                "No contact force data available. Call step() with a Contacts object whose "
+                "'force' attribute is allocated before update_contacts()."
+            )
+        layout = (contacts.rigid_contact_max, contacts.soft_contact_max)
+        if layout != self._contact_force_layout:
+            raise ValueError(
+                "Contacts capacity mismatch: update_contacts() received "
+                f"(rigid_contact_max, soft_contact_max)={layout}, but step() used "
+                f"{self._contact_force_layout}. Pass the same Contacts instance to both "
+                "step() and update_contacts()."
+            )
+        if self._integrates_rigid_bodies and contacts.rigid_contact_max > 0:
+            wp.copy(dest=contacts.force, src=self._body_body_contact_force, count=contacts.rigid_contact_max)
+        if contacts.soft_contact_max > 0:
+            wp.copy(
+                dest=contacts.force,
+                src=self._body_particle_contact_force,
+                dest_offset=contacts.rigid_contact_max,
+                count=contacts.soft_contact_max,
+            )
 
     def _finalize_particles(self, state_out: State, dt: float):
         """Finalize particle velocities after VBD iterations."""

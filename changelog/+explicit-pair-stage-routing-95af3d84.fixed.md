@@ -1,0 +1,1 @@
+Fix `CollisionPipeline` with explicit `shape_pairs_filtered` when a listed pair contains a shape with shape collision disabled: a mesh in such a pair could crash the narrow phase, and a capsule, cylinder, cone or ellipsoid could get too few contacts from the lean convex kernel.
