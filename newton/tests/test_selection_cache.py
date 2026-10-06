@@ -187,22 +187,35 @@ class TestSelectionCacheLifetime(unittest.TestCase):
         self.assertEqual(gradient.ptr, model.joint_q.grad.ptr)
         assert_np_equal(gradient.numpy(), np.full(gradient.shape, 3.0))
 
-    def unweakrefable_sources_and_native_slices(self, device):
-        """Serve sources that cannot be weakly referenced, and native slices, from the current arrays."""
+    def getters_follow_arrays_replaced_by_xpbd(self, device):
+        """Read and write the arrays XPBD assigns to a differentiable output state."""
+        model, view = self.make_view("dense", requires_grad=True, device=device)
+        state_in, state_out = model.state(), model.state()
+        view.get_link_transforms(state_out)
+        view.get_link_velocities(state_out)
+        old_q, old_qd = state_out.body_q, state_out.body_qd
 
-        class SlottedSource:
-            __slots__ = ("joint_q",)
+        newton.solvers.SolverXPBD(model).step(state_in, state_out, model.control(), None, 1e-3)
+        self.assertIsNot(state_out.body_q, old_q)
+        self.assertIsNot(state_out.body_qd, old_qd)
+        # stale reads would return these values
+        old_q.fill_(wp.transform((7.0, 7.0, 7.0), wp.quat_identity()))
+        old_qd.fill_(wp.spatial_vector(7.0, 7.0, 7.0, 7.0, 7.0, 7.0))
+        old_q_values = old_q.numpy()
+        transforms = view.get_link_transforms(state_out)
+        velocities = view.get_link_velocities(state_out)
+        assert_np_equal(transforms.numpy().reshape(-1, 7), state_out.body_q.numpy())
+        assert_np_equal(velocities.numpy().reshape(-1, 6), state_out.body_qd.numpy())
 
+        target = wp.transform((1.0, 2.0, 3.0), wp.quat_identity())
+        view.set_attribute("body_q", state_out, wp.full(transforms.shape, target, dtype=wp.transform, device=device))
+        assert_np_equal(state_out.body_q.numpy(), np.tile(np.array(target, dtype=np.float32), (model.body_count, 1)))
+        assert_np_equal(old_q.numpy(), old_q_values)
+
+    def native_slices_reuse_cached_arrays(self, device):
+        """Cache arrays selected by native slices, which are unhashable before Python 3.12."""
         model, view = self.make_view("dense", device=device)
-        source = SlottedSource()
-        source.joint_q = wp.full(model.joint_coord_count, 5.0, dtype=float, device=device)
-        positions = view.get_dof_positions(source)
-        assert_np_equal(positions.numpy(), np.full(positions.shape, 5.0))
-        source.joint_q = wp.full(model.joint_coord_count, 6.0, dtype=float, device=device)
-        assert_np_equal(view.get_dof_positions(source).numpy(), np.full(positions.shape, 6.0))
-
         model.joint_q.fill_(2.0)
-        # native slices are unhashable before Python 3.12
         values = view._get_attribute_values("joint_q", model, _slice=slice(0, 3))
         self.assertEqual(values.shape, (view.world_count, view.count_per_world, 3))
         assert_np_equal(values.numpy(), np.full(values.shape, 2.0))
@@ -281,8 +294,14 @@ add_function_test(
 )
 add_function_test(
     TestSelectionCacheLifetime,
-    "test_unweakrefable_sources_and_native_slices",
-    TestSelectionCacheLifetime.unweakrefable_sources_and_native_slices,
+    "test_getters_follow_arrays_replaced_by_xpbd",
+    TestSelectionCacheLifetime.getters_follow_arrays_replaced_by_xpbd,
+    devices=devices,
+)
+add_function_test(
+    TestSelectionCacheLifetime,
+    "test_native_slices_reuse_cached_arrays",
+    TestSelectionCacheLifetime.native_slices_reuse_cached_arrays,
     devices=devices,
 )
 

@@ -1282,7 +1282,7 @@ class ArticulationView:
     def _get_attribute_array(
         self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
     ):
-        """Return the cached reshaped array of ``source.<name>``, rebuilding it if the source array changed.
+        """Return the cached reshaped array of ``source.<name>``, rebuilding it if the source array was replaced.
 
         Entries are keyed weakly on ``source``, so they are dropped with the source and with the view.
         An entry is reused only while ``source.<name>`` and its gradient are the arrays it was built from.
