@@ -342,7 +342,7 @@ class DriveRecorder:
         return "drive"
 
 
-class TestTuningGoals(unittest.TestCase):
+class TestCalibrationGoals(unittest.TestCase):
     """Grouping co-recorded views onto one simulation."""
 
     def test_views_of_one_recording_share_a_group(self):
@@ -500,7 +500,7 @@ def write_mask(path, value, shape=(24, 32)):
 
 
 @unittest.skipUnless(importlib.util.find_spec("PIL") is not None, "Requires Pillow")
-class TestTuningRehydrate(unittest.TestCase):
+class TestCalibrationRehydrate(unittest.TestCase):
     """Reading a stored bundle back into goals."""
 
     ATTACHMENT = ((0.0, 0.0, 0.1), IDENTITY)
