@@ -236,9 +236,6 @@ class ConstraintStabilizationConfig(ConfigBase):
     alpha: float = 0.01
     """
     Global default Baumgarte stabilization parameter for bilateral joint constraints.\n
-    The PADMM and DVI backends correct this fraction of each joint residual in one step. The LOX
-    backend corrects each joint residual up to this value [m or rad] in one step and this value
-    beyond it, so that a large joint violation is recovered over several steps.\n
     Must be in range `[0, 1.0]`.\n
     Defaults to `0.01`.
     """
@@ -1059,6 +1056,13 @@ class LOXSolverConfig:
     always used in full.
     """
 
+    joint_max_correction: float = 1.0e-3
+    """Largest joint residual corrected in one step [m or rad].
+
+    Each structural joint row corrects its begin-step residual in full up to this value, and by
+    this value beyond it, so that a large joint violation is recovered over several steps.
+    """
+
     joint_proximal_relaxation: float = 0.0
     """Relaxation factor for exact candidate-pose structural joint residuals.
 
@@ -1209,6 +1213,8 @@ class LOXSolverConfig:
             raise ValueError(
                 f"Invalid eliminate_fixed_world_islands: {self.eliminate_fixed_world_islands}. Must be a boolean."
             )
+        if not np.isfinite(self.joint_max_correction) or self.joint_max_correction <= 0.0:
+            raise ValueError(f"Invalid joint_max_correction: {self.joint_max_correction}. Must be positive and finite.")
         if (
             not np.isfinite(self.joint_proximal_relaxation)
             or self.joint_proximal_relaxation < 0.0

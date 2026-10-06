@@ -491,7 +491,7 @@ class LOXSolver:
         constraints = self._constraints
         self._problem.begin_time_step(
             self._model.time.dt,
-            joint_max_correction=constraints.alpha,
+            joint_max_correction=self._config.joint_max_correction,
             limit_stabilization_fraction=constraints.beta,
             contact_stabilization_fraction=constraints.gamma,
             contact_dead_zone=constraints.delta,
