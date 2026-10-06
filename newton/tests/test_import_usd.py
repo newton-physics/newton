@@ -3933,7 +3933,6 @@ def Xform "Articulation" (
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model, "joint_stiffness"))
         self.assertFalse(hasattr(model.mujoco, "dof_passive_damping"))
 
         joint_names = model.joint_label
@@ -5025,7 +5024,8 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
-        model = builder.finalize()
+        with self.assertWarnsRegex(DeprecationWarning, "mujoco:dof_springref"):
+            model = builder.finalize()
 
         rest_q = model.joint_rest_q.numpy()
         q_start = model.joint_q_start.numpy()
@@ -5126,7 +5126,8 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
-        model = builder.finalize()
+        with self.assertWarnsRegex(DeprecationWarning, "mujoco:dof_springref"):
+            model = builder.finalize()
 
         qd_start = model.joint_qd_start.numpy()
         dof_ref = model.mujoco.dof_ref.numpy()

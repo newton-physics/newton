@@ -3,6 +3,7 @@
 
 import unittest
 import warnings
+from contextlib import nullcontext
 from itertools import product
 
 import numpy as np
@@ -83,7 +84,7 @@ class TestJointSprings(unittest.TestCase):
     def test_mjcf_hinge_to_ball_spring_conversion(self):
         """Report lost scalar spring references during the optional hinge-to-ball approximation."""
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "identity spring rest orientation"):
+        with self.assertWarnsRegex(UserWarning, "identity spring rest orientation") as warning:
             builder.add_mjcf(
                 """<mujoco><worldbody><body>
                     <joint axis="1 0 0" ref="10" stiffness="2"/>
@@ -93,6 +94,7 @@ class TestJointSprings(unittest.TestCase):
                 </body></worldbody></mujoco>""",
                 convert_3d_hinge_to_ball_joints=True,
             )
+        self.assertEqual(warning.filename, __file__)
         model = builder.finalize(device="cpu")
         np.testing.assert_allclose(model.joint_rest_q.numpy(), [0, 0, 0, 1])
         np.testing.assert_allclose(model.joint_stiffness.numpy(), [2, 2, 2])
@@ -197,7 +199,8 @@ class TestJointSprings(unittest.TestCase):
                     custom_attributes=attributes,
                 )
                 builder.add_articulation([joint])
-                model = builder.finalize(device="cpu")
+                with self.assertWarns(DeprecationWarning) if legacy else nullcontext():
+                    model = builder.finalize(device="cpu")
                 factory = (
                     (lambda view: SolverMuJoCo(view, use_mujoco_cpu=True)) if solver_cls == SolverMuJoCo else solver_cls
                 )
@@ -380,10 +383,15 @@ class TestJointSprings(unittest.TestCase):
             )
             builder.add_articulation([joint])
             if conflict:
-                with self.assertRaisesRegex(ValueError, "Conflicting core joint spring"):
+                with (
+                    self.assertWarns(DeprecationWarning),
+                    self.assertRaisesRegex(ValueError, "Conflicting core joint spring"),
+                ):
                     builder.finalize(device="cpu")
             else:
-                model = builder.finalize(device="cpu")
+                with self.assertWarnsRegex(DeprecationWarning, "joint_stiffness") as warning:
+                    model = builder.finalize(device="cpu")
+                self.assertEqual(warning.filename, __file__)
                 np.testing.assert_allclose(model.joint_stiffness.numpy(), [3])
                 np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.5])
                 solver = SolverMuJoCo(model, use_mujoco_cpu=True)
@@ -393,35 +401,98 @@ class TestJointSprings(unittest.TestCase):
                 np.testing.assert_allclose(solver.mj_model.qpos_spring, [0.8], atol=1e-7)
                 combined = newton.ModelBuilder()
                 combined.replicate(builder, 2)
-                replicated = combined.finalize(device="cpu")
+                with self.assertWarns(DeprecationWarning):
+                    replicated = combined.finalize(device="cpu")
                 np.testing.assert_allclose(replicated.joint_stiffness.numpy(), [3, 3])
                 np.testing.assert_allclose(replicated.joint_rest_q.numpy(), [0.5, 0.5], atol=1e-7)
+
+    def test_legacy_springref_default(self):
+        """Default legacy springref to zero without changing core-authored rest coordinates."""
+        for joint_type, legacy, rest_q in product(("revolute", "prismatic"), (False, True), (0.0, 0.4)):
+            with self.subTest(joint_type=joint_type, legacy=legacy, rest_q=rest_q):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                ball_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                builder.add_articulation([builder.add_joint_ball(-1, ball_body)])
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                attributes = {"mujoco:dof_ref": 0.2}
+                if legacy:
+                    attributes["mujoco:dof_passive_stiffness"] = 3.0
+                joint = getattr(builder, "add_joint_" + joint_type)(
+                    -1, body, stiffness=0 if legacy else 3, rest_q=rest_q, custom_attributes=attributes
+                )
+                builder.add_articulation([joint])
+                expected_rest = -0.2 if legacy and rest_q == 0 else rest_q
+                with self.assertWarns(DeprecationWarning) if legacy else nullcontext():
+                    model = builder.finalize(device="cpu")
+                np.testing.assert_allclose(model.joint_rest_q.numpy(), [0, 0, 0, 1, expected_rest], atol=1e-7)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+                np.testing.assert_allclose(solver.mj_model.qpos_spring[-1], expected_rest + 0.2, atol=1e-7)
+                combined = newton.ModelBuilder()
+                combined.replicate(builder, 2)
+                with self.assertWarns(DeprecationWarning) if legacy else nullcontext():
+                    replicated = combined.finalize(device="cpu")
+                np.testing.assert_allclose(
+                    replicated.joint_rest_q.numpy(), np.tile([0, 0, 0, 1, expected_rest], 2), atol=1e-7
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_legacy_springref_default(self):
+        """Preserve MuJoCo's omitted springref with default USD schema resolvers."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString("""#usda 1.0
+        def Xform "root" {
+            def Cube "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]) {
+                float physics:mass = 1
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                double size = 0.1
+            }
+            def PhysicsPrismaticJoint "slider" (prepend apiSchemas = ["MjcJointAPI"]) {
+                rel physics:body1 = </root/body>
+                token physics:axis = "X"
+                float mjc:ref = 0.2
+                double mjc:stiffness = 3
+            }
+        }""")
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        builder.add_articulation([0])
+        with self.assertWarns(DeprecationWarning):
+            model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.joint_stiffness.numpy(), [3])
+        np.testing.assert_allclose(model.joint_rest_q.numpy(), [-0.2], atol=1e-7)
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        np.testing.assert_allclose(solver.mj_model.qpos_spring, [0], atol=1e-7)
 
     def test_d6_springs_after_quaternion_joint(self):
         """Index D6 rest coordinates correctly after a ball joint changes the coordinate offset."""
         for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo):
-            builder = newton.ModelBuilder(gravity=(0, 0, 0))
-            ball = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
-            builder.add_articulation([builder.add_joint_ball(-1, ball)])
-            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
-            joint = builder.add_joint_d6(
-                -1,
-                body,
-                linear_axes=[
-                    newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, stiffness=2, rest_q=0.3),
-                    newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y, stiffness=4, rest_q=0.2),
-                ],
-                angular_axes=[newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, stiffness=5, rest_q=0.1)],
-            )
-            builder.add_articulation([joint])
-            model = builder.finalize(device="cpu")
-            kwargs = {"use_mujoco_cpu": True} if solver_cls == SolverMuJoCo else {}
-            solver = solver_cls(model, **kwargs)
-            state, out = model.state(), model.state()
-            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-            solver.step(state, out, model.control(), None, 0.001)
-            newton.eval_ik(model, out, out.joint_q, out.joint_qd)
-            np.testing.assert_allclose(out.joint_qd.numpy()[3:], [0.0006, 0.0008, 0.0005], atol=1e-7)
+            with self.subTest(solver=solver_cls.__name__):
+                builder = newton.ModelBuilder(gravity=(0, 0, 0))
+                ball = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+                builder.add_articulation([builder.add_joint_ball(-1, ball)])
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+                joint = builder.add_joint_d6(
+                    -1,
+                    body,
+                    linear_axes=[
+                        newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, stiffness=2, rest_q=0.3),
+                        newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y, stiffness=4, rest_q=0.2),
+                    ],
+                    angular_axes=[newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, stiffness=5, rest_q=0.1)],
+                )
+                builder.add_articulation([joint])
+                model = builder.finalize(device="cpu")
+                kwargs = {"use_mujoco_cpu": True} if solver_cls == SolverMuJoCo else {}
+                solver = solver_cls(model, **kwargs)
+                state, out = model.state(), model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                solver.step(state, out, model.control(), None, 0.001)
+                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
+                np.testing.assert_allclose(out.joint_qd.numpy()[3:], [0.0006, 0.0008, 0.0005], atol=1e-7)
 
     def test_spring_parameter_gradients(self):
         """Differentiate a slider's acceleration with respect to its stiffness and rest coordinate."""

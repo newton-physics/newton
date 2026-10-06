@@ -1194,8 +1194,8 @@ Featherstone and SemiImplicit apply springs to REVOLUTE, PRISMATIC, and D6
 coordinates and warn about nonzero springs on other joint types. MuJoCo
 also supports isotropic BALL springs and quaternion rest orientations.
 Other solvers do not consume these properties yet. The experimental
-FeatherPGS integration is tracked in :github:`pull/4493` and
-:github:`issues/4516`.
+FeatherPGS integration is tracked in `PR #4493 <https://github.com/newton-physics/newton/pull/4493>`_ and
+`issue #4516 <https://github.com/newton-physics/newton/issues/4516>`_.
 
 MJCF ``stiffness`` and ``springref`` import into the core fields without explicit
 solver custom-attribute registration. Scalar rest coordinates are
@@ -1209,7 +1209,7 @@ For USD, reuse the existing MjcJointAPI ``mjc:stiffness``,
 ``mjc:springref``, and ``mjc:ref`` properties with
 :class:`newton.usd.SchemaResolverMjc` enabled. This import path does not
 require MuJoCo solver registration. NewtonJointAPI spring authoring
-properties are tracked separately in :github:`issues/4516`; no unregistered
+properties are tracked separately in `issue #4516 <https://github.com/newton-physics/newton/issues/4516>`_; no unregistered
 Newton USD attributes are introduced here.
 
 Legacy MuJoCo spring custom attributes remain accepted as builder inputs

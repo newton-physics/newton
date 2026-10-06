@@ -19,9 +19,28 @@ if TYPE_CHECKING:
 
 def finalize_legacy_joint_spring(builder: ModelBuilder, model: Model, attr: ModelBuilder.CustomAttribute) -> None:
     """Convert authored legacy values into core arrays without exposing runtime aliases."""
-    if not attr.values:
-        return
     is_rest = attr.name == "dof_springref"
+    authored = attr.values or {}
+    authored = authored.items() if isinstance(authored, dict) else enumerate(authored)
+    authored = {d: value for d, value in authored if value is not None}
+    if authored:
+        replacement = "joint_rest_q (springref - ref, indexed by joint_q_start)" if is_rest else "joint_stiffness"
+        warnings.warn(
+            f"{attr.key} builder inputs are deprecated since Newton 1.7; use {replacement} instead.",
+            DeprecationWarning,
+            stacklevel=4,
+        )
+    entries = authored.copy()
+    if is_rest:
+        # Legacy stiffness implies MuJoCo's default springref=0. A core spring
+        # with only dof_ref authored must keep its Newton rest coordinate.
+        stiffness = builder.custom_attributes["mujoco:dof_passive_stiffness"].values or {}
+        stiffness = stiffness.items() if isinstance(stiffness, dict) else enumerate(stiffness)
+        for d, value in stiffness:
+            if value is not None:
+                entries.setdefault(d, attr.default)
+    if not entries:
+        return
     target = model.joint_rest_q if is_rest else model.joint_stiffness
     values = target.numpy()
     coord = None
@@ -33,13 +52,12 @@ def finalize_legacy_joint_spring(builder: ModelBuilder, model: Model, attr: Mode
                 start = builder.joint_qd_start[j]
                 size = sum(builder.joint_dof_dim[j])
                 coord[start : start + size] = np.arange(builder.joint_q_start[j], builder.joint_q_start[j] + size)
-    entries = attr.values.items() if isinstance(attr.values, dict) else enumerate(attr.values)
-    for d, value in entries:
-        if value is None:
-            continue
+    for d, value in entries.items():
         q = int(coord[d]) if is_rest else d
         if q < 0:
             continue
+        if d not in authored and values[q] != 0.0:
+            continue  # An explicit core rest coordinate takes precedence over a legacy default.
         offset = 0.0
         if is_rest and ref is not None:
             authored_ref = ref.values or {}
@@ -58,14 +76,16 @@ def finalize_legacy_joint_spring(builder: ModelBuilder, model: Model, attr: Mode
 
 def warn_unsupported_joint_springs(model: Model, solver_name: str) -> None:
     """Report passive springs outside the scalar joint types supported by the native solvers."""
-    stiffness = model.joint_stiffness.numpy()
+    active_dofs = np.flatnonzero(model.joint_stiffness.numpy())
+    if active_dofs.size == 0:
+        return
     starts = model.joint_qd_start.numpy()
-    for j, kind in enumerate(model.joint_type.numpy()):
-        if kind not in (JointType.REVOLUTE, JointType.PRISMATIC, JointType.D6):
-            if np.any(stiffness[starts[j] : starts[j + 1]] != 0.0):
-                warnings.warn(
-                    f"{solver_name} ignores passive springs on {JointType(int(kind)).name} joints; "
-                    "only REVOLUTE, PRISMATIC and D6 springs are supported.",
-                    stacklevel=3,
-                )
-                return
+    joints = np.searchsorted(starts, active_dofs, side="right") - 1
+    kinds = model.joint_type.numpy()[joints]
+    unsupported = kinds[~np.isin(kinds, (JointType.REVOLUTE, JointType.PRISMATIC, JointType.D6))]
+    if unsupported.size:
+        warnings.warn(
+            f"{solver_name} ignores passive springs on {JointType(int(unsupported[0])).name} joints; "
+            "only REVOLUTE, PRISMATIC and D6 springs are supported.",
+            stacklevel=3,
+        )
