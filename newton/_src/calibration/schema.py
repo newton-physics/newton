@@ -19,6 +19,7 @@ by adding it to :data:`SUPPORTED_SCHEMA_VERSIONS` and converting it on load.
 from __future__ import annotations
 
 import dataclasses
+import numbers
 from collections.abc import Mapping
 from typing import Any
 
@@ -55,3 +56,8 @@ def check_fields(cls: type, d: Mapping[str, Any], what: str) -> None:
     unknown = sorted(set(d) - {f.name for f in dataclasses.fields(cls)})
     if unknown:
         raise ValueError(f"{what}: unknown field(s) {unknown}.")
+
+
+def is_real(value: Any) -> bool:
+    """Return whether ``value`` is a real number. A bool is not."""
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
