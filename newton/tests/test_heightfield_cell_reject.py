@@ -17,7 +17,7 @@ from newton._src.utils.heightfield import (
     _heightfield_cell_below_query,
     heightfield_vs_convex_midphase,
 )
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 def _create_heightfield_midphase(*, upstream_default):
@@ -345,6 +345,101 @@ def test_explicit_mesh_stage_capacity(test, device):
         test.assertTrue(np.any(np.all(shapes == sorted(pair), axis=1)), pair)
 
 
+def _explicit_box_pair_distances(device, *, b_collides, b_scale, reverse, reduce_contacts, generic=False):
+    """Return mesh SDF specialization flags and contact distances for one listed box pair."""
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(margin=0.01, gap=0.01)
+    b_cfg = builder.ShapeConfig(margin=0.01, gap=0.01, density=0.0, has_shape_collision=b_collides)
+    mesh_a = newton.Mesh.create_box(0.5, compute_inertia=False)
+    mesh_a.build_sdf(device=device, max_resolution=16)
+    mesh_b = newton.Mesh.create_box(0.2, 0.2, 0.1, compute_inertia=False)
+    if b_scale != (1.0, 1.0, 1.0):
+        mesh_b.build_sdf(device=device, max_resolution=16)
+    a = builder.add_shape_mesh(builder.add_body(), mesh=mesh_a, cfg=cfg)
+    b = builder.add_shape_mesh(
+        builder.add_body(
+            xform=wp.transform((0.45, 0.45, 0.58), wp.quat_identity()), mass=1.0, inertia=wp.diag(wp.vec3(0.01))
+        ),
+        mesh=mesh_b,
+        scale=b_scale,
+        cfg=b_cfg,
+    )
+    model = builder.finalize(device=device)
+    pair = [b, a] if reverse else [a, b]
+    init = NarrowPhase.__init__
+
+    def generic_init(self, *args, **kwargs):
+        kwargs.update(mesh_sdf_texture_only=False, mesh_sdf_identity_scale_only=False)
+        init(self, *args, **kwargs)
+
+    with patch.object(NarrowPhase, "__init__", generic_init) if generic else nullcontext():
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            shape_pairs_filtered=wp.array([pair], dtype=wp.vec2i, device=device),
+            reduce_contacts=reduce_contacts,
+        )
+    state = model.state()
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+    newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    flags = (pipeline.narrow_phase.mesh_sdf_texture_only, pipeline.narrow_phase.mesh_sdf_identity_scale_only)
+    return flags, np.sort(distance.numpy()[:count])
+
+
+def test_explicit_disabled_mesh_sdf_specialization(test, device):
+    """Match the generic mesh kernel when a listed collision-disabled mesh has no texture SDF."""
+    for b_scale in ((1.0, 1.0, 1.0), (2.0, 2.0, 2.0)):
+        for reverse in (False, True):
+            for reduce_contacts in (True, False):
+                with test.subTest(b_scale=b_scale, reverse=reverse, reduce_contacts=reduce_contacts):
+                    kwargs = {"b_scale": b_scale, "reverse": reverse, "reduce_contacts": reduce_contacts}
+                    flags, distances = _explicit_box_pair_distances(device, b_collides=False, **kwargs)
+                    _, expected = _explicit_box_pair_distances(device, b_collides=False, generic=True, **kwargs)
+                    test.assertGreater(len(expected), 0)
+                    np.testing.assert_allclose(expected, -0.04 - 0.1 * (b_scale[2] - 1.0), atol=1.0e-4)
+                    np.testing.assert_allclose(distances, expected, atol=1.0e-5)
+                    test.assertEqual(flags, (False, False))
+    flags, _ = _explicit_box_pair_distances(
+        device, b_collides=True, b_scale=(2.0, 2.0, 2.0), reverse=False, reduce_contacts=True
+    )
+    test.assertEqual(flags, (True, False))
+
+
+def test_explicit_disabled_capsule_full_gjk(test, device):
+    """Keep full GJK/MPR for a listed collision-disabled capsule."""
+    results = []
+    for capsule_collides in (True, False):
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig(margin=0.01, gap=0.01, has_shape_collision=capsule_collides)
+        box = builder.add_shape_box(builder.add_body(), hx=0.5, hy=0.5, hz=0.5)
+        capsule = builder.add_shape_capsule(
+            builder.add_body(
+                xform=wp.transform((0.0, 0.0, 0.68), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * wp.pi))
+            ),
+            radius=0.2,
+            half_height=0.3,
+            cfg=cfg,
+        )
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            shape_pairs_filtered=wp.array([[box, capsule]], dtype=wp.vec2i, device=device),
+        )
+        state = model.state()
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+        newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        results.append(np.sort(distance.numpy()[:count]))
+    test.assertEqual(len(results[1]), len(results[0]))
+    np.testing.assert_allclose(results[1], results[0], atol=1.0e-5)
+
+
 def test_near_below_transformed_and_scaled(test, device):
     """Keep margin contacts, downward prisms, scaled terrain and reversed endpoints."""
     for z, rotation, reverse, scale in (
@@ -524,6 +619,7 @@ for _test in (
     test_mixed_mesh_route,
     test_explicit_mesh_pair_route,
     test_explicit_mesh_stage_capacity,
+    test_explicit_disabled_capsule_full_gjk,
     test_near_below_transformed_and_scaled,
     test_primitive_contact_geometry,
     test_speculative_search_gap,
@@ -534,6 +630,12 @@ for _test in (
     test_negative_heights_ties_nonfinite_and_current_corners,
 ):
     add_function_test(TestHeightfieldCellReject, _test.__name__, _test, devices=devices)
+add_function_test(
+    TestHeightfieldCellReject,
+    "test_explicit_disabled_mesh_sdf_specialization",
+    test_explicit_disabled_mesh_sdf_specialization,
+    devices=get_cuda_test_devices(),
+)
 
 
 if __name__ == "__main__":

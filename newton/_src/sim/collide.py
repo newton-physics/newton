@@ -1637,7 +1637,14 @@ class CollisionPipeline:
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
                 colliding_mask = _shape_collide_mask(model, len(shape_types))
-                colliding_shape_types = shape_types[colliding_mask]
+                # Kernel specializations must hold for every shape that can reach the narrow
+                # phase. The explicit list is authoritative, including collision-disabled shapes.
+                route_mask = colliding_mask
+                if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
+                    explicit_pairs_host = self.shape_pairs_filtered.numpy().reshape(-1, 2)
+                    route_mask = np.zeros(len(shape_types), dtype=bool)
+                    pair_shapes = explicit_pairs_host.ravel()
+                    route_mask[pair_shapes[(pair_shapes >= 0) & (pair_shapes < len(shape_types))]] = True
                 mesh_mask = colliding_mask & (shape_types == int(GeoType.MESH))
                 heightfield_mask = colliding_mask & (shape_types == int(GeoType.HFIELD))
                 plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
@@ -1658,7 +1665,7 @@ class CollisionPipeline:
                     has_planar_sdf_shapes = bool(np.any(planar_sdf_mask))
                     has_meshes = has_meshes or has_planar_sdf_shapes
                     mesh_sdf_pair_mask |= planar_sdf_mask
-                    mesh_sdf_shapes = colliding_mask & (
+                    mesh_sdf_shapes = route_mask & (
                         (shape_types != int(GeoType.HFIELD))
                         & ((shape_types == int(GeoType.MESH)) | (shape_edge_range[:, 1] > 0))
                     )
@@ -1683,8 +1690,7 @@ class CollisionPipeline:
                             bool(scale_baked[shape_sdf_index[shape_idx]]) or identity_shape_scale[shape_idx]
                             for shape_idx in np.flatnonzero(mesh_sdf_shapes)
                         )
-                if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
-                    explicit_pairs_host = self.shape_pairs_filtered.numpy().reshape(-1, 2)
+                if explicit_pairs_host is not None:
                     # The explicit list is authoritative: a listed mesh reaches the mesh
                     # midphase even with shape collision disabled.
                     has_meshes = has_meshes or bool(np.any(shape_types[explicit_pairs_host] == int(GeoType.MESH)))
@@ -1740,7 +1746,7 @@ class CollisionPipeline:
                     int(GeoType.CYLINDER),
                     int(GeoType.CONE),
                 }
-                use_lean_gjk_mpr = not bool(lean_unsupported & set(colliding_shape_types.tolist()))
+                use_lean_gjk_mpr = not bool(lean_unsupported & set(shape_types[route_mask].tolist()))
 
             if self.broad_phase_mode == "explicit":
                 candidate_pair_work_estimate = self.shape_pairs_max
