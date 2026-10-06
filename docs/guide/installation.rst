@@ -42,10 +42,10 @@ GPU requirements depend on the installed `Warp
      - NVIDIA GPU
      - NVIDIA driver
      - CUDA support
-   * - 1.18 (fresh installs)
-     - Compute capability 7.5+ (Turing)
-     - R580 or newer
-     - Standard wheel uses CUDA 13.4
+   * - 1.18+ (fresh installs)
+     - 1.18: compute capability 7.5+ (Turing)
+     - 1.18: R580 or newer
+     - Standard 1.18 wheel uses CUDA 13.4; check Warp's requirements for later releases
    * - 1.17
      - Compute capability 5.2+ (Maxwell) on x86-64; see the ARM64 limitation below
      - 545 or newer
