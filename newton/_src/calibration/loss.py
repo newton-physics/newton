@@ -83,7 +83,8 @@ class CalibrationLoss(ABC):
                 :attr:`wants_render` is ``False`` and nothing was rendered.
             crop: ``[x0, y0, x1, y1]`` pixel crop the goal was prepared in.
             geom: The world's projected cable, shape ``(n_nodes, 2)``, when
-                :attr:`wants_geometry` is ``True``; otherwise ``None``.
+                :attr:`wants_geometry` is ``True``; otherwise ``None``. A node at
+                or behind the image plane is NaN.
 
         Returns:
             The frame's loss.
@@ -120,6 +121,7 @@ class CalibrationLoss(ABC):
             accumulator: The object :meth:`make_accum` returned.
             geom: The projected cable for all worlds, shape
                 ``(n_worlds, n_nodes, 2)``, when :attr:`wants_geometry` is
-                ``True``; otherwise ``None``.
+                ``True``; otherwise ``None``. A node at or behind the image plane
+                is NaN.
         """
         raise NotImplementedError(f"{type(self).__name__} does not support on-device accumulation.")

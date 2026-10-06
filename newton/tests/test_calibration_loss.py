@@ -40,7 +40,7 @@ def make_axis(x_start=GOAL_X0, x_end=GOAL_X1, offset_px=0.0, n_nodes=11):
 def make_hidden(axis, nodes):
     """``axis`` with the given nodes moved behind the lens."""
     hidden = axis.copy()
-    hidden[nodes] = -2.0e8
+    hidden[nodes] = np.nan
     return hidden
 
 
