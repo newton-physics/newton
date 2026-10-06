@@ -10,7 +10,7 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from .loss import TuningLoss
+from .loss import CalibrationLoss
 
 # --- Chamfer: distance to the goal, which does not saturate ------------------
 #
@@ -305,7 +305,7 @@ class _ChamferGoal:
         return self._dev_edt[key]
 
 
-class TuningLossChamfer(TuningLoss):
+class CalibrationLossChamfer(CalibrationLoss):
     """Symmetric chamfer distance between the goal mask and the projected cable axis.
 
     .. experimental::
@@ -406,5 +406,5 @@ class TuningLossChamfer(TuningLoss):
         )
 
 
-CHAMFER = TuningLossChamfer()
-"""The shared :class:`TuningLossChamfer` instance."""
+CHAMFER = CalibrationLossChamfer()
+"""The shared :class:`CalibrationLossChamfer` instance."""

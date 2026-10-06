@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""What a tuning objective has to provide."""
+"""What a calibration objective has to provide."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import numpy as np
 import warp as wp
 
 
-class TuningLoss(ABC):
-    """Abstract interface for one tuning objective.
+class CalibrationLoss(ABC):
+    """Abstract interface for one calibration objective.
 
     .. experimental::
 
@@ -51,7 +51,7 @@ class TuningLoss(ABC):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        if cls.supports_accum and (cls.make_accum is TuningLoss.make_accum or cls.accum is TuningLoss.accum):
+        if cls.supports_accum and (cls.make_accum is CalibrationLoss.make_accum or cls.accum is CalibrationLoss.accum):
             raise TypeError(f"{cls.__name__} sets supports_accum but does not implement make_accum and accum.")
 
     @abstractmethod

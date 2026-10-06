@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the tuning loss interface and the Chamfer loss."""
+"""Tests for the calibration loss interface and the Chamfer loss."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.tuning.loss import TuningLoss
-from newton._src.tuning.loss_chamfer import CHAMFER, CHAMFER_MISS, _goal_edt
+from newton._src.calibration.loss import CalibrationLoss
+from newton._src.calibration.loss_chamfer import CHAMFER, CHAMFER_MISS, _goal_edt
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 # The test goal is a horizontal line one pixel thick: row GOAL_ROW, columns
@@ -53,11 +53,11 @@ def chamfer_on(device, *axes):
     return accumulator.totals()
 
 
-class TestTuningLoss(unittest.TestCase):
+class TestCalibrationLoss(unittest.TestCase):
     def test_incomplete_loss_fails_at_construction(self):
         """Reject a loss without score when it is constructed, not when it is first called."""
 
-        class LossPrepareOnly(TuningLoss):
+        class LossPrepareOnly(CalibrationLoss):
             def prepare(self, goal_mask):
                 return goal_mask
 
@@ -68,7 +68,7 @@ class TestTuningLoss(unittest.TestCase):
         """Reject supports_accum at class definition when accum is not implemented."""
         with self.assertRaisesRegex(TypeError, "supports_accum"):
 
-            class LossAccumFlagOnly(TuningLoss):
+            class LossAccumFlagOnly(CalibrationLoss):
                 supports_accum = True
 
                 def prepare(self, goal_mask):
@@ -81,7 +81,7 @@ class TestTuningLoss(unittest.TestCase):
                     return None
 
 
-class TestTuningChamfer(unittest.TestCase):
+class TestCalibrationChamfer(unittest.TestCase):
     """The chamfer objective."""
 
     def test_goal_edt_matches_an_exact_euclidean_transform(self):
@@ -190,7 +190,7 @@ for test_func in (
     test_nodes_behind_the_lens_are_skipped,
     test_accumulator_sums_over_frames,
 ):
-    add_function_test(TestTuningChamfer, test_func.__name__, test_func, devices=devices)
+    add_function_test(TestCalibrationChamfer, test_func.__name__, test_func, devices=devices)
 
 
 if __name__ == "__main__":
