@@ -363,11 +363,13 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                 margin (``GJK_CUTOFF_TOLERANCE`` times the support-point coordinate scale).
                 The bound is exact in real arithmetic; the margin is an empirical allowance
                 chosen so the exact query (``max_dist=0.0``) also returns a distance above
-                ``max_dist`` in tested cases, not a proven float32 error bound. The returned distance is then an upper bound on the true
-                distance that still exceeds ``max_dist``, and the witness points are the
+                ``max_dist`` in tested cases, not a proven float32 error bound. The
+                returned distance is then an upper bound on the true distance that
+                still exceeds ``max_dist``, and the witness points are the
                 current simplex estimate rather than the closest points. Queries the
-                cutoff does not stop return the exact query's results. ``0.0``
-                (default) disables the cutoff.
+                cutoff does not stop follow the exact query's iteration path.
+                Independently compiled call sites can differ in floating-point rounding.
+                ``0.0`` (default) disables the cutoff.
 
         Returns:
             Tuple of:

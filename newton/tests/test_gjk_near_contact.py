@@ -118,33 +118,6 @@ def _write_query(
 
 
 @wp.kernel(module="unique")
-def _query_hull_pairs_with_cutoff(
-    shape_types: wp.array[int],
-    scales: wp.array[wp.vec3],
-    rotations: wp.array[wp.quat],
-    positions: wp.array[wp.vec3],
-    cutoff: float,
-    exact: wp.array2d[float],
-    cut: wp.array2d[float],
-):
-    """Query each pair once without and once with the separation cutoff."""
-    i = wp.tid()
-    a = GenericShapeData()
-    a.shape_type = shape_types[2 * i]
-    a.scale = scales[2 * i]
-    b = GenericShapeData()
-    b.shape_type = shape_types[2 * i + 1]
-    b.scale = scales[2 * i + 1]
-    gjk = wp.static(create_solve_closest_distance(support_map).core)
-    separated, point_a, point_b, normal, distance = gjk(a, b, rotations[i], positions[i], 0.0, SupportMapDataProvider())
-    _write_query(exact, i, separated, point_a, point_b, normal, distance)
-    separated, point_a, point_b, normal, distance = gjk(
-        a, b, rotations[i], positions[i], 0.0, SupportMapDataProvider(), max_dist=cutoff
-    )
-    _write_query(cut, i, separated, point_a, point_b, normal, distance)
-
-
-@wp.kernel(module="unique")
 def _query_positional_arguments(cutoff: float, output: wp.array2d[float]):
     """Bind the trailing optional arguments positionally and by keyword."""
     a = GenericShapeData()
@@ -180,10 +153,9 @@ def _query_pairs_at_cutoffs(
     rotations: wp.array[wp.quat],
     positions: wp.array[wp.vec3],
     cutoffs: wp.array2d[float],
-    exact: wp.array2d[float],
     cut: wp.array3d[float],
 ):
-    """Query each pair without the cutoff and with each of its cutoffs."""
+    """Query each pair at runtime cutoffs, including zero for the exact reference."""
     i, j = wp.tid()
     a = GenericShapeData()
     a.shape_type = shape_types[2 * i]
@@ -201,11 +173,6 @@ def _query_pairs_at_cutoffs(
         cut[i, j, 2 + axis] = point_a[axis]
         cut[i, j, 5 + axis] = point_b[axis]
         cut[i, j, 8 + axis] = normal[axis]
-    if j == 0:
-        separated, point_a, point_b, normal, distance = gjk(
-            a, b, rotations[i], positions[i], 0.0, SupportMapDataProvider()
-        )
-        _write_query(exact, i, separated, point_a, point_b, normal, distance)
 
 
 def test_positive_sub_tolerance_gap(test, device):
@@ -338,22 +305,25 @@ def test_separation_cutoff_matches_exact_query_within_cutoff(test, device):
     directions = rng.normal(size=(count, 3))
     directions /= np.linalg.norm(directions, axis=1, keepdims=True)
     positions = directions * rng.uniform(0.0, 0.6, count)[:, None]
-    exact = wp.zeros((count, 11), dtype=float, device=device)
-    cut = wp.zeros((count, 11), dtype=float, device=device)
+    # Use one compiled call site for both queries. CUDA can fuse arithmetic
+    # differently when a literal zero lets it optimize away the cutoff branch.
+    cutoffs = np.tile(np.array([0.0, cutoff], dtype=np.float32), (count, 1))
+    output = wp.zeros((count, 2, 11), dtype=float, device=device)
     wp.launch(
-        _query_hull_pairs_with_cutoff,
-        dim=count,
+        _query_pairs_at_cutoffs,
+        dim=(count, 2),
         inputs=[
             wp.array(types, dtype=int, device=device),
             wp.array(scales, dtype=wp.vec3, device=device),
             wp.array(rotations, dtype=wp.quat, device=device),
             wp.array(positions, dtype=wp.vec3, device=device),
-            cutoff,
+            wp.array(cutoffs, dtype=float, device=device),
         ],
-        outputs=[exact, cut],
+        outputs=[output],
         device=device,
     )
-    exact, cut = exact.numpy(), cut.numpy()
+    actual = output.numpy()
+    exact, cut = actual[:, 0, :], actual[:, 1, :]
     within = exact[:, 1] <= cutoff
     beyond = ~within
     # Guard the sample: both sides of the cutoff and overlapping pairs are present.
@@ -462,16 +432,18 @@ def test_separation_cutoff_matches_exact_query_at_the_boundary(test, device):
         wp.array(positions, dtype=wp.vec3, device=device),
     ]
     # Exact distances first (every cutoff zero), then cutoffs around them.
-    exact = wp.zeros((count, 11), dtype=float, device=device)
     cut = wp.zeros((count, 1, 11), dtype=float, device=device)
     wp.launch(
         _query_pairs_at_cutoffs,
         dim=(count, 1),
         inputs=[*arrays, wp.zeros((count, 1), dtype=float, device=device)],
-        outputs=[exact, cut],
+        outputs=[cut],
         device=device,
     )
-    distance = exact.numpy()[:, 1].astype(np.float32)
+    # The reference must use the same runtime-cutoff call site as the queries
+    # below; literal-zero specialization can change CUDA FMA rounding.
+    exact = cut.numpy()[:, 0, :]
+    distance = exact[:, 1].astype(np.float32)
     steps = []
     for ulps in (-2, -1, 0, 1, 2):
         cutoff = distance.copy()
@@ -488,10 +460,10 @@ def test_separation_cutoff_matches_exact_query_at_the_boundary(test, device):
         _query_pairs_at_cutoffs,
         dim=(count, width),
         inputs=[*arrays, wp.array(cutoffs, dtype=float, device=device)],
-        outputs=[exact, cut],
+        outputs=[cut],
         device=device,
     )
-    exact, cut = exact.numpy(), cut.numpy()
+    cut = cut.numpy()
     separated = exact[:, 0] == 1.0
     test.assertGreater(int(np.count_nonzero(separated)), 3000)
     within = separated[:, None] & (exact[:, 1:2] <= cutoffs)
@@ -510,7 +482,7 @@ def test_separation_cutoff_matches_exact_query_at_the_boundary(test, device):
 def test_separation_cutoff_keeps_contact_at_the_exact_boundary(test, device):
     """Keep the contact of a cylinder pair whose total gap equals its exact float32 distance."""
     type_a, scale_a, type_b, scale_b, rotation, position = _BOUNDARY_PAIRS[2]
-    exact = wp.zeros((1, 11), dtype=float, device=device)
+    exact = wp.zeros((1, 1, 11), dtype=float, device=device)
     wp.launch(
         _query_pairs_at_cutoffs,
         dim=(1, 1),
@@ -521,11 +493,11 @@ def test_separation_cutoff_keeps_contact_at_the_exact_boundary(test, device):
             wp.array([position], dtype=wp.vec3, device=device),
             wp.zeros((1, 1), dtype=float, device=device),
         ],
-        outputs=[exact, wp.zeros((1, 1, 11), dtype=float, device=device)],
+        outputs=[exact],
         device=device,
     )
     # The exact query's distance differs by device rounding; on CPU it is 0.1076592430472374.
-    gap = float(exact.numpy()[0, 1])
+    gap = float(exact.numpy()[0, 0, 1])
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     cfg = builder.ShapeConfig(gap=0.5 * gap, margin=0.0)
     body_a = builder.add_body(xform=wp.transform_identity())
