@@ -48,7 +48,7 @@ GPU requirements depend on the installed `Warp
      - Standard 1.18 wheel uses CUDA 13.4; check Warp's requirements for later releases
    * - 1.17
      - Compute capability 5.2+ (Maxwell) on x86-64; see the ARM64 limitation below
-     - 545 or newer
+     - 545 or newer (Newton 1.7 requirement)
      - Standard wheel uses CUDA 12.9
 
 Newton 1.7 deprecates CUDA 12 GPU support, while retaining it with a Warp
