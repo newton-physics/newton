@@ -227,7 +227,7 @@ class Example:
             axis=wp.vec3(0.0, 0.0, 1.0),
             target_ke=p["gantry_drive_ke"],
             target_kd=p["gantry_drive_kd"],
-            target_pos=grab_z,
+            target_q=grab_z,
             label="gantry_z_joint",
         )
         j_x = builder.add_joint_prismatic(
@@ -236,7 +236,7 @@ class Example:
             axis=wp.vec3(1.0, 0.0, 0.0),
             target_ke=p["gantry_drive_ke"],
             target_kd=p["gantry_drive_kd"],
-            target_pos=0.0,
+            target_q=0.0,
             label="gantry_x_joint",
         )
         j_left = builder.add_joint_prismatic(
@@ -246,7 +246,7 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, p["finger_z_offset"]), wp.quat_identity()),
             target_ke=p["finger_drive_ke"],
             target_kd=p["finger_drive_kd"],
-            target_pos=p["open_half_gap"],
+            target_q=p["open_half_gap"],
             label="left_finger_joint",
         )
         j_right = builder.add_joint_prismatic(
@@ -256,7 +256,7 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, p["finger_z_offset"]), wp.quat_identity()),
             target_ke=p["finger_drive_ke"],
             target_kd=p["finger_drive_kd"],
-            target_pos=p["open_half_gap"],
+            target_q=p["open_half_gap"],
             label="right_finger_joint",
         )
         builder.add_articulation([j_z, j_x, j_left, j_right], label="gripper")

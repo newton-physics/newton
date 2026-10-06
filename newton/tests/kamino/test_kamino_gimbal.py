@@ -125,8 +125,8 @@ def _build_fixture(
     configs = [
         newton.ModelBuilder.JointDofConfig(
             axis=axis,
-            target_pos=0.0,
-            target_vel=0.0,
+            target_q=0.0,
+            target_qd=0.0,
             target_ke=stiffness,
             target_kd=drive_damping,
             damping=passive_damping,

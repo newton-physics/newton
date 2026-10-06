@@ -787,6 +787,11 @@ def test_real_model_recording_roundtrip(test: TestRecorder, device):
                 test.assertEqual(restored_model.joint_count, model.joint_count)
                 test.assertEqual(restored_model.shape_count, model.shape_count)
 
+                for attr_name in ("joint_stiffness", "joint_rest_q"):
+                    np.testing.assert_array_equal(
+                        getattr(restored_model, attr_name).numpy(), getattr(model, attr_name).numpy()
+                    )
+
                 # Verify MuJoCo attributes loaded (these use dynamic vec5 types).
                 # SolverMuJoCo.register_custom_attributes guarantees ``model.mujoco`` and
                 # the three attributes below exist after finalize; restored_model.mujoco

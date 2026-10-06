@@ -3963,17 +3963,16 @@ def Xform "Articulation" (
         SolverMuJoCo.register_custom_attributes(builder)
         self.assertNotIn("mujoco:dof_passive_damping", builder.custom_attributes)
         # mjc:damping resolves through SchemaResolverMjc into joint_damping;
-        # mjc:stiffness stays a namespaced custom attribute.
+        # mjc:stiffness resolves into core joint_stiffness.
         builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverMjc()])
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
         self.assertFalse(hasattr(model.mujoco, "dof_passive_damping"))
 
         joint_names = model.joint_label
         joint_qd_start = model.joint_qd_start.numpy()
-        joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
+        joint_stiffness = model.joint_stiffness.numpy()
         joint_damping = model.joint_damping.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
@@ -5060,18 +5059,17 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
-        model = builder.finalize()
+        with self.assertWarnsRegex(DeprecationWarning, "mujoco:dof_springref"):
+            model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "dof_springref"))
-        springref = model.mujoco.dof_springref.numpy()
-        qd_start = model.joint_qd_start.numpy()
+        rest_q = model.joint_rest_q.numpy()
+        q_start = model.joint_q_start.numpy()
 
         revolute_joint_idx = model.joint_label.index("/Articulation/revolute_joint")
-        self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], np.deg2rad(30.0), places=4)
+        self.assertAlmostEqual(rest_q[q_start[revolute_joint_idx]], np.deg2rad(30.0), places=4)
 
         prismatic_joint_idx = model.joint_label.index("/Articulation/prismatic_joint")
-        self.assertAlmostEqual(springref[qd_start[prismatic_joint_idx]], 0.25, places=4)
+        self.assertAlmostEqual(rest_q[q_start[prismatic_joint_idx]], 0.25, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_converter_degree_joint_angles_are_converted(self):
@@ -5163,20 +5161,24 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
-        model = builder.finalize()
+        with self.assertWarnsRegex(DeprecationWarning, "mujoco:dof_springref"):
+            model = builder.finalize()
 
         qd_start = model.joint_qd_start.numpy()
         dof_ref = model.mujoco.dof_ref.numpy()
-        springref = model.mujoco.dof_springref.numpy()
+        rest_q = model.joint_rest_q.numpy()
+        q_start = model.joint_q_start.numpy()
+        revolute_coord = q_start[model.joint_label.index("/Articulation/revolute_joint")]
+        prismatic_coord = q_start[model.joint_label.index("/Articulation/prismatic_joint")]
 
         revolute_dof = qd_start[model.joint_label.index("/Articulation/revolute_joint")]
         prismatic_dof = qd_start[model.joint_label.index("/Articulation/prismatic_joint")]
 
         for name, value, expected in (
             ("revolute dof_ref", dof_ref[revolute_dof], np.deg2rad(30.0)),
-            ("revolute dof_springref", springref[revolute_dof], np.deg2rad(45.0)),
+            ("revolute rest_q", rest_q[revolute_coord], np.deg2rad(45.0 - 30.0)),
             ("prismatic dof_ref", dof_ref[prismatic_dof], 0.5),
-            ("prismatic dof_springref", springref[prismatic_dof], 0.25),
+            ("prismatic rest_q", rest_q[prismatic_coord], 0.25 - 0.5),
         ):
             with self.subTest(name):
                 self.assertAlmostEqual(value, expected, places=5)

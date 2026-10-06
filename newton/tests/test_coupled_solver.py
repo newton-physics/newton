@@ -1439,7 +1439,9 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         model.joint_armature.fill_(3.0)
         model.mujoco.dof_ref.fill_(0.2)
-        model.mujoco.dof_springref.fill_(0.3)
+        rest_q = model.joint_rest_q.numpy()
+        rest_q[-2:] = 0.1
+        model.joint_rest_q.assign(rest_q)
         model.joint_damping.fill_(0.8)
         model.joint_target_ke.fill_(25.0)
         model.joint_friction.fill_(0.4)
@@ -1463,9 +1465,10 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
         coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        np.testing.assert_allclose(view.joint_rest_q.numpy(), 0.0)
         coupled.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.2)
-        np.testing.assert_allclose(view.mujoco.dof_springref.numpy(), 0.3)
+        np.testing.assert_allclose(view.joint_rest_q.numpy(), 0.1)
 
     def test_custom_control_arrays_are_mapped_to_entries(self):
         """Custom CONTROL attributes should follow their compact frequency map."""

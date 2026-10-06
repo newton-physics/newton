@@ -203,7 +203,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
             solver.notify_model_changed(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
         for ref in (0.2, 0.4):
             model.mujoco.dof_ref.fill_(ref)
-            model.mujoco.dof_springref.fill_(ref + 0.1)
+            model.joint_rest_q.fill_(0.1)
             wp.capture_launch(capture.graph)
             np.testing.assert_allclose(solver.mjw_model.qpos0.numpy(), ref)
             np.testing.assert_allclose(solver.mjw_model.qpos_spring.numpy(), ref + 0.1)
@@ -427,7 +427,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                         model.joint_limit_upper.fill_(0.7 * scale)
                         model.joint_limit_ke.fill_(100.0 * scale)
                         model.joint_limit_kd.fill_(10.0 * scale)
-                        model.mujoco.dof_passive_stiffness.fill_(0.2 * scale)
+                        model.joint_stiffness.fill_(0.2 * scale)
                         model.mujoco.limit_margin.fill_(0.01 * scale)
                         solimp = model.mujoco.solimplimit.numpy()
                         solimp[:, 1] = 0.8 + 0.05 * scale
@@ -468,7 +468,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 model.joint_armature.fill_(1.5)
                 model.joint_friction.fill_(0.7)
                 model.mujoco.dof_ref.fill_(0.2)
-                model.mujoco.dof_springref.fill_(0.3)
+                model.joint_rest_q.fill_(0.1)
                 solver.notify_model_changed(ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
                 np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 1.5)
                 np.testing.assert_allclose(solver.mjw_model.dof_frictionloss.numpy(), 0.0)

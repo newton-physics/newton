@@ -28,6 +28,9 @@ def joint_force(
     limit_ke: float,
     limit_kd: float,
     damping: float,
+    stiffness: float = 0.0,
+    rest_q: float = 0.0,
+    angular: bool = False,
 ) -> float:
     """Joint force evaluation for a single degree of freedom."""
 
@@ -47,7 +50,13 @@ def joint_force(
         damping_f = -limit_kd * qd
         target_f = 0.0
 
-    passive_f = -damping * qd
+    # Body poses do not retain angular winding. Choose the same principal
+    # coordinate for equivalent quaternion signs, but keep the rest offset
+    # unwrapped so scalar spring preload is preserved.
+    spring_q = q
+    if angular:
+        spring_q = q - 2.0 * wp.pi * wp.floor((q + wp.pi) / (2.0 * wp.pi))
+    passive_f = stiffness * (rest_q - spring_q) - damping * qd
 
     return limit_f + damping_f + target_f + passive_f
 
@@ -167,6 +176,7 @@ def eval_body_joints(
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
     joint_qd_start: wp.array[int],
+    joint_q_start: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_type: wp.array[int],
     joint_enabled: wp.array[bool],
@@ -186,6 +196,8 @@ def eval_body_joints(
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
     joint_damping: wp.array[float],
+    joint_stiffness: wp.array[float],
+    joint_rest_q: wp.array[float],
     joint_mimic_joint: wp.array[int],
     joint_mimic_coeffs: wp.array[wp.vec2],
     joint_attach_ke: float,
@@ -203,6 +215,7 @@ def eval_body_joints(
     if not joint_enabled[tid]:
         return
 
+    q_start = joint_q_start[tid]
     qd_start = joint_qd_start[tid]
     target_q_start = joint_target_q_start[tid]
     if type == JointType.FREE or type == JointType.DISTANCE:
@@ -299,6 +312,8 @@ def eval_body_joints(
                 joint_limit_ke[qd_start],
                 joint_limit_kd[qd_start],
                 joint_damping[qd_start],
+                joint_stiffness[qd_start],
+                joint_rest_q[q_start],
             )
         )
 
@@ -334,6 +349,9 @@ def eval_body_joints(
                 joint_limit_ke[qd_start],
                 joint_limit_kd[qd_start],
                 joint_damping[qd_start],
+                joint_stiffness[qd_start],
+                joint_rest_q[q_start],
+                True,
             )
         )
 
@@ -379,6 +397,8 @@ def eval_body_joints(
                     joint_limit_ke[qd_start + 0],
                     joint_limit_kd[qd_start + 0],
                     joint_damping[qd_start + 0],
+                    joint_stiffness[qd_start + 0],
+                    joint_rest_q[q_start],
                 )
             )
 
@@ -404,6 +424,8 @@ def eval_body_joints(
                     joint_limit_ke[qd_start + 1],
                     joint_limit_kd[qd_start + 1],
                     joint_damping[qd_start + 1],
+                    joint_stiffness[qd_start + 1],
+                    joint_rest_q[q_start + 1],
                 )
             )
 
@@ -429,6 +451,8 @@ def eval_body_joints(
                     joint_limit_ke[qd_start + 2],
                     joint_limit_kd[qd_start + 2],
                     joint_damping[qd_start + 2],
+                    joint_stiffness[qd_start + 2],
+                    joint_rest_q[q_start + 2],
                 )
             )
 
@@ -474,6 +498,9 @@ def eval_body_joints(
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
                     joint_damping[i_0],
+                    joint_stiffness[i_0],
+                    joint_rest_q[q_start + i_0 - qd_start],
+                    True,
                 )
             )
 
@@ -521,6 +548,9 @@ def eval_body_joints(
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
                     joint_damping[i_0],
+                    joint_stiffness[i_0],
+                    joint_rest_q[q_start + i_0 - qd_start],
+                    True,
                 )
             )
             t_total += axis_1 * (
@@ -537,6 +567,9 @@ def eval_body_joints(
                     joint_limit_ke[i_1],
                     joint_limit_kd[i_1],
                     joint_damping[i_1],
+                    joint_stiffness[i_1],
+                    joint_rest_q[q_start + i_1 - qd_start],
+                    True,
                 )
             )
 
@@ -592,6 +625,9 @@ def eval_body_joints(
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
                     joint_damping[i_0],
+                    joint_stiffness[i_0],
+                    joint_rest_q[q_start + i_0 - qd_start],
+                    True,
                 )
             )
             t_total += axis_1 * (
@@ -608,6 +644,9 @@ def eval_body_joints(
                     joint_limit_ke[i_1],
                     joint_limit_kd[i_1],
                     joint_damping[i_1],
+                    joint_stiffness[i_1],
+                    joint_rest_q[q_start + i_1 - qd_start],
+                    True,
                 )
             )
             t_total += axis_2 * (
@@ -624,6 +663,9 @@ def eval_body_joints(
                     joint_limit_ke[i_2],
                     joint_limit_kd[i_2],
                     joint_damping[i_2],
+                    joint_stiffness[i_2],
+                    joint_rest_q[q_start + i_2 - qd_start],
+                    True,
                 )
             )
 
@@ -674,6 +716,7 @@ def eval_body_joint_forces(
                 state.body_qd,
                 model.body_com,
                 model.joint_qd_start,
+                model.joint_q_start,
                 model.joint_target_q_start,
                 model.joint_type,
                 model.joint_enabled,
@@ -693,6 +736,8 @@ def eval_body_joint_forces(
                 model.joint_limit_ke,
                 model.joint_limit_kd,
                 model.joint_damping,
+                model.joint_stiffness,
+                model.joint_rest_q,
                 model.joint_mimic_joint,
                 model.joint_mimic_coeffs,
                 joint_attach_ke,

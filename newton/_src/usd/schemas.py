@@ -495,6 +495,9 @@ class SchemaResolverMjc(SchemaResolver):
             # DOFs), unlike the USD per-degree convention behind the plain
             # "damping" key, so it resolves through the _per_rad variant.
             "damping_per_rad": SchemaAttribute("mjc:damping", None),
+            "stiffness": SchemaAttribute("mjc:stiffness", None),
+            "springref": SchemaAttribute("mjc:springref", None),
+            "ref": SchemaAttribute("mjc:ref", None),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
             "effort_limit": SchemaAttribute(
                 "mjc:actuatorfrcrange:min",

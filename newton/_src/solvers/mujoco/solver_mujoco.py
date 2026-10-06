@@ -35,6 +35,7 @@ from ...sim.articulation import eval_fk
 from ...sim.collide import _estimate_rigid_contact_max, _estimate_rigid_contact_max_per_world
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
+from ...sim.joint_springs import finalize_legacy_joint_spring
 from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
@@ -86,6 +87,7 @@ from .kernels import (
     reset_sleeping_state_kernel,
     reset_world_buffers_kernel,
     restore_sleeping_state_kernel,
+    sync_ball_qpos_spring_kernel,
     sync_qpos0_kernel,
     sync_site_xposes_kernel,
     sync_worldbody_geom_xposes_kernel,
@@ -1146,6 +1148,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
         """
         Declare custom attributes to be allocated on the Model object within the ``mujoco`` namespace.
+        Legacy ``dof_passive_stiffness`` and ``dof_springref`` inputs are converted once into
+        ``Model.joint_stiffness`` and ``Model.joint_rest_q`` during finalization; they are not
+        exposed as runtime attributes.
         Custom attributes use ``CustomAttribute.usd_attribute_name`` with the ``mjc:`` prefix (e.g. ``"mjc:condim"``)
         to leverage the MuJoCo USD schema where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
         """
@@ -1522,6 +1527,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mjcf_value_transformer=cls._angle_value_transformer,
             )
         )
+        # Accept legacy builder inputs, but keep spring state only in the core model arrays.
+        for name in ("dof_passive_stiffness", "dof_springref"):
+            builder._add_custom_attribute_model_finalizer("mujoco:" + name, finalize_legacy_joint_spring)
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dof_ref",
@@ -4256,6 +4264,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._notify_physical_meaninertia: wp.array[float] | None = None
         self._notify_body_flags: wp.array[wp.int32] | None = None
         self._notify_joint_armature: wp.array[float] | None = None
+        self._notify_joint_rest_q: wp.array[float] | None = None
         self._joint_limit_solref_snapshot: wp.array[wp.vec2] | None = None
 
         self._viewer = None
@@ -5128,8 +5137,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.dof_solref[:] = self.mjw_model.dof_solref.numpy()[0]
             if update_configuration:
                 self.mj_model.qpos0[:] = self.mjw_model.qpos0.numpy()[0]
-                self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
                 self.mj_model.jnt_range[:] = self.mjw_model.jnt_range.numpy()[0]
+            if update_configuration or flags & ModelFlags.JOINT_PROPERTIES:
+                self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
             if update_force:
                 self.mj_model.jnt_solimp[:] = self.mjw_model.jnt_solimp.numpy()[0]
                 self.mj_model.jnt_stiffness[:] = self.mjw_model.jnt_stiffness.numpy()[0]
@@ -6234,12 +6244,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joint_solref_limit_mode = get_custom_attribute("solreflimit_mode")
         joint_dof_solref = get_custom_attribute("solreffriction")
         joint_dof_solimp = get_custom_attribute("solimpfriction")
-        joint_stiffness = get_custom_attribute("dof_passive_stiffness")
+        joint_stiffness = model.joint_stiffness.numpy()
         joint_damping = model.joint_damping.numpy() if model.joint_damping is not None else None
         joint_actgravcomp = get_custom_attribute("jnt_actgravcomp")
         body_gravcomp = get_custom_attribute("gravcomp")
         body_sleep_policy = get_custom_attribute("sleep_policy")
-        joint_springref = get_custom_attribute("dof_springref")
+        joint_rest_q = model.joint_rest_q.numpy()
         joint_ref = get_custom_attribute("dof_ref")
 
         def joint_has_raw_limit_solref(dof_idx: int) -> bool:
@@ -7271,8 +7281,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     joint_params["actfrclimited"] = True
                     joint_params["actfrcrange"] = (-effort_limit, effort_limit)
 
-                    if joint_springref is not None:
-                        joint_params["springref"] = joint_springref[ai]
+                    joint_params["springref"] = joint_rest_q[joint_q_start[j] + i] + (
+                        joint_ref[ai] if joint_ref is not None else 0.0
+                    )
                     if joint_ref is not None:
                         joint_params["ref"] = joint_ref[ai]
 
@@ -7387,8 +7398,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     joint_params["actfrclimited"] = True
                     joint_params["actfrcrange"] = (-effort_limit, effort_limit)
 
-                    if joint_springref is not None:
-                        joint_params["springref"] = np.rad2deg(joint_springref[ai])
+                    joint_params["springref"] = np.rad2deg(
+                        joint_rest_q[joint_q_start[j] + i] + (joint_ref[ai] if joint_ref is not None else 0.0)
+                    )
                     if joint_ref is not None:
                         joint_params["ref"] = np.rad2deg(joint_ref[ai])
 
@@ -8449,6 +8461,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Constant refreshes must use published properties, not pending model edits.
         self._notify_body_flags = wp.clone(self.model.body_flags)
         self._notify_joint_armature = wp.clone(self.model.joint_armature)
+        self._notify_joint_rest_q = wp.clone(self.model.joint_rest_q)
         solref = getattr(getattr(self.model, "mujoco", None), "solreflimit", None)
         self._joint_limit_solref_snapshot = wp.clone(solref) if solref is not None else None
         if not self.use_mujoco_cpu:
@@ -8753,7 +8766,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Update joint properties (limits, stiffness, solimp) per MuJoCo joint.
         solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
         joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
-        joint_stiffness = getattr(mujoco_attrs, "dof_passive_stiffness", None) if mujoco_attrs is not None else None
+        joint_stiffness = self.model.joint_stiffness
 
         njnt = self.mjc_jnt_to_newton_dof.shape[1]
         wp.launch(
@@ -8786,6 +8799,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Refresh reference poses and shift existing limit ranges by the reference change."""
         if self.model.joint_dof_count == 0 or self.newton_dof_to_body is None:
             return
+        wp.copy(self._notify_joint_rest_q, self.model.joint_rest_q)
         mujoco_attrs = getattr(self.model, "mujoco", None)
         dof_ref = getattr(mujoco_attrs, "dof_ref", None)
         nworld = self.mjc_jnt_to_newton_dof.shape[0]
@@ -8807,7 +8821,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # set_const copies qpos0 → d.qpos and runs FK to compute derived fields,
         # so qpos0 must be correct before calling it.
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
-        dof_springref = getattr(mujoco_attrs, "dof_springref", None) if mujoco_attrs is not None else None
         joints_per_world = self.model.joint_count // nworld
         bodies_per_world = self.model.body_count // nworld
         wp.launch(
@@ -8821,9 +8834,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.joint_qd_start,
                 self.model.joint_dof_dim,
                 self.model.joint_child,
+                self.model.joint_X_c,
                 self.model.body_q,
                 dof_ref,
-                dof_springref,
+                self._notify_joint_rest_q,
                 self.mj_q_start,
             ],
             outputs=[
@@ -8885,6 +8899,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ],
                 device=self.model.device,
             )
+
+        # BALL spring rest is stored in the child joint frame.
+        nworld = self.mjw_model.qpos_spring.shape[0]
+        joints_per_world = self.model.joint_count // nworld
+        wp.launch(
+            sync_ball_qpos_spring_kernel,
+            dim=(nworld, joints_per_world),
+            inputs=[
+                joints_per_world,
+                self.model.joint_type,
+                self.model.joint_q_start,
+                self.model.joint_X_c,
+                self._notify_joint_rest_q,
+                self.mj_q_start,
+            ],
+            outputs=[self.mjw_model.qpos_spring],
+            device=self.model.device,
+        )
 
     @staticmethod
     def _build_ref_q(model: Model, ref_q: wp.array | None = None) -> wp.array:
