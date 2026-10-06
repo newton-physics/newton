@@ -2405,7 +2405,7 @@ void main() {
 
     @override
     def get_frame(
-        self, target_image: wp.array3d[wp.uint8] | None = None, render_ui: bool = False
+        self, target_image: wp.array3d[wp.uint8] | None = None, *, render_ui: bool = False
     ) -> wp.array3d[wp.uint8]:
         """Retrieve the last rendered frame as RGB image data.
 

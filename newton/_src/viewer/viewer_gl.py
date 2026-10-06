@@ -17,6 +17,7 @@ import warp as wp
 import newton as nt
 
 from ..core.types import Axis, override
+from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
@@ -2045,8 +2046,9 @@ class ViewerGL(ViewerBase):
         self.renderer.present()
 
     @override
+    @deprecate_nonkeyword_arguments
     def get_frame(
-        self, target_image: wp.array3d[wp.uint8] | None = None, render_ui: bool = False
+        self, target_image: wp.array3d[wp.uint8] | None = None, *, render_ui: bool = False
     ) -> wp.array3d[wp.uint8]:
         """
         Retrieve the last rendered frame.
@@ -2054,6 +2056,10 @@ class ViewerGL(ViewerBase):
         This method uses OpenGL Pixel Buffer Objects (PBO). CUDA viewers use
         CUDA-OpenGL interoperability, while CPU viewers read the PBO into host
         memory.
+
+        .. deprecated:: 1.7
+            Passing ``render_ui`` positionally is deprecated. Use
+            ``get_frame(target_image, render_ui=...)`` instead.
 
         Args:
             target_image:

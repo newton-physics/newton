@@ -4,6 +4,7 @@
 import ctypes
 import sys
 import unittest
+import warnings
 from types import SimpleNamespace
 from unittest import mock
 
@@ -182,6 +183,15 @@ class TestViewerGLGetFrame(unittest.TestCase):
 
             target = wp.empty(shape=(48, 64, 3), dtype=wp.uint8, device=cpu_device)
             self.assertIs(viewer.get_frame(target_image=target), target)
+
+            for render_ui in (False, True):
+                with self.assertWarnsRegex(DeprecationWarning, "Passing 'render_ui' positionally"):
+                    self.assertIs(viewer.get_frame(target, render_ui), target)
+                positional_frame = target.numpy()
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", DeprecationWarning)
+                    self.assertIs(viewer.get_frame(target, render_ui=render_ui), target)
+                np.testing.assert_array_equal(target.numpy(), positional_frame)
 
             viewer._invalidate_pbo()
             self.assertEqual(viewer.get_frame().shape, (48, 64, 3))
