@@ -1954,7 +1954,7 @@ class CollisionPipeline:
         constructing :class:`CollisionPipeline` directly. ``overrides`` take
         precedence over both USD-authored and default values. Length values
         (``softContactGap``, ``contactMatchingPosThreshold``,
-        ``maxSpeculativeExtension``) are authored in stage units and converted
+        ``maxSpeculativeContactGap``) are authored in stage units and converted
         to meters. Following :meth:`ModelBuilder.add_usd`, unauthored stage
         unit metadata is interpreted as one meter per stage unit. Because
         :meth:`ModelBuilder.add_usd` does not yet convert rigid/collider
@@ -2170,13 +2170,11 @@ class CollisionPipeline:
                 )
             kwargs["contact_reduction_hashtable_size_factor"] = result
 
-        value = authored("newton:collisionPipeline:maxSpeculativeExtension")
+        value = authored("newton:collisionPipeline:maxSpeculativeContactGap")
         if value is not None:
-            extension = optional_finite_float("newton:collisionPipeline:maxSpeculativeExtension", value, minimum=0.0)
-            if extension is not None:
-                kwargs["speculative_config"] = cls.SpeculativeContactConfig(
-                    max_speculative_extension=extension * linear_unit
-                )
+            gap_max = optional_finite_float("newton:collisionPipeline:maxSpeculativeContactGap", value, minimum=0.0)
+            if gap_max is not None:
+                kwargs["speculative_contact_gap_max"] = gap_max * linear_unit
 
         kwargs.update(overrides)
 

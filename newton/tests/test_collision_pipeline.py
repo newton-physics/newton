@@ -510,7 +510,7 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertEqual(unauthored_pipeline.contact_matching, default_pipeline.contact_matching)
         self.assertEqual(unauthored_pipeline.contact_report, default_pipeline.contact_report)
         self.assertEqual(unauthored_pipeline.narrow_phase.verify_buffers, default_pipeline.narrow_phase.verify_buffers)
-        self.assertEqual(unauthored_pipeline.speculative_config, default_pipeline.speculative_config)
+        self.assertEqual(unauthored_pipeline.speculative_contact_gap_max, default_pipeline.speculative_contact_gap_max)
         self.assertIsNone(unauthored_pipeline._contact_matcher)
         self.assertIsNone(default_pipeline._contact_matcher)
 
@@ -533,7 +533,7 @@ class TestCollisionPipeline(unittest.TestCase):
         scene_prim.GetAttribute("newton:collisionPipeline:contactMatchingNormalDotThreshold").Set(0.9)
         scene_prim.GetAttribute("newton:collisionPipeline:contactReport").Set(True)
         scene_prim.GetAttribute("newton:collisionPipeline:verifyBuffers").Set(False)
-        scene_prim.GetAttribute("newton:collisionPipeline:maxSpeculativeExtension").Set(0.15)
+        scene_prim.GetAttribute("newton:collisionPipeline:maxSpeculativeContactGap").Set(0.15)
 
         pipeline = CollisionPipeline.create_from_usd(scene_prim, model)
 
@@ -553,7 +553,7 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertNotEqual(pipeline.contact_matching, default_pipeline.contact_matching)
         self.assertNotEqual(pipeline.contact_report, default_pipeline.contact_report)
         self.assertNotEqual(pipeline.narrow_phase.verify_buffers, default_pipeline.narrow_phase.verify_buffers)
-        self.assertNotEqual(pipeline.speculative_config, default_pipeline.speculative_config)
+        self.assertNotEqual(pipeline.speculative_contact_gap_max, default_pipeline.speculative_contact_gap_max)
 
         self.assertEqual(pipeline.rigid_contact_max, 19)
         self.assertEqual(pipeline.broad_phase_mode, "sap")
@@ -569,8 +569,7 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertEqual(pipeline.contact_matching, "sticky")
         self.assertTrue(pipeline.contact_report)
         self.assertFalse(pipeline.narrow_phase.verify_buffers)
-        self.assertIsNotNone(pipeline.speculative_config)
-        self.assertAlmostEqual(pipeline.speculative_config.max_speculative_extension, 0.15)
+        self.assertAlmostEqual(pipeline.speculative_contact_gap_max, 0.15)
         self.assertIsNotNone(pipeline._contact_matcher)
         self.assertAlmostEqual(pipeline._contact_matcher._pos_threshold_sq, 0.01**2)
         self.assertAlmostEqual(pipeline._contact_matcher._normal_dot_threshold, 0.9)
@@ -607,14 +606,14 @@ class TestCollisionPipeline(unittest.TestCase):
         prim.GetAttribute("newton:collisionPipeline:maxShapePairs").Set(-1)
         # -inf is the documented sentinel for optional float attributes.
         prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(float("-inf"))
-        prim.GetAttribute("newton:collisionPipeline:maxSpeculativeExtension").Set(float("-inf"))
+        prim.GetAttribute("newton:collisionPipeline:maxSpeculativeContactGap").Set(float("-inf"))
 
         sentinel_pipeline = CollisionPipeline.create_from_usd(scene, model)
         self.assertEqual(sentinel_pipeline.rigid_contact_max, default_pipeline.rigid_contact_max)
         self.assertEqual(sentinel_pipeline.soft_contact_max, default_pipeline.soft_contact_max)
         self.assertEqual(sentinel_pipeline.shape_pairs_max, default_pipeline.shape_pairs_max)
         self.assertAlmostEqual(sentinel_pipeline.soft_contact_gap, default_pipeline.soft_contact_gap)
-        self.assertEqual(sentinel_pipeline.speculative_config, default_pipeline.speculative_config)
+        self.assertEqual(sentinel_pipeline.speculative_contact_gap_max, default_pipeline.speculative_contact_gap_max)
 
         # **overrides take precedence over authored USD values.
         prim.GetAttribute("newton:collisionPipeline:broadPhase").Set("sap")
@@ -635,7 +634,7 @@ class TestCollisionPipeline(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_soft_limits_warn_and_fall_back_to_default(self):
         """Warn and fall back to the __init__ default, instead of raising, when
-        softContactGap or maxSpeculativeExtension is authored below its minimum,
+        softContactGap or maxSpeculativeContactGap is authored below its minimum,
         mirroring the newton:hydroelasticStiffness soft-limit convention."""
         from pxr import Usd, UsdPhysics
 
@@ -657,15 +656,17 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertAlmostEqual(pipeline.soft_contact_gap, default_pipeline.soft_contact_gap)
         scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Clear()
 
-        scene_prim.GetAttribute("newton:collisionPipeline:maxSpeculativeExtension").Set(-0.1)
-        with self.assertWarnsRegex(UserWarning, r"newton:collisionPipeline:maxSpeculativeExtension=-0\.\d+ is invalid"):
+        scene_prim.GetAttribute("newton:collisionPipeline:maxSpeculativeContactGap").Set(-0.1)
+        with self.assertWarnsRegex(
+            UserWarning, r"newton:collisionPipeline:maxSpeculativeContactGap=-0\.\d+ is invalid"
+        ):
             pipeline = CollisionPipeline.create_from_usd(scene_prim, model)
-        self.assertEqual(pipeline.speculative_config, default_pipeline.speculative_config)
+        self.assertEqual(pipeline.speculative_contact_gap_max, default_pipeline.speculative_contact_gap_max)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_converts_length_attributes_to_meters(self):
         """Convert softContactGap, contactMatchingPosThreshold, and
-        maxSpeculativeExtension from stage units to meters, matching the particles
+        maxSpeculativeContactGap from stage units to meters, matching the particles
         ModelBuilder.add_usd() would import from the same stage."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -679,14 +680,14 @@ class TestCollisionPipeline(unittest.TestCase):
         scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
         scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(2.0)
         scene_prim.GetAttribute("newton:collisionPipeline:contactMatchingPosThreshold").Set(1.0)
-        scene_prim.GetAttribute("newton:collisionPipeline:maxSpeculativeExtension").Set(15.0)
+        scene_prim.GetAttribute("newton:collisionPipeline:maxSpeculativeContactGap").Set(15.0)
         scene_prim.GetAttribute("newton:collisionPipeline:contactMatching").Set("latest")
 
         pipeline = CollisionPipeline.create_from_usd(scene_prim, model)
 
         self.assertAlmostEqual(pipeline.soft_contact_gap, 0.02)
         self.assertAlmostEqual(pipeline._contact_matcher._pos_threshold_sq, 0.01**2)
-        self.assertAlmostEqual(pipeline.speculative_config.max_speculative_extension, 0.15)
+        self.assertAlmostEqual(pipeline.speculative_contact_gap_max, 0.15)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_rejects_nonunit_stage_with_rigid_shapes(self):
