@@ -1943,6 +1943,11 @@ class CollisionPipeline:
     ) -> CollisionPipeline:
         """Create a :class:`CollisionPipeline` from ``NewtonCollisionPipelineAPI``.
 
+        .. experimental::
+
+            :meth:`create_from_usd` and the ``NewtonCollisionPipelineAPI``
+            schema it reads may change without prior notice.
+
         Reads ``newton:collisionPipeline:*`` attributes off ``scene_prim``.
         Only authored USD values override the :meth:`__init__`
         defaults, so unauthored attributes fall back to the same defaults as
