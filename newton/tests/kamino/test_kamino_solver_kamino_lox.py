@@ -499,10 +499,15 @@ class TestSolverKaminoLOX(unittest.TestCase):
                     float(np.linalg.norm(inertia @ next_omega) / np.linalg.norm(inertia @ omega)), 1.0, delta=1.0e-5
                 )
 
-    def test_large_joint_violation_is_corrected_by_alpha_per_step(self):
-        """Correct a joint violation by at most the stabilization ``alpha`` per step, and a small one fully."""
+    def test_large_joint_violation_is_corrected_by_max_correction_per_step(self):
+        """Correct a joint violation by at most ``joint_max_correction`` per step, and a smaller one fully."""
         time_step = 0.01
-        for offset, expected_speed in ((0.1, 0.01 / time_step), (0.005, 0.005 / time_step)):
+        max_correction = self.make_config().lox.joint_max_correction
+        for offset, corrected in (
+            (100.0 * max_correction, max_correction),
+            (0.5 * max_correction, 0.5 * max_correction),
+        ):
+            expected_speed = corrected / time_step
             with self.subTest(offset=offset):
                 model = _build_revolute_dynamics_model(damping=0.0, friction=0.0, velocity=0.0)
                 solver = SolverKamino(model, config=self.make_config())
