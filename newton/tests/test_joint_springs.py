@@ -307,7 +307,7 @@ class TestJointSprings(unittest.TestCase):
                 np.testing.assert_allclose(out.joint_qd.numpy(), [0.1 + 0.001 * force], atol=1e-6)
 
     def test_ball_spring_compatibility(self):
-        """Preserve isotropic MuJoCo ball springs and report unsupported native solver springs."""
+        """Preserve isotropic MuJoCo ball springs across rest-orientation updates."""
         builder = newton.ModelBuilder(gravity=(0, 0, 0))
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
         joint = builder.add_joint_ball(-1, body, stiffness=2)
@@ -321,9 +321,6 @@ class TestJointSprings(unittest.TestCase):
         model.joint_rest_q.assign(rest)
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
         np.testing.assert_allclose(solver.mj_model.qpos_spring, rest[[3, 0, 1, 2]], atol=1e-6)
-        for solver_cls in (SolverFeatherstone, SolverSemiImplicit):
-            with self.assertWarnsRegex(UserWarning, "ignores passive springs on BALL"):
-                solver_cls(model)
 
     @unittest.skipUnless(wp.is_cuda_available(), "CUDA is required for graph capture")
     def test_cuda_graph_runtime_updates(self):

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Joint spring import compatibility and solver support checks."""
+"""Joint spring import compatibility."""
 
 from __future__ import annotations
 
@@ -72,20 +72,3 @@ def finalize_legacy_joint_spring(builder: ModelBuilder, model: Model, attr: Mode
             raise ValueError(f"Conflicting core joint spring value and deprecated {attr.key} at DOF {d}")
         values[q] = canonical
     target.assign(values)
-
-
-def warn_unsupported_joint_springs(model: Model, solver_name: str) -> None:
-    """Report passive springs outside the scalar joint types supported by the native solvers."""
-    active_dofs = np.flatnonzero(model.joint_stiffness.numpy())
-    if active_dofs.size == 0:
-        return
-    starts = model.joint_qd_start.numpy()
-    joints = np.searchsorted(starts, active_dofs, side="right") - 1
-    kinds = model.joint_type.numpy()[joints]
-    unsupported = kinds[~np.isin(kinds, (JointType.REVOLUTE, JointType.PRISMATIC, JointType.D6))]
-    if unsupported.size:
-        warnings.warn(
-            f"{solver_name} ignores passive springs on {JointType(int(unsupported[0])).name} joints; "
-            "only REVOLUTE, PRISMATIC and D6 springs are supported.",
-            stacklevel=3,
-        )

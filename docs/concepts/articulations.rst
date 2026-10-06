@@ -1190,8 +1190,8 @@ with :attr:`newton.Model.joint_q_start`, regardless of the legacy target
 layout flag. Scalar ``JointDofConfig.rest_q`` values cannot specify a
 quaternion; edit the joint's four entries in ``joint_rest_q`` instead.
 
-Featherstone and SemiImplicit apply springs to REVOLUTE, PRISMATIC, and D6
-coordinates and warn about nonzero springs on other joint types. MuJoCo
+Featherstone and SemiImplicit apply springs only to REVOLUTE, PRISMATIC, and D6
+coordinates. MuJoCo
 also supports isotropic BALL springs and quaternion rest orientations.
 Other solvers do not consume these properties yet. The experimental
 FeatherPGS integration is tracked in `PR #4493 <https://github.com/newton-physics/newton/pull/4493>`_ and

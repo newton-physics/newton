@@ -8,7 +8,6 @@ import warp as wp
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
 from ...sim.joint_mimic import has_supported_joint_mimics
-from ...sim.joint_springs import warn_unsupported_joint_springs
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from . import kernels_body, kernels_contact, kernels_muscle, kernels_particle
@@ -107,7 +106,6 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                 ``wp.config.deterministic`` mode.
         """
         super().__init__(model=model)
-        warn_unsupported_joint_springs(model, type(self).__name__)
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         deterministic_modules = []
         if model.joint_count > 0:
