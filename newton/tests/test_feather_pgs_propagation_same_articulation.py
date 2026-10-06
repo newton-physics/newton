@@ -203,7 +203,7 @@ def test_default_routing_keeps_same_articulation_rows_dense(test, device):
 def test_flag_requires_propagation_mode(test, device):
     """Reject same-articulation propagation rows without the response that solves them."""
     model = _build_scissor_model(device)
-    for response in ("immediate", "propagation-fused"):
+    for response in ("immediate", "propagation-fused", "propagation-colored"):
         with test.subTest(response=response):
             with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
                 SolverFeatherPGS(model, articulated_contact_response=response, propagation_same_articulation_rows=True)

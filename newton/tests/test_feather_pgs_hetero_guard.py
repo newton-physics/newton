@@ -105,7 +105,7 @@ def test_hetero_worlds_match_isolated_worlds(test, device, pgs_mode="matrix_free
 def test_homogeneous_propagation_constructs(test, device):
     """Construct both propagation responses on worlds with identical DOF counts."""
     model = _build_model([3, 3, 3, 3], device)
-    for response in ("propagation", "propagation-fused"):
+    for response in ("propagation", "propagation-fused", "propagation-colored"):
         with test.subTest(response=response):
             solver = SolverFeatherPGS(model, articulated_contact_response=response)
             test.assertEqual(solver.articulated_contact_response, response)
@@ -122,10 +122,12 @@ def test_hetero_propagation_matches_isolated_worlds(test, device):
         model = _build_model(link_counts, device, 0.35, free_box)
         return _final_joint_q(model, response=response, from_fk=True)
 
-    combined = run([1, 3], None, "propagation")
-    single = run([1], None, "propagation")
-    triple = run([3], None, "propagation")
-    np.testing.assert_allclose(combined, np.concatenate([single, triple]), rtol=0.0, atol=1.0e-5)
+    for response in ("propagation", "propagation-colored"):
+        combined = run([1, 3], None, response)
+        single = run([1], None, response)
+        triple = run([3], None, response)
+        # The cached response sizes its reductions by the model's body capacity, so the sums reassociate.
+        np.testing.assert_allclose(combined, np.concatenate([single, triple]), rtol=0.0, atol=1.0e-4)
 
     # The fused response needs one articulation size, but a free box still makes world DOF counts differ.
     combined = run([3, 3], [False, True], "propagation-fused")

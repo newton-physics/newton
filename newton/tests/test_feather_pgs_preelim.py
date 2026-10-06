@@ -521,17 +521,27 @@ def test_split_rejects_bilateral_rows(test, device):
                 SolverFeatherPGS(model, pgs_mode="split", enable_bilateral_preelimination=enabled)
 
 
-def test_propagation_rejects_bilateral_rows(test, device):
-    """Reject mimic rows with the propagation responses, with or without pre-elimination."""
+def test_propagation_keeps_iterative_mimic_rows(test, device):
+    """Keep iterative mimic rows with the propagation responses; pre-elimination falls back with a warning."""
     builder, _, _ = _build_two_revolute_chain(0.0, 1.0)
     model = builder.finalize(device=device)
-    for response in ("propagation", "propagation-fused"):
-        for enabled in (False, True):
-            with test.subTest(response=response, enable_bilateral_preelimination=enabled):
-                with test.assertRaisesRegex(NotImplementedError, "articulated_contact_response"):
-                    SolverFeatherPGS(
-                        model, articulated_contact_response=response, enable_bilateral_preelimination=enabled
-                    )
+    for response in ("propagation", "propagation-fused", "propagation-colored"):
+        with test.subTest(response=response):
+            with test.assertWarnsRegex(UserWarning, "propagation"):
+                solver = SolverFeatherPGS(
+                    model, articulated_contact_response=response, enable_bilateral_preelimination=True
+                )
+            test.assertFalse(solver._preelim_active)
+            test.assertGreater(solver._mimic_count, 0)
+
+
+def test_propagation_rejects_loop_joints(test, device):
+    """Reject loop-closing joints with the propagation responses."""
+    model = _build_four_bar().finalize(device=device)
+    for response in ("propagation", "propagation-fused", "propagation-colored"):
+        with test.subTest(response=response):
+            with test.assertRaisesRegex(NotImplementedError, "Loop-closing joints.*articulated_contact_response"):
+                SolverFeatherPGS(model, articulated_contact_response=response)
 
 
 class TestFeatherPGSPreelimination(unittest.TestCase):
@@ -568,8 +578,14 @@ add_function_test(
 )
 add_function_test(
     TestFeatherPGSPreeliminationPropagation,
-    "test_propagation_rejects_bilateral_rows",
-    test_propagation_rejects_bilateral_rows,
+    "test_propagation_keeps_iterative_mimic_rows",
+    test_propagation_keeps_iterative_mimic_rows,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestFeatherPGSPreeliminationPropagation,
+    "test_propagation_rejects_loop_joints",
+    test_propagation_rejects_loop_joints,
     devices=cuda_devices,
 )
 

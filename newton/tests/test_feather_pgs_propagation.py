@@ -26,7 +26,7 @@ from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 DENSE_PATH = 0
 PROPAGATION_PATH = 2
-RESPONSES = ("propagation", "propagation-fused")
+RESPONSES = ("propagation", "propagation-fused", "propagation-colored")
 
 
 def _chain(builder, x, n_links, root_z, joint="revolute"):
@@ -106,9 +106,9 @@ def _step(model, solver, steps=1, dt=1.0 / 240.0):
 
 
 def test_contact_effective_mass_matches_dense_response(test, device):
-    """Give each propagation row the effective mass ``J H^-1 J^T`` of its dense immediate row.
+    """Give each propagation row the effective mass ``J H^-1 J^T`` of its dense immediate row, mass-split.
 
-    Covers the native 0/1-DOF and free-root tree kernels, the generic kernels and
+    The response of a body is scaled by the row-bearing bodies of its coupling group. Covers the native 0/1-DOF and free-root tree kernels, the generic kernels and
     multi-DOF (ball) joints. The rows of contacts between an articulated body and the
     ground are compared at the same state, before any solve.
     """
@@ -130,7 +130,11 @@ def test_contact_effective_mass_matches_dense_response(test, device):
             SolverFeatherPGS._kernel_overrides = {"propagation_tree_kernel": tree_kernel}
             try:
                 solver = SolverFeatherPGS(
-                    model, pgs_iterations=0, dense_max_constraints=96, articulated_contact_response="propagation"
+                    model,
+                    pgs_iterations=0,
+                    dense_max_constraints=96,
+                    friction_anchor_beta=0.0,
+                    articulated_contact_response="propagation",
                 )
             finally:
                 SolverFeatherPGS._kernel_overrides = {}
@@ -144,11 +148,14 @@ def test_contact_effective_mass_matches_dense_response(test, device):
             world = solver.contact_world.numpy()[:count]
             dense_diag = reference.diag.numpy()
             eff_mass_inv = solver.propagation_eff_mass_inv.numpy()
+            # Each compared row has the ground on one side.
+            row_body = np.maximum(solver.propagation_body_a.numpy(), solver.propagation_body_b.numpy())
+            split = solver.propagation_coupling_group_body_count.numpy()[solver.propagation_body_coupling_group.numpy()]
             checked = 0
             # Contacts between links of one articulation stay dense in both responses.
             for c in np.flatnonzero((ref_path == DENSE_PATH) & (ref_slot >= 0) & (path == PROPAGATION_PATH)):
                 for row in range(3):
-                    expected = float(dense_diag[world[c], ref_slot[c] + row])
+                    expected = float(dense_diag[world[c], ref_slot[c] + row]) * split[row_body[world[c], slot[c] + row]]
                     got = 1.0 / float(eff_mass_inv[world[c], slot[c] + row])
                     test.assertAlmostEqual(got, expected, delta=2.0e-4 * expected)
                     checked += 1
@@ -271,7 +278,13 @@ def test_global_kinematic_floor_moves_articulated_bodies(test, device):
             results = {}
             for floor, floor_velocity in (("static", 0.0), ("kinematic", 0.0), ("kinematic", 0.5)):
                 model = _chains_on_global_floor(device, floor)
-                solver = SolverFeatherPGS(model, dense_max_constraints=64, articulated_contact_response=response)
+                solver = SolverFeatherPGS(
+                    model,
+                    pgs_iterations=50,
+                    dense_max_constraints=64,
+                    friction_anchor_beta=0.0,
+                    articulated_contact_response=response,
+                )
                 state_0, state_1 = model.state(), model.state()
                 joint_qd = state_0.joint_qd.numpy()
                 joint_qd[:4] = -1.0
@@ -288,8 +301,10 @@ def test_global_kinematic_floor_moves_articulated_bodies(test, device):
                 np.testing.assert_array_equal(solver.contact_path.numpy()[:count], PROPAGATION_PATH)
                 np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [False, False, False])
                 results[(floor, floor_velocity)] = state_1.body_qd.numpy()[:4]
-            # Both worlds respond to the global kinematic floor exactly like to world geometry.
-            np.testing.assert_allclose(results[("kinematic", 0.0)], results[("static", 0.0)], atol=1.0e-5)
+            # Both worlds respond to the global kinematic floor exactly like to world geometry; the
+            # colored sweep orders the two floors' contacts differently.
+            atol = 5.0e-5 if response == "propagation-colored" else 1.0e-5
+            np.testing.assert_allclose(results[("kinematic", 0.0)], results[("static", 0.0)], atol=atol)
             np.testing.assert_allclose(results[("static", 0.0)][:2], results[("static", 0.0)][2:], atol=1.0e-5)
             # The floor's prescribed velocity enters every world's contact target.
             moving = results[("kinematic", 0.5)]

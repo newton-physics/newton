@@ -45,6 +45,13 @@ _KERNEL_FACTORIES = (
     "_get_mark_independent_sparse_contact_candidates_kernel",
     "_get_build_independent_sparse_contact_groups_kernel",
     "_get_pgs_solve_sparse_diagonal_kernel",
+    "_get_propagation_tree_cached_response_kernel",
+    "_get_propagation_cached_gemv_kernel",
+    "_get_color_propagation_prebuild_kernel",
+    "_get_colored_friction_setup_kernel",
+    "_get_colored_payload_pack_kernel",
+    "_get_pgs_solve_propagation_colored_warp_kernel",
+    "_get_pgs_solve_propagation_colored_block_kernel",
 )
 
 
