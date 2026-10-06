@@ -1537,15 +1537,15 @@ class SolverFeatherPGS(SolverBase):
                 after teleporting a body to discard its history.
             pgs_contact_regularization: Dimensionless regularization ``g`` of penetrating
                 contact rows (``pgs_mode="matrix_free"`` only). Each iteration moves a row's impulse toward the rigid solution
-                with weight ``w = 1 / (1 + g)`` and toward zero with weight ``1 - w``, the
+                with weight ``1 / (1 + g)`` and toward zero with weight ``g / (1 + g)``, the
                 update of an implicitly integrated contact spring. It makes statically
                 indeterminate normal-force splits unique and damps the sweep, at the cost of
                 a resting penetration: a row at rest settles at ``pgs_beta * phi / dt = -g * d * lambda``
                 (``d`` its unsplit inverse effective mass, ``lambda`` its impulse), about
                 ``g * a * dt^2 / pgs_beta`` for a body under acceleration ``a`` resting on one row.
-                Propagation rows whose response is split across coupled contact bodies, with
-                split diagonal ``d_s``, take weight ``w * d_s / (w * d_s + (1 - w) * d)`` and
-                reach the same fixed point.
+                Propagation rows whose response is split across coupled contact bodies, with split
+                diagonal ``d_s``, take weight ``w * d_s / (w * d_s + (1 - w) * d)`` with
+                ``w = 1 / (1 + g)``, which reaches the same rest state.
                 Speculative (positive-gap) rows, rows whose rebound fires and the
                 velocity-only iterations stay rigid. ``0`` is the rigid law; at most ``1e6``.
             pgs_velocity_iterations: Number of velocity-only iterations after the position
@@ -10660,6 +10660,7 @@ def _get_crba_cholesky_kernel(n_dofs: int, device_arch: str, tile_threads: int =
     """
     del device_arch
     dofs = wp.constant(int(n_dofs))
+    force_rounds = (int(n_dofs) + int(tile_threads) - 1) // int(tile_threads)
     element_rounds = (int(n_dofs) * int(n_dofs) + int(tile_threads) - 1) // int(tile_threads)
     tile_stride = wp.constant(int(tile_threads))
 
@@ -10686,12 +10687,15 @@ def _get_crba_cholesky_kernel(n_dofs: int, device_arch: str, tile_threads: int =
         H_tile = wp.tile_zeros(shape=(dofs, dofs), dtype=wp.float32, storage="shared")
         force_tile = wp.tile_zeros(shape=(dofs,), dtype=wp.spatial_vector, storage="shared")
         dof_start = articulation_dof_start[art]
-        force = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        lane_has_dof = lane < dofs
-        if lane_has_dof:
-            joint = articulation_start[art] + dof_joint_offset[lane]
-            force = body_I_c[joint_child[joint]] * joint_S_s[dof_start + lane]
-        wp.tile_scatter_masked(force_tile, lane, force, lane_has_dof)
+        # Blocks narrower than the articulation stage its forces in several rounds.
+        for force_round in range(force_rounds):
+            dof = lane + force_round * tile_stride
+            force = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            has_dof = dof < dofs
+            if has_dof:
+                joint = articulation_start[art] + dof_joint_offset[dof]
+                force = body_I_c[joint_child[joint]] * joint_S_s[dof_start + dof]
+            wp.tile_scatter_masked(force_tile, dof, force, has_dof)
 
         # Every lane executes the same fixed number of cooperative scatters.
         # The immutable source map turns tree ancestry into direct indexing:
