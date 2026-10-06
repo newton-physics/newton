@@ -67,7 +67,7 @@ class CableRecording:
     """``[width, height]`` [px] of the stored frames and masks, used when :attr:`camera_intrinsics` is ``None``."""
 
     fov_deg: float | None = None
-    """Horizontal field of view [deg], required when :attr:`camera_intrinsics` is ``None``. There is no default."""
+    """Vertical field of view [deg], required when :attr:`camera_intrinsics` is ``None``. There is no default."""
 
     cable_start: list[float] | None = None
     """Cable attachment point in the robot base frame [m]."""
