@@ -163,6 +163,12 @@ class ControllerDifferentialIKModelFree(ControllerBase):
     graph replay) reads through to the current contents of the underlying
     array.
 
+    The controller reads input ports and overwrites output ports. Plain arrays
+    are read and written directly; indexed views use gather/scatter buffers.
+    Output ports must not overlap any input port or other output port in
+    memory, including through views. Overlap is not validated and may produce
+    incorrect results.
+
     Array shapes and devices are validated on each direct call to
     :meth:`step`, but not when a captured graph is replayed, since the
     checks run in Python at capture time only.
@@ -1165,6 +1171,13 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                     f"would be ignored."
                 )
 
+        if isinstance(dt, wp.array):
+            _validate_array(array=dt, name="dt", dtype=wp.float32, shape=(1,), device=self._device)
+            dt_buf = dt
+        else:
+            self._dt_buf.fill_(float(dt))
+            dt_buf = self._dt_buf
+
         # Plain-array ports are read in place; only views are gathered into the internal buffers.
         sources: dict[str, wp.array] = {}
         for port, name, buf, shape, dtype in bindings:
@@ -1442,13 +1455,6 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 outputs=[joint_qd_target],
                 device=self._device,
             )
-
-        if isinstance(dt, wp.array):
-            _validate_array(array=dt, name="dt", dtype=wp.float32, shape=(1,), device=self._device)
-            dt_buf = dt
-        else:
-            self._dt_buf.fill_(float(dt))
-            dt_buf = self._dt_buf
 
         wp.launch(
             _integrate_position_kernel,

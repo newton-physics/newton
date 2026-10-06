@@ -66,6 +66,12 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     Views are live and graph-capturable: bind them once, and each step (or graph
     replay) reads through to the current contents of the underlying array.
 
+    The controller reads input ports and overwrites output ports. Plain arrays
+    are read and written directly; indexed views use gather/scatter buffers.
+    Output ports must not overlap any input port or other output port in
+    memory, including through views. Overlap is not validated and may produce
+    incorrect results.
+
     Array shapes and devices are validated on each direct call to :meth:`step`,
     but not when a captured graph is replayed, since the checks run in Python
     at capture time only.
