@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the calibration contracts, goals, bundle rehydration and the cable world."""
+"""Tests for the calibration contracts, goals, bundle rehydration and cable evaluation."""
 
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.calibration import evaluate as evaluate_module
 from newton._src.calibration.data_source import CableDataSource
+from newton._src.calibration.evaluate import CableCandidate, CableEvaluator, CableTraceView, _goal_index_for_sim_frame
 from newton._src.calibration.evidence import CableEvidenceBundle, CableRecording
 from newton._src.calibration.goal import CableGoal, group_goals
 from newton._src.calibration.model import ANGLE_PARAM_EXP, CableWorld
@@ -338,14 +340,15 @@ def make_goal(**overrides):
 
 
 class DriveRecorder:
-    """A data source that records the drive it is asked for instead of sampling one."""
+    """A data source that records the drive it is asked for and returns ``drive`` instead of sampling one."""
 
-    def __init__(self):
+    def __init__(self, drive="drive"):
         self.calls = []
+        self.drive = drive
 
     def drive_buffer(self, start_ns, num_frames, substep_rate, sim_substeps):
         self.calls.append((start_ns, num_frames, substep_rate, sim_substeps))
-        return "drive"
+        return self.drive
 
 
 class TestCalibrationGoals(unittest.TestCase):
@@ -875,6 +878,25 @@ def scene_mask():
     return mask
 
 
+def make_scene_goal(viewing_dir=(0.0, 1.0, 0.0), **overrides):
+    """A goal of the hanging scene with two reference frames, at 0 s and 0.05 s."""
+    camera = scene_camera(viewing_dir)
+    values = {
+        "masks": [scene_mask()] * 2,
+        "frame_times": [0.0, 0.05],
+        "cable_start": HANG_START,
+        "sensor_pos": camera["sensor_pos"],
+        "sensor_quat": list(camera["sensor_quat"]),
+        "camera_intrinsics": SCENE_INTRINSICS,
+        "crop": list(SCENE_CROP),
+        "start_ns": 0,
+        "attachment_transform": HANG_DOWN,
+        "clamp_position": 0.0,
+    }
+    values.update(overrides)
+    return make_goal(**values)
+
+
 class LossPixelCount:
     """A pixel loss: the number of cable pixels inside the crop of the rendered mask. Keeps every mask it receives."""
 
@@ -1292,6 +1314,203 @@ class TestCalibrationRunSequence(unittest.TestCase):
         self.assertEqual(world.record_indices(num_frames, 1.0), [0])
         with self.assertRaisesRegex(ValueError, "record_fps"):
             world.record_indices(num_frames, 0.0)
+
+
+def make_candidate(angles=(0.0, 0.0)):
+    """A candidate whose three joints all have rest angles ``angles`` [rad]."""
+    return CableCandidate(
+        angles=[angles] * 3, bend_stiffness=1.0, twist_stiffness=1.0, bend_damping=0.01, twist_damping=0.01
+    )
+
+
+def make_evaluator(goals, loss, **overrides):
+    """A CableEvaluator over three-capsule cables, without settling."""
+    values = {
+        "settle_frames": 0,
+        "settle_mode": "dynamic",
+        "sim_iterations": 10,
+        "stretch_stiffness": 1000.0,
+        "num_elements": 3,
+        "segment_length": 0.05,
+        "cable_radius": 0.01,
+        "cable_mass": 0.02,
+        "angle_parametrization": ANGLE_PARAM_EXP,
+    }
+    values.update(overrides)
+    return CableEvaluator(goals, loss, **values)
+
+
+class TestTuningEvaluation(unittest.TestCase):
+    """Scoring a population against goals with CableEvaluator."""
+
+    def test_evaluator_passes_its_settings_to_the_world(self):
+        """Verify evaluate() and record() build and settle the world with the evaluator's settings.
+
+        The world also gets the goal's grasp and drive, and each candidate's
+        values. The frame rate also sets the goal timeline: the last reference
+        frame at 0.05 s is frame 1.5, which rounds to 2, so the timeline has 3
+        frames at 30 fps.
+        """
+        built, settled = [], []
+
+        class CableWorldRecorded(CableWorld):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                built.append((args, kwargs))
+
+            def settle(self, settle_frames):
+                settled.append(settle_frames)
+
+        drive = fixed_drive()
+        # A clamp one capsule from the end, 0.01 m along the TCP z axis, with the cable along the TCP x axis.
+        grasp = {
+            "attachment_transform": ((0.0, 0.0, 0.01), HANG_DOWN[1]),
+            "clamp_position": 0.05,
+            "cable_axis": (1.0, 0.0, 0.0),
+        }
+        goal = make_scene_goal(driven=True, data_source=DriveRecorder(drive), **grasp)
+        settings = {
+            "fps": 30,
+            "sim_substeps": 7,
+            "sim_iterations": 11,
+            "settle_check_every": 5,
+            "settle_move_tol": 2.0e-3,
+            "stretch_stiffness": 500.0,
+        }
+        evaluator = make_evaluator([goal], LossNodeDistance(), settle_frames=3, **settings)
+        self.assertEqual(evaluator.groups[0].num_frames, 3)
+        candidate = CableCandidate(
+            angles=[(0.0, 0.0)] * 3, bend_stiffness=1.5, twist_stiffness=2.5, bend_damping=0.03, twist_damping=0.04
+        )
+        with patch.object(evaluate_module, "CableWorld", CableWorldRecorded):
+            evaluator.evaluate([candidate])
+            evaluator.record(candidate)
+
+        self.assertEqual(len(built), 2)
+        self.assertEqual(settled, [3, 3])
+        for args, kwargs in built:
+            self.assertEqual({name: kwargs[name] for name in settings}, settings)
+            self.assertEqual({name: kwargs[name] for name in grasp}, grasp)
+            # The bend stiffness and the drive are the third and fourth positional arguments.
+            self.assertEqual(args[2], [1.5])
+            self.assertIs(args[3], drive)
+            self.assertEqual(kwargs["twist_stiffness_list"], [2.5])
+            self.assertEqual(kwargs["bend_damping_list"], [0.03])
+            self.assertEqual(kwargs["twist_damping_list"], [0.04])
+
+    def test_population_is_scored_in_one_pass(self):
+        """Verify a population is scored in one CableWorld and each candidate gets its own value.
+
+        Candidates that differ only in rest angles get different values, equal
+        candidates get equal values, and a candidate scores the same alone as in
+        the population. An empty population scores nothing.
+        """
+        evaluator = make_evaluator([make_scene_goal()], LossNodeDistance())
+        self.assertEqual(evaluator.evaluate([]), [])
+
+        candidates = [make_candidate(), make_candidate((0.3, 0.0)), make_candidate((0.0, 0.3)), make_candidate()]
+        built = []
+
+        class CableWorldCounted(CableWorld):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                built.append(self.n)
+
+        with patch.object(evaluate_module, "CableWorld", CableWorldCounted):
+            values = evaluator.evaluate(candidates)
+        self.assertEqual(built, [4])
+        self.assertEqual(len(values), 4)
+        self.assertEqual(len(set(values[:3])), 3)
+        self.assertAlmostEqual(values[3], values[0], places=5)
+        self.assertAlmostEqual(evaluator.evaluate([candidates[2]])[0], values[2], places=3)
+
+    def test_record_returns_one_trace_per_view(self):
+        """Verify record() returns one trace per view, with every frame paired with its reference frame.
+
+        Two cameras see one recording, so each view has half the weight. The
+        reference frames at 0 s and 0.05 s span four simulated frames; frames 0
+        and 1 are nearest the first reference, frames 2 and 3 the second. The
+        per-frame losses add up to the view's loss, and the weighted view losses
+        add up to the value evaluate() gives. Each view keeps its own frames,
+        masks and loss.
+        """
+        goals = [make_scene_goal(label="front"), make_scene_goal(label="side", viewing_dir=(-1.0, 0.0, 0.0))]
+        evaluator = make_evaluator(goals, LossNodeDistance())
+        candidate = make_candidate((0.0, 0.3))
+        views = evaluator.record(candidate)
+
+        self.assertEqual([v.label for v in views], ["front", "side"])
+        # At frame 0 both views see the same straight cable; the bent cable then looks different from each side.
+        self.assertFalse(np.array_equal(views[0].masks[-1], views[1].masks[-1]))
+        self.assertFalse(np.array_equal(views[0].frames[-1], views[1].frames[-1]))
+        self.assertGreater(abs(views[0].loss - views[1].loss), 0.05)
+        for view in views:
+            with self.subTest(view.label):
+                self.assertIsInstance(view, CableTraceView)
+                self.assertEqual(view.weight, 0.5)
+                self.assertEqual(view.crop, SCENE_CROP)
+                self.assertEqual([f.shape for f in view.frames], [(24, 32, 4)] * 4)
+                self.assertEqual([m.shape for m in view.masks], [(24, 32)] * 4)
+                self.assertEqual(view.goal_indices, [0, 0, 1, 1])
+                np.testing.assert_allclose([t for t, _ in view.frame_losses], [0.0, 0.05])
+                self.assertAlmostEqual(sum(v for _, v in view.frame_losses) / 2, view.loss, places=5)
+        self.assertAlmostEqual(evaluator.evaluate([candidate])[0], sum(v.weight * v.loss for v in views), places=4)
+
+    def test_record_keeps_frames_at_the_record_rate(self):
+        """Verify record() keeps only the frames of record_fps and pairs each with its reference frame.
+
+        The references at 0 s and 0.05 s span four frames at 60 fps. At half that
+        rate, record() keeps two frames, the first and the last.
+        """
+        evaluator = make_evaluator([make_scene_goal()], LossNodeDistance())
+        (view,) = evaluator.record(make_candidate(), record_fps=evaluator.fps / 2)
+        self.assertEqual(len(view.frames), 2)
+        self.assertEqual(len(view.masks), 2)
+        self.assertEqual(view.goal_indices, [0, 1])
+
+    def test_record_pairs_frames_by_capture_time(self):
+        """Verify evaluate() and record() score each reference frame at the simulated frame of its capture time.
+
+        The references at 0 s, 0.01 s and 0.05 s are not evenly spaced. At 60 fps
+        they fall on frames 0, 1 and 3 (0.6 frames rounds to 1). Pairing by index
+        would score frames 0, 2 and 3. record() also pairs each simulated frame
+        with the nearest reference: frame 2 (0.033 s) is nearest 0.05 s. The
+        candidate is bent, so the cable moves and frames 1 and 2 score differently.
+        """
+        goal = make_scene_goal(masks=[scene_mask()] * 3, frame_times=[0.0, 0.01, 0.05])
+        evaluator = make_evaluator([goal], LossNodeDistance())
+        candidate = make_candidate((0.0, 0.3))
+        (view,) = evaluator.record(candidate)
+        self.assertEqual(view.goal_indices, [0, 1, 2, 2])
+        fps = evaluator.fps
+        np.testing.assert_allclose([t for t, _ in view.frame_losses], [0.0, 1 / fps, 3 / fps])
+        self.assertAlmostEqual(evaluator.evaluate([candidate])[0], view.loss, places=5)
+
+    def test_recorded_frames_pair_with_the_reference_nearest_in_time(self):
+        """Verify a simulated frame pairs with the reference frame nearest to it in capture time.
+
+        This is the inverse of the reference-to-simulation matching in
+        run_sequence. Without capture times, the reference frames are spread
+        evenly over the timeline.
+        """
+        fps = 60.0
+        # References at 0.0, 0.5 and 1.0 s; simulated frame 30 is at 0.5 s.
+        times = [0.0, 0.5, 1.0]
+        self.assertEqual(_goal_index_for_sim_frame(0, 61, times, 3, fps), 0)
+        self.assertEqual(_goal_index_for_sim_frame(30, 61, times, 3, fps), 1)
+        self.assertEqual(_goal_index_for_sim_frame(60, 61, times, 3, fps), 2)
+        # Nearest, not preceding: frame 25 (0.417 s) is closer to 0.5 s than to 0.0 s.
+        self.assertEqual(_goal_index_for_sim_frame(25, 61, times, 3, fps), 1)
+
+        self.assertEqual(_goal_index_for_sim_frame(0, 61, None, 3, fps), 0)
+        self.assertEqual(_goal_index_for_sim_frame(30, 61, None, 3, fps), 1)
+        self.assertEqual(_goal_index_for_sim_frame(60, 61, None, 3, fps), 2)
+        # Nearest, not preceding: frame 20 is 2/3 of the way to the second reference.
+        self.assertEqual(_goal_index_for_sim_frame(20, 61, None, 3, fps), 1)
+
+        # Every frame pairs with a single reference, with or without capture times.
+        self.assertEqual(_goal_index_for_sim_frame(42, 61, None, 1, fps), 0)
+        self.assertEqual(_goal_index_for_sim_frame(42, 61, times[:1], 1, fps), 0)
 
 
 if __name__ == "__main__":
