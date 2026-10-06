@@ -1,0 +1,1 @@
+Add contact force export to `SolverVBD`: `update_contacts()` populates `Contacts.force` with one wrench per body-body contact (when VBD integrates the rigid bodies) and per rigid-soft particle, edge, or face contact record (force on body 0 or on the contacted shape's body, with torque about its center of mass), evaluated at the final configuration of the preceding step.

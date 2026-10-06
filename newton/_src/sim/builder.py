@@ -14,8 +14,9 @@ import math
 import os
 import warnings
 import weakref
+from bisect import bisect_left
 from collections import Counter, deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -142,6 +143,11 @@ _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pa
 _DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
 _ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
     "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
+)
+_JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
+    "ModelBuilder.joint_twist_lower and ModelBuilder.joint_twist_upper are deprecated in Newton 1.7 and "
+    "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
+    "limits of ModelBuilder.JointDofConfig instead."
 )
 _ADD_ROD_POSITIONS_DEPRECATION_MSG = (
     "ModelBuilder.add_rod(positions=...) is deprecated in Newton 1.6; "
@@ -337,19 +343,41 @@ def _build_convex_support_acceleration(source: Mesh) -> tuple[np.ndarray, np.nda
     return lut, offsets, np.asarray(neighbors, dtype=np.int32)
 
 
-def _build_joint_ancestor(joint_parent: Sequence[int], joint_child: Sequence[int]) -> np.ndarray:
+def _build_joint_ancestor(
+    joint_parent: Sequence[int], joint_child: Sequence[int], joint_articulation: Sequence[int]
+) -> np.ndarray:
     joint_parents = np.asarray(joint_parent, dtype=np.int32)
     joint_children = np.asarray(joint_child, dtype=np.int32)
+    joint_articulations = np.asarray(joint_articulation, dtype=np.int32)
     joint_indices = np.arange(len(joint_parents), dtype=np.int32)
     max_child = int(np.max(joint_children, initial=-1))
 
     body_joint = np.full(max_child + 1, -1, dtype=np.int32)
     valid_child = joint_children >= 0
     body_joint[joint_children[valid_child]] = joint_indices[valid_child]
+    # Prefer articulation tree joints over loop closures, regardless of creation order.
+    tree_joint = valid_child & (joint_articulations >= 0)
+    body_joint[joint_children[tree_joint]] = joint_indices[tree_joint]
 
     parent_joint = np.full(len(joint_parents), -1, dtype=np.int32)
     has_parent = (joint_parents >= 0) & (joint_parents <= max_child)
     parent_joint[has_parent] = body_joint[joint_parents[has_parent]]
+
+    # Articulated ancestry must stay within its own tree and stop at external roots.
+    # Include articulation IDs because a body may be a child in multiple articulations.
+    articulated = joint_articulations >= 0
+    parent_joint[articulated] = -1
+    tree_indices = joint_indices[tree_joint]
+    if len(tree_indices):
+        body_stride = max_child + 1
+        child_keys = joint_articulations[tree_indices].astype(np.int64) * body_stride + joint_children[tree_indices]
+        order = np.argsort(child_keys, kind="stable")
+        sorted_keys = child_keys[order]
+        candidates = joint_indices[articulated & has_parent]
+        parent_keys = joint_articulations[candidates].astype(np.int64) * body_stride + joint_parents[candidates]
+        positions = np.searchsorted(sorted_keys, parent_keys, side="right") - 1
+        found = (positions >= 0) & (sorted_keys[np.maximum(positions, 0)] == parent_keys)
+        parent_joint[candidates[found]] = tree_indices[order[positions[found]]]
     return parent_joint
 
 
@@ -655,13 +683,13 @@ class ModelBuilder:
     }
 
     _BUILDER_GROUP_REFERENCES: ClassVar[dict[str, dict[str, Model.AttributeFrequency]]] = {
-        "cable": {
+        "curve": {
             "body_start": Model.AttributeFrequency.BODY,
             "body_end": Model.AttributeFrequency.BODY,
             "joint_start": Model.AttributeFrequency.JOINT,
             "joint_end": Model.AttributeFrequency.JOINT,
         },
-        "cloth": {
+        "surface": {
             "particle_start": Model.AttributeFrequency.PARTICLE,
             "particle_end": Model.AttributeFrequency.PARTICLE,
             "tri_start": Model.AttributeFrequency.TRIANGLE,
@@ -669,7 +697,7 @@ class ModelBuilder:
             "edge_start": Model.AttributeFrequency.EDGE,
             "edge_end": Model.AttributeFrequency.EDGE,
         },
-        "soft": {
+        "volume": {
             "particle_start": Model.AttributeFrequency.PARTICLE,
             "particle_end": Model.AttributeFrequency.PARTICLE,
             "tet_start": Model.AttributeFrequency.TETRAHEDRON,
@@ -1835,10 +1863,9 @@ class ModelBuilder:
         self.joint_friction: list[float] = []
         """Joint friction values accumulated for :attr:`Model.joint_friction`."""
 
-        self.joint_twist_lower: list[float] = []
-        """Lower twist limits accumulated for :attr:`Model.joint_twist_lower`."""
-        self.joint_twist_upper: list[float] = []
-        """Upper twist limits accumulated for :attr:`Model.joint_twist_upper`."""
+        # Created on first access so a fresh builder has no merge-managed list for them.
+        self._deprecated_joint_twist_lower: list[float] | None = None
+        self._deprecated_joint_twist_upper: list[float] | None = None
 
         self.joint_enabled: list[bool] = []
         """Joint enabled flags accumulated for :attr:`Model.joint_enabled`."""
@@ -1872,52 +1899,108 @@ class ModelBuilder:
         self.articulation_world: list[int] = []
         """World indices accumulated for :attr:`Model.articulation_world`."""
 
-        # Deformable group registries: prim-path-labelled, world-tagged index ranges for each
-        # imported cable/cloth/volume (mirrors articulation_start/end/label/world). Ranges are
-        # [start, end) into the corresponding builder arrays, and replicate()/add_builder() carry
-        # them per world so each group stays indexable by path.
-        self._cable_label: list[str] = []
-        """Prim-path labels of imported cable groups."""
-        self._cable_world: list[int] = []
-        """World index of each cable group."""
-        self._cable_body_start: list[int] = []
-        """Inclusive body-range start of each cable group."""
-        self._cable_body_end: list[int] = []
-        """Exclusive body-range end of each cable group."""
-        self._cable_joint_start: list[int] = []
-        """Inclusive joint-range start of each cable group."""
-        self._cable_joint_end: list[int] = []
-        """Exclusive joint-range end of each cable group."""
+        # Public labels and worlds mirror articulation_label/articulation_world.
+        # Applications may edit labels; the builder assigns worlds during construction
+        # and cloning. Private [start, end) ranges locate simulation data in builder
+        # arrays: rod-backed curves use bodies/joints, triangle surfaces use
+        # particles/triangles/edges, and tetrahedral volumes use particles/tets.
+        self.curve_label: list[str] = []
+        """Labels of rod-backed deformable objects, aligned with :attr:`curve_world`.
 
-        self._cloth_label: list[str] = []
-        """Prim-path labels of imported cloth groups."""
-        self._cloth_world: list[int] = []
-        """World index of each cloth group."""
-        self._cloth_particle_start: list[int] = []
-        """Inclusive particle-range start of each cloth group."""
-        self._cloth_particle_end: list[int] = []
-        """Exclusive particle-range end of each cloth group."""
-        self._cloth_tri_start: list[int] = []
-        """Inclusive triangle-range start of each cloth group."""
-        self._cloth_tri_end: list[int] = []
-        """Exclusive triangle-range end of each cloth group."""
-        self._cloth_edge_start: list[int] = []
-        """Inclusive edge-range start of each cloth group."""
-        self._cloth_edge_end: list[int] = []
-        """Exclusive edge-range end of each cloth group."""
+        Native :meth:`add_rod` and :meth:`add_rod_graph` calls each append one entry.
+        USD cable imports record one entry per simulation prim, except that curves
+        welded into a graph share one entry for the complete graph. A prim containing
+        several disconnected curves also has one entry. See :ref:`deformable-objects`
+        for graph labels and builder-time identity updates.
 
-        self._soft_label: list[str] = []
-        """Prim-path labels of imported soft (volume) groups."""
-        self._soft_world: list[int] = []
-        """World index of each soft group."""
-        self._soft_particle_start: list[int] = []
-        """Inclusive particle-range start of each soft group."""
-        self._soft_particle_end: list[int] = []
-        """Exclusive particle-range end of each soft group."""
-        self._soft_tet_start: list[int] = []
-        """Inclusive tetrahedron-range start of each soft group."""
-        self._soft_tet_end: list[int] = []
-        """Exclusive tetrahedron-range end of each soft group."""
+        .. experimental::
+
+           Builder-time deformable object identities may change without notice.
+        """
+        self.curve_world: list[int] = []
+        """World index corresponding to each entry in :attr:`curve_label`.
+
+        Assigned by the builder during construction and cloning. Do not edit this list;
+        use the world-assignment methods described in :ref:`deformable-objects`.
+
+        .. experimental::
+
+           Builder-time deformable object identities may change without notice.
+        """
+        self._curve_body_start: list[int] = []
+        """Inclusive body-range start of each deformable curve."""
+        self._curve_body_end: list[int] = []
+        """Exclusive body-range end of each deformable curve."""
+        self._curve_joint_start: list[int] = []
+        """Inclusive joint-range start of each deformable curve."""
+        self._curve_joint_end: list[int] = []
+        """Exclusive joint-range end of each deformable curve."""
+        self._curve_object_recording_suppressed: int = 0
+        """Nesting depth for private deformable-curve recording suppression."""
+
+        self.surface_label: list[str] = []
+        """Labels of deformable objects represented by triangle surfaces, aligned with :attr:`surface_world`.
+
+        :meth:`add_cloth_mesh` and :meth:`add_cloth_grid` each record one cloth.
+        USD cloth imports record one entry per simulation prim.
+        See :ref:`deformable-objects` for builder-time identity updates.
+
+        .. experimental::
+
+           Builder-time deformable object identities may change without notice.
+        """
+        self.surface_world: list[int] = []
+        """World index corresponding to each entry in :attr:`surface_label`.
+
+        Assigned by the builder during construction and cloning. Do not edit this list;
+        use the world-assignment methods described in :ref:`deformable-objects`.
+
+        .. experimental::
+
+           Builder-time deformable object identities may change without notice.
+        """
+        self._surface_particle_start: list[int] = []
+        """Inclusive particle-range start of each deformable surface."""
+        self._surface_particle_end: list[int] = []
+        """Exclusive particle-range end of each deformable surface."""
+        self._surface_tri_start: list[int] = []
+        """Inclusive triangle-range start of each deformable surface."""
+        self._surface_tri_end: list[int] = []
+        """Exclusive triangle-range end of each deformable surface."""
+        self._surface_edge_start: list[int] = []
+        """Inclusive edge-range start of each deformable surface."""
+        self._surface_edge_end: list[int] = []
+        """Exclusive edge-range end of each deformable surface."""
+
+        self.volume_label: list[str] = []
+        """Labels of deformable objects represented by tetrahedral volumes, aligned with :attr:`volume_world`.
+
+        :meth:`add_soft_mesh` and :meth:`add_soft_grid` each record one soft body.
+        USD volume imports record one entry per simulation prim.
+        See :ref:`deformable-objects` for builder-time identity updates.
+
+        .. experimental::
+
+           Builder-time deformable object identities may change without notice.
+        """
+        self.volume_world: list[int] = []
+        """World index corresponding to each entry in :attr:`volume_label`.
+
+        Assigned by the builder during construction and cloning. Do not edit this list;
+        use the world-assignment methods described in :ref:`deformable-objects`.
+
+        .. experimental::
+
+           Builder-time deformable object identities may change without notice.
+        """
+        self._volume_particle_start: list[int] = []
+        """Inclusive particle-range start of each deformable volume."""
+        self._volume_particle_end: list[int] = []
+        """Exclusive particle-range end of each deformable volume."""
+        self._volume_tet_start: list[int] = []
+        """Inclusive tetrahedron-range start of each deformable volume."""
+        self._volume_tet_end: list[int] = []
+        """Exclusive tetrahedron-range end of each deformable volume."""
 
         self.joint_dof_count: int = 0
         """Total joint DoF count propagated to :attr:`Model.joint_dof_count`."""
@@ -3054,6 +3137,42 @@ class ModelBuilder:
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
+    @property
+    def joint_twist_lower(self) -> list[float]:
+        """Lower twist limits, never used by :meth:`finalize` or any solver.
+
+        .. deprecated:: 1.7
+            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
+        """
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        if self._deprecated_joint_twist_lower is None:
+            self._deprecated_joint_twist_lower = []
+        return self._deprecated_joint_twist_lower
+
+    @joint_twist_lower.setter
+    def joint_twist_lower(self, value: list[float]) -> None:
+        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
+        self._deprecated_joint_twist_lower = value
+
+    @property
+    def joint_twist_upper(self) -> list[float]:
+        """Upper twist limits, never used by :meth:`finalize` or any solver.
+
+        .. deprecated:: 1.7
+            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
+        """
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        if self._deprecated_joint_twist_upper is None:
+            self._deprecated_joint_twist_upper = []
+        return self._deprecated_joint_twist_upper
+
+    @joint_twist_upper.setter
+    def joint_twist_upper(self, value: list[float]) -> None:
+        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
+        self._deprecated_joint_twist_upper = value
+
     def _project_target_q_to_dof(self) -> list[float] | np.ndarray:
         """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
         the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped one.
@@ -3257,6 +3376,15 @@ class ModelBuilder:
             transform_mul_cfunc(a, b, ctypes.byref(out))
             return out
 
+        def rotate_vectors(rotation: wp.quat, vectors: np.ndarray) -> None:
+            # In-place SO(3) on (N, 3). Translation is not applied: a pure offset
+            # must leave linear and angular velocity unchanged.
+            q = np.asarray(rotation, dtype=np.float32)
+            xyz = q[:3]
+            w = float(q[3])
+            t = 2.0 * np.cross(xyz, vectors)
+            vectors += np.cross(xyz, t) + w * t
+
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
         attribute_specs = self._builder_merge_attribute_specs()
@@ -3373,10 +3501,15 @@ class ModelBuilder:
 
         attribute_specs.pop("joint_X_p")
         attribute_specs.pop("joint_q")
+        attribute_specs.pop("joint_qd")
         joint_X_p_start = array_starts.get("joint_X_p", int(bases["joint"]))
         if "joint_X_p" not in array_starts:
             self.joint_X_p.extend(source_list("joint_X_p") * world_count)
         joint_q = np.tile(np.asarray(builder.joint_q, dtype=np.float32), world_count)
+        # joint_qd is parent-frame. Free-root twists use the same rotation as joint_q
+        # (xform conjugated by joint_X_p). Other joint velocities are unchanged.
+        joint_qd_source = np.asarray(builder.joint_qd, dtype=np.float32)
+        joint_qd = np.tile(joint_qd_source, world_count)
         if counts["joint"]:
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)
@@ -3396,23 +3529,33 @@ class ModelBuilder:
                 free_root_frames = []
                 for joint in free_roots.tolist():
                     source_q = builder.joint_q_start[joint]
+                    source_qd = builder.joint_qd_start[joint]
                     xform_prev = wp.transform(*builder.joint_q[source_q : source_q + 7])
                     X_pj = wp.transform(*builder.joint_X_p[joint])
-                    free_root_frames.append((source_q, X_pj, wp.transform_inverse(X_pj), xform_prev))
+                    free_root_frames.append((source_q, source_qd, X_pj, wp.transform_inverse(X_pj), xform_prev))
                 for world_index, xform in enumerate(xforms):
                     if xform is None:
                         continue
                     coord_base = world_index * counts["joint_coord"]
-                    for source_q, X_pj, X_pj_inv, xform_prev in free_root_frames:
+                    dof_base = world_index * len(joint_qd_source)
+                    rotate_qd = not np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION)
+                    for source_q, source_qd, X_pj, X_pj_inv, xform_prev in free_root_frames:
                         xform_local = transform_mul(transform_mul(X_pj_inv, xform), X_pj)
                         transformed = transform_mul(xform_local, xform_prev)
                         target_q = coord_base + source_q
                         joint_q[target_q : target_q + 7] = np.asarray(transformed, dtype=np.float32)
+                        if rotate_qd:
+                            twist = joint_qd[dof_base + source_qd : dof_base + source_qd + 6].reshape(2, 3)
+                            rotate_vectors(wp.transform_get_rotation(xform_local), twist)
 
         if "joint_q" in array_starts:
             self.joint_q[array_starts["joint_q"] :] = joint_q
         else:
             self.joint_q.extend(joint_q.tolist())
+        if "joint_qd" in array_starts:
+            self.joint_qd[array_starts["joint_qd"] :] = joint_qd
+        elif len(joint_qd):
+            self.joint_qd.extend(joint_qd.tolist())
 
         for world_index, joint_start in enumerate(joint_starts.tolist()):
             body_start = int(body_starts[world_index])
@@ -3452,6 +3595,24 @@ class ModelBuilder:
                             transform_mul(xform, wp.transform(*source_body_q)) for source_body_q in builder.body_q
                         )
                     body_q_target += counts["body"]
+
+        # body_qd is a world-frame twist (linear, angular). Rotate both parts by the
+        # copy rotation. An identity rotation, including translation-only copies, is
+        # left bit-exact.
+        attribute_specs.pop("body_qd")
+        if counts["body"]:
+            body_qd = np.tile(np.asarray(builder.body_qd, dtype=np.float32).reshape((-1, 6)), (world_count, 1))
+            if not translations_only:
+                for world_index, xform in enumerate(xforms):
+                    if xform is None or np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION):
+                        continue
+                    sl = slice(world_index * counts["body"], (world_index + 1) * counts["body"])
+                    rotate_vectors(xform.q, body_qd[sl, :3])
+                    rotate_vectors(xform.q, body_qd[sl, 3:])
+            if "body_qd" in array_starts:
+                self.body_qd[array_starts["body_qd"] :] = body_qd
+            else:
+                self.body_qd.extend(wp.spatial_vector.from_buffer_copy(row) for row in body_qd)
 
         source_filter_pairs = builder._shape_collision_filter_pairs
         if source_filter_pairs:
@@ -3600,9 +3761,9 @@ class ModelBuilder:
         specs["joint_target_q"] = Model.AttributeSpec(target_q_frequency)
 
         for group, references in cls._BUILDER_GROUP_REFERENCES.items():
-            specs[f"_{group}_label"] = Model.AttributeSpec(group)
-            specs[f"_{group}_world"] = Model.AttributeSpec(group, references=Model.AttributeFrequency.WORLD)
-            declared_builder_attributes.update((f"_{group}_label", f"_{group}_world"))
+            specs[f"{group}_label"] = Model.AttributeSpec(group)
+            specs[f"{group}_world"] = Model.AttributeSpec(group, references=Model.AttributeFrequency.WORLD)
+            declared_builder_attributes.update((f"{group}_label", f"{group}_world"))
             for suffix, reference in references.items():
                 name = f"_{group}_{suffix}"
                 specs[name] = Model.AttributeSpec(
@@ -3821,50 +3982,64 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.ARTICULATION,
             )
 
-    def _record_cable_group(
+    def _record_curve_deformable_object(
         self,
-        label: str,
+        label: str | None,
         body_range: tuple[int, int],
         joint_range: tuple[int, int],
     ) -> None:
-        """Register an imported cable as an addressable, world-tagged group."""
-        self._cable_label.append(label)
-        self._cable_world.append(self.current_world)
-        self._cable_body_start.append(body_range[0])
-        self._cable_body_end.append(body_range[1])
-        self._cable_joint_start.append(joint_range[0])
-        self._cable_joint_end.append(joint_range[1])
+        """Register a curve as an addressable, world-tagged deformable object."""
+        if self._curve_object_recording_suppressed:
+            return
+        label = label or f"curve_{len(self.curve_label)}"
+        self.curve_label.append(label)
+        self.curve_world.append(self.current_world)
+        self._curve_body_start.append(body_range[0])
+        self._curve_body_end.append(body_range[1])
+        self._curve_joint_start.append(joint_range[0])
+        self._curve_joint_end.append(joint_range[1])
 
-    def _record_cloth_group(
+    @contextmanager
+    def _suppress_curve_object_recording(self) -> Iterator[None]:
+        """Let internal callers record complete curves instead of their construction parts."""
+        self._curve_object_recording_suppressed += 1
+        try:
+            yield
+        finally:
+            self._curve_object_recording_suppressed -= 1
+
+    def _record_surface_deformable_object(
         self,
-        label: str,
+        label: str | None,
         particle_range: tuple[int, int],
         tri_range: tuple[int, int],
         edge_range: tuple[int, int],
     ) -> None:
-        """Register an imported cloth as an addressable, world-tagged group."""
-        self._cloth_label.append(label)
-        self._cloth_world.append(self.current_world)
-        self._cloth_particle_start.append(particle_range[0])
-        self._cloth_particle_end.append(particle_range[1])
-        self._cloth_tri_start.append(tri_range[0])
-        self._cloth_tri_end.append(tri_range[1])
-        self._cloth_edge_start.append(edge_range[0])
-        self._cloth_edge_end.append(edge_range[1])
+        """Register a surface as an addressable, world-tagged deformable object."""
+        label = label or f"surface_{len(self.surface_label)}"
+        self.surface_label.append(label)
+        self.surface_world.append(self.current_world)
+        self._surface_particle_start.append(particle_range[0])
+        self._surface_particle_end.append(particle_range[1])
+        self._surface_tri_start.append(tri_range[0])
+        self._surface_tri_end.append(tri_range[1])
+        self._surface_edge_start.append(edge_range[0])
+        self._surface_edge_end.append(edge_range[1])
 
-    def _record_soft_group(
+    def _record_volume_deformable_object(
         self,
-        label: str,
+        label: str | None,
         particle_range: tuple[int, int],
         tet_range: tuple[int, int],
     ) -> None:
-        """Register an imported soft volume as an addressable, world-tagged group."""
-        self._soft_label.append(label)
-        self._soft_world.append(self.current_world)
-        self._soft_particle_start.append(particle_range[0])
-        self._soft_particle_end.append(particle_range[1])
-        self._soft_tet_start.append(tet_range[0])
-        self._soft_tet_end.append(tet_range[1])
+        """Register a volume as an addressable, world-tagged deformable object."""
+        label = label or f"volume_{len(self.volume_label)}"
+        self.volume_label.append(label)
+        self.volume_world.append(self.current_world)
+        self._volume_particle_start.append(particle_range[0])
+        self._volume_particle_end.append(particle_range[1])
+        self._volume_tet_start.append(tet_range[0])
+        self._volume_tet_end.append(tet_range[1])
 
     # region importers
     def add_urdf(
@@ -4136,7 +4311,9 @@ class ModelBuilder:
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
             enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
             apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
-            root_path: The USD path to import, defaults to "/".
+            root_path: The USD path to import, defaults to "/". Bound physics materials
+                outside this subtree are resolved without importing unrelated bodies
+                or shapes.
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
@@ -6544,6 +6721,13 @@ class ModelBuilder:
             verbose: If True, print additional information about the collapsed joints.
             joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
                 the collapse process.
+
+        Note:
+            Deformable labels do not change which fixed joints are collapsed. A curve's
+            record is retained only if all of its segment bodies and joints survive.
+            Otherwise the incomplete record is omitted with a warning. Pass the relevant
+            fixed joint through ``joints_to_keep`` to preserve the complete curve.
+            Curve-removal warnings are emitted after collapse completes.
         """
         joints_to_keep = set(joints_to_keep or ())
 
@@ -6848,7 +7032,7 @@ class ModelBuilder:
         # Reindex retained bodies in their original relative order: DFS discovery order
         # would reorder bodies whenever a loop-closing joint (e.g. an attachment anchor)
         # reaches a body before its chain root, breaking parent < child joint ordering
-        # and the contiguity of recorded group ranges.
+        # and the contiguity of recorded deformable object ranges.
         retained_bodies.sort()
         for new_id, original_id in enumerate(retained_bodies):
             body_data[original_id]["id"] = new_id
@@ -6984,36 +7168,52 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
-        # Remap cable group ranges onto the reindexed bodies/joints. Cable bodies are linked by rod
-        # joints (never fixed), so they are not collapsed and their ranges stay contiguous; only their
-        # indices shift as other bodies/joints are dropped. Cloth/volume ranges address particles and
-        # triangles/tets/edges, which fixed-joint collapse never touches, so they are left untouched.
-        def _remap_body_id(body_id: int) -> int:
-            # Cable bodies are linked only by non-fixed rod joints, so collapse must never
-            # merge or drop them; a violation would silently corrupt every recorded range.
-            assert body_id in body_remap, f"cable body {body_id} was collapsed; cable ranges would be corrupt"
-            return body_remap[body_id]
+        # Rebuild deformable curve ranges after reindexing. Retain a deformable object record only when
+        # every one of its simulation bodies and joints survived collapse; exposing a partial
+        # range would misrepresent the original curve topology.
+        curve_records = []
+        incomplete_curve_labels = []
+        for label, world, body_start, body_end, joint_start, joint_end in zip(
+            self.curve_label,
+            self.curve_world,
+            self._curve_body_start,
+            self._curve_body_end,
+            self._curve_joint_start,
+            self._curve_joint_end,
+            strict=True,
+        ):
+            old_bodies = list(range(body_start, body_end))
+            old_joints = list(range(joint_start, joint_end))
+            new_bodies = [body_remap[body] for body in old_bodies if body in body_remap]
+            new_joints = [joint_remap[joint] for joint in old_joints if joint in joint_remap]
 
-        for i in range(len(self._cable_label)):
-            if self._cable_body_end[i] > self._cable_body_start[i]:
-                new_start = _remap_body_id(self._cable_body_start[i])
-                self._cable_body_start[i] = new_start
-                self._cable_body_end[i] = _remap_body_id(self._cable_body_end[i] - 1) + 1
-            if self._cable_joint_end[i] > self._cable_joint_start[i]:
-                first, last = self._cable_joint_start[i], self._cable_joint_end[i] - 1
-                assert first in joint_remap and last in joint_remap, (
-                    f"rod joints [{first}, {last}] were collapsed; cable ranges would be corrupt"
-                )
-                self._cable_joint_start[i] = joint_remap[first]
-                self._cable_joint_end[i] = joint_remap[last] + 1
+            bodies_complete = len(new_bodies) == len(old_bodies) and all(
+                body == new_bodies[0] + offset for offset, body in enumerate(new_bodies)
+            )
+            joints_complete = len(new_joints) == len(old_joints) and (
+                not new_joints or all(joint == new_joints[0] + offset for offset, joint in enumerate(new_joints))
+            )
+            if not old_bodies or not bodies_complete or not joints_complete:
+                incomplete_curve_labels.append(label)
+                continue
+
+            if new_joints:
+                remapped_joint_range = (new_joints[0], new_joints[-1] + 1)
             else:
-                # A welded-graph curve owns no tree joints, but its empty [b, b) boundary must
-                # still shift with the retained joints, else it can point past the collapsed
-                # joint array. Map b to the number of retained joints below it.
-                boundary = self._cable_joint_start[i]
-                new_boundary = sum(1 for old_joint in joint_remap if old_joint < boundary)
-                self._cable_joint_start[i] = new_boundary
-                self._cable_joint_end[i] = new_boundary
+                # Unwrapped single segments have empty joint ranges. Shift each boundary
+                # by the count of earlier retained joints, using their sorted order to
+                # avoid a full scan.
+                new_boundary = bisect_left(retained_joints, joint_start, key=lambda joint: joint["original_id"])
+                remapped_joint_range = (new_boundary, new_boundary)
+
+            curve_records.append((label, world, new_bodies[0], new_bodies[-1] + 1, *remapped_joint_range))
+
+        self.curve_label = [record[0] for record in curve_records]
+        self.curve_world = [record[1] for record in curve_records]
+        self._curve_body_start = [record[2] for record in curve_records]
+        self._curve_body_end = [record[3] for record in curve_records]
+        self._curve_joint_start = [record[4] for record in curve_records]
+        self._curve_joint_end = [record[5] for record in curve_records]
 
         def remap_articulation_reference(value: Any) -> Any:
             if isinstance(value, bool):
@@ -7338,6 +7538,16 @@ class ModelBuilder:
                 self.joint_children[p] = [(c, i)]
             else:
                 self.joint_children[p].append((c, i))
+
+        # Warning filters may raise, so finish rebuilding all references before emitting these.
+        for label in incomplete_curve_labels:
+            warnings.warn(
+                f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because one or more "
+                "of its segment bodies or joints were removed; pass the relevant fixed joint through "
+                "joints_to_keep to preserve the complete deformable object.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         return {
             "body_remap": body_remap,
@@ -9087,8 +9297,11 @@ class ModelBuilder:
                 segment back to the first. Repeat the first position at the end
                 to include the closing segment. When using ``rod``, pass
                 ``closed=True`` to the :class:`newton.Rod` constructor instead.
-            label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
-                retain the historical ``{label}_cable_{n}`` form for compatibility.
+            label: Optional label prefix for bodies, shapes, joints, and articulations.
+                The same name is appended to :attr:`curve_label` for this rod; if None,
+                a generated ``curve_N`` label is used. See :ref:`deformable-objects`.
+                Generated joint labels retain
+                the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: Whether Newton automatically creates
                 articulations for the generated tree joints. Defaults to True.
                 See the Articulations section below.
@@ -9166,6 +9379,8 @@ class ModelBuilder:
         if rod is not None and not isinstance(rod, Rod):
             raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
 
+        start_body = self.body_count
+        start_joint = self.joint_count
         if rod is not None:
             if quaternions is not None:
                 raise ValueError("add_rod: quaternions must be None when rod is supplied")
@@ -9173,7 +9388,7 @@ class ModelBuilder:
                 raise ValueError("add_rod: radius must be None when rod is supplied; set rod.radius instead")
             if closed is not None:
                 raise ValueError("add_rod: closed must be None when rod is supplied")
-            return self._add_rod_object(
+            result = self._add_rod_object(
                 rod,
                 cfg=cfg,
                 stretch_stiffness=stretch_stiffness,
@@ -9190,6 +9405,8 @@ class ModelBuilder:
                 color=color,
                 body_frame_origin=body_frame_origin,
             )
+            self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
+            return result
 
         assert positions is not None
         warnings.warn(
@@ -9197,7 +9414,7 @@ class ModelBuilder:
             DeprecationWarning,
             stacklevel=self._external_warning_stacklevel(),
         )
-        return self._add_rod_chain(
+        result = self._add_rod_chain(
             positions,
             quaternions=quaternions,
             radius=radius,
@@ -9216,6 +9433,8 @@ class ModelBuilder:
             color=color,
             body_frame_origin=body_frame_origin,
         )
+        self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
+        return result
 
     def add_rod_graph(
         self,
@@ -9284,8 +9503,11 @@ class ModelBuilder:
                 ``bend_stiffness``.
             twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, and articulations. Generated
-                joint labels retain the historical ``{label}_cable_{n}`` form for compatibility.
+            label: Optional label prefix for bodies, shapes, joints, and articulations.
+                The same name is appended to :attr:`curve_label` for this rod; if None,
+                a generated ``curve_N`` label is used. See :ref:`deformable-objects`.
+                Generated joint labels retain
+                the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, places each connected component's generated joints and a
                 free joint to the world in one articulation.
             quaternions: Optional per-edge orientations in world space. If provided, must have
@@ -9314,12 +9536,14 @@ class ModelBuilder:
         Raises:
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
         """
+        start_body = self.body_count
+        start_joint = self.joint_count
         warnings.warn(
             _ADD_ROD_GRAPH_DEPRECATION_MSG,
             DeprecationWarning,
             stacklevel=self._external_warning_stacklevel(),
         )
-        return self._add_rod_graph(
+        result = self._add_rod_graph(
             node_positions,
             edges,
             radius=radius,
@@ -9339,6 +9563,8 @@ class ModelBuilder:
             color=color,
             body_frame_origin=body_frame_origin,
         )
+        self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
+        return result
 
     def _add_rod_graph(
         self,
@@ -10477,8 +10703,9 @@ class ModelBuilder:
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
-                via :meth:`add_cloth_mesh` so a mesh-quality warning can identify
-                this cloth.
+                via :meth:`add_cloth_mesh` so a mesh-quality warning can identify this cloth.
+                The same name is appended to :attr:`surface_label` for this cloth; if None,
+                a generated ``surface_N`` label is used. See :ref:`deformable-objects`.
             color: Display color in [0, 1] for the cloth surface. If a single
                 RGB value, applied to all triangles. If array-like, RGB values
                 are applied per triangle.
@@ -10621,8 +10848,9 @@ class ModelBuilder:
                 pipeline.)
             label: Optional name forwarded to
                 :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
-                warning emitted with ``validate_mesh=True`` can identify
-                this cloth.
+                warning emitted with ``validate_mesh=True`` can identify this cloth.
+                The same name is appended to :attr:`surface_label` for this cloth; if None,
+                a generated ``surface_N`` label is used. See :ref:`deformable-objects`.
 
         Note:
             The mesh should be two-manifold.
@@ -10717,6 +10945,13 @@ class ModelBuilder:
 
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
+
+        self._record_surface_deformable_object(
+            label,
+            (start_vertex, len(self.particle_q)),
+            (start_tri, end_tri),
+            (edge_range.start, edge_range.stop),
+        )
 
     def add_particle_grid(
         self,
@@ -10853,7 +11088,7 @@ class ModelBuilder:
         color: Vec3 | list[Vec3] | np.ndarray | None = None,
         opacity: float | list[float] | np.ndarray | None = None,
         label: str | None = None,
-    ):
+    ) -> None:
         """Helper to create a rectangular tetrahedral FEM grid
 
         Creates a regular grid of FEM tetrahedra and surface triangles. Useful for example
@@ -10894,10 +11129,10 @@ class ModelBuilder:
             opacity: Display opacity in [0, 1] for the generated surface mesh.
                 If scalar, applied to all triangles. If array-like, values are
                 applied per triangle.
-            label: Optional name reserved for forwarding to mesh-quality
-                diagnostics. Currently unused by ``add_soft_grid`` (the
-                generated grid is degenerate-free by construction); kept
-                for signature consistency with the other ``add_*`` helpers.
+            label: Optional name appended to :attr:`volume_label` for this soft body.
+                If None, a generated ``volume_N`` label is used. Currently unused by mesh-quality diagnostics
+                because the generated grid is degenerate-free by construction. See
+                :ref:`deformable-objects`.
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -10905,8 +11140,8 @@ class ModelBuilder:
             elastic forces. Set the triangle stiffness parameters above to non-zero values if you
             want the surface to behave like a thin skin.
         """
-        del label  # currently unused; kept on the signature for API parity
         start_vertex = len(self.particle_q)
+        start_tet = self.tet_count
 
         mass = cell_x * cell_y * cell_z * density
 
@@ -11004,6 +11239,8 @@ class ModelBuilder:
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
+        self._record_volume_deformable_object(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
+
     def add_soft_mesh(
         self,
         *,
@@ -11079,9 +11316,10 @@ class ModelBuilder:
                 tetrahedra, sliver tetrahedra, and non-manifold faces, and
                 emit warnings. See :func:`newton.utils.validate_tet_mesh`.
             label: Optional name forwarded to
-                :func:`newton.utils.validate_tet_mesh` so a mesh-quality
-                warning emitted with ``validate_mesh=True`` can identify
-                this soft body.
+                :func:`newton.utils.validate_tet_mesh` so a mesh-quality warning emitted with
+                ``validate_mesh=True`` can identify this soft body. The same name is appended to
+                :attr:`volume_label`; if None, a generated ``volume_N`` label is used.
+                See :ref:`deformable-objects`.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
@@ -11165,6 +11403,7 @@ class ModelBuilder:
                     tri_custom[attr_name] = arr
 
         start_vertex = len(self.particle_q)
+        start_tet = self.tet_count
 
         pos = wp.vec3(pos[0], pos[1], pos[2])
         # add particles
@@ -11233,6 +11472,8 @@ class ModelBuilder:
             # add surface mesh edges (for collision)
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
+
+        self._record_volume_deformable_object(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
@@ -13779,95 +14020,63 @@ class ModelBuilder:
             # This catches negative masses/inertias and other critical issues.
             # Neither path mutates the builder — corrected values only appear
             # on the returned Model so that finalize() is side-effect-free.
-            if len(self.body_mass) > 0:
-                if self.validate_inertia_detailed:
-                    # Use detailed Python validation with per-body warnings.
-                    # Build corrected copies without modifying builder lists.
-                    corrected_mass = list(self.body_mass)
-                    corrected_inertia = list(self.body_inertia)
-                    corrected_inv_mass = list(self.body_inv_mass)
-                    corrected_inv_inertia = list(self.body_inv_inertia)
-
-                    for i in range(len(self.body_mass)):
-                        mass = self.body_mass[i]
-                        inertia = self.body_inertia[i]
-                        body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
-
-                        new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
-                            mass,
-                            inertia,
-                            self.balance_inertia,
-                            self.bound_mass,
-                            self.bound_inertia,
-                            body_label,
-                        )
-
-                        if was_corrected:
-                            corrected_mass[i] = new_mass
-                            corrected_inertia[i] = new_inertia
-                            if new_mass > 0.0:
-                                corrected_inv_mass[i] = 1.0 / new_mass
-                            else:
-                                corrected_inv_mass[i] = 0.0
-
-                            if any(x for x in new_inertia):
-                                corrected_inv_inertia[i] = wp.inverse(new_inertia)
-                            else:
-                                corrected_inv_inertia[i] = new_inertia
-
-                    # Create arrays from corrected copies
-                    m.body_mass = wp.array(corrected_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inv_mass = wp.array(corrected_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inertia = wp.array(corrected_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                    m.body_inv_inertia = wp.array(corrected_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                else:
-                    # Use fast Warp kernel validation
-                    body_mass_array = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    body_inertia_array = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                    body_inv_mass_array = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    body_inv_inertia_array = wp.array(
-                        self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad
+            body_mass = self.body_mass
+            body_inertia = self.body_inertia
+            body_inv_mass = self.body_inv_mass
+            body_inv_inertia = self.body_inv_inertia
+            if len(self.body_mass) > 0 and self.validate_inertia_detailed:
+                # Use detailed Python validation with per-body warnings on copies of the builder lists.
+                body_mass = list(body_mass)
+                body_inertia = list(body_inertia)
+                body_inv_mass = list(body_inv_mass)
+                body_inv_inertia = list(body_inv_inertia)
+                for i in range(len(body_mass)):
+                    body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
+                    new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
+                        body_mass[i],
+                        body_inertia[i],
+                        self.balance_inertia,
+                        self.bound_mass,
+                        self.bound_inertia,
+                        body_label,
                     )
-                    correction_count = wp.zeros(1, dtype=wp.int32)
+                    if was_corrected:
+                        body_mass[i] = new_mass
+                        body_inertia[i] = new_inertia
+                        body_inv_mass[i] = 1.0 / new_mass if new_mass > 0.0 else 0.0
+                        body_inv_inertia[i] = wp.inverse(new_inertia) if any(x for x in new_inertia) else new_inertia
 
-                    # Launch validation kernel (corrects arrays in-place on device)
-                    wp.launch(
-                        kernel=validate_and_correct_inertia_kernel,
-                        dim=len(self.body_mass),
-                        inputs=[
-                            body_mass_array,
-                            body_inertia_array,
-                            body_inv_mass_array,
-                            body_inv_inertia_array,
-                            self.balance_inertia,
-                            self.bound_mass if self.bound_mass is not None else 0.0,
-                            self.bound_inertia if self.bound_inertia is not None else 0.0,
-                            correction_count,
-                        ],
+            m.body_mass = wp.array(body_mass, dtype=wp.float32, requires_grad=requires_grad)
+            m.body_inv_mass = wp.array(body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+            m.body_inertia = wp.array(body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+            m.body_inv_inertia = wp.array(body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+
+            if len(self.body_mass) > 0 and not self.validate_inertia_detailed:
+                # Use fast Warp kernel validation, correcting the Model arrays in place on device.
+                correction_count = wp.zeros(1, dtype=wp.int32)
+                wp.launch(
+                    kernel=validate_and_correct_inertia_kernel,
+                    dim=len(self.body_mass),
+                    inputs=[
+                        m.body_mass,
+                        m.body_inertia,
+                        m.body_inv_mass,
+                        m.body_inv_inertia,
+                        self.balance_inertia,
+                        self.bound_mass if self.bound_mass is not None else 0.0,
+                        self.bound_inertia if self.bound_inertia is not None else 0.0,
+                        correction_count,
+                    ],
+                )
+
+                # Check if any corrections were made (single int transfer)
+                num_corrections = int(correction_count.numpy()[0])
+                if num_corrections > 0:
+                    warnings.warn(
+                        f"Inertia validation corrected {num_corrections} bodies. "
+                        f"Set validate_inertia_detailed=True for detailed per-body warnings.",
+                        stacklevel=3,
                     )
-
-                    # Check if any corrections were made (single int transfer)
-                    num_corrections = int(correction_count.numpy()[0])
-                    if num_corrections > 0:
-                        warnings.warn(
-                            f"Inertia validation corrected {num_corrections} bodies. "
-                            f"Set validate_inertia_detailed=True for detailed per-body warnings.",
-                            stacklevel=3,
-                        )
-
-                    # Use the corrected arrays directly on the Model.
-                    # Builder state is intentionally left unchanged — corrected
-                    # values live only on the returned Model.
-                    m.body_mass = body_mass_array
-                    m.body_inv_mass = body_inv_mass_array
-                    m.body_inertia = body_inertia_array
-                    m.body_inv_inertia = body_inv_inertia_array
-            else:
-                # No bodies, create empty arrays
-                m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-                m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
 
             m.body_q = wp.array(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
@@ -13902,7 +14111,7 @@ class ModelBuilder:
             m.joint_label = self.joint_label
             m.joint_world = wp.array(self.joint_world, dtype=wp.int32)
             # compute joint ancestors
-            parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np)
+            parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np, joint_articulation_np)
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
             m.joint_articulation = wp.array(joint_articulation_np, dtype=wp.int32)
             m.joint_mimic_joint = wp.array(self.joint_mimic_joint, dtype=wp.int32)
@@ -14113,22 +14322,11 @@ class ModelBuilder:
                     requires_grad=requires_grad,
                 )
 
+                actuator.register_custom_attributes(self)
                 m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)
             self._resolve_custom_frequency_articulation_owners()
-
-            # Early return if no custom attributes exist to avoid overhead
-            if not self.custom_attributes:
-                m.custom_frequency_counts = dict(self._custom_frequency_counts)
-                self._finalize_custom_frequency_metadata(m, device)
-                m.bvh_build_shapes(
-                    m,
-                    bvh_constructor=self.default_bvh_cfg.shape_constructor,
-                    shape_flags=self.default_bvh_cfg.shape_flags,
-                )
-                m.bvh_build_particles(m)
-                return m
 
             # Resolve authoritative counts for custom frequencies
             # Use incremental _custom_frequency_counts as primary source, with safety fallback
@@ -14176,43 +14374,7 @@ class ModelBuilder:
                     continue
 
                 freq_key = custom_attr.frequency
-
-                # determine count by frequency
-                if isinstance(freq_key, str):
-                    # Custom frequency: count determined by validated frequency count
-                    count = custom_frequency_counts.get(freq_key, 0)
-                elif freq_key == Model.AttributeFrequency.ONCE:
-                    count = 1
-                elif freq_key == Model.AttributeFrequency.BODY:
-                    count = m.body_count
-                elif freq_key == Model.AttributeFrequency.SHAPE:
-                    count = m.shape_count
-                elif freq_key == Model.AttributeFrequency.JOINT:
-                    count = m.joint_count
-                elif freq_key == Model.AttributeFrequency.JOINT_DOF:
-                    count = m.joint_dof_count
-                elif freq_key == Model.AttributeFrequency.JOINT_COORD:
-                    count = m.joint_coord_count
-                elif freq_key == Model.AttributeFrequency.JOINT_CONSTRAINT:
-                    count = m.joint_constraint_count
-                elif freq_key == Model.AttributeFrequency.ARTICULATION:
-                    count = m.articulation_count
-                elif freq_key == Model.AttributeFrequency.WORLD:
-                    count = m.world_count
-                elif freq_key == Model.AttributeFrequency.CONSTRAINT_MIMIC:
-                    count = m.constraint_mimic_count
-                elif freq_key == Model.AttributeFrequency.PARTICLE:
-                    count = m.particle_count
-                elif freq_key == Model.AttributeFrequency.EDGE:
-                    count = m.edge_count
-                elif freq_key == Model.AttributeFrequency.TRIANGLE:
-                    count = m.tri_count
-                elif freq_key == Model.AttributeFrequency.TETRAHEDRON:
-                    count = m.tet_count
-                elif freq_key == Model.AttributeFrequency.SPRING:
-                    count = m.spring_count
-                else:
-                    continue
+                count = m._attribute_frequency_count(freq_key)
 
                 # Keep canonical MuJoCo equality attributes shape-stable at zero rows. This lets
                 # callers consume ``model.mujoco.equality_constraint_*`` without branching on
@@ -14742,8 +14904,6 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "joint_limit_upper": wp.float32,
     "joint_limit_ke": wp.float32,
     "joint_limit_kd": wp.float32,
-    "joint_twist_lower": wp.float32,
-    "joint_twist_upper": wp.float32,
     "joint_world": wp.int32,
     "articulation_world": wp.int32,
     "constraint_mimic_joint0": wp.int32,
