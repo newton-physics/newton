@@ -55,10 +55,10 @@ class CableRecording:
     """Paths to the binary masks, relative to the bundle directory. One per RGB frame."""
 
     sensor_pos: list[float] | None = None
-    """Camera optical-frame origin in the robot base frame [m]."""
+    """Camera origin in the robot base frame [m]."""
 
     sensor_quat: list[float] | None = None
-    """Camera optical-frame orientation in base, ``(qx, qy, qz, qw)``."""
+    """Camera orientation in the robot base frame, ``(qx, qy, qz, qw)``."""
 
     camera_intrinsics: list[float] | None = None
     """``[width, height, fx, fy, cx, cy]`` [px] of the stored frames and masks, or ``None`` when uncalibrated."""
@@ -106,9 +106,8 @@ class CableRecording:
 class CableEvidenceBundle:
     """A set of co-imported recordings, one per camera view.
 
-    Distances are in meters. Poses are in the robot base frame, with axes as in
-    ROS REP-103 (x forward, y left, z up; right-handed), and quaternions are
-    ``(qx, qy, qz, qw)``.
+    Distances are in meters. Poses are in the robot base frame (right-handed,
+    z up), and quaternions are ``(qx, qy, qz, qw)``.
     """
 
     recordings: list[CableRecording] = field(default_factory=list)
