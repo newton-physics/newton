@@ -126,9 +126,13 @@ An explicit ``rest_q=0.0`` also takes precedence over that default; use
 ``rest_q=None`` to leave it unspecified. Conflicting explicitly configured
 core rest coordinates and authored legacy rest values raise an error.
 The finalized model exposes only the core spring arrays. The old runtime
-arrays are removed without a deprecation period: their absolute, DOF-indexed
-rest values cannot directly alias the relative, coordinate-indexed core array.
-Runtime reads and writes through those attributes must be migrated.
+names are removed without a deprecation period, independently of the retained,
+deprecated builder inputs. ``dof_passive_stiffness`` is a direct rename to
+``joint_stiffness`` with the same DOF layout. ``dof_springref`` additionally
+changes from absolute MuJoCo coordinates in DOF layout to relative Newton
+coordinates in coordinate layout, so it cannot directly alias ``joint_rest_q``.
+The runtime removal is an intentional compatibility break for both names;
+existing runtime reads and writes must be migrated to the core arrays.
 
 To change a spring at runtime, edit :attr:`~newton.Model.joint_stiffness`
 or :attr:`~newton.Model.joint_rest_q` and notify the solver with

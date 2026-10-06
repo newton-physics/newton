@@ -324,14 +324,22 @@ class TestJointSprings(unittest.TestCase):
 
     def test_ball_spring_rest_with_rotated_child_frame(self):
         """Hold a MuJoCo ball joint at its rest orientation with an authored or runtime-edited child frame."""
-        rest = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4)
-        child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5))
-        for device, runtime_edit in product(wp.get_devices(), (False, True)):
-            with self.subTest(device=device, runtime_edit=runtime_edit):
+        cases = (
+            (newton.Axis.Z, 0.4, newton.Axis.X, 0.5, 25.0),
+            (newton.Axis.X, np.pi / 6.0, newton.Axis.Z, 0.0, 2.0),
+            (newton.Axis.X, np.pi / 6.0, newton.Axis.Z, np.pi / 2.0, 2.0),
+        )
+        for device, runtime_edit, (rest_axis, rest_angle, child_axis, child_angle, stiffness) in product(
+            wp.get_devices(), (False, True), cases
+        ):
+            with self.subTest(device=device, runtime_edit=runtime_edit, rest_axis=rest_axis, child_angle=child_angle):
+                rest = wp.quat_from_axis_angle(wp.vec3(*rest_axis.to_vector()), rest_angle)
+                child_rotation = wp.quat_from_axis_angle(wp.vec3(*child_axis.to_vector()), child_angle)
+                child_xform = wp.transform((0.0, 0.0, 0.0), child_rotation)
                 builder = newton.ModelBuilder(gravity=(0, 0, 0))
                 body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
                 authored = wp.transform_identity() if runtime_edit else child_xform
-                builder.add_articulation([builder.add_joint_ball(-1, body, child_xform=authored, stiffness=25.0)])
+                builder.add_articulation([builder.add_joint_ball(-1, body, child_xform=authored, stiffness=stiffness)])
                 builder.joint_q[0:4] = list(rest)
                 builder.joint_rest_q[0:4] = list(rest)
                 model = builder.finalize(device=device)
@@ -342,7 +350,7 @@ class TestJointSprings(unittest.TestCase):
                 state, out = model.state(), model.state()
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
                 solver.step(state, out, model.control(), None, 0.001)
-                np.testing.assert_allclose(out.joint_qd.numpy(), [0.0, 0.0, 0.0], atol=1e-6)
+                np.testing.assert_allclose(out.joint_qd.numpy(), [0.0, 0.0, 0.0], atol=1e-8, rtol=0.0)
 
     def test_ball_frame_update_preserves_pending_rest(self):
         """Publish child-frame edits separately from reference-pose edits on both backends."""
