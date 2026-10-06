@@ -55,7 +55,6 @@ from .loss import CalibrationLoss
 # sim->goal sum covers a fixed number of axis samples and fits int32.
 _CHAMFER_FIXED = wp.constant(16.0)  # fixed-point scale, 1/16 px resolution
 _CHAMFER_MAX_PX = 1024.0  # distance clamp; bounds each sample's contribution
-_PROJ_INVALID = wp.constant(-1.0e8)  # a projected node below this is behind the lens
 CHAMFER_MISS = 2.0  # frame score when the sim projects nothing
 
 # Samples along the projected cable axis for the sim->goal direction, at uniform
@@ -124,14 +123,14 @@ def _point_seg_dist(px: float, py: float, ax: float, ay: float, bx: float, by: f
 def _axis_length(uv: wp.array3d[wp.float32], i: int, n_nodes: int):
     """Total projected length [px] of world ``i``'s cable axis.
 
-    Segments with an endpoint behind the lens are excluded, so the arc-length
-    parametrisation below covers only the visible part of the cable.
+    Segments with an endpoint behind the lens (NaN) are excluded, so the
+    arc-length parametrisation below covers only the visible part of the cable.
     """
     total = float(0.0)
     for s in range(n_nodes - 1):
         ax = uv[i, s, 0]
         bx = uv[i, s + 1, 0]
-        if ax > _PROJ_INVALID and bx > _PROJ_INVALID:
+        if not (wp.isnan(ax) or wp.isnan(bx)):
             dx = bx - ax
             dy = uv[i, s + 1, 1] - uv[i, s, 1]
             total += wp.sqrt(dx * dx + dy * dy)
@@ -176,7 +175,7 @@ def _chamfer_axis_kernel(
         if found == 0:
             ax = uv[i, s, 0]
             bx = uv[i, s + 1, 0]
-            if ax > _PROJ_INVALID and bx > _PROJ_INVALID:
+            if not (wp.isnan(ax) or wp.isnan(bx)):
                 ay = uv[i, s, 1]
                 by = uv[i, s + 1, 1]
                 dx = bx - ax
@@ -232,7 +231,7 @@ def _chamfer_goal_kernel(
                 for s in range(n_nodes - 1):
                     ax = uv[i, s, 0]
                     bx = uv[i, s + 1, 0]
-                    if ax > _PROJ_INVALID and bx > _PROJ_INVALID:
+                    if not (wp.isnan(ax) or wp.isnan(bx)):
                         d = _point_seg_dist(float(x), float(y), ax, uv[i, s, 1], bx, uv[i, s + 1, 1])
                         best = wp.min(best, d)
                 d_goal += int(wp.round(best * _CHAMFER_FIXED))
@@ -363,9 +362,9 @@ class CalibrationLossChamfer(CalibrationLoss):
         """Score every world on-device, adding into ``accumulator``.
 
         ``geom`` is the ``(n_worlds, n_nodes, 2)`` projected cable axis in full-image
-        pixel coordinates, with nodes behind the lens marked by a value below
-        ``-1e8``. ``sim_mask`` is unused and may be None -- this loss declares
-        ``wants_render=False``, so the caller need not render at all.
+        pixel coordinates, with nodes behind the lens marked by NaN. ``sim_mask`` is
+        unused and may be None -- this loss declares ``wants_render=False``, so the
+        caller need not render at all.
         """
         if geom is None:
             raise ValueError("the chamfer loss needs the projected cable (geom=).")
