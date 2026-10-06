@@ -588,12 +588,28 @@ class SolverBase:
         updated after the solver was created.  Passing the appropriate
         combination of flags enables a solver implementation to refresh its
         internal buffers without having to recreate the whole solver object.
+        Solver implementations must handle each relevant narrow DOF flag:
+        checking ``JOINT_DOF_PROPERTIES`` alone does not detect them. The broad
+        flag covers force, inertial, and reference properties; friction/damping
+        belongs to the force category. Solvers may ignore categories they do
+        not cache or support, but should preserve unrelated pending edits
+        except for documented backend dependencies. In MuJoCo, notifications
+        that recompute constants also republish the current tendon limit
+        modes, gains, raw solref values, and ranges, even without
+        ``TENDON_PROPERTIES``. Force-only joint notifications leave these
+        tendon parameters unchanged.
         Valid flags are:
 
-        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms or coordinates
+        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms, axes, or coordinates
           have changed.
-        * ``ModelFlags.JOINT_DOF_PROPERTIES``: Joint axis limits, targets,
-          modes, DOF state, or force buffers have changed.
+        * ``ModelFlags.JOINT_DOF_PROPERTIES``: Full joint DOF update, including
+          force, armature, and reference-pose properties (legacy behavior).
+        * ``ModelFlags.JOINT_DOF_FORCE_PROPERTIES``: Joint friction, damping,
+          target gains/modes, effort limits, passive stiffness, or limit
+          coefficients/bounds have changed.
+        * ``ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES``: Joint armature has changed.
+        * ``ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES``: Joint reference poses
+          or spring references have changed.
         * ``ModelFlags.BODY_PROPERTIES``: Rigid-body pose or velocity buffers
           have changed.
         * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass or inertia
