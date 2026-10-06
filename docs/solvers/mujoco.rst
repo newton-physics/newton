@@ -97,8 +97,8 @@ at the solver boundary:
   runtime observables (``qpos``, sensors) match the authored MJCF and
   native MuJoCo exactly.
 * Attributes in the ``mujoco.*`` custom-attribute namespace (for example
-  the deprecated ``dof_springref`` or authored ``actuator_ctrlrange``) are native MuJoCo
-  data and remain in MuJoCo's absolute units.
+  authored ``actuator_ctrlrange``) are native MuJoCo data and remain in
+  MuJoCo's absolute units.
 
 Changing ``mujoco.dof_ref`` at runtime (via
 :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) shifts exported
@@ -115,18 +115,18 @@ joints.
     instead of ``mujoco.dof_springref``. The latter requires subtracting
     ``mujoco.dof_ref`` and uses coordinate indexing, not DOF indexing.
 
-The deprecated stiffness attribute aliases the core stiffness array.
-The deprecated spring-reference array remains in absolute MuJoCo
-coordinates. Writes are reconciled when the solver is constructed or
-notified with :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`. After a
-legacy custom reference is authored or edited, later ``ref`` edits keep that
-absolute spring reference fixed. Editing the corresponding core rest
-coordinate switches that coordinate to Newton semantics, so subsequent
-``ref`` edits preserve its physical rest pose. If both rest arrays change
-before a notification, the core edit takes precedence. Conflicting
-nonzero core and legacy values at model construction raise an error.
-MJCF and USD imports populate the core properties, so their rest poses
-follow Newton semantics unless subsequently edited through a legacy alias.
+Legacy ``mujoco:dof_passive_stiffness`` and ``mujoco:dof_springref``
+custom-attribute inputs remain accepted by registered builders. Finalization
+converts them once into the core arrays, using ``rest_q = springref - ref``
+for scalar joints. Conflicting nonzero core and legacy values raise an error.
+The finalized model exposes only the core spring arrays; runtime reads and
+writes through the old MuJoCo spring attributes must be migrated.
+
+To change a spring at runtime, edit :attr:`~newton.Model.joint_stiffness`
+or :attr:`~newton.Model.joint_rest_q` and notify the solver with
+:attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`. Subsequent ``dof_ref``
+changes preserve the physical spring rest pose, regardless of whether the
+spring was authored through core fields, legacy builder inputs, MJCF, or USD.
 
 
 Geometry types

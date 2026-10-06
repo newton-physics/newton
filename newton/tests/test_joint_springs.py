@@ -163,15 +163,22 @@ class TestJointSprings(unittest.TestCase):
                     np.testing.assert_allclose(model.joint_limit_upper.numpy()[-1], np.pi / 6 - offset, atol=1e-6)
 
     def test_coupled_spring_updates(self):
-        """Apply core and legacy rest edits to compacted solvers after quaternion coordinates."""
+        """Apply core rest edits to compacted solvers with core or legacy builder inputs."""
         for solver_cls, legacy in product((SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo), (False, True)):
             with self.subTest(solver=solver_cls.__name__, legacy=legacy):
                 builder = newton.ModelBuilder(gravity=(0, 0, 0))
                 SolverMuJoCo.register_custom_attributes(builder)
                 builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
                 body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                attributes = {"mujoco:dof_ref": 0.1}
+                if legacy:
+                    attributes.update({"mujoco:dof_passive_stiffness": 2, "mujoco:dof_springref": 0.35})
                 joint = builder.add_joint_prismatic(
-                    -1, body, stiffness=2, rest_q=0.25, custom_attributes={"mujoco:dof_ref": 0.1}
+                    -1,
+                    body,
+                    stiffness=0 if legacy else 2,
+                    rest_q=0 if legacy else 0.25,
+                    custom_attributes=attributes,
                 )
                 builder.add_articulation([joint])
                 model = builder.finalize(device="cpu")
@@ -184,16 +191,9 @@ class TestJointSprings(unittest.TestCase):
                 stiffness = model.joint_stiffness.numpy()
                 stiffness[-1] = 4.0
                 model.joint_stiffness.assign(stiffness)
-                if legacy:
-                    with self.assertWarns(DeprecationWarning):
-                        springref = model.mujoco.dof_springref
-                    values = springref.numpy()
-                    values[-1] = 0.6
-                    springref.assign(values)
-                else:
-                    rest = model.joint_rest_q.numpy()
-                    rest[-1] = 0.5
-                    model.joint_rest_q.assign(rest)
+                rest = model.joint_rest_q.numpy()
+                rest[-1] = 0.5
+                model.joint_rest_q.assign(rest)
                 solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
                 state, out = model.state(), model.state()
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -201,15 +201,14 @@ class TestJointSprings(unittest.TestCase):
                 newton.eval_ik(model, out, out.joint_q, out.joint_qd)
                 np.testing.assert_allclose(out.joint_qd.numpy()[-1], 0.002, atol=1e-7)
 
-    def test_legacy_spring_setter_warning_location(self):
-        """Attribute deprecated spring assignments to the caller's source file."""
+    def test_legacy_spring_inputs_are_builder_only(self):
+        """Expose only core spring arrays after converting legacy builder inputs."""
         model = _slider_builder(register=True).finalize(device="cpu")
-        for name in ("dof_passive_stiffness", "dof_springref"):
-            with self.subTest(attribute=name), warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always", DeprecationWarning)
-                setattr(model.mujoco, name, [0.5])
-                self.assertEqual(len(caught), 1)
-                self.assertEqual(caught[0].filename, __file__)
+        self.assertIs(type(model.mujoco), newton.Model.AttributeNamespace)
+        self.assertFalse(hasattr(model.mujoco, "dof_passive_stiffness"))
+        self.assertFalse(hasattr(model.mujoco, "dof_springref"))
+        self.assertIsNone(model._attribute_spec("mujoco:dof_passive_stiffness"))
+        self.assertIsNone(model._attribute_spec("mujoco:dof_springref"))
 
     def test_builder_composition_and_coordinate_layout(self):
         """Preserve spring data through fixed-joint collapse and world replication with quaternion joints."""
@@ -251,32 +250,6 @@ class TestJointSprings(unittest.TestCase):
             model = builder.finalize(device="cpu")
             np.testing.assert_allclose(model.joint_target_q.numpy(), [0.4])
             np.testing.assert_allclose(model.joint_target_qd.numpy(), [0.8])
-
-    def test_legacy_spring_edits_and_reference_authority(self):
-        """Convert legacy array edits and preserve absolute references until a core rest edit takes over."""
-        for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo):
-            with self.subTest(solver=solver_cls.__name__):
-                model = _slider_builder(register=True).finalize(device="cpu")
-                kwargs = {"use_mujoco_cpu": True} if solver_cls == SolverMuJoCo else {}
-                solver = solver_cls(model, **kwargs)
-                with self.assertWarns(DeprecationWarning):
-                    model.mujoco.dof_passive_stiffness = wp.array([4.0], dtype=float, device="cpu")
-                with self.assertWarns(DeprecationWarning):
-                    model.mujoco.dof_springref.assign([0.9])
-                model.mujoco.dof_ref.assign([0.2])
-                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-                np.testing.assert_allclose(model.joint_stiffness.numpy(), [4])
-                np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.7], atol=1e-7)
-                model.mujoco.dof_ref.assign([0.3])
-                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-                np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.6], atol=1e-7)
-                model.joint_rest_q.assign([0.5])
-                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-                model.mujoco.dof_ref.assign([0.4])
-                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-                np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.5])
-                with self.assertWarns(DeprecationWarning):
-                    np.testing.assert_allclose(model.mujoco.dof_springref.numpy(), [0.9], atol=1e-7)
 
     def test_passive_spring_preload_and_drive(self):
         """Apply passive spring and damping forces independently of drive suppression at a joint limit."""
@@ -335,7 +308,7 @@ class TestJointSprings(unittest.TestCase):
 
     @unittest.skipUnless(wp.is_cuda_available(), "CUDA is required for graph capture")
     def test_cuda_graph_runtime_updates(self):
-        """Apply core and deprecated spring updates to already captured solver steps."""
+        """Apply core spring updates to already captured solver steps."""
         for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo):
             with self.subTest(solver=solver_cls.__name__):
                 model = _slider_builder(register=True).finalize(device="cuda:0")
@@ -353,8 +326,7 @@ class TestJointSprings(unittest.TestCase):
                 wp.capture_launch(capture.graph)
                 newton.eval_ik(model, out, out.joint_q, out.joint_qd)
                 np.testing.assert_allclose(out.joint_qd.numpy(), [0.002], atol=2e-6)
-                with self.assertWarns(DeprecationWarning):
-                    model.mujoco.dof_springref = wp.array([0.85], dtype=float, device=model.device)
+                model.joint_rest_q.assign([0.75])
                 solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
                 wp.capture_launch(capture.graph)
                 newton.eval_ik(model, out, out.joint_q, out.joint_qd)
@@ -374,15 +346,16 @@ class TestJointSprings(unittest.TestCase):
         np.testing.assert_allclose(solver.mj_model.jnt_stiffness, [5.0])
 
     def test_legacy_authored_values_and_conflicts(self):
-        """Resolve legacy builder inputs and reject conflicting nonzero core stiffness."""
-        for conflict in (False, True):
+        """Convert legacy inputs once, preserve them through replication, and reject core conflicts."""
+        for conflict in (None, "stiffness", "rest_q"):
             builder = newton.ModelBuilder()
             SolverMuJoCo.register_custom_attributes(builder)
             body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
             joint = builder.add_joint_revolute(
                 -1,
                 body,
-                stiffness=5 if conflict else 0,
+                stiffness=5 if conflict == "stiffness" else 0,
+                rest_q=0.25 if conflict == "rest_q" else 0,
                 custom_attributes={
                     "mujoco:dof_passive_stiffness": 3.0,
                     "mujoco:dof_springref": 0.7,
@@ -400,7 +373,13 @@ class TestJointSprings(unittest.TestCase):
                 solver = SolverMuJoCo(model, use_mujoco_cpu=True)
                 model.mujoco.dof_ref.assign([0.3])
                 solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-                np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.4], atol=1e-7)
+                np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.5], atol=1e-7)
+                np.testing.assert_allclose(solver.mj_model.qpos_spring, [0.8], atol=1e-7)
+                combined = newton.ModelBuilder()
+                combined.replicate(builder, 2)
+                replicated = combined.finalize(device="cpu")
+                np.testing.assert_allclose(replicated.joint_stiffness.numpy(), [3, 3])
+                np.testing.assert_allclose(replicated.joint_rest_q.numpy(), [0.5, 0.5], atol=1e-7)
 
     def test_d6_springs_after_quaternion_joint(self):
         """Index D6 rest coordinates correctly after a ball joint changes the coordinate offset."""

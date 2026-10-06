@@ -14507,9 +14507,6 @@ class ModelBuilder:
                     custom_attr.references,
                 )
 
-            from .joint_springs import finalize_joint_springs  # noqa: PLC0415
-
-            finalize_joint_springs(self, m)
             self._finalize_custom_frequency_metadata(m, device)
 
             m.bvh_build_shapes(

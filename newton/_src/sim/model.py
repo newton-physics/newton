@@ -1003,7 +1003,6 @@ class Model:
         """Drive proportional gain [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_kd: wp.array[wp.float32] | None = None
         """Drive derivative gain [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
-        self._joint_spring_compat = None
         self.joint_stiffness: wp.array[wp.float32] | None = None
         """Passive spring stiffness [N/m or N·m/rad], shape [joint_dof_count]. Independent of drive gains."""
         self.joint_rest_q: wp.array[wp.float32] | None = None
@@ -1411,11 +1410,6 @@ class Model:
         if frequency != spec.frequency or assignment != spec.assignment:
             return replace(spec, frequency=frequency, assignment=assignment)
         return spec
-
-    def _sync_joint_springs(self) -> None:
-        """Resolve edits to deprecated MuJoCo spring references before solver property updates."""
-        if self._joint_spring_compat is not None:
-            self._joint_spring_compat._sync()
 
     def _iter_attribute_specs(self, *, include_deprecated: bool = False) -> Iterator[tuple[str, Model.AttributeSpec]]:
         """Yield unified metadata, including late legacy registrations.

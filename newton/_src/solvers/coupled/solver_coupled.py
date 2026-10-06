@@ -3010,7 +3010,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     def notify_model_changed(self, flags: int) -> None:
         """Forward model change notifications to all sub-solvers."""
-        super().notify_model_changed(flags)
         self._refresh_model_view_overrides(flags)
         for entry in self._entries.values():
             entry.solver.notify_model_changed(flags)

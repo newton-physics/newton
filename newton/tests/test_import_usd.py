@@ -5027,18 +5027,14 @@ def Xform "Articulation" (
         builder.add_usd(stage)
         model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"))
-        with self.assertWarnsRegex(DeprecationWarning, "dof_springref"):
-            self.assertTrue(hasattr(model.mujoco, "dof_springref"))
-        with self.assertWarnsRegex(DeprecationWarning, "dof_springref"):
-            springref = model.mujoco.dof_springref.numpy()
-        qd_start = model.joint_qd_start.numpy()
+        rest_q = model.joint_rest_q.numpy()
+        q_start = model.joint_q_start.numpy()
 
         revolute_joint_idx = model.joint_label.index("/Articulation/revolute_joint")
-        self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], np.deg2rad(30.0), places=4)
+        self.assertAlmostEqual(rest_q[q_start[revolute_joint_idx]], np.deg2rad(30.0), places=4)
 
         prismatic_joint_idx = model.joint_label.index("/Articulation/prismatic_joint")
-        self.assertAlmostEqual(springref[qd_start[prismatic_joint_idx]], 0.25, places=4)
+        self.assertAlmostEqual(rest_q[q_start[prismatic_joint_idx]], 0.25, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_converter_degree_joint_angles_are_converted(self):
@@ -5134,17 +5130,19 @@ def Xform "Articulation" (
 
         qd_start = model.joint_qd_start.numpy()
         dof_ref = model.mujoco.dof_ref.numpy()
-        with self.assertWarnsRegex(DeprecationWarning, "dof_springref"):
-            springref = model.mujoco.dof_springref.numpy()
+        rest_q = model.joint_rest_q.numpy()
+        q_start = model.joint_q_start.numpy()
+        revolute_coord = q_start[model.joint_label.index("/Articulation/revolute_joint")]
+        prismatic_coord = q_start[model.joint_label.index("/Articulation/prismatic_joint")]
 
         revolute_dof = qd_start[model.joint_label.index("/Articulation/revolute_joint")]
         prismatic_dof = qd_start[model.joint_label.index("/Articulation/prismatic_joint")]
 
         for name, value, expected in (
             ("revolute dof_ref", dof_ref[revolute_dof], np.deg2rad(30.0)),
-            ("revolute dof_springref", springref[revolute_dof], np.deg2rad(45.0)),
+            ("revolute rest_q", rest_q[revolute_coord], np.deg2rad(45.0 - 30.0)),
             ("prismatic dof_ref", dof_ref[prismatic_dof], 0.5),
-            ("prismatic dof_springref", springref[prismatic_dof], 0.25),
+            ("prismatic rest_q", rest_q[prismatic_coord], 0.25 - 0.5),
         ):
             with self.subTest(name):
                 self.assertAlmostEqual(value, expected, places=5)

@@ -258,9 +258,6 @@ class SolverBase:
             collision_frequency_type: Per-slot detection points. Unspecified
                 slots retain their defaults.
         """
-        # Some backends also reuse SolverBase with their own internal model type.
-        if isinstance(model, Model):
-            model._sync_joint_springs()
         self.model = model
         self._module_options: dict[Any, dict[str, Any]] = {}
         self._applied_module_options_revision = -1
@@ -617,8 +614,7 @@ class SolverBase:
                 bits indicating which model properties changed.
 
         """
-        if flags & ModelFlags.JOINT_DOF_PROPERTIES and isinstance(self.model, Model):
-            self.model._sync_joint_springs()
+        pass
 
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """

@@ -1212,6 +1212,12 @@ require MuJoCo solver registration. NewtonJointAPI spring authoring
 properties are tracked separately in :github:`issues/4516`; no unregistered
 Newton USD attributes are introduced here.
 
+Legacy MuJoCo spring custom attributes remain accepted as builder inputs
+and are converted once during finalization. Runtime spring state lives only
+in ``joint_stiffness`` and ``joint_rest_q``; migrate reads and writes of
+``mujoco.dof_passive_stiffness`` and ``mujoco.dof_springref`` to these core
+arrays. Later ``mujoco.dof_ref`` edits preserve the physical rest pose.
+
 After runtime spring edits, call ``solver.notify_model_changed`` with
 :attr:`newton.ModelFlags.JOINT_DOF_PROPERTIES`. Modify existing arrays in
 place when reusing captured simulation graphs.
