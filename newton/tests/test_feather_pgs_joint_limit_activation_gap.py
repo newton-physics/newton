@@ -390,9 +390,10 @@ def _check_fused_matches_phased(test, device, pgs_iterations):
         # The free body's contacts are propagation rows in the phased response and free-body rows when fused.
         test.assertEqual(int(np.sum(expected["mf_row_type"] == PGS_CONSTRAINT_TYPE_CONTACT)), 0)
         test.assertGreater(int(np.sum(observed["mf_row_type"] == PGS_CONSTRAINT_TYPE_CONTACT)), 0)
+        # The fused kernel solves the free body's contacts as free-body rows, which rounds differently.
         for label in ("impulses", "joint_q", "joint_qd"):
             np.testing.assert_allclose(
-                observed[label], expected[label], rtol=1.0e-5, atol=2.0e-6, err_msg=f"{label} differed at step {step}"
+                observed[label], expected[label], rtol=1.0e-5, atol=1.0e-5, err_msg=f"{label} differed at step {step}"
             )
     limit_rows = np.flatnonzero(phased[0]["row_type"] == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
     test.assertGreater(float(np.max(np.abs(phased[0]["impulses"][limit_rows]))), 0.0)

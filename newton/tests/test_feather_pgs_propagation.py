@@ -216,7 +216,7 @@ def test_captured_steps_match_eager(test, device):
     for response in RESPONSES:
         with test.subTest(response=response):
             model = _scene(device, "floating")
-            pipeline = newton.CollisionPipeline(model)
+            pipeline = newton.CollisionPipeline(model, deterministic=True)
             contacts = pipeline.contacts()
             control = model.control()
 
