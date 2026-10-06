@@ -1541,8 +1541,11 @@ class SolverFeatherPGS(SolverBase):
                 update of an implicitly integrated contact spring. It makes statically
                 indeterminate normal-force splits unique and damps the sweep, at the cost of
                 a resting penetration: a row at rest settles at ``pgs_beta * phi / dt = -g * d * lambda``
-                (``d`` its inverse effective mass, ``lambda`` its impulse), about
+                (``d`` its unsplit inverse effective mass, ``lambda`` its impulse), about
                 ``g * a * dt^2 / pgs_beta`` for a body under acceleration ``a`` resting on one row.
+                Propagation rows whose response is split across coupled contact bodies, with split
+                diagonal ``d_s``, take weight ``w * d_s / (w * d_s + (1 - w) * d)`` with
+                ``w = 1 / (1 + g)``, which reaches the same rest state.
                 Speculative (positive-gap) rows, rows whose rebound fires and the
                 velocity-only iterations stay rigid. ``0`` is the rigid law; at most ``1e6``.
             pgs_velocity_iterations: Number of velocity-only iterations after the position
