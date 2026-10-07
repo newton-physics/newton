@@ -1422,6 +1422,7 @@ class ArticulationView:
                     dim=attrib._staging_array.shape,
                     inputs=[attrib._gather_src, attrib._gather_indices],
                     outputs=[attrib._staging_array],
+                    device=self.device,
                 )
                 src_grad = attrib._gather_src.grad
                 dst_grad = attrib._staging_array.grad

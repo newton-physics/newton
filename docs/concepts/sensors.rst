@@ -162,7 +162,17 @@ For fisheye cameras, extract the calibration values from your chosen USD attribu
 :meth:`~newton.sensors.SensorCamera.compute_camera_rays_fisheye_opencv`,
 :meth:`~newton.sensors.SensorCamera.compute_camera_rays_fisheye_ftheta`, or
 :meth:`~newton.sensors.SensorCamera.compute_camera_rays_fisheye_kannala_brandt`. Each helper builds a single-camera
-``(height, width, 2)`` ray bundle.
+``(height, width, sample_count, 2)`` ray bundle. Set ``sample_count`` to generate
+subpixel rays and select ``SensorCamera.AntiAliasing.SSAA`` or ``MSAA`` through
+``SensorCamera.RenderConfig.anti_aliasing`` to resolve them.
+
+``MSAA`` traces every ray for coverage but shades each covered shape, particle,
+or deformable-mesh face using the first ray in bundle order that hits it. That
+shaded color is reused for the other rays hitting the same surface, so shading
+may come from an off-center subpixel ray. Use ``SSAA`` to shade every ray.
+The built-in ray helpers put the pixel-center ray first when ``sample_count`` is
+at least three, with the remaining rays evenly spaced around it. With two samples,
+they use an off-center pair so the sample pattern remains centered on the pixel.
 
 Solver Observables
 ------------------
