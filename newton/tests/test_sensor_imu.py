@@ -87,10 +87,10 @@ class TestSensorIMU(unittest.TestCase):
             observables = self._observables(foreign_model, sensor)
             with self.subTest(body_count=foreign_model.body_count):
                 with mock.patch.object(wp, "launch") as launch, self.assertRaisesRegex(ValueError, "model"):
-                    sensor.update(model.state(), solver_observables=observables)
+                    sensor.update(model.state(), observables=observables)
                 launch.assert_not_called()
         with self.assertRaisesRegex(ValueError, "model"):
-            sensor.update(model.state(), solver_observables=newton.solvers.SolverObservables())
+            sensor.update(model.state(), observables=newton.solvers.SolverObservables())
 
     def test_sensor_creation(self):
         """Test basic sensor creation."""
@@ -176,7 +176,7 @@ class TestSensorIMU(unittest.TestCase):
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
         observables.body_qdd.zero_()
-        sensor.update(state, solver_observables=observables)
+        sensor.update(state, observables=observables)
 
         acc = sensor.accelerometer.numpy()
         gyro = sensor.gyroscope.numpy()
@@ -200,7 +200,7 @@ class TestSensorIMU(unittest.TestCase):
 
         self.assertIsNone(state.body_qdd)
         observables.body_qdd.zero_()
-        sensor.update(state, solver_observables=observables.select(sensor.solver_observable_flags))
+        sensor.update(state, observables=observables.select(sensor.solver_observable_flags))
 
         np.testing.assert_allclose(sensor.accelerometer.numpy()[0], -model.gravity.numpy()[-1], atol=1e-5)
         np.testing.assert_allclose(sensor.gyroscope.numpy()[0], [0.0, 0.0, 0.0], atol=1e-5)
@@ -218,7 +218,7 @@ class TestSensorIMU(unittest.TestCase):
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
         observables.body_qdd.zero_()
-        sensor.update(state, solver_observables=observables)
+        sensor.update(state, observables=observables)
 
         acc = sensor.accelerometer.numpy()[0]
         gyro = sensor.gyroscope.numpy()[0]
@@ -238,7 +238,7 @@ class TestSensorIMU(unittest.TestCase):
         state = model.state()
 
         observables.body_qdd.zero_()
-        sensor.update(state, solver_observables=observables)
+        sensor.update(state, observables=observables)
 
         acc = sensor.accelerometer.numpy()[0]
         gyro = sensor.gyroscope.numpy()[0]
@@ -269,7 +269,7 @@ class TestSensorIMU(unittest.TestCase):
         state = model.state()
 
         observables.body_qdd.zero_()
-        sensor.update(state, solver_observables=observables)
+        sensor.update(state, observables=observables)
 
         np.testing.assert_allclose(
             sensor.accelerometer.numpy(),
@@ -292,7 +292,7 @@ class TestSensorIMU(unittest.TestCase):
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
         observables.body_qdd.zero_()
-        sensor.update(state, solver_observables=observables)
+        sensor.update(state, observables=observables)
 
         acc = sensor.accelerometer.numpy()[0]
 

@@ -53,7 +53,7 @@ Most Newton sensors follow a common pattern:
        solver.step(state, state, None, None, dt=1.0 / 60.0, observables=observables)
 
        # 2. Compute measurements from the current state
-       imu.update(state, solver_observables=observables)
+       imu.update(state, observables=observables)
 
        # 3. Results stored on sensor attributes
        acc = imu.accelerometer.numpy()   # (n_sensors, 3) linear acceleration
@@ -180,8 +180,8 @@ step and sensor. The first step binds the observable container to that storage:
    observables = solver.observables(flags)
 
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
-   imu.update(state_out, solver_observables=observables)
-   contact_sensor.update(state_out, contacts, solver_observables=observables)
+   imu.update(state_out, observables=observables)
+   contact_sensor.update(state_out, contacts, observables=observables)
 
 Contact observables are allocated from the model's resolved rigid and soft contact
 capacities, not the current number of contacts. See :ref:`solver_observables` for

@@ -148,11 +148,11 @@ class TestLogContacts(unittest.TestCase):
 
         solver = newton.solvers.SolverXPBD(model)
         observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
-        solver._validate_observables(observables, contacts)
+        solver.validate_observables(observables, contacts)
         observables.contact_f.assign([wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0)] * 2)
         self.assertIsNone(contacts.force)
         viewer.show_contact_forces = True
-        viewer.log_contacts(contacts, model.state(), solver_observables=observables)
+        viewer.log_contacts(contacts, model.state(), observables=observables)
         assert_np_equal(viewer._contact_disk_scales.numpy()[:, 0], np.array([0.02, 0.1]), tol=1.0e-6)
         force_lengths = np.linalg.norm(
             viewer._contact_force_ends.numpy() - viewer._contact_force_starts.numpy(), axis=1

@@ -13,10 +13,6 @@ Solver Observables
    The solver observable API may change while additional solvers and observable
    categories are migrated to it.
 
-See the standalone `Solver Observables architecture guide
-<https://reports.eric-heiden.com/solver-observables/>`_ for diagrams of the ownership,
-allocation, extension, and sensor-consumption flows.
-
 Quantities produced by a solver but not required to advance simulation belong
 in :class:`newton.solvers.SolverObservables`, separately from
 :class:`~newton.State` and :class:`~newton.Contacts`. Request only the arrays
@@ -70,9 +66,12 @@ Allocation freezes the model's contact capacities: later changes, including a
 replacement pipeline with different capacities, are rejected. Configure or
 rebuild pipelines before requesting contact-indexed observables.
 
-The first ``solver.step(..., contacts, ..., observables=observables)`` binds the observable
-container to that contact storage after validating device and both capacities.
-Subsequent steps and sensors must use that same storage. Allocate observables and
+The first solver step or consumer read binds the observable container to its
+contact storage after validating device and both capacities. Newly allocated
+forces are zero and can be read by a sensor or viewer before the first step.
+Custom consumers can use :meth:`SolverObservables.bind_contacts()
+<newton.solvers.SolverObservables.bind_contacts>` for the same validation.
+Subsequent steps and consumers must use that same storage. Allocate observables and
 contacts before graph capture; neither ordinary nor conditional graph execution
 needs deferred observable allocation. Other solver scratch buffers may still need
 their usual warmup.
@@ -174,57 +173,64 @@ Observable enums must derive directly from :class:`enum.Enum`, not
 :class:`enum.IntEnum` or a string-mixin enum. Integer and string enum members
 can compare equal across enum classes and silently collide in a set.
 
-Each flag's string value names its array field. Declare that field's row domain
-in the container's ``ATTRIBUTE_FREQUENCIES`` mapping, using
-:class:`~newton.Model.AttributeFrequency` or a custom string frequency. Lookup
-inherits base declarations; subclasses need only list their additional fields.
-Missing declarations are rejected before allocation. Frequency means indexing
-domain, not how often an observable is updated.
+Declare each array on a ``@dataclass(eq=False)`` container using
+:meth:`SolverObservables.field() <newton.solvers.SolverObservables.field>`.
+The declaration associates the field with a flag, Warp dtype, and row frequency.
+Flag values are opaque identifiers: they do not need to match Python field names.
+Frequency means indexing domain, not how often an observable is updated.
 
-Override ``_allocate_observables()`` and call ``super()`` to allocate inherited
-arrays before custom arrays. ``SUPPORTED_OBSERVABLE_FLAGS`` is the only
-capability flag set. Contact dependencies follow the declared frequency:
+Derived containers inherit the standard fields and any custom fields from their
+base classes. There is no separate frequency map or handwritten initializer.
+The generic allocator handles standard and custom arrays alike. Inherited
+declarations do not imply that a solver can compute those quantities:
+``SUPPORTED_OBSERVABLE_FLAGS`` remains the capability declaration, and
+``solver.supported_observable_flags`` reports the effective instance capabilities.
+Contact dependencies follow the declared frequency:
 
 .. code-block:: python
 
+   from dataclasses import dataclass
+   from enum import Enum
+
+   import warp as wp
+
    class CustomObservableFlags(Enum):
-       CONTACT_PRESSURE = "contact_pressure"
+       CONTACT_PRESSURE = 0
 
+   @dataclass(eq=False)
    class CustomObservables(newton.solvers.SolverObservables):
-       ATTRIBUTE_FREQUENCIES = {
-           "contact_pressure": newton.Model.AttributeFrequency.CONTACT_RIGID,
-       }
-
-       def __init__(self, flags=()):
-           super().__init__(flags)
-           self.contact_pressure = None
+       contact_pressure: wp.array[float] | None = newton.solvers.SolverObservables.field(
+           flag=CustomObservableFlags.CONTACT_PRESSURE,
+           dtype=float,
+           frequency=newton.Model.AttributeFrequency.CONTACT_RIGID,
+       )
+       """Rigid contact pressure [Pa], shape (rigid_contact_max,)."""
 
    class CustomSolver(newton.solvers.SolverBase):
        OBSERVABLES_TYPE = CustomObservables
        SUPPORTED_OBSERVABLE_FLAGS = frozenset({CustomObservableFlags.CONTACT_PRESSURE})
 
-       def _allocate_observables(self, observables, *, requires_grad):
-           super()._allocate_observables(observables, requires_grad=requires_grad)
-           if observables.is_requested(CustomObservableFlags.CONTACT_PRESSURE):
-               observables.contact_pressure = wp.zeros(
-                   self.model.rigid_contact_max,
-                   dtype=float,
-                   device=self.model.device,
-                   requires_grad=requires_grad,
-               )
+The dataclass helper defaults every declared array to ``None`` and excludes it
+from constructor arguments. Only ``solver.observables(flags)`` allocates the
+requested arrays, in declaration order, on the model's device with the requested
+gradient setting. ``eq=False`` preserves object identity and hashing for
+articulation-view caches. A derived container may redeclare a field with a new
+dtype or frequency; its siblings and base class are not modified. Two fields
+cannot declare the same flag. Missing declarations, duplicate flags, and missing
+dataclass decorators are rejected before array allocation.
 
-The snippet assumes ``from enum import Enum`` and ``import warp as wp``.
 The base solver requires pipeline initialization, freezes capacities, and binds
 contact storage for any requested contact frequency, including custom fields
 requested without ``CONTACT_F``. Body- and joint-indexed fields do not require
 a collision pipeline.
 
-Use :meth:`~newton.solvers.SolverObservables.is_requested` in both allocation
-and stepping code. For example, after validating the container and advancing
+Use :meth:`~newton.solvers.SolverObservables.is_requested` in stepping code.
+For example, after validating the container and advancing
 the simulation, compute a custom diagnostic only when it is requested:
 
 .. code-block:: python
 
+   self.validate_observables(observables, contacts)
    if observables is not None and observables.is_requested(CustomObservableFlags.CONTACT_PRESSURE):
        wp.launch(
            compute_contact_pressure,
@@ -235,9 +241,37 @@ the simulation, compute a custom diagnostic only when it is requested:
        )
 
 ``compute_contact_pressure`` is a solver-specific kernel, not provided by this
-snippet. ``flag in observables`` remains equivalent to
-``observables.is_requested(flag)``. Neither expression tests freshness.
+snippet. ``observables.is_requested(flag)`` tests the request, not freshness.
 The request remains true for zero-length arrays and while they are being allocated.
+
+Specialized allocation
+^^^^^^^^^^^^^^^^^^^^^^
+
+Most custom fields require no allocation override. Solvers that need specialized
+storage can use two public, experimental extension hooks:
+
+* :meth:`SolverBase.allocate_observable() <newton.solvers.SolverBase.allocate_observable>`
+  allocates one requested array. Override it for an unusual layout, returning an
+  owned Warp array with the declared dtype and row domain on the model device.
+  Honor ``requires_grad`` and delegate other flags to ``super()``. The generic
+  implementation allocates one element per frequency row; vector and matrix
+  element types are supported through ``dtype``.
+* :meth:`SolverBase.prepare_observables() <newton.solvers.SolverBase.prepare_observables>`
+  runs once after all requested arrays exist and the container has its solver
+  owner. Use it for auxiliary scratch arrays or nested containers. Kamino uses
+  it for saved input poses; the coupled solver uses it for entry-local
+  observables. Do not replace declared arrays or change requests in this hook.
+
+Both hooks complete inside ``solver.observables()`` before graph capture.
+Neither ``step()`` nor ``select()`` invokes them. If allocation or preparation
+fails, that call does not freeze the model's contact capacities.
+
+This field-declaration API replaces the earlier experimental extension contract
+based on ``ATTRIBUTE_FREQUENCIES``, custom container initializers, and
+``_allocate_observables()``. Solver ``step()`` implementations must still call
+``validate_observables()`` before using the arrays; making the base class own
+the step entry point is a separate migration. The declarations describe
+runtime diagnostics and do not introduce USD-authorable model attributes.
 
 Contact row domains
 -------------------
@@ -290,21 +324,23 @@ container, and pass it through the step:
 .. code-block:: python
 
    imu = newton.sensors.SensorIMU(model, sites="imu_*", request_state_attributes=False)
-   contact_sensor = newton.sensors.SensorContact(model, sensing_shapes="foot_*")
+   contact_sensor = newton.sensors.SensorContact(
+       model, sensing_shapes="foot_*", request_contact_attributes=False
+   )
 
    flags = imu.solver_observable_flags | contact_sensor.solver_observable_flags
    # Construct a pipeline with a compatible capacity before requesting contacts.
    observables = solver.observables(flags)
 
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
-   imu.update(state_out, solver_observables=observables)
-   contact_sensor.update(state_in, contacts, solver_observables=observables)
+   imu.update(state_out, observables=observables)
+   contact_sensor.update(state_in, contacts, observables=observables)
 
 The viewer follows the same pattern:
 
 .. code-block:: python
 
-   viewer.log_contacts(contacts, state_in, solver_observables=observables)
+   viewer.log_contacts(contacts, state_in, observables=observables)
 
 Substep scheduling
 ------------------
@@ -334,9 +370,9 @@ pipeline, and sensors as above:
        # Run the usual collision update here if using external collision detection.
        solver.step(state_in, state_out, control, contacts, substep_dt, observables=requested)
        state_in, state_out = state_out, state_in
-       imu.update(state_in, solver_observables=every_substep)
+       imu.update(state_in, observables=every_substep)
 
-   contact_sensor.update(state_in, contacts, solver_observables=observables)
+   contact_sensor.update(state_in, contacts, observables=observables)
 
 If all fields are needed only at the end, pass ``observables=None`` on earlier
 substeps. ``observables.select(set())`` also requests no diagnostics.
@@ -405,10 +441,12 @@ The following compatibility paths remain available for a deprecation period:
    * - ``solver.update_contacts()``
      - Pass contact observables to ``solver.step(..., observables=observables)``
 
-The request methods and ``update_contacts()`` emit :class:`DeprecationWarning`.
-``SensorIMU`` retains its legacy ``request_state_attributes=True`` default
-during the deprecation period; explicitly pass ``False`` when using solver
-observables. ``SensorContact`` defaults to ``request_contact_attributes=False``.
+The request methods and legacy force export via ``update_contacts()`` emit
+:class:`DeprecationWarning`. MuJoCo's geometry-only ``update_contacts()`` remains
+supported without a warning when ``contacts.force`` is ``None``.
+``SensorIMU`` and ``SensorContact`` retain their legacy
+``request_state_attributes=True`` and ``request_contact_attributes=True`` defaults
+during the deprecation period; explicitly pass ``False`` when using solver observables.
 Setting either option to ``True`` is deprecated in Newton 1.7 and emits one
 sensor-specific warning at the caller's location. Passing ``False`` does not
 emit a warning or request legacy fields.
@@ -422,8 +460,10 @@ deprecated state destinations listed above.
 
 This deprecation does not affect custom attributes registered with
 :meth:`ModelBuilder.add_custom_attribute <newton.ModelBuilder.add_custom_attribute>`.
-Custom model, state, control, and contact data remain supported; the migration
-only covers built-in solver-produced diagnostics.
+Existing custom model, state, and control data remain supported; the migration
+only covers built-in solver-produced diagnostics. The new ``CONTACT*`` frequencies
+are reserved for solver observables: ``ModelBuilder.add_custom_attribute()`` rejects
+them because builder finalization does not allocate dynamic contact rows.
 
 The VBD contact-force export added on ``main`` currently uses the legacy
 ``Contacts.force`` path below; it does not yet advertise ``CONTACT_F`` observables.

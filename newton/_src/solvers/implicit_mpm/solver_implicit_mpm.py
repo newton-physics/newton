@@ -1920,7 +1920,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 This solver declares no supported observables, so only an empty
                 container is accepted.
         """
-        self._validate_observables(observables, contacts)
+        self.validate_observables(observables, contacts)
         model = self.model
 
         with wp.ScopedDevice(model.device):

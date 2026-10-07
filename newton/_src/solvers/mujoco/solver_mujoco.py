@@ -11,8 +11,9 @@ import sys
 import warnings
 from collections.abc import Iterable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from enum import Enum, IntEnum
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
@@ -466,6 +467,17 @@ _MJW_BATCHED_MODEL_FIELDS = (
 )
 
 
+class _MuJoCoObservableFlags(Enum):
+    """MuJoCo-specific solver observables.
+
+    .. experimental::
+        The solver observable API may change without prior notice.
+    """
+
+    QFRC_ACTUATOR = "qfrc_actuator"
+    """Actuator forces in Newton generalized-coordinate order."""
+
+
 class SolverMuJoCo(SolverBase, CouplingInterface):
     """
     This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
@@ -534,36 +546,31 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             solver.render_mujoco_viewer()
     """
 
-    class ObservableFlags(Enum):
-        """MuJoCo-specific solver observables.
+    ObservableFlags = _MuJoCoObservableFlags
+    """MuJoCo-specific observable flags."""
 
-        .. experimental::
-            The solver observable API may change without prior notice.
-        """
-
-        QFRC_ACTUATOR = "qfrc_actuator"
-        """Actuator forces in Newton generalized-coordinate order."""
-
+    @dataclass(eq=False)
     class Observables(SolverObservables):
         """Standard and MuJoCo-specific observable arrays.
 
         The native CPU backend (``use_mujoco_cpu=True``) supports only
         ``QFRC_ACTUATOR``. MuJoCo Warp supports the standard body and contact
-        fields; body fields require sensors to remain enabled. Contact storage
-        must cover :meth:`SolverMuJoCo.get_max_contact_count` and be allocated
-        after constructing a compatible :class:`~newton.CollisionPipeline`.
+        fields, including body fields when sensors are disabled. With native
+        collision detection, contact storage must cover
+        :meth:`SolverMuJoCo.get_max_contact_count`. External collision detection
+        uses the pipeline's own capacity. Construct a compatible
+        :class:`~newton.CollisionPipeline` before allocating contact observables.
 
         .. experimental::
             The solver observable API may change without prior notice.
         """
 
-        ATTRIBUTE_FREQUENCIES: ClassVar = {"qfrc_actuator": AttributeFrequency.JOINT_DOF}
-
-        def __init__(self, flags=()):
-            """Initialize output fields before solver-owned allocation."""
-            super().__init__(flags)
-            self.qfrc_actuator: wp.array[wp.float32] | None = None
-            """Actuator forces [N or N·m], shape ``(joint_dof_count,)``."""
+        qfrc_actuator: wp.array[wp.float32] | None = SolverObservables.field(  # noqa: RUF009
+            flag=_MuJoCoObservableFlags.QFRC_ACTUATOR,
+            dtype=wp.float32,
+            frequency=AttributeFrequency.JOINT_DOF,
+        )
+        """Actuator forces [N or N·m], shape ``(joint_dof_count,)``."""
 
     OBSERVABLES_TYPE = Observables
     SUPPORTED_OBSERVABLE_FLAGS = frozenset(
@@ -591,10 +598,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         return flags
 
-    def _allocate_observables(self, observables: Observables, *, requires_grad: bool) -> None:
-        """Allocate standard and MuJoCo-specific observable arrays."""
+    def allocate_observable(self, flag: Enum, *, requires_grad: bool) -> wp.array:
+        """Check the backend contact budget before allocating a declared array."""
         if (
-            observables.is_requested(SolverObservableFlags.CONTACT_F)
+            flag is SolverObservableFlags.CONTACT_F
+            and self.mjw_model.opt.run_collision_detection
             and self.mjw_data.naconmax > self.model.rigid_contact_max
         ):
             raise ValueError(
@@ -602,14 +610,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"({self.model.rigid_contact_max}). Construct CollisionPipeline with "
                 "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
             )
-        super()._allocate_observables(observables, requires_grad=requires_grad)
-        if observables.is_requested(self.ObservableFlags.QFRC_ACTUATOR):
-            observables.qfrc_actuator = wp.zeros(
-                self.model.joint_dof_count,
-                dtype=wp.float32,
-                device=self.model.device,
-                requires_grad=requires_grad,
-            )
+        return super().allocate_observable(flag, requires_grad=requires_grad)
 
     EqType = _EqType
     """MuJoCo equality constraint type."""
@@ -4540,7 +4541,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         *,
         observables: SolverObservables | None = None,
     ) -> None:
-        self._validate_observables(observables, contacts)
+        self.validate_observables(observables, contacts)
         if self.use_mujoco_cpu:
             self._apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
@@ -5950,15 +5951,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Geometry-only export remains supported when ``contacts.force`` is ``None``.
 
         .. deprecated:: 1.7
-            Request :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` and
-            pass the resulting container to :meth:`step` instead.
+            Exporting ``contacts.force`` is deprecated. Request
+            :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` and pass the
+            resulting container to :meth:`step` instead. Geometry-only export
+            is not deprecated.
         """
-        warnings.warn(
-            "SolverMuJoCo.update_contacts() is deprecated in Newton 1.7; request SolverObservableFlags.CONTACT_F and pass "
-            "SolverObservables to step().",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        if contacts.force is not None:
+            warnings.warn(
+                "SolverMuJoCo.update_contacts() force export is deprecated in Newton 1.7; request "
+                "SolverObservableFlags.CONTACT_F and pass SolverObservables to step().",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self._populate_contact_observables(contacts, contacts.force)
 
     def _populate_contact_observables(
@@ -5978,7 +5982,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mj_data = self.mjw_data
         mj_contact = mj_data.contact
 
-        if mj_data.naconmax > contacts.rigid_contact_max:
+        if not preserve_geometry and mj_data.naconmax > contacts.rigid_contact_max:
             raise ValueError(
                 f"MuJoCo naconmax ({mj_data.naconmax}) exceeds contacts.rigid_contact_max "
                 f"({contacts.rigid_contact_max}). Create Contacts with at least "
@@ -5989,7 +5993,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             contact_f.zero_()
         wp.launch(
             self._convert_mjw_contacts_to_newton_kernel,
-            dim=mj_data.naconmax,
+            dim=contacts.rigid_contact_max if preserve_geometry else mj_data.naconmax,
             inputs=[
                 self.mjc_geom_to_newton_shape,
                 self.mjw_model.opt.cone,

@@ -423,7 +423,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
         """
         self._ensure_restitution_module_options()
         self._apply_module_options()
-        self._validate_observables(observables, contacts)
+        self.validate_observables(observables, contacts)
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0

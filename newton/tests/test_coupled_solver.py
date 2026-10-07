@@ -361,7 +361,7 @@ class _BodyObservableCopySolver(_StepCountingCopySolver):
     )
 
     def step(self, state_in, state_out, control, contacts, dt, *, observables=None):
-        self._validate_observables(observables, contacts)
+        self.validate_observables(observables, contacts)
         super().step(state_in, state_out, control, contacts, dt)
         if observables is None:
             return

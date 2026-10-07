@@ -208,7 +208,7 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         if self.contacts is not None:
-            self.viewer.log_contacts(self.contacts, self.contact_state, solver_observables=self.solver_observables)
+            self.viewer.log_contacts(self.contacts, self.contact_state, observables=self.solver_observables)
         self.viewer.end_frame()
 
     @staticmethod

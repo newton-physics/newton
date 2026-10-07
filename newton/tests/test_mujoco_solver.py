@@ -6073,14 +6073,15 @@ class TestMuJoCoContactForce(unittest.TestCase):
     GRAVITY = 9.81
 
     def test_legacy_geometry_export_without_force_buffer(self):
-        """Retain geometry-only callers of the deprecated contact export API."""
+        """Keep geometry-only contact export available without a deprecation warning."""
         model, _ = self._build_box_on_ground()
         solver = SolverMuJoCo(model)
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count())
         contacts = pipeline.contacts()
         self.assertIsNone(contacts.force)
         solver.step(model.state(), model.state(), None, None, 0.002)
-        with self.assertWarnsRegex(DeprecationWarning, r"SolverMuJoCo.update_contacts.*1\.7"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
             solver.update_contacts(contacts)
         count = int(contacts.rigid_contact_count.numpy()[0])
         self.assertGreater(count, 0)
@@ -6091,7 +6092,8 @@ class TestMuJoCoContactForce(unittest.TestCase):
         """Keep collision rows stable across substeps and map forces past culled rows."""
         model, _ = self._build_box_on_ground()
         solver = SolverMuJoCo(model, use_mujoco_contacts=False)
-        pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count())
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=16)
+        self.assertLess(model.rigid_contact_max, solver.get_max_contact_count())
         contacts = pipeline.contacts()
         state_in, state_out = model.state(), model.state()
         joint_q = state_in.joint_q.numpy()

@@ -171,7 +171,7 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
             # read IMU acceleration
-            self.imu.update(self.state_0, solver_observables=self.solver_observables)
+            self.imu.update(self.state_0, observables=self.solver_observables)
             # average and compute color
             wp.launch(acc_to_color, dim=self.n_cubes, inputs=[0.025, self.imu.accelerometer, self.buffer, self.colors])
 
@@ -203,7 +203,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_1, solver_observables=self.solver_observables)
+        self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
         self.viewer.end_frame()
 
 

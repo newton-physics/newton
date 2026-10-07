@@ -352,7 +352,7 @@ class Example:
                 self.control,
                 self.contacts,
                 self.sim_dt,
-                observables=self.solver_observables,
+                observables=self.solver_observables if i == self.sim_substeps - 1 else None,
             )
 
             if need_state_copy and i == self.sim_substeps - 1:
@@ -427,7 +427,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0, solver_observables=self.solver_observables)
+        self.viewer.log_contacts(self.contacts, self.state_0, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_final(self):

@@ -186,7 +186,7 @@ def test_vbd_rigid_none_refreshes_external_contacts(test, device):
     observables = solver.observables(set())
 
     pipeline.collide(state_a, solver.contacts)
-    with patch.object(solver, "_validate_observables", wraps=solver._validate_observables) as validate:
+    with patch.object(solver, "validate_observables", wraps=solver.validate_observables) as validate:
         solver.step(state_a, state_b, None, None, 1e-3, observables=observables)
     validate.assert_called_once_with(observables, solver.contacts)
     test.assertGreater(int(solver.body_body_contact_counts.numpy().sum()), 0)

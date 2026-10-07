@@ -267,7 +267,7 @@ class Example:
             self.viewer.activate(layer.layer_id)
             self.viewer.log_state(layer.state_0)
             if layer.contacts is not None:
-                self.viewer.log_contacts(layer.contacts, layer.state_1, solver_observables=layer.solver_observables)
+                self.viewer.log_contacts(layer.contacts, layer.state_1, observables=layer.solver_observables)
         self.viewer.end_frame()
 
 

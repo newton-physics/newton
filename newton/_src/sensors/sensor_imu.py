@@ -86,7 +86,7 @@ class SensorIMU:
 
     .. experimental::
 
-        The :attr:`solver_observable_flags` attribute and the ``solver_observables`` argument
+        The :attr:`solver_observable_flags` attribute and the ``observables`` argument
         to :meth:`update` may change with the solver observable API.
 
     The ``sites`` parameter accepts label patterns -- see :ref:`label-matching`.
@@ -113,7 +113,7 @@ class SensorIMU:
 
             # after solver step
             solver.step(state, state, None, None, dt=1.0 / 60.0, observables=observables)
-            imu.update(state, solver_observables=observables)
+            imu.update(state, observables=observables)
             acc = imu.accelerometer.numpy()
             gyro = imu.gyroscope.numpy()
     """
@@ -180,7 +180,7 @@ class SensorIMU:
                 "SensorIMU(request_state_attributes=True) is deprecated in Newton 1.7; "
                 "pass request_state_attributes=False, allocate SolverObservables with "
                 "solver.observables(sensor.solver_observable_flags), pass them to solver.step(observables=...), "
-                "and pass them to update(..., solver_observables=...).",
+                "and pass them to update(..., observables=...).",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -205,12 +205,12 @@ class SensorIMU:
             if not (shape_flags[site_idx] & ShapeFlags.SITE):
                 raise ValueError(f"sensor site index {site_idx} is not a site")
 
-    def update(self, state: State, *, solver_observables: SolverObservables | None = None):
+    def update(self, state: State, *, observables: SolverObservables | None = None):
         """Update the IMU sensor.
 
         Args:
             state: The state to update the sensor from.
-            solver_observables: Solver observables containing rigid-body accelerations. If
+            observables: Solver observables containing rigid-body accelerations. If
                 ``None``, use the legacy ``state.body_qdd`` attribute. Must be allocated
                 by a solver for this sensor's model.
 
@@ -218,9 +218,9 @@ class SensorIMU:
             ValueError: If solver observables belong to a different model or the
                 required body acceleration array is missing.
         """
-        if solver_observables is not None and solver_observables.model is not self.model:
+        if observables is not None and observables.model is not self.model:
             raise ValueError("Solver observables must belong to the sensor's model.")
-        body_qdd = solver_observables.body_qdd if solver_observables is not None else state.body_qdd
+        body_qdd = observables.body_qdd if observables is not None else state.body_qdd
         if body_qdd is None:
             raise ValueError(
                 "SensorIMU requires SolverObservables with BODY_QDD allocated. "

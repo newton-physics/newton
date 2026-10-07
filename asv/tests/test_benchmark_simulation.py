@@ -272,7 +272,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
                     self.assertEqual(step_call.kwargs, {})
                 self.assertEqual(example.solver.step.call_args.kwargs, {"observables": example.solver_observables})
                 example.sensor_contact.update.assert_called_once_with(
-                    example.state_0, example.contacts, solver_observables=example.solver_observables
+                    example.state_0, example.contacts, observables=example.solver_observables
                 )
                 example.solver.update_contacts.assert_not_called()
 

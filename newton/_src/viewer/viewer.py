@@ -1236,7 +1236,7 @@ class ViewerBase(ABC):
         contacts: newton.Contacts,
         state: newton.State,
         *,
-        solver_observables: newton.solvers.SolverObservables | None = None,
+        observables: newton.solvers.SolverObservables | None = None,
     ):
         """Render contact visualizations.
 
@@ -1265,19 +1265,14 @@ class ViewerBase(ABC):
                 Required to compute
                 world-space contact positions and (for mode coloring) body
                 velocities at the contact points.
-            solver_observables: Optional solver observables containing ``contact_f``. If
+            observables: Optional solver observables containing ``contact_f``. If
                 omitted, the deprecated ``contacts.force`` array is used.
-                Must be bound to the same ``contacts`` instance passed to ``solver.step()``.
+                Binds compatible contact storage on first use; newly allocated forces
+                are zero until the solver updates them.
 
                 .. experimental::
                     The solver observable API may change without prior notice.
         """
-
-        contact_f = solver_observables.contact_f if solver_observables is not None else contacts.force
-        if solver_observables is not None and solver_observables.contacts is not contacts:
-            raise ValueError(
-                "Contact solver observables must be used with the Contacts instance passed to solver.step()."
-            )
 
         if not self.show_contacts or self._layer_force_hidden():
             self.log_arrows(self._qualify("/contacts/normals"), None, None, None)
@@ -1287,6 +1282,13 @@ class ViewerBase(ABC):
                 )
             self.log_arrows(self._qualify("/contacts/forces"), None, None, None)
             return
+
+        contact_f = observables.contact_f if observables is not None else contacts.force
+        if observables is not None:
+            if observables.model is not self.model:
+                raise ValueError("Solver observables must belong to the viewer's model.")
+            if contact_f is not None:
+                observables.bind_contacts(contacts)
 
         # Get contact count, clamped to buffer size (counter may exceed max on overflow)
         max_contacts = contacts.rigid_contact_max

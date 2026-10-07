@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -361,13 +361,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
         substeps: int = 1
         in_place: bool = False
 
+    @dataclass(eq=False)
     class Observables(SolverObservables):
         """Global observables and the entry-local containers that populate them."""
 
-        def __init__(self, flags=()):
-            super().__init__(flags)
-            self.entry_observables: dict[str, SolverObservables] = {}
-            """Observable containers allocated by each owning sub-solver."""
+        entry_observables: dict[str, SolverObservables] = field(default_factory=dict, init=False, repr=False)
+        """Observable containers allocated by each owning sub-solver."""
 
         def select(self, flags: Iterable[Enum]) -> SolverCoupled.Observables:
             """Select global fields and matching entry-local arrays without allocating."""
@@ -390,9 +389,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 flags.add(flag)
         return frozenset(flags)
 
-    def _allocate_observables(self, observables: Observables, *, requires_grad: bool) -> None:
-        """Allocate global observables and matching entry-local containers."""
-        super()._allocate_observables(observables, requires_grad=requires_grad)
+    def prepare_observables(self, observables: Observables, *, requires_grad: bool) -> None:
+        """Allocate entry-local containers after the global observable arrays."""
+        super().prepare_observables(observables, requires_grad=requires_grad)
         for entry in self._entries.values():
             entry_flags = observables.flags if entry.body_indices.shape[0] > 0 else ()
             observables.entry_observables[entry.name] = entry.solver.observables(
@@ -2252,7 +2251,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         need a private contact pipeline (e.g. proxy collisions, ADMM internal
         contacts) own their own buffers internally.
         """
-        self._validate_observables(observables, contacts)
+        self.validate_observables(observables, contacts)
         self._distribute_state(state_in, dt=dt)
         self._active_observables = observables
         try:

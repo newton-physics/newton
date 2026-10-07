@@ -71,7 +71,7 @@ def test_free_fall_body_acceleration_and_imu(test, device, integrator):
     state_out = model.state()
 
     solver.step(state_in, state_out, model.control(), None, DT, observables=observables)
-    sensor.update(state_out, solver_observables=observables)
+    sensor.update(state_out, observables=observables)
 
     expected_gravity = np.array([0.0, 0.0, -9.81])
     test.assertIsNone(state_in.body_qdd)

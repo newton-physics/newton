@@ -169,7 +169,7 @@ class Example:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
-        self.plate_contact_sensor.update(self.contact_state, self.contacts, solver_observables=self.solver_observables)
+        self.plate_contact_sensor.update(self.contact_state, self.contacts, observables=self.solver_observables)
 
         # Check if any object touched the matching plate by looking up per-counterpart forces.
         net_force = self.plate_contact_sensor.force_matrix.numpy()
@@ -186,7 +186,7 @@ class Example:
             print(f"Plate {plate_label} was touched by counterpart {counterpart_label}")
             self._set_shape_colors({plate_shape: self.shape_colors[counterpart_label]})
 
-        self.flap_contact_sensor.update(self.contact_state, self.contacts, solver_observables=self.solver_observables)
+        self.flap_contact_sensor.update(self.contact_state, self.contacts, observables=self.solver_observables)
         self.viewer.log_scalar(
             "Flap Contact Force",
             np.abs(self.flap_contact_sensor.total_force.numpy()[0, 2]),
@@ -216,7 +216,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.contact_state, solver_observables=self.solver_observables)
+        self.viewer.log_contacts(self.contacts, self.contact_state, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_post_step(self):

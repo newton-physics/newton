@@ -2231,6 +2231,7 @@ class ModelBuilder:
         Raises:
             ValueError: If the attribute key already exists with incompatible specification,
                 if the attribute uses a custom string frequency that hasn't been registered,
+                if the attribute uses a contact frequency (reserved for solver observables),
                 or if ``usd_attribute_name`` is ``"*"`` without a ``usd_value_transformer``.
 
         Example:
@@ -2256,6 +2257,14 @@ class ModelBuilder:
                 # with the default value 20.0
                 assert np.allclose(model.my_namespace.my_attribute.numpy(), [30.0, 20.0])
         """
+        if attribute.frequency in (
+            Model.AttributeFrequency.CONTACT,
+            Model.AttributeFrequency.CONTACT_RIGID,
+            Model.AttributeFrequency.CONTACT_SOFT,
+        ):
+            raise ValueError(
+                "Contact frequencies are only supported by SolverObservables, not builder custom attributes."
+            )
         key = attribute.key
 
         existing = self.custom_attributes.get(key)

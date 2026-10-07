@@ -126,9 +126,7 @@ class Example:
             )
             self.contacts = self.collision_pipeline.contacts()
         else:
-            self.collision_pipeline = newton.CollisionPipeline(
-                self.model, rigid_contact_max=self.solver.get_max_contact_count()
-            )
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
         self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
 
@@ -149,7 +147,7 @@ class Example:
     def simulate(self):
         if not self.use_mujoco_contacts:
             self.collision_pipeline.collide(self.state_0, self.contacts)
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # apply forces to the model for picking, wind, etc
@@ -160,7 +158,7 @@ class Example:
                 self.control,
                 self.contacts,
                 self.sim_dt,
-                observables=self.solver_observables,
+                observables=self.solver_observables if substep == self.sim_substeps - 1 else None,
             )
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -176,7 +174,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0, solver_observables=self.solver_observables)
+        self.viewer.log_contacts(self.contacts, self.state_0, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_final(self):

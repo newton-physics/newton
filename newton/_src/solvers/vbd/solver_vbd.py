@@ -2469,7 +2469,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 need to be allocated or grown during graph capture.
         """
         contacts = self._resolve_step_contacts(contacts)
-        self._validate_observables(observables, contacts)
+        self.validate_observables(observables, contacts)
         self._apply_module_options()
         update_rigid = self._update_rigid_history
         self._update_rigid_history = True

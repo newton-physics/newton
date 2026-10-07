@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import dataclass
 from enum import Enum, IntEnum
-from typing import ClassVar
 
 import numpy as np
 import warp as wp
@@ -27,15 +27,13 @@ class IntegerObservableFlags(IntEnum):
     BODY_TEMPERATURE = 0
 
 
+@dataclass(eq=False)
 class DummySolverObservables(newton.solvers.SolverObservables):
     """Extend the standard observable container with a custom body array."""
 
-    ATTRIBUTE_FREQUENCIES: ClassVar = {"body_temperature": newton.Model.AttributeFrequency.BODY}
-
-    def __init__(self, flags=()):
-        """Initialize the inherited and custom output fields."""
-        super().__init__(flags)
-        self.body_temperature: wp.array[wp.float32] | None = None
+    body_temperature: wp.array[wp.float32] | None = newton.solvers.SolverObservables.field(
+        flag=DummyObservableFlags.BODY_TEMPERATURE, dtype=wp.float32, frequency=newton.Model.AttributeFrequency.BODY
+    )
 
 
 class DummySolver(newton.solvers.SolverBase):
@@ -68,17 +66,6 @@ class DummySolver(newton.solvers.SolverBase):
         self.saw_body_properties = bool(flags & newton.ModelFlags.BODY_PROPERTIES)
         if flags & self.MODEL_ATTRIBUTE_CHANGED:
             self.model_epoch = int(self.model.custom_solver.model_epoch.numpy()[0])
-
-    def _allocate_observables(self, observables: DummySolverObservables, *, requires_grad: bool) -> None:
-        """Allocate inherited observables before solver-specific arrays."""
-        super()._allocate_observables(observables, requires_grad=requires_grad)
-        if observables.is_requested(DummyObservableFlags.BODY_TEMPERATURE):
-            observables.body_temperature = wp.zeros(
-                self.model.body_count,
-                dtype=wp.float32,
-                device=self.model.device,
-                requires_grad=requires_grad,
-            )
 
     def reset(
         self,

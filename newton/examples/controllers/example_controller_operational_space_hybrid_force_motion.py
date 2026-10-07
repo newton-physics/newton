@@ -238,7 +238,9 @@ class Example:
         # wrench feedback and shown in the GUI alongside the commanded
         # force. One sensor covers both robots; total_force's rows are
         # ordered to match sensing_bodies below (Franka's ball, then UR10's).
-        self.force_sensor = SensorContact(self.model, sensing_bodies=[franka_tool_body, ur10_tool_body])
+        self.force_sensor = SensorContact(
+            self.model, request_contact_attributes=False, sensing_bodies=[franka_tool_body, ur10_tool_body]
+        )
         self.collision_pipeline = newton.CollisionPipeline(
             self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
         )
@@ -553,7 +555,7 @@ class Example:
         # Force feedback needs last frame's measured contact force before
         # this frame's controller.step() runs; SensorContact.update() isn't
         # graph-capturable, so it has to happen here in Python, first.
-        self.force_sensor.update(self.state_1, self.contacts, solver_observables=self.solver_observables)
+        self.force_sensor.update(self.state_1, self.contacts, observables=self.solver_observables)
         # One sensing body per robot (Franka's ball, then UR10's), matching
         # sensing_bodies' order above.
         per_robot_force_world = self.force_sensor.total_force.numpy()

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, replace
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -823,11 +824,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             )
             if not model._contact_capacity_initialized:
                 model.rigid_contact_max = native_contact_max
-            elif native_contact_max > model.rigid_contact_max:
-                raise ValueError(
-                    f"Kamino contact capacity ({native_contact_max}) exceeds CollisionPipeline capacity "
-                    f"({model.rigid_contact_max}). Configure a compatible pipeline or construct it after SolverKamino."
-                )
         else:
             # If collision detector is disabled allocate contacts based on the capacity estimate from the Newton CollisionPipeline.
             world_count = self.model.world_count
@@ -1029,16 +1025,20 @@ class SolverKamino(SolverBase, CouplingInterface):
         if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
             config.base_pose = config_cache
 
-    def _allocate_observables(self, observables: SolverObservables, *, requires_grad: bool) -> None:
+    def allocate_observable(self, flag: Enum, *, requires_grad: bool) -> wp.array:
         """Check the native detector budget before allocating contact observables."""
-        if observables.is_requested(SolverObservableFlags.CONTACT_F) and self._collision_detector_kamino is not None:
+        if flag is SolverObservableFlags.CONTACT_F and self._collision_detector_kamino is not None:
             native_max = self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
             if native_max > self.model.rigid_contact_max:
                 raise ValueError(
                     f"Kamino contact capacity ({native_max}) exceeds CollisionPipeline capacity "
                     f"({self.model.rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
                 )
-        super()._allocate_observables(observables, requires_grad=requires_grad)
+        return super().allocate_observable(flag, requires_grad=requires_grad)
+
+    def prepare_observables(self, observables: SolverObservables, *, requires_grad: bool) -> None:
+        """Allocate input-pose storage before contact observables are stepped."""
+        super().prepare_observables(observables, requires_grad=requires_grad)
         if observables.is_requested(SolverObservableFlags.CONTACT_F) and self._contact_observable_state is None:
             # Preserve the input body frames even when step() overwrites state_in.
             # Allocate here, never during stepping or graph capture.
@@ -1084,7 +1084,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 detection. Consumers reconstructing world-space contact points must
                 retain these input poses.
         """
-        self._validate_observables(observables, contacts)
+        self.validate_observables(observables, contacts)
         if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
             wp.copy(self._contact_observable_state.body_q, state_in.body_q)
         # Interface the input state containers to Kamino's equivalents

@@ -488,7 +488,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         observables: SolverObservables | None = None,
     ) -> None:
         self._apply_module_options()
-        self._validate_observables(observables)
+        self.validate_observables(observables)
         requires_grad = state_in.requires_grad
         step_in_place = state_in is state_out
 

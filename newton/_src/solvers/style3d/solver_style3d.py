@@ -191,7 +191,7 @@ class SolverStyle3D(SolverBase):
                 This solver declares no supported observables, so only an empty
                 container is accepted.
         """
-        self._validate_observables(observables, contacts)
+        self.validate_observables(observables, contacts)
         # Model masses and flags may change between solver steps.
         wp.copy(self._particle_flags, self.model.particle_flags)
         if self.model.particle_count > 0:
