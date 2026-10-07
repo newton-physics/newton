@@ -3,8 +3,11 @@
 
 """Tests for Gaussian visual payloads embedded in deformable bodies."""
 
+import importlib.util
 import math
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 import warp as wp
@@ -12,7 +15,7 @@ import warp as wp
 import newton
 from newton.sensors import SensorCamera
 from newton.tests.unittest_utils import USD_AVAILABLE
-from newton.viewer import ViewerNull
+from newton.viewer import ViewerFile, ViewerNull
 
 
 def _soft_builder():
@@ -397,6 +400,81 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
                     axes = _quat_matrix(transform[3:]) @ np.diag(scales)
                     expected_axes = placement @ motion @ np.diag([0.05, 0.04, 0.03])
                     np.testing.assert_allclose(axes @ axes.T, expected_axes @ expected_axes.T, atol=1.0e-7, rtol=1.0e-4)
+
+    def test_recording_restores_gaussian_visual_and_camera(self):
+        from pxr import Sdf
+
+        stage = self._stage()
+        tet = self._add_volume(stage, "/World/Soft")
+        bind = np.asarray(tet.GetPointsAttr().Get())
+        tet.GetPointsAttr().Set((bind * 2).tolist())
+        tet.GetPrim().AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+        tet.GetPrim().CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
+            ["bindPose"]
+        )
+        tet.GetPrim().CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
+            bind.tolist()
+        )
+        self._add_gaussian(stage, "/World/Soft/Gaussian", [(0.2, 0.2, 0.2)])
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        builder.add_shape_box(-1, xform=wp.transform(wp.vec3(3, 0, 0), wp.quat_identity()))
+        builder.add_deformable_visual_mesh(
+            [[0, 0, 0], [2, 0, 0], [0, 2, 0]], [0, 1, 2], kind="particle", particles=[0, 1, 2]
+        )
+        model = builder.finalize()
+        state = model.state()
+        state.particle_q.assign(state.particle_q.numpy() + np.array([0, 0, 0.2]))
+        expected = model.deformable_visuals()
+        model.update_deformable_visuals(state, expected)
+
+        def camera_depth(render_model, render_state):
+            sensor = SensorCamera(
+                render_model,
+                default_render_config=SensorCamera.RenderConfig(
+                    enable_particles=False,
+                    enable_simulation_triangles=False,
+                    gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY,
+                    max_distance=10.0,
+                ),
+            )
+            rays = sensor.compute_camera_rays_pinhole(16, 16, device=render_model.device, camera_fov=math.radians(40))
+            cameras = wp.array(
+                [wp.transform(wp.vec3(0.4, 0.4, 3), wp.quat_identity())], dtype=wp.transform, device=render_model.device
+            )
+            depth = sensor.create_depth_image_output(render_model.world_count, 16, 16)
+            sensor.update(render_state, cameras, rays, depth_image=depth)
+            return depth.numpy()
+
+        expected_depth = camera_depth(model, state)
+        for suffix in (".json", ".bin"):
+            with self.subTest(format=suffix), tempfile.TemporaryDirectory() as directory:
+                if suffix == ".bin" and importlib.util.find_spec("cbor2") is None:
+                    self.skipTest("CBOR recording requires optional cbor2")
+                path = str(Path(directory) / f"recording{suffix}")
+                recorder = ViewerFile(path, auto_save=False)
+                recorder.set_model(model)
+                recorder.log_state(state)
+                recorder.save_recording()
+                playback = ViewerFile(path)
+                playback.load_recording()
+                restored = newton.Model(device=model.device)
+                playback.load_model(restored)
+                self.assertIsInstance(restored.deformable_visual_gaussians[0], newton.DeformableVisualGaussian)
+                self.assertEqual(restored.deformable_visual_gaussians[0].graphics_path, "/World/Soft/Gaussian")
+                restored_state = restored.state()
+                playback.load_state(restored_state, 0)
+                ViewerNull().set_model(restored)
+                actual = restored.deformable_visuals()
+                restored.update_deformable_visuals(restored_state, actual)
+                np.testing.assert_allclose(
+                    actual.gaussian_transforms.numpy(), expected.gaussian_transforms.numpy(), atol=1.0e-6
+                )
+                np.testing.assert_allclose(
+                    actual.gaussian_scales.numpy(), expected.gaussian_scales.numpy(), atol=1.0e-6
+                )
+                restored.bvh_build_shapes(restored_state)
+                np.testing.assert_allclose(camera_depth(restored, restored_state), expected_depth, atol=1.0e-5)
 
 
 class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
