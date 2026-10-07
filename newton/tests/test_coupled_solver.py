@@ -4,7 +4,6 @@
 """Smoke tests for the coupled solver prototype."""
 
 import unittest
-import warnings
 from typing import ClassVar
 from unittest import mock
 
@@ -458,15 +457,6 @@ class TestModelView(unittest.TestCase):
         self.assertIs(view.body_inv_mass, new_mass)
         # Parent unchanged
         self.assertIsNot(self.model.body_inv_mass, new_mass)
-
-    def test_override_accepts_set_subclass_parent(self):
-        """Set overrides should accept a native set when the parent uses a set subclass."""
-        view = ModelView(self.model, "test")
-        filters = set(self.model.shape_collision_filter_pairs)
-
-        view.shape_collision_filter_pairs = filters
-
-        self.assertIs(view.shape_collision_filter_pairs, filters)
 
     def test_count_override_slices_frequency_arrays(self):
         """Frequency-matched arrays should follow view-local counts."""
@@ -927,15 +917,10 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                 for name, expected in parent_before.items():
                     np.testing.assert_array_equal(getattr(parent, name).numpy(), expected)
 
-        legacy_mask = wp.array((True, False), dtype=wp.bool, device=model.device)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", DeprecationWarning)
-            coupled.reset(parent, world_mask=legacy_mask, flags=0)
-        deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
-        self.assertEqual(len(deprecations), 1)
-        forwarded_mask = entry.solver.reset_calls[-1][1]
-        self.assertIsNot(forwarded_mask, legacy_mask)
-        np.testing.assert_array_equal(forwarded_mask.numpy(), (True, False, False))
+        reset_call_count = len(entry.solver.reset_calls)
+        with self.assertRaisesRegex(ValueError, "world_count \\+ 1"):
+            coupled.reset(parent, world_mask=wp.array((True, False), dtype=wp.bool, device=model.device), flags=0)
+        self.assertEqual(len(entry.solver.reset_calls), reset_call_count)
 
         model = newton.ModelBuilder().finalize(device="cpu")
         with self.assertRaises(ValueError):
@@ -1121,6 +1106,14 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 model=self.model,
                 entries=[SolverCoupled.Entry(name="unsupported", solver=SolverBase, bodies=[0])],
             )
+
+    def test_entry_contact_buffer_detects_surface_velocity_layout_change(self):
+        """Recreate filtered contacts when surface-velocity allocation changes."""
+        contacts = newton.Contacts(1, 0, device="cpu")
+        filtered = newton.Contacts(1, 0, device="cpu", rigid_contact_surface_velocity=True)
+
+        self.assertFalse(SolverCoupled._entry_contact_buffer_matches(filtered, contacts))
+        self.assertFalse(SolverCoupled._entry_contact_buffer_matches(contacts, filtered))
 
     def test_entry_contacts_preserves_contact_matching_mode(self):
         """Preserve matching mode metadata when coupled entry buffers are reused."""
@@ -1398,6 +1391,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
     def test_compacted_joint_targets_use_local_layout(self):
         """Joint targets and their derived starts should use compact layout."""
         builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         free_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         free_joint = builder.add_joint_free(child=free_body)
         builder.add_articulation([free_joint])
@@ -1429,12 +1423,49 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(view.joint_ancestor.numpy(), [-1, 0])
         np.testing.assert_array_equal(view.joint_target_q_start.numpy(), [0, 1, 2])
         np.testing.assert_array_equal(view.joint_target_q.numpy(), [7.0, 8.0])
+        self.assertIsNotNone(model._fk_articulation_level_start)
+        self.assertGreater(model._fk_level_capacity, 0)
+        self.assertIsNone(view._fk_articulation_level_start)
+        self.assertIsNone(view._fk_level_joint_start)
+        self.assertIsNone(view._fk_level_joints)
+        self.assertIsNone(view._fk_level_parent_pos)
+        self.assertEqual(view._fk_level_capacity, 0)
 
         model.joint_target_q.assign(10.0 + np.arange(model.joint_coord_count, dtype=np.float32))
         model.joint_target_ke.assign(100.0 + np.arange(model.joint_dof_count, dtype=np.float32))
         coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
         np.testing.assert_array_equal(view.joint_target_q.numpy(), [17.0, 18.0])
         np.testing.assert_array_equal(view.joint_target_ke.numpy(), [106.0, 107.0])
+
+        model.joint_armature.fill_(3.0)
+        model.mujoco.dof_ref.fill_(0.2)
+        model.mujoco.dof_springref.fill_(0.3)
+        model.joint_damping.fill_(0.8)
+        model.joint_target_ke.fill_(25.0)
+        model.joint_friction.fill_(0.4)
+        solref = model.mujoco.solreffriction.numpy()
+        solref[:, 0] = -100.0
+        solref[:, 1] = -10.0
+        model.mujoco.solreffriction.assign(solref)
+        solimp = model.mujoco.solimpfriction.numpy()
+        solimp[:, 0] = 0.8
+        model.mujoco.solimpfriction.assign(solimp)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+        np.testing.assert_allclose(view.joint_friction.numpy(), 0.4)
+        np.testing.assert_allclose(view.mujoco.solreffriction.numpy(), solref[-2:])
+        np.testing.assert_allclose(view.mujoco.solimpfriction.numpy(), solimp[-2:])
+        np.testing.assert_allclose(view.joint_damping.numpy(), 0.8)
+        np.testing.assert_allclose(view.joint_target_ke.numpy(), 25.0)
+        np.testing.assert_allclose(view.joint_armature.numpy(), 0.0)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+        np.testing.assert_allclose(view.joint_armature.numpy(), 3.0)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.2)
+        np.testing.assert_allclose(view.mujoco.dof_springref.numpy(), 0.3)
 
     def test_custom_control_arrays_are_mapped_to_entries(self):
         """Custom CONTROL attributes should follow their compact frequency map."""
@@ -3590,13 +3621,13 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         model.test.namespace_marker = "parent"
 
         self.assertEqual(
-            model._attribute_reference_frequency("test:linkage_body0"),
+            model._attribute_spec("test:linkage_body0").references,
             newton.Model.AttributeFrequency.BODY,
         )
         linkage_spec = model._attribute_spec("test:linkage_bodies")
         self.assertEqual(linkage_spec.frequency, "test:linkage")
         self.assertEqual(linkage_spec.references, newton.Model.AttributeFrequency.BODY)
-        self.assertEqual(model._attribute_reference_frequency("test:link_entity"), "test:entity")
+        self.assertEqual(model._attribute_spec("test:link_entity").references, "test:entity")
         self.assertEqual(
             model.attribute_assignment.get("test:linkage_body0", newton.Model.AttributeAssignment.MODEL),
             newton.Model.AttributeAssignment.MODEL,
@@ -3609,9 +3640,9 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
             ("tri_materials", newton.Model.AttributeFrequency.TRIANGLE),
         ):
             with self.subTest(core_attribute=name):
-                self.assertEqual(model._resolve_attribute_frequency(name), frequency)
+                self.assertEqual(model.get_attribute_frequency(name), frequency)
         self.assertEqual(
-            model._resolve_attribute_frequency("joint_q"),
+            model.get_attribute_frequency("joint_q"),
             newton.Model.AttributeFrequency.JOINT_COORD,
         )
 

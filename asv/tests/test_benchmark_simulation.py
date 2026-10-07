@@ -202,6 +202,14 @@ class TestSimulationBenchmarks(unittest.TestCase):
             self.assertIn(benchmark_name, inventory)
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
 
+    def test_deformable_collision_benchmark_is_in_pr_gate(self):
+        """Keep the large-scene deformable collision benchmark in the PR gate."""
+        benchmark_name = "simulation.bench_cloth.FastDeformableSelfCollision.time_detect"
+        inventory = {entry["name"] for entry in self._discover_benchmarks(pr_gate=True)}
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        self.assertIn(benchmark_name, inventory)
+        self.assertTrue(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
+
     def test_fast_kitchen_g1_validates_kitchen_body_count(self):
         """Validate the configured kitchen body count at runtime."""
         benchmark = bench_mujoco.FastKitchenG1()
@@ -358,6 +366,14 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera.time_render_color_only",
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_color_only",
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_depth_only",
+            # SensorCamera benchmarks stay out of the PR gate: the class is new in
+            # this PR, so it cannot be imported on the base commit for comparison.
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_color_depth",
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_color_only",
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_depth_only",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_depth",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_only",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_depth_only",
         )
 
         for benchmark in blocking_benchmarks + dashboard_benchmarks:

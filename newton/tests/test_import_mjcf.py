@@ -681,6 +681,25 @@ class TestImportMjcfBasic(unittest.TestCase):
         # Sanity: at least the default-style sequences must have run.
         self.assertGreater(compared, 0, "no eulerseq combinations actually compared")
 
+    def test_zaxis_matches_mujoco(self):
+        """Match MuJoCo's zaxis rotation, including its near-antiparallel cutoff."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        # The last two straddle MuJoCo's |axis|^2 < 1e-14 fallback to a +X rotation axis.
+        directions = ("1 0 0", "1 2 3", "-2 3 -4", "0 0 1", "9.99e-8 0 -1", "1.001e-7 0 -1")
+        bodies = "".join(f'<body zaxis="{d}"><geom size="0.1"/></body>' for d in directions)
+        mjcf = f"<mujoco><worldbody>{bodies}</worldbody></mujoco>"
+
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        for i, direction in enumerate(directions):
+            with self.subTest(zaxis=direction):
+                expected = np.empty(9)
+                mujoco.mju_quat2Mat(expected, native.body_quat[i + 1])
+                actual = wp.quat_to_matrix(wp.transform_get_rotation(builder.body_q[i]))
+                np.testing.assert_allclose(np.array(actual).reshape(9), expected, atol=1e-6)
+
     def test_compiler_merge_across_includes(self):
         """``<compiler>`` attributes merge globally across ``<include>``-expanded
         files (document order, later wins, scope is not file-local).
@@ -1195,6 +1214,313 @@ class TestImportMjcfBasic(unittest.TestCase):
         # note we need to swap quaternion order wxyz -> xyzw
         np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
+    def test_combined_joint_dof_attributes_follow_newton_dof_order(self):
+        """Per-DOF attributes and actuators of combined joints must map to Newton's DOF order.
+
+        Newton orders a combined joint's DOFs linear-first, so a slide declared after a
+        hinge in MJCF becomes the first DOF. Per-DOF custom attributes and actuator
+        targets must follow that reordering; the exported MuJoCo model is compared
+        joint-by-joint against the natively compiled MJCF.
+        """
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        mjcf = """<mujoco>
+    <worldbody>
+        <body name="b">
+            <joint name="h1" type="hinge" axis="0 0 1" range="-60 60" ref="10" margin="0.05" stiffness="3"/>
+            <joint name="s1" type="slide" axis="1 0 0" range="-0.3 0.3" ref="0.1" margin="0.01" stiffness="7"/>
+            <joint name="h2" type="hinge" axis="0 1 0" range="-30 45" ref="-5" margin="0.02" stiffness="11"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position name="a_h1" joint="h1" kp="5"/>
+        <position name="a_s1" joint="s1" kp="9"/>
+        <position name="a_h2" joint="h2" kp="13"/>
+    </actuator>
+</mujoco>"""
+        native = mujoco.MjModel.from_xml_string(mjcf)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True, disable_contacts=True)
+        exported = solver.mj_model
+
+        # Newton places the slide first, followed by the hinges in MJCF order.
+        newton_dof = {"s1": 0, "h1": 1, "h2": 2}
+        self.assertEqual(exported.njnt, 3)
+        for name, dof in newton_dof.items():
+            with self.subTest(joint=name):
+                expected = native.joint(name)
+                actual = exported.joint(dof)
+                self.assertEqual(actual.type[0], expected.type[0])
+                np.testing.assert_allclose(actual.range, expected.range, atol=1e-6)
+                np.testing.assert_allclose(actual.qpos0, expected.qpos0, atol=1e-6)
+                np.testing.assert_allclose(actual.margin, expected.margin, atol=1e-6)
+                np.testing.assert_allclose(actual.stiffness, expected.stiffness, atol=1e-6)
+
+        actuator_target = {"a_h1": "h1", "a_s1": "s1", "a_h2": "h2"}
+        self.assertEqual(exported.nu, 3)
+        for i in range(exported.nu):
+            gain = exported.actuator_gainprm[i, 0]
+            name = next(n for n in actuator_target if native.actuator(n).gainprm[0] == gain)
+            with self.subTest(actuator=name):
+                self.assertEqual(exported.actuator_trnid[i, 0], newton_dof[actuator_target[name]])
+
+
+class TestMjcfSlideCoordinateScale(unittest.TestCase):
+    """Tests for scale applied to MJCF slide coordinates."""
+
+    def test_combined_joint_slide_scaling_follows_dof_order(self):
+        """Preserve slide scaling when combined joint DOFs are reordered."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint name="hinge" type="hinge" axis="0 0 1" range="-60 60"
+                           ref="10" springref="15" margin="0.05"/>
+                    <joint name="slide" type="slide" axis="1 0 0" range="-0.3 0.5"
+                           ref="0.1" springref="0.15" margin="0.01"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <position joint="slide" inheritrange="1"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, scale=2.0, ctrl_direct=True)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.mujoco.dof_ref.numpy(), [0.2, np.deg2rad(10)], atol=1e-6)
+        np.testing.assert_allclose(model.mujoco.dof_springref.numpy(), [0.3, np.deg2rad(15)], atol=1e-6)
+        np.testing.assert_allclose(model.mujoco.limit_margin.numpy(), [0.02, 0.05], atol=1e-6)
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.qpos0, [0.2, np.deg2rad(10)], atol=1e-6)
+        np.testing.assert_allclose(solver.mj_model.qpos_spring, [0.3, np.deg2rad(15)], atol=1e-6)
+        np.testing.assert_allclose(solver.mj_model.jnt_range, [[-0.6, 1.0], np.deg2rad([-60, 60])], atol=1e-6)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, [[-0.6, 1.0]], atol=1e-6)
+
+    def test_slide_limit_margin_scales_with_coordinate(self):
+        """Scale a slide margin without changing an angular margin."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint name="slide" type="slide" margin="0.01"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body>
+                        <joint name="hinge" type="hinge" margin="0.02"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, scale=2.0)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.mujoco.limit_margin.numpy()[:2], [0.02, 0.02])
+
+    def test_explicit_slide_position_ctrlrange_scales(self):
+        """Scale explicit position targets, leaving force controls alone."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint name="slide" type="slide" range="-0.3 0.3"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body>
+                        <joint name="hinge" type="hinge" range="-60 60"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <position name="explicit" joint="slide" ctrlrange="-0.2 0.2"/>
+                <position name="inherited" joint="slide" inheritrange="1"/>
+                <position name="angular" joint="hinge" ctrlrange="-0.2 0.2"/>
+                <motor name="motor" joint="slide" ctrlrange="-0.2 0.2"/>
+                <general name="general" joint="slide" ctrlrange="-0.2 0.2"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, scale=2.0)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(
+            model.mujoco.actuator_ctrlrange.numpy(),
+            [[-0.4, 0.4], [-0.6, 0.6], [-0.2, 0.2], [-0.2, 0.2], [-0.2, 0.2]],
+        )
+
+    def test_explicit_slide_velocity_ctrlrange_scales(self):
+        """Scale slide velocity limits without changing angular controls."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint name="slide" type="slide"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body>
+                        <joint name="hinge" type="hinge"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <velocity name="linear_velocity" joint="slide" ctrlrange="-0.2 0.2"/>
+                <intvelocity name="linear_integrated" joint="slide" ctrlrange="-0.3 0.3"/>
+                <velocity name="angular_velocity" joint="hinge" ctrlrange="-0.2 0.2"/>
+                <intvelocity name="angular_integrated" joint="hinge" ctrlrange="-0.3 0.3"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, scale=2.0)
+        model = builder.finalize(device="cpu")
+        expected = [[-0.4, 0.4], [-0.6, 0.6], [-0.2, 0.2], [-0.3, 0.3]]
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy(), expected)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        actuator_mapping = solver.mjc_actuator_to_newton_actuator_idx.numpy()
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, np.asarray(expected)[actuator_mapping])
+
+    def test_slide_intvelocity_actrange_scales(self):
+        """Preserve integrated velocity activation limits in slide units."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint name="slide" type="slide"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body>
+                        <joint name="hinge" type="hinge"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <intvelocity name="linear" joint="slide" kp="20" actrange="-0.2 0.2"/>
+                <intvelocity name="angular" joint="hinge" kp="20" actrange="-0.2 0.2"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, scale=2.0)
+        self.assertEqual(len(builder.custom_attributes["mujoco:actuator_actrange"].values), 2)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.mujoco.actuator_actrange.numpy(), [[-0.4, 0.4], [-0.2, 0.2]])
+        np.testing.assert_array_equal(model.mujoco.actuator_dyntype.numpy(), [1, 1])
+        np.testing.assert_allclose(model.mujoco.actuator_gainprm.numpy()[:, 0], [20, 20])
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.actuator_actrange, [[-0.4, 0.4], [-0.2, 0.2]])
+        np.testing.assert_array_equal(solver.mj_model.actuator_dyntype, [1, 1])
+
+    def test_slide_intvelocity_inheritrange_scales_with_ref(self):
+        """Derive integrated activation bounds from absolute slide limits."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint name="slide" type="slide" range="-0.3 0.5" ref="0.1"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <intvelocity joint="slide" kp="20" inheritrange="1"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, scale=2.0)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.mujoco.actuator_actrange.numpy(), [[-0.6, 1.0]])
+        np.testing.assert_array_equal(model.mujoco.actuator_actlimited.numpy(), [1])
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.actuator_actrange, [[-0.6, 1.0]])
+        np.testing.assert_array_equal(solver.mj_model.actuator_dyntype, [1])
+
+    def test_intvelocity_bias_and_integrator_match_native_mujoco(self):
+        """Keep velocity damping and activation dynamics through export."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint name="slide" type="slide"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <intvelocity name="kv" joint="slide" kp="20" kv="3"/>
+                <intvelocity name="ratio" joint="slide" kp="20" dampratio="0.5"/>
+                <intvelocity name="default" joint="slide" kp="20"/>
+            </actuator>
+        </mujoco>
+        """
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize(device="cpu")
+
+        np.testing.assert_allclose(
+            model.mujoco.actuator_biasprm.numpy()[:, :3], [[0, -20, -3], [0, -20, 0.5], [0, -20, 0]]
+        )
+        np.testing.assert_array_equal(model.mujoco.actuator_dyntype.numpy(), [1, 1, 1])
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.actuator_biasprm, native_model.actuator_biasprm)
+        np.testing.assert_allclose(solver.mj_model.actuator_dynprm, native_model.actuator_dynprm)
+        np.testing.assert_array_equal(solver.mj_model.actuator_actearly, native_model.actuator_actearly)
+        np.testing.assert_array_equal(solver.mj_model.actuator_dyntype, native_model.actuator_dyntype)
+
+    def test_slide_range_and_ref_scale_together(self):
+        """Scale slide range and reference while retaining angular ranges."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="slider">
+                    <joint name="slide" type="slide" range="-0.3 0.3" ref="0.1"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body name="hinge_body">
+                        <joint name="hinge" type="hinge" range="-60 60" ref="10"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        for scale in (1.0, 2.0):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, scale=scale)
+                np.testing.assert_allclose(builder.joint_limit_lower[:2], [-0.4 * scale, np.deg2rad(-70)])
+                np.testing.assert_allclose(builder.joint_limit_upper[:2], [0.2 * scale, np.deg2rad(50)])
+
+    def test_slide_ref_and_springref_metadata_scale(self):
+        """Keep MuJoCo slide reference metadata in scaled coordinates."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="slider">
+                    <joint name="slide" type="slide" range="-0.3 0.3"
+                           ref="0.1" springref="0.15"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, scale=2.0)
+        self.assertAlmostEqual(builder.custom_attributes["mujoco:dof_ref"].values[0], 0.2)
+        self.assertAlmostEqual(builder.custom_attributes["mujoco:dof_springref"].values[0], 0.3)
+
 
 class TestImportMjcfMeshScale(unittest.TestCase):
     """Tests for MJCF mesh scale resolution from default classes."""
@@ -1704,6 +2030,29 @@ class TestImportMjcfGeometry(unittest.TestCase):
 
         # Body 6: mass="0" should also have zero inertia
         self.assertAlmostEqual(np.trace(body_inertia[6]), 0.0, places=6, msg="Body 6 (mass=0) should have zero inertia")
+
+    def test_explicit_geom_mass_for_small_primitives(self):
+        """Apply explicit mass above a (0.1 mm)^3 reference-volume cutoff."""
+        mjcf_content = """
+<mujoco model="small_explicit_mass_test">
+    <worldbody>
+        <body name="sphere"><freejoint/><geom type="sphere" size="0.005" mass="0.1"/></body>
+        <body name="cylinder"><freejoint/><geom type="cylinder" size="0.003 0.005" mass="0.2"/></body>
+        <body name="capsule"><freejoint/><geom type="capsule" size="0.003 0.005" mass="0.3"/></body>
+        <body name="ellipsoid"><freejoint/><geom type="ellipsoid" size="0.004 0.005 0.006" mass="0.4"/></body>
+        <body name="above_cutoff"><freejoint/><geom type="sphere" size="0.00007" mass="0.5"/></body>
+        <body name="below_cutoff"><freejoint/><geom type="sphere" size="0.00005" mass="0.6"/></body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        np.testing.assert_allclose(model.body_mass.numpy(), [0.1, 0.2, 0.3, 0.4, 0.5, 0.0], rtol=1e-6)
+        for body_index, inertia in enumerate(model.body_inertia.numpy()[:5]):
+            self.assertGreater(np.trace(inertia), 0.0, msg=f"Body {body_index} should have non-zero inertia")
+        self.assertEqual(np.trace(model.body_inertia.numpy()[5]), 0.0)
 
     def test_explicit_small_mesh_geom_mass(self):
         """Test that a positive mass on a solid or hollow mesh sets body mass and inertia."""
@@ -5277,6 +5626,77 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 
         slide_idx = model.joint_label.index("test/worldbody/base/child1/child2/slide")
         self.assertAlmostEqual(dof_ref[qd_start[slide_idx]], 0.5, places=4)
+
+    def test_ref_shifts_joint_limits(self):
+        """Shift MJCF absolute joint ranges relative to the authored pose."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <compiler angle="radian"/>
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0" ref="0.5" range="0.4 0.9"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child2" pos="0 0 1">
+                    <joint name="slide" type="slide" axis="0 0 1" ref="-0.2" range="-0.1 0.3"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="child3" pos="0 0 1">
+                        <joint name="free_hinge" type="hinge" axis="1 0 0" ref="0.7"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        lower = model.joint_limit_lower.numpy()
+        upper = model.joint_limit_upper.numpy()
+
+        hinge_dof = qd_start[model.joint_label.index("test/worldbody/base/child1/hinge")]
+        self.assertAlmostEqual(lower[hinge_dof], 0.4 - 0.5, places=5)
+        self.assertAlmostEqual(upper[hinge_dof], 0.9 - 0.5, places=5)
+
+        slide_dof = qd_start[model.joint_label.index("test/worldbody/base/child1/child2/slide")]
+        self.assertAlmostEqual(lower[slide_dof], -0.1 - (-0.2), places=5)
+        self.assertAlmostEqual(upper[slide_dof], 0.3 - (-0.2), places=5)
+
+        # No authored range: the unlimited sentinel must not be shifted.
+        free_dof = qd_start[model.joint_label.index("test/worldbody/base/child1/child2/child3/free_hinge")]
+        self.assertGreater(upper[free_dof], 1.0e5)
+        self.assertLess(lower[free_dof], -1.0e5)
+
+    def test_ref_shifts_joint_limits_degrees(self):
+        """Apply degree-authored ref and range conversion to the limits."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <compiler angle="degree"/>
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0" ref="30" range="10 90"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        hinge_dof = qd_start[model.joint_label.index("test/worldbody/base/child1/hinge")]
+        self.assertAlmostEqual(model.joint_limit_lower.numpy()[hinge_dof], np.deg2rad(10.0 - 30.0), places=5)
+        self.assertAlmostEqual(model.joint_limit_upper.numpy()[hinge_dof], np.deg2rad(90.0 - 30.0), places=5)
+        self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[hinge_dof], np.deg2rad(30.0), places=5)
 
     def test_springref_attribute_parsing(self):
         """Test that 'springref' attribute is parsed for hinge and slide joints."""

@@ -11,8 +11,8 @@ import shutil
 import tempfile
 import types
 import unittest
-import warnings
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 from unittest.mock import patch
 
@@ -25,17 +25,18 @@ from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     Actuator,
     ActuatorParsed,
-    Clamping,
+    ClampingBase,
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
-    Controller,
-    ControllerNeuralLSTM,
-    ControllerNeuralMLP,
-    ControllerPD,
-    ControllerPID,
     Delay,
-    ResponseOracle,
+    DriveBase,
+    DriveNeuralGRU,
+    DriveNeuralLSTM,
+    DriveNeuralMLP,
+    DrivePD,
+    DrivePID,
+    JointSpaceResponse,
     parse_actuator_prim,
 )
 from newton.selection import ArticulationView
@@ -130,7 +131,7 @@ def _build_lstm_onnx(
     metadata: dict | None = None,
     rng_seed: int = 0,
 ) -> None:
-    """Build a small ONNX LSTM policy model for controller tests."""
+    """Build a small ONNX LSTM policy model for drive tests."""
     if num_layers != 1:
         raise NotImplementedError("test fixture currently supports num_layers=1")
 
@@ -194,6 +195,114 @@ def _build_lstm_onnx(
     meta_prop.value = json.dumps(full_meta)
     onnx_mod.checker.check_model(model)
     onnx_mod.save(model, path)
+
+
+def _build_gru_onnx(
+    path: str,
+    input_size: int,
+    hidden_size: int,
+    metadata: dict[str, Any],
+    layer_count: int = 1,
+    output_size: int = 1,
+    output_scale: float = 2.5,
+    apply_tanh: bool = True,
+    include_bias: bool = True,
+    linear_before_reset: int = 1,
+    rng_seed: int = 1946,
+) -> dict[str, Any]:
+    """Build a GRU plus scalar-head ONNX checkpoint and return its weights."""
+    onnx_mod, TensorProto, helper, numpy_helper = _onnx_modules()
+    rng = np.random.default_rng(rng_seed)
+
+    x_in = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, None, input_size])
+    graph_inputs = [x_in]
+    graph_outputs = []
+    initializers = []
+    nodes = []
+    layers = []
+    layer_input = "input"
+
+    for layer_index in range(layer_count):
+        layer_input_size = input_size if layer_index == 0 else hidden_size
+        weight_ih = (rng.standard_normal((1, 3 * hidden_size, layer_input_size)) * 0.3).astype(np.float32)
+        weight_hh = (rng.standard_normal((1, 3 * hidden_size, hidden_size)) * 0.3).astype(np.float32)
+        bias = (
+            (rng.standard_normal((1, 6 * hidden_size)) * 0.05).astype(np.float32)
+            if include_bias
+            else np.zeros((1, 6 * hidden_size), dtype=np.float32)
+        )
+        layers.append((weight_ih, weight_hh, bias))
+
+        weight_ih_name = f"gru_{layer_index}_W"
+        weight_hh_name = f"gru_{layer_index}_R"
+        bias_name = f"gru_{layer_index}_B"
+        hidden_in_name = f"hidden_in_{layer_index}"
+        hidden_out_name = f"hidden_out_{layer_index}"
+        sequence_name = f"sequence_{layer_index}"
+        squeezed_name = f"sequence_squeezed_{layer_index}"
+        axes_name = f"direction_axis_{layer_index}"
+
+        graph_inputs.append(helper.make_tensor_value_info(hidden_in_name, TensorProto.FLOAT, [1, None, hidden_size]))
+        graph_outputs.append(helper.make_tensor_value_info(hidden_out_name, TensorProto.FLOAT, [1, None, hidden_size]))
+        initializers.extend(
+            [
+                numpy_helper.from_array(weight_ih, name=weight_ih_name),
+                numpy_helper.from_array(weight_hh, name=weight_hh_name),
+                numpy_helper.from_array(np.array([1], dtype=np.int64), name=axes_name),
+            ]
+        )
+        if include_bias:
+            initializers.append(numpy_helper.from_array(bias, name=bias_name))
+        gru_inputs = [layer_input, weight_ih_name, weight_hh_name, bias_name if include_bias else ""]
+        nodes.append(
+            helper.make_node(
+                "GRU",
+                [*gru_inputs, "", hidden_in_name],
+                [sequence_name, hidden_out_name],
+                hidden_size=hidden_size,
+                linear_before_reset=linear_before_reset,
+            )
+        )
+        nodes.append(helper.make_node("Squeeze", [sequence_name, axes_name], [squeezed_name]))
+        layer_input = squeezed_name
+
+    final_axes_name = "sequence_axis"
+    initializers.append(numpy_helper.from_array(np.array([0], dtype=np.int64), name=final_axes_name))
+    nodes.append(helper.make_node("Squeeze", [layer_input, final_axes_name], ["features"]))
+
+    head_weight = (rng.standard_normal((output_size, hidden_size)) * 0.3).astype(np.float32)
+    head_bias = (rng.standard_normal((output_size,)) * 0.05).astype(np.float32)
+    initializers.extend(
+        [
+            numpy_helper.from_array(head_weight, name="head_weight"),
+            numpy_helper.from_array(head_bias, name="head_bias"),
+        ]
+    )
+    nodes.append(helper.make_node("Gemm", ["features", "head_weight", "head_bias"], ["head"], transB=1))
+    output_name = "head"
+    if apply_tanh:
+        nodes.append(helper.make_node("Tanh", [output_name], ["bounded_head"]))
+        output_name = "bounded_head"
+    if output_scale != 1.0:
+        initializers.append(numpy_helper.from_array(np.array(output_scale, dtype=np.float32), name="output_scale"))
+        nodes.append(helper.make_node("Mul", [output_name, "output_scale"], ["effort"]))
+        output_name = "effort"
+
+    graph_outputs.insert(0, helper.make_tensor_value_info(output_name, TensorProto.FLOAT, [None, output_size]))
+    graph = helper.make_graph(nodes, "gru", graph_inputs, graph_outputs, initializer=initializers)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    meta_prop = model.metadata_props.add()
+    meta_prop.key = "metadata"
+    meta_prop.value = json.dumps(metadata)
+    onnx_mod.checker.check_model(model)
+    onnx_mod.save(model, path)
+    return {
+        "layers": layers,
+        "head_weight": head_weight,
+        "head_bias": head_bias,
+        "apply_tanh": apply_tanh,
+        "output_scale": output_scale,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -381,71 +490,48 @@ def _make_implicit_actuator(
     kd: wp.array[float],
     max_effort: Sequence[float] | np.ndarray | None = None,
     **kwargs: Any,
-) -> tuple[Actuator, ResponseOracle]:
+) -> tuple[Actuator, JointSpaceResponse]:
     """Build an implicit PD Actuator over all DOFs, with an optional max-effort clamp.
 
-    Returns the actuator together with the response oracle driving its solve.
+    Returns the actuator together with the response provider driving its solve.
     """
     clamping = None
     if max_effort is not None:
         clamping = [ClampingMaxEffort(max_effort=wp.array(max_effort, dtype=float, device=device))]
-    oracle = kwargs.setdefault("response", ResponseOracle(model))
+    response = kwargs.setdefault("response", JointSpaceResponse(model))
     actuator = Actuator(
         indices=wp.array(_arm_dofs(model), dtype=wp.uint32, device=device),
-        controller=ControllerPD(kp=kp, kd=kd),
+        drive=DrivePD(kp=kp, kd=kd),
         clamping=clamping,
         control_target_pos_attr="joint_target_q",
         control_target_vel_attr="joint_target_qd",
     )
     actuator.set_effort_mode_implicit(**kwargs)
-    return actuator, oracle
+    return actuator, response
 
 
 def _refresh_and_step(
     actuator: Actuator,
-    oracle: ResponseOracle,
+    response: JointSpaceResponse,
     state: newton.State,
     control: newton.Control,
     dt: float,
 ) -> None:
-    """Refresh the response oracle at *state*, then step the actuator — the simulation order."""
-    oracle.refresh(state)
+    """Refresh the response at *state*, then step the actuator — the simulation order."""
+    response.refresh(state)
     actuator.step(state, control, dt=dt)
 
 
-def _ignore_torchscript_deprecation(test_case: unittest.TestCase) -> None:
-    """Tolerate torch's TorchScript-family deprecation notices for one test.
-
-    The neural-controller tests deliberately exercise the TorchScript checkpoint
-    path (``torch.jit.script``/``save``/``load``), which PyTorch now deprecates in
-    favor of ``torch.export``. Ignore just those advisories, scoped to the calling
-    test, so strict-warnings mode still surfaces everything else.
-    """
-    ctx = warnings.catch_warnings()
-    ctx.__enter__()
-    test_case.addCleanup(ctx.__exit__, None, None, None)
-    warnings.filterwarnings(
-        "ignore",
-        message=r".*torch\.jit\..* is deprecated",
-        category=DeprecationWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"Loading (TorchScript|dict) checkpoints .* is deprecated",
-        category=DeprecationWarning,
-    )
-
-
 # ---------------------------------------------------------------------------
-# 1. Controllers
+# 1. Drives
 # ---------------------------------------------------------------------------
 
 
-class TestControllerPD(unittest.TestCase):
-    """PD controller: f = constant + act + kp*(target_pos - q) + kd*(target_vel - v)."""
+class TestDrivePD(unittest.TestCase):
+    """PD drive: f = constant + act + kp*(target_pos - q) + kd*(target_vel - v)."""
 
     def test_compute(self):
-        """Construct controller directly and call compute() with all terms."""
+        """Construct drive directly and call compute() with all terms."""
         n = 2
         kp_vals = [100.0, 200.0]
         kd_vals = [10.0, 20.0]
@@ -460,7 +546,7 @@ class TestControllerPD(unittest.TestCase):
             return wp.array(vals, dtype=wp.float32)
 
         indices = wp.array(list(range(n)), dtype=wp.uint32)
-        ctrl = ControllerPD(kp=_f(kp_vals), kd=_f(kd_vals), const_effort=_f(const_vals))
+        ctrl = DrivePD(kp=_f(kp_vals), kd=_f(kd_vals), const_effort=_f(const_vals))
         forces = wp.zeros(n, dtype=wp.float32)
 
         ctrl.compute(
@@ -484,11 +570,11 @@ class TestControllerPD(unittest.TestCase):
             self.assertAlmostEqual(result[i], expected, places=4, msg=f"DOF {i}")
 
 
-class TestControllerPID(unittest.TestCase):
-    """PID controller: f = const + act + kp*e + ki*integral + kd*de."""
+class TestDrivePID(unittest.TestCase):
+    """PID drive: f = const + act + kp*e + ki*integral + kd*de."""
 
     def test_compute(self):
-        """Construct controller directly and call compute() over multiple steps."""
+        """Construct drive directly and call compute() over multiple steps."""
         kp, ki, kd, const = 50.0, 10.0, 5.0, 2.0
         dt = 0.01
         q, qd = [0.0], [0.0]
@@ -501,7 +587,7 @@ class TestControllerPID(unittest.TestCase):
             return wp.array(vals, dtype=wp.float32, device=device)
 
         indices = wp.array([0], dtype=wp.uint32, device=device)
-        ctrl = ControllerPID(
+        ctrl = DrivePID(
             kp=_f([kp]),
             ki=_f([ki]),
             kd=_f([kd]),
@@ -541,8 +627,989 @@ class TestControllerPID(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
-class TestControllerNeuralMLP(unittest.TestCase):
-    """ControllerNeuralMLP - load via model_path, call compute() directly."""
+class TestDriveNeuralGRU(unittest.TestCase):
+    """DriveNeuralGRU ONNX loading and Warp-NN inference."""
+
+    FEATURES = ("position", "position_error", "velocity", "bias_force")
+    ALL_FEATURES = (
+        "position",
+        "target_position",
+        "position_error",
+        "velocity",
+        "target_velocity",
+        "velocity_error",
+        "bias_force",
+    )
+    CUSTOM_INPUT = "bias_force"
+    SAMPLE_DT = 0.02
+
+    def setUp(self):
+        self.device = wp.get_device()
+        self._tmp_dir = tempfile.mkdtemp()
+        self._networks: dict[str, dict[str, Any]] = {}
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def _metadata(self, input_columns: Sequence[str] | None = None) -> dict[str, Any]:
+        input_columns = self.FEATURES if input_columns is None else input_columns
+        return {
+            "model_type": "gru",
+            "input_columns": list(input_columns),
+            "custom_inputs": [self.CUSTOM_INPUT] if self.CUSTOM_INPUT in input_columns else [],
+            "sample_dt_s": self.SAMPLE_DT,
+            "normalization": {
+                "inputs": {
+                    "mean": dict(zip(self.ALL_FEATURES, (0.5, 0.9, -0.25, 1.0, -1.5, 0.75, -2.0), strict=True)),
+                    "std": dict(zip(self.ALL_FEATURES, (2.0, 1.75, 0.5, 4.0, 3.0, 2.5, 5.0), strict=True)),
+                },
+                "targets": {"mean": {"torque": 7.0}, "std": {"torque": 3.0}},
+            },
+        }
+
+    def _save_gru(self, filename: str = "gru.onnx", metadata=None, **kwargs) -> str:
+        path = os.path.join(self._tmp_dir, filename)
+        metadata = self._metadata() if metadata is None else metadata
+        input_columns = metadata.get("input_columns")
+        default_input_size = len(input_columns) if isinstance(input_columns, list) and input_columns else 4
+        self._networks[path] = _build_gru_onnx(
+            path,
+            input_size=kwargs.pop("input_size", default_input_size),
+            hidden_size=kwargs.pop("hidden_size", 4),
+            metadata=metadata,
+            **kwargs,
+        )
+        return path
+
+    def _mutate_gru(self, source: str, filename: str, edit: Callable[[Any], None]) -> str:
+        onnx_mod, _, _, _ = _onnx_modules()
+        model = onnx_mod.load(source)
+        edit(model)
+        path = os.path.join(self._tmp_dir, filename)
+        onnx_mod.save(model, path)
+        if source in self._networks:
+            self._networks[path] = self._networks[source]
+        return path
+
+    def _write_single_joint_gru_usd(self, model_path: str, filename: str) -> str:
+        """Write a single-joint GRU fixture using typed USD physics APIs."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage_path = os.path.join(self._tmp_dir, filename)
+        stage = Usd.Stage.CreateNew(stage_path)
+        world = UsdGeom.Xform.Define(stage, "/World")
+        stage.SetDefaultPrim(world.GetPrim())
+        UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+
+        UsdGeom.Xform.Define(stage, "/World/Robot")
+
+        base = UsdGeom.Xform.Define(stage, "/World/Robot/Base")
+        base_rigid_body = UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        base_rigid_body.CreateKinematicEnabledAttr(True)
+        base_mass = UsdPhysics.MassAPI.Apply(base.GetPrim())
+        base_mass.CreateMassAttr(1.0)
+        base_mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.01, 0.01, 0.01))
+
+        link = UsdGeom.Xform.Define(stage, "/World/Robot/Link")
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        link_mass = UsdPhysics.MassAPI.Apply(link.GetPrim())
+        link_mass.CreateMassAttr(0.5)
+        link_mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.005, 0.005, 0.005))
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Robot/Joint")
+        joint.CreateBody0Rel().SetTargets([base.GetPath()])
+        joint.CreateBody1Rel().SetTargets([link.GetPath()])
+        joint.CreateAxisAttr("Z")
+
+        actuator = stage.DefinePrim("/World/Robot/Actuator", "NewtonActuator")
+        schemas = Sdf.TokenListOp()
+        schemas.prependedItems = ["NewtonNeuralControlAPI"]
+        actuator.SetMetadata("apiSchemas", schemas)
+        actuator.CreateRelationship("newton:targets").SetTargets([Sdf.Path("/World/Robot/Joint")])
+        actuator.CreateAttribute("newton:modelPath", Sdf.ValueTypeNames.Asset).Set(
+            Sdf.AssetPath(os.path.basename(model_path))
+        )
+        stage.GetRootLayer().Save()
+        return stage_path
+
+    def _make_case(self, model_path: str, n: int) -> types.SimpleNamespace:
+        indices = np.array([3, 1, 5][:n], dtype=np.uint32)
+        pos_indices = np.array([4, 0, 2][:n], dtype=np.uint32)
+        target_indices = np.array([2, 4, 0][:n], dtype=np.uint32)
+        position = np.array([-1.0, 0.5, 2.0, -0.25, 1.25, -2.0], dtype=np.float32)
+        velocity = np.array([0.1, -0.4, 0.7, 1.1, -1.3, 0.2], dtype=np.float32)
+        target = np.array([1.0, -1.5, 0.2, 2.0, 0.5, -0.7], dtype=np.float32)
+        target_velocity = np.array([0.9, -1.7, 2.5, -0.2, 1.2, 3.4], dtype=np.float32)
+        bias_force = np.array([3.0, -2.5, 0.0, 4.5, -1.0, 2.0], dtype=np.float32)
+        actuator = Actuator(
+            indices=wp.array(indices, dtype=wp.uint32, device=self.device),
+            pos_indices=wp.array(pos_indices, dtype=wp.uint32, device=self.device),
+            target_pos_indices=wp.array(target_indices, dtype=wp.uint32, device=self.device),
+            drive=DriveNeuralGRU(model_path),
+        )
+        state = types.SimpleNamespace(
+            joint_q=wp.array(position, dtype=wp.float32, device=self.device),
+            joint_qd=wp.array(velocity, dtype=wp.float32, device=self.device),
+        )
+        control = types.SimpleNamespace(
+            joint_target_q=wp.array(target, dtype=wp.float32, device=self.device),
+            joint_target_qd=wp.array(target_velocity, dtype=wp.float32, device=self.device),
+            joint_act=wp.full(6, 456.0, dtype=wp.float32, device=self.device),
+            joint_f=wp.zeros(6, dtype=wp.float32, device=self.device),
+            bias_force=wp.array(bias_force, dtype=wp.float32, device=self.device),
+        )
+        return types.SimpleNamespace(
+            actuator=actuator,
+            state=state,
+            control=control,
+            state_a=actuator.state(),
+            state_b=actuator.state(),
+            indices=indices,
+            pos_indices=pos_indices,
+            target_indices=target_indices,
+            position=position,
+            velocity=velocity,
+            target=target,
+            target_velocity=target_velocity,
+            target_vel_indices=indices,
+            bias_force=bias_force,
+            network=self._networks[model_path],
+        )
+
+    def _expected(self, metadata, case, hidden=None, target_vel_indices=None):
+        keys = metadata["input_columns"]
+        stats = metadata["normalization"]["inputs"]
+        position = case.position[case.pos_indices]
+        velocity = case.velocity[case.indices]
+        if target_vel_indices is None:
+            target_vel_indices = case.target_vel_indices
+        target_velocity = case.target_velocity[target_vel_indices]
+        values = {
+            "position": position,
+            "target_position": case.target[case.target_indices],
+            "position_error": case.target[case.target_indices] - position,
+            "velocity": velocity,
+            "target_velocity": target_velocity,
+            "velocity_error": target_velocity - velocity,
+        }
+        # The caller-supplied column is keyed by whatever name the checkpoint chose.
+        for name in metadata.get("custom_inputs", ()):
+            values[name] = case.bias_force[case.indices]
+        raw = np.stack(tuple(values[key] for key in keys), axis=1)
+        means = np.array([stats["mean"][key] for key in keys], dtype=np.float32)
+        stds = np.array([stats["std"][key] for key in keys], dtype=np.float32)
+        layer_input = (raw - means) / stds
+        layers = case.network["layers"]
+        if hidden is None:
+            hidden = np.zeros((len(layers), len(case.indices), layers[0][1].shape[2]), dtype=np.float32)
+        next_hidden = []
+        for layer_index, (weight_ih, weight_hh, bias) in enumerate(layers):
+            size = weight_hh.shape[2]
+            input_gates = layer_input @ weight_ih[0].T + bias[0, : 3 * size]
+            hidden_gates = hidden[layer_index] @ weight_hh[0].T + bias[0, 3 * size :]
+            z = 1.0 / (1.0 + np.exp(-(input_gates[:, :size] + hidden_gates[:, :size])))
+            r = 1.0 / (1.0 + np.exp(-(input_gates[:, size : 2 * size] + hidden_gates[:, size : 2 * size])))
+            candidate = np.tanh(input_gates[:, 2 * size :] + r * hidden_gates[:, 2 * size :])
+            layer_input = (1.0 - z) * candidate + z * hidden[layer_index]
+            next_hidden.append(layer_input)
+        output = layer_input @ case.network["head_weight"].T + case.network["head_bias"]
+        if case.network["apply_tanh"]:
+            output = np.tanh(output)
+        output *= case.network["output_scale"]
+        targets = metadata["normalization"]["targets"]
+        return output[:, 0] * targets["std"]["torque"] + targets["mean"]["torque"], np.stack(next_hidden)
+
+    def _step(self, case):
+        case.control.joint_f.zero_()
+        case.actuator.step(case.state, case.control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+        return case.control.joint_f.numpy()[case.indices], case.state_b.drive_state.hidden.numpy()
+
+    def _compute_direct(self, case, state, dt=SAMPLE_DT, target_vel_indices=None, feedforward=None):
+        forces = wp.zeros(len(case.indices), dtype=wp.float32, device=self.device)
+        custom_inputs = {"bias_force": feedforward} if feedforward is not None else None
+        if target_vel_indices is None:
+            target_vel_indices = case.actuator.indices
+        elif not isinstance(target_vel_indices, wp.array):
+            target_vel_indices = wp.array(target_vel_indices, dtype=wp.uint32, device=self.device)
+        case.actuator.drive.compute(
+            case.state.joint_q,
+            case.state.joint_qd,
+            case.control.joint_target_q,
+            case.control.joint_target_qd,
+            feedforward,
+            case.actuator.pos_indices,
+            case.actuator.indices,
+            case.actuator.target_pos_indices,
+            target_vel_indices,
+            forces,
+            state,
+            dt,
+            self.device,
+            custom_inputs,
+        )
+        return forces
+
+    def test_scalar_vectorized_and_stacked_inference(self):
+        """Match a reference GRU for scalar, vectorized, and stacked-layer checkpoints."""
+        for n, layers in ((1, 1), (3, 1), (3, 2)):
+            with self.subTest(batch=n, layers=layers):
+                metadata = self._metadata()
+                path = self._save_gru(f"gru_{n}_{layers}.onnx", metadata, layer_count=layers)
+                case = self._make_case(path, n)
+                expected_effort, expected_hidden = self._expected(metadata, case)
+
+                effort, hidden = self._step(case)
+
+                np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
+                np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
+                np.testing.assert_array_equal(
+                    np.delete(case.control.joint_f.numpy(), case.indices.astype(np.int64)), 0.0
+                )
+
+    def test_arbitrary_ordered_feature_subsets(self):
+        """Assemble network input for any ordered subset of the supported features."""
+        feature_sets = (
+            ("target_velocity",),
+            ("velocity_error", "position", "bias_force"),
+            ("target_position", "position_error"),
+            tuple(reversed(self.ALL_FEATURES)),
+        )
+        for index, features in enumerate(feature_sets):
+            with self.subTest(features=features):
+                metadata = self._metadata(features)
+                path = self._save_gru(f"feature_subset_{index}.onnx", metadata)
+                case = self._make_case(path, 3)
+
+                effort, hidden = self._step(case)
+                expected_effort, expected_hidden = self._expected(metadata, case)
+
+                np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
+                np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
+
+    def test_target_velocity_features_use_nonsequential_indices(self):
+        """Gather target-velocity features through the actuator's own target indices."""
+        features = ("target_velocity", "velocity_error")
+        metadata = self._metadata(features)
+        path = self._save_gru("target_velocity_indices.onnx", metadata)
+        case = self._make_case(path, 3)
+        target_vel_indices = np.array([5, 0, 2], dtype=np.uint32)
+
+        forces = self._compute_direct(case, case.state_a.drive_state, target_vel_indices=target_vel_indices)
+
+        expected, _ = self._expected(metadata, case, target_vel_indices=target_vel_indices)
+        np.testing.assert_allclose(forces.numpy(), expected, rtol=1e-5, atol=1e-6)
+
+    def test_output_head_and_target_normalization(self):
+        """Denormalize the network output into physical torque using the target statistics."""
+        metadata = self._metadata()
+        metadata["normalization"]["targets"] = {"mean": {"torque": -3.0}, "std": {"torque": 4.0}}
+        path = self._save_gru("linear_head.onnx", metadata, output_scale=1.0, apply_tanh=False)
+        case = self._make_case(path, 2)
+
+        effort, _ = self._step(case)
+
+        np.testing.assert_allclose(effort, self._expected(metadata, case)[0], rtol=1e-5, atol=1e-6)
+
+    def test_gru_without_bias(self):
+        """Evaluate a checkpoint whose GRU nodes carry no bias initializer."""
+        metadata = self._metadata(self.FEATURES[:-1])
+        path = self._save_gru("no_gru_bias.onnx", metadata, input_size=3, include_bias=False)
+        case = self._make_case(path, 2)
+
+        effort, hidden = self._step(case)
+        expected_effort, expected_hidden = self._expected(metadata, case)
+
+        np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
+
+    def test_hidden_state_evolves_and_resets(self):
+        """Advance hidden state across steps and zero it on full and masked resets."""
+        path = self._save_gru("state.onnx")
+        case = self._make_case(path, 3)
+        _, hidden_first = self._step(case)
+        case.state_a, case.state_b = case.state_b, case.state_a
+        _, hidden_second = self._step(case)
+        self.assertFalse(np.allclose(hidden_first, hidden_second))
+
+        hidden_before = case.state_b.drive_state.hidden.numpy().copy()
+        case.state_b.reset(wp.array([False, True, False], dtype=wp.bool, device=self.device))
+        hidden_after = case.state_b.drive_state.hidden.numpy()
+        np.testing.assert_array_equal(hidden_after[:, 1, :], 0.0)
+        np.testing.assert_array_equal(hidden_after[:, 0, :], hidden_before[:, 0, :])
+        np.testing.assert_array_equal(hidden_after[:, 2, :], hidden_before[:, 2, :])
+        case.state_b.reset()
+        np.testing.assert_array_equal(case.state_b.drive_state.hidden.numpy(), 0.0)
+
+    def test_sim_state_swap_uses_current_supplied_arrays(self):
+        """Read the bias written for the current step, not the previous one."""
+        metadata = self._metadata(("position", "bias_force"))
+        path = self._save_gru("state_swap.onnx", metadata)
+        case = self._make_case(path, 3)
+        _, hidden_first = self._step(case)
+
+        case.state_a, case.state_b = case.state_b, case.state_a
+        case.position = np.array([0.2, -0.8, 1.7, 2.1, -1.4, 0.6], dtype=np.float32)
+        bias = case.control.bias_force
+        case.state = types.SimpleNamespace(
+            joint_q=wp.array(case.position, dtype=wp.float32, device=self.device),
+            joint_qd=wp.array(case.velocity, dtype=wp.float32, device=self.device),
+        )
+        case.bias_force = np.array([-0.7, 1.6, 2.2, -3.5, 0.4, 4.1], dtype=np.float32)
+        bias.assign(case.bias_force)
+        expected_effort, expected_hidden = self._expected(metadata, case, hidden=hidden_first)
+
+        effort, hidden = self._step(case)
+
+        np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
+
+    def test_delay_applies_to_targets_but_not_supplied_arrays(self):
+        """Delay target-derived features while sampling the bias from the current step."""
+        metadata = self._metadata(("position_error", "target_velocity", "bias_force"))
+        path = self._save_gru("delayed_targets.onnx", metadata)
+        case = self._make_case(path, 3)
+        case.actuator = Actuator(
+            indices=case.actuator.indices,
+            pos_indices=case.actuator.pos_indices,
+            target_pos_indices=case.actuator.target_pos_indices,
+            drive=DriveNeuralGRU(path),
+            delay=Delay(
+                delay_steps=wp.full(3, 1, dtype=wp.int32, device=self.device),
+                max_delay=1,
+            ),
+        )
+        case.state_a = case.actuator.state()
+        case.state_b = case.actuator.state()
+
+        delayed_target = case.target.copy()
+        delayed_target_velocity = case.target_velocity.copy()
+        _, hidden_first = self._step(case)
+        case.state_a, case.state_b = case.state_b, case.state_a
+
+        case.target = np.array([-3.0, 2.5, 1.4, -0.6, 3.2, -2.1], dtype=np.float32)
+        case.target_velocity = np.array([2.1, 0.4, -1.6, 3.3, -2.2, 0.8], dtype=np.float32)
+        case.bias_force = np.array([-4.0, 5.5, 1.2, -2.7, 3.1, 6.4], dtype=np.float32)
+        case.control.joint_target_q.assign(case.target)
+        case.control.joint_target_qd.assign(case.target_velocity)
+        case.control.bias_force.assign(case.bias_force)
+
+        expected_case = types.SimpleNamespace(**vars(case))
+        expected_case.target = delayed_target
+        expected_case.target_velocity = delayed_target_velocity
+        expected_effort, expected_hidden = self._expected(metadata, expected_case, hidden=hidden_first)
+
+        effort, hidden = self._step(case)
+
+        np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
+
+    def test_supplied_array_features_are_optional(self):
+        """Evaluate a checkpoint that does not select the bias feature."""
+        metadata = self._metadata(self.FEATURES[:-1])
+        path = self._save_gru("no_bias.onnx", metadata, input_size=3)
+        case = self._make_case(path, 2)
+        self.assertEqual(case.actuator.drive.custom_inputs, ())
+
+        effort, _ = self._step(case)
+
+        np.testing.assert_allclose(effort, self._expected(metadata, case)[0], rtol=1e-5, atol=1e-6)
+
+    def test_reset_rejects_a_short_mask(self):
+        """Reject a reset mask shorter than the actuator count instead of reading past it."""
+        case = self._make_case(self._save_gru("short_mask.onnx"), 3)
+        with self.assertRaisesRegex(ValueError, "mask has length 1"):
+            case.state_a.drive_state.reset(wp.array([True], dtype=wp.bool, device=self.device))
+
+    def test_drive_rejects_a_second_actuator(self):
+        """Refuse to finalize one drive instance for a second, differently sized actuator."""
+        drive = DriveNeuralGRU(self._save_gru("shared_drive.onnx"))
+        Actuator(indices=wp.array([3, 1, 5], dtype=wp.uint32, device=self.device), drive=drive)
+        with self.assertRaisesRegex(RuntimeError, "already finalized"):
+            Actuator(indices=wp.array([0, 2], dtype=wp.uint32, device=self.device), drive=drive)
+
+    def test_runtime_dt_and_state_contract(self):
+        """Reject a runtime dt that disagrees with sample_dt_s, and a missing drive state."""
+        path = self._save_gru("contract.onnx")
+        for dt in (None, self.SAMPLE_DT * 2.0):
+            with self.subTest(dt=dt):
+                case = self._make_case(path, 1)
+                with self.assertRaisesRegex(ValueError, "sample_dt_s"):
+                    case.actuator.step(case.state, case.control, case.state_a, case.state_b, dt=dt)
+
+        case = self._make_case(path, 1)
+        bare = types.SimpleNamespace(**vars(case.control))
+        del bare.bias_force
+        with self.assertRaisesRegex(RuntimeError, "no array was supplied"):
+            case.actuator.step(case.state, bare, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+        wrong = types.SimpleNamespace(**vars(case.control))
+        wrong.bias_force = [0.0] * 6
+        with self.assertRaisesRegex(ValueError, "must be a Warp array"):
+            case.actuator.step(case.state, wrong, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+        short = types.SimpleNamespace(**vars(case.control))
+        short.bias_force = wp.zeros(2, dtype=wp.float32, device=self.device)
+        with self.assertRaisesRegex(ValueError, "has length 2; expected 6"):
+            case.actuator.step(case.state, short, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+        with self.assertRaisesRegex(RuntimeError, "no array was supplied"):
+            self._compute_direct(case, case.state_a.drive_state)
+        with self.assertRaisesRegex(RuntimeError, "compute must run"):
+            case.actuator.drive.update_state(case.state_a.drive_state, case.state_b.drive_state)
+
+        metadata = self._metadata(self.FEATURES[:-1])
+        no_bias_case = self._make_case(self._save_gru("no_state.onnx", metadata, input_size=3), 1)
+        with self.assertRaisesRegex(ValueError, "current drive state"):
+            self._compute_direct(no_bias_case, None)
+
+    def test_metadata_validation(self):
+        """Reject malformed input_columns and normalization metadata."""
+        for index, input_columns in enumerate(
+            ([], ["position", "position"], ["position", "unknown_feature"], "position", None)
+        ):
+            metadata = self._metadata()
+            metadata["input_columns"] = input_columns
+            path = self._save_gru(f"bad_columns_{index}.onnx", metadata)
+            with self.assertRaisesRegex(ValueError, "input_columns"):
+                DriveNeuralGRU(path)
+
+        metadata = self._metadata(self.FEATURES[:-1])
+        path = self._save_gru("bad_input_size.onnx", metadata, input_size=4)
+        with self.assertRaisesRegex(ValueError, "input size.*input_columns"):
+            DriveNeuralGRU(path)
+
+        for group, statistic, name, value in (
+            ("inputs", "mean", "position", math.nan),
+            ("inputs", "std", "velocity", 0.0),
+            ("targets", "mean", "torque", math.nan),
+            ("targets", "std", "torque", math.inf),
+        ):
+            metadata = self._metadata()
+            metadata["normalization"][group][statistic][name] = value
+            path = self._save_gru(f"bad_{group}_{statistic}_{name}.onnx", metadata)
+            with self.assertRaisesRegex(ValueError, "normalization"):
+                DriveNeuralGRU(path)
+
+    def test_checkpoint_and_network_validation(self):
+        """Reject missing files, non-ONNX paths, and shape-inconsistent weights."""
+        with self.assertRaisesRegex(ValueError, "model_path"):
+            DriveNeuralGRU.resolve_arguments({})
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            DriveNeuralGRU.resolve_arguments({"model_path": ""})
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            DriveNeuralGRU(os.path.join(self._tmp_dir, "missing.onnx"))
+
+        wrong_suffix = os.path.join(self._tmp_dir, "network.pt")
+        with open(wrong_suffix, "w", encoding="utf-8"):
+            pass
+        with self.assertRaisesRegex(ValueError, "ONNX"):
+            DriveNeuralGRU(wrong_suffix)
+
+        path = os.path.join(self._tmp_dir, "no_gru.onnx")
+        _build_mlp_onnx(path, np.zeros((1, 4), np.float32), np.zeros(1, np.float32), self._metadata())
+        with self.assertRaisesRegex(ValueError, "no GRU"):
+            DriveNeuralGRU(path)
+        with self.assertRaisesRegex(ValueError, "linear_before_reset"):
+            DriveNeuralGRU(self._save_gru("bad_reset.onnx", linear_before_reset=0))
+        with self.assertRaisesRegex(ValueError, "one scalar|output head"):
+            DriveNeuralGRU(self._save_gru("vector_output.onnx", output_size=2))
+
+    def test_rejects_unsupported_onnx_graphs(self):
+        """Reject GRU graphs whose structure the drive cannot reconstruct faithfully."""
+        _, TensorProto, helper, numpy_helper = _onnx_modules()
+        source = self._save_gru("valid_for_mutation.onnx")
+
+        def node(model, op_type, index=0):
+            return [item for item in model.graph.node if item.op_type == op_type][index]
+
+        def set_attribute(model, op_type, name, value, index=0):
+            target = node(model, op_type, index)
+            for attribute in target.attribute:
+                if attribute.name == name:
+                    attribute.CopyFrom(helper.make_attribute(name, value))
+                    return
+            target.attribute.append(helper.make_attribute(name, value))
+
+        def replace_initializer(model, name, value):
+            target = next(item for item in model.graph.initializer if item.name == name)
+            target.CopyFrom(numpy_helper.from_array(np.asarray(value), name=name))
+
+        edits = []
+
+        def reverse(model):
+            set_attribute(model, "GRU", "direction", "reverse")
+
+        edits.append(("reverse.onnx", reverse, "forward"))
+
+        def batch_major(model):
+            set_attribute(model, "GRU", "layout", 1)
+
+        edits.append(("batch_major.onnx", batch_major, "layout"))
+
+        def missing_initial_hidden(model):
+            node(model, "GRU").input[5] = ""
+
+        edits.append(("missing_initial_hidden.onnx", missing_initial_hidden, "initial_h|initial hidden"))
+
+        def sequence_lengths(model):
+            model.graph.input.append(helper.make_tensor_value_info("sequence_lens", TensorProto.INT32, [None]))
+            node(model, "GRU").input[4] = "sequence_lens"
+
+        edits.append(("sequence_lengths.onnx", sequence_lengths, "sequence_lens"))
+
+        def clipped_gru(model):
+            set_attribute(model, "GRU", "clip", 0.25)
+
+        edits.append(("clipped_gru.onnx", clipped_gru, "clip"))
+
+        def custom_activations(model):
+            set_attribute(model, "GRU", "activations", ["HardSigmoid", "Tanh"])
+
+        edits.append(("custom_activations.onnx", custom_activations, "activations"))
+
+        for attribute in ("activation_alpha", "activation_beta"):
+
+            def custom_activation_parameter(model, attribute=attribute):
+                set_attribute(model, "GRU", attribute, [0.25, 0.5])
+
+            edits.append((f"{attribute}.onnx", custom_activation_parameter, attribute))
+
+        def missing_weights(model):
+            node(model, "GRU").input[1] = "missing_weight"
+
+        edits.append(("missing_weights.onnx", missing_weights, "embed GRU weights"))
+
+        def flat_input_weights(model):
+            replace_initializer(model, "gru_0_W", np.zeros((12, 4), dtype=np.float32))
+
+        edits.append(("flat_input_weights.onnx", flat_input_weights, "input weights"))
+
+        def mismatched_input_weights(model):
+            set_attribute(model, "GRU", "hidden_size", 5)
+
+        edits.append(("mismatched_input_weights.onnx", mismatched_input_weights, "input weights"))
+
+        def mismatched_hidden_weights(model):
+            replace_initializer(model, "gru_0_R", np.zeros((1, 12, 3), dtype=np.float32))
+
+        edits.append(("mismatched_hidden_weights.onnx", mismatched_hidden_weights, "hidden weights"))
+
+        def missing_bias(model):
+            node(model, "GRU").input[3] = "missing_bias"
+
+        edits.append(("missing_bias.onnx", missing_bias, "embed GRU biases"))
+
+        def mismatched_bias(model):
+            replace_initializer(model, "gru_0_B", np.zeros((1, 23), dtype=np.float32))
+
+        edits.append(("mismatched_bias.onnx", mismatched_bias, "biases"))
+
+        def missing_head(model):
+            node(model, "Gemm").op_type = "MatMul"
+
+        edits.append(("missing_head.onnx", missing_head, "one scalar Gemm"))
+
+        def unsupported_head(model):
+            set_attribute(model, "Gemm", "alpha", 2.0)
+
+        edits.append(("unsupported_head.onnx", unsupported_head, "unsupported Gemm"))
+
+        def missing_head_weight(model):
+            node(model, "Gemm").input[1] = "missing_head_weight"
+
+        edits.append(("missing_head_weight.onnx", missing_head_weight, "output-head weights"))
+
+        def branched_head(model):
+            model.graph.node.append(helper.make_node("Identity", ["head"], ["unused_head"]))
+
+        edits.append(("branched_head.onnx", branched_head, "one linear path"))
+
+        def vector_scale(model):
+            replace_initializer(model, "output_scale", np.array([1.0, 2.0], dtype=np.float32))
+
+        edits.append(("vector_scale.onnx", vector_scale, "scale must be scalar"))
+
+        def nonfinite_scale(model):
+            replace_initializer(model, "output_scale", np.array(math.nan, dtype=np.float32))
+
+        edits.append(("nonfinite_scale.onnx", nonfinite_scale, "scale must be finite"))
+
+        def unsupported_output(model):
+            node(model, "Tanh").op_type = "Relu"
+
+        edits.append(("unsupported_output.onnx", unsupported_output, "unsupported output operation"))
+
+        def reversed_output_operations(model):
+            tanh = node(model, "Tanh")
+            scale = node(model, "Mul")
+            tanh.op_type = "Mul"
+            tanh.input.append("output_scale")
+            scale.op_type = "Tanh"
+            del scale.input[1:]
+
+        edits.append(("reversed_output_operations.onnx", reversed_output_operations, "order|unsupported output"))
+
+        def disconnected_head(model):
+            model.graph.input.append(helper.make_tensor_value_info("unrelated_features", TensorProto.FLOAT, [None, 4]))
+            node(model, "Gemm").input[0] = "unrelated_features"
+
+        edits.append(("disconnected_head.onnx", disconnected_head, "GRU|output head"))
+
+        def disconnected_output(model):
+            model.graph.output[0].name = "not_the_head_output"
+
+        edits.append(("disconnected_output.onnx", disconnected_output, "does not reach"))
+
+        for filename, edit, message in edits:
+            with self.subTest(filename=filename):
+                path = self._mutate_gru(source, filename, edit)
+                with self.assertRaisesRegex(ValueError, message):
+                    DriveNeuralGRU(path)
+
+    def test_accepts_identity_output_and_rejects_invalid_runtime_state(self):
+        """Accept an Identity output tail and reject an unfinalized or mismatched state."""
+        source = self._save_gru("linear_output.onnx", apply_tanh=False, output_scale=1.0)
+
+        def append_identity(model):
+            _, _, helper, _ = _onnx_modules()
+            model.graph.node.append(helper.make_node("Identity", ["head"], ["identity_output"]))
+            model.graph.output[0].name = "identity_output"
+
+        path = self._mutate_gru(source, "identity_output.onnx", append_identity)
+        case = self._make_case(path, 1)
+        self._step(case)
+
+        with self.assertRaisesRegex(ValueError, "device"):
+            case.actuator.drive.state(1, object())
+
+        self._compute_direct(case, case.state_a.drive_state, feedforward=case.control.bias_force)
+        with self.assertRaisesRegex(ValueError, "next drive state"):
+            case.actuator.drive.update_state(case.state_a.drive_state, DriveNeuralGRU.State())
+
+    def test_state_creation_rejects_unfinalized_and_empty_state(self):
+        """Refuse to create state before finalize, and to reset a state with no hidden array."""
+        drive = DriveNeuralGRU(self._save_gru("state_contract.onnx"))
+        with self.assertRaisesRegex(RuntimeError, "finalized"):
+            drive.state(1, self.device)
+        with self.assertRaisesRegex(ValueError, "no hidden"):
+            DriveNeuralGRU.State().reset()
+
+    def test_implicit_path_forwards_declared_custom_inputs(self):
+        """Hand a drive's declared inputs to prepare_implicit, as the explicit path does."""
+
+        class _RecordingDrive(DrivePD):
+            custom_inputs = ("bias_force",)
+            seen = None
+
+            def prepare_implicit(self, *args, custom_inputs=None, **kwargs):
+                type(self).seen = custom_inputs
+                return super().prepare_implicit(*args, **kwargs)
+
+        device = self.device
+        model = _build_pendulum(device)
+        state, control = model.state(), model.control()
+        oracle = JointSpaceResponse(model)
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32, device=device),
+            drive=_RecordingDrive(
+                kp=wp.array([100.0], dtype=wp.float32, device=device),
+                kd=wp.array([10.0], dtype=wp.float32, device=device),
+            ),
+        )
+        actuator.set_effort_mode_implicit(response=oracle)
+
+        bias = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)
+        control.bias_force = bias
+        oracle.refresh(state)
+        control.joint_f.zero_()
+        actuator.step(state, control, dt=0.01)
+
+        self.assertIsNotNone(_RecordingDrive.seen)
+        self.assertIs(_RecordingDrive.seen["bias_force"], bias)
+
+        # The actuator leaves missing-input behavior to the drive.
+        del control.bias_force
+        actuator.step(state, control, dt=0.01)
+        self.assertIsNone(_RecordingDrive.seen["bias_force"])
+
+    def test_implicit_drive_without_custom_inputs_keyword_remains_compatible(self):
+        """Keep drives using the previous prepare_implicit signature working."""
+
+        class _LegacyDrive(DrivePD):
+            prepared = False
+
+            def prepare_implicit(self, *args, inv_mass=None, device=None):
+                type(self).prepared = True
+                return super().prepare_implicit(*args, inv_mass=inv_mass, device=device)
+
+        device = self.device
+        model = _build_pendulum(device)
+        state, control = model.state(), model.control()
+        response = JointSpaceResponse(model)
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32, device=device),
+            drive=_LegacyDrive(
+                kp=wp.array([100.0], dtype=wp.float32, device=device),
+                kd=wp.array([10.0], dtype=wp.float32, device=device),
+            ),
+        )
+        actuator.set_effort_mode_implicit(response=response)
+
+        response.refresh(state)
+        actuator.step(state, control, dt=0.01)
+
+        self.assertTrue(_LegacyDrive.prepared)
+
+    def test_custom_input_name_comes_from_metadata(self):
+        """Take the caller-supplied column's name from custom_inputs metadata."""
+        metadata = self._metadata(("position", "qfrc_bias"))
+        metadata["custom_inputs"] = ["qfrc_bias"]
+        metadata["normalization"]["inputs"]["mean"]["qfrc_bias"] = -2.0
+        metadata["normalization"]["inputs"]["std"]["qfrc_bias"] = 5.0
+        case = self._make_case(self._save_gru("named_custom.onnx", metadata, input_size=2), 2)
+        self.assertEqual(case.actuator.drive.custom_inputs, ("qfrc_bias",))
+
+        # The array is read under the name the checkpoint chose, not "bias_force".
+        case.control.qfrc_bias = case.control.bias_force
+        del case.control.bias_force
+
+        effort, _ = self._step(case)
+
+        np.testing.assert_allclose(effort, self._expected(metadata, case)[0], rtol=1e-5, atol=1e-6)
+
+    def test_rejects_unknown_and_clashing_custom_inputs(self):
+        """Reject a column that is neither built in nor declared, and a clashing declaration."""
+        undeclared = self._metadata(("position", "mystery"))
+        path = self._save_gru("undeclared.onnx", undeclared, input_size=2)
+        with self.assertRaisesRegex(ValueError, "unsupported input_columns: mystery"):
+            DriveNeuralGRU(path)
+
+        unselected = self._metadata(("position",))
+        unselected["custom_inputs"] = ["bias_force"]
+        path = self._save_gru("unselected_custom.onnx", unselected, input_size=1)
+        with self.assertRaisesRegex(ValueError, "custom_inputs must name columns in input_columns: bias_force"):
+            DriveNeuralGRU(path)
+
+        clashing = self._metadata(("position", "velocity"))
+        clashing["custom_inputs"] = ["velocity"]
+        path = self._save_gru("clashing.onnx", clashing, input_size=2)
+        with self.assertRaisesRegex(ValueError, "may not reuse built-in feature names"):
+            DriveNeuralGRU(path)
+
+        too_many = self._metadata(("position",))
+        too_many["custom_inputs"] = ["a", "b"]
+        path = self._save_gru("too_many.onnx", too_many, input_size=1)
+        with self.assertRaisesRegex(ValueError, "at most one custom input"):
+            DriveNeuralGRU(path)
+
+        for index, declared in enumerate(("bias_force", [1], [""], ["bias force"], ["class"])):
+            malformed = self._metadata(("position",))
+            malformed["custom_inputs"] = declared
+            path = self._save_gru(f"malformed_{index}.onnx", malformed, input_size=1)
+            with self.subTest(custom_inputs=declared), self.assertRaisesRegex(ValueError, "must be a list of valid"):
+                DriveNeuralGRU(path)
+
+    def test_step_replays_under_cuda_graph_capture(self):
+        """Capture a GRU step into a CUDA graph and reproduce the eager effort on replay."""
+        if not self.device.is_cuda:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+
+        case = self._make_case(self._save_gru("captured.onnx"), 2)
+        eager, _ = self._step(case)
+
+        # Deliberately no warm-up beyond the eager step above: finalize() is
+        # responsible for populating Warp-NN's shape caches before capture.
+        case.control.joint_f.zero_()
+        with wp.ScopedCapture(self.device) as capture:
+            case.actuator.step(case.state, case.control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+
+        wp.capture_launch(capture.graph)
+        np.testing.assert_allclose(case.control.joint_f.numpy()[case.indices], eager, rtol=1e-5, atol=1e-6)
+
+        # A second replay accumulates one more identical contribution, since
+        # the states are not swapped and joint_f is scatter-added into.
+        wp.capture_launch(capture.graph)
+        np.testing.assert_allclose(case.control.joint_f.numpy()[case.indices], 2.0 * eager, rtol=1e-5, atol=1e-6)
+
+    def test_input_containers_expose_required_fields(self):
+        """Hand back empty containers with exactly the fields the actuator reads."""
+        case = self._make_case(self._save_gru("container.onnx"), 2)
+
+        sim_state = case.actuator.sim_state()
+        sim_control = case.actuator.sim_control()
+        self.assertEqual(sorted(type(sim_state).__slots__), ["joint_q", "joint_qd"])
+        self.assertEqual(
+            sorted(type(sim_control).__slots__),
+            ["bias_force", "joint_act", "joint_f", "joint_target_q", "joint_target_qd"],
+        )
+
+        # A checkpoint that selects no custom column contributes no field.
+        metadata = self._metadata(("position", "target_velocity"))
+        without = self._make_case(self._save_gru("container_none.onnx", metadata, input_size=2), 2)
+        self.assertFalse(hasattr(without.actuator.sim_control(), "bias_force"))
+        self.assertIsNone(sim_state.joint_q)
+        self.assertIsNone(sim_control.bias_force)
+
+        with self.assertRaises(AttributeError):
+            sim_state.joint_qq = case.state.joint_q
+
+        # An unassigned field raises instead of reaching a kernel with None.
+        sim_state.joint_qd = case.state.joint_qd
+        with self.assertRaisesRegex(ValueError, "'joint_q' is None"):
+            case.actuator.step(sim_state, case.control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+
+        sim_state.joint_q = case.state.joint_q
+        sim_state.joint_qd = case.state.joint_qd
+        sim_control.joint_target_q = case.control.joint_target_q
+        sim_control.joint_target_qd = case.control.joint_target_qd
+        sim_control.joint_act = case.control.joint_act
+        sim_control.joint_f = case.control.joint_f
+        sim_control.bias_force = case.control.bias_force
+
+        case.control.joint_f.zero_()
+        case.actuator.step(sim_state, sim_control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+        np.testing.assert_allclose(
+            case.control.joint_f.numpy()[case.indices],
+            self._expected(self._metadata(), case)[0],
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+    def test_sim_control_may_be_an_object_or_a_mapping(self):
+        """Read control and the drive's extra arrays from a namespace or from a dict."""
+        case = self._make_case(self._save_gru("sources.onnx"), 2)
+        expected = self._expected(self._metadata(), case)[0]
+
+        as_dict = vars(case.control)
+        for label, sim_control in (("namespace", case.control), ("dict", as_dict)):
+            with self.subTest(sim_control=label):
+                case.control.joint_f.zero_()
+                case.state_a.reset()
+                case.actuator.step(case.state, sim_control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+                np.testing.assert_allclose(case.control.joint_f.numpy()[case.indices], expected, rtol=1e-5, atol=1e-6)
+
+    def test_step_follows_the_array_the_sim_control_points_at(self):
+        """Use the array the sim_control references now, not one seen on an earlier step."""
+        case = self._make_case(self._save_gru("per_step.onnx"), 2)
+        _, hidden_first = self._step(case)
+        case.state_a, case.state_b = case.state_b, case.state_a
+
+        # A different array object, substituted after a step has already run.
+        case.bias_force = case.bias_force * -3.0
+        case.control.bias_force = wp.array(case.bias_force, dtype=wp.float32, device=self.device)
+
+        observed, _ = self._step(case)
+
+        expected = self._expected(self._metadata(), case, hidden=hidden_first)[0]
+        np.testing.assert_allclose(observed, expected, rtol=1e-5, atol=1e-6)
+
+    def test_builder_registers_declared_arrays_on_control(self):
+        """Register the declared array on Control and leave its values to the caller."""
+
+        def build_model(model_path):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            link = builder.add_link()
+            joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+            builder.add_articulation([joint])
+            builder.add_actuator(
+                DriveNeuralGRU,
+                index=builder.joint_qd_start[joint],
+                model_path=model_path,
+            )
+            return builder.finalize(device=self.device)
+
+        model = build_model(self._save_gru("declared_only.onnx"))
+        actuator = model.actuators[0]
+        self.assertEqual(actuator.drive.custom_inputs, ("bias_force",))
+        self.assertEqual(actuator.control_feedforward_attr, "joint_act")
+
+        control = model.control()
+        self.assertTrue(hasattr(control, "bias_force"))
+        self.assertEqual(control.bias_force.dtype, wp.float32)
+        self.assertEqual(len(control.bias_force), model.joint_dof_count)
+        self.assertFalse(hasattr(model.state(), "bias_force"))
+
+        state = model.state()
+        control.clear(model)
+        control.bias_force.fill_(2.5)
+        control.joint_f.zero_()
+        a, b = actuator.state(), actuator.state()
+        actuator.step(state, control, a, b, dt=self.SAMPLE_DT)
+        self.assertTrue(np.isfinite(control.joint_f.numpy()).all())
+
+        metadata = self._metadata(("position", "target_velocity"))
+        without_bias = build_model(self._save_gru("declared_none.onnx", metadata))
+        self.assertEqual(without_bias.actuators[0].drive.custom_inputs, ())
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_model_builder_constructs_relative_onnx_usd_actuator(self):
+        """Construct a finalized GRU actuator from a relative USD asset path."""
+        model_path = self._save_gru("builder_gru.onnx")
+        stage_path = self._write_single_joint_gru_usd(model_path, "builder_gru.usda")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage_path, floating=False, load_visual_shapes=False)
+        self.assertEqual(result["actuator_count"], 1)
+        # This test covers actuator parsing, not the OpenUSD package-dependent
+        # articulation discovery performed by LoadUsdPhysicsFromRange.
+        joint_index = builder.joint_label.index("/World/Robot/Joint")
+        builder.add_articulation([joint_index], label="/World/Robot")
+        model = builder.finalize(device=self.device)
+        self.assertIsInstance(model.actuators[0].drive, DriveNeuralGRU)
+        self.assertEqual(model.actuators[0].control_feedforward_attr, "joint_act")
+        self.assertEqual(model.actuators[0].drive.custom_inputs, ("bias_force",))
+        self.assertTrue(hasattr(model.control(), "bias_force"))
+        self.assertFalse(hasattr(model.state(), "bias_force"))
+
+    def test_builder_groups_equal_model_paths(self):
+        """Accumulate actuators sharing one checkpoint into a single vectorized group."""
+        shared_path = self._save_gru("shared.onnx")
+        distinct_path = self._save_gru("distinct.onnx", rng_seed=2026)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        links = [builder.add_link() for _ in range(3)]
+        joints = [
+            builder.add_joint_revolute(parent=-1 if i == 0 else links[i - 1], child=link, axis=newton.Axis.Z)
+            for i, link in enumerate(links)
+        ]
+        builder.add_articulation(joints)
+        dofs = [builder.joint_qd_start[joint] for joint in joints]
+        builder.add_actuator(DriveNeuralGRU, index=dofs[0], model_path=shared_path)
+        builder.add_actuator(DriveNeuralGRU, index=dofs[1], model_path=shared_path)
+        builder.add_actuator(DriveNeuralGRU, index=dofs[2], model_path=distinct_path)
+
+        model = builder.finalize(device=self.device)
+
+        self.assertEqual(len(model.actuators), 2)
+        by_path = {actuator.drive.model_path: actuator for actuator in model.actuators}
+        self.assertEqual(by_path[shared_path].num_actuators, 2)
+        self.assertEqual(by_path[distinct_path].num_actuators, 1)
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_usd_dispatches_onnx_asset_to_gru(self):
+        """Dispatch a USD actuator prim with gru model_type to DriveNeuralGRU."""
+        from pxr import Sdf
+
+        model_path = self._save_gru("usd_gru.onnx")
+        stage_path = os.path.join(self._tmp_dir, "gru.usda")
+        stage = Usd.Stage.CreateNew(stage_path)
+        stage.DefinePrim("/World/Joint", "PhysicsRevoluteJoint")
+        stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
+        prim = stage.DefinePrim("/World/Actuator", "NewtonActuator")
+        schemas = Sdf.TokenListOp()
+        schemas.prependedItems = ["NewtonNeuralControlAPI"]
+        prim.SetMetadata("apiSchemas", schemas)
+        prim.CreateRelationship("newton:targets").SetTargets([Sdf.Path("/World/Joint")])
+        prim.CreateAttribute("newton:modelPath", Sdf.ValueTypeNames.Asset).Set(
+            Sdf.AssetPath(os.path.basename(model_path))
+        )
+        stage.GetRootLayer().Save()
+
+        parsed = parse_actuator_prim(prim)
+
+        self.assertEqual(parsed.drive_class, DriveNeuralGRU)
+        self.assertEqual(os.path.realpath(parsed.drive_kwargs["model_path"]), os.path.realpath(model_path))
+
+
+@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+class TestDriveNeuralMLP(unittest.TestCase):
+    """DriveNeuralMLP - load via model_path, call compute() directly."""
 
     def setUp(self):
         self.device = wp.get_device()
@@ -569,7 +1636,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
         bias = np.array([42.0], dtype=np.float32)
         path = self._save_mlp(weights, bias)
         n = 1
-        ctrl = ControllerNeuralMLP(model_path=path)
+        ctrl = DriveNeuralMLP(model_path=path)
         ctrl.finalize(self.device, n)
         state_a = ctrl.state(n, self.device)
         state_b = ctrl.state(n, self.device)
@@ -612,7 +1679,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
         bias = np.zeros((1,), dtype=np.float32)
         path = self._save_mlp(weights, bias)
         n = 1
-        ctrl = ControllerNeuralMLP(model_path=path)
+        ctrl = DriveNeuralMLP(model_path=path)
         ctrl.finalize(self.device, n)
         state_a = ctrl.state(n, self.device)
         state_b = ctrl.state(n, self.device)
@@ -655,7 +1722,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
         path = self._save_mlp(weights, bias, metadata={"effort_scale": 3.0})
 
         n = 1
-        ctrl = ControllerNeuralMLP(model_path=path)
+        ctrl = DriveNeuralMLP(model_path=path)
         self.assertAlmostEqual(ctrl.effort_scale, 3.0)
         ctrl.finalize(self.device, n)
         state_a = ctrl.state(n, self.device)
@@ -691,7 +1758,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
         onnx_mod.save(model, path)
 
         with self.assertRaisesRegex(ValueError, "Invalid JSON.*metadata.*mlp.onnx"):
-            ControllerNeuralMLP(model_path=path)
+            DriveNeuralMLP(model_path=path)
 
     def test_non_mapping_single_metadata_property_raises(self):
         weights = np.zeros((1, 2), dtype=np.float32)
@@ -704,7 +1771,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
         onnx_mod.save(model, path)
 
         with self.assertRaisesRegex(ValueError, "mlp.onnx.*expected a JSON object"):
-            ControllerNeuralMLP(model_path=path)
+            DriveNeuralMLP(model_path=path)
 
     def test_invalid_scale_metadata_names_key_and_path(self):
         weights = np.zeros((1, 2), dtype=np.float32)
@@ -712,11 +1779,11 @@ class TestControllerNeuralMLP(unittest.TestCase):
         path = self._save_mlp(weights, bias, metadata={"effort_scale": None})
 
         with self.assertRaisesRegex(ValueError, "effort_scale.*mlp.onnx"):
-            ControllerNeuralMLP(model_path=path)
+            DriveNeuralMLP(model_path=path)
 
         path = self._save_mlp(weights, bias, filename="zero_scale.onnx", metadata={"effort_scale": 0.0})
         with self.assertRaisesRegex(ValueError, "effort_scale.*zero_scale.onnx"):
-            ControllerNeuralMLP(model_path=path)
+            DriveNeuralMLP(model_path=path)
 
     def test_finalize_fixed_batch_onnx_with_multiple_actuators(self):
         """Fixed-batch ONNX exports can still run one scalar per actuator."""
@@ -725,7 +1792,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
         path = self._save_mlp(weights, bias, filename="fixed_batch_mlp.onnx", batch_dim=1)
 
         n = 3
-        ctrl = ControllerNeuralMLP(model_path=path)
+        ctrl = DriveNeuralMLP(model_path=path)
         ctrl.finalize(self.device, n)
         self.assertEqual(ctrl._network._shapes[ctrl._net_input_name], (n, 2))
         self.assertEqual(ctrl._network._shapes[ctrl._net_output_name], (n, 1))
@@ -750,7 +1817,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
         np.testing.assert_allclose(forces.numpy(), np.array([3.0, 5.0, 7.0], dtype=np.float32), rtol=1e-5)
 
     def test_neural_mlp_implicit_linear_net(self):
-        """A 1-layer (linear) neural controller solves implicitly, exact.
+        """A 1-layer (linear) neural drive solves implicitly, exact.
 
         For a linear net (tau = w0*pos_err + w1*vel_err + b) the linearization is
         the net itself, so the solve matches the analytic Stable-PD solution with
@@ -770,18 +1837,18 @@ class TestControllerNeuralMLP(unittest.TestCase):
         path = self._save_mlp(
             np.array([[w0, w1]], dtype=np.float32), np.array([b], dtype=np.float32), filename="implicit_linear.onnx"
         )
-        controller = ControllerNeuralMLP(model_path=path)
-        oracle = ResponseOracle(model)
+        drive = DriveNeuralMLP(model_path=path)
+        response = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array([0], dtype=wp.uint32, device=device),
-            controller=controller,
+            drive=drive,
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_effort_mode_implicit(response=oracle)
+        actuator.set_effort_mode_implicit(response=response)
         self.assertTrue(actuator.is_graphable())
 
-        oracle.refresh(state)
+        response.refresh(state)
         state_a, state_b = actuator.state(), actuator.state()
         control.joint_f.zero_()
         actuator.step(state, control, state_a, state_b, dt=h)
@@ -794,14 +1861,14 @@ class TestControllerNeuralMLP(unittest.TestCase):
         # Same step under graph capture, with no warm-up: the per-step wp.Tape
         # backward and the network's gradient buffers must both be capture-safe.
         if device.is_cuda:
-            fresh = ControllerNeuralMLP(model_path=path)
+            fresh = DriveNeuralMLP(model_path=path)
             captured = Actuator(
                 indices=wp.array([0], dtype=wp.uint32, device=device),
-                controller=fresh,
+                drive=fresh,
                 control_target_pos_attr="joint_target_q",
                 control_target_vel_attr="joint_target_qd",
             )
-            captured.set_effort_mode_implicit(response=oracle)
+            captured.set_effort_mode_implicit(response=response)
             cap_a, cap_b = captured.state(), captured.state()
             control.joint_f.zero_()
             with wp.ScopedCapture() as capture:
@@ -823,7 +1890,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
         device = wp.get_device()
         h = 0.01
         w0, w1, bias = 0.0, 400.0, 1.5
-        margin = ControllerNeuralMLP.IMPLICIT_JACOBIAN_MARGIN
+        margin = DriveNeuralMLP.IMPLICIT_JACOBIAN_MARGIN
         q0 = np.array([0.0, 0.0], dtype=np.float32)
         qd0 = np.array([3.0, -2.0], dtype=np.float32)
 
@@ -839,22 +1906,22 @@ class TestControllerNeuralMLP(unittest.TestCase):
             np.array([bias], dtype=np.float32),
             filename="implicit_multidof.onnx",
         )
-        oracle = ResponseOracle(model)
+        response = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array([0, 1], dtype=wp.uint32, device=device),
-            controller=ControllerNeuralMLP(model_path=path),
+            drive=DriveNeuralMLP(model_path=path),
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_effort_mode_implicit(response=oracle)
+        actuator.set_effort_mode_implicit(response=response)
 
-        oracle.refresh(state)
+        response.refresh(state)
         state_a, state_b = actuator.state(), actuator.state()
         control.joint_f.zero_()
         actuator.step(state, control, state_a, state_b, dt=h)
 
-        response = _response_at_state(model, state)
-        alpha = np.diag(response)
+        response_matrix = _response_at_state(model, state)
+        alpha = np.diag(response_matrix)
         # Guard: slope = a*dt + b is capped to (1 - margin) / (dt * alpha_i).
         slope = -w0 * h + w1
         limit = (1.0 - margin) / (h * alpha)
@@ -864,11 +1931,11 @@ class TestControllerNeuralMLP(unittest.TestCase):
 
         # Affine law: (I - h*diag(b_capped) @ A) p = h*tau0, and effort = p/h.
         tau0 = w1 * qd0 + bias
-        p = np.linalg.solve(np.eye(2) - h * (b_capped[:, None] * response), h * tau0)
+        p = np.linalg.solve(np.eye(2) - h * (b_capped[:, None] * response_matrix), h * tau0)
         np.testing.assert_allclose(control.joint_f.numpy(), p / h, rtol=2e-3, atol=1e-4)
 
     def test_neural_mlp_implicit_nonlinear_linearized(self):
-        """A nonlinear neural controller enters the solve as a linearization.
+        """A nonlinear neural drive enters the solve as a linearization.
 
         Builds a 2-layer ELU net. Implicit actuation linearizes it once about the
         current state, ``tau ~= tau0 + a*(q-q0) + b*(qd-qd0)`` with
@@ -920,16 +1987,16 @@ class TestControllerNeuralMLP(unittest.TestCase):
 
         path = os.path.join(self._tmp_dir, "implicit_nonlinear.onnx")
         _build_elu_mlp_onnx(path, w1, b1, w2, b2)
-        controller = ControllerNeuralMLP(model_path=path)
-        oracle = ResponseOracle(model)
+        drive = DriveNeuralMLP(model_path=path)
+        response = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array([0], dtype=wp.uint32, device=device),
-            controller=controller,
+            drive=drive,
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_effort_mode_implicit(response=oracle)
-        oracle.refresh(state)
+        actuator.set_effort_mode_implicit(response=response)
+        response.refresh(state)
         sa, sb = actuator.state(), actuator.state()
         control.joint_f.zero_()
         actuator.step(state, control, sa, sb, dt=h)
@@ -937,8 +2004,8 @@ class TestControllerNeuralMLP(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
-class TestControllerNeuralLSTM(unittest.TestCase):
-    """ControllerNeuralLSTM - load via model_path, call compute() directly."""
+class TestDriveNeuralLSTM(unittest.TestCase):
+    """DriveNeuralLSTM - load via model_path, call compute() directly."""
 
     def setUp(self):
         self.device = wp.get_device()
@@ -952,7 +2019,7 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         _build_lstm_onnx(path, hidden_size=hidden, num_layers=1, metadata=metadata)
         return path
 
-    def _run_lstm_compute(self, ctrl: ControllerNeuralLSTM) -> None:
+    def _run_lstm_compute(self, ctrl: DriveNeuralLSTM) -> None:
         n = 1
         ctrl.finalize(self.device, n)
 
@@ -990,14 +2057,14 @@ class TestControllerNeuralLSTM(unittest.TestCase):
 
     def test_compute(self):
         path = self._save_lstm()
-        ctrl = ControllerNeuralLSTM(model_path=path)
+        ctrl = DriveNeuralLSTM(model_path=path)
         self._run_lstm_compute(ctrl)
 
     def test_metadata_scales(self):
         metadata = {"pos_scale": 2.0, "vel_scale": 0.5, "effort_scale": 10.0}
         path = self._save_lstm(metadata=metadata)
 
-        ctrl = ControllerNeuralLSTM(model_path=path)
+        ctrl = DriveNeuralLSTM(model_path=path)
         self.assertAlmostEqual(ctrl.pos_scale, 2.0)
         self.assertAlmostEqual(ctrl.vel_scale, 0.5)
         self.assertAlmostEqual(ctrl.effort_scale, 10.0)
@@ -1008,7 +2075,7 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         path = self._save_lstm(filename="invalid_lstm.onnx", metadata={"vel_scale": float("inf")})
 
         with self.assertRaisesRegex(ValueError, "vel_scale.*invalid_lstm.onnx"):
-            ControllerNeuralLSTM(model_path=path)
+            DriveNeuralLSTM(model_path=path)
 
     def test_neural_lstm_implicit_linearized(self):
         """The LSTM enters the implicit solve as a per-step linearization.
@@ -1030,22 +2097,22 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         control.joint_target_q.assign(np.array([target], dtype=np.float32))
 
         path = self._save_lstm(filename="implicit_lstm.onnx", metadata={"effort_scale": 10.0})
-        controller = ControllerNeuralLSTM(model_path=path)
-        oracle = ResponseOracle(model)
+        drive = DriveNeuralLSTM(model_path=path)
+        response = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array([0], dtype=wp.uint32, device=device),
-            controller=controller,
+            drive=drive,
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
 
-        actuator.set_effort_mode_implicit(response=oracle)
-        oracle.refresh(state)
+        actuator.set_effort_mode_implicit(response=response)
+        response.refresh(state)
         sa, sb = actuator.state(), actuator.state()
         control.joint_f.zero_()
         actuator.step(state, control, sa, sb, dt=h)
 
-        pack = controller._lin_params.numpy()
+        pack = drive._lin_params.numpy()
         self.assertEqual(pack.shape[1], 5)  # [tau0, a, b, q0, qd0]
         tau0, a, b, pq0, pqd0 = (float(v) for v in pack[0])
         self.assertAlmostEqual(pq0, q0, delta=1e-6)
@@ -1058,9 +2125,9 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         tau = float(control.joint_f.numpy()[0])
         self.assertTrue(np.isfinite(tau))
         self.assertAlmostEqual(tau, expected, delta=abs(expected) * 1e-3 + 1e-6)
-        self.assertTrue(np.any(sb.controller_state.hidden.numpy() != 0.0))
+        self.assertTrue(np.any(sb.drive_state.hidden.numpy() != 0.0))
 
-        # Finite differences of the controller's own output pin the sign and the
+        # Finite differences of the drive's own output pin the sign and the
         # scaling of the slopes. They are compared against the raw slopes, not
         # the packed ones, which may be scaled down to bound the Jacobian.
         actuator.set_effort_mode_explicit()
@@ -1075,12 +2142,12 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         eps = 1e-3
         fd_dq = (explicit_tau(q0 + eps, qd0) - explicit_tau(q0 - eps, qd0)) / (2.0 * eps)
         fd_dqd = (explicit_tau(q0, qd0 + eps) - explicit_tau(q0, qd0 - eps)) / (2.0 * eps)
-        self.assertAlmostEqual(float(controller._dtau_dq.numpy()[0]), fd_dq, delta=abs(fd_dq) * 0.02 + 1e-3)
-        self.assertAlmostEqual(float(controller._dtau_dqd.numpy()[0]), fd_dqd, delta=abs(fd_dqd) * 0.02 + 1e-3)
+        self.assertAlmostEqual(float(drive._dtau_dq.numpy()[0]), fd_dq, delta=abs(fd_dq) * 0.02 + 1e-3)
+        self.assertAlmostEqual(float(drive._dtau_dqd.numpy()[0]), fd_dqd, delta=abs(fd_dqd) * 0.02 + 1e-3)
 
 
 class _TorchCheckpointTestMixin:
-    """Shared helpers for saving pt2 / TorchScript / dict torch checkpoints."""
+    """Shared helpers for saving pt2 torch checkpoints."""
 
     def setUp(self):
         import torch
@@ -1089,24 +2156,11 @@ class _TorchCheckpointTestMixin:
         if self.device.is_cuda and not torch.cuda.is_available():
             self.skipTest("Torch not compiled with CUDA support")
         self.torch = torch
-        _ignore_torchscript_deprecation(self)
         self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
 
     def tearDown(self):
         shutil.rmtree(self._tmp_dir, ignore_errors=True)
-
-    def _save_torchscript(self, net: Any, filename: str = "model.pt", metadata: dict | None = None) -> str:
-        path = os.path.join(self._tmp_dir, filename)
-        scripted = self.torch.jit.script(net)
-        extra = {"metadata.json": json.dumps(metadata)} if metadata else {}
-        self.torch.jit.save(scripted, path, _extra_files=extra)
-        return path
-
-    def _save_dict(self, net: Any, filename: str = "model_dict.pt", metadata: dict | None = None) -> str:
-        path = os.path.join(self._tmp_dir, filename)
-        self.torch.save({"model": net, "metadata": metadata or {}}, path)
-        return path
 
     def _export_pt2(
         self,
@@ -1125,8 +2179,8 @@ class _TorchCheckpointTestMixin:
 
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
-class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
-    """ControllerNeuralMLP loading from pt2, TorchScript, and dict checkpoints."""
+class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
+    """DriveNeuralMLP loading from pt2 checkpoints."""
 
     def _make_mlp(self, bias: float = 0.0) -> Any:
         net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
@@ -1140,20 +2194,16 @@ class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.Te
         batch = self.torch.export.Dim("batch", min=1)
         return self._export_pt2(net, example, ({0: batch},), filename, metadata=metadata)
 
-    def test_dict_checkpoint(self):
-        """Load MLP from a dict checkpoint with metadata."""
-        path = self._save_dict(self._make_mlp(bias=5.0), metadata={"effort_scale": 4.0})
-        ctrl = ControllerNeuralMLP(model_path=path)
-        self.assertAlmostEqual(ctrl.effort_scale, 4.0)
-
     def test_pt2_checkpoint(self):
         """Load MLP from a pt2 archive with metadata and run compute."""
         path = self._save_pt2(self._make_mlp(bias=7.0), metadata={"effort_scale": 2.0})
         n = 1
-        ctrl = ControllerNeuralMLP(model_path=path)
+        ctrl = DriveNeuralMLP(model_path=path)
         self.assertAlmostEqual(ctrl.effort_scale, 2.0)
         ctrl.finalize(self.device, n)
+        self.assertFalse(ctrl.is_graphable())
         state_a = ctrl.state(n, self.device)
+        self.assertTrue(type(state_a.pos_error_history).__module__.startswith("torch"))
 
         indices = wp.array([0], dtype=wp.uint32, device=self.device)
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
@@ -1174,36 +2224,12 @@ class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.Te
         )
         self.assertAlmostEqual(forces.numpy()[0], 14.0, places=3, msg="bias=7 * effort_scale=2 -> 14")
 
-    def test_legacy_formats_warn(self):
-        """TorchScript and dict checkpoints emit a DeprecationWarning on load."""
-        ts_path = self._save_torchscript(self._make_mlp())
-        dict_path = self._save_dict(self._make_mlp())
+    def test_load_metadata_reads_pt2_zip_entry(self):
+        """Metadata-only reads return the pt2 archive's metadata."""
+        path = self._save_pt2(self._make_mlp(), metadata={"effort_scale": 3.0})
+        self.assertEqual(load_metadata(path), {"effort_scale": 3.0})
 
-        with self.assertWarnsRegex(DeprecationWarning, "TorchScript checkpoints"):
-            ControllerNeuralMLP(model_path=ts_path)
-        with self.assertWarnsRegex(DeprecationWarning, "dict checkpoints"):
-            ControllerNeuralMLP(model_path=dict_path)
-
-    def test_deprecation_warning_points_at_caller(self):
-        """The legacy-format warning is attributed to the calling code, not newton internals."""
-        path = self._save_torchscript(self._make_mlp())
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            ControllerNeuralMLP(model_path=path)
-        hits = [w for w in caught if "TorchScript checkpoints" in str(w.message)]
-        self.assertEqual(len(hits), 1)
-        self.assertEqual(hits[0].filename, __file__)
-
-    def test_load_metadata_reads_zip_entry_without_warning(self):
-        """Metadata-only reads do not deserialize the network or warn about legacy formats."""
-        path = self._save_torchscript(self._make_mlp(), metadata={"effort_scale": 3.0})
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            metadata = load_metadata(path)
-        self.assertEqual(metadata, {"effort_scale": 3.0})
-        self.assertFalse([w for w in caught if "checkpoints" in str(w.message)])
-
-    def test_dict_checkpoint_uses_target_pos_indices(self):
+    def test_pt2_checkpoint_uses_target_pos_indices(self):
         """Verify target_pos uses target_pos_indices, not sequential or pos_indices.
 
         Regression test for a bug where the Torch path fell back to sequential indices
@@ -1217,8 +2243,8 @@ class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.Te
         """
         self.torch.manual_seed(0)
         net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
-        path = self._save_dict(net, metadata={"effort_scale": 1.0})
-        ctrl = ControllerNeuralMLP(model_path=path)
+        path = self._save_pt2(net, metadata={"effort_scale": 1.0})
+        ctrl = DriveNeuralMLP(model_path=path)
         n = 2
         ctrl.finalize(self.device, n)
         state_a = ctrl.state(n, self.device)
@@ -1260,8 +2286,8 @@ class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.Te
 
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
-class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
-    """ControllerNeuralLSTM loading from pt2, TorchScript, and dict checkpoints."""
+class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
+    """DriveNeuralLSTM loading from pt2 checkpoints."""
 
     def _make_lstm(self, hidden: int = 8, layers: int = 1, bidirectional: bool = False) -> Any:
         return _LSTMNet(hidden=hidden, layers=layers, bidirectional=bidirectional).to(self._torch_dev)
@@ -1276,7 +2302,7 @@ class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.T
         dynamic_shapes = ({0: batch}, ({1: batch}, {1: batch}))
         return self._export_pt2(net, (x, (h, c)), dynamic_shapes, filename, metadata=metadata)
 
-    def _run_lstm_compute(self, ctrl: ControllerNeuralLSTM) -> None:
+    def _run_lstm_compute(self, ctrl: DriveNeuralLSTM) -> None:
         n = 1
         ctrl.finalize(self.device, n)
 
@@ -1312,18 +2338,11 @@ class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.T
         self.assertFalse(self.torch.all(state_b.hidden == 0.0).item(), "hidden state should evolve")
         return forces.numpy()[0]
 
-    def test_dict_checkpoint(self):
-        """Load LSTM from a dict checkpoint with metadata."""
-        path = self._save_dict(self._make_lstm(hidden=8, layers=1), metadata={"effort_scale": 5.0})
-        ctrl = ControllerNeuralLSTM(model_path=path)
-        self.assertAlmostEqual(ctrl.effort_scale, 5.0)
-        self._run_lstm_compute(ctrl)
-
     def test_pt2_checkpoint(self):
         """Load LSTM from a pt2 archive; layer config comes from metadata."""
         metadata = {"effort_scale": 5.0, "num_layers": 2, "hidden_size": 8}
         path = self._save_pt2(self._make_lstm(hidden=8, layers=2), metadata=metadata)
-        ctrl = ControllerNeuralLSTM(model_path=path)
+        ctrl = DriveNeuralLSTM(model_path=path)
         self.assertAlmostEqual(ctrl.effort_scale, 5.0)
         self.assertEqual(ctrl._num_layers, 2)
         self.assertEqual(ctrl._hidden_size, 8)
@@ -1333,42 +2352,41 @@ class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.T
         """A pt2 checkpoint lacking num_layers/hidden_size fails with clear guidance."""
         path = self._save_pt2(self._make_lstm(hidden=8, layers=2), metadata={"effort_scale": 5.0})
         with self.assertRaisesRegex(ValueError, "num_layers.*hidden_size"):
-            ControllerNeuralLSTM(model_path=path)
+            DriveNeuralLSTM(model_path=path)
 
     def test_pt2_metadata_config_coerced_to_int(self):
         """JSON floats for num_layers/hidden_size are coerced to int."""
         metadata = {"num_layers": 2.0, "hidden_size": 8.0}
         path = self._save_pt2(self._make_lstm(hidden=8, layers=2), metadata=metadata)
-        ctrl = ControllerNeuralLSTM(model_path=path)
+        ctrl = DriveNeuralLSTM(model_path=path)
         self.assertIsInstance(ctrl._num_layers, int)
         self.assertIsInstance(ctrl._hidden_size, int)
         self.assertEqual(ctrl._num_layers, 2)
         self.assertEqual(ctrl._hidden_size, 8)
 
-    def test_metadata_config_mismatch_raises(self):
-        """Metadata that contradicts the network's actual LSTM fails at load."""
-        path = self._save_dict(self._make_lstm(hidden=8, layers=1), metadata={"num_layers": 2, "hidden_size": 8})
-        with self.assertRaisesRegex(ValueError, "num_layers"):
-            ControllerNeuralLSTM(model_path=path)
+    def test_implicit_rejected_for_torch_backend(self):
+        """Implicit actuation is refused for Torch checkpoints rather than degrading.
 
-    def test_invalid_lstm_not_masked_by_config_metadata(self):
-        """Structural validation still runs when metadata provides the LSTM config."""
-        net = self._make_lstm(hidden=8, layers=1, bidirectional=True)
-        path = self._save_dict(net, metadata={"num_layers": 1, "hidden_size": 8})
-        with self.assertRaisesRegex(ValueError, "bidirectional"):
-            ControllerNeuralLSTM(model_path=path)
+        The Torch backend runs outside Warp's tape, so there is no input adjoint
+        to linearize the network with; the solve would silently fall back to the
+        explicit impulse while still paying for the Newton loop.
+        """
+        metadata = {"num_layers": 1, "hidden_size": 4}
+        path = self._save_pt2(self._make_lstm(hidden=4, layers=1), metadata=metadata)
 
-    def test_legacy_formats_warn(self):
-        """TorchScript and dict checkpoints emit a DeprecationWarning on load."""
-        ts_path = self._save_torchscript(self._make_lstm(hidden=8, layers=1))
-        dict_path = self._save_dict(self._make_lstm(hidden=8, layers=1))
+        model = _build_pendulum(self.device)
+        drive = DriveNeuralLSTM(model_path=path)
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32, device=self.device),
+            drive=drive,
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        self.assertIsNone(drive.bind_params())
+        with self.assertRaises(NotImplementedError):
+            actuator.set_effort_mode_implicit(response=JointSpaceResponse(model))
 
-        with self.assertWarnsRegex(DeprecationWarning, "TorchScript checkpoints"):
-            ControllerNeuralLSTM(model_path=ts_path)
-        with self.assertWarnsRegex(DeprecationWarning, "dict checkpoints"):
-            ControllerNeuralLSTM(model_path=dict_path)
-
-    def test_dict_checkpoint_uses_target_pos_indices(self):
+    def test_pt2_checkpoint_uses_target_pos_indices(self):
         """Verify target_pos uses target_pos_indices, not sequential or pos_indices.
 
         Regression test for a bug where the Torch path fell back to sequential indices
@@ -1381,8 +2399,8 @@ class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.T
         ``arange(n)``.
         """
         net = self._make_lstm(hidden=4, layers=1)
-        path = self._save_dict(net, metadata={"effort_scale": 1.0})
-        ctrl = ControllerNeuralLSTM(model_path=path)
+        path = self._save_pt2(net, metadata={"effort_scale": 1.0, "num_layers": 1, "hidden_size": 4})
+        ctrl = DriveNeuralLSTM(model_path=path)
         n = 2
         ctrl.finalize(self.device, n)
         state_a = ctrl.state(n, self.device)
@@ -1434,8 +2452,8 @@ class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.T
         allowed``.
         """
         net = self._make_lstm(hidden=4, layers=1)
-        path = self._save_dict(net, metadata={"effort_scale": 1.0})
-        ctrl = ControllerNeuralLSTM(model_path=path)
+        path = self._save_pt2(net, metadata={"effort_scale": 1.0, "num_layers": 1, "hidden_size": 4})
+        ctrl = DriveNeuralLSTM(model_path=path)
         n = 3
         ctrl.finalize(self.device, n)
         state_a = ctrl.state(n, self.device)
@@ -1484,187 +2502,6 @@ class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.T
                 self.assertTrue(
                     self.torch.equal(state_b.cell[:, b, :], cell_before[:, b, :]), f"actuator {b} not preserved"
                 )
-
-
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
-class TestControllerNeuralMLPLegacyTorchScript(unittest.TestCase):
-    """Regression tests for the supported .pt MLP checkpoint path."""
-
-    def setUp(self):
-        self.device = wp.get_device()
-        self._tmp_dir = tempfile.mkdtemp()
-        _ignore_torchscript_deprecation(self)
-
-    def tearDown(self):
-        shutil.rmtree(self._tmp_dir, ignore_errors=True)
-
-    def test_finalize_legacy_torchscript_checkpoint(self):
-        """.pt checkpoints keep the Torch backend and state interface."""
-        import torch
-
-        n = 1
-        in_features = 2
-
-        class _BiasOnlyMLP(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.fc = torch.nn.Linear(in_features, 1, bias=True)
-                with torch.no_grad():
-                    self.fc.weight.zero_()
-                    self.fc.bias.fill_(7.0)
-
-            def forward(self, x: torch.Tensor) -> torch.Tensor:
-                return self.fc(x)
-
-        model = _BiasOnlyMLP().eval()
-        scripted = torch.jit.script(model)
-        path = os.path.join(self._tmp_dir, "legacy_mlp.pt")
-        scripted.save(path, _extra_files={"metadata.json": json.dumps({"effort_scale": 1.0})})
-
-        ctrl = ControllerNeuralMLP(model_path=path)
-        ctrl.finalize(self.device, n)
-
-        self.assertFalse(ctrl.is_graphable())
-        self.assertIsNotNone(ctrl.network)
-        self.assertIsNone(ctrl._network)
-
-        indices = wp.array([0], dtype=wp.uint32, device=self.device)
-        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
-        state_a = ctrl.state(n, self.device)
-        self.assertTrue(type(state_a.pos_error_history).__module__.startswith("torch"))
-        ctrl.compute(
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.array([1.0], dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
-        )
-        self.assertAlmostEqual(float(forces.numpy()[0]), 7.0, places=3)
-
-
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
-class TestControllerNeuralLSTMLegacyTorchScript(unittest.TestCase):
-    """Regression tests for the supported .pt LSTM checkpoint path."""
-
-    def setUp(self):
-        self.device = wp.get_device()
-        self._tmp_dir = tempfile.mkdtemp()
-        _ignore_torchscript_deprecation(self)
-
-    def tearDown(self):
-        shutil.rmtree(self._tmp_dir, ignore_errors=True)
-
-    def _build_legacy_lstm_checkpoint(self, path: str, hidden_size: int = 4, metadata: dict | None = None):
-        import torch
-
-        class _LegacyLSTM(torch.nn.Module):
-            def __init__(self, hidden_size: int):
-                super().__init__()
-                self.lstm = torch.nn.LSTM(
-                    input_size=2,
-                    hidden_size=hidden_size,
-                    num_layers=1,
-                    batch_first=True,
-                )
-                self.fc = torch.nn.Linear(hidden_size, 1, bias=True)
-                with torch.no_grad():
-                    self.fc.weight.fill_(0.5)
-                    self.fc.bias.fill_(0.0)
-
-            def forward(
-                self, x: torch.Tensor, hc: tuple[torch.Tensor, torch.Tensor]
-            ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-                y, hc_new = self.lstm(x, hc)
-                effort = self.fc(y[:, -1, :])
-                return effort, hc_new
-
-        model = _LegacyLSTM(hidden_size).eval()
-        scripted = torch.jit.script(model)
-        extra_files = {"metadata.json": json.dumps(metadata or {})}
-        scripted.save(path, _extra_files=extra_files)
-
-    def test_synthesizes_metadata_from_torch_module(self):
-        path = os.path.join(self._tmp_dir, "legacy_lstm.pt")
-        hidden = 6
-        self._build_legacy_lstm_checkpoint(path, hidden_size=hidden, metadata={"effort_scale": 2.5})
-
-        ctrl = ControllerNeuralLSTM(model_path=path)
-
-        self.assertEqual(ctrl._num_layers, 1)
-        self.assertEqual(ctrl._hidden_size, hidden)
-        self.assertAlmostEqual(ctrl.effort_scale, 2.5)
-
-    def test_finalize_and_compute(self):
-        path = os.path.join(self._tmp_dir, "legacy_lstm.pt")
-        self._build_legacy_lstm_checkpoint(path, hidden_size=4)
-
-        ctrl = ControllerNeuralLSTM(model_path=path)
-
-        n = 1
-        ctrl.finalize(self.device, n)
-        self.assertFalse(ctrl.is_graphable())
-
-        state_a = ctrl.state(n, self.device)
-        state_b = ctrl.state(n, self.device)
-        self.assertTrue(type(state_a.hidden).__module__.startswith("torch"))
-        np.testing.assert_array_equal(state_a.hidden.detach().cpu().numpy(), 0.0)
-
-        indices = wp.array([0], dtype=wp.uint32, device=self.device)
-        positions = wp.zeros(n, dtype=wp.float32, device=self.device)
-        velocities = wp.array([1.0], dtype=wp.float32, device=self.device)
-        target_pos = wp.array([1.0], dtype=wp.float32, device=self.device)
-        target_vel = wp.zeros(n, dtype=wp.float32, device=self.device)
-        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
-
-        ctrl.compute(
-            positions,
-            velocities,
-            target_pos,
-            target_vel,
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
-        )
-        ctrl.update_state(state_a, state_b)
-
-        self.assertNotAlmostEqual(float(forces.numpy()[0]), 0.0, places=6)
-        self.assertTrue(np.any(state_b.hidden.detach().cpu().numpy() != 0.0))
-
-    def test_implicit_rejected_for_torch_backend(self):
-        """Implicit actuation is refused for .pt checkpoints rather than degrading.
-
-        The Torch backend runs outside Warp's tape, so there is no input adjoint
-        to linearize the network with; the solve would silently fall back to the
-        explicit impulse while still paying for the Newton loop.
-        """
-        path = os.path.join(self._tmp_dir, "legacy_lstm.pt")
-        self._build_legacy_lstm_checkpoint(path, hidden_size=4)
-
-        model = _build_pendulum(self.device)
-        controller = ControllerNeuralLSTM(model_path=path)
-        actuator = Actuator(
-            indices=wp.array([0], dtype=wp.uint32, device=self.device),
-            controller=controller,
-            control_target_pos_attr="joint_target_q",
-            control_target_vel_attr="joint_target_qd",
-        )
-        self.assertIsNone(controller.bind_params())
-        with self.assertRaises(NotImplementedError):
-            actuator.set_effort_mode_implicit(response=ResponseOracle(model))
 
 
 # ---------------------------------------------------------------------------
@@ -1837,10 +2674,10 @@ class TestClampingDCMotor(unittest.TestCase):
                 velocity_limit=wp.array([vel_lim], dtype=float, device=device),
                 max_motor_effort=wp.array([20.0], dtype=float, device=device),
             )
-            oracle = ResponseOracle(model)
+            response = JointSpaceResponse(model)
             actuator = Actuator(
                 indices=wp.array([0], dtype=wp.uint32, device=device),
-                controller=ControllerPD(
+                drive=DrivePD(
                     kp=wp.array([5.0e4], dtype=float, device=device),
                     kd=wp.zeros(1, dtype=float, device=device),
                 ),
@@ -1849,12 +2686,12 @@ class TestClampingDCMotor(unittest.TestCase):
                 control_target_vel_attr="joint_target_qd",
             )
             if implicit:
-                actuator.set_effort_mode_implicit(response=oracle)
+                actuator.set_effort_mode_implicit(response=response)
             # Retune through the (possibly view-backed) parameter array.
             clamp.max_motor_effort.assign(np.array([max_e], dtype=np.float32))
             control.joint_f.zero_()
-            _refresh_and_step(actuator, oracle, state, control, h)
-            return float(control.joint_f.numpy()[0]), float(oracle.inverse_blocks.numpy()[0, 0, 0])
+            _refresh_and_step(actuator, response, state, control, h)
+            return float(control.joint_f.numpy()[0]), float(response.inverse_blocks.numpy()[0, 0, 0])
 
         # Explicit mode clamps at the measured velocity, so the envelope is exact:
         #   corner = vel_lim * (1 + max_e/sat); vel = clip(qd0, +/-corner)
@@ -1883,7 +2720,7 @@ def _dc_bounds(sat: float, vel_lim: float, max_e: float, qd: float) -> tuple[flo
 
 
 def _dc_envelope(sat: float, vel_lim: float, max_e: float, qd: float) -> float:
-    """Upper DC-motor effort bound at *qd*; a hard-driven controller lands here."""
+    """Upper DC-motor effort bound at *qd*; a hard-driven drive lands here."""
     return _dc_bounds(sat, vel_lim, max_e, qd)[1]
 
 
@@ -1927,7 +2764,7 @@ def _pipeline_clamping(
     clamp: str | None,
     device: wp.Device,
     n: int,
-) -> tuple[list[Clamping] | None, Callable[[float, float], tuple[float, float]]]:
+) -> tuple[list[ClampingBase] | None, Callable[[float, float], tuple[float, float]]]:
     """Return the clamping list for *clamp* and its NumPy ``(q, qd) -> (lo, hi)`` law."""
     if clamp is None:
         return None, lambda q, qd: (-np.inf, np.inf)
@@ -2024,7 +2861,7 @@ class TestActuatorStep(unittest.TestCase):
         self,
         device: wp.Device,
         *,
-        controller: str = "pd",
+        drive: str = "pd",
         clamp: str | None = None,
         implicit: bool = True,
         dofs: int = 1,
@@ -2044,10 +2881,10 @@ class TestActuatorStep(unittest.TestCase):
         worlds: int = 1,
         actuated: Sequence[int] | None = None,
     ) -> None:
-        """Run the actuator pipeline for one controller / clamp / effort-mode combination.
+        """Run the actuator pipeline for one drive / clamp / effort-mode combination.
 
         Each step follows the order a simulation uses: zero the forces, refresh
-        the response oracle at the step-start pose, step the actuator, then step
+        the response at the step-start pose, step the actuator, then step
         the solver. Every effort is compared against a NumPy reference built from
         the dense response ``A = inv(H)``. Without a clamp the law is linear, so
         the reference solves ``(I + dt*diag(dt*kp + kd)*A) tau = f0`` directly and
@@ -2062,7 +2899,7 @@ class TestActuatorStep(unittest.TestCase):
 
         Args:
             device: Device to build the model and actuator on.
-            controller: ``"pd"`` or ``"pid"``.
+            drive: ``"pd"`` or ``"pid"``.
             clamp: ``None``, ``"max_effort"``, ``"dc_motor"`` or ``"position"``.
                 Only the single-DOF model supports a clamp.
             implicit: Solve the control law against the predicted end-of-step state.
@@ -2115,23 +2952,23 @@ class TestActuatorStep(unittest.TestCase):
             """Per-actuator array: select the driven DOFs, then repeat per world."""
             return wp.array(_tiled(np.asarray(values)[act]), dtype=float, device=device)
 
-        if controller == "pd":
-            control_law = ControllerPD(kp=_arr(kp), kd=_arr(kd))
-        elif controller == "pid":
-            control_law = ControllerPID(kp=_arr(kp), ki=_arr(ki), kd=_arr(kd), integral_max=_arr(integral_max))
+        if drive == "pd":
+            control_law = DrivePD(kp=_arr(kp), kd=_arr(kd))
+        elif drive == "pid":
+            control_law = DrivePID(kp=_arr(kp), ki=_arr(ki), kd=_arr(kd), integral_max=_arr(integral_max))
         else:
-            raise ValueError(f"unknown controller kind: {controller}")
+            raise ValueError(f"unknown drive kind: {drive}")
 
-        oracle = ResponseOracle(model)
+        response = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array(act_all, dtype=wp.uint32, device=device),
-            controller=control_law,
+            drive=control_law,
             clamping=clamping,
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
         if implicit:
-            actuator.set_effort_mode_implicit(response=oracle)
+            actuator.set_effort_mode_implicit(response=response)
         self.assertTrue(actuator.is_graphable())
 
         def reference(
@@ -2146,7 +2983,7 @@ class TestActuatorStep(unittest.TestCase):
             Returns one value per model DOF; undriven DOFs are zero, since the
             actuator never writes them.
             """
-            feedforward = np.asarray(ki * integral if controller == "pid" else np.zeros(n), dtype=np.float64)
+            feedforward = np.asarray(ki * integral if drive == "pid" else np.zeros(n), dtype=np.float64)
             out = np.zeros(n, dtype=np.float64)
 
             if not implicit:
@@ -2156,15 +2993,15 @@ class TestActuatorStep(unittest.TestCase):
 
             # Only the driven DOFs are solved, coupled through their submatrix of
             # inv(H). Inverting first leaves the undriven DOFs free to move.
-            response = _response_at(model, _tiled(q), _tiled(qd))[np.ix_(act, act)]
+            response_matrix = _response_at(model, _tiled(q), _tiled(qd))[np.ix_(act, act)]
             if clamp is None:
                 gain = dt * kp_now[act] + kd_now[act]
-                jacobian = np.eye(driven) + dt * np.diag(gain) @ response
+                jacobian = np.eye(driven) + dt * np.diag(gain) @ response_matrix
                 rhs = kp_now[act] * (target[act] - q[act] - dt * qd[act]) - kd_now[act] * qd[act] + feedforward[act]
                 out[act] = np.linalg.solve(jacobian, rhs)
                 return out
 
-            alpha = float(response[0, 0])
+            alpha = float(response_matrix[0, 0])
             j = act[0]
 
             def residual(tau: float) -> float:
@@ -2195,11 +3032,11 @@ class TestActuatorStep(unittest.TestCase):
         if use_graph:
             # Module loading and lazy allocation have to happen before a capture.
             control.joint_f.zero_()
-            oracle.refresh(state_in)
+            response.refresh(state_in)
             actuator.step(state_in, control, act_a, act_b, dt=dt)
             if stateful:
-                act_a.controller_state.integral.zero_()
-                act_b.controller_state.integral.zero_()
+                act_a.drive_state.integral.zero_()
+                act_b.drive_state.integral.zero_()
 
         def actuate():
             """Zero the efforts, refresh the response, and step the actuator.
@@ -2210,14 +3047,14 @@ class TestActuatorStep(unittest.TestCase):
             """
             if not use_graph:
                 control.joint_f.zero_()
-                oracle.refresh(state_in)
+                response.refresh(state_in)
                 actuator.step(state_in, control, act_a, act_b, dt=dt)
                 return
             key = (id(state_in), id(act_a))
             if key not in graphs:
                 with wp.ScopedCapture(device) as capture:
                     control.joint_f.zero_()
-                    oracle.refresh(state_in)
+                    response.refresh(state_in)
                     actuator.step(state_in, control, act_a, act_b, dt=dt)
                 graphs[key] = capture.graph
             wp.capture_launch(graphs[key])
@@ -2231,7 +3068,7 @@ class TestActuatorStep(unittest.TestCase):
             """Step once from the live state and compare the effort to the reference."""
             q = state_in.joint_q.numpy().astype(np.float64)[:n]
             qd = state_in.joint_qd.numpy().astype(np.float64)[:n]
-            if controller == "pid":
+            if drive == "pid":
                 integral[:] = np.clip(integral + (target - q) * dt, -integral_max, integral_max)
 
             actuate()
@@ -2248,10 +3085,10 @@ class TestActuatorStep(unittest.TestCase):
                     err_msg=f"{step_label}: q={q} qd={qd} integral={integral}",
                 )
                 _assert_worlds_match(self, model, control.joint_f)
-                if controller == "pid":
+                if drive == "pid":
                     # act_b holds the integral this step just advanced to.
                     np.testing.assert_allclose(
-                        act_b.controller_state.integral.numpy(),
+                        act_b.drive_state.integral.numpy(),
                         _tiled(integral[act]),
                         rtol=1.0e-4,
                         atol=1.0e-9,
@@ -2267,9 +3104,9 @@ class TestActuatorStep(unittest.TestCase):
 
         if retune:
             kp_now, kd_now = (4.0 * kp).astype(np.float32), (4.0 * kd).astype(np.float32)
-            actuator.controller.kp.assign(_tiled(kp_now[act]))
-            actuator.controller.kd.assign(_tiled(kd_now[act]))
-            np.testing.assert_allclose(actuator.controller.kp.numpy(), _tiled(kp_now[act]), rtol=1e-6)
+            actuator.drive.kp.assign(_tiled(kp_now[act]))
+            actuator.drive.kd.assign(_tiled(kd_now[act]))
+            np.testing.assert_allclose(actuator.drive.kp.numpy(), _tiled(kp_now[act]), rtol=1e-6)
             retuned = check_effort("retune", kp_now, kd_now, integral)
 
             if clamp == "max_effort":
@@ -2299,39 +3136,37 @@ class TestActuatorStep(unittest.TestCase):
 
     def test_pipeline_pd_implicit(self):
         """Verify the implicit PD solve against the Stable-PD reference."""
-        self.run_test_actuator_pipeline(controller="pd")
+        self.run_test_actuator_pipeline(drive="pd")
 
     def test_pipeline_pd_explicit(self):
         """Verify plain PD in explicit mode through the same pipeline."""
-        self.run_test_actuator_pipeline(controller="pd", implicit=False)
+        self.run_test_actuator_pipeline(drive="pd", implicit=False)
 
     def test_pipeline_pd_max_effort_implicit(self):
         """Verify a max-effort clamp bounds the implicit effort exactly."""
-        self.run_test_actuator_pipeline(controller="pd", clamp="max_effort")
+        self.run_test_actuator_pipeline(drive="pd", clamp="max_effort")
 
     def test_pipeline_pd_stacked_clamps_implicit(self):
         """Stacking an open clamp with a max-effort clamp gives the same bound in either order."""
         for order in ("max_effort_then_open", "open_then_max_effort"):
             with self.subTest(order=order):
-                self.run_test_actuator_pipeline(controller="pd", clamp=order)
+                self.run_test_actuator_pipeline(drive="pd", clamp=order)
 
     def test_pipeline_pd_dc_motor_implicit(self):
         """Verify the DC-motor envelope binds at the predicted end-of-step velocity."""
-        self.run_test_actuator_pipeline(controller="pd", clamp="dc_motor", kp=5.0e4, kd=0.0, q0=0.0, qd0=1.0, worlds=2)
+        self.run_test_actuator_pipeline(drive="pd", clamp="dc_motor", kp=5.0e4, kd=0.0, q0=0.0, qd0=1.0, worlds=2)
 
     def test_pipeline_pd_dc_motor_explicit(self):
         """Verify the DC-motor envelope binds at the current velocity in explicit mode."""
-        self.run_test_actuator_pipeline(
-            controller="pd", clamp="dc_motor", implicit=False, kp=5.0e4, kd=0.0, q0=0.0, qd0=1.0
-        )
+        self.run_test_actuator_pipeline(drive="pd", clamp="dc_motor", implicit=False, kp=5.0e4, kd=0.0, q0=0.0, qd0=1.0)
 
     def test_pipeline_pd_position_implicit(self):
         """Verify the position-based limit is read at the predicted end-of-step position."""
-        self.run_test_actuator_pipeline(controller="pd", clamp="position", kp=5.0e4, kd=0.0, q0=0.2, target=2.0)
+        self.run_test_actuator_pipeline(drive="pd", clamp="position", kp=5.0e4, kd=0.0, q0=0.2, target=2.0)
 
     def test_pipeline_pd_high_gain_implicit(self):
         """Verify an extreme stiffness stays finite and matches the reference."""
-        self.run_test_actuator_pipeline(controller="pd", kp=1.0e8, kd=0.0, q0=0.0, target=0.5)
+        self.run_test_actuator_pipeline(drive="pd", kp=1.0e8, kd=0.0, q0=0.0, target=0.5)
 
     def test_pipeline_pid_antiwindup_implicit(self):
         """Verify a saturating integral bound feeds the implicit solve each step.
@@ -2340,7 +3175,7 @@ class TestActuatorStep(unittest.TestCase):
         per step and anti-windup binds on step 3 of 5.
         """
         self.run_test_actuator_pipeline(
-            controller="pid",
+            drive="pid",
             kp=400.0,
             ki=50.0,
             kd=6.0,
@@ -2353,7 +3188,7 @@ class TestActuatorStep(unittest.TestCase):
     def test_pipeline_pd_coupled_implicit(self):
         """Verify the implicit solve couples both DOFs of a two-link chain through inv(H)."""
         self.run_test_actuator_pipeline(
-            controller="pd",
+            drive="pd",
             dofs=2,
             kp=[4000.0, 3000.0],
             kd=[40.0, 30.0],
@@ -2384,26 +3219,26 @@ class TestActuatorStep(unittest.TestCase):
             state.joint_q.assign(q0)
             control = model.control()
             control.joint_target_q.assign(target)
-            actuators, oracles = [], []
+            actuators, responses = [], []
             for group in dof_groups:
                 dofs = np.asarray(group)
                 actuator = Actuator(
                     indices=wp.array(dofs.astype(np.uint32), dtype=wp.uint32, device=device),
-                    controller=ControllerPD(
+                    drive=DrivePD(
                         kp=wp.array(kp[dofs], dtype=float, device=device),
                         kd=wp.array(kd[dofs], dtype=float, device=device),
                     ),
                     control_target_pos_attr="joint_target_q",
                     control_target_vel_attr="joint_target_qd",
                 )
-                oracle = ResponseOracle(model)
+                response = JointSpaceResponse(model)
                 if implicit:
-                    actuator.set_effort_mode_implicit(response=oracle)
+                    actuator.set_effort_mode_implicit(response=response)
                 actuators.append(actuator)
-                oracles.append(oracle)
+                responses.append(response)
             control.joint_f.zero_()
-            for oracle in oracles:
-                oracle.refresh(state)
+            for response in responses:
+                response.refresh(state)
             for actuator in actuators:
                 actuator.step(state, control, dt=h)
             return control.joint_f.numpy().copy()
@@ -2419,7 +3254,7 @@ class TestActuatorStep(unittest.TestCase):
     def test_pipeline_pd_partially_actuated_implicit(self):
         """Drive only the tip joint of the two-link chain."""
         self.run_test_actuator_pipeline(
-            controller="pd",
+            drive="pd",
             dofs=2,
             actuated=[1],
             kp=[4000.0, 3000.0],
@@ -2429,9 +3264,9 @@ class TestActuatorStep(unittest.TestCase):
         )
 
     def test_pipeline_pid_coupled_implicit(self):
-        """Verify a stateful controller on the coupled chain over several steps."""
+        """Verify a stateful drive on the coupled chain over several steps."""
         self.run_test_actuator_pipeline(
-            controller="pid",
+            drive="pid",
             dofs=2,
             kp=[400.0, 300.0],
             ki=[50.0, 30.0],
@@ -2444,18 +3279,18 @@ class TestActuatorStep(unittest.TestCase):
 
     def test_pipeline_pd_implicit_retune(self):
         """Verify gain and clamp writes reach the installed implicit solve."""
-        self.run_test_actuator_pipeline(controller="pd", clamp="max_effort", retune=True, worlds=2)
+        self.run_test_actuator_pipeline(drive="pd", clamp="max_effort", retune=True, worlds=2)
 
     def test_pipeline_pd_stiff_implicit_converges(self):
         """Verify stiff gains converge to the target over a long implicit run."""
         self.run_test_actuator_pipeline(
-            controller="pd", kp=5.0e4, kd=300.0, q0=0.0, steps=300, expect="converge", check_forces=False
+            drive="pd", kp=5.0e4, kd=300.0, q0=0.0, steps=300, expect="converge", check_forces=False
         )
 
     def test_pipeline_pd_stiff_explicit_diverges(self):
         """Verify explicit mode blows up where implicit mode stays bounded."""
         self.run_test_actuator_pipeline(
-            controller="pd",
+            drive="pd",
             kp=5.0e4,
             kd=300.0,
             q0=0.0,
@@ -2490,7 +3325,7 @@ class TestActuatorStep(unittest.TestCase):
         dof_b = template.joint_qd_start[joint_b]
         dc_args = {"saturation_effort": sat, "velocity_limit": v_lim, "max_motor_effort": 1e6}
         template.add_actuator(
-            ControllerPD,
+            DrivePD,
             index=dof_a,
             kp=kp,
             kd=kd,
@@ -2498,7 +3333,7 @@ class TestActuatorStep(unittest.TestCase):
             clamping=[(ClampingDCMotor, dc_args)],
         )
         template.add_actuator(
-            ControllerPD,
+            DrivePD,
             index=dof_b,
             kp=kp,
             kd=kd,
@@ -2510,7 +3345,7 @@ class TestActuatorStep(unittest.TestCase):
         builder.replicate(template, num_envs)
         model = builder.finalize()
 
-        self.assertEqual(len(model.actuators), 1, "all DOFs share controller+clamping type")
+        self.assertEqual(len(model.actuators), 1, "all DOFs share drive+clamping type")
         actuator = model.actuators[0]
         n = actuator.num_actuators
         self.assertEqual(n, 2 * num_envs)
@@ -2587,26 +3422,26 @@ class TestActuatorStep(unittest.TestCase):
         control = model.control()
         control.joint_target_q.assign(np.array([target], dtype=np.float32))
 
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.array([kp_val], dtype=float, device=device),
             kd=wp.array([kd_val], dtype=float, device=device),
         )
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         implicit_tau = float(control.joint_f.numpy()[0])
 
         actuator.set_effort_mode_explicit()
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         explicit_tau = float(control.joint_f.numpy()[0])
         self.assertAlmostEqual(explicit_tau, kp_val * (target - q0), delta=1e-3)
         self.assertLess(implicit_tau, explicit_tau)
 
-        actuator.set_effort_mode_implicit(response=oracle)
+        actuator.set_effort_mode_implicit(response=response)
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), implicit_tau, delta=abs(implicit_tau) * 1e-5)
 
 
@@ -2623,11 +3458,11 @@ class TestActuatorImplicit(unittest.TestCase):
     to the implicit solve.
     """
 
-    def test_unsupported_controller_raises(self):
-        """A controller without evaluate_force is rejected at construction."""
+    def test_unsupported_drive_raises(self):
+        """A drive without evaluate_force is rejected at construction."""
         device = wp.get_device()
 
-        class _NoForceController(Controller):
+        class _NoForceDriveBase(DriveBase):
             def is_stateful(self):
                 return False
 
@@ -2638,15 +3473,15 @@ class TestActuatorImplicit(unittest.TestCase):
         indices = wp.array(np.arange(model.joint_dof_count, dtype=np.uint32), device=device)
         actuator = Actuator(
             indices=indices,
-            controller=_NoForceController(),
+            drive=_NoForceDriveBase(),
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
         with self.assertRaises(NotImplementedError):
-            actuator.set_effort_mode_implicit(response=ResponseOracle(model))
+            actuator.set_effort_mode_implicit(response=JointSpaceResponse(model))
 
     def test_validation_errors(self):
-        """A non-ResponseOracle inverse mass and a missing dt raise clearly."""
+        """A non-JointSpaceResponse inverse mass and a missing dt raise clearly."""
         device = wp.get_device()
         model = _build_pendulum(device)
         indices = wp.array(np.arange(model.joint_dof_count, dtype=np.uint32), device=device)
@@ -2655,11 +3490,11 @@ class TestActuatorImplicit(unittest.TestCase):
 
         actuator = Actuator(
             indices=indices,
-            controller=ControllerPD(kp=kp, kd=kd),
+            drive=DrivePD(kp=kp, kd=kd),
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        with self.assertRaisesRegex(ValueError, "ResponseOracle"):
+        with self.assertRaisesRegex(ValueError, "JointSpaceResponse"):
             actuator.set_effort_mode_implicit(response=None)
 
         actuator, _ = _make_implicit_actuator(model, device, kp=kp, kd=kd)
@@ -2709,18 +3544,18 @@ class TestActuatorImplicit(unittest.TestCase):
         control = model.control()
         control.joint_target_q.assign(target)
 
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.array(kp, dtype=float, device=device),
             kd=wp.array(kd, dtype=float, device=device),
         )
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state_in, control, h)
+        _refresh_and_step(actuator, response, state_in, control, h)
         tau = control.joint_f.numpy().copy()
 
         # What the solve assumed the step would do.
-        A = oracle.inverse_blocks.numpy()[0, :n, :n]
+        A = response.inverse_blocks.numpy()[0, :n, :n]
         qd_pred = A @ (h * tau)
         q_pred = q0 + h * qd_pred
 
@@ -2757,14 +3592,14 @@ class TestActuatorImplicit(unittest.TestCase):
         A = _response_at(model, q0, np.zeros(2, dtype=np.float32))
 
         # Unclamped block solve, to size a binding limit on DOF 0.
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.array(kp, dtype=float, device=device),
             kd=wp.array(kd, dtype=float, device=device),
         )
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         unclamped = control.joint_f.numpy().copy()
         limit = 0.5 * abs(unclamped[0])
 
@@ -2774,10 +3609,10 @@ class TestActuatorImplicit(unittest.TestCase):
             kp=wp.array(kp, dtype=float, device=device),
             kd=wp.array(kd, dtype=float, device=device),
             max_effort=np.array([limit, 1.0e6], dtype=np.float32),
-            response=oracle,
+            response=response,
         )
         control.joint_f.zero_()
-        _refresh_and_step(clamped, oracle, state, control, h)
+        _refresh_and_step(clamped, response, state, control, h)
         joint_f = control.joint_f.numpy()
 
         # DOF 0 binds exactly at the limit (same sign as the unclamped force).
@@ -2827,14 +3662,14 @@ class TestActuatorImplicit(unittest.TestCase):
             n = model.joint_dof_count
             actuator = Actuator(
                 indices=wp.array(np.arange(n, dtype=np.uint32), device=device),
-                controller=ControllerPD(
+                drive=DrivePD(
                     kp=wp.array(np.full(n, 100.0, dtype=np.float32), dtype=float, device=device),
                     kd=wp.zeros(n, dtype=float, device=device),
                 ),
                 control_target_pos_attr="joint_target_q",
                 control_target_vel_attr="joint_target_qd",
             )
-            actuator.set_effort_mode_implicit(response=ResponseOracle(model))
+            actuator.set_effort_mode_implicit(response=JointSpaceResponse(model))
 
         for kind in ("revolute", "d6"):
             install(build(kind))  # must not raise
@@ -2869,10 +3704,10 @@ class TestActuatorImplicit(unittest.TestCase):
             state.joint_qd.assign(qd0.astype(np.float32))
             control = model.control()
             control.joint_target_q.assign(target.astype(np.float32))
-            oracle = ResponseOracle(model)
+            response = JointSpaceResponse(model)
             actuator = Actuator(
                 indices=wp.array([0, 1], dtype=wp.uint32, device=device),
-                controller=ControllerPD(
+                drive=DrivePD(
                     kp=wp.array([kp, kp], dtype=float, device=device),
                     kd=wp.zeros(2, dtype=float, device=device),
                 ),
@@ -2887,19 +3722,19 @@ class TestActuatorImplicit(unittest.TestCase):
                 control_target_vel_attr="joint_target_qd",
             )
             actuator.set_effort_mode_implicit(
-                response=oracle,
+                response=response,
                 options=newton.actuators.Actuator.ImplicitOptions(max_iters=max_iters, warm_start="zero"),
             )
             control.joint_f.zero_()
-            _refresh_and_step(actuator, oracle, state, control, h)
+            _refresh_and_step(actuator, response, state, control, h)
             return control.joint_f.numpy().copy(), _response_at_state(model, state)
 
-        converged, response = run(8)
+        converged, response_matrix = run(8)
 
         # Independent reference: damped fixed point on p = h*g(q(p), qd(p)).
         p = np.zeros(2)
         for _ in range(200000):
-            qd_p = qd0 + response @ p
+            qd_p = qd0 + response_matrix @ p
             q_p = q0 + h * qd_p
             bounds = np.array([_dc_bounds(sat, vel_lim, max_e, v) for v in qd_p])
             f = np.clip(kp * (target - q_p), bounds[:, 0], bounds[:, 1])
@@ -2930,7 +3765,7 @@ class TestActuatorImplicit(unittest.TestCase):
             state.joint_qd.assign(np.array([0.5, 0.25], dtype=np.float32))
             control = model.control()
             control.joint_target_q.assign(np.array([0.8, 0.4], dtype=np.float32))
-            actuator, oracle = _make_implicit_actuator(
+            actuator, response = _make_implicit_actuator(
                 model,
                 device,
                 kp=wp.array([kp_val, kp_val], dtype=float, device=device),
@@ -2938,7 +3773,7 @@ class TestActuatorImplicit(unittest.TestCase):
                 options=newton.actuators.Actuator.ImplicitOptions(warm_start=warm_start),
             )
             control.joint_f.zero_()
-            _refresh_and_step(actuator, oracle, state, control, h)
+            _refresh_and_step(actuator, response, state, control, h)
             return control.joint_f.numpy().copy()
 
         np.testing.assert_allclose(run("zero"), run("explicit"), rtol=1e-5, atol=1e-6)
@@ -2962,7 +3797,7 @@ class TestActuatorImplicit(unittest.TestCase):
         control = model.control()
         control.joint_target_q.assign(np.array([1.0], dtype=np.float32))
 
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.zeros(model.joint_dof_count, dtype=float, device=device),
@@ -2970,28 +3805,28 @@ class TestActuatorImplicit(unittest.TestCase):
             options=newton.actuators.Actuator.ImplicitOptions(derivative_floor=1.0e-8),
         )
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         np.testing.assert_allclose(control.joint_f.numpy(), 0.0, atol=1e-9)
 
 
 # ---------------------------------------------------------------------------
-# 6. Response oracle — the per-articulation inv(H) the implicit solve reads
+# 6. Joint-space response — the per-articulation inv(H) the implicit solve reads
 # ---------------------------------------------------------------------------
 
 
-class TestResponseOracle(unittest.TestCase):
-    """ResponseOracle: the per-articulation inv(H) the implicit solve reads."""
+class TestJointSpaceResponse(unittest.TestCase):
+    """JointSpaceResponse: the per-articulation inv(H) the implicit solve reads."""
 
     def test_singular_one_dof_mass_matrix_uses_float32_floor(self):
         """Bound the inverse of a singular one-DOF mass matrix by float32 epsilon."""
         model = _build_pendulum(wp.get_device())
-        oracle = ResponseOracle(model)
-        oracle._H.zero_()
+        response = JointSpaceResponse(model)
+        response._H.zero_()
 
-        oracle._invert_blocks()
+        response._invert_blocks()
 
         expected = 1.0 / np.finfo(np.float32).eps
-        self.assertAlmostEqual(float(oracle.inverse_blocks.numpy()[0, 0, 0]), expected)
+        self.assertAlmostEqual(float(response.inverse_blocks.numpy()[0, 0, 0]), expected)
 
     def test_inverse_blocks_match_dense_inverse(self):
         """refresh() fills the full per-articulation inverse mass block.
@@ -3005,10 +3840,10 @@ class TestResponseOracle(unittest.TestCase):
         state = model.state()
         _set_arm(model, state.joint_q, np.tile(q0, model.world_count))
 
-        oracle = ResponseOracle(model)
-        oracle.refresh(state)
+        response = JointSpaceResponse(model)
+        response.refresh(state)
 
-        blocks = oracle.inverse_blocks.numpy()
+        blocks = response.inverse_blocks.numpy()
         dofs = len(_arm_dofs(model))
         Hinv = _response_at(model, np.tile(q0, model.world_count), np.zeros(dofs, dtype=np.float32))
         np.testing.assert_allclose(blocks[0, :n, :n], Hinv, rtol=1e-4, atol=1e-6)
@@ -3025,7 +3860,7 @@ class TestResponseOracle(unittest.TestCase):
             m = _two_link_builder(armature=armature).finalize(device=device)
             st = m.state()
             st.joint_q.assign(q0)
-            o = ResponseOracle(m)
+            o = JointSpaceResponse(m)
             o.refresh(st)
             return np.diag(o.inverse_blocks.numpy()[0, :2, :2]).copy()
 
@@ -3059,7 +3894,7 @@ class TestResponseOracle(unittest.TestCase):
         body_q[:, 0] += 5.0
         state.body_q.assign(body_q)
 
-        ResponseOracle(model).refresh(state)
+        JointSpaceResponse(model).refresh(state)
         np.testing.assert_allclose(state.body_q.numpy(), body_q, rtol=0, atol=0)
 
     def test_multi_articulation_indexing(self):
@@ -3089,17 +3924,17 @@ class TestResponseOracle(unittest.TestCase):
         control = model.control()
         control.joint_target_q.assign(target)
 
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.array(kp, dtype=float, device=device),
             kd=wp.array(kd, dtype=float, device=device),
         )
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
 
         # Each articulation is its own 2x2 coupled solve.
-        blocks = oracle.inverse_blocks.numpy()
+        blocks = response.inverse_blocks.numpy()
         expected = np.zeros(n, dtype=np.float64)
         for a in range(2):
             sl = slice(2 * a, 2 * a + 2)
@@ -3112,7 +3947,7 @@ class TestResponseOracle(unittest.TestCase):
     def test_refresh_from_solve_captures_without_warmup(self):
         """refresh_from_solve captures and replays, with no warm-up call first.
 
-        Deliberately captures straight after constructing the oracle, so the whole
+        Deliberately captures straight after constructing the response, so the whole
         path -- scratch setup, the per-column solves and the scatter -- has to be
         capture-safe. Where the device has no memory pool, allocating on a
         capturing stream would fail here.
@@ -3129,28 +3964,28 @@ class TestResponseOracle(unittest.TestCase):
         solver.step(state, model.state(), model.control(), None, 0.01)
         solve_inverse = _mujoco_solve(solver)
 
-        oracle = ResponseOracle(model)  # fresh: nothing allocated by a prior call
+        response = JointSpaceResponse(model)  # fresh: nothing allocated by a prior call
         with wp.ScopedCapture(device) as capture:
-            oracle.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+            response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
         wp.capture_launch(capture.graph)
 
-        reference = ResponseOracle(model)
+        reference = JointSpaceResponse(model)
         reference.refresh(state)
         np.testing.assert_allclose(
-            oracle.inverse_blocks.numpy()[0, :n, :n],
+            response.inverse_blocks.numpy()[0, :n, :n],
             reference.inverse_blocks.numpy()[0, :n, :n],
             rtol=2e-3,
             atol=1e-6,
         )
 
     def test_response_from_mujoco_factorization(self):
-        """Fill the oracle response from MuJoCo's per-step factorized inertia.
+        """Fill the response from MuJoCo's per-step factorized inertia.
 
         MuJoCo refactorizes its inertia at the step-start pose every step, so --
         unlike the compile-time, diagonal-only ``dof_invweight0`` -- the recovered
         inverse tracks inertial coupling at the current configuration. Checks
-        :meth:`ResponseOracle.refresh_from_solve` against a host-side
-        inverse-and-remap of that inertia, against the built-in oracle, and by
+        :meth:`JointSpaceResponse.refresh_from_solve` against a host-side
+        inverse-and-remap of that inertia, against the built-in dense recompute, and by
         driving the coupled implicit solve with it.
         """
         device = wp.get_device()
@@ -3175,24 +4010,24 @@ class TestResponseOracle(unittest.TestCase):
         n = len(_arm_dofs(model)) // worlds
         self.assertEqual(solver.mj_model.nv * worlds, model.joint_dof_count)
 
-        mjc_oracle = ResponseOracle(model)
-        mjc_oracle.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
-        response_newton = mjc_oracle.inverse_blocks.numpy()[0, :n, :n]
+        mjc_response = JointSpaceResponse(model)
+        mjc_response.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
+        response_newton = mjc_response.inverse_blocks.numpy()[0, :n, :n]
 
-        # The solver's mass matrix must agree with the oracle's own dense recompute.
-        oracle_ref = ResponseOracle(model)
-        oracle_ref.refresh(state)
-        np.testing.assert_allclose(response_newton, oracle_ref.inverse_blocks.numpy()[0, :n, :n], rtol=1e-4)
+        # The solver's mass matrix must agree with the response's own dense recompute.
+        response_ref = JointSpaceResponse(model)
+        response_ref.refresh(state)
+        np.testing.assert_allclose(response_newton, response_ref.inverse_blocks.numpy()[0, :n, :n], rtol=1e-4)
 
         # Drive the implicit solve with the solver-provided values (no refresh()).
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.array(np.tile(kp, worlds), dtype=float, device=device),
             kd=wp.array(np.tile(kd, worlds), dtype=float, device=device),
         )
-        oracle.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
-        np.testing.assert_allclose(oracle.inverse_blocks.numpy()[0, :n, :n], response_newton, rtol=1e-4)
+        response.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
+        np.testing.assert_allclose(response.inverse_blocks.numpy()[0, :n, :n], response_newton, rtol=1e-4)
         control.joint_f.zero_()
         actuator.step(state, control, dt=h)
 
@@ -3205,9 +4040,9 @@ class TestResponseOracle(unittest.TestCase):
     def test_full_loop_response_from_mujoco_matches_refresh(self):
         """Closed-loop run with the coupled response from MuJoCo's inertia.
 
-        Runs the same simulation twice, updating the oracle response every step
+        Runs the same simulation twice, updating the response every step
         either from the solver's own factorization (``refresh_from_solve`` --
-        the "solver-owned oracle" path) or with the built-in ``oracle.refresh()``.
+        the "solver-owned response" path) or with the built-in ``response.refresh()``.
         The refresh is scheduled at the same one-step-stale phase as the
         factorization, so the trajectories must coincide. On CUDA the
         whole step (actuator + solver + response update) is graph-captured, which
@@ -3228,7 +4063,7 @@ class TestResponseOracle(unittest.TestCase):
             _set_arm(model, control.joint_target_q, target)
 
             solver = _mujoco_solver(self, model)
-            actuator, oracle = _make_implicit_actuator(
+            actuator, response = _make_implicit_actuator(
                 model,
                 device,
                 kp=wp.array(kp, dtype=float, device=device),
@@ -3242,9 +4077,9 @@ class TestResponseOracle(unittest.TestCase):
                 if use_qm:
                     # Full inverse response from the solver's factorization at the
                     # pose of the step that just ran — same staleness as refresh().
-                    oracle.refresh_from_solve(solve_m, dof_map=solver.mjc_dof_to_newton_dof)
+                    response.refresh_from_solve(solve_m, dof_map=solver.mjc_dof_to_newton_dof)
                 else:
-                    oracle.refresh(state_prev)
+                    response.refresh(state_prev)
 
             def two_steps():
                 for _ in range(2):  # even count: state buffers line up for graph replay
@@ -3258,7 +4093,7 @@ class TestResponseOracle(unittest.TestCase):
                 _set_arm(model, states[0].joint_q, q_init)
                 states[0].joint_qd.zero_()
                 newton.eval_fk(model, states[0].joint_q, states[0].joint_qd, states[0])
-                oracle.refresh(states[0])  # prime the response at the initial pose
+                response.refresh(states[0])  # prime the response at the initial pose
 
             reset()
             two_steps()  # warm-up: module loads and lazy allocations before capture
@@ -3315,14 +4150,14 @@ class TestActuatorBuilder(unittest.TestCase):
         delayed = next(a for a in model.actuators if a.delay is not None)
 
         self.assertEqual(clamped.num_actuators, 1)
-        self.assertAlmostEqual(clamped.controller.kp.numpy()[0], 100.0, places=3)
-        self.assertAlmostEqual(clamped.controller.kd.numpy()[0], 10.0, places=3)
+        self.assertAlmostEqual(clamped.drive.kp.numpy()[0], 100.0, places=3)
+        self.assertAlmostEqual(clamped.drive.kd.numpy()[0], 10.0, places=3)
         self.assertIsInstance(clamped.clamping[0], ClampingMaxEffort)
         self.assertAlmostEqual(clamped.clamping[0].max_effort.numpy()[0], 50.0, places=3)
 
         self.assertEqual(delayed.num_actuators, 1)
-        self.assertAlmostEqual(delayed.controller.kp.numpy()[0], 200.0, places=3)
-        self.assertAlmostEqual(delayed.controller.kd.numpy()[0], 20.0, places=3)
+        self.assertAlmostEqual(delayed.drive.kp.numpy()[0], 200.0, places=3)
+        self.assertAlmostEqual(delayed.drive.kd.numpy()[0], 20.0, places=3)
         np.testing.assert_array_equal(delayed.delay.delay_steps.numpy(), [5])
         self.assertEqual(delayed.delay.buf_depth, 5)
 
@@ -3330,7 +4165,7 @@ class TestActuatorBuilder(unittest.TestCase):
         parsed = parse_actuator_prim(stage.GetPrimAtPath("/World/Robot/Joint1Actuator"))
         self.assertIsNotNone(parsed)
         self.assertIsInstance(parsed, ActuatorParsed)
-        self.assertEqual(parsed.controller_class, ControllerPD)
+        self.assertEqual(parsed.drive_class, DrivePD)
 
     @unittest.skipUnless(HAS_USD, "pxr not installed")
     def test_from_usd_ignore_paths(self):
@@ -3368,12 +4203,12 @@ class TestActuatorBuilder(unittest.TestCase):
 
         self.assertIsNotNone(parsed)
         self.assertIsInstance(parsed, ActuatorParsed)
-        self.assertEqual(parsed.controller_class, ControllerPD)
-        self.assertAlmostEqual(parsed.controller_kwargs["kp"], 100.0)
-        self.assertAlmostEqual(parsed.controller_kwargs["kd"], 10.0)
+        self.assertEqual(parsed.drive_class, DrivePD)
+        self.assertAlmostEqual(parsed.drive_kwargs["kp"], 100.0)
+        self.assertAlmostEqual(parsed.drive_kwargs["kd"], 10.0)
 
     def test_programmatic(self):
-        """Mixed controller types, clamping, and delays via add_actuator.
+        """Mixed drive types, clamping, and delays via add_actuator.
 
         3-joint chain: PD, PID with DC motor clamping, PD with delay=4.
         Verifies grouping (3 groups), per-DOF params, and state shapes.
@@ -3387,9 +4222,9 @@ class TestActuatorBuilder(unittest.TestCase):
         builder.add_articulation(joints)
         dofs = [builder.joint_qd_start[j] for j in joints]
 
-        builder.add_actuator(ControllerPD, index=dofs[0], kp=50.0, kd=5.0, const_effort=1.0)
+        builder.add_actuator(DrivePD, index=dofs[0], kp=50.0, kd=5.0, const_effort=1.0)
         builder.add_actuator(
-            ControllerPID,
+            DrivePID,
             index=dofs[1],
             kp=100.0,
             ki=10.0,
@@ -3398,35 +4233,35 @@ class TestActuatorBuilder(unittest.TestCase):
                 (ClampingDCMotor, {"saturation_effort": 80.0, "velocity_limit": 15.0, "max_motor_effort": 200.0})
             ],
         )
-        builder.add_actuator(ControllerPD, index=dofs[2], kp=150.0, delay_steps=4)
+        builder.add_actuator(DrivePD, index=dofs[2], kp=150.0, delay_steps=4)
 
         model = builder.finalize()
         self.assertEqual(len(model.actuators), 3)
 
-        pd_plain = next(a for a in model.actuators if isinstance(a.controller, ControllerPD) and a.delay is None)
-        pid_act = next(a for a in model.actuators if isinstance(a.controller, ControllerPID))
-        pd_delay = next(a for a in model.actuators if isinstance(a.controller, ControllerPD) and a.delay is not None)
+        pd_plain = next(a for a in model.actuators if isinstance(a.drive, DrivePD) and a.delay is None)
+        pid_act = next(a for a in model.actuators if isinstance(a.drive, DrivePID))
+        pd_delay = next(a for a in model.actuators if isinstance(a.drive, DrivePD) and a.delay is not None)
 
         self.assertEqual(pd_plain.num_actuators, 1)
-        np.testing.assert_array_almost_equal(pd_plain.controller.kp.numpy(), [50.0])
-        np.testing.assert_array_almost_equal(pd_plain.controller.kd.numpy(), [5.0])
-        np.testing.assert_array_almost_equal(pd_plain.controller.const_effort.numpy(), [1.0])
+        np.testing.assert_array_almost_equal(pd_plain.drive.kp.numpy(), [50.0])
+        np.testing.assert_array_almost_equal(pd_plain.drive.kd.numpy(), [5.0])
+        np.testing.assert_array_almost_equal(pd_plain.drive.const_effort.numpy(), [1.0])
         self.assertIsNone(pd_plain.state())
 
         self.assertEqual(pid_act.num_actuators, 1)
-        np.testing.assert_array_almost_equal(pid_act.controller.kp.numpy(), [100.0])
-        np.testing.assert_array_almost_equal(pid_act.controller.ki.numpy(), [10.0])
-        np.testing.assert_array_almost_equal(pid_act.controller.kd.numpy(), [20.0])
+        np.testing.assert_array_almost_equal(pid_act.drive.kp.numpy(), [100.0])
+        np.testing.assert_array_almost_equal(pid_act.drive.ki.numpy(), [10.0])
+        np.testing.assert_array_almost_equal(pid_act.drive.kd.numpy(), [20.0])
         self.assertIsInstance(pid_act.clamping[0], ClampingDCMotor)
         self.assertAlmostEqual(pid_act.clamping[0].saturation_effort.numpy()[0], 80.0, places=3)
         self.assertAlmostEqual(pid_act.clamping[0].max_motor_effort.numpy()[0], 200.0, places=3)
         pid_state = pid_act.state()
-        self.assertIsNotNone(pid_state.controller_state)
-        self.assertEqual(pid_state.controller_state.integral.shape, (1,))
-        np.testing.assert_array_equal(pid_state.controller_state.integral.numpy(), [0.0])
+        self.assertIsNotNone(pid_state.drive_state)
+        self.assertEqual(pid_state.drive_state.integral.shape, (1,))
+        np.testing.assert_array_equal(pid_state.drive_state.integral.numpy(), [0.0])
 
         self.assertEqual(pd_delay.num_actuators, 1)
-        np.testing.assert_array_almost_equal(pd_delay.controller.kp.numpy(), [150.0])
+        np.testing.assert_array_almost_equal(pd_delay.drive.kp.numpy(), [150.0])
         np.testing.assert_array_equal(pd_delay.delay.delay_steps.numpy(), [4])
         self.assertEqual(pd_delay.delay.buf_depth, 4)
         ds = pd_delay.state().delay_state
@@ -3456,10 +4291,10 @@ class TestActuatorBuilder(unittest.TestCase):
         dof2 = template.joint_qd_start[j2]
 
         template.add_actuator(
-            ControllerPD, index=dof1, kp=100.0, kd=10.0, pos_index=template.joint_q_start[j1], delay_steps=2
+            DrivePD, index=dof1, kp=100.0, kd=10.0, pos_index=template.joint_q_start[j1], delay_steps=2
         )
         template.add_actuator(
-            ControllerPD, index=dof2, kp=200.0, kd=20.0, pos_index=template.joint_q_start[j2], delay_steps=3
+            DrivePD, index=dof2, kp=200.0, kd=20.0, pos_index=template.joint_q_start[j2], delay_steps=3
         )
 
         builder = newton.ModelBuilder()
@@ -3478,8 +4313,8 @@ class TestActuatorBuilder(unittest.TestCase):
             "pos_indices should differ from indices for free-joint articulations",
         )
 
-        np.testing.assert_array_almost_equal(act.controller.kp.numpy(), [100.0, 200.0] * num_envs)
-        np.testing.assert_array_almost_equal(act.controller.kd.numpy(), [10.0, 20.0] * num_envs)
+        np.testing.assert_array_almost_equal(act.drive.kp.numpy(), [100.0, 200.0] * num_envs)
+        np.testing.assert_array_almost_equal(act.drive.kd.numpy(), [10.0, 20.0] * num_envs)
 
         np.testing.assert_array_equal(act.delay.delay_steps.numpy(), [2, 3] * num_envs)
         self.assertEqual(act.delay.buf_depth, 3)
@@ -3503,7 +4338,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         joint = single_world_builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
         single_world_builder.add_articulation([joint], label="robot")
         single_world_builder.add_actuator(
-            ControllerPD,
+            DrivePD,
             index=single_world_builder.joint_qd_start[joint],
             kp=100.0,
         )
@@ -3552,7 +4387,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         for i, jname in enumerate(joint_names):
             j_idx = single_articulation_builder.joint_label.index(jname)
             dof = single_articulation_builder.joint_qd_start[j_idx]
-            single_articulation_builder.add_actuator(ControllerPD, index=dof, kp=100.0 * (i + 1))
+            single_articulation_builder.add_actuator(DrivePD, index=dof, kp=100.0 * (i + 1))
 
         single_world_builder = newton.ModelBuilder()
         for _i in range(num_articulations_per_world):
@@ -3575,7 +4410,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
         actuator = model.actuators[0]
 
-        kp_values = joint_view.get_actuator_parameter(actuator, actuator.controller, "kp").numpy().copy()
+        kp_values = joint_view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy().copy()
 
         if use_multiple_artics_per_view:
             self.assertEqual(kp_values.shape, (num_worlds, 2))
@@ -3595,7 +4430,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
             mask = wp.array([False, True, False], dtype=bool, device=model.device)
 
         wp_kp = wp.array(kp_values, dtype=float, device=model.device)
-        joint_view.set_actuator_parameter(actuator, actuator.controller, "kp", wp_kp, mask=mask)
+        joint_view.set_actuator_parameter(actuator, actuator.drive, "kp", wp_kp, mask=mask)
 
         expected_kp = []
         if use_mask:
@@ -3685,7 +4520,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
                     1200.0,
                 ]
 
-        measured_kp = actuator.controller.kp.numpy()
+        measured_kp = actuator.drive.kp.numpy()
         for i in range(num_actuators):
             self.assertAlmostEqual(
                 expected_kp[i],
@@ -3722,13 +4557,13 @@ class TestActuatorSelectionAPI(unittest.TestCase):
             with self.subTest(shape=mask.shape, dtype=mask.dtype, device=mask.device):
                 with patch.object(wp, "launch") as launch:
                     with self.assertRaisesRegex(ValueError, message):
-                        view.set_actuator_parameter(actuator, actuator.controller, "kp", values, mask=mask)
+                        view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=mask)
                     launch.assert_not_called()
 
     def test_selection_api_updates_implicit_solve(self):
         """Gain writes reach the installed implicit solve, through either write path.
 
-        ``set_effort_mode_implicit`` re-points the controller's parameter arrays
+        ``set_effort_mode_implicit`` re-points the drive's parameter arrays
         at columns of a packed array. Both the masked scatter used by
         ``set_actuator_parameter`` and a direct ``.assign`` must land in that
         pack. Re-installing the mode must also reuse the same pack, otherwise
@@ -3745,7 +4580,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         control = model.control()
         control.joint_target_q.assign(np.array([target], dtype=np.float32))
 
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.array([kp1], dtype=float, device=device),
@@ -3753,22 +4588,22 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         )
 
         view = ArticulationView(model, "*", verbose=False)
-        np.testing.assert_allclose(view.get_actuator_parameter(actuator, actuator.controller, "kp").numpy(), [[kp1]])
-        view.set_actuator_parameter(actuator, actuator.controller, "kp", wp.array([[kp2]], dtype=float, device=device))
-        np.testing.assert_allclose(actuator.controller.kp.numpy(), [kp2])
+        np.testing.assert_allclose(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), [[kp1]])
+        view.set_actuator_parameter(actuator, actuator.drive, "kp", wp.array([[kp2]], dtype=float, device=device))
+        np.testing.assert_allclose(actuator.drive.kp.numpy(), [kp2])
 
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         expected = _expected_implicit_pd(model, state, kp2, kd_val, target, h)
         self.assertAlmostEqual(control.joint_f.numpy()[0], expected, delta=abs(expected) * 1e-4)
 
         # Re-installing must keep the same pack, so a direct assign still lands.
-        pack = actuator.controller._param_pack
-        actuator.set_effort_mode_implicit(response=oracle)
-        self.assertIs(actuator.controller._param_pack, pack)
-        actuator.controller.kp.assign(np.array([kp1], dtype=np.float32))
+        pack = actuator.drive._param_pack
+        actuator.set_effort_mode_implicit(response=response)
+        self.assertIs(actuator.drive._param_pack, pack)
+        actuator.drive.kp.assign(np.array([kp1], dtype=np.float32))
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         expected = _expected_implicit_pd(model, state, kp1, kd_val, target, h)
         self.assertAlmostEqual(control.joint_f.numpy()[0], expected, delta=abs(expected) * 1e-4)
 
@@ -3854,7 +4689,7 @@ class TestStateReset(unittest.TestCase):
             return wp.array(vals, dtype=wp.float32, device=device)
 
         indices = wp.array(list(range(n)), dtype=wp.uint32, device=device)
-        ctrl = ControllerPID(
+        ctrl = DrivePID(
             kp=_f([50.0] * n),
             ki=_f([10.0] * n),
             kd=_f([5.0] * n),
@@ -3890,7 +4725,7 @@ class TestStateReset(unittest.TestCase):
         self.assertTrue(all(v > 0 for v in integral_before), "integrals should have accumulated")
 
         mask = wp.array([True, False, True], dtype=wp.bool, device=device)
-        with patch("newton._src.actuators.controllers.controller_pid.wp.launch", wraps=wp.launch) as launch:
+        with patch("newton._src.actuators.drives.drive_pid.wp.launch", wraps=wp.launch) as launch:
             state_0.reset(mask)
 
         launch.assert_called_once()
@@ -3902,7 +4737,7 @@ class TestStateReset(unittest.TestCase):
         self.assertAlmostEqual(integral_after[2], 0.0, places=6, msg="DOF 2 should be reset")
 
     def test_pid_masked_reset_rejects_invalid_mask(self):
-        state = ControllerPID.State(integral=wp.zeros(3, dtype=wp.float32, device="cpu"))
+        state = DrivePID.State(integral=wp.zeros(3, dtype=wp.float32, device="cpu"))
 
         with self.assertRaisesRegex(ValueError, "one-dimensional Boolean array"):
             state.reset(wp.zeros(3, dtype=wp.int32, device="cpu"))
@@ -3913,14 +4748,14 @@ class TestStateReset(unittest.TestCase):
 
     @unittest.skipUnless(wp.get_cuda_device_count() > 0, "CUDA device required")
     def test_pid_masked_reset_rejects_wrong_device(self):
-        state = ControllerPID.State(integral=wp.zeros(3, dtype=wp.float32, device="cuda:0"))
+        state = DrivePID.State(integral=wp.zeros(3, dtype=wp.float32, device="cuda:0"))
         mask = wp.zeros(3, dtype=wp.bool, device="cpu")
 
         with self.assertRaisesRegex(ValueError, "mask device .* must match integral device"):
             state.reset(mask)
 
     def test_actuator_composed_reset(self):
-        """Actuator.State.reset delegates to both delay and controller sub-states."""
+        """Actuator.State.reset delegates to both delay and drive sub-states."""
         num_envs = 2
         device = wp.get_device()
 
@@ -3929,7 +4764,7 @@ class TestStateReset(unittest.TestCase):
         joint = template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
         template.add_articulation([joint])
         dof = template.joint_qd_start[joint]
-        template.add_actuator(ControllerPID, index=dof, kp=50.0, ki=10.0, kd=5.0, delay_steps=2)
+        template.add_actuator(DrivePID, index=dof, kp=50.0, ki=10.0, kd=5.0, delay_steps=2)
 
         builder = newton.ModelBuilder()
         builder.replicate(template, num_envs)
@@ -3952,7 +4787,7 @@ class TestStateReset(unittest.TestCase):
             state_0, state_1 = state_1, state_0
 
         self.assertTrue(all(p > 0 for p in state_0.delay_state.num_pushes.numpy()))
-        self.assertTrue(all(v > 0 for v in state_0.controller_state.integral.numpy()))
+        self.assertTrue(all(v > 0 for v in state_0.drive_state.integral.numpy()))
 
         mask = wp.array([True, False], dtype=wp.bool, device=device)
         state_0.reset(mask)
@@ -3960,9 +4795,9 @@ class TestStateReset(unittest.TestCase):
         self.assertEqual(state_0.delay_state.num_pushes.numpy()[0], 0, "env 0 delay should be reset")
         self.assertGreater(state_0.delay_state.num_pushes.numpy()[1], 0, "env 1 delay should be untouched")
         self.assertAlmostEqual(
-            state_0.controller_state.integral.numpy()[0], 0.0, places=6, msg="env 0 integral should be reset"
+            state_0.drive_state.integral.numpy()[0], 0.0, places=6, msg="env 0 integral should be reset"
         )
-        self.assertGreater(state_0.controller_state.integral.numpy()[1], 0.0, msg="env 1 integral should be untouched")
+        self.assertGreater(state_0.drive_state.integral.numpy()[1], 0.0, msg="env 1 integral should be untouched")
 
 
 # ---------------------------------------------------------------------------
@@ -4007,7 +4842,7 @@ class TestDelayGraphCapture(unittest.TestCase):
         builder.add_articulation([joint])
         dof = builder.joint_qd_start[joint]
         builder.add_actuator(
-            ControllerPD,
+            DrivePD,
             index=dof,
             kp=200.0,
             kd=10.0,
@@ -4090,18 +4925,266 @@ class TestDelayGraphCapture(unittest.TestCase):
             )
 
 
+class TestActuatorStateAssign(unittest.TestCase):
+    """Cover the :meth:`Actuator.State.assign` copy contract."""
+
+    def test_assign_copies_built_in_state(self):
+        """Copy every array in the built-in delay and PID drive state."""
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        link = builder.add_link()
+        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        builder.add_articulation([joint])
+        builder.add_actuator(DrivePID, index=builder.joint_qd_start[joint], kp=0.0, ki=1.0, kd=0.0, delay_steps=2)
+        actuator = builder.finalize(device=device).actuators[0]
+        current, advanced = actuator.state(), actuator.state()
+
+        delay_fields = ("buffer_pos", "buffer_vel", "buffer_act", "num_pushes", "write_idx")
+        for value, name in enumerate(delay_fields, start=1):
+            getattr(advanced.delay_state, name).fill_(value)
+        advanced.drive_state.integral.fill_(6.0)
+
+        current.assign(advanced)
+
+        for value, name in enumerate(delay_fields, start=1):
+            with self.subTest(name=name):
+                np.testing.assert_array_equal(getattr(current.delay_state, name).numpy(), value)
+        np.testing.assert_array_equal(current.drive_state.integral.numpy(), 6.0)
+
+    def test_assign_delegates_to_custom_drive_state(self):
+        """Delegate nested and slotted storage to the custom drive state."""
+
+        class _CustomState(DriveBase.State):
+            __slots__ = ("nested",)
+
+            def __init__(self, num_actuators: int, device: wp.Device):
+                self.nested = types.SimpleNamespace(value=wp.zeros(num_actuators, dtype=wp.float32, device=device))
+
+            def assign(self, other: DriveBase.State) -> None:
+                self.nested.value.assign(other.nested.value)
+
+        device = wp.get_device()
+        current, advanced = _CustomState(1, device), _CustomState(1, device)
+        advanced.nested.value.fill_(1.0)
+
+        Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+        self.assertEqual(current.nested.value.numpy()[0], 1.0)
+        self.assertIsNot(current.nested, advanced.nested)
+
+    def test_assign_copies_slotted_dataclass_state(self):
+        """Copy a custom slotted dataclass through the default implementation."""
+
+        @dataclass(slots=True)
+        class _CustomState(DriveBase.State):
+            value: wp.array | None = None
+
+        device = wp.get_device()
+        current = _CustomState(wp.zeros(1, dtype=wp.float32, device=device))
+        advanced = _CustomState(wp.ones(1, dtype=wp.float32, device=device))
+        destination = current.value
+
+        Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+        self.assertIs(current.value, destination)
+        self.assertEqual(current.value.numpy()[0], 1.0)
+
+    def test_assign_copies_neural_warp_state_in_place(self):
+        """Copy neural Warp arrays while preserving destination storage."""
+        device = wp.get_device()
+        cases = (
+            (
+                DriveNeuralMLP.State(
+                    pos_error_history=wp.zeros((2, 1), dtype=wp.float32, device=device),
+                    vel_history=wp.zeros((2, 1), dtype=wp.float32, device=device),
+                ),
+                DriveNeuralMLP.State(
+                    pos_error_history=wp.ones((2, 1), dtype=wp.float32, device=device),
+                    vel_history=wp.ones((2, 1), dtype=wp.float32, device=device),
+                ),
+                ("pos_error_history", "vel_history"),
+            ),
+            (
+                DriveNeuralLSTM.State(
+                    hidden=wp.zeros((1, 1, 2), dtype=wp.float32, device=device),
+                    cell=wp.zeros((1, 1, 2), dtype=wp.float32, device=device),
+                ),
+                DriveNeuralLSTM.State(
+                    hidden=wp.ones((1, 1, 2), dtype=wp.float32, device=device),
+                    cell=wp.ones((1, 1, 2), dtype=wp.float32, device=device),
+                ),
+                ("hidden", "cell"),
+            ),
+        )
+
+        for current, advanced, fields in cases:
+            destinations = {name: getattr(current, name) for name in fields}
+            Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+            for name in fields:
+                destination = destinations[name]
+                self.assertIs(getattr(current, name), destination)
+                np.testing.assert_array_equal(destination.numpy(), 1.0)
+
+    def test_assign_rejects_undecorated_custom_drive_state(self):
+        """Reject an undeclared custom state rather than silently skipping it."""
+
+        class _CustomState(DriveBase.State):
+            def __init__(self, device: wp.Device):
+                self.value = wp.zeros(1, dtype=wp.float32, device=device)
+
+        current = _CustomState(wp.get_device())
+        advanced = _CustomState(wp.get_device())
+        with self.assertRaisesRegex(NotImplementedError, "decorated with @dataclass or implement assign"):
+            Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+    def test_assign_rejects_undeclared_attribute(self):
+        """Reject an attribute present on only one otherwise compatible state."""
+
+        @dataclass
+        class _CustomState(DriveBase.State):
+            value: wp.array | None = None
+
+        device = wp.get_device()
+        current = _CustomState(wp.zeros(1, dtype=wp.float32, device=device))
+        advanced = _CustomState(wp.ones(1, dtype=wp.float32, device=device))
+        current.extra = None
+
+        with self.assertRaisesRegex(ValueError, "undeclared state attributes: extra"):
+            Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+    @unittest.skipUnless(_HAS_TORCH, "PyTorch is required")
+    def test_assign_copies_torch_state_without_aliasing(self):
+        """Copy Torch-backed drive state without aliasing the source tensors."""
+        with _torch.inference_mode():
+            current = DriveNeuralLSTM.State(hidden=_torch.zeros((1, 1, 1)), cell=_torch.zeros((1, 1, 1)))
+            advanced = DriveNeuralLSTM.State(hidden=_torch.ones((1, 1, 1)), cell=_torch.ones((1, 1, 1)))
+
+        Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+        self.assertIsNot(current.hidden, advanced.hidden)
+        self.assertIsNot(current.cell, advanced.cell)
+        with _torch.inference_mode():
+            advanced.hidden.zero_()
+            advanced.cell.zero_()
+        self.assertEqual(current.hidden.item(), 1.0)
+        self.assertEqual(current.cell.item(), 1.0)
+
+    def test_assign_rejects_mismatched_components(self):
+        """Raise rather than silently skip when only one state holds a component."""
+        state = DrivePID.State(integral=wp.zeros(1, dtype=wp.float32, device=wp.get_device()))
+        with self.assertRaisesRegex(ValueError, "drive_state"):
+            Actuator.State(drive_state=state).assign(Actuator.State())
+
+
+@unittest.skipUnless(
+    wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
+    "CUDA graph capture requires CUDA device with memory pools",
+)
+class TestDriveStateGraphCapture(unittest.TestCase):
+    """Drive state must advance per replay, not only for an even captured step count.
+
+    A PID with only ``ki`` set, held at a constant position error by a model no
+    solver moves, accumulates exactly ``ki * error * dt`` per actuator step
+    however the loop is chunked.  A graph cannot re-point its state buffers
+    between replays, so an odd-length captured region needs either a boundary
+    :meth:`Actuator.State.assign` or a second graph of the opposite parity.
+    """
+
+    DT = 0.01
+    KI = 1.0
+    TARGET = 1.0
+    STEPS = 12
+
+    def _integral_after_all_steps(self, implicit: bool, steps_per_graph: int | None, parity_graphs: bool) -> float:
+        """Run :attr:`STEPS` actuator steps and return the resulting PID integral.
+
+        Args:
+            implicit: Solve the control law implicitly instead of explicitly.
+                Both effort modes advance the integral through the same state.
+            steps_per_graph: Steps per captured region, or ``None`` to run eagerly.
+            parity_graphs: Capture one graph per state-buffer orientation and
+                alternate them, instead of assigning at the region boundary.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        # Mass and inertia only matter to the implicit response.
+        body = builder.add_link(com=wp.vec3(0.5, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+        builder.add_articulation([joint])
+        builder.add_actuator(DrivePID, index=builder.joint_qd_start[joint], kp=0.0, ki=self.KI, kd=0.0)
+        model = builder.finalize(device=device)
+
+        actuator = model.actuators[0]
+        response = JointSpaceResponse(model) if implicit else None
+        if response is not None:
+            actuator.set_effort_mode_implicit(response=response)
+        state, control = model.state(), model.control()
+        control.joint_target_q.fill_(self.TARGET)  # joint_q stays 0, so the error is constant
+        s0, s1 = actuator.state(), actuator.state()
+
+        def run(s0, s1, steps, boundary_assign=False):
+            """Step the actuator, swapping state as the documented loop does."""
+            for i in range(steps):
+                control.joint_f.zero_()
+                if response is not None:
+                    response.refresh(state)
+                actuator.step(state, control, s0, s1, dt=self.DT)
+                if boundary_assign and steps % 2 == 1 and i == steps - 1:
+                    s0.assign(s1)  # keeps a single odd-length graph correct
+                else:
+                    s0, s1 = s1, s0
+            return s0, s1
+
+        if steps_per_graph is None:
+            s0, s1 = run(s0, s1, self.STEPS)
+        else:
+            # Module loading and lazy allocation have to happen before a capture.
+            s0, s1 = run(s0, s1, 1)
+            s0.drive_state.integral.zero_()
+            s1.drive_state.integral.zero_()
+            graphs = {}
+            for _ in range(self.STEPS // steps_per_graph):
+                # Keying on the current buffer builds one graph per orientation.
+                key = id(s0) if parity_graphs else None
+                if key not in graphs:
+                    with wp.ScopedCapture(device) as capture:
+                        after = run(s0, s1, steps_per_graph, boundary_assign=not parity_graphs)
+                    graphs[key] = (capture.graph, after)
+                graph, (s0, s1) = graphs[key]
+                wp.capture_launch(graph)
+            self.assertLessEqual(len(graphs), 2, msg="alternating parity needs at most two graphs")
+        return float(s0.drive_state.integral.numpy()[0])
+
+    def test_pid_integral_advances_per_replay_boundary_assign(self):
+        """Assign at an odd-length region's boundary and match the eager integral."""
+        expected = self.KI * self.TARGET * self.DT * self.STEPS
+        for implicit in (False, True):
+            for steps_per_graph in (None, 1, 2, 3):
+                with self.subTest(implicit=implicit, steps_per_graph=steps_per_graph):
+                    got = self._integral_after_all_steps(implicit, steps_per_graph, parity_graphs=False)
+                    self.assertAlmostEqual(got, expected, places=6)
+
+    def test_pid_integral_advances_per_replay_parity_graphs(self):
+        """Alternate one graph per buffer orientation and match the eager integral."""
+        expected = self.KI * self.TARGET * self.DT * self.STEPS
+        for steps_per_graph in (1, 2, 3):
+            with self.subTest(steps_per_graph=steps_per_graph):
+                got = self._integral_after_all_steps(False, steps_per_graph, parity_graphs=True)
+                self.assertAlmostEqual(got, expected, places=6)
+
+
 # ---------------------------------------------------------------------------
-# 11. Neural controller via USD parsing (parse_actuator_prim)
+# 11. Neural drive via USD parsing (parse_actuator_prim)
 # ---------------------------------------------------------------------------
 
 
 @unittest.skipUnless(HAS_USD and _HAS_ONNX, "pxr or onnx not installed")
 class TestNeuralActuatorUsdParsing(unittest.TestCase):
-    """Verify ``parse_actuator_prim`` correctly handles neural controller
+    """Verify ``parse_actuator_prim`` correctly handles neural drive
     prims with asset-typed ``newton:modelPath`` attributes.
 
     This exercises the full USD parsing path — the same path that
-    ``ModelBuilder.add_usd`` uses — rather than constructing controllers
+    ``ModelBuilder.add_usd`` uses — rather than constructing drives
     directly from a file path.
     """
 
@@ -4187,8 +5270,8 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
         parsed = parse_actuator_prim(prim)
         self.assertIsNotNone(parsed)
-        self.assertEqual(parsed.controller_class, ControllerNeuralMLP)
-        self.assertEqual(parsed.controller_kwargs["model_path"], model_path)
+        self.assertEqual(parsed.drive_class, DriveNeuralMLP)
+        self.assertEqual(parsed.drive_kwargs["model_path"], model_path)
         self.assertEqual(parsed.target_path, "/World/Robot/Joint1")
 
         self.assertEqual(len(parsed.component_specs), 1)
@@ -4204,8 +5287,8 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
         parsed = parse_actuator_prim(prim)
         self.assertIsNotNone(parsed)
-        self.assertEqual(parsed.controller_class, ControllerNeuralLSTM)
-        self.assertEqual(parsed.controller_kwargs["model_path"], model_path)
+        self.assertEqual(parsed.drive_class, DriveNeuralLSTM)
+        self.assertEqual(parsed.drive_kwargs["model_path"], model_path)
 
 
 # ---------------------------------------------------------------------------
@@ -4231,10 +5314,10 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
         pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
         target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (legacy DOF target layout)
 
-        ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
+        ctrl = DrivePD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
         actuator = Actuator(
             indices=indices,
-            controller=ctrl,
+            drive=ctrl,
             pos_indices=pos_indices,
             target_pos_indices=target_pos_indices,
         )
@@ -4284,11 +5367,11 @@ class TestControlTargetAttrDefaults(unittest.TestCase):
     def _actuator(self, **kwargs):
         device = wp.get_device()
         indices = wp.array([0], dtype=wp.uint32, device=device)
-        controller = ControllerPD(
+        drive = DrivePD(
             kp=wp.array([10.0], dtype=wp.float32, device=device),
             kd=wp.array([0.0], dtype=wp.float32, device=device),
         )
-        return Actuator(indices=indices, controller=controller, **kwargs)
+        return Actuator(indices=indices, drive=drive, **kwargs)
 
     def test_omitted_attrs_default_to_canonical_names(self):
         """Verify omitted attributes select canonical names."""

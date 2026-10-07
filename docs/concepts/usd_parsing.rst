@@ -330,12 +330,17 @@ mass with it.
 
 Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:
-``path_cable_map`` holds each cable's body and joint indices, and ``path_cloth_map`` /
-``path_soft_map`` hold each cloth's and soft body's ``[start, end)`` particle and topology
+``path_cable_map`` holds each cable's body and rod-joint indices. Generated root joints
+are excluded. Welded curves return empty joint lists; see :ref:`deformable-objects-welded-usd-graphs`.
+``path_cloth_map`` / ``path_soft_map`` hold each cloth's and soft body's ``[start, end)`` particle and topology
 ranges. Without the flag the return shape carries no deformable entries.
 The corresponding ``path_*_attrs`` entry preserves valid authored ``masses`` and ``thicknesses``
 values with their resolved element type under ``simulation``; a legacy untyped mass entry is also
 marked ``legacy_implicit_type``.
+
+Imported deformables also populate the experimental builder identity lists
+described in :ref:`deformable-objects`. These lists are separate from the
+import result mappings above.
 
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
 (``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
@@ -357,20 +362,25 @@ A ``point``->``point`` attachment between two imported cables can be a weld. Wel
 only when the attachment is **hard** (no authored stiffness, or infinite; authored damping
 does not affect hardness) **and** the two attached points sit at the same position. Such a junction is shared structure,
 not a runtime constraint: the two points become one node, and every curve connected through such
-junctions is built as one rod graph with a single :meth:`~newton.ModelBuilder.add_rod_graph`
-call (one capsule body per segment, junction nodes shared). Welded junction attachments are
+junctions is built as one :class:`~newton.Rod` with explicit edges and assembled
+through :meth:`~newton.ModelBuilder.add_rod` using ``rod=`` (one capsule body per
+segment, junction nodes shared). Welded junction attachments are
 absorbed into the graph, so they appear in neither ``path_attachment_map`` nor
 ``path_attachment_attrs``. A springy or non-coincident cable-to-cable attachment is **not**
 welded. It warns and is kept as unsupported in ``path_attachment_attrs``, so the authored
 geometry and the constraint intent are never silently rewritten. Cable-to-xform attachments on
 the same curves still import as described above.
 
-Each imported cable is wrapped into its own articulation, labelled ``"<path>_articulation"``
-(a multi-curve prim labels per curve: ``"<path>_curveN_articulation"``).
-The model is therefore ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
-A welded rod graph gets one articulation per connected component; each of its curves keeps its
-own body range but shares that articulation. Attachment joints that tie a cable to other bodies
-close a loop, so they stay outside the articulation.
+An imported cable incorporated into an existing rigid-body articulation keeps that articulation's
+existing label. Only cable-owned articulations use the cable-derived label ``"<path>_articulation"``
+(a multi-curve prim labels per curve: ``"<path>_curveN_articulation"``). A free cable gets a free
+root joint to the world. When an open cable has exactly one supported hard attachment at an
+endpoint, that ball joint becomes the cable's root instead. An attachment to a rigid body joins
+the cable to that body's articulation, whether the articulation has a fixed or floating base.
+Attachments at interior points and additional attachments remain separate constraints outside
+the articulation. A welded rod graph gets one free-rooted articulation per connected component;
+each of its curves keeps its own body range but shares that articulation. The imported model is
+ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
 
 .. code-block:: python
 
@@ -391,6 +401,8 @@ authored during their deprecation windows; a cloth entry also keeps moduli its i
 cannot express. This lets another solver rebuild the supported state without re-parsing the stage.
 A cable entry carries a ``graph_component`` identifier only when the curve was welded into a rod
 graph; curves of one graph share it, and independent or fallback cables have no such key.
+It is also the label of the complete graph in ``ModelBuilder.curve_label``;
+see :ref:`deformable-objects-welded-usd-graphs` for per-curve lookup.
 
 .. note::
 
@@ -560,6 +572,8 @@ On joint prims (``RevoluteJoint``, ``PrismaticJoint``, ``D6Joint``), the followi
      - ``limit_kd``
      - ``-inf`` = engine default; ignored when ``limitStiffness`` is ``+inf``
 
+On ``SphericalJoint`` prims, only ``newton:armature``, ``newton:damping``, and ``newton:friction`` are resolved; each applies to all three rotational DOFs.
+
 Angular joints store gains per-degree in USD and the importer converts to per-radian internally.
 
 **MuJoCo Attribute Remapping Examples:**
@@ -576,6 +590,9 @@ The table below shows MuJoCo attribute remapping examples, including both direct
    * - ``mjc:armature``
      - ``armature``
      - Direct mapping
+   * - ``mjc:actuatorfrcrange:min``, ``mjc:actuatorfrcrange:max``
+     - ``effort_limit``
+     - Revolute and prismatic joints: larger magnitude of the range. Ignored when ``mjc:actuatorfrclimited`` is ``"false"``, or ``"auto"`` with an empty range. A smaller drive ``maxForce`` takes precedence.
    * - ``mjc:margin``
      - ``margin``
      - Direct mapping (identity under MuJoCo 3.9+). Pass ``legacy_margin_gap=True`` to :meth:`~newton.ModelBuilder.add_usd` for the pre-3.9 ``margin = mjc:margin - mjc:gap`` translation.
@@ -734,6 +751,32 @@ The collected attributes are returned in the result dictionary and can be access
            if "physxJoint:armature" in attrs:
                armature_value = attrs["physxJoint:armature"]
                print(f"PhysX joint {prim_path} has armature: {armature_value}")
+
+MuJoCo Tendons
+--------------
+
+Register :class:`~newton.solvers.SolverMuJoCo` custom attributes before importing
+USD assets containing ``MjcTendon`` prims:
+
+.. code-block:: python
+
+   import newton
+   from newton.solvers import SolverMuJoCo
+
+   builder = newton.ModelBuilder()
+   SolverMuJoCo.register_custom_attributes(builder)
+   builder.add_usd("robot.usda")
+
+Both fixed and spatial tendons are supported. An unauthored ``mjc:type`` defaults
+to ``"spatial"``. Spatial paths use ``mjc:path`` and optional ``mjc:path:indices``
+to reference sites and wrapping spheres or cylinders, including repeated targets.
+``mjc:path:segments`` and ``mjc:path:divisors`` define pulley branches;
+``mjc:sideSites`` and ``mjc:sideSites:indices`` select side sites for wrapping
+geometry. Segment and side-site arrays follow the indexed path order.
+
+Referenced shapes must be included by the import options. Paths with invalid
+indices or unresolved targets emit a warning and contribute no wrap entries.
+MuJoCo export also warns when it skips a tendon with no usable path.
 
 Custom Attributes from USD
 --------------------------
@@ -1461,16 +1504,20 @@ Limitations
 -----------
 
 Importing USD files where many (> 30) mesh colliders are under the same rigid body
-can result in a crash in ``UsdPhysics.LoadUsdPhysicsFromRange``.  This is a known
-thread-safety issue in OpenUSD and will be fixed in a future release of
-``usd-core``.  It can be worked around by setting the work concurrency limit to 1
-before ``pxr`` initializes its thread pool.
+can result in a crash in OpenUSD's native physics parser.  This is a known
+thread-safety issue in OpenUSD, **fixed in OpenUSD 26.08**: no workaround is needed
+when the USD runtime is 26.08 or newer, whether it comes from ``usd-core`` or from
+the OpenUSD build bundled in ``usd-exchange``.
+
+Newton still supports older ``usd-core`` releases, so the workaround below remains
+relevant when running against a USD runtime older than 26.08.  It can be applied by
+setting the work concurrency limit to 1 before ``pxr`` initializes its thread pool.
 
 .. note::
 
    Setting the concurrency limit to 1 disables multi-threaded USD processing
    globally and may degrade performance of other OpenUSD workloads in the same
-   process.
+   process.  Prefer upgrading to OpenUSD 26.08 or newer instead.
 
 Choose **one** of the two approaches below — do not combine them.
 ``PXR_WORK_THREAD_LIMIT`` is evaluated once when ``pxr`` is first imported and

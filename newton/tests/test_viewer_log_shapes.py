@@ -121,5 +121,29 @@ class TestLogShapesBroadcast(unittest.TestCase):
         )
 
 
+class TestLogContacts(unittest.TestCase):
+    def test_glyphs_scale_with_smaller_contact_shape(self):
+        builder = newton.ModelBuilder()
+        for radius in (0.2, 2.0, 1.0):
+            builder.add_shape_sphere(body=-1, radius=radius)
+        model = builder.finalize(device="cpu")
+
+        contacts = newton.Contacts(2, 0, device=model.device)
+        contacts.rigid_contact_count.assign([2])
+        contacts.rigid_contact_shape0.assign([0, 1])
+        contacts.rigid_contact_shape1.assign([1, 2])
+        contacts.rigid_contact_normal.assign([wp.vec3(0.0, 0.0, 1.0)] * 2)
+
+        viewer = ViewerNull(num_frames=1)
+        viewer.set_model(model)
+        viewer.show_contacts = True
+        viewer.log_contacts(contacts, model.state())
+
+        self.assertIsNone(viewer._get_world_extents())
+        normal_lengths = np.linalg.norm(viewer._contact_points1.numpy() - viewer._contact_points0.numpy(), axis=1)
+        assert_np_equal(normal_lengths, np.array([0.1, 0.5]), tol=1.0e-6)
+        assert_np_equal(viewer._contact_disk_scales.numpy()[:, 0], np.array([0.02, 0.1]), tol=1.0e-6)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -31,6 +31,7 @@ from .kernels import (
     repack_shape_opacities,
     transform_points,
 )
+from .transform import transform_add_translation, transform_from_array, transform_multiply
 from .utils import OPAQUE_OPACITY_THRESHOLD
 
 MAX_TRIANGLE_OPACITY_GROUPS = 32
@@ -619,8 +620,8 @@ class ViewerBase(ABC):
         layer.contact_mode_eps_velocity = 1e-3
 
         # Scaling parameters for the contact visualization
-        # Note: these are auto-set in :meth:`set_model`, below are fallback defaults.
-        layer.contact_viz_scale = 1.0  # Length of contact normal arrows (contact disks/forces scale relatively)
+        # Note: contact_viz_scale is relative to the smaller shape in each contact pair.
+        layer.contact_viz_scale = 1.0
         layer.contact_force_scale = 0.5  # Length of contact force arrows, w.r.t. contact normal arrows
         layer._contact_viz_scale_default = layer.contact_viz_scale
         layer._contact_force_scale_default = layer.contact_force_scale
@@ -834,13 +835,13 @@ class ViewerBase(ABC):
             raise ValueError("camera_speed must be finite and nonnegative")
         self._camera_speed = value
 
-    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+    def set_camera(self, pos: wp.vec3, pitch: float | None = None, yaw: float | None = None):
         """Set the camera position and orientation.
 
         Args:
-            pos: The position of the camera.
-            pitch: The pitch of the camera.
-            yaw: The yaw of the camera.
+            pos: The position of the camera [m].
+            pitch: The pitch of the camera [deg]. If None, the current pitch is kept.
+            yaw: The yaw of the camera [deg]. If None, the current yaw is kept.
         """
         return
 
@@ -954,9 +955,13 @@ class ViewerBase(ABC):
         bounds_min_np = world_bounds_min.numpy()
         bounds_max_np = world_bounds_max.numpy()
 
-        # Find maximum extents across all worlds
-        # Mask out invalid bounds (inf values)
-        valid_mask = ~np.isinf(bounds_min_np[:, 0])
+        # Find maximum extents across all worlds. Empty worlds retain the
+        # finite MAXVAL/-MAXVAL sentinels used to initialize the buffers.
+        valid_mask = (
+            np.all(np.isfinite(bounds_min_np), axis=1)
+            & np.all(np.isfinite(bounds_max_np), axis=1)
+            & np.all(bounds_min_np <= bounds_max_np, axis=1)
+        )
 
         if not valid_mask.any():
             # No valid worlds found
@@ -989,8 +994,8 @@ class ViewerBase(ABC):
     def _auto_compute_contact_scales(self):
         """Adapt contact-visualization scales to the current model.
 
-        Sets ``contact_viz_scale`` and ``contact_force_scale``, based on
-        aggregate model dimensions.
+        Sets the relative ``contact_viz_scale`` default and adapts
+        ``contact_force_scale`` to the aggregate model weight.
 
         Falls back to the literal defaults if the relevant model data is
         unavailable (e.g. no shapes / no dynamic bodies / zero gravity).
@@ -999,14 +1004,6 @@ class ViewerBase(ABC):
         # before the model was attached (rare but possible).
         prev_default_scale = self._contact_viz_scale_default
         prev_default_force_scale = self._contact_force_scale_default
-
-        # Characteristic length L_char: 10% of the maximal extent.
-        L_char = 0.0
-        max_extents = self._get_world_extents()
-        if max_extents is not None:
-            L_char = float(0.1 * np.linalg.norm(max_extents))
-        if not np.isfinite(L_char) or L_char <= 0.0:
-            L_char = 1.0
 
         # Characteristic force F_char = sum(dynamic body mass) * |gravity|.
         F_char = 0.0
@@ -1032,8 +1029,9 @@ class ViewerBase(ABC):
         if not np.isfinite(F_char) or F_char <= 0.0:
             F_char = 1.0
 
-        # Set contact scales based on L_char and F_char
-        self._contact_viz_scale_default = 1.0 * L_char
+        # Normal arrows use half the smaller shape's collision radius when
+        # contact_viz_scale is at its default value of 1.0.
+        self._contact_viz_scale_default = 1.0
         self._contact_force_scale_default = 5.0 / F_char if F_char > 0.0 else 0.5
 
         # Reset live attributes to new defaults, if values were still default
@@ -1183,8 +1181,8 @@ class ViewerBase(ABC):
                 if body_q_np is None:
                     body_q_np = state.body_q.numpy()
 
-                body_xform = wp.transform_expand(body_q_np[parent])
-                world_xform = wp.transform_multiply(body_xform, shape_xform)
+                body_xform = transform_from_array(body_q_np[parent])
+                world_xform = transform_multiply(body_xform, shape_xform)
             else:
                 world_xform = shape_xform
 
@@ -1192,11 +1190,8 @@ class ViewerBase(ABC):
                 if offsets_np is None:
                     offsets_np = self.world_offsets.numpy()
                 offset = offsets_np[world_idx]
-                world_xform = wp.transformf(
-                    wp.vec3(world_xform.p[0] + offset[0], world_xform.p[1] + offset[1], world_xform.p[2] + offset[2]),
-                    world_xform.q,
-                )
-            world_xform = wp.transform_multiply(self.layer.xform, world_xform)
+                world_xform = transform_add_translation(world_xform, offset)
+            world_xform = transform_multiply(self.layer.xform, world_xform)
             self.log_gaussian(gname, gaussian, xform=world_xform, hidden=False)
 
     def _log_non_shape_state(self, state: newton.State):
@@ -1284,6 +1279,10 @@ class ViewerBase(ABC):
             self.log_arrows(self._qualify("/contacts/forces"), None, None, None)
             return
 
+        # Base glyph size as a multiplier of the smaller shape's collision
+        # radius. Disks and force arrows preserve their existing proportions.
+        contact_scale = 0.5 * float(self.contact_viz_scale)
+
         # ---- Contact-normal arrows -------------------------------
         if self.show_contact_normals:
             if self._contact_points0 is None or len(self._contact_points0) < max_contacts:
@@ -1299,6 +1298,7 @@ class ViewerBase(ABC):
                     state.body_q,
                     self.model.shape_body,
                     self.model.shape_world,
+                    self.model.shape_collision_radius,
                     self.world_offsets,
                     self.layer.xform,
                     self._visible_worlds_mask,
@@ -1308,7 +1308,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_offset0,
                     contacts.rigid_contact_normal,
-                    float(self.contact_viz_scale),
+                    contact_scale,
                 ],
                 outputs=[
                     self._contact_points0,  # line start points
@@ -1354,6 +1354,7 @@ class ViewerBase(ABC):
                     self.model.body_com,
                     self.model.shape_body,
                     self.model.shape_world,
+                    self.model.shape_collision_radius,
                     self.world_offsets,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
@@ -1364,8 +1365,8 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_offset0,
                     contacts.rigid_contact_normal,
                     contacts.force,  # may be None — kernel falls back to default color
-                    float(self.contact_viz_scale * 0.2),
-                    float(self.contact_viz_scale * 0.004),  # cylinder half-height
+                    contact_scale * 0.2,
+                    contact_scale * 0.004,  # cylinder half-height
                     float(self.contact_mode_eps_force),
                     float(self.contact_mode_eps_velocity),
                     wp.vec3(0.1, 0.1, 0.1),  # open: black
@@ -1405,6 +1406,7 @@ class ViewerBase(ABC):
                     state.body_q,
                     self.model.shape_body,
                     self.model.shape_world,
+                    self.model.shape_collision_radius,
                     self.world_offsets,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
@@ -1413,7 +1415,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_offset0,
                     contacts.force,
-                    float(self.contact_viz_scale * self.contact_force_scale),
+                    contact_scale * float(self.contact_force_scale),
                 ],
                 outputs=[self._contact_force_starts, self._contact_force_ends],
                 device=self.device,
@@ -1781,14 +1783,16 @@ class ViewerBase(ABC):
 
         Args:
             name: The name of the gizmo.
-            transform: The transform of the gizmo.
+            transform: Gizmo transform with translation [m] and a unitless
+                rotation quaternion.
             translate: Axes on which the translation handles are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all translation handles.
             rotate: Axes on which the rotation rings are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
-            snap_to: Optional world transform to snap to when this gizmo is
+            snap_to: Optional world transform with translation [m] and a
+                unitless rotation quaternion to apply when this gizmo is
                 released by the user.
         """
         return
@@ -1949,6 +1953,7 @@ class ViewerBase(ABC):
 
         The GL viewer renders these with a dedicated arrow shader that draws
         a screen-space quad line body plus a triangular arrowhead per segment.
+        The RTX viewer renders cylinder shafts with cone heads in world space.
         Other backends fall back to :meth:`log_lines`.
 
         Args:
@@ -1956,9 +1961,9 @@ class ViewerBase(ABC):
             starts: Optional arrow start points as a Warp vec3 array.
             ends: Optional arrow end points (arrowhead tip) as a Warp vec3 array.
             colors: Per-arrow colors as a Warp array, or a single RGB triplet.
-            width: Reserved for future use (world-space line width).
-                Currently ignored; arrow size is set in screen-space pixels
-                via the renderer (e.g. ``RendererGL.arrow_scale``).
+            width: Shaft radius [m] in the RTX viewer. Ignored by the GL viewer,
+                where arrow size is set in screen-space pixels via
+                ``RendererGL.arrow_scale``.
             hidden: Whether the arrow batch should be hidden.
         """
         self.log_lines(self._qualify(name), starts, ends, colors, width=width, hidden=hidden)
@@ -2039,7 +2044,8 @@ class ViewerBase(ABC):
 
         Args:
             name: Stable identifier. Subsequent calls with the same *name*
-                update in place. In :class:`ViewerGL`, each name gets one
+                update in place. In :class:`~newton.viewer.ViewerGL` and
+                :class:`~newton.viewer.ViewerRTX`, each name gets one
                 dockable window.
             image: Image array. Accepted shapes:
 
@@ -2051,12 +2057,14 @@ class ViewerBase(ABC):
                 Accepted dtypes: ``uint8`` (values in ``[0, 255]``) or
                 ``float32`` (values in ``[0, 1]``). Values outside the range
                 are clipped.
-            fullscreen: In :class:`~newton.viewer.ViewerGL`, display the image
-                as the main viewer surface for the current frame instead of
+            fullscreen: In :class:`~newton.viewer.ViewerGL` and
+                :class:`~newton.viewer.ViewerRTX`, display the image as the
+                main viewer surface for the current frame instead of
                 rendering the 3D scene. Other backends ignore this option.
 
-        The base implementation is a no-op. Backends that render images
-        (currently only :class:`~newton.viewer.ViewerGL`) override this method.
+        The base implementation is a no-op. Backends that render images,
+        including :class:`~newton.viewer.ViewerGL`, :class:`~newton.viewer.ViewerRTX`,
+        and :class:`~newton.viewer.ViewerViser`, override this method.
         """
         return
 
@@ -2255,7 +2263,8 @@ class ViewerBase(ABC):
     def _hash_geometry(
         self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
     ) -> int:
-        geometry_hash = hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
+        source_hash = geo_src._get_render_hash() if isinstance(geo_src, newton.Mesh) else geo_src
+        geometry_hash = hash((int(geo_type), source_hash, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
         if isinstance(geo_src, newton.Mesh) and geo_src.texture is not None:
             geometry_hash = hash((geometry_hash, geo_src.texture_transform))
         return geometry_hash
@@ -2452,7 +2461,7 @@ class ViewerBase(ABC):
             if geo_type == newton.GeoType.GAUSSIAN:
                 if isinstance(geo_src, newton.Gaussian):
                     parent = shape_body[s]
-                    xform = wp.transform_expand(shape_transform[s])
+                    xform = transform_from_array(shape_transform[s])
                     gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
                     self._gaussian_instances.append(
                         (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
@@ -2532,7 +2541,7 @@ class ViewerBase(ABC):
             else:
                 batch = self._shape_instances[shape_hash]
 
-            xform = wp.transform_expand(shape_transform[s])
+            xform = transform_from_array(shape_transform[s])
             scale = np.array([1.0, 1.0, 1.0])
 
             if shape_display_color is not None:
@@ -2702,7 +2711,7 @@ class ViewerBase(ABC):
             else:
                 batch = self._sdf_isomesh_instances[geo_hash]
 
-            xform = wp.transform_expand(shape_transform[s])
+            xform = transform_from_array(shape_transform[s])
             # Apply shape scale if not baked into SDF, otherwise use (1,1,1)
             if scale_baked:
                 scale = np.array([1.0, 1.0, 1.0])

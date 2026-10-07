@@ -470,10 +470,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertTrue(seen_velocity, "no velocity sub-actuator found")
 
     def test_ball_joint_target_ranges_applied_to_all_axes(self):
-        """A ball-joint position actuator expands to one mj_model actuator per axis.
-
-        The single authored ctrl/force range must apply to every per-axis actuator.
-        """
+        """Ball-joint axes share the actuator-range row stored at the joint's base DOF."""
         mjcf = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="ball">
     <option gravity="0 0 0"/>
@@ -485,6 +482,7 @@ class TestMuJoCoActuators(unittest.TestCase):
     </worldbody>
     <actuator>
         <position name="p" joint="bj" kp="100" forcerange="-7 7" forcelimited="true" ctrlrange="-2 2" ctrllimited="true"/>
+        <velocity name="v" joint="bj" kv="10" forcerange="-3 3" forcelimited="true" ctrlrange="-5 5" ctrllimited="true"/>
     </actuator>
 </mujoco>
 """
@@ -494,12 +492,23 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         mj_model = solver.mj_model
-        self.assertEqual(mj_model.nu, 3)  # one actuator per ball DOF
+        self.assertEqual(mj_model.nu, 6)
+        mjc_to_newton = solver.mjc_actuator_to_newton_idx.numpy()
         for mj_idx in range(mj_model.nu):
-            np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-7.0, 7.0], atol=1e-5)
-            np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-2.0, 2.0], atol=1e-5)
+            if mjc_to_newton[mj_idx] >= 0:
+                np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-7.0, 7.0], atol=1e-5)
+                np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-2.0, 2.0], atol=1e-5)
+            else:
+                np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-3.0, 3.0], atol=1e-5)
+                np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-5.0, 5.0], atol=1e-5)
             self.assertTrue(bool(mj_model.actuator_forcelimited[mj_idx]))
             self.assertTrue(bool(mj_model.actuator_ctrllimited[mj_idx]))
+
+        model.mujoco.actuator_ctrlrange.assign([[-4.0, 4.0], [-6.0, 6.0]])
+        solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+        for mj_idx in range(mj_model.nu):
+            expected = [-4.0, 4.0] if mjc_to_newton[mj_idx] >= 0 else [-6.0, 6.0]
+            np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[0, mj_idx], expected)
 
     def test_parsing_ctrl_direct_true(self):
         """Test parsing with ctrl_direct=True."""
@@ -928,6 +937,25 @@ MJCF_SITE_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 </mujoco>
 """
 
+MJCF_DAMPER_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_damper_actuator">
+    <option gravity="0 0 0"/>
+    <default>
+        <damper ctrlrange="0 2"/>
+    </default>
+    <worldbody>
+        <body name="body">
+            <joint name="hinge"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <damper name="drive" joint="hinge" kv="4"/>
+    </actuator>
+</mujoco>
+"""
+
+
 MJCF_JOINT_IN_PARENT_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_joint_in_parent_actuator">
     <option gravity="0 0 0"/>
@@ -976,6 +1004,46 @@ MJCF_SITE_ACTUATOR_WITH_REFSITE = """<?xml version="1.0" encoding="utf-8"?>
     </actuator>
 </mujoco>
 """
+
+
+class TestMuJoCoDamperActuators(unittest.TestCase):
+    """Tests for controllable damper actuator shortcuts."""
+
+    def test_damper_actuator_parsed_from_mjcf(self):
+        """Expand inherited damper parameters into actuator metadata."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_DAMPER_ACTUATOR, ctrl_direct=True)
+        model = builder.finalize()
+
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
+        np.testing.assert_array_equal(model.mujoco.actuator_gaintype.numpy(), [1])
+        np.testing.assert_array_equal(model.mujoco.actuator_biastype.numpy(), [0])
+        np.testing.assert_allclose(model.mujoco.actuator_gainprm.numpy()[0, :3], [0.0, 0.0, -4.0])
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy(), [[0.0, 2.0]])
+
+    def test_damper_actuator_matches_native_mujoco(self):
+        """Match native MuJoCo damping force at nonzero velocity."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(MJCF_DAMPER_ACTUATOR)
+        native_data = mujoco.MjData(native_model)
+
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_DAMPER_ACTUATOR, ctrl_direct=True)
+        solver = SolverMuJoCo(builder.finalize(), iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.nu, 1)
+        np.testing.assert_allclose(solver.mj_model.actuator_gainprm, native_model.actuator_gainprm)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, native_model.actuator_ctrlrange)
+
+        native_data.qvel[:] = 3.0
+        solver.mj_data.qvel[:] = 3.0
+        native_data.ctrl[:] = 0.5
+        solver.mj_data.ctrl[:] = 0.5
+        mujoco.mj_forward(native_model, native_data)
+        mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, atol=1.0e-7)
+        np.testing.assert_allclose(native_data.qfrc_actuator, [-6.0], atol=1.0e-7)
 
 
 class TestMuJoCoJointInParentActuators(unittest.TestCase):

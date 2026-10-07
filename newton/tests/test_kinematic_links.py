@@ -161,7 +161,34 @@ class TestKinematicLinks(unittest.TestCase):
             "Dynamic body should move on the first step after a kinematic toggle.",
         )
 
+    def test_featherstone_refreshes_joint_inertia_separately_from_forces(self):
+        """Refresh a cached mass matrix for armature changes but retain it for force edits."""
+        builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(-1, body, armature=0.1)
+        builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        solver = newton.solvers.SolverFeatherstone(model, update_mass_matrix_interval=100)
+        state_in, state_out = model.state(), model.state()
+        control = model.control()
+        control.joint_f.fill_(1.0)
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        solver.step(state_in, state_out, control, None, 0.01)
+        initial_velocity = state_out.joint_qd.numpy().copy()
+        model.joint_damping.fill_(0.2)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+        self.assertFalse(solver._mass_matrix_dirty)
+        model.joint_armature.fill_(2.0)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+        solver.step(state_in, state_out, control, None, 0.01)
+        reference = newton.solvers.SolverFeatherstone(model)
+        reference_out = model.state()
+        reference.step(state_in, reference_out, control, None, 0.01)
+        np.testing.assert_allclose(state_out.joint_qd.numpy(), reference_out.joint_qd.numpy())
+        self.assertLess(float(state_out.joint_qd.numpy()[0]), float(initial_velocity[0]))
+
     def test_immovable_contact_pair_filtering(self):
+        """Filter static-static pairs while making other immovable pairs configurable."""
         for shape_a, shape_b in [
             ("kinematic", "kinematic"),
             ("static", "kinematic"),
@@ -170,7 +197,8 @@ class TestKinematicLinks(unittest.TestCase):
         ]:
             model = _build_contact_pair(shape_a, shape_b)
             with self.subTest(shape_a=shape_a, shape_b=shape_b, model_pair_superset=True):
-                self.assertEqual(model.shape_contact_pair_count, 1)
+                expected_pair_count = 0 if shape_a == "static" and shape_b == "static" else 1
+                self.assertEqual(model.shape_contact_pair_count, expected_pair_count)
             for broad_phase in ("explicit", "nxn", "sap"):
                 with self.subTest(
                     shape_a=shape_a,
@@ -196,7 +224,10 @@ class TestKinematicLinks(unittest.TestCase):
                         broad_phase=broad_phase,
                         include_static_kinematic_pairs=True,
                     )
-                    self.assertGreater(count, 0)
+                    if shape_a == "static" and shape_b == "static":
+                        self.assertEqual(count, 0)
+                    else:
+                        self.assertGreater(count, 0)
 
     def test_immovable_filter_does_not_remove_dynamic_pairs(self):
         for shape_a, shape_b in [
@@ -278,10 +309,6 @@ def _build_contact_pair(shape_a: str, shape_b: str) -> newton.Model:
 
     add_sphere(shape_a, -0.25)
     add_sphere(shape_b, 0.25)
-    # Static shapes share the world body and are filtered as a same-body pair
-    # by default. Clear that independent filter so this test isolates the
-    # broad phase's immovable-pair option.
-    builder.shape_collision_filter_pairs.clear()
     return builder.finalize(requires_grad=False)
 
 

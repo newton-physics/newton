@@ -2106,6 +2106,7 @@ def verify_narrow_phase_buffers(
     reduction_ht_active_slots: wp.array[int],
     reduction_ht_capacity: int,
     reduction_ht_insert_failures: wp.array[int],
+    reduction_buffer_overflows: wp.array[int],
     reduction_ht_warn_load_percent: int,
 ):
     """Check for buffer overflows in the collision pipeline."""
@@ -2182,7 +2183,10 @@ def verify_narrow_phase_buffers(
         )
     if reduction_ht_capacity > 0:
         reduction_ht_active_count = reduction_ht_active_slots[reduction_ht_capacity]
-        if reduction_ht_active_count * 100 >= reduction_ht_capacity * reduction_ht_warn_load_percent:
+        # Promote before multiplying: large tables can overflow either int32 product.
+        if wp.int64(reduction_ht_active_count) * wp.int64(100) >= wp.int64(reduction_ht_capacity) * wp.int64(
+            reduction_ht_warn_load_percent
+        ):
             wp.printf(
                 "Warning: Contact reduction hashtable fill ratio exceeded %d%% (%d / %d). "
                 "Increase contact_reduction_hashtable_size_factor or max_triangle_pairs.\n",
@@ -2195,6 +2199,12 @@ def verify_narrow_phase_buffers(
                 "Warning: Contact reduction hashtable insert failures %d. "
                 "Increase contact_reduction_hashtable_size_factor or max_triangle_pairs.\n",
                 reduction_ht_insert_failures[0],
+            )
+        if reduction_buffer_overflows[0] > 0:
+            wp.printf(
+                "Warning: Contact reduction buffer overflowed; %d contact candidates were dropped. "
+                "Increase max_triangle_pairs.\n",
+                reduction_buffer_overflows[0],
             )
 
 
@@ -2258,7 +2268,8 @@ class NarrowPhase:
             shape_aabb_lower: Optional external AABB lower bounds array (if provided, AABBs won't be computed internally)
             shape_aabb_upper: Optional external AABB upper bounds array (if provided, AABBs won't be computed internally)
             shape_voxel_resolution: Optional per-shape voxel resolution array used for mesh/SDF and
-                hydroelastic contact processing.
+                hydroelastic contact processing. When omitted, :class:`~newton.CollisionPipeline`
+                supplies the model's table. A supplied table must match that model's shape count and device.
             contact_writer_warp_func: Optional custom contact writer function (first arg: ContactData, second arg: custom struct type)
             hydroelastic_sdf: Optional SDF hydroelastic instance. Set is_hydroelastic=True on shapes to enable hydroelastic collisions.
             has_meshes: Whether the scene contains any mesh shapes (GeoType.MESH). When False, mesh-related
@@ -2683,23 +2694,34 @@ class NarrowPhase:
         self.num_tile_blocks = num_blocks
         # Split-convex blocks distribute independent serial pair queries across
         # lanes. Use one warp while preserving the block distribution; lanes
-        # grid-stride over larger block queues.
-        self.split_convex_block_dim = 32 if device_obj.is_cuda else self.block_dim
+        # grid-stride over larger block queues. That suits the accelerated
+        # hill-climb support map, whose per-pair cost is long and uneven. The
+        # exhaustive support scan is shorter and far more uniform, and does
+        # better with the full block: num_blocks is sized against self.block_dim,
+        # so the narrower block also launches a quarter of the threads used by
+        # the rest of the narrow phase, which throttles large replicated scenes.
+        if device_obj.is_cuda:
+            self.split_convex_block_dim = 32 if convex_support_acceleration else self.block_dim
+        else:
+            self.split_convex_block_dim = self.block_dim
         self.split_convex_total_num_threads = self.split_convex_block_dim * num_blocks
         # One-warp blocks spread sparse, serial-per-lane triangle solves across
         # more SMs without reducing the total number of launched threads.
         self.mesh_triangle_block_dim = 32 if device_obj.is_cuda else self.block_dim
 
         # Dynamic block allocation for mesh-mesh and mesh-plane contacts.
-        # On CUDA we partition toward ~4 blocks per SM and launch twice as many
-        # mesh-mesh blocks to reduce serial work in long per-pair queues. On CPU
-        # there is no SM notion so we pick 64 as a modest parallelism
-        # target that splits pair work across OpenMP threads without
-        # over-subscribing on small scenes.
+        # On CUDA we partition toward ~4 blocks per SM. The 128-thread mesh-mesh
+        # kernel keeps four blocks resident per SM, and launching four times
+        # that many blocks (several waves of small chunks) balances the uneven
+        # per-chunk edge work: with only two waves, scenes around 100 pairs
+        # measured 25% slower because busy chunks dominated the tail. On CPU
+        # there is no SM notion so we pick 64 as a modest parallelism target
+        # that splits pair work across OpenMP threads without over-subscribing
+        # on small scenes.
         if self.reduce_contacts:
             target_blocks = device_obj.sm_count * 4 if device_obj.is_cuda else 64
             # Mesh-mesh
-            self.num_mesh_mesh_blocks = target_blocks * 2 if device_obj.is_cuda else target_blocks
+            self.num_mesh_mesh_blocks = target_blocks * 4 if device_obj.is_cuda else target_blocks
             self.mesh_mesh_target_blocks = target_blocks
             mesh_mesh_scan_size = self.max_mesh_mesh_pairs + 1
             self.mesh_mesh_block_offsets = wp.zeros(mesh_mesh_scan_size, dtype=wp.int32, device=device)
@@ -3354,10 +3376,12 @@ class NarrowPhase:
                 reduction_ht_active_slots = self.global_contact_reducer.hashtable.active_slots
                 reduction_ht_capacity = self.global_contact_reducer.hashtable.capacity
                 reduction_ht_insert_failures = self.global_contact_reducer.ht_insert_failures
+                reduction_buffer_overflows = self.global_contact_reducer.buffer_overflows
             else:
                 reduction_ht_active_slots = self.gjk_candidate_pairs_count
                 reduction_ht_capacity = 0
                 reduction_ht_insert_failures = self.gjk_candidate_pairs_count
+                reduction_buffer_overflows = self.gjk_candidate_pairs_count
 
             if self.split_gjk_mpr:
                 split_query_count = candidate_pair_count if self.sparse_gjk_pairs else self.gjk_candidate_pairs_count
@@ -3399,6 +3423,7 @@ class NarrowPhase:
                     reduction_ht_active_slots,
                     reduction_ht_capacity,
                     reduction_ht_insert_failures,
+                    reduction_buffer_overflows,
                     HASHTABLE_WARN_LOAD_PERCENT,
                 ],
                 device=device,
