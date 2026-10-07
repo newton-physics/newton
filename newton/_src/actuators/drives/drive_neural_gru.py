@@ -14,6 +14,7 @@ import numpy as np
 import warp as wp
 
 from ..utils import _require_onnx, load_metadata
+from ._neural import _network_count, _validate_network_dof_count
 from .base import DriveBase
 
 _FEATURE_POSITION = 0
@@ -47,6 +48,7 @@ def _compute_inputs_kernel(
     feature_codes: wp.array[wp.int32],
     means: wp.array[float],
     stds: wp.array[float],
+    network_dof_count: int,
     output: wp.array2d[float],
 ):
     i, column = wp.tid()
@@ -68,7 +70,9 @@ def _compute_inputs_kernel(
         value = target_vel[target_vel_indices[i]] - velocity
     elif feature == _FEATURE_CUSTOM_INPUT:
         value = custom_input[vel_indices[i]]
-    output[i, column] = (value - means[column]) / stds[column]
+    output[i // network_dof_count, (i % network_dof_count) * len(feature_codes) + column] = (
+        value - means[column]
+    ) / stds[column]
 
 
 @wp.kernel
@@ -77,17 +81,21 @@ def _write_effort_kernel(
     network_scale: float,
     effort_mean: float,
     effort_std: float,
+    network_dof_count: int,
     forces: wp.array[float],
 ):
     i = wp.tid()
-    forces[i] = network_output[i, 0] * network_scale * effort_std + effort_mean
+    forces[i] = network_output[i // network_dof_count, i % network_dof_count] * network_scale * effort_std + effort_mean
 
 
 @wp.kernel
-def _zero_masked_hidden_kernel(hidden: wp.array3d[float], mask: wp.array[wp.bool]):
-    layer, actuator, feature = wp.tid()
-    if mask[actuator]:
-        hidden[layer, actuator, feature] = 0.0
+def _zero_masked_hidden_kernel(hidden: wp.array3d[float], mask: wp.array[wp.bool], network_dof_count: int):
+    layer, network, feature = wp.tid()
+    reset = bool(False)
+    for dof in range(network_dof_count):
+        reset = reset or mask[network * network_dof_count + dof]
+    if reset:
+        hidden[layer, network, feature] = 0.0
 
 
 @dataclass(frozen=True)
@@ -230,8 +238,8 @@ def _validate_onnx_data_path(
         value_name = node.input[0]
 
 
-def _load_network_description(model_path: str) -> _GRUNetworkDescription:
-    """Read a supported GRU, scalar output head, and weights from ONNX."""
+def _load_network_description(model_path: str, network_dof_count: int = 1) -> _GRUNetworkDescription:
+    """Read a supported GRU, output head, and weights from ONNX."""
     if not os.path.isfile(model_path):
         raise ValueError(f"DriveNeuralGRU checkpoint does not exist or is not a local file: '{model_path}'")
     if os.path.splitext(model_path)[1].lower() != ".onnx":
@@ -389,7 +397,7 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
 
     gemm_nodes = [node for node in model.graph.node if node.op_type == "Gemm"]
     if len(gemm_nodes) != 1:
-        raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' must contain one scalar Gemm output head")
+        raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' must contain one Gemm output head")
     head = gemm_nodes[0]
     attributes = _node_attributes(onnx, head)
     if (
@@ -403,8 +411,9 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
         raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' must embed output-head weights and bias")
     head_weight = np.asarray(initializers[head.input[1]], dtype=np.float32)
     head_bias = np.asarray(initializers[head.input[2]], dtype=np.float32)
-    if head_weight.shape != (1, hidden_size) or head_bias.shape != (1,):
-        raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' output head must produce one scalar")
+    if head_weight.shape != (network_dof_count, hidden_size) or head_bias.shape != (network_dof_count,):
+        expected = "one scalar" if network_dof_count == 1 else f"{network_dof_count} scalars"
+        raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' output head must produce {expected}")
 
     if not gru_nodes[-1].output or not gru_nodes[-1].output[0] or not head.input or not head.input[0]:
         raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' output head has no GRU data path")
@@ -496,8 +505,8 @@ class DriveNeuralGRU(DriveBase):
         * - Key
           - Meaning
         * - ``input_columns``
-          - Ordered list of the network's input feature names, one per input
-            column. Non-empty and duplicate-free.
+          - Ordered per-DOF input feature names. Non-empty and duplicate-free.
+            For coupled networks, this layout is repeated for each group member.
         * - ``custom_inputs``
           - Optional list naming at most one column of ``input_columns`` that
             the application supplies. The name must be a valid identifier and
@@ -528,17 +537,18 @@ class DriveNeuralGRU(DriveBase):
     :ref:`custom-drive-inputs`.
 
     Normalization is applied per column as ``(value - mean) / std``. The
-    scalar output is converted to physical torque [N or N·m] as
+    output for each DOF is converted to physical torque [N or N·m] as
     ``output * torque_std + torque_mean``. Any output-head activation or scale
     is part of the exported network and is not applied again.
 
-    **ONNX graph.** One or more forward ``GRU`` nodes followed by a scalar
+    **ONNX graph.** One or more forward ``GRU`` nodes followed by a
     ``Gemm`` output head, optionally followed by ``Tanh`` and a scalar ``Mul``.
     GRU nodes use ``layout=0`` and ``linear_before_reset=1``; stacked layers
     share one hidden size; all weights must be embedded in the file. Per
-    invocation the network takes an input of shape ``[1, N, F]`` and a hidden
-    state of shape ``[layer_count, N, hidden_size]``, and returns one scalar
-    per actuator.
+    invocation the network takes an input of shape ``[1, N/K, K*F]`` and a hidden
+    state of shape ``[layer_count, N/K, hidden_size]``, and returns K efforts per
+    group. Here N is the actuator DOF count, F the per-DOF feature count, and
+    K is ``network_dof_count`` (one by default).
 
     .. warning::
 
@@ -547,33 +557,48 @@ class DriveNeuralGRU(DriveBase):
         inputs it declares may change without the normal deprecation period.
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"model_path", "network_dof_count"}
 
     @dataclass
     class State(DriveBase.State):
         """GRU hidden state."""
 
         hidden: wp.array3d[float] | None = None
-        """Hidden state, shape [layer_count, actuator_count, hidden_size]."""
+        """Hidden state, shape [layer_count, network_count, hidden_size]."""
+
+        network_dof_count: int = 1
+        """Number of consecutive actuator DOFs sharing each hidden-state lane."""
+
+        def assign(self, other: DriveNeuralGRU.State) -> None:
+            """Copy compatible hidden state without replacing its storage."""
+            if self.network_dof_count != other.network_dof_count:
+                raise ValueError("Cannot assign GRU states with different network_dof_count")
+            if self.hidden is None and other.hidden is None:
+                return
+            if self.hidden is None or other.hidden is None or self.hidden.shape != other.hidden.shape:
+                raise ValueError("Cannot assign GRU states with incompatible hidden arrays")
+            self.hidden.assign(other.hidden)
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             """Reset all or selected actuator hidden-state lanes.
 
             Args:
                 mask: Boolean mask with shape [actuator_count]. ``True``
-                    entries are reset. If ``None``, all lanes are reset.
+                    entries reset their entire coupled group. If ``None``,
+                    all lanes are reset.
             """
             if self.hidden is None:
                 raise ValueError("DriveNeuralGRU.State has no hidden array to reset")
             if mask is None:
                 self.hidden.zero_()
                 return
-            if len(mask) < self.hidden.shape[1]:
-                raise ValueError(f"mask has length {len(mask)}; expected at least {self.hidden.shape[1]}.")
+            dof_count = self.hidden.shape[1] * self.network_dof_count
+            if len(mask) < dof_count:
+                raise ValueError(f"mask has length {len(mask)}; expected at least {dof_count}.")
             wp.launch(
                 _zero_masked_hidden_kernel,
                 dim=self.hidden.shape,
-                inputs=[self.hidden, mask],
+                inputs=[self.hidden, mask, self.network_dof_count],
                 device=self.hidden.device,
             )
 
@@ -592,28 +617,37 @@ class DriveNeuralGRU(DriveBase):
         model_path = args["model_path"]
         if not model_path:
             raise ValueError("DriveNeuralGRU requires a non-empty 'model_path'")
-        return {"model_path": model_path}
+        return {
+            "model_path": model_path,
+            "network_dof_count": _validate_network_dof_count(args.get("network_dof_count", 1)),
+        }
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, *, network_dof_count: int = 1):
         """Initialize the drive from an ONNX GRU network.
 
         Args:
             model_path: Local path to an ONNX checkpoint.
+            network_dof_count: Positive number of consecutive actuator DOFs
+                evaluated jointly by each network instance. Defaults to one
+                independent network lane per DOF. Experimental; see the
+                coupled neural drive contract in the actuator concept page.
         """
+        self.network_dof_count = _validate_network_dof_count(network_dof_count)
         self.model_path = os.fspath(model_path)
         """Local path to the ONNX checkpoint."""
-        self._description = _load_network_description(self.model_path)
+        self._description = _load_network_description(self.model_path, network_dof_count)
         metadata = load_metadata(self.model_path)
 
         normalization = metadata["normalization"]
         input_normalization = normalization["inputs"]
         self._input_feature_keys = _parse_input_feature_keys(metadata, self.model_path)
         self.custom_inputs = _custom_inputs(self._input_feature_keys)
-        if self._description.layers[0].input_size != len(self._input_feature_keys):
+        expected_input_size = len(self._input_feature_keys) * network_dof_count
+        if self._description.layers[0].input_size != expected_input_size:
             raise ValueError(
                 f"DriveNeuralGRU checkpoint '{self.model_path}' GRU input size "
                 f"{self._description.layers[0].input_size} does not match input_columns "
-                f"{len(self._input_feature_keys)}"
+                f"times network_dof_count ({expected_input_size})"
             )
         try:
             self._input_means = tuple(float(input_normalization["mean"][name]) for name in self._input_feature_keys)
@@ -676,6 +710,7 @@ class DriveNeuralGRU(DriveBase):
             raise RuntimeError(
                 "DriveNeuralGRU is already finalized for a different actuator; construct one drive per actuator."
             )
+        network_count = _network_count(num_actuators, self.network_dof_count)
         self._device = device
         self._num_actuators = num_actuators
         self._input_means_wp = wp.array(self._input_means, dtype=wp.float32, device=device)
@@ -685,7 +720,9 @@ class DriveNeuralGRU(DriveBase):
             dtype=wp.int32,
             device=device,
         )
-        self._net_input = wp.zeros((num_actuators, len(self._input_feature_keys)), dtype=wp.float32, device=device)
+        self._net_input = wp.zeros(
+            (network_count, len(self._input_feature_keys) * self.network_dof_count), dtype=wp.float32, device=device
+        )
 
         self._gru_layers = []
         with wp.ScopedDevice(device):
@@ -705,18 +742,18 @@ class DriveNeuralGRU(DriveBase):
                 layer.load_state_dict(state_dict)
                 self._gru_layers.append(layer)
 
-            self._head = nn.Linear(self._description.layers[-1].hidden_size, 1)
+            self._head = nn.Linear(self._description.layers[-1].hidden_size, self.network_dof_count)
             self._head.load_state_dict(
                 {
                     "weight": self._description.head_weight,
-                    "bias": self._description.head_bias.reshape(1, 1),
+                    "bias": self._description.head_bias.reshape(1, self.network_dof_count),
                 }
             )
             self._activation = nn.Tanh() if self._description.apply_tanh else None
 
             # Populate Warp-NN's shape caches before optional graph capture.
             warm_hidden = wp.zeros(
-                (num_actuators, self._description.layers[0].hidden_size), dtype=wp.float32, device=device
+                (network_count, self._description.layers[0].hidden_size), dtype=wp.float32, device=device
             )
             output = self._net_input
             for layer in self._gru_layers:
@@ -747,12 +784,19 @@ class DriveNeuralGRU(DriveBase):
             raise RuntimeError("DriveNeuralGRU must be finalized before creating state")
         if device != self._device:
             raise ValueError(f"GRU state device {device} must match drive device {self._device}")
+        if num_actuators != self._num_actuators:
+            raise ValueError("GRU state actuator count must match the finalized drive")
         return DriveNeuralGRU.State(
             hidden=wp.zeros(
-                (len(self._description.layers), num_actuators, self._description.layers[0].hidden_size),
+                (
+                    len(self._description.layers),
+                    num_actuators // self.network_dof_count,
+                    self._description.layers[0].hidden_size,
+                ),
                 dtype=wp.float32,
                 device=device,
-            )
+            ),
+            network_dof_count=self.network_dof_count,
         )
 
     def compute(
@@ -827,6 +871,7 @@ class DriveNeuralGRU(DriveBase):
                 self._input_feature_codes_wp,
                 self._input_means_wp,
                 self._input_stds_wp,
+                self.network_dof_count,
             ],
             outputs=[self._net_input],
             device=runtime_device,
@@ -850,6 +895,7 @@ class DriveNeuralGRU(DriveBase):
                 self._description.output_scale,
                 self._effort_mean,
                 self._effort_std,
+                self.network_dof_count,
             ],
             outputs=[forces],
             device=runtime_device,

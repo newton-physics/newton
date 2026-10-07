@@ -2852,15 +2852,15 @@ class ModelBuilder:
     def add_actuator(
         self,
         drive_class: type[DriveBase] | None = None,
-        index: int | None = None,
+        index: int | list[int] | tuple[int, ...] | None = None,
         clamping: list[tuple[type[ClampingBase], dict[str, Any]]] | None = None,
         delay_steps: int | None = None,
-        pos_index: int | None = None,
+        pos_index: int | list[int] | tuple[int, ...] | None = None,
         *,
         controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
         **kwargs: Any,
     ) -> None:
-        """Add an external actuator for a single DOF.
+        """Add an external actuator for one DOF or one coupled neural group.
 
         External actuators apply forces computed outside the physics engine.
         Multiple calls with the same *drive_class*, *clamping*
@@ -2873,7 +2873,9 @@ class ModelBuilder:
         Args:
             drive_class: Drive class (e.g. :class:`~newton.actuators.DrivePD`).
             index: DOF index into ``joint_qd``-shaped arrays (velocities,
-                velocity targets, feedforward, forces).
+                velocity targets, feedforward, forces). A list or tuple supplies
+                one ordered coupled neural group (experimental); its length must
+                equal ``network_dof_count``. Scalar indices remain the default.
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
                 post-drive. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
             delay_steps: Optional number of timesteps [timesteps] to delay inputs.
@@ -2881,6 +2883,7 @@ class ModelBuilder:
                 position targets). Defaults to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
                 where ``joint_q`` and ``joint_qd`` have different layouts.
+                For a coupled group, supply a list or tuple matching *index*.
             controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
         """
@@ -2894,6 +2897,22 @@ class ModelBuilder:
 
         if index is None:
             raise TypeError("add_actuator() missing required argument: 'index'")
+
+        indices = list(index) if isinstance(index, list | tuple) else [index]
+        pos_indices = (
+            list(pos_index) if isinstance(pos_index, list | tuple) else indices if pos_index is None else [pos_index]
+        )
+        group_size = kwargs.get("network_dof_count", 1)
+        if isinstance(group_size, bool) or not isinstance(group_size, int) or group_size < 1:
+            raise ValueError("network_dof_count must be a positive integer")
+        if len(indices) != group_size or len(pos_indices) != group_size:
+            raise ValueError("index and pos_index must specify one complete network_dof_count group")
+        if group_size > 1 and "network_dof_count" not in drive_class.SHARED_PARAMS:
+            raise ValueError(f"{drive_class.__name__} does not support coupled neural groups")
+        if any(isinstance(i, bool) or not isinstance(i, int | np.integer) or i < 0 for i in indices + pos_indices):
+            raise ValueError("Actuator indices must be non-negative integers")
+        if len(set(indices)) != len(indices):
+            raise ValueError("Coupled actuator group must contain distinct DOF indices")
 
         clamping = clamping or []
 
@@ -2955,12 +2974,13 @@ class ModelBuilder:
             ),
         )
 
-        entry.indices.append(index)
-        entry.pos_indices.append(pos_index if pos_index is not None else index)
-        entry.drive_args.append(drive_array_params)
-        if delay_steps is not None:
-            entry.delay_args.append({"delay_steps": delay_steps})
-        entry.clamping_args.append(clamping_array_params_list)
+        for dof_index, coord_index in zip(indices, pos_indices, strict=True):
+            entry.indices.append(dof_index)
+            entry.pos_indices.append(coord_index)
+            entry.drive_args.append(drive_array_params.copy())
+            if delay_steps is not None:
+                entry.delay_args.append({"delay_steps": delay_steps})
+            entry.clamping_args.append([params.copy() for params in clamping_array_params_list])
 
     def _stack_args_to_arrays(
         self,

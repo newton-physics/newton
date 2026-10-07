@@ -60,10 +60,12 @@ if _HAS_TORCH:
     class _LSTMNet(_torch.nn.Module):
         """Minimal LSTM network for exercising the Torch checkpoint path."""
 
-        def __init__(self, hidden: int = 8, layers: int = 1, bidirectional: bool = False):
+        def __init__(self, hidden: int = 8, layers: int = 1, bidirectional: bool = False, network_dof_count: int = 1):
             super().__init__()
-            self.lstm = _torch.nn.LSTM(2, hidden, layers, batch_first=True, bidirectional=bidirectional)
-            self.dec = _torch.nn.Linear(hidden, 1)
+            self.lstm = _torch.nn.LSTM(
+                2 * network_dof_count, hidden, layers, batch_first=True, bidirectional=bidirectional
+            )
+            self.dec = _torch.nn.Linear(hidden, network_dof_count)
 
         def forward(
             self,
@@ -130,6 +132,7 @@ def _build_lstm_onnx(
     num_layers: int = 1,
     metadata: dict | None = None,
     rng_seed: int = 0,
+    network_dof_count: int = 1,
 ) -> None:
     """Build a small ONNX LSTM policy model for drive tests."""
     if num_layers != 1:
@@ -138,18 +141,18 @@ def _build_lstm_onnx(
     onnx_mod, TensorProto, helper, numpy_helper = _onnx_modules()
 
     rng = np.random.default_rng(rng_seed)
-    input_size = 2
+    input_size = 2 * network_dof_count
 
     W = (rng.standard_normal((1, 4 * hidden_size, input_size)) * 0.3).astype(np.float32)
     R = (rng.standard_normal((1, 4 * hidden_size, hidden_size)) * 0.3).astype(np.float32)
     B = (rng.standard_normal((1, 8 * hidden_size)) * 0.05).astype(np.float32)
-    Wd = (rng.standard_normal((1, hidden_size)) * 0.3).astype(np.float32)
-    bd = np.zeros((1,), dtype=np.float32)
+    Wd = (rng.standard_normal((network_dof_count, hidden_size)) * 0.3).astype(np.float32)
+    bd = np.zeros((network_dof_count,), dtype=np.float32)
 
     x_in = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, None, input_size])
     h_in = helper.make_tensor_value_info("h_in", TensorProto.FLOAT, [num_layers, None, hidden_size])
     c_in = helper.make_tensor_value_info("c_in", TensorProto.FLOAT, [num_layers, None, hidden_size])
-    y_out = helper.make_tensor_value_info("output", TensorProto.FLOAT, [None, 1])
+    y_out = helper.make_tensor_value_info("output", TensorProto.FLOAT, [None, network_dof_count])
     h_out = helper.make_tensor_value_info("h_out", TensorProto.FLOAT, [num_layers, None, hidden_size])
     c_out = helper.make_tensor_value_info("c_out", TensorProto.FLOAT, [num_layers, None, hidden_size])
 
@@ -732,10 +735,10 @@ class TestDriveNeuralGRU(unittest.TestCase):
         stage.GetRootLayer().Save()
         return stage_path
 
-    def _make_case(self, model_path: str, n: int) -> types.SimpleNamespace:
-        indices = np.array([3, 1, 5][:n], dtype=np.uint32)
-        pos_indices = np.array([4, 0, 2][:n], dtype=np.uint32)
-        target_indices = np.array([2, 4, 0][:n], dtype=np.uint32)
+    def _make_case(self, model_path: str, n: int, *, network_dof_count: int = 1) -> types.SimpleNamespace:
+        indices = np.array([3, 1, 5, 0][:n], dtype=np.uint32)
+        pos_indices = np.array([4, 0, 2, 5][:n], dtype=np.uint32)
+        target_indices = np.array([2, 4, 0, 3][:n], dtype=np.uint32)
         position = np.array([-1.0, 0.5, 2.0, -0.25, 1.25, -2.0], dtype=np.float32)
         velocity = np.array([0.1, -0.4, 0.7, 1.1, -1.3, 0.2], dtype=np.float32)
         target = np.array([1.0, -1.5, 0.2, 2.0, 0.5, -0.7], dtype=np.float32)
@@ -745,7 +748,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
             indices=wp.array(indices, dtype=wp.uint32, device=self.device),
             pos_indices=wp.array(pos_indices, dtype=wp.uint32, device=self.device),
             target_pos_indices=wp.array(target_indices, dtype=wp.uint32, device=self.device),
-            drive=DriveNeuralGRU(model_path),
+            drive=DriveNeuralGRU(model_path, network_dof_count=network_dof_count),
         )
         state = types.SimpleNamespace(
             joint_q=wp.array(position, dtype=wp.float32, device=self.device),
@@ -776,7 +779,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
             network=self._networks[model_path],
         )
 
-    def _expected(self, metadata, case, hidden=None, target_vel_indices=None):
+    def _expected(self, metadata, case, hidden=None, target_vel_indices=None, network_dof_count=1):
         keys = metadata["input_columns"]
         stats = metadata["normalization"]["inputs"]
         position = case.position[case.pos_indices]
@@ -799,9 +802,11 @@ class TestDriveNeuralGRU(unittest.TestCase):
         means = np.array([stats["mean"][key] for key in keys], dtype=np.float32)
         stds = np.array([stats["std"][key] for key in keys], dtype=np.float32)
         layer_input = (raw - means) / stds
+        network_count = len(case.indices) // network_dof_count
+        layer_input = layer_input.reshape(network_count, -1)
         layers = case.network["layers"]
         if hidden is None:
-            hidden = np.zeros((len(layers), len(case.indices), layers[0][1].shape[2]), dtype=np.float32)
+            hidden = np.zeros((len(layers), network_count, layers[0][1].shape[2]), dtype=np.float32)
         next_hidden = []
         for layer_index, (weight_ih, weight_hh, bias) in enumerate(layers):
             size = weight_hh.shape[2]
@@ -817,7 +822,96 @@ class TestDriveNeuralGRU(unittest.TestCase):
             output = np.tanh(output)
         output *= case.network["output_scale"]
         targets = metadata["normalization"]["targets"]
-        return output[:, 0] * targets["std"]["torque"] + targets["mean"]["torque"], np.stack(next_hidden)
+        return output.reshape(-1) * targets["std"]["torque"] + targets["mean"]["torque"], np.stack(next_hidden)
+
+    def test_mimo_coupling_and_group_isolation(self):
+        """Match coupled inference to NumPy without mixing independent groups."""
+        metadata = self._metadata()
+        path = self._save_gru("mimo.onnx", metadata, input_size=8, output_size=2, layer_count=2)
+        case = self._make_case(path, 4, network_dof_count=2)
+        expected, hidden = self._expected(metadata, case, network_dof_count=2)
+        effort, actual_hidden = self._step(case)
+        np.testing.assert_allclose(effort, expected, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(actual_hidden, hidden, rtol=1e-5, atol=1e-6)
+        self.assertEqual(actual_hidden.shape, (2, 2, 4))
+
+        # Perturb one joint: its partner must respond, the other group must not.
+        case.position[case.pos_indices[0]] += 3.0
+        case.state.joint_q.assign(case.position)
+        perturbed, _ = self._step(case)
+        self.assertGreater(abs(float(perturbed[1] - effort[1])), 1e-5)
+        np.testing.assert_array_equal(perturbed[2:], effort[2:])
+
+        case.state_a, case.state_b = case.state_b, case.state_a
+        expected, hidden = self._expected(
+            metadata, case, hidden=case.state_a.drive_state.hidden.numpy(), network_dof_count=2
+        )
+        effort, actual_hidden = self._step(case)
+        np.testing.assert_allclose(effort, expected, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(actual_hidden, hidden, rtol=1e-5, atol=1e-6)
+
+    def test_mimo_state_reset_and_assign(self):
+        """Reset a coupled group's memory when any member resets and copy it in place."""
+        path = self._save_gru("mimo_state.onnx", input_size=8, output_size=2)
+        case = self._make_case(path, 4, network_dof_count=2)
+        _, hidden = self._step(case)
+        pointer = case.state_a.drive_state.hidden.ptr
+        case.state_a.assign(case.state_b)
+        self.assertEqual(case.state_a.drive_state.hidden.ptr, pointer)
+        np.testing.assert_array_equal(case.state_a.drive_state.hidden.numpy(), hidden)
+        case.state_a.reset(wp.array([False, True, False, False], dtype=wp.bool, device=self.device))
+        reset = case.state_a.drive_state.hidden.numpy()
+        np.testing.assert_array_equal(reset[:, 0, :], 0.0)
+        np.testing.assert_array_equal(reset[:, 1, :], hidden[:, 1, :])
+        case.state_a.reset()
+        np.testing.assert_array_equal(case.state_a.drive_state.hidden.numpy(), 0.0)
+        with self.assertRaisesRegex(ValueError, "mask has length"):
+            case.state_b.reset(wp.array([True, False], dtype=wp.bool, device=self.device))
+
+    def test_mimo_rejects_invalid_grouping(self):
+        """Reject invalid counts, mismatched checkpoints and incomplete builder groups."""
+        path = self._save_gru("mimo_invalid.onnx", input_size=8, output_size=2)
+        for count in (0, -1, True, 1.5):
+            with self.subTest(count=count), self.assertRaisesRegex(ValueError, "positive integer"):
+                DriveNeuralGRU(path, network_dof_count=count)
+        with self.assertRaisesRegex(ValueError, "output head"):
+            DriveNeuralGRU(path)
+        with self.assertRaisesRegex(ValueError, "divisible"):
+            self._make_case(path, 3, network_dof_count=2)
+        wrong_input = self._save_gru("mimo_wrong_input.onnx", input_size=4, output_size=2)
+        with self.assertRaisesRegex(ValueError, "GRU input size"):
+            DriveNeuralGRU(wrong_input, network_dof_count=2)
+        with self.assertRaisesRegex(ValueError, "complete"):
+            newton.ModelBuilder().add_actuator(DriveNeuralGRU, index=0, model_path=path, network_dof_count=2)
+
+    def test_mimo_builder_custom_inputs(self):
+        """Keep coupled GRU state and declared custom inputs isolated across worlds."""
+        path = self._save_gru("mimo_builder.onnx", input_size=8, output_size=2)
+        template = newton.ModelBuilder()
+        links = [template.add_link() for _ in range(2)]
+        joints = [
+            template.add_joint_revolute(parent=-1, child=links[0]),
+            template.add_joint_revolute(parent=links[0], child=links[1]),
+        ]
+        template.add_articulation(joints)
+        template.add_actuator(DriveNeuralGRU, index=[1, 0], model_path=path, network_dof_count=2)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize(device=self.device)
+        actuator = model.actuators[0]
+        np.testing.assert_array_equal(actuator.indices.numpy(), [1, 0, 3, 2])
+        state, control = model.state(), model.control()
+        current, next_state = actuator.state(), actuator.state()
+        self.assertEqual(current.drive_state.hidden.shape, (1, 2, 4))
+        self.assertEqual(len(control.bias_force), 4)
+        actuator.step(state, control, current, next_state, self.SAMPLE_DT)
+        first = control.joint_f.numpy().copy()
+        control.bias_force.assign(np.array([5.0, 0, 0, 0], dtype=np.float32))
+        control.joint_f.zero_()
+        actuator.step(state, control, current, next_state, self.SAMPLE_DT)
+        second = control.joint_f.numpy()
+        self.assertGreater(np.max(np.abs(first[:2] - second[:2])), 1e-6)
+        np.testing.assert_array_equal(first[2:], second[2:])
 
     def _step(self, case):
         case.control.joint_f.zero_()
@@ -1204,7 +1298,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         def missing_head(model):
             node(model, "Gemm").op_type = "MatMul"
 
-        edits.append(("missing_head.onnx", missing_head, "one scalar Gemm"))
+        edits.append(("missing_head.onnx", missing_head, "one Gemm"))
 
         def unsupported_head(model):
             set_attribute(model, "Gemm", "alpha", 2.0)
@@ -1412,6 +1506,16 @@ class TestDriveNeuralGRU(unittest.TestCase):
             self.skipTest("CUDA graph capture requires a CUDA device")
 
         case = self._make_case(self._save_gru("captured.onnx"), 2)
+        self._check_graph_replay(case)
+
+    def test_mimo_step_replays_under_cuda_graph_capture(self):
+        """Capture coupled inference with independent recurrent lanes per group."""
+        if not self.device.is_cuda:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+        path = self._save_gru("mimo_captured.onnx", input_size=8, output_size=2)
+        self._check_graph_replay(self._make_case(path, 4, network_dof_count=2))
+
+    def _check_graph_replay(self, case):
         eager, _ = self._step(case)
 
         # Deliberately no warm-up beyond the eager step above: finalize() is
@@ -1605,6 +1709,144 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         self.assertEqual(parsed.drive_class, DriveNeuralGRU)
         self.assertEqual(os.path.realpath(parsed.drive_kwargs["model_path"]), os.path.realpath(model_path))
+
+
+@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+class TestNeuralMIMO(unittest.TestCase):
+    """Exercise coupled neural drives through the shared actuator pipeline."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.device = wp.get_device("cpu")
+
+    def _checkpoint(self, cls):
+        path = os.path.join(self.tmp.name, cls.__name__ + ".onnx")
+        if cls is DriveNeuralMLP:
+            _build_mlp_onnx(
+                path,
+                np.array([[0, 0, 1, 0], [1, 0, 0, 0]], dtype=np.float32),
+                np.zeros(2, dtype=np.float32),
+                {"model_type": "mlp"},
+            )
+        else:
+            _build_lstm_onnx(path, hidden_size=4, network_dof_count=2, metadata={"model_type": "lstm"})
+        return path
+
+    def _template(self, cls, path, *, delay_steps=None, floating=False):
+        builder = newton.ModelBuilder()
+        parent = -1
+        joints = []
+        if floating:
+            parent = builder.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
+            joints.append(builder.add_joint_free(child=parent))
+        for _ in range(2):
+            body = builder.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
+            joints.append(builder.add_joint_revolute(parent=parent, child=body))
+            parent = body
+        builder.add_articulation(joints, label="robot")
+        builder.add_actuator(
+            cls,
+            index=[builder.joint_qd_start[j] for j in joints[-2:][::-1]],
+            pos_index=[builder.joint_q_start[j] for j in joints[-2:][::-1]],
+            model_path=path,
+            network_dof_count=2,
+            delay_steps=delay_steps,
+            clamping=[(ClampingMaxEffort, {"max_effort": 10.0})],
+        )
+        return builder
+
+    def test_mimo_replication_selection_delay(self):
+        """Preserve groups through floating-base replication, delay and selection."""
+        path = self._checkpoint(DriveNeuralMLP)
+        builder = newton.ModelBuilder()
+        builder.replicate(self._template(DriveNeuralMLP, path, delay_steps=1, floating=True), 2)
+        model = builder.finalize(device=self.device)
+        actuator = model.actuators[0]
+        np.testing.assert_array_equal(actuator.indices.numpy(), [7, 6, 15, 14])
+        np.testing.assert_array_equal(actuator.pos_indices.numpy(), [8, 7, 17, 16])
+        view = ArticulationView(model, "robot")
+        clamp = actuator.clamping[0]
+        limits = view.get_actuator_parameter(actuator, clamp, "max_effort")
+        limits_np = limits.numpy()
+        limits_np[limits_np == 10.0] = 3.0
+        view.set_actuator_parameter(actuator, clamp, "max_effort", wp.array(limits_np, device=self.device))
+        np.testing.assert_array_equal(clamp.max_effort.numpy(), 3.0)
+
+        sim_state, control = model.state(), model.control()
+        current, next_state = actuator.state(), actuator.state()
+        targets = control.joint_target_q.numpy()
+        targets[actuator.target_pos_indices.numpy()] = [1.0, 2.0, 4.0, 5.0]
+        control.joint_target_q.assign(targets)
+        actuator.step(sim_state, control, current, next_state, 0.01)
+        np.testing.assert_allclose(control.joint_f.numpy()[actuator.indices.numpy()], [2, 1, 3, 3])
+        current, next_state = next_state, current
+        control.joint_target_q.zero_()
+        control.joint_f.zero_()
+        actuator.step(sim_state, control, current, next_state, 0.01)
+        np.testing.assert_allclose(control.joint_f.numpy()[actuator.indices.numpy()], [2, 1, 3, 3])
+        next_state.assign(current)
+        next_state.reset(wp.array([True, True, False, False], dtype=wp.bool, device=self.device))
+
+    def test_mimo_lstm_numpy_and_reset(self):
+        """Match coupled LSTM recurrence to NumPy and reset only the selected group."""
+        path = self._checkpoint(DriveNeuralLSTM)
+        builder = newton.ModelBuilder()
+        builder.replicate(self._template(DriveNeuralLSTM, path), 2)
+        model = builder.finalize(device=self.device)
+        actuator = model.actuators[0]
+        sim_state, control = model.state(), model.control()
+        control.joint_target_q.assign(np.array([0.2, 0.7, -0.1, 0.4], dtype=np.float32))
+        current, next_state = actuator.state(), actuator.state()
+        onnx, _, _, numpy_helper = _onnx_modules()
+        weights = {item.name: numpy_helper.to_array(item) for item in onnx.load(path).graph.initializer}
+        inputs = np.array([[0.7, 0, 0.2, 0], [0.4, 0, -0.1, 0]], dtype=np.float32)
+        hidden, cell = np.zeros((2, 4), dtype=np.float32), np.zeros((2, 4), dtype=np.float32)
+        for _ in range(3):
+            gates = inputs @ weights["W"][0].T + hidden @ weights["R"][0].T
+            gates += weights["B"][0, :16] + weights["B"][0, 16:]
+            i, o, f, c = np.split(gates, 4, axis=1)
+
+            def sigmoid(x):
+                return 1.0 / (1.0 + np.exp(-x))
+
+            cell = sigmoid(f) * cell + sigmoid(i) * np.tanh(c)
+            hidden = sigmoid(o) * np.tanh(cell)
+            expected = hidden @ weights["Wd"].T + weights["bd"]
+            control.joint_f.zero_()
+            actuator.step(sim_state, control, current, next_state, 0.01)
+            np.testing.assert_allclose(control.joint_f.numpy()[actuator.indices.numpy()], expected.flatten(), atol=1e-6)
+            np.testing.assert_allclose(next_state.drive_state.hidden.numpy()[0], hidden, atol=1e-6)
+            current, next_state = next_state, current
+        next_state.assign(current)
+        pointer = next_state.drive_state.hidden.ptr
+        next_state.reset(wp.array([False, True, False, False], dtype=wp.bool, device=self.device))
+        self.assertEqual(next_state.drive_state.hidden.ptr, pointer)
+        np.testing.assert_array_equal(next_state.drive_state.hidden.numpy()[:, 0], 0)
+        np.testing.assert_allclose(next_state.drive_state.hidden.numpy()[0, 1], hidden[1], atol=1e-6)
+        np.testing.assert_array_equal(next_state.drive_state.cell.numpy()[:, 0], 0)
+        np.testing.assert_allclose(next_state.drive_state.cell.numpy()[0, 1], cell[1], atol=1e-6)
+
+    def test_mimo_validation_and_implicit(self):
+        """Reject incomplete groups, invalid checkpoints and implicit coupled inference."""
+        for cls in (DriveNeuralMLP, DriveNeuralLSTM):
+            with self.subTest(drive=cls.__name__):
+                path = self._checkpoint(cls)
+                for value in (0, -1, True, 1.5):
+                    with self.assertRaisesRegex(ValueError, "positive integer"):
+                        cls(path, network_dof_count=value)
+                with self.assertRaisesRegex(ValueError, "divisible"):
+                    cls(path, network_dof_count=2).finalize(self.device, 3)
+                builder = newton.ModelBuilder()
+                with self.assertRaisesRegex(ValueError, "complete"):
+                    builder.add_actuator(cls, index=0, model_path=path, network_dof_count=2)
+                self.assertFalse(builder.actuator_entries)
+                model = self._template(cls, path).finalize(device=self.device)
+                response = JointSpaceResponse(model)
+                with self.assertRaisesRegex(NotImplementedError, "MIMO"):
+                    model.actuators[0].set_effort_mode_implicit(response)
+                with self.assertRaisesRegex(ValueError, "shape"):
+                    cls(path).finalize(self.device, 2)
 
 
 @unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
@@ -2176,6 +2418,64 @@ class _TorchCheckpointTestMixin:
         extra = {"metadata.json": json.dumps(metadata)} if metadata else None
         self.torch.export.save(exported, path, extra_files=extra)
         return path
+
+
+@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+class TestNeuralMIMOTorch(_TorchCheckpointTestMixin, unittest.TestCase):
+    """Verify coupled Torch checkpoints use the same grouping as ONNX."""
+
+    def test_mimo_torch_reference(self):
+        """Compare MLP and recurrent LSTM outputs to their exported Torch networks."""
+        for cls in (DriveNeuralMLP, DriveNeuralLSTM):
+            with self.subTest(drive=cls.__name__):
+                self.torch.manual_seed(12)
+                batch = self.torch.export.Dim("batch", min=1)
+                x = self.torch.randn(2, 4, device=self._torch_dev)
+                metadata = {}
+                if cls is DriveNeuralMLP:
+                    net = self.torch.nn.Linear(4, 2).to(self._torch_dev)
+                    args, shapes = (x,), ({0: batch},)
+                else:
+                    net = _LSTMNet(hidden=4, network_dof_count=2).to(self._torch_dev)
+                    h = self.torch.zeros(1, 2, 4, device=self._torch_dev)
+                    args = (x.unsqueeze(1), (h, h.clone()))
+                    shapes = ({0: batch}, ({1: batch}, {1: batch}))
+                    metadata = {"num_layers": 1, "hidden_size": 4}
+                path = self._export_pt2(net, args, shapes, cls.__name__ + ".pt2", metadata)
+                drive = cls(path, network_dof_count=2)
+                indices = wp.array([1, 0, 3, 2], dtype=wp.uint32, device=self.device)
+                actuator = Actuator(indices=indices, drive=drive)
+                state = types.SimpleNamespace(
+                    joint_q=wp.zeros(4, device=self.device), joint_qd=wp.zeros(4, device=self.device)
+                )
+                control = types.SimpleNamespace(
+                    joint_target_q=wp.array([0.2, 0.7, -0.1, 0.4], dtype=wp.float32, device=self.device),
+                    joint_target_qd=wp.zeros(4, device=self.device),
+                    joint_f=wp.zeros(4, device=self.device),
+                )
+                current, next_state = actuator.state(), actuator.state()
+                inputs = self.torch.tensor([[0.7, 0, 0.2, 0], [0.4, 0, -0.1, 0]], device=self._torch_dev)
+                hidden = self.torch.zeros(1, 2, 4, device=self._torch_dev)
+                cell = hidden.clone()
+                for _ in range(2):
+                    with self.torch.inference_mode():
+                        if cls is DriveNeuralMLP:
+                            expected = net(inputs)
+                        else:
+                            expected, (hidden, cell) = net(inputs.unsqueeze(1), (hidden, cell))
+                    control.joint_f.zero_()
+                    actuator.step(state, control, current, next_state, 0.01)
+                    np.testing.assert_allclose(
+                        control.joint_f.numpy()[indices.numpy()],
+                        expected.cpu().numpy().flatten(),
+                        atol=1e-6,
+                    )
+                    current, next_state = next_state, current
+                next_state.assign(current)
+                next_state.reset(wp.array([False, True, False, False], dtype=wp.bool, device=self.device))
+                if cls is DriveNeuralLSTM:
+                    self.assertTrue(self.torch.all(next_state.drive_state.hidden[:, 0] == 0).item())
+                    self.torch.testing.assert_close(next_state.drive_state.hidden[:, 1], hidden[:, 1])
 
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
@@ -5261,6 +5561,41 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         act_prim.CreateAttribute("newton:maxMotorEffort", Sdf.ValueTypeNames.Float).Set(200.0)
 
         return stage
+
+    def test_mimo_usd_import_preserves_targets(self):
+        """Import all neural targets in order and replicate the complete group."""
+        from pxr import Sdf
+
+        path = os.path.join(self._tmp_dir, "mimo.onnx")
+        _build_mlp_onnx(path, np.zeros((2, 4)), np.array([1.0, 2.0]), {"model_type": "mlp"})
+        stage = self._build_neural_stage(path)
+        layer = stage.GetRootLayer()
+        Sdf.CopySpec(layer, "/World/Robot/Link1", layer, "/World/Robot/Link2")
+        Sdf.CopySpec(layer, "/World/Robot/Joint1", layer, "/World/Robot/Joint2")
+        joint = stage.GetPrimAtPath("/World/Robot/Joint2")
+        joint.GetRelationship("physics:body0").SetTargets(["/World/Robot/Link1"])
+        joint.GetRelationship("physics:body1").SetTargets(["/World/Robot/Link2"])
+        prim = stage.GetPrimAtPath("/World/Robot/NeuralActuator")
+        targets = ["/World/Robot/Joint2", "/World/Robot/Joint1"]
+        prim.GetRelationship("newton:targets").SetTargets(targets)
+        parsed = parse_actuator_prim(prim)
+        self.assertEqual(parsed.target_paths, tuple(targets))
+        self.assertEqual(parsed.drive_kwargs["network_dof_count"], 2)
+        template = newton.ModelBuilder()
+        result = parse_usd(template, stage)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize(device="cpu")
+        actuator = model.actuators[0]
+        self.assertEqual(actuator.drive.network_dof_count, 2)
+        first = [template.joint_qd_start[result["path_joint_map"][p]] for p in targets]
+        np.testing.assert_array_equal(actuator.indices.numpy(), first + [i + template.joint_dof_count for i in first])
+        state, control = model.state(), model.control()
+        actuator.step(state, control, actuator.state(), actuator.state(), 0.01)
+        np.testing.assert_allclose(control.joint_f.numpy()[actuator.indices.numpy()], [1, 2, 1, 2])
+        prim.GetRelationship("newton:targets").SetTargets([targets[0], "/World/Missing"])
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            parse_actuator_prim(prim)
 
     def test_parse_mlp_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for MLP checkpoint."""

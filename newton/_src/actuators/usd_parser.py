@@ -73,7 +73,9 @@ class ActuatorParsed:
     drive_kwargs: dict[str, Any] = field(default_factory=dict)
     component_specs: list[tuple[type[ClampingBase | Delay], dict[str, Any]]] = field(default_factory=list)
     target_path: str = ""
-    """Joint target path (USD prim path of the driven joint)."""
+    """First joint target path (retained for single-DOF callers)."""
+    target_paths: tuple[str, ...] = ()
+    """Ordered joint targets forming one coupled neural group, or one target."""
 
     def __init__(
         self,
@@ -84,6 +86,7 @@ class ActuatorParsed:
         *,
         controller_class: type[DriveBase] | object = _DEPRECATED_UNSET,
         controller_kwargs: dict[str, Any] | object = _DEPRECATED_UNSET,
+        target_paths: tuple[str, ...] | None = None,
     ) -> None:
         """Initialize a parsed actuator specification.
 
@@ -92,6 +95,7 @@ class ActuatorParsed:
             drive_kwargs: Parsed drive constructor arguments.
             component_specs: Parsed delay and clamping specifications.
             target_path: USD prim path of the driven joint.
+            target_paths: Ordered coupled targets; defaults to ``(target_path,)``.
             controller_class: Deprecated in Newton 1.6; use ``drive_class``.
             controller_kwargs: Deprecated in Newton 1.6; use ``drive_kwargs``.
         """
@@ -112,7 +116,8 @@ class ActuatorParsed:
         self.drive_class = drive_class
         self.drive_kwargs = {} if drive_kwargs is _DEPRECATED_UNSET else drive_kwargs
         self.component_specs = [] if component_specs is None else component_specs
-        self.target_path = target_path
+        self.target_paths = tuple(target_paths) if target_paths is not None else (target_path,)
+        self.target_path = self.target_paths[0] if self.target_paths else target_path
 
     @property
     def controller_class(self) -> type[DriveBase]:
@@ -325,7 +330,8 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
             f"Actuator prim '{prim.GetPath()}' has no authored 'newton:targets' relationship; "
             f"deactivate the prim instead of leaving the target empty"
         )
-    if len(target_paths) > 1:
+    is_neural = SchemaNames.NEURAL_CONTROL in get_applied_api_schemas(prim)
+    if len(target_paths) > 1 and not is_neural:
         warnings.warn(
             f"Actuator prim {prim.GetPath()} has {len(target_paths)} targets; "
             f"only the first is used, additional targets are ignored",
@@ -335,18 +341,19 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
 
     _SUPPORTED_JOINT_TYPES = {"PhysicsRevoluteJoint", "PhysicsPrismaticJoint"}
     stage = prim.GetStage()
-    target_prim = stage.GetPrimAtPath(target_paths[0]) if stage else None
-    if target_prim is None or not target_prim.IsValid():
-        raise ValueError(
-            f"Actuator prim '{prim.GetPath()}' targets '{target_paths[0]}' which does not exist on the stage"
-        )
-    target_type = target_prim.GetTypeName()
-    if target_type not in _SUPPORTED_JOINT_TYPES:
-        raise ValueError(
-            f"Actuator prim '{prim.GetPath()}' targets '{target_paths[0]}' "
-            f"of type '{target_type}'; only {sorted(_SUPPORTED_JOINT_TYPES)} "
-            f"are supported"
-        )
+    for target_path in target_paths:
+        target_prim = stage.GetPrimAtPath(target_path) if stage else None
+        if target_prim is None or not target_prim.IsValid():
+            raise ValueError(
+                f"Actuator prim '{prim.GetPath()}' targets '{target_path}' which does not exist on the stage"
+            )
+        target_type = target_prim.GetTypeName()
+        if target_type not in _SUPPORTED_JOINT_TYPES:
+            raise ValueError(
+                f"Actuator prim '{prim.GetPath()}' targets '{target_path}' "
+                f"of type '{target_type}'; only {sorted(_SUPPORTED_JOINT_TYPES)} "
+                f"are supported"
+            )
 
     drive_class = None
     drive_kwargs: dict[str, Any] = {}
@@ -382,9 +389,13 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
     if drive_class is None:
         raise ValueError(f"Actuator prim '{prim.GetPath()}' has no drive schema (detected schemas: {detected})")
 
+    if is_neural:
+        drive_kwargs["network_dof_count"] = len(target_paths)
+
     return ActuatorParsed(
         drive_class=drive_class,
         drive_kwargs=drive_kwargs,
         component_specs=component_specs,
         target_path=target_paths[0],
+        target_paths=tuple(target_paths),
     )

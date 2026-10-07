@@ -503,6 +503,8 @@ class Actuator:
                 "and the neural drives open their own wp.Tape, which cannot nest inside "
                 "an outer tape. Build the Actuator with requires_grad=False."
             )
+        if self.drive.network_dof_count != 1:
+            raise NotImplementedError("Implicit actuation does not support coupled MIMO neural drives")
         if self.drive.custom_inputs and type(self.drive).prepare_implicit is DriveBase.prepare_implicit:
             raise NotImplementedError(
                 f"{type(self.drive).__name__} declares custom inputs but does not override prepare_implicit, "
