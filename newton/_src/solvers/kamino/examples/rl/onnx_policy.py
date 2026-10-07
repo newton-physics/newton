@@ -7,34 +7,24 @@ from pathlib import Path
 
 import warp as wp
 
+from .....utils.onnx import load_onnx_runtime
+
 
 class WarpOnnxPolicy:
     """Evaluate a single-input, single-output ONNX policy with Warp-NN."""
 
     def __init__(self, path: str | Path, device: wp.DeviceLike, batch_size: int, *, action_width: int) -> None:
-        try:
-            from warp_nn.runtime import OnnxRuntime  # noqa: PLC0415
-        except ImportError as exc:  # pragma: no cover
-            raise ImportError(
-                "Kamino ONNX policy inference requires Warp-NN. Install it with `pip install newton[onnx]`."
-            ) from exc
-
         self.device = wp.get_device(device)
-        self.runtime = OnnxRuntime(str(path), device=self.device)
-        if len(self.runtime.inputs) != 1 or len(self.runtime.outputs) != 1:
+        self.runtime = load_onnx_runtime(str(path), device=self.device, batch_size=batch_size, input_batch_axes=0)
+        inputs, outputs = self.runtime.inputs, self.runtime.outputs
+        if len(inputs) != 1 or len(outputs) != 1:
             raise ValueError(
                 f"Policy '{path}' must have exactly one input and one output; got "
-                f"inputs={self.runtime.inputs}, outputs={self.runtime.outputs}"
+                f"inputs={[spec.name for spec in inputs]}, outputs={[spec.name for spec in outputs]}"
             )
-        self.input_name = self.runtime.inputs[0].name
-        self.output_name = self.runtime.outputs[0].name
-        self.runtime.prepare(batch_size=batch_size)
-        input_spec = self.runtime.inputs[0]
-        observation = wp.ones(
-            tuple(batch_size if dimension is None else dimension for dimension in input_spec.shape),
-            dtype=input_spec.dtype,
-            device=self.device,
-        )
+        self.input_name = inputs[0].name
+        self.output_name = outputs[0].name
+        observation = wp.zeros(inputs[0].shape, dtype=inputs[0].dtype, device=self.device)
         output_shape = self.runtime({self.input_name: observation})[self.output_name].shape
         expected_output_shape = (batch_size, action_width)
         if output_shape != expected_output_shape:

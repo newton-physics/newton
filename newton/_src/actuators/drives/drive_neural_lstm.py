@@ -266,17 +266,11 @@ class DriveNeuralLSTM(DriveBase):
         self._network = runtime
         self.network = runtime
 
-        outputs = runtime(
-            {
-                self._input_name: wp.zeros((1, num_actuators, 2), dtype=wp.float32, device=device),
-                self._hidden_in_name: wp.zeros(
-                    (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
-                ),
-                self._cell_in_name: wp.zeros(
-                    (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
-                ),
-            }
-        )
+        inputs = {
+            spec.name: wp.zeros(spec.shape, dtype=spec.dtype, device=device, requires_grad=True)
+            for spec in runtime.inputs
+        }
+        outputs = runtime(inputs)
         out_shape = outputs[self._output_name].shape
         if out_shape != (num_actuators, 1):
             raise ValueError(
