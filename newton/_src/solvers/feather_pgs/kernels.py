@@ -6560,6 +6560,8 @@ def pgs_solve_loop(
     world_row_type: wp.array2d[int],
     world_row_parent: wp.array2d[int],
     world_row_mu: wp.array2d[float],
+    friction_start_iteration: int,
+    iteration_offset: int,
     # in/out
     world_impulses: wp.array2d[float],
 ):
@@ -6567,15 +6569,20 @@ def pgs_solve_loop(
 
     The residual of row ``i`` is ``rhs_i + sum_j C_ij lambda_j``. Contact and joint-limit
     rows are unilateral; the first friction row of a contact solves both tangents on the
-    Coulomb disk of the current normal impulse (:func:`friction_pair_candidate`).
+    Coulomb disk of the current normal impulse (:func:`friction_pair_candidate`). Friction
+    rows hold zero impulse in iterations before ``friction_start_iteration``, counted from
+    ``iteration_offset``.
     """
     world = wp.tid()
     m = world_constraint_count[world]
     if m == 0:
         return
-    for _it in range(iterations):
+    for it in range(iterations):
         for i in range(m):
             row_type = world_row_type[world, i]
+            if row_type == PGS_CONSTRAINT_TYPE_FRICTION and iteration_offset + it < friction_start_iteration:
+                world_impulses[world, i] = 0.0
+                continue
             if row_type == PGS_CONSTRAINT_TYPE_FRICTION and i != world_row_parent[world, i] + 1:
                 continue
 
@@ -6705,6 +6712,8 @@ def pgs_solve_mf_loop(
     art_dof_start: wp.array[int],
     iterations: int,
     omega: float,
+    friction_start_iteration: int,
+    iteration_offset: int,
     # in/out
     mf_impulses: wp.array2d[float],
     v_out: wp.array[float],
@@ -6714,13 +6723,18 @@ def pgs_solve_mf_loop(
     ``J v`` is recomputed from ``v_out`` for every row and each impulse change is applied
     immediately through ``M^-1 J^T``. Rows are laid out as ``[contacts and friction]
     [velocity limits]``, so the velocity limits have the last word in each sweep; they
-    are stateless and apply only the impulse needed for the current overshoot.
+    are stateless and apply only the impulse needed for the current overshoot. Friction
+    rows hold zero impulse in iterations before ``friction_start_iteration``, counted from
+    ``iteration_offset``.
     """
     world = wp.tid()
     m = mf_constraint_count[world]
-    for _it in range(iterations):
+    for it in range(iterations):
         for i in range(m):
             row_type = mf_row_type[world, i]
+            if row_type == PGS_CONSTRAINT_TYPE_FRICTION and iteration_offset + it < friction_start_iteration:
+                mf_impulses[world, i] = 0.0
+                continue
             parent_idx = mf_row_parent[world, i]
             if row_type == PGS_CONSTRAINT_TYPE_FRICTION and i != parent_idx + 1:
                 continue
@@ -6791,6 +6805,13 @@ def pgs_solve_mf_loop(
                 delta_impulse = new_impulse - old_impulse
             mf_impulses[world, i] = new_impulse
             _mf_apply_impulse(world, i, mf_MiJt_a, mf_MiJt_b, dof_a, dof_b, delta_impulse, v_out)
+
+
+@wp.kernel
+def scale_array_inplace(values: wp.array[float], scale: float):
+    """Multiply every entry of ``values`` by ``scale``."""
+    i = wp.tid()
+    values[i] = values[i] * scale
 
 
 @wp.kernel

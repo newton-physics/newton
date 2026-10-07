@@ -68,6 +68,7 @@ def validate_configuration(settings):
         "contact_shared_anchor": False,
         "contact_friction_shared_anchor": False,
         "friction_mode": "current",
+        "contact_friction_position_iterations": -1,
     }
     for key, expected in required.items():
         if settings[key] != expected:
@@ -98,7 +99,7 @@ def start_step(solver, contacts, dt):
     if count < 0 or count > contacts.rigid_contact_max:
         raise RuntimeError("contact_compliance rejects overflowing contact input")
     restitution = getattr(solver, "shape_material_restitution", None)
-    if restitution is not None and np.any(restitution.numpy() > 0.0):
+    if getattr(solver, "enable_restitution", True) and restitution is not None and np.any(restitution.numpy() > 0.0):
         # The compliant law replaces the position bias; a rebound target has no
         # defined composition with it.
         raise ValueError("contact_compliance requires zero shape restitution")

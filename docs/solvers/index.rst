@@ -181,7 +181,7 @@ may use different subsets or interpret these fields according to their own
 formulation.
 
 - ``mu``: :class:`~newton.solvers.SolverFeatherPGS` (arithmetic mean of the two
-  shapes), :class:`~newton.solvers.SolverFeatherstone`,
+  shapes, scaled by ``contact_friction_scale``), :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`,
   :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverMuJoCo`,
   :class:`~newton.solvers.SolverVBD`, :class:`~newton.solvers.SolverKamino`,
@@ -196,7 +196,8 @@ formulation.
   :class:`~newton.solvers.SolverMuJoCo`
   (see :ref:`mujoco-contact-friction-solreffriction`).
 - ``restitution``: :class:`~newton.solvers.SolverFeatherPGS` (arithmetic mean of
-  the two shapes, for impacts faster than ``restitution_velocity_threshold``),
+  the two shapes, for impacts faster than ``restitution_velocity_threshold``, unless
+  ``enable_restitution=False``),
   :class:`~newton.solvers.SolverXPBD` when ``enable_restitution=True``, and
   :class:`~newton.solvers.SolverKamino`.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and

@@ -104,6 +104,8 @@ def _validate_torsion_mode(solver):
         raise ValueError("Contact torsion requires a non-differentiable CUDA model and pgs_warmstart=False")
     if solver.friction_mode != "current":
         raise ValueError(f"Contact torsion requires friction_mode='current', got {solver.friction_mode!r}")
+    if not solver.enable_contact_friction:
+        raise ValueError("Contact torsion requires enable_contact_friction=True")
 
 
 @dataclass
