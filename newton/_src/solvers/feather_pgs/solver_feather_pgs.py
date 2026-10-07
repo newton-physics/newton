@@ -1645,7 +1645,7 @@ class SolverFeatherPGS(SolverBase):
                 with ``SHAPE_PROPERTIES``. It scales the friction rows, patches and the torsion
                 budget; the model's coefficients are unchanged.
             contact_friction_position_iterations: Number of position iterations that solve
-                friction rows. ``-1`` (the default) solves them in every position iteration;
+                tangential friction rows. ``-1`` (the default) solves them in every position iteration;
                 ``k >= 0`` solves them only in the last ``k`` position iterations (``0`` never),
                 and holds their impulses at zero before that. Velocity-only iterations always
                 solve friction. Values other than ``-1`` reject ``pgs_warmstart``,
