@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 from ..core.types import Axis, override
 from .camera import Camera
-from .gl.image_logger import (
+from .image_logger import (
     _atlas_layout,
     _convert_to_packed_rgba_numpy,
     _pack_rgba_warp,
