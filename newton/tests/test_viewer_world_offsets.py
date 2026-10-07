@@ -12,6 +12,23 @@ from newton.viewer import ViewerNull
 
 
 class TestViewerWorldOffsets(unittest.TestCase):
+    def test_single_world_global_shapes_keep_default_extents(self):
+        """Keep global shapes out of world layout and ground-plane sizing."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.01)
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(model.world_count, 1)
+        self.assertTrue(np.all(model.shape_world.numpy() == -1))
+
+        viewer = ViewerNull(num_frames=1)
+        viewer.set_model(model)
+
+        self.assertIsNone(viewer._get_world_extents())
+        self.assertIsNone(viewer.world_offsets)
+
     def test_compute_world_offsets_function(self):
         """Test that the shared compute_world_offsets function works correctly."""
         # Test basic functionality

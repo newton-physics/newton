@@ -413,6 +413,36 @@ class TestViewerLayerBackends(unittest.TestCase):
     def _make_viser_viewer(self):
         captured_calls = {}
 
+        class GuiHandle:
+            def __init__(self, value=None, disabled=False):
+                self.value = value
+                self.disabled = disabled
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def on_update(self, callback):
+                return callback
+
+            def on_click(self, callback):
+                return callback
+
+            def remove(self):
+                return None
+
+        class Gui:
+            def add_folder(self, _name, **_kwargs):
+                return GuiHandle()
+
+            def add_checkbox(self, _label, initial_value, **_kwargs):
+                return GuiHandle(initial_value)
+
+            def add_button(self, _label, **kwargs):
+                return GuiHandle(disabled=kwargs.get("disabled", False))
+
         def add_mesh_simple(name, vertices, faces, color, wireframe, side):
             captured_calls["add_mesh_simple"] = {
                 "name": name,
@@ -432,6 +462,8 @@ class TestViewerLayerBackends(unittest.TestCase):
             batched_wxyzs,
             batched_scales,
             batched_colors,
+            batched_opacities,
+            wireframe,
             lod,
         ):
             captured_calls["add_batched_meshes_simple"] = {
@@ -455,6 +487,7 @@ class TestViewerLayerBackends(unittest.TestCase):
 
         server = Mock()
         server.scene = scene
+        server.gui = Gui()
         server.on_client_connect = Mock()
         server.on_client_disconnect = Mock()
         server.get_scene_serializer = Mock(return_value=None)
@@ -506,40 +539,6 @@ class TestViewerLayerBackends(unittest.TestCase):
             scene.captured_calls["add_batched_meshes_simple"]["name"],
             "/layers/solverA/instances",
         )
-
-    def test_viser_warns_when_appearance_argument_is_unsupported(self):
-        """Drop unsupported appearance arguments with an explicit warning."""
-
-        def add_batched_meshes_trimesh(name):
-            return name
-
-        with self.assertWarnsRegex(UserWarning, "batched_opacities"):
-            result = ViewerViser._call_scene_method(
-                add_batched_meshes_trimesh,
-                name="instances",
-                batched_opacities=[0.5],
-            )
-
-        self.assertEqual(result, "instances")
-
-    def test_viser_does_not_retry_failed_scene_calls(self):
-        """Propagate scene failures without retrying with unsupported arguments."""
-        call_count = 0
-
-        def add_batched_meshes_trimesh(name):
-            nonlocal call_count
-            call_count += 1
-            raise RuntimeError(f"failed to add {name}")
-
-        with self.assertWarnsRegex(UserWarning, "batched_opacities"):
-            with self.assertRaisesRegex(RuntimeError, "failed to add instances"):
-                ViewerViser._call_scene_method(
-                    add_batched_meshes_trimesh,
-                    name="instances",
-                    batched_opacities=[0.5],
-                )
-
-        self.assertEqual(call_count, 1)
 
     def test_viser_set_camera_preserves_orientation_when_omitted(self):
         """Verify set_camera keeps the last angle for each axis omitted as None.
