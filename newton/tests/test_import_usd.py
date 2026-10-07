@@ -185,6 +185,52 @@ class TestImportUsdPhysics(unittest.TestCase):
                             self.assertIn(property_key, migration[0])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_hydroelastic_importer_defaults_precede_compatibility_defaults(self):
+        """Prefer hydroelastic importer defaults in registered mode and audit the change."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        class CompatibilityHydroelastic(usd.SchemaResolver):
+            name = "compat_hydroelastic"
+            mapping: ClassVar = {
+                usd.PrimType.SHAPE: {
+                    "hydroelastic_enabled": usd.SchemaResolver.SchemaAttribute("custom:enabled", True),
+                    "kh": usd.SchemaResolver.SchemaAttribute("custom:kh", 123.0),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/scene")
+        prim = UsdGeom.Sphere.Define(stage, "/sphere").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.CollisionAPI.Apply(prim)
+
+        for enabled in (False, True):
+            for registered, audit in ((False, False), (False, True), (True, False)):
+                with self.subTest(enabled=enabled, registered=registered, audit=audit):
+                    builder = newton.ModelBuilder()
+                    builder.default_shape_cfg.is_hydroelastic = enabled
+                    builder.default_shape_cfg.kh = 456.0
+                    builder.default_shape_cfg.sdf_max_resolution = 64
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        result = builder.add_usd(
+                            stage,
+                            schema_resolvers=[CompatibilityHydroelastic(), usd.SchemaResolverNewton()],
+                            use_registered_schema_fallbacks=registered,
+                            audit_registered_schema_fallbacks=audit,
+                        )
+                    shape = result["path_shape_map"]["/sphere"]
+                    self.assertEqual(
+                        bool(builder.shape_flags[shape] & ShapeFlags.HYDROELASTIC), enabled or not registered
+                    )
+                    self.assertEqual(builder.shape_material_kh[shape], 456.0 if registered else 123.0)
+                    migration = [str(item.message) for item in caught if issubclass(item.category, DeprecationWarning)]
+                    self.assertEqual(len(migration), int(audit), migration)
+                    if migration:
+                        self.assertIn("kh:", migration[0])
+                        self.assertEqual("hydroelastic_enabled:" in migration[0], not enabled)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_custom_schema_getter_without_mapping(self):
         """Honor custom getters and tolerate unmapped optional properties."""
         from pxr import Usd, UsdGeom, UsdPhysics

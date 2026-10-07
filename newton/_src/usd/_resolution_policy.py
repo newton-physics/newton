@@ -889,7 +889,8 @@ class _UsdResolutionPolicy:
             prim,
             PrimType.SHAPE,
             "hydroelastic_enabled",
-            None,
+            False if has_sdf_api else defaults.is_hydroelastic,
+            legacy_default=None,
             interpreter=interpret_enabled,
         )
 
@@ -937,6 +938,8 @@ class _UsdResolutionPolicy:
             prim,
             PrimType.SHAPE,
             "kh",
+            default=defaults.kh,
+            legacy_default=None,
             interpreter=interpret_stiffness,
             verbose=self._verbose,
         )
