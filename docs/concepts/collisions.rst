@@ -1655,6 +1655,15 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    forces written by :meth:`~solvers.SolverXPBD.update_contacts` are
    approximate -- see that method's documentation for details.
 
+.. note::
+
+   :class:`~solvers.SolverVBD` populates the rigid-contact rows of
+   :attr:`~Contacts.force` when it integrates the rigid bodies, and the
+   soft-contact rows (row ``rigid_contact_max + i`` for soft contact ``i``) for
+   rigid-soft particle, edge, and face records. With an external rigid solver the
+   rigid rows are left to that solver. See
+   :meth:`~solvers.SolverVBD.update_contacts` for the sign and torque convention.
+
 Example usage:
 
 .. testsetup:: contact-data
@@ -2288,6 +2297,17 @@ fresh geometry becomes the saved history for the next frame.  The extra
 per-contact buffers (four ``vec3`` columns for the body-frame points and
 offsets) are only allocated when the mode is ``"sticky"``; ``"latest"`` and
 ``"disabled"`` pay zero additional memory and launch no additional kernels.
+
+**Memory**
+
+Both enabled modes keep the previous frame's sorted keys, uniqueness claims,
+contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
+``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
+``contact_report=True`` adds 4.  ``"disabled"`` allocates no matching history.
+
+The deterministic pipeline's sorter omits the unused simple-layout scratch,
+saving 48 bytes per ``rigid_contact_max`` slot. This more than offsets the
+additional matcher-owned midpoint and normal history.
 
 .. _Contact Reports:
 

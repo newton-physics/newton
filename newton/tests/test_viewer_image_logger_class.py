@@ -8,6 +8,7 @@ the per-helper tests in ``test_viewer_image_logger.py`` cannot reach
 without instantiating ``ImageLogger`` itself.
 """
 
+import contextlib
 import sys
 import types
 import unittest
@@ -144,7 +145,7 @@ class _ImageLoggerFixture(unittest.TestCase):
         self.fake_gl = _FakeGL()
         _install_fake_pyglet(self.fake_gl)
 
-        from newton._src.viewer.gl.image_logger import ImageLogger  # noqa: PLC0415
+        from newton._src.viewer.image_logger import ImageLogger  # noqa: PLC0415
 
         self.ImageLogger = ImageLogger
         self.cpu_device = wp.get_device("cpu")
@@ -223,6 +224,31 @@ class TestImageLoggerOrchestration(_ImageLoggerFixture):
 
         # Second clear must not raise.
         self.logger.clear()
+
+    def test_fullscreen_request_is_frame_scoped(self):
+        """Verify pop_fullscreen returns the last fullscreen name once."""
+        self.logger.log("docked", np.zeros((8, 8), dtype=np.uint8))
+        self.assertIsNone(self.logger.pop_fullscreen())
+
+        self.logger.log("a", np.zeros((8, 8), dtype=np.uint8), fullscreen=True)
+        self.logger.log("b", np.zeros((8, 8), dtype=np.uint8), fullscreen=True)
+        self.assertEqual(self.logger.pop_fullscreen(), "b")
+        self.assertIsNone(self.logger.pop_fullscreen())
+
+        self.logger.log("a", np.zeros((8, 8), dtype=np.uint8), fullscreen=True)
+        self.logger.clear_matching(lambda name: name == "a")
+        self.assertIsNone(self.logger.pop_fullscreen())
+
+    def test_set_device_releases_images_only_on_change(self):
+        """Verify rebinding to a new device drops textures registered on the old one."""
+        self.logger.log("cam0", np.zeros((8, 8), dtype=np.uint8))
+        self.logger.set_device(self.cpu_device)
+        self.assertIn("cam0", self.logger._images)
+
+        other_device = mock.MagicMock()
+        self.logger.set_device(other_device)
+        self.assertEqual(self.logger._images, {})
+        self.assertIs(self.logger.device, other_device)
 
 
 class TestImageLoggerDeviceWarnings(_ImageLoggerFixture):
@@ -342,7 +368,12 @@ class _FakeRenderer:
 class _FakeFullscreenImageLogger:
     def __init__(self, texture):
         self.texture = texture
+        self.fullscreen_name = None
         self.get_texture_calls = []
+
+    def pop_fullscreen(self):
+        name, self.fullscreen_name = self.fullscreen_name, None
+        return name
 
     def get_texture(self, name, *, fullscreen=False):
         self.get_texture_calls.append((name, fullscreen))
@@ -357,7 +388,6 @@ class TestViewerGLFullscreenMainImage(unittest.TestCase):
         viewer = viewer_gl.ViewerGL.__new__(viewer_gl.ViewerGL)
         viewer.renderer = _FakeRenderer()
         viewer._image_logger = _FakeFullscreenImageLogger(texture)
-        viewer._main_image_name = None
         viewer._last_time = 0.0
         viewer.wind = None
         viewer.camera = object()
@@ -373,7 +403,7 @@ class TestViewerGLFullscreenMainImage(unittest.TestCase):
         from newton._src.viewer import viewer_gl  # noqa: PLC0415
 
         viewer = self._make_viewer(texture=(17, 64, 48))
-        viewer._main_image_name = "color"
+        viewer._image_logger.fullscreen_name = "color"
 
         with mock.patch.object(viewer_gl.ViewerGL, "_update_camera", autospec=True):
             viewer_gl.ViewerGL._update(viewer)
@@ -382,7 +412,7 @@ class TestViewerGLFullscreenMainImage(unittest.TestCase):
         self.assertEqual(viewer.renderer.render_texture_calls, [(17, 64, 48)])
         self.assertEqual(len(viewer.renderer.render_calls), 1)
         self.assertEqual(viewer.renderer.present_count, 2)
-        self.assertIsNone(viewer._main_image_name)
+        self.assertIsNone(viewer._image_logger.fullscreen_name)
         self.assertEqual(viewer._image_logger.get_texture_calls, [("color", True)])
 
     def test_missing_fullscreen_texture_renders_empty_texture(self):
@@ -390,7 +420,7 @@ class TestViewerGLFullscreenMainImage(unittest.TestCase):
         from newton._src.viewer import viewer_gl  # noqa: PLC0415
 
         viewer = self._make_viewer(texture=None)
-        viewer._main_image_name = "color"
+        viewer._image_logger.fullscreen_name = "color"
 
         with mock.patch.object(viewer_gl.ViewerGL, "_update_camera", autospec=True):
             viewer_gl.ViewerGL._update(viewer)
@@ -398,7 +428,111 @@ class TestViewerGLFullscreenMainImage(unittest.TestCase):
         self.assertEqual(viewer.renderer.render_texture_calls, [(None, 0, 0)])
         self.assertEqual(viewer.renderer.render_calls, [])
         self.assertEqual(viewer.renderer.present_count, 1)
-        self.assertIsNone(viewer._main_image_name)
+        self.assertIsNone(viewer._image_logger.fullscreen_name)
+
+
+class TestViewerGuiDrawsLoggedImages(unittest.TestCase):
+    def test_render_ui_draws_viewer_image_logger(self):
+        """Verify the shared GUI draws whichever viewer owns the image logger."""
+        from newton._src.viewer.viewer_gui import _SIDEBAR_WIDTH_PX, ViewerGui  # noqa: PLC0415
+
+        gui = ViewerGui.__new__(ViewerGui)
+        gui._viewer = types.SimpleNamespace(_image_logger=mock.Mock())
+        gui.ui = types.SimpleNamespace(dpi_scale=2.0)
+        gui._render_logged_images()
+        gui._viewer._image_logger.draw.assert_called_once_with(gui.ui, sidebar_width_px=_SIDEBAR_WIDTH_PX)
+
+
+class TestViewerGLImageWindowSurvivesExampleSwitch(unittest.TestCase):
+    def test_clear_model_keeps_drawing_logged_images(self):
+        """Verify the image window is still drawn after clear_model drops example UI callbacks."""
+        from newton._src.viewer import viewer_gl, viewer_gui  # noqa: PLC0415
+
+        renderer = mock.MagicMock()
+        renderer.window.get_framebuffer_size.return_value = (640, 480)
+        renderer.window.get_size.return_value = (640, 480)
+        fake_ui = types.SimpleNamespace(is_available=True, imgui=mock.MagicMock(), dpi_scale=1.0)
+        with (
+            wp.ScopedDevice("cpu"),
+            mock.patch.object(viewer_gl, "RendererGL", return_value=renderer),
+            mock.patch.object(viewer_gl, "ImageLogger"),
+            mock.patch.object(viewer_gui, "UI", return_value=fake_ui),
+        ):
+            viewer = viewer_gl.ViewerGL(headless=False)
+        self.addCleanup(viewer.close)
+
+        viewer.clear_model()
+        panels = ("_render_gizmos", "_render_left_panel", "_render_stats_overlay", "_render_scalar_plots")
+        with contextlib.ExitStack() as stack:
+            for panel in panels:
+                stack.enter_context(mock.patch.object(viewer.gui, panel))
+            viewer.gui._render_ui()
+
+        viewer._image_logger.draw.assert_called_once()
+
+
+class TestViewerRTXLogImage(unittest.TestCase):
+    def _make_viewer(self, headless: bool):
+        from newton._src.viewer.viewer_rtx import ViewerRTX  # noqa: PLC0415
+        from newton._src.viewer.viewer_usd import UsdGeom  # noqa: PLC0415
+
+        if UsdGeom is None:
+            self.skipTest("usd-core is required")
+        # Neither OVRTX nor the window is created before the first rendered frame.
+        with (
+            wp.ScopedDevice("cpu"),
+            mock.patch.dict("sys.modules", {"ovrtx": types.SimpleNamespace(__version__="0.3.0")}),
+        ):
+            viewer = ViewerRTX(headless=headless)
+        self.addCleanup(viewer.close)
+        viewer._image_logger = mock.Mock()
+        return viewer
+
+    def test_log_image_before_window_is_validated_and_buffered(self):
+        """Verify images logged before the GL context exists are kept for the first frame."""
+        viewer = self._make_viewer(headless=False)
+        image = np.zeros((4, 4), dtype=np.uint8)
+        viewer.log_image("a", image, fullscreen=True)
+        viewer.log_image("b", image, fullscreen=True)
+        viewer.log_image("a", image, fullscreen=True)
+
+        viewer._image_logger.log.assert_not_called()
+        # Flush order must keep the last fullscreen call winning.
+        self.assertEqual(list(viewer._pending_images), [("b", True), ("a", True)])
+        with self.assertRaises(ValueError):
+            viewer.log_image("bad", np.zeros(4, dtype=np.uint8))
+
+        viewer.clear_model()
+        self.assertEqual(viewer._pending_images, {})
+
+    def test_log_image_is_ignored_when_headless(self):
+        """Verify headless RTX, which has no GL context, drops logged images."""
+        viewer = self._make_viewer(headless=True)
+        viewer.log_image("color", np.zeros((4, 4), dtype=np.uint8))
+        viewer._image_logger.log.assert_not_called()
+        self.assertEqual(viewer._pending_images, {})
+
+    def test_fullscreen_image_replaces_rtx_render(self):
+        """Verify a fullscreen image is presented instead of stepping OVRTX."""
+        from newton._src.viewer.viewer_rtx import ViewerRTX  # noqa: PLC0415
+
+        for texture, expected in (((7, 64, 32), (7, 64, 32)), (None, (None, 0, 0))):
+            with self.subTest(texture=texture):
+                viewer = ViewerRTX.__new__(ViewerRTX)
+                viewer._image_logger = mock.Mock()
+                viewer._image_logger.pop_fullscreen.return_value = "color"
+                viewer._image_logger.get_texture.return_value = texture
+                viewer._rtx = mock.Mock()
+                viewer._should_close = False
+                viewer._window = object()
+                viewer._present = mock.Mock()
+
+                ViewerRTX._render_and_display(viewer)
+
+                viewer._image_logger.get_texture.assert_called_once_with("color", fullscreen=True)
+                viewer._present.assert_called_once_with(*expected)
+                viewer._rtx.step.assert_not_called()
+                viewer._rtx.step_async.assert_not_called()
 
 
 @unittest.skipUnless(wp.is_cuda_available(), "GPU-path test requires CUDA")
@@ -411,7 +545,7 @@ class TestImageLoggerEnsurePboRollback(unittest.TestCase):
         self.fake_gl = _FakeGL()
         _install_fake_pyglet(self.fake_gl)
 
-        from newton._src.viewer.gl.image_logger import ImageLogger, LoggedImage  # noqa: PLC0415
+        from newton._src.viewer.image_logger import ImageLogger, LoggedImage  # noqa: PLC0415
 
         self.ImageLogger = ImageLogger
         self.LoggedImage = LoggedImage
@@ -526,7 +660,7 @@ class TestViewerGLInitialization(unittest.TestCase):
                 self.closed = True
 
         class _FakeImageLogger:
-            def __init__(self, device, sidebar_width_px=0.0, dpi_scale=1.0):
+            def __init__(self, device):
                 self.device = device
 
             def clear_matching(self, owns):
