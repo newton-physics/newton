@@ -1258,6 +1258,23 @@ class _UsdResolutionPolicy:
             audit_key=audit_key,
         )
 
+    def resolve_joint_effort_limit(self, prim: Any, *, drive_limit: float | None) -> float | None:
+        """Resolve the tighter of the joint and drive effort limits [N or N·m]."""
+
+        def interpret(resolved: _ResolvedValue) -> float | None:
+            if resolved.value is None:
+                return drive_limit
+            return resolved.value if drive_limit is None else min(drive_limit, resolved.value)
+
+        return self._resolver._get_interpreted_value(
+            prim,
+            PrimType.JOINT,
+            "effort_limit",
+            default=None,
+            interpreter=interpret,
+            verbose=self._verbose,
+        ).value
+
     def resolve_optional_joint_state(self, prim: Any, key: str) -> float | None:
         """Resolve optional joint state without reporting normal absence as an error."""
         return self._resolver.get_value(

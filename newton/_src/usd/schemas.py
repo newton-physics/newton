@@ -655,6 +655,26 @@ def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     return damping
 
 
+def _mjc_joint_effort_limit(read_attribute: _AttributeReader) -> float | None:
+    """Read a joint effort limit [N or N·m] from MuJoCo ``mjc:actuatorfrcrange``.
+
+    ``mjc:actuatorfrclimited = "auto"`` follows MuJoCo's default ``autolimits`` and
+    limits only a non-empty range. Newton's effort limit is symmetric, so an
+    asymmetric range keeps its larger magnitude, as MJCF import does.
+    """
+    lower = read_attribute("mjc:actuatorfrcrange:min")
+    upper = read_attribute("mjc:actuatorfrcrange:max")
+    if lower is None and upper is None:
+        return None
+    lower, upper = float(lower or 0.0), float(upper or 0.0)
+    limited = read_attribute("mjc:actuatorfrclimited")
+    if limited is None:
+        limited = "auto"
+    if limited == "true" or (limited == "auto" and lower < upper):
+        return max(abs(lower), abs(upper))
+    return None
+
+
 class SchemaResolverMjc(SchemaResolver):
     """Schema resolver for MuJoCo USD attributes."""
 
@@ -690,6 +710,12 @@ class SchemaResolverMjc(SchemaResolver):
             # MuJoCo authors angular damping per radian rather than per degree.
             "damping": SchemaAttribute("mjc:damping", None, angular_unit="radians"),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
+            "effort_limit": _reader_schema_attribute(
+                "mjc:actuatorfrcrange:min",
+                None,
+                _reader_value_getter=_mjc_joint_effort_limit,
+                attribute_names=("mjc:actuatorfrcrange:min", "mjc:actuatorfrcrange:max", "mjc:actuatorfrclimited"),
+            ),
         },
         PrimType.SHAPE: {
             # Mesh

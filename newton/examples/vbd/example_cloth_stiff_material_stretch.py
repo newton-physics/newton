@@ -151,7 +151,7 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(pos=wp.vec3(8.44, 3.26, 4.23), pitch=-20.0, yaw=-180.0)
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+        if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = 53.0
         self.capture()
 

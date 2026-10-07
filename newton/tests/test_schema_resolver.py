@@ -568,6 +568,38 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
         self.assertEqual(scene["time_steps_per_second"].value, 100)
         self.assertAlmostEqual(shape["gap"].value, 0.04)
 
+    def test_mjc_joint_effort_limit_from_source_values(self):
+        """Resolve MuJoCo effort ranges without PXR under both policies."""
+        names = ("mjc:actuatorfrcrange:min", "mjc:actuatorfrcrange:max", "mjc:actuatorfrclimited")
+        cases = (
+            ("symmetric", -7.0, 7.0, None, 7.0),
+            ("asymmetric", -2.0, 4.0, None, 4.0),
+            ("disabled", -7.0, 7.0, "false", None),
+            ("explicit_zero", 0.0, 0.0, "true", 0.0),
+            ("lower_only", -7.0, None, None, 7.0),
+            ("upper_only", None, 7.0, None, 7.0),
+            ("empty_auto", 0.0, 0.0, None, None),
+            ("missing", None, None, None, None),
+        )
+        for registered in (False, True):
+            resolution = SchemaResolution([SchemaResolverMjc()], use_registered_schema_fallbacks=registered)
+            self.assertEqual(resolution.requirements(PrimType.JOINT, keys=("effort_limit",)), names)
+            for case, lower, upper, limited, expected in cases:
+                with self.subTest(registered=registered, case=case):
+                    values = {
+                        name: value
+                        for name, value in zip(names, (lower, upper, limited), strict=True)
+                        if value is not None
+                    }
+                    result = resolution.resolve(PrimType.JOINT, values, keys=("effort_limit",))["effort_limit"]
+                    self.assertEqual(result.value, expected)
+                    self.assertEqual(
+                        result.source,
+                        SchemaResolution.Source.AUTHORED
+                        if expected is not None
+                        else SchemaResolution.Source.UNRESOLVED,
+                    )
+
     def test_mjc_collision_schema_owns_solref_fallback(self):
         """Resolve the MuJoCo collision fallback from its owning schema."""
         resolution = _composed_resolution([SchemaResolverMjc()])
@@ -3999,6 +4031,7 @@ class TestSchemaResolver(unittest.TestCase):
         to validate that joint positions and velocities are correctly initialized during
         model building. Tests revolute joint state initialization with degree-to-radian
         conversion and confirms expected values match the authored USD content.
+        Angular joint-state positions and velocities are authored in degrees and degrees per second.
         """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -4053,6 +4086,7 @@ class TestSchemaResolver(unittest.TestCase):
                 actual_vel = joint_qd[qd_start]
 
                 expected_pos_deg, expected_vel = expected_joint_values[joint_label]
+                expected_vel = math.radians(expected_vel)
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 self.assertAlmostEqual(
@@ -4081,6 +4115,7 @@ class TestSchemaResolver(unittest.TestCase):
         to validate D6 joint state initialization. Tests multi-DOF joint handling, per-axis
         state initialization, and validates both D6 joints (multiple rotational DOFs) and
         revolute joints (single DOF) are correctly initialized from authored Newton attributes.
+        Angular joint-state positions and velocities are authored in degrees and degrees per second.
         """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -4142,6 +4177,7 @@ class TestSchemaResolver(unittest.TestCase):
                 # Validate each DOF against expected values
                 for dof_idx in range(min(dof_count, len(expected_values))):
                     expected_pos_deg, expected_vel = expected_values[dof_idx]
+                    expected_vel = math.radians(expected_vel)
                     expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                     actual_pos = joint_q[q_start + dof_idx]
@@ -4172,6 +4208,7 @@ class TestSchemaResolver(unittest.TestCase):
             joint_type = joint_types[i]
             if joint_type == 1 and i in expected_revolute_joints:  # JointType.REVOLUTE
                 expected_pos_deg, expected_vel = expected_revolute_joints[i]
+                expected_vel = math.radians(expected_vel)
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 q_start = int(joint_q_start[i])
@@ -4203,6 +4240,8 @@ class TestSchemaResolver(unittest.TestCase):
         1. DOF indices correctly map to the actual DOF axes that were added
         2. Missing initial values don't cause index shifts for subsequent axes
         3. Only axes that were actually added as DOFs are processed
+
+        Angular joint-state positions and velocities are authored in degrees and degrees per second.
         """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -4295,6 +4334,7 @@ class TestSchemaResolver(unittest.TestCase):
             # Validate each DOF maps to the correct expected value
             for dof_idx in range(dof_count):
                 expected_pos_deg, expected_vel = expected_values[dof_idx]
+                expected_vel = math.radians(expected_vel)
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 actual_pos = joint_q[q_start + dof_idx]
