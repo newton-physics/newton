@@ -500,12 +500,14 @@ class TestSolverKaminoLOX(unittest.TestCase):
                 )
 
     def test_large_joint_violation_is_corrected_by_max_correction_per_step(self):
-        """Correct a joint violation by at most ``joint_max_correction`` per step, and a smaller one fully."""
+        """Correct a joint violation by at most ``joint_max_correction`` per step, and a smaller one beyond the tolerance."""
         time_step = 0.01
-        max_correction = self.make_config().lox.joint_max_correction
+        lox_config = self.make_config().lox
+        max_correction = lox_config.joint_max_correction
+        tolerance = lox_config.position_tolerance
         for offset, corrected in (
             (100.0 * max_correction, max_correction),
-            (0.5 * max_correction, 0.5 * max_correction),
+            (0.5 * max_correction, 0.5 * max_correction - tolerance),
         ):
             expected_speed = corrected / time_step
             with self.subTest(offset=offset):
@@ -522,6 +524,38 @@ class TestSolverKaminoLOX(unittest.TestCase):
 
                 velocity = state_next.body_qd.numpy()[0, :3]
                 self.assertAlmostEqual(float(-velocity[0]), expected_speed, delta=0.05 * expected_speed)
+
+    def test_joint_violation_within_tolerance_is_left_uncorrected(self):
+        """Correct only the part of a joint translation beyond the position tolerance, and of a joint
+        rotation beyond the rotation tolerance."""
+        time_step = 0.01
+        tolerance = 1.0e-4
+        # The other tolerance stays far smaller, so each row must use the tolerance of its own kind
+        small_tolerance = 1.0e-7
+        for kind in ("translation", "rotation"):
+            for offset, corrected in ((0.5 * tolerance, 0.0), (3.0 * tolerance, 2.0 * tolerance)):
+                with self.subTest(kind=kind, offset=offset):
+                    model = _build_revolute_dynamics_model(damping=0.0, friction=0.0, velocity=0.0)
+                    config = self.make_config()
+                    config.lox.position_tolerance = tolerance if kind == "translation" else small_tolerance
+                    config.lox.rotation_tolerance = tolerance if kind == "rotation" else small_tolerance
+                    solver = SolverKamino(model, config=config)
+                    state_previous = model.state()
+                    state_next = model.state()
+                    body_q = state_previous.body_q.numpy()
+                    if kind == "translation":
+                        # Pull the link off its hinge anchor along x
+                        body_q[0, 0] += offset
+                    else:
+                        # Tilt the link about x, across its hinge axis along y
+                        body_q[0, 3:7] = (math.sin(0.5 * offset), 0.0, 0.0, math.cos(0.5 * offset))
+                    state_previous.body_q.assign(body_q)
+
+                    solver.step(state_previous, state_next, model.control(), contacts=None, dt=time_step)
+
+                    velocity = state_next.body_qd.numpy()[0]
+                    component = velocity[0] if kind == "translation" else velocity[3]
+                    self.assertAlmostEqual(float(-component), corrected / time_step, delta=0.05 * tolerance / time_step)
 
     def test_spinning_hinge_keeps_its_axis(self):
         """Integrate the LOX velocity of a body spinning about a non-principal hinge axis along that axis."""

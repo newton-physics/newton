@@ -185,6 +185,8 @@ class LOXProblem:
         self.rotation_correction = rotation_correction
         self.joint_proximal_relaxation = joint_proximal_relaxation
         self._joint_max_correction = math.inf
+        self._joint_translation_dead_zone = 0.0
+        self._joint_rotation_dead_zone = 0.0
         self.contact_compliance = contact_compliance
         self.contact_restitution = contact_restitution
         self.contact_spatial_friction = contact_spatial_friction
@@ -384,6 +386,8 @@ class LOXProblem:
         time_step: wp.array[wp.float32],
         *,
         joint_max_correction: float,
+        joint_translation_dead_zone: float,
+        joint_rotation_dead_zone: float,
         limit_stabilization_fraction: float,
         contact_stabilization_fraction: float,
         contact_dead_zone: float,
@@ -394,6 +398,8 @@ class LOXProblem:
         Args:
             time_step: Time step of each world [s].
             joint_max_correction: Largest joint residual corrected in one step [m or rad].
+            joint_translation_dead_zone: Translational joint residual left uncorrected [m].
+            joint_rotation_dead_zone: Rotational joint residual left uncorrected [rad].
             limit_stabilization_fraction: Fraction of the limit violation corrected in one step.
             contact_stabilization_fraction: Fraction of the contact penetration corrected in one step.
             contact_dead_zone: Symmetric contact distance dead zone of the stabilization [m].
@@ -401,6 +407,8 @@ class LOXProblem:
                 previous time step.
         """
         self._joint_max_correction = joint_max_correction
+        self._joint_translation_dead_zone = joint_translation_dead_zone
+        self._joint_rotation_dead_zone = joint_rotation_dead_zone
         if self._data.structural_rows.count > 0:
             if self._data.structural_rows.proximal_defect is not None:
                 self._data.structural_rows.proximal_defect.zero_()
@@ -539,6 +547,8 @@ class LOXProblem:
                     self._data.structural_rows.penalty,
                     prescribed_twist=self.body_velocity_begin,
                     joint_max_correction=self._joint_max_correction,
+                    joint_translation_dead_zone=self._joint_translation_dead_zone,
+                    joint_rotation_dead_zone=self._joint_rotation_dead_zone,
                 )
             rows = self._data.structural_rows
             rows.body_impulse.zero_()
@@ -571,7 +581,8 @@ class LOXProblem:
     def update_structural_multipliers_from_twist(
         self,
         time_step: wp.array[wp.float32],
-        structural_tolerance: float,
+        position_tolerance: float,
+        rotation_tolerance: float,
         global_twist: wp.array[vec6f],
         projected_twist: wp.array[vec6f],
         world_active: wp.array[wp.bool],
@@ -580,8 +591,10 @@ class LOXProblem:
     ) -> None:
         """Update the structural multipliers from the candidate twist of each joint, in one pass over the joints.
 
-        The per-world structural residual is accumulated into ``structural_rows.world_residual``,
-        which the convergence check reads and clears. A non-finite update fails its world.
+        The per-world structural residual, scaled by ``position_tolerance`` for the translational
+        rows and ``rotation_tolerance`` for the rotational rows, is accumulated into
+        ``structural_rows.world_residual``, which the convergence check reads and clears. A
+        non-finite update fails its world.
         """
         if self._data.structural_rows.count == 0:
             return
@@ -591,7 +604,8 @@ class LOXProblem:
             dim=self.model.size.sum_of_num_joints,
             inputs=[
                 time_step,
-                structural_tolerance,
+                position_tolerance,
+                rotation_tolerance,
                 joints.wid,
                 joints.dof_type,
                 joints.coords_offset,
@@ -617,6 +631,8 @@ class LOXProblem:
                 self._data.structural_rows.penalty,
                 self.joint_proximal_relaxation,
                 self._joint_max_correction,
+                self._joint_translation_dead_zone,
+                self._joint_rotation_dead_zone,
             ],
             outputs=[
                 self._data.structural_rows.proximal_defect,
