@@ -434,6 +434,7 @@ def add_equality_weld(
         body1: First body index, or ``-1`` for the world.
         body2: Second body index, or ``-1`` for the world.
         relpose: Relative pose of the second body in the first body's frame.
+            If omitted, preserve the bodies' initial relative pose.
         torquescale: Angular residual length scale [m].
         label: Optional constraint label.
         enabled: Whether the constraint is active.
@@ -451,6 +452,9 @@ def add_equality_weld(
         raise ValueError("A weld equality must reference at least one body.")
     if body1 == body2:
         raise ValueError("A weld equality requires two distinct bodies.")
+    if relpose is None:
+        # MuJoCo's zero-quaternion sentinel asks the compiler to infer relpose from qpos0.
+        relpose = wp.transform(wp.vec3(0.0, 1.0, 0.0), wp.quat(0.0, 0.0, 0.0, 0.0))
     return _add_equality_constraint(
         builder,
         EqType.WELD,

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...geometry import ShapeFlags
-from ...sim import ModelBuilder
+from ...sim import JointType, ModelBuilder
 from ._authoring import _ensure_mujoco_attributes, _prepare_custom_frequency_row, _tristate, _vector
 
 
@@ -119,7 +119,8 @@ def add_tendon_fixed(
 
     Args:
         builder: Model builder receiving the tendon.
-        joints: Ordered ``(joint_index, coefficient)`` entries.
+        joints: Ordered ``(joint_index, coefficient)`` entries. D6 and fixed
+            joints are unsupported because they have no single MuJoCo joint mapping.
         label: Optional tendon label.
         stiffness: Tendon stiffness [N/m].
         damping: Tendon damping [N·s/m].
@@ -146,6 +147,8 @@ def add_tendon_fixed(
     for joint, _ in entries:
         if joint < 0 or joint >= joint_count:
             raise IndexError(f"joint index {joint} is outside [0, {joint_count}).")
+        if builder.joint_type[joint] in (JointType.D6, JointType.FIXED):
+            raise ValueError(f"Joint {joint} cannot be used in a fixed tendon: no single MuJoCo joint mapping.")
 
     joint_start = builder._custom_frequency_counts.get("mujoco:tendon_joint", 0)
     values = _tendon_values(

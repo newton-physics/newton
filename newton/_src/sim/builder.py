@@ -1259,10 +1259,14 @@ class ModelBuilder:
         builder), ``destination_builder``, ``entity_offsets``, ``custom_frequency_offsets``,
         ``row_indices`` (source row index of each value), ``world``, and ``label_prefix``. It
         must return a list of the same length.
+
+        Mutually exclusive with :attr:`references`; the callback owns reference remapping.
         """
 
         def __post_init__(self):
             """Initialize default values and validate dtype compatibility."""
+            if self.references is not None and self.reference_value_transformer is not None:
+                raise ValueError("references and reference_value_transformer cannot both be specified.")
             # Allow str dtype for string attributes (stored as Python lists, not warp arrays)
             if self.dtype is not str:
                 # ensure dtype is a valid Warp dtype

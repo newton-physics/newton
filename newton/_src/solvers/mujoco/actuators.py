@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -13,7 +14,7 @@ from typing import Any
 import warp as wp
 
 from ...geometry import ShapeFlags
-from ...sim import ModelBuilder
+from ...sim import JointType, ModelBuilder
 from ._authoring import _add_custom_frequency_row, _ensure_mujoco_attributes, _tristate, _vector
 from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 
@@ -25,6 +26,11 @@ class ActuatorTarget:
     Construct targets with :meth:`joint`, :meth:`joint_dof`, :meth:`tendon`,
     :meth:`site`, :meth:`body`, or :meth:`slider_crank`. The authoring helper
     resolves the target to MuJoCo's heterogeneous ``trnid`` representation.
+
+    Targets must belong to the builder's current world or the global world
+    (``-1``). For ball and free joints, a single-value ``gear`` scales the
+    selected DOF's axis. Longer gear vectors use MuJoCo's native transmission
+    layout and define the direction explicitly.
     """
 
     class Kind(Enum):
@@ -142,13 +148,23 @@ def _validate_index(name: str, index: int, count: int) -> None:
         raise IndexError(f"{name} index {index} is outside [0, {count}).")
 
 
+def _validate_target_world(builder: ModelBuilder, name: str, index: int, world: int) -> None:
+    if world not in (-1, builder.current_world):
+        raise ValueError(
+            f"{name} index {index} belongs to world {world}, "
+            f"but the actuator is added to world {builder.current_world}."
+        )
+
+
 def _validate_site(builder: ModelBuilder, site: int, name: str) -> None:
     _validate_index(name, site, len(builder.shape_flags))
     if not (int(builder.shape_flags[site]) & int(ShapeFlags.SITE)):
         raise ValueError(f"{name} index {site} does not identify a Newton site.")
+    _validate_target_world(builder, name, site, int(builder.shape_world[site]))
 
 
-def _resolve_target(builder: ModelBuilder, target: ActuatorTarget) -> tuple[int, wp.vec2i]:
+def _resolve_target(builder: ModelBuilder, target: ActuatorTarget) -> tuple[int, wp.vec2i, int]:
+    """Resolve transmission type, indices, and the axis for a single-value gear."""
     from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
     if not isinstance(target, ActuatorTarget):
@@ -167,32 +183,42 @@ def _resolve_target(builder: ModelBuilder, target: ActuatorTarget) -> tuple[int,
         else:
             local_dof = target.dof
         _validate_index("joint dof", local_dof, dof_count)
-        dof = int(builder.joint_qd_start[target.index]) + local_dof
-        return int(SolverMuJoCo.TrnType.JOINT), wp.vec2i(dof, -1)
-
-    if target.kind == ActuatorTarget.Kind.JOINT_DOF:
+        joint = target.index
+        dof = int(builder.joint_qd_start[joint]) + local_dof
+    elif target.kind == ActuatorTarget.Kind.JOINT_DOF:
         _validate_index("joint dof", target.index, len(builder.joint_qd))
-        return int(SolverMuJoCo.TrnType.JOINT), wp.vec2i(target.index, -1)
+        dof = target.index
+        joint = bisect_right(builder.joint_qd_start, dof) - 1
+        local_dof = dof - int(builder.joint_qd_start[joint])
+
+    if target.kind in (ActuatorTarget.Kind.JOINT, ActuatorTarget.Kind.JOINT_DOF):
+        _validate_target_world(builder, "joint", joint, int(builder.joint_world[joint]))
+        gear_axis = local_dof if builder.joint_type[joint] in (JointType.BALL, JointType.FREE) else 0
+        return int(SolverMuJoCo.TrnType.JOINT), wp.vec2i(dof, -1), gear_axis
 
     if target.kind == ActuatorTarget.Kind.TENDON:
         tendon_count = builder._custom_frequency_counts.get("mujoco:tendon", 0)
         _validate_index("tendon", target.index, tendon_count)
-        return int(SolverMuJoCo.TrnType.TENDON), wp.vec2i(target.index, -1)
+        world_attr = builder.custom_attributes["mujoco:tendon_world"]
+        world = world_attr.values[target.index] if target.index < len(world_attr.values) else None
+        _validate_target_world(builder, "tendon", target.index, int(world_attr.default if world is None else world))
+        return int(SolverMuJoCo.TrnType.TENDON), wp.vec2i(target.index, -1), 0
 
     if target.kind == ActuatorTarget.Kind.SITE:
         _validate_site(builder, target.index, "site")
         if target.secondary_index >= 0:
             _validate_site(builder, target.secondary_index, "refsite")
-        return int(SolverMuJoCo.TrnType.SITE), wp.vec2i(target.index, target.secondary_index)
+        return int(SolverMuJoCo.TrnType.SITE), wp.vec2i(target.index, target.secondary_index), 0
 
     if target.kind == ActuatorTarget.Kind.BODY:
         _validate_index("body", target.index, len(builder.body_mass))
-        return int(SolverMuJoCo.TrnType.BODY), wp.vec2i(target.index, -1)
+        _validate_target_world(builder, "body", target.index, int(builder.body_world[target.index]))
+        return int(SolverMuJoCo.TrnType.BODY), wp.vec2i(target.index, -1), 0
 
     if target.kind == ActuatorTarget.Kind.SLIDER_CRANK:
         _validate_site(builder, target.index, "cranksite")
         _validate_site(builder, target.secondary_index, "slidersite")
-        return int(SolverMuJoCo.TrnType.SLIDERCRANK), wp.vec2i(target.index, target.secondary_index)
+        return int(SolverMuJoCo.TrnType.SLIDERCRANK), wp.vec2i(target.index, target.secondary_index), 0
 
     raise ValueError(f"Unsupported actuator target kind {target.kind!r}.")
 
@@ -297,7 +323,9 @@ def _add_actuator(
     from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
     _ensure_mujoco_attributes(builder, "mujoco:actuator_trnid")
-    trntype, trnid = _resolve_target(builder, target)
+    trntype, trnid, gear_axis = _resolve_target(builder, target)
+    if len(gear) == 1:
+        gear = [0.0] * gear_axis + list(gear)
     if trntype == int(SolverMuJoCo.TrnType.SLIDERCRANK):
         if cranklength is None or cranklength <= 0.0:
             raise ValueError("A slider-crank actuator requires a positive cranklength [m].")
@@ -640,10 +668,6 @@ def add_actuator_dcmotor(
     gear: Sequence[float] = (1.0,),
     ctrlrange: Sequence[float] | None = None,
     ctrllimited: bool | int | str = "auto",
-    forcerange: Sequence[float] | None = None,
-    forcelimited: bool | int | str = "auto",
-    actrange: Sequence[float] | None = None,
-    actlimited: bool | int | str = "auto",
     cranklength: float | None = None,
     damping: float = 0.0,
     armature: float = 0.0,
@@ -652,31 +676,35 @@ def add_actuator_dcmotor(
 ) -> int:
     """Add a MuJoCo DC-motor shortcut controlled through ``control.mujoco.ctrl``.
 
-    The high-level values are preserved until :class:`SolverMuJoCo` builds its
+    The high-level values are preserved until :class:`~newton.solvers.SolverMuJoCo` builds its
     native MuJoCo model, where ``MjsActuator.set_to_dcmotor()`` compiles them.
+    Force limits are derived from ``saturation``; MuJoCo manages the activation
+    limits. See the `MuJoCo DC-motor reference
+    <https://mujoco.readthedocs.io/en/stable/XMLreference.html#actuator-dcmotor>`_
+    for parameter layouts and interactions.
 
     Args:
         builder: Model builder receiving the actuator.
         target: Typed actuator transmission target.
-        motorconst: Motor torque and back-EMF constants.
+        motorconst: Torque constant [N·m/A] and back-EMF constant [V·s/rad].
         resistance: Terminal resistance [ohm].
-        nominal: Nominal voltage, current, and speed.
-        saturation: Current, voltage, and controller saturation values.
-        inductance: Inductance and current-loop bandwidth.
-        cogging: Cogging-friction parameters.
-        controller: Controller parameters.
-        thermal: Thermal-model parameters.
-        lugre: LuGre-friction parameters.
+        nominal: Voltage [V], stall torque [N·m], and no-load speed [rad/s].
+        saturation: Maximum torque [N·m], current [A], and current rate [A/s].
+            Torque takes precedence over current when deriving the force limit.
+        inductance: Winding inductance [H] and electrical time constant [s].
+        cogging: Torque amplitude [N·m], pole count, and phase [rad].
+        controller: ``(kp, ki, kd, slewmax, Imax, Vmax)``; see the MuJoCo
+            reference for input-dependent units and saturation behavior.
+        thermal: Thermal resistance [K/W], capacitance [J/K], time constant [s],
+            temperature coefficient [1/K], reference temperature [°C], and ambient temperature [°C].
+        lugre: Bristle stiffness [N·m/rad], damping [N·m·s/rad], Coulomb torque [N·m],
+            static torque [N·m], and Stribeck velocity [rad/s].
         input_mode: Control input: ``"voltage"``, ``"position"``, or
             ``"velocity"``, or the corresponding MuJoCo ``mjtCtrlInput`` value
             (8, 1, or 2).
         gear: Transmission gear, padded to six values.
         ctrlrange: Optional control range.
         ctrllimited: Control-limit tri-state (false, true, or auto).
-        forcerange: Optional actuator force range [N or N·m].
-        forcelimited: Force-limit tri-state (false, true, or auto).
-        actrange: Optional activation-state range.
-        actlimited: Activation-limit tri-state (false, true, or auto).
         cranklength: Slider-crank length [m]. Required for slider-crank targets.
         damping: Actuator damping [N·s/m or N·m·s/rad].
         armature: Actuator armature [kg or kg·m²].
@@ -713,10 +741,6 @@ def add_actuator_dcmotor(
         gear=gear,
         ctrlrange=ctrlrange,
         ctrllimited=ctrllimited,
-        forcerange=forcerange,
-        forcelimited=forcelimited,
-        actrange=actrange,
-        actlimited=actlimited,
         cranklength=cranklength,
         damping=damping,
         armature=armature,

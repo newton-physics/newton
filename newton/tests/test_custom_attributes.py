@@ -1940,6 +1940,17 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "returned 0 values, expected 1"):
             ModelBuilder().add_builder(sub_builder)
 
+    def test_reference_transformer_rejects_builtin_references(self):
+        """A transformer must not silently override a declared reference type."""
+        with self.assertRaisesRegex(ValueError, "references.*reference_value_transformer"):
+            ModelBuilder.CustomAttribute(
+                name="target",
+                frequency=AttributeFrequency.BODY,
+                dtype=wp.int32,
+                references="body",
+                reference_value_transformer=lambda values, _context: values,
+            )
+
     def test_custom_frequency_unknown_references_raises_error(self):
         """Test that unknown references value raises ValueError during add_world."""
         sub_builder = ModelBuilder()
