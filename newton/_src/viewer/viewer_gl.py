@@ -19,8 +19,8 @@ import newton as nt
 from ..core.types import Axis, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
-from .gl.image_logger import ImageLogger
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
+from .image_logger import ImageLogger
 from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
@@ -44,11 +44,6 @@ def _imgui_uses_imvec4_color_edit3() -> bool:
 
 
 _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
-# Width of the main Newton Viewer sidebar in logical (96-DPI) pixels. The
-# actual framebuffer width used at render time is ``_SIDEBAR_WIDTH_PX *
-# ui.dpi_scale`` so the sidebar keeps a constant visual size on HiDPI
-# displays — see :meth:`ViewerGL._dpi_scale`.
-_SIDEBAR_WIDTH_PX: float = 300.0
 _TRANSPARENT_INSTANCER_SUFFIX = "/__transparent__"
 
 
@@ -292,12 +287,7 @@ class ViewerGL(ViewerBase):
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
-        self._image_logger = ImageLogger(
-            device=self.device,
-            sidebar_width_px=self._sidebar_width_fb_px(),
-            dpi_scale=self._dpi_scale(),
-        )
-        self._main_image_name: str | None = None
+        self._image_logger = ImageLogger(device=self.device)
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
@@ -326,8 +316,6 @@ class ViewerGL(ViewerBase):
         # Only create UI in non-headless mode to avoid OpenGL context dependency
         if not headless:
             self.gui = ViewerGui(self, self.renderer.window)
-            # ViewerGL owns the pyglet ``on_scale`` event so the GUI and
-            # ImageLogger receive the same resolved DPI scale value.
             self.renderer.window.push_handlers(on_scale=self._on_window_scale)
         else:
             self.gui = None
@@ -337,8 +325,6 @@ class ViewerGL(ViewerBase):
         if self.gui is not None:
             # Register GL-specific rendering options (sky, shadows, wireframe, colors)
             self.gui.register_ui_callback(self._ui_populate_rendering_panel, position="rendering")
-            # Draw image-logger floating windows outside the sidebar window.
-            self.gui.register_ui_callback(lambda _imgui: self._image_logger.draw(), position="free")
             # Top-level Layers panel (visible only when multiple layers exist).
             self.gui.register_ui_callback(self._ui_populate_layers_panel, position="panel")
 
@@ -636,16 +622,9 @@ class ViewerGL(ViewerBase):
             # per-frame overlay path.
             self.gui.update_shape_counts(self.model)
 
-        # ``ViewerBase.set_model`` may have switched ``self.device`` to the
-        # model's device. Rebind the image logger so its GPU path tests against
-        # — and registers PBO interop with — the correct CUDA context.
-        if self._image_logger is not None and self._image_logger.device != self.device:
-            self._image_logger.clear()
-            self._image_logger = ImageLogger(
-                device=self.device,
-                sidebar_width_px=self._sidebar_width_fb_px(),
-                dpi_scale=self._dpi_scale(),
-            )
+        # ``ViewerBase.set_model`` may have switched ``self.device`` to the model's device.
+        if self._image_logger is not None:
+            self._image_logger.set_device(self.device)
 
         if self.model is not None:
             # For capsule batches, replace per-instance scales with (radius, radius, half_height)
@@ -1790,10 +1769,7 @@ class ViewerGL(ViewerBase):
         """See :meth:`~newton.viewer.ViewerBase.log_image`."""
         # Route user-supplied names through the active layer (idempotent)
         # so two layers logging the same image name don't stomp each other.
-        name = self._qualify(name)
-        self._image_logger.log(name, image, fullscreen=fullscreen)
-        if fullscreen:
-            self._main_image_name = name
+        self._image_logger.log(self._qualify(name), image, fullscreen=fullscreen)
 
     @override
     def log_scalar(
@@ -2051,29 +2027,22 @@ class ViewerGL(ViewerBase):
         if self.wind is not None:
             self.wind.update(dt)
 
-        try:
-            # If the window was closed during event processing, skip rendering
-            if self.renderer.has_exit():
-                return
+        fullscreen_name = self._image_logger.pop_fullscreen()
 
-            # Fullscreen image logs are frame-scoped so stale sensor output cannot
-            # keep replacing the 3D scene after an example stops logging it.
-            main_image_name = self._main_image_name
-            if main_image_name is not None:
-                texture = self._image_logger.get_texture(main_image_name, fullscreen=True)
-                if texture is None:
-                    self.renderer.render_texture(None, 0, 0)
-                else:
-                    self.renderer.render_texture(*texture)
-            else:
-                self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
+        # If the window was closed during event processing, skip rendering
+        if self.renderer.has_exit():
+            return
 
-            if self.gui:
-                self.gui.render_frame(update_fps=True)
+        if fullscreen_name is not None:
+            texture = self._image_logger.get_texture(fullscreen_name, fullscreen=True)
+            self.renderer.render_texture(*(texture or (None, 0, 0)))
+        else:
+            self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
 
-            self.renderer.present()
-        finally:
-            self._main_image_name = None
+        if self.gui:
+            self.gui.render_frame(update_fps=True)
+
+        self.renderer.present()
 
     def get_frame(self, target_image: wp.array | None = None, render_ui: bool = False) -> wp.array:
         """
@@ -2474,34 +2443,12 @@ class ViewerGL(ViewerBase):
         """Propagate the current DPI to all DPI-dependent layout state.
 
         ``dpi_scale`` is the raw pyglet ``on_scale`` value when available. We
-        resolve it against the current framebuffer/window ratio once here, then
-        feed that same value to both UI and ImageLogger.
+        resolve it against the current framebuffer/window ratio before handing
+        it to the UI.
         """
         resolved_scale = self._resolve_dpi_scale(dpi_scale)
         if self.ui is not None and self.ui.is_available:
-            resolved_scale = self.ui.refresh_dpi(resolved_scale)
-        if self._image_logger is not None:
-            self._image_logger._sidebar_width_px = _SIDEBAR_WIDTH_PX * resolved_scale
-            self._image_logger.dpi_scale = resolved_scale
-
-    def _dpi_scale(self) -> float:
-        """Return the current DPI scale.
-
-        Falls back to ``window.scale`` (pyglet's documented HiDPI API) and
-        then the framebuffer/window-size ratio when the ImGui UI is not yet
-        available (e.g. during ``__init__`` before the UI is created, or in
-        headless mode). On macOS Retina ``window.scale`` is the only signal
-        that yields a value > 1.0 because pyglet reports both sizes in
-        physical pixels there.
-        """
-        ui = getattr(self, "ui", None)
-        if ui is not None and ui.is_available:
-            return ui.dpi_scale
-        return self._detect_window_dpi_scale()
-
-    def _detect_window_dpi_scale(self) -> float:
-        """Return the current DPI scale from pyglet window APIs."""
-        return self._resolve_dpi_scale()
+            self.ui.refresh_dpi(resolved_scale)
 
     def _resolve_dpi_scale(self, dpi_scale: float | None = None) -> float:
         """Return one DPI scale resolved from event and window signals."""
@@ -2530,10 +2477,6 @@ class ViewerGL(ViewerBase):
         except (TypeError, ValueError):
             return 1.0
 
-    def _sidebar_width_fb_px(self) -> float:
-        """Sidebar width in framebuffer pixels, scaled by the current DPI."""
-        return _SIDEBAR_WIDTH_PX * self._dpi_scale()
-
     def _ui_populate_rendering_panel(self, imgui):
         """Render GL-specific items inside the Rendering Options panel section."""
         # Sky rendering
@@ -2560,8 +2503,6 @@ class ViewerGL(ViewerBase):
         _changed, self.renderer.sky_upper = _edit_color3("Sky Color", self.renderer.sky_upper)
         # Ground color
         _changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
-
-        self._image_logger.draw_controls()
 
     def _ui_populate_layers_panel(self, imgui):
         """Top-level Layers panel — toggle visibility of overlaid solvers/models.

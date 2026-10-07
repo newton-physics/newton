@@ -519,6 +519,8 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
     def test_display_uses_ovrtx_05_color_output(self):
         """Blit the fully qualified OVRTX 0.5 color output to the window."""
         viewer = ViewerRTX.__new__(ViewerRTX)
+        viewer._image_logger = mock.Mock()
+        viewer._image_logger.pop_fullscreen.return_value = None
         viewer._rtx = mock.Mock()
         viewer._should_close = False
         viewer._async = False

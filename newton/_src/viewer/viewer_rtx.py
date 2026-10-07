@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 
 from .camera import Camera
 from .gl.icon import set_window_icon
+from .image_logger import ImageLogger, _validate
 from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
@@ -359,6 +360,11 @@ class ViewerRTX(ViewerUSD):
         # flushed once the GUI exists.
         self._pending_ui_callbacks: list[tuple] = []
         self._pending_splash: tuple[bool, str | None] | None = None
+        # ``set_model`` rebinds the device once ``ViewerBase`` has resolved it.
+        self._image_logger = ImageLogger(device=wp.get_device())
+        # ``log_image`` calls that arrive before the GL context exists, keyed by
+        # ``(name, fullscreen)``.
+        self._pending_images: dict[tuple[str, bool], Any] = {}
 
         # Generate a temporary USD path to share with OVRTX renderer
         fd, output_path = tempfile.mkstemp(suffix=".usd")
@@ -537,6 +543,9 @@ void main() {
             else:
                 self.gui.hide_loading_splash()
             self._pending_splash = None
+        for (name, fullscreen), image in self._pending_images.items():
+            self._image_logger.log(name, image, fullscreen=fullscreen)
+        self._pending_images.clear()
 
     def _discard_partial_window(self) -> None:
         """Close and clear resources left by failed window initialization."""
@@ -1304,6 +1313,8 @@ void main() {
             model: The Newton model instance.
         """
         super().set_model(model)
+        # ``ViewerBase.set_model`` may have switched ``self.device`` to the model's device.
+        self._image_logger.set_device(self.device)
         if model is not None and self._borrowed_stage is not None:
             self._bind_body_prims(model)
         if model is not None:
@@ -2590,7 +2601,14 @@ void main() {
         return None
 
     def _render_and_display(self):
+        fullscreen_name = self._image_logger.pop_fullscreen()
         if self._rtx is None or self._should_close:
+            return
+
+        if fullscreen_name is not None and self._window is not None:
+            # Like ViewerGL, a fullscreen image replaces the scene, so skip the RTX render.
+            texture = self._image_logger.get_texture(fullscreen_name, fullscreen=True)
+            self._present(*(texture or (None, 0, 0)))
             return
 
         with wp.ScopedTimer("ViewerRTX::render_and_display", active=PROFILE_ENABLED, use_nvtx=True):
@@ -2641,20 +2659,30 @@ void main() {
                     self._render_result = self._rtx.step_async(**step_kwargs)
 
     def _blit_to_window(self, pixels: wp.array | wp.Texture2D):
-        """Upload *pixels* to a GL texture and draw a fullscreen triangle (GPU sRGB + flip)."""
-        gl = self._pyglet_gl
-
+        """Upload *pixels* to the window's GL texture and present it."""
         with wp.ScopedTimer("ViewerRTX::gl_tex_copy", active=PROFILE_ENABLED, use_nvtx=True):
             # copy OVRTX output to OpenGL texture
             frame_tex = self._tex_resource.map()
             frame_tex.copy_from(pixels)
             self._tex_resource.unmap()
 
+        self._present(self._gl_texture, self.camera.width, self.camera.height)
+
+    def _present(self, texture_id: int | None, width: int, height: int):
+        """Draw a top-row-first RGBA texture letterboxed into the window, then the UI, and swap buffers.
+
+        Args:
+            texture_id: GL texture to draw, or ``None`` to only clear the window.
+            width: Texture width [px].
+            height: Texture height [px].
+        """
+        gl = self._pyglet_gl
+
         self._window.switch_to()
         fb_w, fb_h = self._window.get_framebuffer_size()
 
-        # Compute a letterbox viewport that preserves the OVRTX render aspect ratio.
-        render_aspect = self.camera.width / max(self.camera.height, 1)
+        # Compute a letterbox viewport that preserves the texture aspect ratio.
+        render_aspect = width / max(height, 1)
         window_aspect = fb_w / max(fb_h, 1)
         if window_aspect >= render_aspect:
             # Window is wider than render — pillarbox (black bars left/right)
@@ -2674,14 +2702,15 @@ void main() {
             gl.glViewport(0, 0, fb_w, fb_h)
             gl.glClearColor(0.0, 0.0, 0.0, 1.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-            gl.glViewport(vp_x, vp_y, vp_w, vp_h)
-            gl.glBindTexture(gl.GL_TEXTURE_2D, self._gl_texture)
-            gl.glUseProgram(self._gl_program)
-            gl.glBindVertexArray(self._gl_vao)
-            gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
-            gl.glBindVertexArray(0)
-            gl.glUseProgram(0)
-            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+            if texture_id:
+                gl.glViewport(vp_x, vp_y, vp_w, vp_h)
+                gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
+                gl.glUseProgram(self._gl_program)
+                gl.glBindVertexArray(self._gl_vao)
+                gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+                gl.glBindVertexArray(0)
+                gl.glUseProgram(0)
+                gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
             # Restore full viewport for ImGui (which spans the entire window)
             gl.glViewport(0, 0, fb_w, fb_h)
@@ -2749,6 +2778,25 @@ void main() {
         self._plot_logger.log_array(self._qualify(name), array)
 
     @override
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray, *, fullscreen: bool = False) -> None:
+        """See :meth:`~newton.viewer.ViewerBase.log_image`.
+
+        Ignored in headless mode, which has no window to display images in.
+        """
+        if self._headless:
+            return
+        name = self._qualify(name)
+        if self._window is None:
+            # The GL context only exists after the first end_frame(); upload then.
+            _validate(name, image)
+            key = (name, fullscreen)
+            # Re-insert so the last fullscreen call still wins after the flush.
+            self._pending_images.pop(key, None)
+            self._pending_images[key] = image
+            return
+        self._image_logger.log(name, image, fullscreen=fullscreen)
+
+    @override
     def log_scalar(
         self,
         name: str,
@@ -2799,6 +2847,13 @@ void main() {
 
         if getattr(self, "_plot_logger", None) is not None:
             self._plot_logger.clear_matching(self._is_layer_owned_path)
+        if getattr(self, "_image_logger", None) is not None:
+            self._image_logger.clear_matching(self._is_layer_owned_path)
+        self._pending_images = {
+            key: image
+            for key, image in getattr(self, "_pending_images", {}).items()
+            if not self._is_layer_owned_path(key[0])
+        }
 
         # Drop example-registered side/free UI callbacks (panel/stats/rendering persist).
         if getattr(self, "gui", None) is not None:
@@ -3001,6 +3056,9 @@ void main() {
 
         if getattr(self, "_plot_logger", None) is not None:
             self._plot_logger.clear()
+        if getattr(self, "_image_logger", None) is not None:
+            self._image_logger.clear()
+        self._pending_images = {}
 
         if self.ui:
             self.ui.shutdown()
