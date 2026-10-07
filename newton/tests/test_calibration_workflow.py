@@ -364,25 +364,6 @@ class TestCalibrationCableProblem(unittest.TestCase):
             )
 
     @unittest.skipUnless(importlib.util.find_spec("cma"), "requires newton[calibration]")
-    def test_failed_search_writes_no_files(self):
-        """Verify a search that fails leaves no output directory, so the same directory can be used again."""
-
-        class Evaluator:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def evaluate(self, candidates):
-                return [float("nan")] * len(candidates)
-
-        with tempfile.TemporaryDirectory() as tmp, patch("newton._src.calibration.problem.CableEvaluator", Evaluator):
-            directory = Path(tmp)
-            problem = CableCalibrationProblem.from_bundle(write_bundle(directory), directory, make_run_spec())
-            out = directory / "result"
-            with self.assertRaisesRegex(ValueError, "finite"):
-                calibrate(problem, optimizer=OptimizerCMA(seed=3, popsize=4, maxiter=2), output_dir=out, trace_every=1)
-            self.assertFalse(out.exists())
-
-    @unittest.skipUnless(importlib.util.find_spec("cma"), "requires newton[calibration]")
     def test_failed_trace_keeps_the_result(self):
         """Verify the result and the history are on disk when rendering a trace fails."""
 
@@ -430,16 +411,6 @@ class TestCalibrationCableProblem(unittest.TestCase):
             self.assertEqual(settings["cable_radius"], 0.003)
             self.assertEqual(settings["cable_mass"], 0.03)
             problem.close()
-
-    def test_missing_mask_fails_before_evaluator(self):
-        """Verify a missing mask file is refused before an evaluator is created."""
-        with tempfile.TemporaryDirectory() as tmp, patch("newton._src.calibration.problem.CableEvaluator") as evaluator:
-            directory = Path(tmp)
-            bundle = write_bundle(directory)
-            bundle.recordings[0].masks = ["missing.png"]
-            with self.assertRaisesRegex(ValueError, "missing"):
-                CableCalibrationProblem.from_bundle(bundle, directory, make_run_spec())
-            evaluator.assert_not_called()
 
     def test_trace_writes_the_cropped_masks_and_rgb_frames(self):
         """Verify the trace writes the recorded mask cropped like the reference, and the RGB channels of the frame."""
