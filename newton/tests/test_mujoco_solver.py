@@ -681,6 +681,40 @@ class TestMuJoCoSolverMassProperties(_MuJoCoSolverPropertiesFixture, unittest.Te
         np.testing.assert_allclose(solver.mj_data.qfrc_actuator[0], native_data.qfrc_actuator[0], rtol=1e-7)
         np.testing.assert_allclose(solver.mj_data.qvel[0], native_data.qvel[0], rtol=1e-6, atol=1e-7)
 
+    def test_mujoco_cpu_midphase_matches_narrowphase(self):
+        """The CPU midphase must not cull a pair that the narrowphase finds penetrating.
+
+        MuJoCo expresses the body BVH in the compiled inertial frame, so it must match the
+        physical center of mass.
+        """
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+
+        builder = newton.ModelBuilder()
+        builder.rigid_gap = 0.0
+        builder.add_shape_box(body=-1, hx=0.01, hy=0.01, hz=0.01)
+        # Two shapes so the pair goes through the midphase; 0.5 mm overlap with the static box.
+        body = builder.add_body(xform=wp.transform(wp.vec3(-0.0145, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_box(body=body, hx=0.005, hy=0.01, hz=0.04)
+        builder.add_shape_box(
+            body=body,
+            hx=0.002,
+            hy=0.002,
+            hz=0.002,
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.03), wp.quat_identity()),
+        )
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        mj_model, mj_data = solver.mj_model, solver.mj_data
+
+        midphase_bit = int(mujoco.mjtDisableBit.mjDSBL_MIDPHASE)
+        mujoco.mj_forward(mj_model, mj_data)
+        midphase_ncon = mj_data.ncon
+        mj_model.opt.disableflags |= midphase_bit
+        mujoco.mj_forward(mj_model, mj_data)
+
+        self.assertGreater(mj_data.ncon, 0)
+        self.assertEqual(midphase_ncon, mj_data.ncon)
+
     def test_body_gravcomp(self):
         """
         Tests if the body gravity compensation is updated properly.
