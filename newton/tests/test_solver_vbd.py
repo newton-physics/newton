@@ -1644,7 +1644,7 @@ def _rigid_contact_stick_eps_are_deprecated(test, device):
 
 
 def _rigid_compliant_alm_defaults_to_compliant(test, device):
-    """Use compliant ALM by default, warn for legacy False, and reject None."""
+    """Use compliant ALM by default, warn for legacy options, and reject a None mode."""
     builder = newton.ModelBuilder()
     builder.add_body()
     builder.color()
@@ -1658,6 +1658,25 @@ def _rigid_compliant_alm_defaults_to_compliant(test, device):
         legacy_solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
     test.assertFalse(legacy_solver.rigid_compliant_alm)
     test.assertEqual(warning.filename, __file__)
+    for parameter, value in (
+        ("rigid_avbd_beta", 0.0),
+        ("rigid_avbd_beta", 5.0),
+        ("rigid_avbd_linear_beta", 0.0),
+        ("rigid_avbd_angular_beta", 0.0),
+        ("rigid_contact_hard", True),
+        ("rigid_contact_hard", False),
+        ("rigid_contact_k_start", 1.0e2),
+        ("rigid_joint_linear_k_start", 1.0e2),
+        ("rigid_joint_angular_k_start", 1.0e1),
+    ):
+        with test.subTest(parameter=parameter, value=value):
+            with test.assertWarnsRegex(DeprecationWarning, parameter) as warning:
+                newton.solvers.SolverVBD(model, **{parameter: value})
+            test.assertEqual(warning.filename, __file__)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        with test.assertRaisesRegex(ValueError, "rigid_avbd_beta"):
+            newton.solvers.SolverVBD(model, rigid_avbd_beta=-1.0)
     with test.assertRaisesRegex(TypeError, "rigid_compliant_alm"):
         newton.solvers.SolverVBD(model, rigid_compliant_alm=None)
 
@@ -3317,7 +3336,7 @@ def _rigid_compliant_alm_validates_drive_limit_damping(test, device):
 
 
 def _rigid_compliant_alm_validates_contact_materials(test, device):
-    """Reject invalid shape materials whenever VBD can consume them."""
+    """Validate shape materials for compliant rigid contacts and particle contacts."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -3340,8 +3359,14 @@ def _rigid_compliant_alm_validates_contact_materials(test, device):
     builder.color()
     model = builder.finalize(device=device)
     model.shape_material_ke.fill_(np.nan)
-    with test.assertRaisesRegex(ValueError, "model.shape_material_ke"):
-        newton.solvers.SolverVBD(model, integrate_with_external_rigid_solver=True)
+    for compliant_alm in (False, True):
+        with test.subTest(compliant_alm=compliant_alm):
+            with test.assertRaisesRegex(ValueError, "model.shape_material_ke"):
+                newton.solvers.SolverVBD(
+                    model,
+                    rigid_compliant_alm=compliant_alm,
+                    integrate_with_external_rigid_solver=True,
+                )
 
 
 def _joint_hard_soft_deprecation_describes_legacy_behavior(test, device):
@@ -4451,7 +4476,7 @@ def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True,
 
     with wp.ScopedDevice(device):
         model = builder.finalize()
-        with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        with test.assertWarns(DeprecationWarning):
             solver = newton.solvers.SolverVBD(
                 model,
                 iterations=10,
@@ -4534,7 +4559,7 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True, rigid_c
 
     with wp.ScopedDevice(device):
         model = builder.finalize()
-        with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        with test.assertWarns(DeprecationWarning):
             solver = newton.solvers.SolverVBD(
                 model,
                 iterations=20,

@@ -200,7 +200,7 @@ rigid-contact rows, so it reports VBD's body-body contacts, but it does not read
 
    pipeline = newton.CollisionPipeline(model)
    contacts = pipeline.contacts()
-   solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+   solver = newton.solvers.SolverVBD(model)
    state_in, state_out = model.state(), model.state()
 
    pipeline.collide(state_in, contacts)

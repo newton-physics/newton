@@ -173,8 +173,11 @@ repository examples spend tuning effort, not a shared solver API.
        deprecated legacy AVBD path during its migration window.
        ``rigid_contact_hard`` selects contact behavior only on that legacy path.
 
-       ``rigid_avbd_beta`` and ``*_k_start`` apply only to the legacy path.
-       Simulations relying on those controls or on legacy hard constraints may
+       Compliant ALM replaces the legacy rigid formulation, regardless of
+       whether penalty ramping was enabled. Body-particle contacts retain
+       their existing penalty formulation; deprecated linear-beta and
+       contact-seed controls still apply to them in either rigid mode.
+       Rigid simulations relying on those controls or on legacy hard constraints may
        require stiffness retuning when enabling compliant ALM. Alpha remains an
        advanced stabilization override.
 
@@ -197,8 +200,7 @@ repository examples spend tuning effort, not a shared solver API.
        contact buffers and filters, ``collision_frequency`` / ``collision_frequency_type``,
        ``particle_enable_tile_solve``, ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``, and
-       ``rigid_contact_history``. On the legacy path, examples also tune
-       ``rigid_contact_hard``. ``rigid_avbd_contact_alpha`` remains available
+       ``rigid_contact_history``. ``rigid_avbd_contact_alpha`` remains available
        under compliant ALM as an advanced stabilization override.
 
        ``rigid_soft_enable_dat=True`` requires a solver-owned
