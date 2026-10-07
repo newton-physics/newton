@@ -269,7 +269,7 @@ class SchemaResolver:
 
     # mapping is a dictionary for known variables in Newton. Its purpose is to map USD attributes to existing Newton data.
     # PrimType -> Newton variable -> Attribute
-    mapping: ClassVar[dict[PrimType, dict[str, SchemaAttribute]]]
+    mapping: ClassVar[dict[PrimType, dict[str, SchemaAttribute]]] = {}
 
     # Name of the schema resolver
     name: ClassVar[str]
@@ -579,9 +579,11 @@ class _SchemaResolutionPolicy:
     ) -> _ResolvedValue:
         compatibility_fallbacks: set[int] = set()
         for resolver in self._resolvers:
-            spec = resolver.mapping.get(prim_type, {}).get(key)
+            mapping = resolver.mapping.get(prim_type, {})
+            spec = mapping.get(key)
             for authored_key in (key, *authored_aliases):
-                if authored_key not in resolver.mapping.get(prim_type, {}):
+                # Custom getters may resolve properties without mapping entries.
+                if authored_key not in mapping and type(resolver).get_value is SchemaResolver.get_value:
                     continue
                 value = read_value(resolver, authored_key)
                 if not isinstance(value, _ResolverValue):
@@ -1768,11 +1770,8 @@ class SchemaResolverManager:
                 (resolver for resolver in self.resolvers if key in resolver.mapping.get(prim_type, {})),
                 None,
             )
-        if representative is None:
-            return
-
         attribute_names = legacy_endpoint.attribute_names or resolved_endpoint.attribute_names
-        if not attribute_names:
+        if not attribute_names and representative is not None:
             mapping = representative.mapping.get(prim_type, {})
             representative_key = legacy.mapping_key or resolved.mapping_key or key
             spec = mapping.get(representative_key) or mapping.get(key)

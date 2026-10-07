@@ -300,10 +300,6 @@ class _UsdResolutionPolicy:
         kd_source: Literal["force", "builder_default"]
         """Consumer semantics associated with ``kd``."""
 
-        @property
-        def comparison(self) -> tuple[float, float, str, str]:
-            return self.ke, self.kd, self.ke_source, self.kd_source
-
     @dataclass(frozen=True)
     class _JointLimitAudit:
         """Describe one legacy-to-composed joint-limit comparison."""
@@ -564,6 +560,7 @@ class _UsdResolutionPolicy:
             prim,
             prim_path=prim_path,
             defaults=defaults,
+            rigid_gap=rigid_gap,
             legacy_margin_gap=legacy_margin_gap,
             read_legacy_mjc_gap=read_legacy_mjc_gap,
         )
@@ -622,6 +619,7 @@ class _UsdResolutionPolicy:
         *,
         prim_path: str,
         defaults: Any,
+        rigid_gap: float,
         legacy_margin_gap: bool,
         read_legacy_mjc_gap: Callable[[], float],
     ) -> _ShapeOffsets:
@@ -634,9 +632,8 @@ class _UsdResolutionPolicy:
             return value
 
         def interpret_gap(result: _ResolvedValue) -> float:
-            if result.value is None or result.value == float("-inf"):
-                return defaults.gap
-            return result.value
+            value = defaults.gap if result.value == float("-inf") else result.value
+            return rigid_gap if value is None else value
 
         margin_policies = self._resolver._resolve_interpreted_policies(
             prim,
@@ -687,7 +684,8 @@ class _UsdResolutionPolicy:
             prim,
             PrimType.SHAPE,
             "sdf_target_voxel_size",
-            None,
+            defaults.sdf_target_voxel_size,
+            legacy_default=None,
             interpreter=interpret_target_voxel_size,
         )
         raw_target = target_policies.active.raw_value
@@ -714,7 +712,8 @@ class _UsdResolutionPolicy:
             prim,
             PrimType.SHAPE,
             "sdf_max_resolution",
-            None,
+            defaults.sdf_max_resolution,
+            legacy_default=None,
         )
         target_voxel_size = target_policies.active.value
         raw_max_resolution = max_resolution_policies.active.raw_value
@@ -797,6 +796,8 @@ class _UsdResolutionPolicy:
                 prim,
                 PrimType.SHAPE,
                 "sdf_narrow_band_inner",
+                default=default_narrow_band[0],
+                legacy_default=None,
                 interpreter=lambda result: interpret_narrow_band(result, default_narrow_band[0]),
                 verbose=self._verbose,
             ).value,
@@ -804,6 +805,8 @@ class _UsdResolutionPolicy:
                 prim,
                 PrimType.SHAPE,
                 "sdf_narrow_band_outer",
+                default=default_narrow_band[1],
+                legacy_default=None,
                 interpreter=lambda result: interpret_narrow_band(result, default_narrow_band[1]),
                 verbose=self._verbose,
             ).value,
@@ -818,6 +821,8 @@ class _UsdResolutionPolicy:
             prim,
             PrimType.SHAPE,
             "sdf_texture_format",
+            default=defaults.sdf_texture_format,
+            legacy_default=None,
             interpreter=interpret_texture_format,
         )
         raw_texture_format = texture_format_result.raw_value
@@ -838,7 +843,8 @@ class _UsdResolutionPolicy:
             prim,
             PrimType.SHAPE,
             "sdf_padding",
-            None,
+            defaults.sdf_padding,
+            legacy_default=None,
             interpreter=interpret_padding,
         )
         raw_padding = padding_policies.active.raw_value
@@ -1359,6 +1365,8 @@ class _UsdResolutionPolicy:
         self,
         prim: Any,
         defaults: Mapping[str, JointLimitDefaults],
+        *,
+        interpret_limit_mode: Callable[[str, str], int],
     ) -> dict[str, JointLimitResult]:
         """Resolve and audit generic and per-axis joint-limit gains."""
         read_value = self._resolver._cached_value_reader(prim, PrimType.JOINT)
@@ -1420,7 +1428,7 @@ class _UsdResolutionPolicy:
             )
             changes.append(self._JointLimitAudit(legacy, composed, legacy_owners, composed_owners))
 
-        self._audit_joint_limit_changes(prim, changes, candidates)
+        self._audit_joint_limit_changes(prim, changes, candidates, interpret_limit_mode)
         return active
 
     def _resolve_joint_limit_policy_result(
@@ -1472,25 +1480,29 @@ class _UsdResolutionPolicy:
         prim: Any,
         changes: Sequence[_JointLimitAudit],
         candidates: Mapping[str, SchemaResolverManager._InterpretedPolicyValues],
+        interpret_limit_mode: Callable[[str, str], int],
     ) -> None:
         """Audit the inputs that contribute to assembled joint-limit changes."""
         changed = set()
+        legacy_values = []
+        composed_values = []
         for change in changes:
+            legacy_mode = interpret_limit_mode(change.legacy.ke_source, change.legacy.kd_source)
+            composed_mode = interpret_limit_mode(change.composed.ke_source, change.composed.kd_source)
+            legacy_values.append((change.legacy.ke, change.legacy.kd, legacy_mode))
+            composed_values.append((change.composed.ke, change.composed.kd, composed_mode))
             if not _values_equal(change.legacy.ke, change.composed.ke):
                 changed.update((change.legacy_owners[0], change.composed_owners[0]))
             if not _values_equal(change.legacy.kd, change.composed.kd):
                 changed.update((change.legacy_owners[1], change.composed_owners[1]))
-            if (
-                change.legacy.ke_source != change.composed.ke_source
-                or change.legacy.kd_source != change.composed.kd_source
-            ):
+            if legacy_mode != composed_mode:
                 changed.update((*change.legacy_owners, *change.composed_owners))
 
         self._resolver._audit_assembled_property(
             prim,
             PrimType.JOINT,
-            tuple(change.legacy.comparison for change in changes),
-            tuple(change.composed.comparison for change in changes),
+            tuple(legacy_values),
+            tuple(composed_values),
             tuple(
                 policies.contribution(key=owner, compare_source=True)
                 for owner, policies in candidates.items()

@@ -125,6 +125,106 @@ class TestImportUsdPhysics(unittest.TestCase):
                 self.assertAlmostEqual(builder.body_mass[result["path_body_map"]["/Body"]], defaults.density * 8.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_sdf_importer_defaults_precede_compatibility_defaults(self):
+        """Use configured SDF defaults before compatibility values only in registered mode."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+
+        for key, importer_default, compatibility_default in (
+            ("sdf_target_voxel_size", 0.02, 0.01),
+            ("sdf_max_resolution", 128, 32),
+        ):
+
+            class CompatibilitySdf(usd.SchemaResolver):
+                name = "compat_sdf"
+                mapping: ClassVar = {
+                    usd.PrimType.SHAPE: {
+                        key: usd.SchemaResolver.SchemaAttribute("custom:resolution", compatibility_default),
+                        "sdf_narrow_band_inner": usd.SchemaResolver.SchemaAttribute("custom:inner", -0.2),
+                        "sdf_narrow_band_outer": usd.SchemaResolver.SchemaAttribute("custom:outer", 0.2),
+                        "sdf_texture_format": usd.SchemaResolver.SchemaAttribute("custom:format", "uint8"),
+                        "sdf_padding": usd.SchemaResolver.SchemaAttribute("custom:padding", 0.05),
+                    }
+                }
+
+            for registered in (False, True):
+                with self.subTest(resolution=key, registered=registered):
+                    builder = newton.ModelBuilder()
+                    setattr(builder.default_shape_cfg, key, importer_default)
+                    builder.default_shape_cfg.sdf_narrow_band_range = (-0.3, 0.3)
+                    builder.default_shape_cfg.sdf_texture_format = "float32"
+                    builder.default_shape_cfg.sdf_padding = 0.07
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        result = builder.add_usd(
+                            stage,
+                            schema_resolvers=[CompatibilitySdf(), usd.SchemaResolverNewton()],
+                            use_registered_schema_fallbacks=registered,
+                            audit_registered_schema_fallbacks=not registered,
+                        )
+                    shape = result["path_shape_map"]["/cube"]
+                    self.assertEqual(
+                        getattr(builder, f"shape_{key}")[shape],
+                        importer_default if registered else compatibility_default,
+                    )
+                    self.assertEqual(
+                        builder.shape_sdf_narrow_band_range[shape], (-0.3, 0.3) if registered else (-0.2, 0.2)
+                    )
+                    self.assertEqual(builder.shape_sdf_texture_format[shape], "float32" if registered else "uint8")
+                    self.assertAlmostEqual(builder.shape_sdf_padding[shape], 0.07 if registered else 0.05)
+                    migration = [str(item.message) for item in caught if issubclass(item.category, DeprecationWarning)]
+                    self.assertEqual(len(migration), int(not registered))
+                    if migration:
+                        for property_key in (
+                            key,
+                            "sdf_narrow_band_inner",
+                            "sdf_narrow_band_outer",
+                            "sdf_texture_format",
+                            "sdf_padding",
+                        ):
+                            self.assertIn(property_key, migration[0])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_schema_getter_without_mapping(self):
+        """Honor custom getters and tolerate unmapped optional properties."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        class GetterOnly(usd.SchemaResolver):
+            name = "custom"
+
+            def get_value(self, prim, prim_type, key):
+                return 0.025 if prim_type == usd.PrimType.SHAPE and key == "margin" else None
+
+        class EmptyMapping(GetterOnly):
+            mapping: ClassVar = {}
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+
+        for resolver_type in (GetterOnly, EmptyMapping):
+            for registered, audit in ((False, False), (False, True), (True, False)):
+                with self.subTest(resolver=resolver_type.__name__, registered=registered, audit=audit):
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(
+                        stage,
+                        schema_resolvers=[resolver_type(), usd.SchemaResolverNewton()],
+                        use_registered_schema_fallbacks=registered,
+                        audit_registered_schema_fallbacks=audit,
+                    )
+                    shape = result["path_shape_map"]["/Body"]
+                    self.assertAlmostEqual(builder.shape_margin[shape], 0.025)
+                    self.assertIsNone(builder.shape_sdf_padding[shape])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -7804,6 +7904,40 @@ def Xform "Articulation" (
         shape2_idx = result["path_shape_map"]["/Articulation/Body/Collider2"]
         self.assertAlmostEqual(model.shape_gap.numpy()[shape1_idx], 0.02, places=4)
         self.assertAlmostEqual(model.shape_gap.numpy()[shape2_idx], 0.01, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_gap_without_resolver_value(self):
+        """Preserve the legacy rigid gap and audit effective default changes."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+
+        for configured_gap in (0.5, 0.1, None):
+            for registered, audit in ((False, False), (False, True), (True, False)):
+                with self.subTest(gap=configured_gap, registered=registered, audit=audit):
+                    builder = newton.ModelBuilder()
+                    builder.default_shape_cfg.gap = configured_gap
+                    builder.rigid_gap = 0.1
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        result = builder.add_usd(
+                            stage,
+                            schema_resolvers=[],
+                            use_registered_schema_fallbacks=registered,
+                            audit_registered_schema_fallbacks=audit,
+                        )
+                    shape = result["path_shape_map"]["/cube"]
+                    self.assertAlmostEqual(
+                        builder.shape_gap[shape], 0.5 if registered and configured_gap == 0.5 else 0.1
+                    )
+                    migration = [item for item in caught if "gap: unresolved -> importer default" in str(item.message)]
+                    self.assertEqual(len(migration), int(audit and configured_gap == 0.5))
+                    if migration:
+                        self.assertIn("gap: unresolved -> importer default", str(migration[0].message))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_gap_uses_importer_default_after_registered_sentinel(self):

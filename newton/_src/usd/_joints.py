@@ -139,6 +139,9 @@ class _UsdJointProperties:
                     kd=builder_limit_kd,
                 )
             },
+            interpret_limit_mode=lambda ke_source, kd_source: self.joint_limit_solref_mode(
+                jp_prim, ke_source, kd_source
+            ),
         )[limit_key]
         limit_lower = jd.limit.lower
         limit_upper = jd.limit.upper
@@ -442,7 +445,13 @@ def parse_joint(
             )
             for dof, key in d6_limit_keys.items()
         }
-        resolved_d6_limits = joint_properties.resolution.resolve_joint_limits(joint_prim, d6_limit_defaults)
+        resolved_d6_limits = joint_properties.resolution.resolve_joint_limits(
+            joint_prim,
+            d6_limit_defaults,
+            interpret_limit_mode=lambda ke_source, kd_source: joint_properties.joint_limit_solref_mode(
+                joint_prim, ke_source, kd_source
+            ),
+        )
         active_d6_limits = {dof: resolved_d6_limits[key] for dof, key in d6_limit_keys.items()}
 
         # print(joint_desc.jointLimits, joint_desc.jointDrives)
