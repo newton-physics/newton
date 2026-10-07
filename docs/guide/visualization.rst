@@ -26,11 +26,11 @@ current viewer session, or a persistent artifact:
       - Dependencies
     * - :class:`~newton.viewer.ViewerGL`
       - Interactive development and live debugging
-      - Real-time display; frame capture in headless mode
+      - Real-time display; frame capture
       - pyglet, imgui_bundle
     * - :class:`~newton.viewer.ViewerRTX`
       - Path-traced visualization on NVIDIA GPUs
-      - Real-time display
+      - Real-time display; frame capture
       - ovrtx, ovstage, usd-core, pyglet (``uv sync --extra rtx``)
     * - :class:`~newton.viewer.ViewerFile`
       - Persistent state-snapshot recording and visual playback
@@ -170,6 +170,78 @@ scalars and ``keep_historical_data`` for arrays. It ignores ``clear`` and
 Real-time Viewers
 -----------------
 
+.. _viewer-frame-capture:
+
+Headless Mode and Frame Capture
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX` support
+``headless=True`` to render off-screen without opening a window. Both implement
+:meth:`~newton.viewer.ViewerBase.get_frame` to capture the last rendered frame
+as an RGB Warp array on the viewer device with shape ``(height, width, 3)``,
+dtype ``wp.uint8``, and a top-left origin. Other viewers inherit the base
+implementation, which raises ``NotImplementedError`` because they do not
+support frame capture. Call it after ``end_frame()`` in either headless or
+windowed mode:
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerGL(headless=True)  # Or ViewerRTX(headless=True)
+    viewer.set_model(model)
+
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
+
+    frame = viewer.get_frame()
+    rgb = frame.numpy()  # NumPy uint8 array with shape (height, width, 3)
+
+    # Reuse the output buffer after rendering subsequent frames.
+    viewer.get_frame(target_image=frame)
+
+Use an image library to save the captured pixels, for example:
+
+.. code-block:: python
+
+    from PIL import Image
+
+    Image.fromarray(rgb).save("screenshot.png")
+
+UI overlays are excluded by default. ``ViewerGL`` supports
+``get_frame(render_ui=True)`` to include them; ``ViewerRTX`` does not support
+that option. RTX also does not support capturing fullscreen images displayed
+with ``log_image(..., fullscreen=True)``: ``get_frame()`` raises
+``NotImplementedError`` for those frames. Capture resumes after the next scene
+render. RTX capture uses the fixed render resolution and reads through CPU
+memory. With asynchronous rendering, ``get_frame()`` waits for the render
+submitted by the latest ``end_frame()`` so each captured image contains the
+latest logged state. Capturing a frame therefore blocks until that render
+completes.
+
+.. note::
+
+    For ``ViewerGL`` on a machine without a display, pyglet must also be put in headless mode.
+    pyglet binds its display backend the first time that backend is imported, and Newton imports pyglet's window
+    and display modules when the first :class:`~newton.viewer.ViewerGL` is constructed, so the
+    option has to be set before that point. Otherwise the snippet above fails with
+    ``pyglet.display.xlib.NoSuchDisplayException: Cannot connect to "None"`` on Linux, since
+    pyglet defaults to Xlib. Either set the environment variable::
+
+        PYGLET_HEADLESS=1 python your_script.py
+
+    or set the option in Python before creating the viewer::
+
+        import newton
+        import pyglet
+
+        pyglet.options["headless"] = True
+
+        viewer = newton.viewer.ViewerGL(headless=True)
+
+    On a machine with several GPUs, ``PYGLET_HEADLESS_DEVICE`` (or
+    ``pyglet.options["headless_device"]``) selects which one renders; it defaults to ``0``,
+    which is not necessarily the device the rest of the simulation runs on.
+
 OpenGL Viewer
 ~~~~~~~~~~~~~
 
@@ -208,48 +280,6 @@ Keys can be specified as single-character strings (``'w'``), special key names (
 
     if viewer.is_key_down('r'):
         state = model.state()  # reset
-
-**Headless mode and frame capture:**
-
-In headless mode (``headless=True``), the viewer renders off-screen without opening a window.
-Use :meth:`~newton.viewer.ViewerGL.get_frame` to retrieve the rendered image as a
-Warp array on the viewer device:
-
-.. code-block:: python
-
-    viewer = newton.viewer.ViewerGL(headless=True)
-    viewer.set_model(model)
-
-    viewer.begin_frame(sim_time)
-    viewer.log_state(state)
-    viewer.end_frame()
-
-    # Returns a wp.array with shape (height, width, 3), dtype wp.uint8
-    frame = viewer.get_frame()
-
-.. note::
-
-    On a machine without a display, pyglet must also be put in headless mode. pyglet binds its
-    display backend the first time that backend is imported, and Newton imports pyglet's window
-    and display modules when the first :class:`~newton.viewer.ViewerGL` is constructed, so the
-    option has to be set before that point. Otherwise the snippet above fails with
-    ``pyglet.display.xlib.NoSuchDisplayException: Cannot connect to "None"`` on Linux, since
-    pyglet defaults to Xlib. Either set the environment variable::
-
-        PYGLET_HEADLESS=1 python your_script.py
-
-    or set the option in Python before creating the viewer::
-
-        import newton
-        import pyglet
-
-        pyglet.options["headless"] = True
-
-        viewer = newton.viewer.ViewerGL(headless=True)
-
-    On a machine with several GPUs, ``PYGLET_HEADLESS_DEVICE`` (or
-    ``pyglet.options["headless_device"]``) selects which one renders; it defaults to ``0``,
-    which is not necessarily the device the rest of the simulation runs on.
 
 **Custom UI panels:**
 

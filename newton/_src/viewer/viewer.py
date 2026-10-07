@@ -1055,6 +1055,33 @@ class ViewerBase(ABC):
         """
         pass
 
+    def get_frame(
+        self, target_image: wp.array3d[wp.uint8] | None = None, *, render_ui: bool = False
+    ) -> wp.array3d[wp.uint8]:
+        """Retrieve the last rendered frame as RGB image data.
+
+        Call after :meth:`end_frame`. Supported by :class:`ViewerGL` and
+        :class:`ViewerRTX` in both headless and windowed modes. Call
+        ``.numpy()`` on the result to obtain a NumPy array.
+
+        Args:
+            target_image: Optional pre-allocated Warp array on the viewer
+                device with shape ``(height, width, 3)`` and dtype ``wp.uint8``.
+                If ``None``, a new array is created.
+            render_ui: Whether to include UI overlays. Support depends on
+                the viewer backend.
+
+        Returns:
+            RGB image data on the viewer device with shape
+            ``(height, width, 3)``, dtype ``wp.uint8``, and a top-left origin.
+            If supplied, returns ``target_image``.
+
+        Raises:
+            NotImplementedError: The viewer backend does not support frame
+                capture or the requested UI capture option.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support frame capture")
+
     def log_state(self, state: newton.State):
         """Update the viewer with the given state of the simulation.
 
