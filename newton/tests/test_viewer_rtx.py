@@ -73,14 +73,15 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
         ):
             ViewerRTX(headless=True, ovstage=object())
 
-    def _borrowed_viewer(self, labels, found):
-        """Build a borrowed-stage viewer whose stage holds the labels in ``found``."""
+    def _borrowed_viewer(self, labels, found, positions=None):
+        """Build a borrowed-stage viewer whose stage holds the labels in ``found`` at the origin."""
         import ovrtx
         import ovstage
 
         builder = newton.ModelBuilder()
-        for label in labels:
-            builder.add_body(label=label)
+        for i, label in enumerate(labels):
+            position = (0.0, 0.0, 0.0) if positions is None else positions[i]
+            builder.add_body(xform=wp.transform(position, wp.quat_identity()), label=label)
         model = builder.finalize(device="cpu")
         with (
             mock.patch.object(ovrtx, "__version__", "0.5.0"),
@@ -104,6 +105,19 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
                 viewer.set_model(model)
             self.assertEqual(viewer._prim_paths, ("/World/a",))
             np.testing.assert_allclose(viewer._prim_linear.numpy()[0], np.diag([2.0, 2.0, 2.0]))
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_keeps_model_frame_for_inconsistent_poses(self):
+        """Warn and skip the frame correction when root bodies disagree on the stage-from-model transform."""
+        viewer, model = self._borrowed_viewer(
+            ["/World/a", "/World/b"], {"/World/a", "/World/b"}, positions=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+        )
+        try:
+            with self.assertWarnsRegex(UserWarning, "more than one rigid transform"):
+                viewer.set_model(model)
+            self.assertIsNone(viewer._stage_from_model)
         finally:
             viewer.close()
 
@@ -555,49 +569,58 @@ class TestViewerRTXRendering(unittest.TestCase):
         finally:
             viewer.close()
 
-    def test_borrowed_stage_writes_above_caller_advanced_floor(self):
-        """Keep writing to a borrowed stage after its owner advances the write floor."""
+    _BORROWED_USDA = """#usda 1.0
+(
+    upAxis = "{up_axis}"
+)
+def Xform "World"
+{{
+    def Xform "Body" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {{
+        double3 xformOp:translate = (1, 2, 3)
+        float3 xformOp:rotateXYZ = (10, 20, 30)
+        float3 xformOp:scale = (2, 2, 2)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+        def Cube "geom" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {{
+            double size = 0.2
+        }}
+    }}
+}}
+"""
+
+    def _borrowed_scene(self, up_axis="Z", **add_usd_kwargs):
+        """Populate a borrowed stage and import the same scene into a model."""
         import ovrtx
         import ovstage
 
         ovrtx.register_schema_paths()
-        usda = """#usda 1.0
-(
-    upAxis = "Z"
-)
-def Xform "World"
-{
-    def Xform "Body" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
-    )
-    {
-        double3 xformOp:translate = (0, 0, 1)
-        uniform token[] xformOpOrder = ["xformOp:translate"]
-        def Cube "geom" (
-            prepend apiSchemas = ["PhysicsCollisionAPI"]
-        )
-        {
-            double size = 0.2
-        }
-    }
-}
-"""
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "scene.usda")
             with open(path, "w") as f:
-                f.write(usda)
+                f.write(self._BORROWED_USDA.format(up_axis=up_axis))
             stage = ovstage.Stage(
                 "newton.test.borrowed",
                 config=ovstage.StageConfig(
                     runtime_default_hierarchy_computation_model=ovstage.HierarchyComputationModel.GPU_INCREMENTAL
                 ),
             )
+            self.addCleanup(stage.destroy)
             ovstage.population.open_usd(stage, path, ordinal=1)
             stage.advance_write_floor(1).wait()
             builder = newton.ModelBuilder()
-            builder.add_usd(path)
-            model = builder.finalize()
+            builder.add_usd(path, **add_usd_kwargs)
+        return stage, builder.finalize()
 
+    def test_borrowed_stage_writes_above_caller_advanced_floor(self):
+        """Keep writing to a borrowed stage after its owner advances the write floor."""
+        import ovstage
+
+        stage, model = self._borrowed_scene()
         state = model.state()
         viewer = ViewerRTX(headless=True, async_rendering=False, ovstage=stage)
         try:
@@ -610,7 +633,28 @@ def Xform "World"
                 viewer.end_frame()
         finally:
             viewer.close()
-            stage.destroy()
+
+    def test_borrowed_stage_renders_reoriented_import_in_stage_frame(self):
+        """Keep bodies at their stage poses when the import rotated a Y-up stage and applied an ``xform``."""
+        xform = wp.transform((5.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7))
+        stage, model = self._borrowed_scene(up_axis="Y", xform=xform)
+        viewer = ViewerRTX(headless=True, async_rendering=False, ovstage=stage)
+        try:
+            paths = ["/World/Body", viewer._camera_prim_path]
+            authored = viewer._read_borrowed_world_matrices(paths)[0]
+            viewer.set_model(model)
+            viewer.begin_frame(0.0)
+            viewer.log_state(model.state())
+            viewer.end_frame()
+            body, camera = viewer._read_borrowed_world_matrices(paths)
+            np.testing.assert_allclose(body, authored, atol=1.0e-5)
+            # The camera follows the model frame, so its view of the bodies is unchanged.
+            rigid = authored.copy()
+            rigid[:3, :3] /= np.linalg.norm(rigid[:3, :3], axis=1)[:, None]
+            stage_from_model = np.linalg.solve(_column_matrix(model.body_q.numpy()[0]).T, rigid)
+            np.testing.assert_allclose(camera, viewer._compute_camera_matrix() @ stage_from_model, atol=1.0e-5)
+        finally:
+            viewer.close()
 
     def test_resizing_line_batch_after_first_frame(self):
         """Resize a line batch created before the first frame once rendering has started."""

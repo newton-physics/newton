@@ -172,6 +172,7 @@ class ViewerRTX(ViewerUSD):
 
     _borrowed_stage = None
     _borrowed_reference = None
+    _stage_from_model = None
     _prim_paths: Sequence[str] = ()
     _prim_count = 0
     _rtx_render_settings: Mapping[str, tuple[Any, Any]] = MappingProxyType({})
@@ -228,7 +229,11 @@ class ViewerRTX(ViewerUSD):
             ovstage: Populated stage to render instead of a scene built from
                 the model. :meth:`log_state` writes each body's world pose to
                 the prim at the body's label, keeping the prim's authored
-                scale; bodies without such a prim are not rendered. The caller
+                scale; bodies without such a prim are not rendered. If the
+                import re-oriented the stage (up-axis alignment or ``xform``),
+                :meth:`set_model` infers the model-to-stage transform from the
+                root bodies' poses, which must still be the imported ones, and
+                applies it to bodies, camera, and debug geometry. The caller
                 owns the stage's content, lights, and lifetime; the viewer adds
                 its camera, render product, and debug geometry under
                 ``/__newton_viewer``. :meth:`set_visible_worlds`,
@@ -1006,14 +1011,51 @@ void main() {
         scales[np.linalg.det(world[:, :3, :3]) < 0.0] *= -1.0
         linear = np.zeros((len(paths), 3, 3))
         linear[:, [0, 1, 2], [0, 1, 2]] = scales
+        bodies = np.array([candidates[i][0] for i in found], dtype=np.int32)
+        stage_from_model = self._infer_stage_from_model(model, bodies, world, scales)
+        if stage_from_model is not None:
+            from pxr import Gf
+
+            # The viewer's camera and debug geometry live in the model frame, under its root.
+            self.root.MakeMatrixXform().Set(Gf.Matrix4d(*stage_from_model.ravel().tolist()))
+            rotation = wp.quat_from_matrix(wp.mat33(stage_from_model[:3, :3].T.astype(np.float32)))
+            self._stage_from_model = wp.transform(wp.vec3(*stage_from_model[3, :3]), rotation)
         self._set_prim_rows(
             paths,
-            np.array([candidates[i][0] for i in found], dtype=np.int32),
+            bodies,
             linear=linear,
             translation=np.zeros((len(paths), 3)),
             worlds=None,
             device=model.device,
         )
+
+    @staticmethod
+    def _infer_stage_from_model(
+        model: newton.Model, bodies: np.ndarray, world: np.ndarray, scales: np.ndarray
+    ) -> np.ndarray | None:
+        """Return the row-vector matrix from the model frame to the stage frame, or ``None`` if they coincide.
+
+        Importing a stage can re-orient it (``add_usd`` up-axis alignment or ``xform``). Root bodies
+        still hold their imported pose, so each one yields the import transform's inverse.
+        """
+        children = model.joint_child.numpy()[model.joint_parent.numpy() >= 0]
+        roots = ~np.isin(bodies, children)
+        if not roots.any():
+            return None
+        rigid = world[roots].copy()
+        rigid[:, :3, :3] /= scales[roots][:, :, None]
+        body = _transforms_to_usd_matrices(model.body_q.numpy()[bodies[roots]].astype(np.float64))
+        candidates = np.linalg.solve(body, rigid)
+        if not np.allclose(candidates, candidates[0], atol=1.0e-3):
+            warnings.warn(
+                "ViewerRTX: body poses in the model and the borrowed stage differ by more than one rigid "
+                "transform; rendering bodies at their model poses",
+                stacklevel=4,
+            )
+            return None
+        if np.allclose(candidates[0], np.eye(4), atol=1.0e-5):
+            return None
+        return candidates[0]
 
     def _attach_borrowed_stage(self) -> None:
         """Attach the renderer and publish the viewer-owned subtree into the borrowed stage."""
@@ -1115,6 +1157,9 @@ void main() {
         body_q = self._last_state.body_q if self._last_state is not None else None
         # Borrowed prims have no world index; the stage already places their worlds.
         world_offsets = self.world_offsets if self._prim_world is not None else None
+        layer_xform = self.layer.xform
+        if self._stage_from_model is not None:
+            layer_xform = wp.transform_multiply(self._stage_from_model, layer_xform)
         wp.launch(
             write_prim_world_matrices,
             dim=self._prim_count,
@@ -1125,7 +1170,7 @@ void main() {
                 self._prim_translation,
                 self._prim_world,
                 world_offsets,
-                self.layer.xform,
+                layer_xform,
                 mat44_offset,
             ],
             outputs=[m_out],
@@ -2799,6 +2844,7 @@ void main() {
 
         self._prim_paths = ()
         self._prim_count = 0
+        self._stage_from_model = None
         self._prim_body = None
         self._prim_linear = None
         self._prim_translation = None
