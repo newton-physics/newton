@@ -4996,38 +4996,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=model.device,
         )
 
-    def _sync_mjw_inertias_to_mjc_cpu(self) -> None:
-        """Synchronize the complete MJWarp inertial representation to MuJoCo CPU."""
-        mjw_body_inertia = self.mjw_model.body_inertia.numpy()[0]
-        mjw_body_iquat = self.mjw_model.body_iquat.numpy()[0]
-
-        inertia_changed = ~np.isclose(
-            self.mj_model.body_inertia,
-            mjw_body_inertia,
-            rtol=1.0e-6,
-            atol=1.0e-8,
-        ).all(axis=1)
-        iquat_changed = ~np.isclose(
-            self.mj_model.body_iquat,
-            mjw_body_iquat,
-            rtol=1.0e-6,
-            atol=1.0e-8,
-        ).all(axis=1)
-        changed_bodies = inertia_changed | iquat_changed
-
-        if not np.any(changed_bodies):
-            return
-
-        self.mj_model.body_inertia[:] = mjw_body_inertia
-        self.mj_model.body_iquat[:] = mjw_body_iquat
-
-        # ``body_inertia`` and ``body_iquat`` are coupled. Once the inertial
-        # frame changes, MuJoCo CPU's compiled simple-path metadata may still
-        # describe the old frame, so invalidate it before ``mj_setConst()``.
-        self.mj_model.body_sameframe[changed_bodies] = int(self._mujoco.mjtSameFrame.mjSAMEFRAME_NONE)
-        self.mj_model.body_simple[changed_bodies] = 0
-        self.mj_model.dof_simplenum[:] = 0
-
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         if self.use_mujoco_cpu:
@@ -5112,7 +5080,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.body_ipos[:] = self.mjw_model.body_ipos.numpy()[0]
                 self.mj_model.body_mass[:] = self.mjw_model.body_mass.numpy()[0]
                 self.mj_model.body_gravcomp[:] = self.mjw_model.body_gravcomp.numpy()[0]
-                self._sync_mjw_inertias_to_mjc_cpu()
+                # MJWarp re-diagonalizes the inertia, so its moments only hold in its own frame.
+                self.mj_model.body_inertia[:] = self.mjw_model.body_inertia.numpy()[0]
+                self.mj_model.body_iquat[:] = self.mjw_model.body_iquat.numpy()[0]
             if flags & ModelFlags.BODY_PROPERTIES or update_inertia:
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
             if update_force and self.mjc_actuator_ctrl_source is not None:
@@ -6156,8 +6126,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             spec.option.magnetic = np.array(magnetic)
 
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
-        # alignfree would erase the offset used below to force general qM storage.
-        spec.compiler.alignfree = False
         if mujoco_attrs and hasattr(mujoco_attrs, "autolimits"):
             spec.compiler.autolimits = bool(mujoco_attrs.autolimits.numpy()[0])
 
@@ -6320,7 +6288,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         }
 
         mj_bodies = [spec.worldbody]
-        full_inertia_bodies = []
         # mapping from Newton body id to MuJoCo body id
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom name
@@ -7022,17 +6989,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # (sensor frames, reference links), omit mass and inertia entirely
             # and let MuJoCo handle them natively.
             body_kwargs = {"name": name, "pos": tf.p, "quat": quat_to_mjc(tf.q), "mocap": mocap}
+            # The compact simple-body qM layout cannot hold runtime COM or inertia-frame edits.
+            body_kwargs["simple"] = 0
             if body_gravcomp is not None and body_gravcomp[child] != 0.0:
                 body_kwargs["gravcomp"] = float(body_gravcomp[child])
             if body_sleep_policy is not None and body_sleep_policy[child] != self.SleepPolicy.AUTO:
                 body_kwargs["sleep"] = int(body_sleep_policy[child])
             if mass > 0.0:
                 body_kwargs["mass"] = mass
-                body_ipos = body_com[child, :].copy()
-                compile_ipos = body_ipos.copy()
-                compile_ipos[0] += 1.0e-3 if compile_ipos[0] >= 0.0 else -1.0e-3
-                # A temporary COM offset forces qM storage that remains valid after inertia edits.
-                body_kwargs["ipos"] = compile_ipos
+                body_kwargs["ipos"] = body_com[child, :]
                 if inertia[0, 1] == 0.0 and inertia[0, 2] == 0.0 and inertia[1, 2] == 0.0:
                     body_kwargs["inertia"] = [inertia[0, 0], inertia[1, 1], inertia[2, 2]]
                 else:
@@ -7047,8 +7012,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 body_kwargs["explicitinertial"] = True
             body = mj_bodies[body_mapping[parent]].add_body(**body_kwargs)
             mj_bodies.append(body)
-            if mass > 0.0:
-                full_inertia_bodies.append((body_mapping[child], body, body_ipos))
             return body, parent, child, child_is_kinematic, j_type, child_xform
 
         # Standalone world-fixed bodies are static (or mocap when kinematic)
@@ -7834,28 +7797,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_newton_ball_jnt = None
             self.mjc_actuator_to_newton_actuator_idx = None
 
-        dampratio_actuators = [
-            (actuator.id, actuator.biasprm[2])
-            for actuator in spec.actuators
-            if actuator.biastype == mujoco.mjtBias.mjBIAS_AFFINE
-            and actuator.gaintype == mujoco.mjtGain.mjGAIN_FIXED
-            and actuator.gainprm[0] > 0.0
-            and actuator.biasprm[0] == 0.0
-            and abs(actuator.biasprm[1] + actuator.gainprm[0]) < 1e-8
-            and actuator.biasprm[2] > 0.0
-        ]
-
         self.mj_model = spec.compile()
-        # Keep the compiled qM layout, but restore the physical COM and derived constants.
-        for body_id, body, body_ipos in full_inertia_bodies:
-            body.ipos = body_ipos
-            self.mj_model.body_ipos[body_id] = body_ipos
-            self.mj_model.body_sameframe[body_id] = mujoco.mjtSameFrame.mjSAMEFRAME_NONE
-        # mj_setConst only recomputes dampratio actuators from positive placeholders.
-        for actuator_id, dampratio in dampratio_actuators:
-            self.mj_model.actuator_biasprm[actuator_id, 2] = dampratio
         self.mj_data = mujoco.MjData(self.mj_model)
-        mujoco.mj_setConst(self.mj_model, self.mj_data)
 
         # Build MuJoCo qpos/qvel start index arrays for coordinate conversion kernels.
         # These map Newton template joint index → MuJoCo qpos/qvel start.
