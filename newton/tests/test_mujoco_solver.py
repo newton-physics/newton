@@ -6837,6 +6837,46 @@ class TestMuJoCoConversion(unittest.TestCase):
         self.assertGreater(abs(float(reference_qd[4])), 1.0e-4)
         np.testing.assert_allclose(actual_qd, reference_qd, rtol=1.0e-5, atol=1.0e-6)
 
+    def test_runtime_com_edit_preserves_dynamics(self):
+        """A runtime COM edit matches a model compiled with that COM on both backends."""
+
+        def build_model(com):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_link(
+                mass=0.1,
+                com=wp.vec3(*com),
+                inertia=wp.mat33(np.diag([0.04, 0.026, 0.05])),
+            )
+            joint = builder.add_joint_free(child=body)
+            builder.add_articulation([joint])
+            return builder.finalize(), body
+
+        def step_with_wrench(test_model, test_body, test_solver):
+            state_in = test_model.state()
+            state_out = test_model.state()
+            newton.eval_fk(test_model, test_model.joint_q, test_model.joint_qd, state_in)
+            state_in.body_f.assign([1.0, 0.0, 0.0, 0.1, 0.0, 0.0])
+            test_solver.step(state_in, state_out, test_model.control(), None, 0.01)
+            return state_out.body_qd.numpy()[test_body]
+
+        com = np.array([0.05, 0.02, -0.03], dtype=np.float32)
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                # A body compiled with its COM at the origin is eligible for MuJoCo's simple layout.
+                model, body = build_model((0.0, 0.0, 0.0))
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, iterations=1, disable_contacts=True)
+                model.body_com.assign(com[None, :])
+                solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+                reference_model, reference_body = build_model(com)
+                reference_solver = SolverMuJoCo(
+                    reference_model, use_mujoco_cpu=use_mujoco_cpu, iterations=1, disable_contacts=True
+                )
+
+                actual_qd = step_with_wrench(model, body, solver)
+                reference_qd = step_with_wrench(reference_model, reference_body, reference_solver)
+                np.testing.assert_allclose(actual_qd, reference_qd, rtol=1.0e-5, atol=1.0e-6)
+
     def test_global_joint_solver_params(self):
         """Test that global joint solver parameters affect joint limit behavior."""
         # Create a simple pendulum model

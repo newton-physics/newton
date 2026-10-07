@@ -343,12 +343,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "body_conaffinity",
     "body_contype",
     "exclude_signature",
-    # Compared semantically because storage depends on simple-body compilation.
-    "M_",
-    "mapM",
-    "mapD",
-    "qLD_",
-    "nC",
     # TileSet types: comparison function doesn't handle these
     "qM_tiles",
     "qLDiagInv_tiles",
@@ -382,9 +376,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "body_ipos",
     # Inertia frame orientation: derived from inertia diagonalization.
     "body_iquat",
-    # Simple-body classification (new in mujoco-warp 3.10.0.2): derived from the
-    # inertia representation, so Newton's re-diagonalization can classify differently.
-    "body_simple",
     # Collision filtering: Newton uses different representation but equivalent behavior
     "geom_conaffinity",
     "geom_contype",
@@ -625,59 +616,6 @@ def compare_inertia_tensors(
         atol=tol,
         err_msg="Inertia tensor mismatch (reconstructed from principal + iquat)",
     )
-
-
-def _mass_matrix_row(model: Any, row: int) -> dict[int, int]:
-    """Map stored columns in a mass-matrix row to their addresses."""
-    rowadr = model.M_rowadr.numpy()
-    rownnz = model.M_rownnz.numpy()
-    colind = model.M_colind.numpy()
-    start = int(rowadr[row])
-    return {int(colind[start + offset]): start + offset for offset in range(int(rownnz[row]))}
-
-
-def compare_mass_matrix_layouts(
-    newton_model: Any,
-    native_model: Any,
-    newton_data: Any,
-    native_data: Any,
-    tol: float = 1e-7,
-) -> None:
-    """Verify that mass-matrix layout differences only expand simple rows."""
-    np.testing.assert_array_equal(newton_model.M_fullm_i.numpy(), native_model.M_fullm_i.numpy())
-    np.testing.assert_array_equal(newton_model.M_fullm_j.numpy(), native_model.M_fullm_j.numpy())
-
-    newton_mass = newton_data.M.numpy()
-    native_mass = native_data.M.numpy()
-
-    for row in range(native_model.nv):
-        newton_entries = _mass_matrix_row(newton_model, row)
-        native_entries = _mass_matrix_row(native_model, row)
-        if newton_entries.keys() == native_entries.keys():
-            continue
-
-        # A simple (diagonal-only) row on one side may be stored expanded on the
-        # other; any other layout difference is a real mismatch.
-        if newton_entries.keys() == {row}:
-            simple_entries = newton_entries
-            general_entries = native_entries
-            general_mass = native_mass
-        else:
-            simple_entries = native_entries
-            general_entries = newton_entries
-            general_mass = newton_mass
-
-        assert set(simple_entries) == {row}, f"DOF {row}: different mass-matrix layouts and neither row is diagonal"
-        assert set(simple_entries) < set(general_entries), f"DOF {row}: general row does not expand simple row"
-
-        extra_addresses = [general_entries[column] for column in sorted(general_entries.keys() - simple_entries.keys())]
-        np.testing.assert_allclose(
-            general_mass[:, extra_addresses],
-            0.0,
-            rtol=0.0,
-            atol=tol,
-            err_msg=f"DOF {row}: entries omitted by the simple layout are nonzero",
-        )
 
 
 def solref_to_ke_kd(solref: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -1602,13 +1540,11 @@ class TestMenagerieBase(unittest.TestCase):
         """
 
     def _compare_mass_matrix_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
-        """Compare equivalent simple and general mass-matrix layouts."""
-        compare_mass_matrix_layouts(
-            newton_mjw,
-            native_mjw,
-            self._newton_solver.mjw_data,
-            self._native_mjw_data,
-        )
+        """Compare sparse mass matrix structure (M_colind, M_rowadr, M_rownnz).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where DOF ordering may differ.
+        """
 
     def _compare_tendon_jacobian_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare sparse tendon Jacobian structure (ten_J_colind, ten_J_rowadr, ten_J_rownnz).
@@ -1689,10 +1625,15 @@ class TestMenagerieBase(unittest.TestCase):
         # Create base MuJoCo model/data (uses default initialization)
         if self.discard_visual:
             xml_content = self._get_mjcf_xml()
-            # from_xml_string needs the assets path for meshes
-            mj_model = _mujoco.MjModel.from_xml_string(xml_content, assets=self._load_assets())
+            # from_string needs the assets path for meshes
+            spec = _mujoco.MjSpec.from_string(xml_content, assets=self._load_assets())
         else:
-            mj_model = _mujoco.MjModel.from_xml_path(str(self.mjcf_path))
+            spec = _mujoco.MjSpec.from_file(str(self.mjcf_path))
+        # Match SolverMuJoCo, which disables simple bodies to support runtime inertia edits.
+        for body in spec.bodies:
+            if body.name != "world":
+                body.simple = 0
+        mj_model = spec.compile()
         mj_data = _mujoco.MjData(mj_model)
         _mujoco.mj_forward(mj_model, mj_data)
 
