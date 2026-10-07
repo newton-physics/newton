@@ -221,6 +221,7 @@ class ViewerRTX(ViewerUSD):
         self._rtx = None
         self._render_result = None
         self._render_products = None
+        self._last_frame_is_fullscreen = False
         self._uses_fractional_opacity = False
         self._transform_binding = None
         self._all_instance_paths = []
@@ -2289,6 +2290,7 @@ void main() {
             # Like ViewerGL, a fullscreen image replaces the scene, so skip the RTX render.
             texture = self._image_logger.get_texture(fullscreen_name, fullscreen=True)
             self._present(*(texture or (None, 0, 0)))
+            self._last_frame_is_fullscreen = True
             return
 
         with wp.ScopedTimer("ViewerRTX::render_and_display", active=PROFILE_ENABLED, use_nvtx=True):
@@ -2338,6 +2340,8 @@ void main() {
                     if self._use_ovstage:
                         step_kwargs["ordinal"] = self._ovstage_ordinal
                     self._render_result = self._rtx.step_async(**step_kwargs)
+
+            self._last_frame_is_fullscreen = False
 
     def _blit_to_window(self, pixels: wp.array | wp.Texture2D):
         """Upload *pixels* to the window's GL texture and present it."""
@@ -2414,7 +2418,9 @@ void main() {
         Works in headless mode and reads the RTX render output through CPU
         memory. Call after :meth:`end_frame`. With asynchronous rendering,
         capture waits for the render submitted by that call so the image
-        contains the latest logged state.
+        contains the latest logged state. Capturing fullscreen images displayed
+        with ``log_image(..., fullscreen=True)`` is not supported; capture
+        resumes after the next scene render.
 
         Args:
             target_image: Optional pre-allocated Warp array on the viewer
@@ -2432,10 +2438,13 @@ void main() {
         Raises:
             RuntimeError: No rendered frame or color output is available.
             ValueError: The target shape, dtype, or device is incompatible.
-            NotImplementedError: ``render_ui`` is ``True``.
+            NotImplementedError: ``render_ui`` is ``True`` or the last frame
+                displayed a fullscreen logged image.
         """
         if render_ui:
             raise NotImplementedError("ViewerRTX.get_frame() does not support render_ui=True")
+        if self._last_frame_is_fullscreen:
+            raise NotImplementedError("ViewerRTX.get_frame() does not support capturing fullscreen logged images")
 
         h, w = self._render_height, self._render_width
         if target_image is None:
@@ -2611,6 +2620,7 @@ void main() {
             self._render_result.wait().fetch()
             self._render_result = None
         self._render_products = None
+        self._last_frame_is_fullscreen = False
 
         # Release runtime-scene resources before destroying the renderer.
         self._release_runtime_scene()
@@ -2784,6 +2794,7 @@ void main() {
 
         # release render products
         self._render_products = None
+        self._last_frame_is_fullscreen = False
 
         # release runtime-scene resources and renderer
         self._release_runtime_scene()

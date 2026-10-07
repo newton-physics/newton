@@ -207,8 +207,11 @@ Use an image library to save the captured pixels, for example:
 
 UI overlays are excluded by default. ``ViewerGL`` supports
 ``get_frame(render_ui=True)`` to include them; ``ViewerRTX`` does not support
-that option. RTX capture uses the fixed render resolution and reads through
-CPU memory. With asynchronous rendering, ``get_frame()`` waits for the render
+that option. RTX also does not support capturing fullscreen images displayed
+with ``log_image(..., fullscreen=True)``: ``get_frame()`` raises
+``NotImplementedError`` for those frames. Capture resumes after the next scene
+render. RTX capture uses the fixed render resolution and reads through CPU
+memory. With asynchronous rendering, ``get_frame()`` waits for the render
 submitted by the latest ``end_frame()`` so each captured image contains the
 latest logged state. Capturing a frame therefore blocks until that render
 completes.
