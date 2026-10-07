@@ -1131,6 +1131,37 @@ class TestSensorCamera(unittest.TestCase):
         # The two projection modes produce distinct results on a curved surface.
         self.assertFalse(np.array_equal(cubic, triplanar))
 
+    def test_in_memory_rgb_and_grayscale_textures(self) -> None:
+        """Verify meshes with in-memory RGB ``(H, W, 3)`` or grayscale ``(H, W)`` textures render opaque."""
+        width, height = 8, 8
+        for name, texture, expected in (
+            ("rgb", np.tile(np.array([200, 40, 10], dtype=np.uint8), (4, 4, 1)), (200, 40, 10)),
+            ("gray", np.full((4, 4), 90, dtype=np.uint8), (90, 90, 90)),
+        ):
+            with self.subTest(texture=name):
+                mesh = newton.Mesh(
+                    np.array([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]], dtype=np.float32),
+                    np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
+                    uvs=np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32),
+                    compute_inertia=False,
+                    texture=texture,
+                )
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                builder.add_shape_mesh(-1, mesh=mesh, color=(1.0, 1.0, 1.0))
+                model = builder.finalize(device="cpu")
+                camera = SensorCamera(model, default_render_config=SensorCamera.RenderConfig(enable_textures=True))
+                above = np.array([[0.0, 0.0, 1.8, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+                albedo = camera.create_albedo_image_output(1, width, height)
+                camera.update(
+                    model.state(),
+                    wp.array(above, dtype=wp.transformf, device="cpu"),
+                    self._rays(width, height, math.radians(60.0)),
+                    albedo_image=albedo,
+                )
+                packed = int(albedo.numpy()[0, height // 2, width // 2])
+                rgb = np.array([packed & 0xFF, (packed >> 8) & 0xFF, (packed >> 16) & 0xFF])
+                np.testing.assert_allclose(rgb, expected, atol=2)
+
     def test_mesh_texture_transform_maps_uvs(self) -> None:
         """Verify ``Mesh.texture_transform`` is applied to mesh UVs, as in the viewers."""
         width, height = 16, 16
