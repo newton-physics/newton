@@ -57,6 +57,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
         """Resolve every indexed frequency through its declared count attribute."""
         model = newton.ModelBuilder().finalize(device="cpu")
         frequency = newton.Model.AttributeFrequency
+        self.assertEqual(len(frequency.__members__), len(frequency), "Attribute frequencies must have distinct values.")
         expected_count_frequencies = set(frequency).difference({frequency.ONCE})
         actual_count_frequencies = set(model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS)
         self.assertEqual(
@@ -3729,7 +3730,7 @@ class TestModelJoints(unittest.TestCase):
         follower = builder.add_joint_revolute(parent=bodies[0], child=bodies[1], axis=newton.Axis.Z)
         builder.add_articulation([reference, follower])
 
-        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        builder.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
 
         self.assertEqual(builder.joint_mimic_joint, [-1, reference])
         np.testing.assert_allclose(
@@ -3771,7 +3772,7 @@ class TestModelJoints(unittest.TestCase):
         reference = builder.add_joint_d6(parent=-1, child=bodies[0], linear_axes=axes)
         follower = builder.add_joint_d6(parent=bodies[0], child=bodies[1], linear_axes=axes)
         builder.add_articulation([reference, follower])
-        builder.set_joint_mimic(follower, reference, (-0.5, 2.0))
+        builder.set_joint_mimic(follower, reference, coeffs=(-0.5, 2.0))
 
         model = builder.finalize()
         state = model.state()

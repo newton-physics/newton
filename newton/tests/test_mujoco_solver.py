@@ -9832,7 +9832,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([reference, follower])
-        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        builder.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
         model = builder.finalize()
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -9862,7 +9862,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([reference, follower])
-        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        builder.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
         model = builder.finalize()
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -9884,7 +9884,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         template.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
         template.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
         template.add_articulation([reference, follower])
-        template.set_joint_mimic(follower, reference, (0.5, 2.0))
+        template.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
 
         builder = newton.ModelBuilder()
         builder.replicate(template, 2)
