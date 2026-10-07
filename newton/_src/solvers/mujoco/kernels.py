@@ -11,6 +11,7 @@ import warp as wp
 
 from ...core.types import vec5
 from ...sim import BodyFlags, JointTargetMode, JointType
+from ...sim.articulation import eval_joint_child_state, eval_joint_motion
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
@@ -33,6 +34,53 @@ def _import_contact_force_fn():
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
 vec11 = wp.types.vector(length=11, dtype=wp.float32)
+
+
+@wp.kernel
+def eval_standalone_root_fk_kernel(
+    root_joints: wp.array[int],
+    joints_per_world: int,
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_com: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    world, root = wp.tid()
+    joint = world * joints_per_world + root_joints[root]
+    child = joint_child[joint]
+    X_j, v_j = eval_joint_motion(
+        joint_type[joint],
+        joint_q_start[joint],
+        joint_qd_start[joint],
+        joint_dof_dim[joint, 0],
+        joint_dof_dim[joint, 1],
+        joint_q,
+        joint_qd,
+        joint_axis,
+    )
+    X_wc, v_wc = eval_joint_child_state(
+        joint_type[joint],
+        -1,
+        child,
+        wp.transform_identity(),
+        joint_X_p[joint],
+        joint_X_c[joint],
+        X_j,
+        v_j,
+        body_qd,
+        body_com,
+    )
+    body_q[child] = X_wc
+    body_qd[child] = v_wc
 
 
 # Utility functions

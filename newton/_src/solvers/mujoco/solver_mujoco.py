@@ -5549,6 +5549,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
+        # Generic FK excludes joints outside articulations, including the standalone roots.
+        if self._standalone_root_joints.size:
+            wp.launch(
+                kernels.eval_standalone_root_fk_kernel,
+                dim=(nworld, self._standalone_root_joints.size),
+                inputs=[
+                    self._standalone_root_joints,
+                    joints_per_world,
+                    state.joint_q,
+                    state.joint_qd,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_type,
+                    model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    model.joint_axis,
+                    model.joint_dof_dim,
+                    model.body_com,
+                ],
+                outputs=[state.body_q, state.body_qd],
+                device=model.device,
+            )
+
         # Update rigid force fields on state.
         if state.body_qdd is not None or state.body_parent_f is not None:
             # Launch over MuJoCo bodies
@@ -7823,6 +7847,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
         self.mj_q_start = wp.array(mj_q_start_np, dtype=wp.int32, device=model.device)
         self.mj_qd_start = wp.array(mj_qd_start_np, dtype=wp.int32, device=model.device)
+        self._standalone_root_joints = wp.array(
+            np.searchsorted(selected_joints, joints_dynamic_roots).astype(np.int32),
+            dtype=wp.int32,
+            device=model.device,
+        )
         if self.enable_sleeping:
             qpos_treeid_np = np.full(self.mj_model.nq, -1, dtype=np.int32)
             for jointid in range(self.mj_model.njnt):
