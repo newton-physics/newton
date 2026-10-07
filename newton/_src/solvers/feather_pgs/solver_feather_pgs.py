@@ -1354,6 +1354,8 @@ class SolverFeatherPGS(SolverBase):
         friction_mode: Literal["current", "bisection", "bisection_desaxce", "coulomb_newton"] = "current",
         pgs_warmstart: bool = False,
         pgs_warmstart_decay: float = 1.0,
+        mf_warmstart: bool | None = None,
+        mf_warmstart_decay: float | None = None,
         enable_restitution: bool = True,
         restitution_velocity_threshold: float = 0.5,
         contact_speculative_scale: float = 1.0,
@@ -1604,6 +1606,11 @@ class SolverFeatherPGS(SolverBase):
                 impulses are rotated into the current tangent frame and clamped to the
                 current friction cone; other rows start cold.
             pgs_warmstart_decay: Non-negative scale applied to the carried impulses.
+            mf_warmstart: Deprecated alias of ``pgs_warmstart``; warns with
+                :class:`DeprecationWarning`. Warm start is enabled when either is ``True``.
+            mf_warmstart_decay: Deprecated alias of ``pgs_warmstart_decay``; warns with
+                :class:`DeprecationWarning`. It takes effect only when ``mf_warmstart`` alone
+                enables warm start; with ``pgs_warmstart=True``, ``pgs_warmstart_decay`` applies.
             enable_restitution: Apply contact restitution. ``False`` turns restitution off for
                 every contact regardless of the shapes' coefficients, as the largest finite
                 ``restitution_velocity_threshold`` does, and lets the split solve and
@@ -1813,6 +1820,17 @@ class SolverFeatherPGS(SolverBase):
             nvtx: Experimental, advanced: annotate the stages of :meth:`step` with NVTX ranges
                 for profilers such as Nsight Systems. Results are unchanged.
         """
+        if mf_warmstart is not None or mf_warmstart_decay is not None:
+            warnings.warn(
+                "mf_warmstart and mf_warmstart_decay are deprecated; use pgs_warmstart and pgs_warmstart_decay",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if mf_warmstart_decay is not None:
+                mf_warmstart_decay = _finite_non_negative("mf_warmstart_decay", mf_warmstart_decay)
+            if mf_warmstart and not pgs_warmstart and mf_warmstart_decay is not None:
+                pgs_warmstart_decay = mf_warmstart_decay
+            pgs_warmstart = bool(pgs_warmstart) or bool(mf_warmstart)
         if contact_compliance:
             # Reject unsupported combinations before any allocation.
             _contact_compliance.validate_configuration(
