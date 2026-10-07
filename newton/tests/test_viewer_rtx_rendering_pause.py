@@ -89,14 +89,21 @@ class TestRenderingPauseRTX(unittest.TestCase):
         viewer = self.viewer
         viewer._phase = viewer._PHASE_RENDER
         viewer._rtx = mock.Mock()
+        viewer._window = mock.Mock()
+        viewer._update_scene = mock.Mock()
+        viewer._present = mock.Mock(side_effect=lambda *_: viewer._rtx.step_async.assert_not_called())
         viewer._accept_render = mock.Mock()
         pending = viewer._rtx.step_async.return_value
         viewer.end_frame()
+        viewer._present.assert_called_once()
+        viewer._present.side_effect = None
         pending.wait.assert_not_called()
         viewer._rtx.step_async.assert_called_once()
+        viewer._accept_render.side_effect = lambda _: self.assertEqual(viewer._update_scene.call_count, 2)
         viewer.end_frame()
         pending.wait.assert_called_once_with()
         viewer._accept_render.assert_called_once_with(pending.wait.return_value.fetch.return_value)
+        viewer._accept_render.side_effect = None
         viewer._accept_render.reset_mock()
         pending.wait.reset_mock()
         viewer._rtx.step_async.reset_mock()
