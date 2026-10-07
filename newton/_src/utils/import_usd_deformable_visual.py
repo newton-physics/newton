@@ -293,8 +293,23 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                 continue
             try:
                 gaussian = _gaussian_in_world(ctx, prim, usd.get_gaussian(prim))
-                tet_range = ctx.path_soft_map[sim_path]["tet"]
+                ranges = ctx.path_soft_map[sim_path]
+                tet_range = ranges["tet"]
+                positions = _sim_bind_positions(ctx, sim_path, ranges["particle"])
                 parent, weights = _read_gaussian_embedding(prim, tet_range, gaussian.count)
+                bind_poses = None
+                if positions is not None:
+                    if parent is None:
+                        parent, weights = builder._embed_visual_vertices_in_tets(
+                            gaussian.positions, tet_range, positions=positions
+                        )
+                    if np.any(parent < tet_range[0]) or np.any(parent >= tet_range[1]):
+                        raise ValueError("tetIndices references a tetrahedron outside the owning volume")
+                    corners = positions[np.asarray(builder.tet_indices)[parent]]
+                    basis = np.transpose(corners[:, 1:] - corners[:, :1], (0, 2, 1))
+                    if np.any(np.abs(np.linalg.det(basis)) <= 1.0e-20):
+                        raise ValueError("degenerate_parent: Gaussian bind tetrahedron is degenerate")
+                    bind_poses = np.linalg.inv(basis).astype(np.float32)
                 index = builder.add_deformable_visual_gaussian(
                     gaussian,
                     kind="tet",
@@ -308,6 +323,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                 continue
 
             spec = builder._deformable_visual_gaussians[index]
+            spec["_bind_poses"] = bind_poses
             spec["body_path"] = body_path
             spec["sim_path"] = sim_path
             spec["graphics_path"] = path

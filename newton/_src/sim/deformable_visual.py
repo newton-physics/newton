@@ -235,6 +235,8 @@ class DeformableVisualGaussian:
         """Rest Gaussian orientations, shape [count]."""
         self.rest_scales = rest_scales
         """Rest Gaussian axis scales [m], shape [count, 3]."""
+        # An imported visual reference can differ from the solver's rest shape.
+        self._bind_poses: wp.array[wp.mat33] | None = None
         self.shape = shape
         """Render-only Gaussian shape index."""
         self.world = world
@@ -448,6 +450,7 @@ def _skin_deformable_visual_gaussian_tet(
     particle_q: wp.array[wp.vec3],
     tet_indices: wp.array2d[wp.int32],
     tet_poses: wp.array[wp.mat33],
+    bind_poses: wp.array[wp.mat33],
     parent: wp.array[wp.int32],
     weights: wp.array[wp.vec4],
     rest_rotations: wp.array[wp.quat],
@@ -470,7 +473,10 @@ def _skin_deformable_visual_gaussian_tet(
     center = w[0] * q0 + w[1] * q1 + w[2] * q2 + w[3] * q3
 
     current_basis = wp.matrix_from_cols(q1 - q0, q2 - q0, q3 - q0)
-    deformation_gradient = current_basis * tet_poses[tet]
+    reference_inverse = tet_poses[tet]
+    if bind_poses:
+        reference_inverse = bind_poses[i]
+    deformation_gradient = current_basis * reference_inverse
     rest_scale = rest_scales[i]
     scale_matrix = wp.mat33(rest_scale[0], 0.0, 0.0, 0.0, rest_scale[1], 0.0, 0.0, 0.0, rest_scale[2])
     axes = deformation_gradient * wp.quat_to_matrix(rest_rotations[i]) * scale_matrix
@@ -508,6 +514,7 @@ def skin_deformable_visual_gaussian(
             state.particle_q,
             model.tet_indices,
             model.tet_poses,
+            visual._bind_poses,
             visual.parent,
             visual.weights,
             visual.rest_rotations,

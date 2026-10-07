@@ -13621,6 +13621,8 @@ class ModelBuilder:
                     graphics_path=spec.get("graphics_path"),
                 )
             )
+            if spec.get("_bind_poses") is not None:
+                visuals[-1]._bind_poses = wp.array(spec["_bind_poses"], dtype=wp.mat33)
         return visuals
 
     def finalize(

@@ -347,6 +347,57 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         imported_axes = _quat_matrix(imported.rotations[0]) @ np.diag(imported.scales[0])
         np.testing.assert_allclose(imported_axes @ imported_axes.T, expected_covariance, rtol=1.0e-5, atol=1.0e-7)
 
+    def test_simulation_bind_pose_drives_centers_and_covariance(self):
+        """Keep visual reference geometry separate from the simulation's rest tet."""
+        from pxr import Sdf, UsdGeom
+
+        bind = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        center = np.array([0.2, 0.2, 0.2])
+        # Stretch, rotate, and shear. The covariance must follow all three.
+        motion = np.array([[0, -1, 0], [2, 0.3, 0], [0, 0, 0.5]])
+        translation = np.array([0, 0, 3])
+        placement = np.diag([1.5, 1.0, 0.8])
+        for authored in (False, True):
+            with self.subTest(authored=authored):
+                stage = self._stage()
+                tet = self._add_volume(stage, "/World/Bear")
+                tet.GetPointsAttr().Set((bind @ motion.T + translation).tolist())
+                prim = tet.GetPrim()
+                prim.AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+                prim.CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
+                    ["bindPose"]
+                )
+                prim.CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
+                    bind.tolist()
+                )
+                UsdGeom.Xformable(stage.GetPrimAtPath("/World/Bear")).AddScaleOp().Set((1.5, 1.0, 0.8))
+                self._add_gaussian(
+                    stage,
+                    "/World/Bear/Gaussian",
+                    [tuple(center)],
+                    parent=[0] if authored else None,
+                    weights=[(0.4, 0.2, 0.2, 0.2)] if authored else None,
+                )
+                template = newton.ModelBuilder()
+                template.add_usd(stage)
+                physics_only = newton.ModelBuilder()
+                physics_only.add_usd(stage, load_visual_shapes=False)
+                np.testing.assert_array_equal(template.tet_poses, physics_only.tet_poses)
+                builder = newton.ModelBuilder()
+                builder.add_world(template)
+                builder.add_world(template, xform=wp.transform(wp.vec3(4, 0, 0), wp.quat_identity()))
+                model = builder.finalize()
+                visuals = model.deformable_visuals()
+                model.update_deformable_visuals(model.state(), visuals)
+                for i in range(2):
+                    transform = visuals.get_gaussian_transforms(i).numpy()[0]
+                    scales = visuals.get_gaussian_scales(i).numpy()[0]
+                    expected_center = placement @ (motion @ center + translation) + [4 * i, 0, 0]
+                    np.testing.assert_allclose(transform[:3], expected_center, atol=2.0e-6)
+                    axes = _quat_matrix(transform[3:]) @ np.diag(scales)
+                    expected_axes = placement @ motion @ np.diag([0.05, 0.04, 0.03])
+                    np.testing.assert_allclose(axes @ axes.T, expected_axes @ expected_axes.T, atol=1.0e-7, rtol=1.0e-4)
+
 
 class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
     """Reusable current Gaussian transforms and scales."""
