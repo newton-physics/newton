@@ -42,7 +42,7 @@ sim = [
 
 # Optional ONNX policy inference for neural actuators and RL policy examples.
 onnx = [
-    "warp-nn[onnx]==0.4.0",
+    "warp-nn[onnx]~=0.4.0",
 ]
 
 # Asset import and mesh processing dependencies
