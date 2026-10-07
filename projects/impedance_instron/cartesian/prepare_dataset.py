@@ -218,8 +218,20 @@ def build_dataset(
     prepared_root: Path = DEFAULT_PREPARED,
     output_root: Path = DEFAULT_OUTPUT,
     seed: int = SEED,
+    *,
+    profile_path: Path | None = None,
+    shoe_path: Path | None = None,
+    shoe_static_pitch_rad: float | None = None,
+    virtual_foot_reference: str = "reconstructed_ground",
 ) -> Path:
-    """Prepare 100 training and 10 evaluation peak-to-peak stance references."""
+    """Prepare 100 training and 10 evaluation peak-to-peak stance references.
+
+    Args:
+        profile_path: Leg profile; defaults to the FR3_2 bundle under ``prepared_root``.
+        shoe_path: Shoe artifact; defaults to the FR3_2 bundle under ``prepared_root``.
+        shoe_static_pitch_rad: Static shoe pitch [rad]; defaults to the FR3_2 bundle summary.
+        virtual_foot_reference: Foot-angle source passed to :func:`.prepare_visual3d.prepare`.
+    """
     rng = np.random.default_rng(seed)
     available: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
     for trial_name in TRIALS:
@@ -246,8 +258,11 @@ def build_dataset(
         # Both trial bundles carry byte-identical profile and shoe artifacts;
         # use the FR3_2 right-side bundle as the shared right-foot source.
         prepared = prepared_root / "FR3_2" / "prepared"
-        profile = prepared / "profile.json"
-        shoe = prepared / "digital_shoe.json"
+        profile = profile_path or prepared / "profile.json"
+        shoe = shoe_path or prepared / "digital_shoe.json"
+        if shoe_static_pitch_rad is None:
+            summary = json.loads((prepared / "summary.json").read_text(encoding="utf-8"))
+            shoe_static_pitch_rad = float(summary["angle_convention"]["shoe_static_pitch_rad"])
         trial_info["source_hashes"][str(profile)] = _sha256(profile)
         trial_info["source_hashes"][str(shoe)] = _sha256(shoe)
         selection_path = trial_root / "stance_selection.json"
@@ -270,12 +285,8 @@ def build_dataset(
                     end_s=cycle["end_s"],
                     subject_mass_kg=float(selection["subject_mass_kg"]),
                     belt_speed_m_s=float(selection["belt_speed_m_s"]),
-                    virtual_foot_reference="reconstructed_ground",
-                    shoe_static_pitch_rad=float(
-                        json.loads((prepared / "summary.json").read_text(encoding="utf-8"))["angle_convention"][
-                            "shoe_static_pitch_rad"
-                        ]
-                    ),
+                    virtual_foot_reference=virtual_foot_reference,
+                    shoe_static_pitch_rad=shoe_static_pitch_rad,
                     allow_force_side_override=(trial_info["source_manifest_force_side"] != SELECTED_SIDE),
                 )
                 records.append(
@@ -333,8 +344,27 @@ def main() -> None:
     parser.add_argument("--prepared-root", type=Path, default=DEFAULT_PREPARED)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--profile", type=Path, help="Leg profile; defaults to the prepared FR3_2 bundle")
+    parser.add_argument("--shoe", type=Path, help="Shoe artifact; defaults to the prepared FR3_2 bundle")
+    parser.add_argument("--shoe-static-pitch-rad", type=float)
+    parser.add_argument(
+        "--virtual-foot-reference",
+        default="reconstructed_ground",
+        choices=("reconstructed_ground", "sole_markers"),
+    )
     args = parser.parse_args()
-    print(build_dataset(args.data_root, args.prepared_root, args.output, args.seed))
+    print(
+        build_dataset(
+            args.data_root,
+            args.prepared_root,
+            args.output,
+            args.seed,
+            profile_path=args.profile,
+            shoe_path=args.shoe,
+            shoe_static_pitch_rad=args.shoe_static_pitch_rad,
+            virtual_foot_reference=args.virtual_foot_reference,
+        )
+    )
 
 
 if __name__ == "__main__":

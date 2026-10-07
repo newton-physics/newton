@@ -1,0 +1,1 @@
+Add a batched GPU rollout for the Hogan stance controller (`hogan.batch`) and a cross-entropy search (`hogan.learn`) that fits one phase-scheduled stiffness and damping profile K(φ), D(φ) over 100 measured stances with the digital shoe in the loop, then scores it on 10 held-out stances. Add `hogan.learn_report` to write an HTML report of the learned schedule.
