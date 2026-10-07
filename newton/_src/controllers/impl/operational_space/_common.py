@@ -376,11 +376,9 @@ def _apply_mass_matrix_inv_on_right_kernel(
 # (:func:`_apply_generalized_task_specification_matrix_kernel`), so selection
 # never touches world frame.
 #
-# Applied once, before Lambda for the motion branch and once on the combined
-# wrench command for the force branch -- not a second time afterward, since
-# Lambda's own coupling is exactly what should propagate through a selected
-# acceleration; see the module-level docstring in ``model_free.py`` for the
-# full derivation.
+# Applied before Lambda for the motion branch, optionally again to its output
+# with use_motion_wrench_projection, and once on the combined wrench command.
+# See model_free.py's module docstring for the two motion laws and tradeoffs.
 #
 # Motion, force, and null-space joint torques are each mapped to joint space
 # by their own :func:`_jacobian_transpose_force_kernel` call and summed there

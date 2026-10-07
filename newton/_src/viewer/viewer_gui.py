@@ -21,13 +21,13 @@ from time import perf_counter
 from typing import Any, Literal
 
 import numpy as np
-import warp as wp
 
 import newton as nt
 from newton.selection import ArticulationView
 
 from ..core.types import Axis
 from .gl.gui import UI
+from .transform import transform_assign, transform_assign_matrix, transform_to_matrix
 
 # Width of the left sidebar in logical (96-DPI) pixels.
 _SIDEBAR_WIDTH_PX = 300.0
@@ -605,13 +605,13 @@ class ViewerGui:
             was_active = self._gizmo_active.get(gid, False)
             if not ops:
                 if was_active and snap_to is not None:
-                    transform[:] = snap_to
+                    transform_assign(transform, snap_to)
                 self._gizmo_active[gid] = False
                 continue
 
             giz.push_id(str(gid))
 
-            M = wp.transform_to_matrix(transform)
+            M = transform_to_matrix(transform)
             M_ = m44_to_mat16(M)
 
             op_modified = False
@@ -625,10 +625,10 @@ class ViewerGui:
                 is_active = op_modified or (was_active and any_gizmo_is_using)
 
             if was_active and not is_active and snap_to is not None:
-                transform[:] = snap_to
+                transform_assign(transform, snap_to)
             else:
                 M[:] = M_.values.reshape(4, 4, order="F")
-                transform[:] = wp.transform_from_matrix(M)
+                transform_assign_matrix(transform, M)
 
             self._gizmo_active[gid] = is_active
 

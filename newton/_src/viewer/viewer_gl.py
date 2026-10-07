@@ -480,14 +480,16 @@ class ViewerGL(ViewerBase):
 
         Args:
             name: Unique gizmo path/name.
-            transform: Gizmo world transform.
+            transform: Gizmo world transform with translation [m] and a
+                unitless rotation quaternion.
             translate: Axes on which the translation handles are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all translation handles.
             rotate: Axes on which the rotation rings are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
-            snap_to: Optional world transform to snap to when this gizmo is
+            snap_to: Optional world transform with translation [m] and a
+                unitless rotation quaternion to apply when this gizmo is
                 released by the user.
         """
         axis_order = (Axis.X, Axis.Y, Axis.Z)
