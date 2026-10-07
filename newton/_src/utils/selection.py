@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import weakref
 from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any
@@ -216,78 +217,45 @@ for _dtype in [float, wp.transform, wp.spatial_vector]:
 
 
 @wp.kernel
-def build_actuator_dof_mapping_slice_kernel(
-    actuator_input_indices: wp.array[wp.uint32],
-    actuators_per_world: int,
-    base_offset: int,
-    slice_start: int,
-    slice_stop: int,
-    stride_within_worlds: int,
-    count_per_world: int,
-    dofs_per_arti: int,
-    dofs_per_world: int,
-    num_worlds: int,
-    mapping: wp.array[int],
-):
-    """Build DOF-to-actuator mapping for slice-based view selection.
+def _build_actuator_dof_lookup_kernel(actuator_dofs: wp.array[wp.uint32], lookup: wp.array[int]):
+    """Scatter ``lookup[actuator_dofs[i]] = i``, skipping DOFs beyond the lookup range.
 
-    Iterates over first world's actuators only, replicates pattern to all worlds.
-    For each actuator, checks all articulations in the view to find matching DOF ranges.
+    ``lookup`` must be filled with -1. If an actuator lists a DOF more than once, the last entry wins.
     """
-    local_idx = wp.tid()  # 0 to actuators_per_world-1
-
-    # Get global DOF from first world's actuator entry
-    global_dof = int(actuator_input_indices[local_idx])
-
-    for arti_idx in range(count_per_world):
-        arti_global_start = base_offset + arti_idx * stride_within_worlds + slice_start
-        arti_global_stop = base_offset + arti_idx * stride_within_worlds + slice_stop
-        if global_dof >= arti_global_start and global_dof < arti_global_stop:
-            view_local_pos = arti_idx * dofs_per_arti + (global_dof - arti_global_start)
-
-            # Replicate to all worlds
-            for world_idx in range(num_worlds):
-                view_pos = world_idx * dofs_per_world + view_local_pos
-                actuator_idx = world_idx * actuators_per_world + local_idx
-                mapping[view_pos] = actuator_idx
-            break
+    i = wp.tid()
+    dof = int(actuator_dofs[i])
+    if dof < lookup.shape[0]:
+        wp.atomic_max(lookup, dof, i)
 
 
 @wp.kernel
-def build_actuator_dof_mapping_indices_kernel(
-    actuator_input_indices: wp.array[wp.uint32],
-    view_dof_indices: wp.array[int],
-    base_offset: int,
+def _map_regular_dofs_to_actuator_kernel(
+    lookup: wp.array[int],
+    offset: int,
+    stride_between_worlds: int,
     stride_within_worlds: int,
-    count_per_world: int,
-    actuators_per_world: int,
-    dofs_per_arti: int,
-    dofs_per_world: int,
-    num_worlds: int,
-    mapping: wp.array[int],
+    slice_start: int,
+    local_indices: wp.array[int],
+    use_local_indices: int,
+    mapping: wp.array3d[int],
 ):
-    """Build DOF-to-actuator mapping for index-array-based view selection.
+    """Gather ``mapping[world, arti, value] = lookup[dof]`` for the view's regular-layout DOF rows."""
+    world, arti, value = wp.tid()
+    local = slice_start + value
+    if use_local_indices != 0:
+        local = local_indices[value]
+    mapping[world, arti, value] = lookup[offset + world * stride_between_worlds + arti * stride_within_worlds + local]
 
-    Iterates over first world's actuators only, replicates pattern to all worlds.
-    For each actuator, checks all articulations in the view to find matching DOF indices.
-    """
-    local_idx = wp.tid()  # 0 to actuators_per_world-1
 
-    global_dof = int(actuator_input_indices[local_idx])
-
-    for arti_idx in range(count_per_world):
-        arti_base = base_offset + arti_idx * stride_within_worlds
-        for i in range(dofs_per_arti):
-            # view_dof_indices[i] is local within the articulation, add arti_base to get global
-            if arti_base + view_dof_indices[i] == global_dof:
-                view_local_pos = arti_idx * dofs_per_arti + i
-
-                # Replicate to all worlds
-                for world_idx in range(num_worlds):
-                    view_pos = world_idx * dofs_per_world + view_local_pos
-                    actuator_idx = world_idx * actuators_per_world + local_idx
-                    mapping[view_pos] = actuator_idx
-                break
+@wp.kernel
+def _map_explicit_dofs_to_actuator_kernel(
+    lookup: wp.array[int],
+    model_indices: wp.array3d[int],
+    mapping: wp.array3d[int],
+):
+    """Gather ``mapping[world, arti, value] = lookup[model_indices[world, arti, value]]``."""
+    world, arti, value = wp.tid()
+    mapping[world, arti, value] = lookup[model_indices[world, arti, value]]
 
 
 @wp.kernel
@@ -322,6 +290,111 @@ def _scatter_masked_2d_kernel(
             dst[dst_idx] = values[row, col]
 
 
+# ========================================================================================
+# Gather/scatter kernels for layouts addressed through explicit model indices
+
+
+@wp.kernel
+def _gather_explicit_2d_kernel(src: Any, indices: wp.array2d[int], dst: Any):
+    world, arti = wp.tid()
+    dst[world, arti] = src[indices[world, arti]]
+
+
+@wp.kernel
+def _gather_explicit_3d_kernel(src: Any, indices: wp.array3d[int], dst: Any):
+    world, arti, value = wp.tid()
+    dst[world, arti, value] = src[indices[world, arti, value]]
+
+
+@wp.kernel
+def _gather_explicit_3d_trailing_kernel(src: Any, indices: wp.array2d[int], dst: Any):
+    world, arti, trailing = wp.tid()
+    dst[world, arti, trailing] = src[indices[world, arti], trailing]
+
+
+@wp.kernel
+def _gather_explicit_4d_kernel(src: Any, indices: wp.array3d[int], dst: Any):
+    world, arti, value, trailing = wp.tid()
+    dst[world, arti, value, trailing] = src[indices[world, arti, value], trailing]
+
+
+@wp.kernel
+def _scatter_explicit_2d_world_kernel(values: Any, indices: wp.array2d[int], mask: wp.array[bool], dst: Any):
+    world, arti = wp.tid()
+    if mask[world]:
+        dst[indices[world, arti]] = values[world, arti]
+
+
+@wp.kernel
+def _scatter_explicit_2d_articulation_kernel(values: Any, indices: wp.array2d[int], mask: wp.array2d[bool], dst: Any):
+    world, arti = wp.tid()
+    if mask[world, arti]:
+        dst[indices[world, arti]] = values[world, arti]
+
+
+@wp.kernel
+def _scatter_explicit_3d_world_kernel(values: Any, indices: wp.array3d[int], mask: wp.array[bool], dst: Any):
+    world, arti, value = wp.tid()
+    if mask[world]:
+        dst[indices[world, arti, value]] = values[world, arti, value]
+
+
+@wp.kernel
+def _scatter_explicit_3d_articulation_kernel(values: Any, indices: wp.array3d[int], mask: wp.array2d[bool], dst: Any):
+    world, arti, value = wp.tid()
+    if mask[world, arti]:
+        dst[indices[world, arti, value]] = values[world, arti, value]
+
+
+@wp.kernel
+def _scatter_explicit_3d_trailing_world_kernel(values: Any, indices: wp.array2d[int], mask: wp.array[bool], dst: Any):
+    world, arti, trailing = wp.tid()
+    if mask[world]:
+        dst[indices[world, arti], trailing] = values[world, arti, trailing]
+
+
+@wp.kernel
+def _scatter_explicit_3d_trailing_articulation_kernel(
+    values: Any, indices: wp.array2d[int], mask: wp.array2d[bool], dst: Any
+):
+    world, arti, trailing = wp.tid()
+    if mask[world, arti]:
+        dst[indices[world, arti], trailing] = values[world, arti, trailing]
+
+
+@wp.kernel
+def _scatter_explicit_4d_world_kernel(values: Any, indices: wp.array3d[int], mask: wp.array[bool], dst: Any):
+    world, arti, value, trailing = wp.tid()
+    if mask[world]:
+        dst[indices[world, arti, value], trailing] = values[world, arti, value, trailing]
+
+
+@wp.kernel
+def _scatter_explicit_4d_articulation_kernel(values: Any, indices: wp.array3d[int], mask: wp.array2d[bool], dst: Any):
+    world, arti, value, trailing = wp.tid()
+    if mask[world, arti]:
+        dst[indices[world, arti, value], trailing] = values[world, arti, value, trailing]
+
+
+# (index ndim, source ndim) -> gather kernel; (index ndim, source ndim, mask ndim) -> scatter kernel
+_EXPLICIT_GATHER_KERNELS = {
+    (2, 1): _gather_explicit_2d_kernel,
+    (3, 1): _gather_explicit_3d_kernel,
+    (2, 2): _gather_explicit_3d_trailing_kernel,
+    (3, 2): _gather_explicit_4d_kernel,
+}
+_EXPLICIT_SCATTER_KERNELS = {
+    (2, 1, 1): _scatter_explicit_2d_world_kernel,
+    (2, 1, 2): _scatter_explicit_2d_articulation_kernel,
+    (3, 1, 1): _scatter_explicit_3d_world_kernel,
+    (3, 1, 2): _scatter_explicit_3d_articulation_kernel,
+    (2, 2, 1): _scatter_explicit_3d_trailing_world_kernel,
+    (2, 2, 2): _scatter_explicit_3d_trailing_articulation_kernel,
+    (3, 2, 1): _scatter_explicit_4d_world_kernel,
+    (3, 2, 2): _scatter_explicit_4d_articulation_kernel,
+}
+
+
 # NOTE: Python slice objects are not hashable in Python < 3.12, so we use this instead.
 class Slice:
     def __init__(self, start=None, stop=None):
@@ -342,6 +415,18 @@ class Slice:
 
 
 class FrequencyLayout:
+    """Placement of one attribute frequency's selected rows in the model arrays.
+
+    A regular layout addresses row ``offset + world * stride_between_worlds + articulation *
+    stride_within_worlds + index`` for each selected ``index``. When the articulations' start rows
+    are not regularly spaced across worlds, ``model_starts`` gives the absolute start row of each
+    ``(world, articulation)`` instead, and attributes are gathered and scattered through
+    :meth:`get_model_indices`. When the selected values are not at the same offsets in every
+    articulation, ``model_indices`` gives the absolute row of each selected value of each
+    ``(world, articulation)`` instead. The stride fields of such a layout describe only the first
+    articulations and do not address the others.
+    """
+
     def __init__(
         self,
         offset: int,
@@ -350,11 +435,20 @@ class FrequencyLayout:
         value_count: int,
         indices: list[int],
         device,
+        *,
+        model_starts: np.ndarray | list[list[int]] | None = None,
+        model_indices: np.ndarray | None = None,
     ):
         self.offset = offset  # number of values to skip at the beginning of attribute array
         self.stride_between_worlds = stride_between_worlds
         self.stride_within_worlds = stride_within_worlds
         self.value_count = value_count
+        self._selected_indices = list(indices)
+        self._device = device
+        self._model_starts = None if model_starts is None else np.asarray(model_starts, dtype=np.int64)
+        # absolute row of every selected value, shaped (world_count, count_per_world, len(indices))
+        self._model_value_indices = None if model_indices is None else np.asarray(model_indices, dtype=np.int64)
+        self._model_index_cache = {}
         self.slice = None
         self.indices = None
         if len(indices) == 0:
@@ -366,7 +460,110 @@ class FrequencyLayout:
 
     @property
     def is_contiguous(self):
-        return self.slice is not None
+        return self.slice is not None and not self.uses_explicit_model_indices
+
+    @property
+    def uses_explicit_model_indices(self) -> bool:
+        """Whether attributes are gathered and scattered through absolute model indices."""
+        return self._model_starts is not None or self._model_value_indices is not None
+
+    def _local_indices(self, value_slice: Slice | slice | int | None) -> tuple[list[int], bool]:
+        """Return the selected value positions and whether the value axis is dropped."""
+        if isinstance(value_slice, Slice):
+            value_slice = value_slice.get()
+        if value_slice is None:
+            return self._selected_indices, False
+        if isinstance(value_slice, int):
+            return [value_slice], True
+        if isinstance(value_slice, slice):
+            start, stop, step = value_slice.indices(self.value_count)
+            if step != 1:
+                raise ValueError("ArticulationView attribute slices must have step 1")
+            return list(range(start, stop)), False
+        raise ValueError(f"Invalid slice type: expected slice or int, got {type(value_slice)}")
+
+    def _selected_positions(self, local_indices: list[int]) -> list[int]:
+        """Map value offsets of the first articulation to positions among its selected values."""
+        positions = {index: position for position, index in enumerate(self._selected_indices)}
+        missing = [index for index in local_indices if index not in positions]
+        if missing:
+            raise ValueError(
+                f"Values {missing} are not selected; this layout addresses only its selected values per articulation"
+            )
+        return [positions[index] for index in local_indices]
+
+    def get_model_indices(self, value_slice: Slice | slice | int | None = None) -> wp.array2d[int] | wp.array3d[int]:
+        """Return the absolute model row of every selected value of an explicit layout.
+
+        Args:
+            value_slice: Positions within each articulation's rows, as for an attribute slice.
+                ``None`` selects the layout's selected values; an integer drops the value axis.
+
+        Returns:
+            An integer array shaped ``(world_count, count_per_world, value_count)``, or
+            ``(world_count, count_per_world)`` for an integer ``value_slice``, on the layout's device.
+
+        Raises:
+            RuntimeError: If the layout is regular (see ``uses_explicit_model_indices``).
+        """
+        if not self.uses_explicit_model_indices:
+            raise RuntimeError("Explicit model indices are unavailable for this regular layout")
+        # native slices are unhashable before Python 3.12
+        if isinstance(value_slice, Slice):
+            value_slice = value_slice.get()
+        key = (value_slice.start, value_slice.stop, value_slice.step) if isinstance(value_slice, slice) else value_slice
+        model_indices = self._model_index_cache.get(key)
+        if model_indices is None:
+            device = wp.get_device(self._device)
+            if device.is_cuda and wp.get_stream(device).is_capturing:
+                raise RuntimeError(
+                    "Explicit model indices for this attribute slice are copied to the device on first access, "
+                    "which cannot run during CUDA graph capture. Access the attribute once before capturing."
+                )
+            local_indices, drop_value_axis = self._local_indices(value_slice)
+            if self._model_value_indices is not None:
+                host_indices = np.ascontiguousarray(
+                    self._model_value_indices[..., self._selected_positions(local_indices)]
+                )
+            else:
+                host_indices = self._model_starts[..., None] + np.asarray(local_indices, dtype=np.int64)
+            if drop_value_axis:
+                host_indices = host_indices[..., 0]
+            model_indices = wp.array(host_indices, dtype=int, device=self._device)
+            self._model_index_cache[key] = model_indices
+        return model_indices
+
+    def get_absolute_indices(self, world_count: int, count_per_world: int) -> np.ndarray:
+        """Return host absolute model rows shaped ``(world_count, count_per_world, selected_value_count)``.
+
+        Works for regular and explicit layouts and does not read device memory.
+        """
+        selected = np.asarray(self._selected_indices, dtype=np.int64)
+        if self._model_value_indices is not None:
+            return self._model_value_indices.copy()
+        if self.uses_explicit_model_indices:
+            return self._model_starts[..., None] + selected
+        world_offsets = np.arange(world_count, dtype=np.int64) * self.stride_between_worlds
+        articulation_offsets = np.arange(count_per_world, dtype=np.int64) * self.stride_within_worlds
+        return self.offset + world_offsets[:, None, None] + articulation_offsets[None, :, None] + selected
+
+    def max_model_index(self, world_count: int, count_per_world: int) -> int:
+        """Return the largest absolute model row the layout selects, or -1 if it selects none.
+
+        Computed from host layout metadata only, without reading device memory.
+        """
+        if not self._selected_indices or world_count == 0 or count_per_world == 0:
+            return -1
+        if self._model_value_indices is not None:
+            return int(self._model_value_indices.max(initial=-1))
+        if self._model_starts is not None:
+            return int(self._model_starts.max()) + max(self._selected_indices)
+        return (
+            self.offset
+            + (world_count - 1) * self.stride_between_worlds
+            + (count_per_world - 1) * self.stride_within_worlds
+            + max(self._selected_indices)
+        )
 
     @property
     def selected_value_count(self):
@@ -506,12 +703,16 @@ def _select_positions(positions, selected):
     return lookup[positions]
 
 
-def _check_layout(slots, offsets, owners, origins, world_count, count_per_world, device):
+def _check_layout(slots, offsets, owners, origins, world_count, count_per_world, device, explicit_values=False):
     """Check one frequency of every selected articulation against the first one.
 
     Each articulation (slot) must select the same number of values, with the same offsets from its
-    origin and the same owning joint or link, and origins must be uniformly strided within and
-    between worlds.
+    origin and the same owning joint or link, and origins must be uniformly strided within worlds.
+    Origins that are not uniformly strided between worlds yield a layout with explicit model indices.
+
+    With ``explicit_values``, matching counts and owners suffice: when the offsets differ between
+    articulations or the origins are irregular within worlds, the layout records the absolute row
+    of every selected value instead.
 
     Returns:
         The layout, or ``None`` with the reason it is unavailable, and whether selected counts match.
@@ -522,22 +723,39 @@ def _check_layout(slots, offsets, owners, origins, world_count, count_per_world,
     failed = counts != count
     uniform_count = not failed.any()
     reasons = [] if uniform_count else ["selected count differs between articulations"]
+    offset_mismatch = False
     if uniform_count:
-        failed = np.zeros(slot_count, dtype=bool)
-        for values in (offsets.reshape(slot_count, count), owners.reshape(slot_count, count)):
-            mismatch = values != values[0]
-            if mismatch.any():
-                failed |= mismatch.any(axis=1)
+        slot_offsets = offsets.reshape(slot_count, count)
+        owner_mismatch = (owners.reshape(slot_count, count) != owners[:count]).any(axis=1)
+        offset_mismatch = (slot_offsets != slot_offsets[0]).any(axis=1)
+        failed = owner_mismatch if explicit_values else owner_mismatch | offset_mismatch
+        offset_mismatch = bool(offset_mismatch.any())
         if failed.any():
             reasons.append("selected values or their owners differ between articulations")
+    # rows can be addressed one value at a time when only their offsets or origins are irregular
+    index_values = explicit_values and not reasons
     grid = origins.reshape(world_count, count_per_world)
     between = int(grid[1, 0] - grid[0, 0]) if world_count > 1 else 0
     within = int(grid[0, 1] - grid[0, 0]) if count_per_world > 1 else 0
+    model_starts = None
+    model_indices = None
     if count:
-        misplaced = grid != grid[0, 0] + between * np.arange(world_count)[:, None] + within * np.arange(count_per_world)
-        if misplaced.any():
-            reasons.append("start indices are not uniformly strided")
-            failed |= misplaced.ravel()
+        within_offsets = within * np.arange(count_per_world)
+        misplaced = grid != grid[0, 0] + between * np.arange(world_count)[:, None] + within_offsets
+        regular_within = np.array_equal(grid - grid[:, :1], np.broadcast_to(within_offsets, grid.shape))
+        if index_values and (offset_mismatch or not regular_within):
+            # e.g. shapes of other bodies interleaved differently between the selected ones
+            model_indices = (origins[:, None] + offsets.reshape(slot_count, count)).reshape(
+                world_count, count_per_world, count
+            )
+        elif misplaced.any():
+            if regular_within:
+                # only the world origins are irregular (e.g. worlds holding different articulations):
+                # address every articulation's rows through explicit model indices
+                model_starts = grid
+            else:
+                reasons.append("start indices are not uniformly strided")
+                failed |= misplaced.ravel()
     if reasons:
         world, articulation = divmod(int(np.argmax(failed)), count_per_world)
         return None, f"{'; '.join(reasons)} (first at world {world}, articulation {articulation})", uniform_count
@@ -548,7 +766,17 @@ def _check_layout(slots, offsets, owners, origins, world_count, count_per_world,
         within = extent
     if world_count == 1:
         between = within * count_per_world
-    return FrequencyLayout(int(grid[0, 0]), between, within, extent, offsets, device), None, True
+    layout = FrequencyLayout(
+        int(grid[0, 0]),
+        between,
+        within,
+        extent,
+        offsets,
+        device,
+        model_starts=model_starts,
+        model_indices=model_indices,
+    )
+    return layout, None, True
 
 
 def _validate_layouts(
@@ -582,8 +810,10 @@ def _validate_layouts(
     ends = articulation_start[ids + 1] if include_loop_closing_joints else articulation_end[ids]
     zeros = np.zeros(slot_count, dtype=int)
 
-    def check(slots, offsets, owners, origins):
-        return _check_layout(slots, offsets, owners, origins, world_count, count_per_world, model.device)
+    def check(slots, offsets, owners, origins, explicit_values=False):
+        return _check_layout(
+            slots, offsets, owners, origins, world_count, count_per_world, model.device, explicit_values
+        )
 
     def selected_origins(slots, rows, fallback):
         """Return each slot's first selected row, retaining its fallback when no rows are selected."""
@@ -641,7 +871,9 @@ def _validate_layouts(
         selected_link_origins,
     )
 
-    # shapes belong to the articulation that owns their link and are ordered by ID within it
+    # shapes belong to the articulation that owns their link and are ordered by ID within it; other
+    # shapes may be interleaved between them differently in each articulation, so matching shape counts
+    # and owning links suffice and irregular rows are addressed one by one
     link_slot = np.full(model.body_count, -1)
     link_slot[links] = link_slots
     link_owner = np.full(model.body_count, -1)
@@ -662,6 +894,7 @@ def _validate_layouts(
         selected_shapes - selected_shape_origins[selected_shape_slots],
         owners[selected],
         selected_shape_origins,
+        explicit_values=True,
     )
     return results
 
@@ -720,6 +953,18 @@ class ArticulationView:
     ``(world_count, count_per_world)``. Per-world masks select all articulations
     in each selected world. :meth:`set_actuator_parameter` accepts only the
     per-world layout. Masks provided as Warp arrays must be on the view's device.
+
+    The view's world axis holds only the model worlds that contain matching
+    articulations, in model order, so worlds holding other articulations are skipped
+    (``is_sparse``). ``world_ids`` maps each view world to its model world, and
+    masks and returned arrays use the view's world axis. When the selected articulations'
+    rows are not regularly spaced between worlds, for example when worlds hold different
+    articulations, the affected attributes are addressed through explicit absolute model
+    indices (``uses_explicit_model_indices``): getters return a gathered copy, and
+    setters scatter the values back, so writing into a returned array does not change
+    the model. Shapes are addressed the same way when every selected articulation has the
+    same shape count and owning links but other shapes are interleaved between its shapes
+    at different positions.
 
     Example:
 
@@ -789,8 +1034,9 @@ class ArticulationView:
     ):
         self.model = model
         self.device = model.device
-        self._attribute_array_cache = {}
-        self._actuator_dof_mapping_cache = {}
+        # Per-view caches. Sources and actuators are held weakly, so the view does not keep them alive.
+        self._attribute_array_cache = weakref.WeakKeyDictionary()
+        self._actuator_dof_mapping_cache = weakref.WeakKeyDictionary()
 
         if verbose is None:
             verbose = wp.config.log_level <= wp.LOG_DEBUG
@@ -819,14 +1065,10 @@ class ArticulationView:
             pattern, model.articulation_label, model_articulation_world, model.world_count
         )
 
-        # determine articulation counts per world
-        world_count = model.world_count
-        articulation_count = 0
-        counts_per_world = [0] * world_count
-        for world_id in range(world_count):
-            count = len(articulation_ids[world_id])
-            counts_per_world[world_id] += count
-            articulation_count += count
+        # The view's world axis holds only the worlds that contain matching articulations, in model order;
+        # ``world_ids`` maps it back to model worlds. Worlds holding other articulations are skipped.
+        articulation_count = sum(len(ids) for ids in articulation_ids)
+        selected_world_ids = [world_id for world_id, ids in enumerate(articulation_ids) if ids]
 
         # can't mix global and per-world articulations in the same view
         if articulation_count > 0 and global_articulation_ids:
@@ -836,17 +1078,20 @@ class ArticulationView:
 
         # handle scenes with only global articulations
         if articulation_count == 0 and global_articulation_ids:
-            world_count = 1
             articulation_count = len(global_articulation_ids)
-            counts_per_world = [articulation_count]
+            selected_world_ids = [-1]
             articulation_ids = [global_articulation_ids]
+        else:
+            articulation_ids = [articulation_ids[world_id] for world_id in selected_world_ids]
 
         if articulation_count == 0:
             raise KeyError(f"No articulations matching pattern '{pattern}'")
 
+        counts_per_world = [len(ids) for ids in articulation_ids]
         if not all_equal(counts_per_world):
-            raise ValueError("Varying articulation counts per world are not supported")
+            raise ValueError("Varying articulation counts per selected world are not supported")
 
+        world_count = len(selected_world_ids)
         count_per_world = counts_per_world[0]
 
         # use the first articulation as a "template"
@@ -1140,6 +1385,7 @@ class ArticulationView:
             value_extent = template_rows[-1] - offset + 1
             starts = [[rows[0] for rows in world_rows] for world_rows in articulation_rows]
             reason = None
+            model_starts = None
 
             if count_per_world > 1:
                 inner_strides = [
@@ -1156,7 +1402,8 @@ class ArticulationView:
             if world_count > 1:
                 outer_strides = [starts[world][0] - starts[world - 1][0] for world in range(1, world_count)]
                 if not all_equal(outer_strides):
-                    reason = f"Non-uniform strides between worlds for custom frequency '{frequency}' are not supported"
+                    # irregular world origins are addressed through explicit model indices
+                    model_starts = starts
                 outer_stride = outer_strides[0]
             else:
                 outer_stride = inner_stride * count_per_world
@@ -1177,6 +1424,7 @@ class ArticulationView:
                     value_extent,
                     selected_indices,
                     self.device,
+                    model_starts=model_starts,
                 )
             elif allow_partial_layouts:
                 self._unavailable_reasons[frequency] = reason
@@ -1206,6 +1454,27 @@ class ArticulationView:
 
         # articulation ids grouped by world
         self.articulation_ids = wp.array(articulation_id_grid, dtype=int, device=self.device)
+        # model world of each view world (-1 for global articulations)
+        self.world_ids: wp.array[int] = wp.array(selected_world_ids, dtype=int, device=self.device)
+        # whether the view skips model worlds that contain no matching articulation
+        self.is_sparse: bool = selected_world_ids not in ([-1], list(range(model.world_count)))
+        # whether any layout gathers and scatters through explicit model indices instead of strided views
+        self.uses_explicit_model_indices: bool = any(
+            layout is not None and layout.uses_explicit_model_indices
+            for layout in (*self.frequency_layouts.values(), *self._root_layouts)
+        )
+        # copy the explicit indices used by the getters and setters to the device now, outside any graph capture
+        for layout in self.frequency_layouts.values():
+            if layout.uses_explicit_model_indices:
+                layout.get_model_indices()
+        if self._root_unavailable_reason is None:
+            if self.is_floating_base:
+                root_slices = ((self._root_layouts[0], Slice(0, 7)), (self._root_layouts[-1], Slice(0, 6)))
+            else:
+                root_slices = ((self._root_layouts[0], 0), (self._root_layouts[0], Slice(0, 1)))
+            for layout, root_slice in root_slices:
+                if layout.uses_explicit_model_indices:
+                    layout.get_model_indices(root_slice)
 
         # default mask includes all articulations in all worlds
         self.full_mask = wp.full(world_count, True, dtype=bool, device=self.device)
@@ -1258,18 +1527,10 @@ class ArticulationView:
     # ========================================================================================
     # Generic attribute API
 
-    def _get_attribute_array(
-        self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
-    ):
-        key = (name, source, _slice, layout)
-        if key not in self._attribute_array_cache:
-            self._attribute_array_cache[key] = self._create_attribute_array(name, source, _slice, layout)
-        return self._attribute_array_cache[key]
-
-    def _create_attribute_array(
-        self, name: str, source: Model | State | Control, _slice: Slice | int | None, layout=None
-    ):
-        # get the attribute (handle namespaced attributes like "mujoco.tendon_stiffness")
+    @staticmethod
+    def _resolve_attribute(name: str, source: Model | State | Control) -> tuple[wp.array, str]:
+        """Return the array currently stored on ``source`` under ``name`` and its frequency name."""
+        # handle namespaced attributes like "mujoco.tendon_stiffness"
         # Note: the user-facing API uses dots (e.g., "mujoco.tendon_stiffness")
         # but internally attributes are stored with colons (e.g., "mujoco:tendon_stiffness")
         if "." in name:
@@ -1283,6 +1544,39 @@ class ArticulationView:
             attrib = getattr(source, name)
             frequency_name = name
         assert isinstance(attrib, wp.array)
+        return attrib, frequency_name
+
+    def _get_attribute_array(
+        self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
+    ):
+        """Return the cached reshaped array of ``source.<name>``, rebuilding it if the source array changed.
+
+        Entries are keyed weakly on ``source``, so they are dropped with the source and with the view.
+        An entry is reused only while ``source.<name>`` and its gradient are the arrays it was built from.
+        """
+        source_array, _ = self._resolve_attribute(name, source)
+        source_grad = source_array.grad if source_array.requires_grad else None
+        # native slices are unhashable before Python 3.12
+        slice_key = (_slice.start, _slice.stop, _slice.step) if isinstance(_slice, slice) else _slice
+        key = (name, slice_key, layout)
+        try:
+            entries = self._attribute_array_cache.get(source)
+            if entries is None:
+                entries = self._attribute_array_cache[source] = {}
+        except TypeError:
+            # the source cannot be weakly referenced; build an uncached array
+            return self._create_attribute_array(name, source, _slice, layout)
+        entry = entries.get(key)
+        if entry is not None and entry[1] is source_array and entry[2] is source_grad:
+            return entry[0]
+        attrib = self._create_attribute_array(name, source, _slice, layout)
+        entries[key] = (attrib, source_array, source_grad)
+        return attrib
+
+    def _create_attribute_array(
+        self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
+    ):
+        attrib, frequency_name = self._resolve_attribute(name, source)
 
         # get frequency info
         frequency = self.model.get_attribute_frequency(frequency_name)
@@ -1316,6 +1610,29 @@ class ArticulationView:
             _slice = _slice.get()
         elif not isinstance(_slice, (NoneType, int, slice)):
             raise ValueError(f"Invalid slice type: expected slice or int, got {type(_slice)}")
+
+        # Rows that one pointer and regular strides cannot address are gathered into a staging array,
+        # and written back by scattering through the absolute row map (see _get/_set_attribute_values).
+        if layout.uses_explicit_model_indices:
+            trailing_shape = attrib.shape[1:]
+            if len(trailing_shape) > 1:
+                raise NotImplementedError(
+                    f"Attributes with {len(trailing_shape)} trailing axes are not supported for layouts with "
+                    "explicit model indices"
+                )
+            model_indices = layout.get_model_indices(_slice)
+            staging = wp.empty(
+                (*model_indices.shape, *trailing_shape),
+                dtype=attrib.dtype,
+                device=attrib.device,
+                requires_grad=attrib.requires_grad,
+            )
+            if attrib.ptr is None or staging.size == 0:
+                staging.ptr = None
+                return staging
+            staging._explicit_source = attrib
+            staging._explicit_model_indices = model_indices
+            return staging
 
         if _slice is None:
             value_slice = layout.indices if is_indexed else layout.slice
@@ -1397,6 +1714,17 @@ class ArticulationView:
         self, name: str, source: Model | State | Control, _slice: slice | None = None, layout=None
     ):
         attrib = self._get_attribute_array(name, source, _slice=_slice, layout=layout)
+        if hasattr(attrib, "_explicit_source"):
+            src = attrib._explicit_source
+            indices = attrib._explicit_model_indices
+            wp.launch(
+                _EXPLICIT_GATHER_KERNELS[(indices.ndim, src.ndim)],
+                dim=attrib.shape,
+                inputs=[src, indices],
+                outputs=[attrib],
+                device=self.device,
+            )
+            return attrib
         if hasattr(attrib, "_staging_array"):
             if hasattr(attrib, "_gather_src"):
                 kernel = _gather_indexed_4d_kernel if attrib.ndim == 4 else _gather_indexed_3d_kernel
@@ -1426,6 +1754,20 @@ class ArticulationView:
             values = wp.array(values, dtype=attrib.dtype, shape=attrib.shape, device=self.device, copy=False)
         assert values.shape == attrib.shape
         assert values.dtype == attrib.dtype
+
+        # staging arrays of explicit layouts are copies: scatter through their absolute row map
+        if hasattr(attrib, "_explicit_source"):
+            mask = self.full_mask if mask is None else self._resolve_mask(mask)
+            indices = attrib._explicit_model_indices
+            dst = attrib._explicit_source
+            wp.launch(
+                _EXPLICIT_SCATTER_KERNELS[(indices.ndim, dst.ndim, mask.ndim)],
+                dim=attrib.shape,
+                inputs=[values, indices, mask],
+                outputs=[dst],
+                device=self.device,
+            )
+            return
 
         # early out for in-place modifications
         if isinstance(attrib, wp.array) and isinstance(values, wp.array):
@@ -1976,13 +2318,35 @@ class ArticulationView:
     # Actuator parameter access
 
     def _get_actuator_dof_mapping(self, actuator: Actuator):
-        if actuator not in self._actuator_dof_mapping_cache:
-            self._actuator_dof_mapping_cache[actuator] = self._create_actuator_dof_mapping(actuator)
-        return self._actuator_dof_mapping_cache[actuator]
+        """Return the cached DOF mapping for ``actuator``, built on first use.
+
+        The cache belongs to the view and holds actuators weakly.
+        """
+        # views that borrow the actuator methods may not define the cache
+        cache = getattr(self, "_actuator_dof_mapping_cache", None)
+        if cache is None:
+            cache = self._actuator_dof_mapping_cache = weakref.WeakKeyDictionary()
+        try:
+            mapping = cache.get(actuator)
+        except TypeError:
+            # the actuator cannot be weakly referenced; build an uncached mapping
+            cache = None
+            mapping = None
+        if mapping is None:
+            mapping = self._create_actuator_dof_mapping(actuator)
+            if cache is not None:
+                cache[actuator] = mapping
+        return mapping
 
     def _create_actuator_dof_mapping(self, actuator: Actuator):
         """
         Build mapping from view DOF positions to actuator parameter indices.
+
+        The mapping matches absolute model DOF indices, so it holds for every layout, including
+        sparse world selections, explicit model indices, and actuators whose entries are not
+        ordered as equal per-world blocks. It is built with device kernels only (a lookup from model
+        DOF to actuator entry, then a gather over the view's DOF rows), so a first access may run
+        during CUDA graph capture when the device's memory pool is enabled.
 
         Note:
             Assumes one DOF per actuator.
@@ -1991,60 +2355,64 @@ class ArticulationView:
         - actuator parameter index if that DOF is actuated
         - -1 if that DOF is not actuated by this actuator
         """
-        num_actuators = actuator.indices.shape[0]
-        actuators_per_world = num_actuators // self.world_count
-
+        # views that borrow the actuator methods may store the device as an alias string
+        device = wp.get_device(self.device)
         dof_layout = self.frequency_layouts.get(AttributeFrequency.JOINT_DOF)
         if dof_layout is None:
-            reason = self._unavailable_reasons[AttributeFrequency.JOINT_DOF]
+            reason = getattr(self, "_unavailable_reasons", {}).get(AttributeFrequency.JOINT_DOF)
             raise AttributeError(f"Actuator parameter access is unavailable: {reason}")
-        dofs_per_arti = dof_layout.selected_value_count
-        dofs_per_world = dofs_per_arti * self.count_per_world
+        mapping_shape = (self.world_count, self.count_per_world, dof_layout.selected_value_count)
 
-        if dofs_per_world == 0:
-            return wp.empty(0, dtype=int, device=self.device)
+        if self.world_count * self.count_per_world * dof_layout.selected_value_count == 0:
+            return wp.empty(0, dtype=int, device=device)
 
-        mapping = wp.full(self.world_count * dofs_per_world, -1, dtype=int, device=self.device)
+        if device.is_cuda and wp.get_stream(device).is_capturing and not wp.is_mempool_enabled(device):
+            raise RuntimeError(
+                "Building the view's DOF mapping for this actuator allocates device memory, which requires "
+                "the CUDA memory pool during graph capture. Enable the memory pool or call "
+                "get_actuator_parameter() or set_actuator_parameter() for this actuator once before capturing."
+            )
 
-        if dof_layout.is_contiguous:
+        lookup = wp.full(
+            dof_layout.max_model_index(self.world_count, self.count_per_world) + 1, -1, dtype=int, device=device
+        )
+        if actuator.indices.shape[0] > 0:
             wp.launch(
-                build_actuator_dof_mapping_slice_kernel,
-                dim=actuators_per_world,
-                inputs=[
-                    actuator.indices,
-                    actuators_per_world,
-                    dof_layout.offset,
-                    dof_layout.slice.start,
-                    dof_layout.slice.stop,
-                    dof_layout.stride_within_worlds,
-                    self.count_per_world,
-                    dofs_per_arti,
-                    dofs_per_world,
-                    self.world_count,
-                ],
+                _build_actuator_dof_lookup_kernel,
+                dim=actuator.indices.shape[0],
+                inputs=[actuator.indices],
+                outputs=[lookup],
+                device=device,
+            )
+
+        mapping = wp.empty(mapping_shape, dtype=int, device=device)
+        if dof_layout.uses_explicit_model_indices:
+            # prepared at view construction; raises a clear error if a borrowing view did not prepare it
+            wp.launch(
+                _map_explicit_dofs_to_actuator_kernel,
+                dim=mapping_shape,
+                inputs=[lookup, dof_layout.get_model_indices()],
                 outputs=[mapping],
-                device=self.device,
+                device=device,
             )
         else:
+            use_local_indices = dof_layout.indices is not None
             wp.launch(
-                build_actuator_dof_mapping_indices_kernel,
-                dim=actuators_per_world,
+                _map_regular_dofs_to_actuator_kernel,
+                dim=mapping_shape,
                 inputs=[
-                    actuator.indices,
-                    dof_layout.indices,
+                    lookup,
                     dof_layout.offset,
+                    dof_layout.stride_between_worlds,
                     dof_layout.stride_within_worlds,
-                    self.count_per_world,
-                    actuators_per_world,
-                    dofs_per_arti,
-                    dofs_per_world,
-                    self.world_count,
+                    0 if use_local_indices else dof_layout.slice.start,
+                    dof_layout.indices,
+                    int(use_local_indices),
                 ],
                 outputs=[mapping],
-                device=self.device,
+                device=device,
             )
-
-        return mapping
+        return mapping.flatten()
 
     def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str):
         """Read an actuator-component parameter for every DOF in this view.
@@ -2053,6 +2421,11 @@ class ArticulationView:
         per DOF, one row per world).  DOFs that are not driven by
         *actuator* are left at zero; driven DOFs contain the
         corresponding value gathered from ``component.<name>``.
+
+        The first :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for an
+        actuator builds and caches the view's DOF mapping for it with device kernels. That first
+        call allocates the mapping, so capturing it in a CUDA graph requires the device's memory
+        pool, as for other allocating view accessors.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which
@@ -2099,6 +2472,11 @@ class ArticulationView:
         *values* must cover all DOFs in the view (one column per DOF, one row
         per world).  Only entries whose DOFs are actually driven by *actuator*
         are written back to ``component.<name>``; the rest are ignored.
+
+        The first :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for an
+        actuator builds and caches the view's DOF mapping for it with device kernels. That first
+        call allocates the mapping, so capturing it in a CUDA graph requires the device's memory
+        pool, as for other allocating view accessors.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which
