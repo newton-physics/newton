@@ -89,6 +89,24 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
         self.assertEqual(visual.count, 4)
         self.assertEqual(visual.label, "soft_splats")
         self.assertEqual(visual.index, index)
+        self.assertEqual(visual.world, -1)
+        self.assertEqual(model.shape_world.numpy()[visual.shape], -1)
+
+    def test_gaussian_visual_uses_active_world(self):
+        """Keep each visual and backing shape in the world that owns its drivers."""
+        prototype = _soft_builder()
+        builder = newton.ModelBuilder()
+        gaussian = newton.Gaussian(positions=np.array([[0.2, 0.2, 0.2]], dtype=np.float32))
+        for _ in range(2):
+            builder.begin_world()
+            tet_start = builder.tet_count
+            builder.add_builder(prototype)
+            builder.add_deformable_visual_gaussian(gaussian, kind="tet", tet_range=(tet_start, builder.tet_count))
+            builder.end_world()
+
+        model = builder.finalize(device="cpu")
+        self.assertEqual([visual.world for visual in model.deformable_visual_gaussians], [0, 1])
+        np.testing.assert_array_equal(model.shape_world.numpy(), [0, 1])
 
     def test_replicate_offsets_gaussian_drivers(self):
         """Replicate Gaussian bindings into distinct worlds without copying rest appearance."""
@@ -110,12 +128,58 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
 
         self.assertEqual(model.deformable_visual_gaussian_count, 2)
         self.assertEqual([visual.world for visual in model.deformable_visual_gaussians], [0, 1])
+        np.testing.assert_array_equal(model.shape_world.numpy(), [0, 1])
         np.testing.assert_array_equal(model.deformable_visual_gaussians[0].parent.numpy(), [0, 1])
         np.testing.assert_array_equal(
             model.deformable_visual_gaussians[1].parent.numpy(), np.array([0, 1]) + source.tet_count
         )
         self.assertIs(model.deformable_visual_gaussians[0].gaussian, gaussian)
         self.assertIs(model.deformable_visual_gaussians[1].gaussian, gaussian)
+
+    def test_rejects_gaussian_visual_from_closed_world(self):
+        """Reject late attachment without leaving a global shape or visual behind."""
+        prototype = _soft_builder()
+        builder = newton.ModelBuilder()
+        builder.add_world(prototype)
+        gaussian = newton.Gaussian(positions=np.array([[0.2, 0.2, 0.2]], dtype=np.float32))
+
+        with self.assertRaisesRegex(ValueError, "current world is -1"):
+            builder.add_deformable_visual_gaussian(gaussian, kind="tet", tet_range=(0, builder.tet_count))
+
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.shape_count, 0)
+        self.assertEqual(model.deformable_visual_gaussian_count, 0)
+        self.assertEqual(model.tet_count, prototype.tet_count)
+        np.testing.assert_array_equal(model.particle_q.numpy(), prototype.particle_q)
+
+    def test_rejects_gaussian_drivers_outside_current_world(self):
+        """Reject earlier-world and mixed-world bindings before adding a shape."""
+        prototype = _soft_builder()
+        for case in ("other_world_active", "other_world_closed", "mixed_drivers"):
+            with self.subTest(case=case):
+                builder = newton.ModelBuilder()
+                builder.add_world(prototype)
+                builder.begin_world()
+                builder.add_builder(prototype)
+                if case == "other_world_closed":
+                    builder.end_world()
+                parents = [0, prototype.tet_count] if case == "mixed_drivers" else [0]
+                gaussian = newton.Gaussian(positions=np.full((len(parents), 3), 0.2, dtype=np.float32))
+
+                with self.assertRaisesRegex(ValueError, "same world scope"):
+                    builder.add_deformable_visual_gaussian(
+                        gaussian,
+                        kind="tet",
+                        tet_range=(0, builder.tet_count),
+                        parent=parents,
+                        weights=np.full((len(parents), 4), 0.25, dtype=np.float32),
+                    )
+
+                if builder.current_world != -1:
+                    builder.end_world()
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.shape_count, 0)
+                self.assertEqual(model.deformable_visual_gaussian_count, 0)
 
     def test_rejects_invalid_gaussian_visual_data(self):
         """Reject malformed appearance and unsupported bindings before finalization."""

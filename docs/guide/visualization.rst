@@ -150,6 +150,12 @@ not. :class:`~newton.sensors.SensorCamera` renders these fields. GL, RTX, and
 Viser do not yet draw the evaluated Gaussian data through ``log_state()``;
 show the camera image instead. Static Gaussian rendering is unchanged.
 
+Add a Gaussian visual in the same world scope as its driving tetrahedra,
+before :meth:`~newton.ModelBuilder.end_world`. For replicated scenes, attach
+the visual to the prototype before replication. Global drivers and visuals
+can both be created in global scope. Attachment to a different world is
+rejected before a shape is added.
+
 Both paths share :class:`~newton.DeformableVisuals`. Allocate it once and update
 it after simulation. A viewer or camera can also evaluate its own buffers when
 no shared result is supplied.

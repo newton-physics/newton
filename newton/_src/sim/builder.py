@@ -11742,6 +11742,11 @@ class ModelBuilder:
         Gaussian shape is created automatically; it adds no collision geometry,
         mass, or constraints.
 
+        Add the visual in the same world scope as its driving tetrahedra,
+        before :meth:`end_world`. For replication, attach visuals to the
+        prototype before calling :meth:`replicate` or :meth:`add_world`.
+        Global drivers are supported when :attr:`current_world` is ``-1``.
+
         Args:
             gaussian: Rest Gaussian appearance and center positions [m].
             kind: Binding kind. The initial implementation supports only
@@ -11753,6 +11758,10 @@ class ModelBuilder:
 
         Returns:
             Stable index in :attr:`newton.Model.deformable_visual_gaussians`.
+
+        Raises:
+            ValueError: If the binding or Gaussian data is invalid, or the
+                driving particles do not all belong to :attr:`current_world`.
 
         .. experimental::
 
@@ -11788,6 +11797,16 @@ class ModelBuilder:
             weights=weights,
             operation="add_deformable_visual_gaussian",
         )
+        # The backing shape uses current_world; its drivers must have the same ownership.
+        worlds = {
+            self.particle_world[particle] for tet in np.unique(binding["parent"]) for particle in self.tet_indices[tet]
+        }
+        if worlds != {self.current_world}:
+            raise ValueError(
+                f"add_deformable_visual_gaussian: drivers belong to worlds {sorted(worlds)}, "
+                f"but current world is {self.current_world}. "
+                "Add the visual in the same world scope as its tetrahedra."
+            )
         shape = self.add_shape_gaussian(-1, gaussian=gaussian, label=label or None)
         self._deformable_visual_gaussians.append(
             {
