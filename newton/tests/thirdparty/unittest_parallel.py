@@ -10,8 +10,10 @@ unittest-parallel command-line script main module
 
 import argparse
 import concurrent.futures  # NVIDIA Modification
+import importlib.metadata
 import multiprocessing
 import os
+import re
 import sys
 import tempfile
 import time
@@ -20,11 +22,34 @@ import warnings
 from contextlib import contextmanager
 from io import StringIO
 
-# Work around a known OpenUSD thread-safety crash in
-# UsdPhysics.LoadUsdPhysicsFromRange for collider-dense assets. OpenUSD reads
-# this once when pxr initializes, so set it before test modules import pxr and
-# preserve any caller-provided override.
-os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
+# Work around a known OpenUSD thread-safety crash in the native physics parser for
+# collider-dense assets: concurrent descriptor appends could race when several colliders
+# shared one rigid body. Fixed in OpenUSD 26.08, so only older runtimes are constrained.
+#
+# OpenUSD reads this once when pxr initializes, so it must be set before test modules import
+# pxr. That rules out reading Usd.GetVersion(), and also rules out importing any newton USD
+# module, since newton_usd_schemas imports pxr at module scope. Distribution metadata gives
+# the runtime version without initializing OpenUSD: usd-core is versioned directly, while
+# usd-exchange bundles its own OpenUSD build and advertises it as a `usd<major><minor>` extra
+# (e.g. `usd2608`). A runtime that cannot be identified is treated as affected, and any
+# caller-provided override is preserved.
+try:
+    _USD_VERSION = tuple(int(part) for part in importlib.metadata.version("usd-core").split(".")[:2])
+except (importlib.metadata.PackageNotFoundError, ValueError):
+    try:
+        _USD_VERSION = next(
+            (int(match.group(1)), int(match.group(2)))
+            for match in (
+                re.fullmatch(r"usd(\d{2})(\d{2})", extra)
+                for extra in importlib.metadata.metadata("usd-exchange").get_all("Provides-Extra") or []
+            )
+            if match
+        )
+    except (importlib.metadata.PackageNotFoundError, StopIteration):
+        _USD_VERSION = (0, 0)
+
+if _USD_VERSION < (26, 8):
+    os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
 
 from newton.tests.unittest_utils import (  # NVIDIA modification
     AllocationCleanupTestResultMixin,
@@ -43,12 +68,47 @@ except ImportError:
 # The following variables are NVIDIA Modifications
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
 
-# Add warning-clean test modules incrementally. Eventually this should cover
-# the entire test_* surface and be replaced by a single test_.* filter.
-_STRICT_WARNING_TEST_MODULES = ("test_actuators",)
+_TEST_MODULE_PREFIX = r"(?:.*\.)?"
+_STRICT_WARNING_TEST_MODULE = rf"{_TEST_MODULE_PREFIX}test_.*$"
+
+# Keep each exception narrow so warning-cleanup PRs can remove debt without
+# leaving an entire test module permissive.
+_KNOWN_WARNING_DEBT = (
+    {
+        "message": (
+            r"Inertia validation corrected \d+ bodies\. Set validate_inertia_detailed=True for detailed per-body "
+            r"warnings\."
+        ),
+        "category": UserWarning,
+        "module": (
+            rf"{_TEST_MODULE_PREFIX}"
+            r"(?:test_collision_cloth|test_collision_pipeline|test_controllers_joint_impedance|"
+            r"test_controllers_joint_selection|test_controllers_operational_space|test_convex_support|"
+            r"test_coupled_solver|test_custom_attributes|test_ik|test_ik_lbfgs|"
+            r"test_import_mjcf|test_jacobian_mass_matrix|test_kinematic_links|test_model|test_mujoco_solver|"
+            r"test_off_origin_convex_hull_contacts|test_rigid_contact)$"
+        ),
+    },
+)
 
 
-def _enable_strict_warnings():
+def _read_deprecation_allowlist(path):
+    """Read literal deprecation-message prefixes from a line-oriented file."""
+    with open(path, encoding="utf-8") as allowlist_file:
+        entries = []
+        for line_number, raw_line in enumerate(allowlist_file, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                raise ValueError(
+                    f"line {line_number} contains ':'; use a unique message prefix ending before the colon"
+                )
+            entries.append(line)
+        return tuple(entries)
+
+
+def _enable_strict_warnings(allowed_deprecation_warnings=()):
     """Escalate actionable and caller-attributed cleaned-test warnings to errors.
 
     Installed before discovery and in each worker initializer so import-time
@@ -56,8 +116,11 @@ def _enable_strict_warnings():
     """
     warnings.filterwarnings("error", category=DeprecationWarning)
     warnings.filterwarnings("error", module=r"newton(\.|$)")
-    for module in _STRICT_WARNING_TEST_MODULES:
-        warnings.filterwarnings("error", module=rf"{module}$")
+    warnings.filterwarnings("error", module=_STRICT_WARNING_TEST_MODULE)
+    for warning_filter in _KNOWN_WARNING_DEBT:
+        warnings.filterwarnings("default", **warning_filter)
+    for message in allowed_deprecation_warnings:
+        warnings.filterwarnings("default", message=re.escape(message), category=DeprecationWarning)
 
 
 def main(argv=None):
@@ -115,9 +178,15 @@ def main(argv=None):
         "--strict-warnings",
         action="store_true",
         default=False,
-        help="Treat warnings we can act on as errors: all DeprecationWarnings (from Newton or its "
-        "dependencies) and any warning attributed to a newton.* module. Off by default so verifying an "
-        "installation does not fail on warnings the user cannot act on; enabled in CI to surface warning debt.",
+        help="Treat all non-allowlisted DeprecationWarnings and warnings attributed to newton.* or test_* modules "
+        "as errors, except narrowly tracked known debt. Off by default so verifying an installation does not fail "
+        "on warnings the user cannot act on; enabled in CI to surface warning debt.",
+    )  # NVIDIA Modification
+    parser.add_argument(
+        "--deprecation-allowlist",
+        metavar="FILE",
+        help="Keep listed DeprecationWarning message prefixes non-fatal under --strict-warnings. "
+        "The file accepts one literal prefix without ':' per line, blank lines, and comments beginning with '#'.",
     )  # NVIDIA Modification
     group_parallel = parser.add_argument_group("parallelization options")
     group_parallel.add_argument(
@@ -150,6 +219,14 @@ def main(argv=None):
         "For the concurrent.futures backend, this is also enabled automatically when "
         "multiple CUDA devices are detected.",
     )
+    group_parallel.add_argument(
+        "--max-tasks-per-child",
+        type=int,
+        default=None,
+        metavar="COUNT",
+        help="Replace each test process after it has run COUNT test suites, bounding memory "
+        "growth while keeping most of the benefit of process reuse (default: reuse indefinitely)",
+    )  # NVIDIA Modification
     group_parallel.add_argument(
         "--disable-concurrent-futures",
         action="store_true",
@@ -202,6 +279,18 @@ def main(argv=None):
     args = parser.parse_args(args=argv)
     if args.parallel_timeout <= 0:
         parser.error("--parallel-timeout must be greater than 0")
+    if args.max_tasks_per_child is not None and args.max_tasks_per_child < 1:
+        parser.error("--max-tasks-per-child must be at least 1")
+    if args.max_tasks_per_child is not None and sys.version_info < (3, 11) and not args.disable_concurrent_futures:
+        parser.error("--max-tasks-per-child requires Python 3.11+ or --disable-concurrent-futures")
+    if args.deprecation_allowlist and not args.strict_warnings:
+        parser.error("--deprecation-allowlist requires --strict-warnings")
+    try:
+        args.allowed_deprecation_warnings = (
+            _read_deprecation_allowlist(args.deprecation_allowlist) if args.deprecation_allowlist else ()
+        )
+    except (OSError, ValueError) as error:
+        parser.error(f"cannot read --deprecation-allowlist: {error}")
 
     if args.coverage_branch:
         args.coverage = args.coverage_branch
@@ -233,7 +322,7 @@ def main(argv=None):
         # Apply before discovery so import-time warnings are caught; also covers
         # the serial-fallback path, which runs here.
         if args.strict_warnings:
-            _enable_strict_warnings()
+            _enable_strict_warnings(args.allowed_deprecation_warnings)
 
         # Discover tests
         with _coverage(args, temp_dir):
@@ -271,18 +360,19 @@ def main(argv=None):
                 # Run the tests in parallel
                 start_time = time.perf_counter()
 
+                max_tasks_per_child = 1 if args.disable_process_pooling else args.max_tasks_per_child
                 if args.disable_concurrent_futures:
                     multiprocessing_context = multiprocessing.get_context(method="spawn")
-                    maxtasksperchild = 1 if args.disable_process_pooling else None
                     with multiprocessing_context.Pool(
                         process_count,
-                        maxtasksperchild=maxtasksperchild,
+                        maxtasksperchild=max_tasks_per_child,
                         initializer=initialize_test_process,
                         initargs=(manager.Lock(), shared_index, args, temp_dir),
                     ) as pool:
                         test_manager = ParallelTestManager(manager, args, temp_dir)
                         try:
-                            results = pool.map_async(test_manager.run_tests, test_suites).get(
+                            # One suite per task so maxtasksperchild counts suites.
+                            results = pool.map_async(test_manager.run_tests, test_suites, chunksize=1).get(
                                 timeout=args.parallel_timeout
                             )
                         except multiprocessing.TimeoutError:
@@ -296,12 +386,22 @@ def main(argv=None):
                         "initializer": initialize_test_process,
                         "initargs": (manager.Lock(), shared_index, args, temp_dir),
                     }
-                    if sys.version_info >= (3, 11) and (args.disable_process_pooling or wp.get_cuda_device_count() > 1):
+                    if wp.get_cuda_device_count() > 1:
+                        max_tasks_per_child = 1
+                    # ProcessPoolExecutor deadlocks with max_tasks_per_child > 1 (Python 3.12-3.14),
+                    # so hand each single-use worker a chunk of that many suites instead.
+                    chunksize = 1
+                    if sys.version_info >= (3, 11) and max_tasks_per_child is not None:
                         executor_kwargs["max_tasks_per_child"] = 1
+                        chunksize = max_tasks_per_child
                     executor = concurrent.futures.ProcessPoolExecutor(**executor_kwargs)
                     try:
                         test_manager = ParallelTestManager(manager, args, temp_dir)
-                        results = list(executor.map(test_manager.run_tests, test_suites, timeout=args.parallel_timeout))
+                        results = list(
+                            executor.map(
+                                test_manager.run_tests, test_suites, timeout=args.parallel_timeout, chunksize=chunksize
+                            )
+                        )
                     except concurrent.futures.TimeoutError:
                         _shutdown_executor_after_timeout(executor)
                         executor = None
@@ -550,8 +650,9 @@ class ParallelTestManager:
         # Filters are applied earlier (pre-discovery and in the worker
         # initializer); re-applying here is idempotent.
         newton.tests.unittest_utils.strict_warnings = self.args.strict_warnings
+        newton.tests.unittest_utils.allowed_deprecation_warnings = self.args.allowed_deprecation_warnings
         if self.args.strict_warnings:
-            _enable_strict_warnings()
+            _enable_strict_warnings(self.args.allowed_deprecation_warnings)
 
         if self.args.junit_report_xml:
             resultclass = ParallelJunitTestResult
@@ -665,7 +766,7 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
     # Apply before the worker imports any test module (suites are imported on
     # unpickle, before run_tests).
     if args.strict_warnings:
-        _enable_strict_warnings()
+        _enable_strict_warnings(args.allowed_deprecation_warnings)
 
     with lock:
         shared_index.value += 1

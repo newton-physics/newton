@@ -1,1 +1,0 @@
-Scale hydroelastic buffers from the sparse surface grids each shape pair actually refines, and omit reduction-only storage for unreduced contacts. This substantially reduces memory use for replicated scenes while retaining dense traversal for deep contacts.

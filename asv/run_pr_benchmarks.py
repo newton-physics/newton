@@ -37,11 +37,37 @@ def build_pr_config(path: Path = FULL_CONFIG_PATH) -> dict:
     return config
 
 
+def build_asv_command(config_path: Path, patterns: tuple[str, ...], revisions: list[str], quick: bool) -> list[str]:
+    """Build the ASV command comparing two revisions, or running one once with *quick*."""
+    if quick:
+        (revision,) = revisions
+        subcommand, options, targets = "run", ["--quick"], [f"{revision}^!"]
+    else:
+        subcommand = "continuous"
+        options = ["--interleave-rounds", "--append-samples", "--no-only-changed"]
+        targets = list(revisions)
+
+    command = ["uvx", "--with", "virtualenv", "asv", subcommand, "--config", str(config_path)]
+    command += ["--launch-method", "spawn", *options, "--show-stderr"]
+    for pattern in patterns:
+        command.extend(("--bench", pattern))
+    return command + targets
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("base", help="Base Git revision")
-    parser.add_argument("branch", help="Git revision under test")
-    return parser.parse_args()
+    parser.add_argument(
+        "revisions", nargs="+", metavar="REV", help="Base and branch revisions, or one revision with --quick"
+    )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Run each benchmark once on a single revision without timing, e.g. to compile its Warp kernels",
+    )
+    args = parser.parse_args()
+    if len(args.revisions) != (1 if args.quick else 2):
+        parser.error("expected one revision with --quick, otherwise a base and a branch revision")
+    return args
 
 
 def main() -> int:
@@ -61,24 +87,7 @@ def main() -> int:
         config_file.write("\n")
         config_path = Path(config_file.name)
 
-    command = [
-        "uvx",
-        "--with",
-        "virtualenv",
-        "asv",
-        "continuous",
-        "--config",
-        str(config_path),
-        "--launch-method",
-        "spawn",
-        "--interleave-rounds",
-        "--append-samples",
-        "--no-only-changed",
-        "--show-stderr",
-    ]
-    for pattern in patterns:
-        command.extend(("--bench", pattern))
-    command.extend((args.base, args.branch))
+    command = build_asv_command(config_path, patterns, args.revisions, args.quick)
 
     try:
         return subprocess.run(command, cwd=ROOT, check=False).returncode

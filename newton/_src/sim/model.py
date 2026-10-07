@@ -27,6 +27,12 @@ from .state import State
 
 logger = logging.getLogger(__name__)
 
+_JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
+    "Model.joint_twist_lower and Model.joint_twist_upper are deprecated in Newton 1.7 and will be removed "
+    "in a future release. They were never populated or used by any solver; limit joint rotations with the "
+    "per-DOF Model.joint_limit_lower and Model.joint_limit_upper instead."
+)
+
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
@@ -398,12 +404,17 @@ class Model:
             AttributeFrequency.JOINT,
             references=AttributeFrequency.ARTICULATION,
         ),
+        "joint_mimic_joint": AttributeSpec(
+            AttributeFrequency.JOINT,
+            references=AttributeFrequency.JOINT,
+        ),
+        "joint_mimic_coeffs": AttributeSpec(AttributeFrequency.JOINT),
         "joint_X_p": AttributeSpec(AttributeFrequency.JOINT),
         "joint_X_c": AttributeSpec(AttributeFrequency.JOINT),
         "joint_dof_dim": AttributeSpec(AttributeFrequency.JOINT),
         "joint_enabled": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_twist_lower": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_twist_upper": AttributeSpec(AttributeFrequency.JOINT),
+        "joint_twist_lower": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
+        "joint_twist_upper": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
         "joint_label": AttributeSpec(AttributeFrequency.JOINT),
         "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD),
         "joint_q_start": AttributeSpec(
@@ -450,7 +461,7 @@ class Model:
         "joint_effort_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_friction": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_velocity_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        # articulations and mimic constraints
+        # articulations and deprecated mimic constraints
         "articulation_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
             references=AttributeFrequency.JOINT,
@@ -961,12 +972,21 @@ class Model:
         self._has_rod_joints: bool = False
         self.joint_articulation: wp.array[wp.int32] | None = None
         """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
+        self.joint_mimic_joint: wp.array[wp.int32] | None = None
+        """Independent reference joint index for each mimic joint, or -1 for an independent joint, shape [joint_count], int."""
+        self.joint_mimic_coeffs: wp.array[wp.vec2] | None = None
+        """Mimic offset and multiplier applied componentwise [m or rad, dimensionless], shape [joint_count, 2], float."""
         self.joint_parent: wp.array[wp.int32] | None = None
         """Joint parent body indices, shape [joint_count], int."""
         self.joint_child: wp.array[wp.int32] | None = None
         """Joint child body indices, shape [joint_count], int."""
         self.joint_ancestor: wp.array[wp.int32] | None = None
-        """Maps from joint index to the index of the joint that has the current joint parent body as child (-1 if no such joint ancestor exists), shape [joint_count], int."""
+        """Incoming joint of each joint's parent body (-1 if none exists), shape [joint_count], int.
+
+        Articulated joints resolve ancestors only within their own articulation,
+        terminating at external roots. For unarticulated joints, articulation
+        tree joints take precedence over loop-closing joints.
+        """
         self.joint_X_p: wp.array[wp.transform] | None = None
         """Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float."""
         self.joint_X_c: wp.array[wp.transform] | None = None
@@ -1001,10 +1021,8 @@ class Model:
         """Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_limit_kd: wp.array[wp.float32] | None = None
         """Joint position limit damping [N·s/m or N·m·s/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
-        self.joint_twist_lower: wp.array[wp.float32] | None = None
-        """Joint lower twist limit [rad], shape [joint_count], float."""
-        self.joint_twist_upper: wp.array[wp.float32] | None = None
-        """Joint upper twist limit [rad], shape [joint_count], float."""
+        self._deprecated_joint_twist_lower: wp.array[wp.float32] | None = None
+        self._deprecated_joint_twist_upper: wp.array[wp.float32] | None = None
         self.joint_q_start: wp.array[wp.int32] | None = None
         """Start index of the first position coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_qd_start: wp.array[wp.int32] | None = None
@@ -1148,19 +1166,47 @@ class Model:
         """
 
         self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
-        """Follower joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
+        """Follower indices for sparse mimic constraints, shape [constraint_mimic_count], int.
+
+        .. deprecated:: 1.6
+            Use :attr:`joint_mimic_joint` and :meth:`ModelBuilder.set_joint_mimic` instead.
+        """
         self.constraint_mimic_joint1: wp.array[wp.int32] | None = None
-        """Leader joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
+        """Reference indices for sparse mimic constraints, shape [constraint_mimic_count], int.
+
+        .. deprecated:: 1.6
+            Use :attr:`joint_mimic_joint` and :meth:`ModelBuilder.set_joint_mimic` instead.
+        """
         self.constraint_mimic_coef0: wp.array[wp.float32] | None = None
-        """Offset coefficient (coef0) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
+        """Offset coefficients for sparse mimic constraints, shape [constraint_mimic_count], float.
+
+        .. deprecated:: 1.6
+            Use :attr:`joint_mimic_coeffs` and :meth:`ModelBuilder.set_joint_mimic` instead.
+        """
         self.constraint_mimic_coef1: wp.array[wp.float32] | None = None
-        """Scale coefficient (coef1) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
+        """Multiplier coefficients for sparse mimic constraints, shape [constraint_mimic_count], float.
+
+        .. deprecated:: 1.6
+            Use :attr:`joint_mimic_coeffs` and :meth:`ModelBuilder.set_joint_mimic` instead.
+        """
         self.constraint_mimic_enabled: wp.array[wp.bool] | None = None
-        """Whether constraint is active, shape [constraint_mimic_count], bool."""
+        """Active flags for sparse mimic constraints, shape [constraint_mimic_count], bool.
+
+        .. deprecated:: 1.6
+            Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
+        """
         self.constraint_mimic_label: list[str] = []
-        """Constraint name/label, shape [constraint_mimic_count], str."""
+        """Sparse mimic constraint labels, shape [constraint_mimic_count], str.
+
+        .. deprecated:: 1.6
+            Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
+        """
         self.constraint_mimic_world: wp.array[wp.int32] | None = None
-        """World index for each constraint, shape [constraint_mimic_count], int."""
+        """World indices for sparse mimic constraints, shape [constraint_mimic_count], int.
+
+        .. deprecated:: 1.6
+            Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
+        """
 
         self.particle_count: int = 0
         """Total number of particles in the system."""
@@ -1189,7 +1235,11 @@ class Model:
         self.joint_constraint_count: int = 0
         """Total number of joint constraints of all joints."""
         self.constraint_mimic_count: int = 0
-        """Total number of mimic constraints in the system."""
+        """Total number of sparse mimic constraints in the system.
+
+        .. deprecated:: 1.6
+            Use :attr:`joint_mimic_joint` to identify joints with joint-owned mimic metadata instead.
+        """
 
         # indices of particles sharing the same color
         self.particle_color_groups: list[wp.array[wp.int32]] = []
@@ -1277,7 +1327,7 @@ class Model:
 
     @property
     def shape_collision_filter_pairs(self) -> AbstractSet[tuple[int, int]]:
-        """Read-only set of canonical shape index pairs that should not collide."""
+        """Read-only set of explicit canonical shape index pairs that should not collide."""
         return self._shape_collision_filter_pairs
 
     def shape_collision_filter_contains(self, shape_a: SupportsIndex, shape_b: SupportsIndex) -> bool:
@@ -1372,26 +1422,6 @@ class Model:
         else:
             self.attribute_assignment[name] = spec.assignment
 
-    def _resolve_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str | None:
-        """Return explicitly registered frequency metadata."""
-        spec = self._attribute_spec(name)
-        return None if spec is None else spec.frequency
-
-    def _attribute_reference_frequency(self, name: str) -> Model.AttributeFrequency | str | None:
-        """Return the entity domain indexed by an attribute's values."""
-        spec = self._attribute_spec(name)
-        return None if spec is None else spec.references
-
-    def _attribute_row_width(self, name: str) -> int:
-        """Return the number of flattened values stored per frequency row."""
-        spec = self._attribute_spec(name)
-        return 1 if spec is None else spec.row_width
-
-    def _attribute_requires_empty_sentinel(self, name: str) -> bool:
-        """Return whether an empty attribute retains one sentinel value."""
-        spec = self._attribute_spec(name)
-        return False if spec is None else spec.requires_empty_sentinel
-
     def _normalize_attribute_reference(self, references: str | None) -> Model.AttributeFrequency | str | None:
         """Return the frequency domain addressed by a builder reference declaration."""
         if references is None:
@@ -1404,7 +1434,6 @@ class Model:
             "joint_coord": Model.AttributeFrequency.JOINT_COORD,
             "joint_constraint": Model.AttributeFrequency.JOINT_CONSTRAINT,
             "articulation": Model.AttributeFrequency.ARTICULATION,
-            "equality_constraint": "mujoco:equality_constraint",
             "constraint_mimic": Model.AttributeFrequency.CONSTRAINT_MIMIC,
             "particle": Model.AttributeFrequency.PARTICLE,
             "edge": Model.AttributeFrequency.EDGE,
@@ -1426,6 +1455,36 @@ class Model:
 
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
+
+    @property
+    def joint_twist_lower(self) -> wp.array[wp.float32] | None:
+        """Joint lower twist limit [rad], shape [joint_count], float. Never populated.
+
+        .. deprecated:: 1.7
+            Limit joint rotations with the per-DOF :attr:`joint_limit_lower` instead.
+        """
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self._deprecated_joint_twist_lower
+
+    @joint_twist_lower.setter
+    def joint_twist_lower(self, value: wp.array[wp.float32] | None) -> None:
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self._deprecated_joint_twist_lower = value
+
+    @property
+    def joint_twist_upper(self) -> wp.array[wp.float32] | None:
+        """Joint upper twist limit [rad], shape [joint_count], float. Never populated.
+
+        .. deprecated:: 1.7
+            Limit joint rotations with the per-DOF :attr:`joint_limit_upper` instead.
+        """
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self._deprecated_joint_twist_upper
+
+    @joint_twist_upper.setter
+    def joint_twist_upper(self, value: wp.array[wp.float32] | None) -> None:
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self._deprecated_joint_twist_upper = value
 
     @property
     def joint_target_q_start(self) -> wp.array | None:

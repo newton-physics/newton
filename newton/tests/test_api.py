@@ -4,7 +4,6 @@
 import inspect
 import typing as _t
 import unittest
-import warnings
 
 
 def _get_type_hints(obj):
@@ -91,29 +90,16 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
-    def test_geometry_match_constants_deprecated(self):
+    def test_collision_pipeline_flattens_speculative_contact_config(self):
+        """Configure speculative contacts without a single-field wrapper."""
         import newton  # noqa: PLC0415
-        from newton._src.geometry.contact_match import MATCH_BROKEN, MATCH_NOT_FOUND  # noqa: PLC0415
 
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            public_match_broken = newton.geometry.MATCH_BROKEN
-            public_match_not_found = newton.geometry.MATCH_NOT_FOUND
+        parameters = inspect.signature(newton.CollisionPipeline).parameters
 
-        self.assertEqual(public_match_broken, MATCH_BROKEN)
-        self.assertEqual(public_match_not_found, MATCH_NOT_FOUND)
-        self.assertEqual(len(caught), 2)
-        self.assertTrue(all(issubclass(warning.category, DeprecationWarning) for warning in caught))
-
-        with self.assertRaises(AttributeError):
-            _ = newton.geometry.UNKNOWN_MATCH_STATUS
-
-        star_namespace = {}
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
-            exec("from newton.geometry import *", star_namespace)
-        self.assertNotIn("MATCH_BROKEN", star_namespace)
-        self.assertNotIn("MATCH_NOT_FOUND", star_namespace)
+        self.assertIn("speculative_contact_gap_max", parameters)
+        self.assertNotIn("max_speculative_extension", parameters)
+        self.assertNotIn("speculative_config", parameters)
+        self.assertFalse(hasattr(newton.CollisionPipeline, "SpeculativeContactConfig"))
 
     def test_builder_urdf_signature_parity(self):
         from newton import ModelBuilder  # noqa: PLC0415

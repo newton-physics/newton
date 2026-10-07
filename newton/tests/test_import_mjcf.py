@@ -1214,6 +1214,59 @@ class TestImportMjcfBasic(unittest.TestCase):
         # note we need to swap quaternion order wxyz -> xyzw
         np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
+    def test_combined_joint_dof_attributes_follow_newton_dof_order(self):
+        """Per-DOF attributes and actuators of combined joints must map to Newton's DOF order.
+
+        Newton orders a combined joint's DOFs linear-first, so a slide declared after a
+        hinge in MJCF becomes the first DOF. Per-DOF custom attributes and actuator
+        targets must follow that reordering; the exported MuJoCo model is compared
+        joint-by-joint against the natively compiled MJCF.
+        """
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        mjcf = """<mujoco>
+    <worldbody>
+        <body name="b">
+            <joint name="h1" type="hinge" axis="0 0 1" range="-60 60" ref="10" margin="0.05" stiffness="3"/>
+            <joint name="s1" type="slide" axis="1 0 0" range="-0.3 0.3" ref="0.1" margin="0.01" stiffness="7"/>
+            <joint name="h2" type="hinge" axis="0 1 0" range="-30 45" ref="-5" margin="0.02" stiffness="11"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position name="a_h1" joint="h1" kp="5"/>
+        <position name="a_s1" joint="s1" kp="9"/>
+        <position name="a_h2" joint="h2" kp="13"/>
+    </actuator>
+</mujoco>"""
+        native = mujoco.MjModel.from_xml_string(mjcf)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True, disable_contacts=True)
+        exported = solver.mj_model
+
+        # Newton places the slide first, followed by the hinges in MJCF order.
+        newton_dof = {"s1": 0, "h1": 1, "h2": 2}
+        self.assertEqual(exported.njnt, 3)
+        for name, dof in newton_dof.items():
+            with self.subTest(joint=name):
+                expected = native.joint(name)
+                actual = exported.joint(dof)
+                self.assertEqual(actual.type[0], expected.type[0])
+                np.testing.assert_allclose(actual.range, expected.range, atol=1e-6)
+                np.testing.assert_allclose(actual.qpos0, expected.qpos0, atol=1e-6)
+                np.testing.assert_allclose(actual.margin, expected.margin, atol=1e-6)
+                np.testing.assert_allclose(actual.stiffness, expected.stiffness, atol=1e-6)
+
+        actuator_target = {"a_h1": "h1", "a_s1": "s1", "a_h2": "h2"}
+        self.assertEqual(exported.nu, 3)
+        for i in range(exported.nu):
+            gain = exported.actuator_gainprm[i, 0]
+            name = next(n for n in actuator_target if native.actuator(n).gainprm[0] == gain)
+            with self.subTest(actuator=name):
+                self.assertEqual(exported.actuator_trnid[i, 0], newton_dof[actuator_target[name]])
+
 
 class TestImportMjcfMeshScale(unittest.TestCase):
     """Tests for MJCF mesh scale resolution from default classes."""
@@ -5319,6 +5372,77 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 
         slide_idx = model.joint_label.index("test/worldbody/base/child1/child2/slide")
         self.assertAlmostEqual(dof_ref[qd_start[slide_idx]], 0.5, places=4)
+
+    def test_ref_shifts_joint_limits(self):
+        """Shift MJCF absolute joint ranges relative to the authored pose."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <compiler angle="radian"/>
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0" ref="0.5" range="0.4 0.9"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child2" pos="0 0 1">
+                    <joint name="slide" type="slide" axis="0 0 1" ref="-0.2" range="-0.1 0.3"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="child3" pos="0 0 1">
+                        <joint name="free_hinge" type="hinge" axis="1 0 0" ref="0.7"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        lower = model.joint_limit_lower.numpy()
+        upper = model.joint_limit_upper.numpy()
+
+        hinge_dof = qd_start[model.joint_label.index("test/worldbody/base/child1/hinge")]
+        self.assertAlmostEqual(lower[hinge_dof], 0.4 - 0.5, places=5)
+        self.assertAlmostEqual(upper[hinge_dof], 0.9 - 0.5, places=5)
+
+        slide_dof = qd_start[model.joint_label.index("test/worldbody/base/child1/child2/slide")]
+        self.assertAlmostEqual(lower[slide_dof], -0.1 - (-0.2), places=5)
+        self.assertAlmostEqual(upper[slide_dof], 0.3 - (-0.2), places=5)
+
+        # No authored range: the unlimited sentinel must not be shifted.
+        free_dof = qd_start[model.joint_label.index("test/worldbody/base/child1/child2/child3/free_hinge")]
+        self.assertGreater(upper[free_dof], 1.0e5)
+        self.assertLess(lower[free_dof], -1.0e5)
+
+    def test_ref_shifts_joint_limits_degrees(self):
+        """Apply degree-authored ref and range conversion to the limits."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <compiler angle="degree"/>
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0" ref="30" range="10 90"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        hinge_dof = qd_start[model.joint_label.index("test/worldbody/base/child1/hinge")]
+        self.assertAlmostEqual(model.joint_limit_lower.numpy()[hinge_dof], np.deg2rad(10.0 - 30.0), places=5)
+        self.assertAlmostEqual(model.joint_limit_upper.numpy()[hinge_dof], np.deg2rad(90.0 - 30.0), places=5)
+        self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[hinge_dof], np.deg2rad(30.0), places=5)
 
     def test_springref_attribute_parsing(self):
         """Test that 'springref' attribute is parsed for hinge and slide joints."""

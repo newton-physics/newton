@@ -118,6 +118,12 @@ class SolverKamino(SolverBase, CouplingInterface):
     Proximal ADMM. An opt-in DVI backend uses projected iterations with a direct
     bilateral block solve.
 
+    When requested, the solver populates :attr:`~newton.State.body_qdd` with the
+    discrete step-average center-of-mass acceleration in the world frame
+    [m/s², rad/s²]. The value is computed from the input and output body twists
+    over each step, so impacts include their velocity impulse divided by the
+    step duration.
+
     This solver is currently in Beta.
 
     .. experimental::
@@ -913,11 +919,6 @@ class SolverKamino(SolverBase, CouplingInterface):
                 final entry representing global world ``-1``. The global entry
                 is a no-op because Kamino does not support global dynamic
                 objects.
-
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.
@@ -990,6 +991,13 @@ class SolverKamino(SolverBase, CouplingInterface):
             config=config,
             success_mask=success_mask,
         )
+
+        if state.body_qdd is not None:
+            self._kamino.reset_body_acceleration(
+                body_wid=self._model_kamino.bodies.wid,
+                body_qdd=state.body_qdd,
+                world_mask=local_world_mask,
+            )
 
         # Restore fields excluded from the reset op
         for array, snapshot in restore_after_reset:
@@ -1070,6 +1078,11 @@ class SolverKamino(SolverBase, CouplingInterface):
             body_q_com=state_in_kamino.q_i,
         )
 
+        if state_out.body_qdd is not None:
+            # The output acceleration buffer is preallocated and can safely hold
+            # the input twist until integration completes, including in-place steps.
+            wp.copy(state_out.body_qdd, state_in.body_qd)
+
         # Step the physics solver
         self._solver_kamino.step(
             state_in=state_in_kamino,
@@ -1079,6 +1092,14 @@ class SolverKamino(SolverBase, CouplingInterface):
             detector=self._detector,
             dt=dt,
         )
+
+        if state_out.body_qdd is not None:
+            self._kamino.compute_body_acceleration(
+                body_qd_in=state_out.body_qdd,
+                body_qd_out=state_out.body_qd,
+                body_qdd=state_out.body_qdd,
+                dt=dt,
+            )
 
         # Convert back from Kamino CoM-frame to Newton body-frame poses
         self._kamino.convert_body_com_to_origin(
@@ -1102,8 +1123,9 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._validate_structural_invariants(flags)
         self._solver_kamino.validate_model_changed(flags)
 
-        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES):
-            # The documentation is unclear about which flag should trigger this update, so we update on both flags.
+        if flags & (
+            ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES
+        ):
             self._update_actuation_types()
 
         if flags & ModelFlags.MODEL_PROPERTIES:
@@ -1150,6 +1172,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             | ModelFlags.SHAPE_PROPERTIES
             | ModelFlags.JOINT_PROPERTIES
             | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+            | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
             | ModelFlags.ACTUATOR_PROPERTIES
             | ModelFlags.CONSTRAINT_PROPERTIES
             | ModelFlags.TENDON_PROPERTIES
@@ -1436,9 +1461,20 @@ class SolverKamino(SolverBase, CouplingInterface):
         Raises:
             RuntimeError: If the solver must be recreated to apply the edit.
         """
-        check_dof = bool(flags & ModelFlags.JOINT_DOF_PROPERTIES)
-        check_actuation = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES))
-        check_axes = check_dof
+        check_dof = bool(
+            flags
+            & (
+                ModelFlags.JOINT_DOF_PROPERTIES
+                | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+                | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+            )
+        )
+        check_actuation = bool(
+            flags
+            & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
+        )
+        # Keep transform-only notifications free of host validation, as before.
+        check_axes = bool(flags & ModelFlags.JOINT_DOF_PROPERTIES)
         check_body_immovability = bool(flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES))
         if not (check_dof or check_actuation or check_axes or check_body_immovability):
             return
