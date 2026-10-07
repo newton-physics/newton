@@ -5,7 +5,7 @@
 # Example Deformable Visual Mesh Camera
 #
 # Shows one scene with a cable, cloth, and soft volume. Each object drives a
-# textured deformable visual mesh, and three tiled cameras focus on the three
+# textured deformable visual mesh, and three camera views focus on the three
 # skinned meshes. Use this example to check that viewer images, camera RGB,
 # depth, and optional recordings see the same skinned visual geometry.
 #
@@ -24,7 +24,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.sensors import SensorTiledCamera
+from newton.sensors import SensorCamera
 
 
 class _CameraRecorder:
@@ -446,42 +446,45 @@ class Example:
             float(getattr(args, "camera_depth_far", 5.0)),
         )
 
-        self.tiled_camera_sensor = SensorTiledCamera(
+        self.camera_sensor = SensorCamera(
             model=self.model,
-            default_render_config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
                 enable_textures=True,
                 max_distance=self.camera_depth_range[1],
             ),
         )
-        self.tiled_camera_sensor.default_render_config.enable_shadows = True
-        self.tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
+        self.camera_sensor.default_render_config.enable_shadows = True
+        self.camera_sensor.create_default_light(enable_shadows=True)
 
         fov = math.radians(float(getattr(args, "camera_fov", 45.0)))
-        self.camera_rays = self.tiled_camera_sensor.utils.compute_camera_rays_pinhole(
+        self.camera_rays = self.camera_sensor.compute_camera_rays_pinhole(
             self.camera_width,
             self.camera_height,
-            camera_fovs=np.full(self.camera_count, fov, dtype=np.float32),
+            camera_fov=fov,
+            device=self.model.device,
         )
         self.camera_transforms = wp.array(
             [
-                [_look_at_transform((-2.4, -2.5, 1.3), (-2.4, 0.0, 1.1))],
-                [_look_at_transform((0.0, -1.8, 1.2), (0.0, 0.0, 0.55))],
-                [_look_at_transform((2.4, -1.4, 1.45), (2.4, 0.2, 1.25))],
+                _look_at_transform((-2.4, -2.5, 1.3), (-2.4, 0.0, 1.1)),
+                _look_at_transform((0.0, -1.8, 1.2), (0.0, 0.0, 0.55)),
+                _look_at_transform((2.4, -1.4, 1.45), (2.4, 0.2, 1.25)),
             ],
             dtype=wp.transformf,
             device=self.model.device,
         )
 
-        self.camera_color_image = self.tiled_camera_sensor.utils.create_color_image_output(
-            self.camera_width, self.camera_height, self.camera_count
+        # Each view observes a different object in the same simulation world.
+        self.camera_world_indices = wp.zeros(self.camera_count, dtype=wp.int32, device=self.model.device)
+        self.camera_color_image = self.camera_sensor.create_color_image_output(
+            self.camera_count, self.camera_width, self.camera_height
         )
-        self.camera_depth_image = self.tiled_camera_sensor.utils.create_depth_image_output(
-            self.camera_width, self.camera_height, self.camera_count
+        self.camera_depth_image = self.camera_sensor.create_depth_image_output(
+            self.camera_count, self.camera_width, self.camera_height
         )
         self.camera_depth_rgba = wp.empty(
-            (self.model.world_count * self.camera_count, self.camera_height, self.camera_width, 4),
+            (self.camera_count, self.camera_height, self.camera_width, 4),
             dtype=wp.uint8,
             device=self.camera_depth_image.device,
         )
@@ -537,17 +540,18 @@ class Example:
     def _render_camera_sensor(self):
         self.model.bvh_refit_shapes(self.state_0)
         self.model.bvh_refit_particles(self.state_0)
-        self.tiled_camera_sensor.update(
+        self.camera_sensor.update(
             self.state_0,
             self.camera_transforms,
             self.camera_rays,
+            world_indices=self.camera_world_indices,
             color_image=self.camera_color_image,
             depth_image=self.camera_depth_image,
-            clear_data=SensorTiledCamera.GRAY_CLEAR_DATA,
+            clear_data=SensorCamera.ClearData(clear_color=0xFF666666),
             deformable_visuals=self.visuals,
         )
 
-        utils = self.tiled_camera_sensor.utils
+        utils = self.camera_sensor.Utils
         color_rgba = utils.to_rgba_from_color(self.camera_color_image)
         utils.to_rgba_from_depth(
             self.camera_depth_image, depth_range=self.camera_depth_range, out_buffer=self.camera_depth_rgba
@@ -560,12 +564,12 @@ class Example:
 
         if self.camera_recorder.is_active:
             self.camera_color_rgba_tiled = utils.flatten_color_image_to_rgba(
-                self.camera_color_image, out_buffer=self.camera_color_rgba_tiled, worlds_per_row=self.camera_count
+                self.camera_color_image, out_buffer=self.camera_color_rgba_tiled, views_per_row=self.camera_count
             )
             self.camera_depth_rgba_tiled = utils.flatten_depth_image_to_rgba(
                 self.camera_depth_image,
                 out_buffer=self.camera_depth_rgba_tiled,
-                worlds_per_row=self.camera_count,
+                views_per_row=self.camera_count,
                 depth_range=self.camera_depth_range_wp,
             )
             self.camera_recorder.write("rgb", self.camera_color_rgba_tiled)
@@ -582,16 +586,16 @@ class Example:
         self._render_camera_sensor()
         self._close_camera_recorder()
 
-        expected_shape = (1, self.camera_count, self.camera_height, self.camera_width)
+        expected_shape = (self.camera_count, self.camera_height, self.camera_width)
         color_image = self.camera_color_image.numpy()
         assert color_image.shape == expected_shape
         for camera_index in range(self.camera_count):
-            assert color_image[0, camera_index].min() < color_image[0, camera_index].max()
+            assert color_image[camera_index].min() < color_image[camera_index].max()
 
         depth_image = self.camera_depth_image.numpy()
         assert depth_image.shape == expected_shape
         for camera_index in range(self.camera_count):
-            assert depth_image[0, camera_index].min() < depth_image[0, camera_index].max()
+            assert depth_image[camera_index].min() < depth_image[camera_index].max()
 
     @staticmethod
     def create_parser():

@@ -6,7 +6,7 @@
 #
 # Loads a soft Gaussian bear from USD, drops its tetrahedral simulation
 # proxy onto a ground plane, and displays the evaluated Gaussian field
-# through SensorTiledCamera.
+# through SensorCamera.
 #
 # Command: python -m newton.examples deformable_visual_gaussian
 #
@@ -22,7 +22,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.sensors import SensorTiledCamera
+from newton.sensors import SensorCamera
 
 
 class _CameraRecorder:
@@ -160,25 +160,26 @@ class Example:
         self.viewer.show_gaussians = False
         self.viewer.set_camera(pos=wp.vec3(1.4, -3.2, 1.7), pitch=-7.0, yaw=66.0)
 
-        render_config = SensorTiledCamera.RenderConfig(
-            gaussians_mode=SensorTiledCamera.GaussianRenderMode.QUALITY,
+        render_config = SensorCamera.RenderConfig(
+            gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY,
             gaussians_max_num_hits=32,
             enable_simulation_triangles=False,
         )
-        self.sensor = SensorTiledCamera(self.model, default_render_config=render_config)
-        self.sensor.utils.create_default_light(enable_shadows=False)
+        self.sensor = SensorCamera(self.model, default_render_config=render_config)
+        self.sensor.create_default_light(enable_shadows=False)
         self.camera_width = args.camera_width
         self.camera_height = args.camera_height
         self.camera_view = args.camera_view
-        self.camera_rays = self.sensor.utils.compute_camera_rays_pinhole(
+        self.camera_rays = self.sensor.compute_camera_rays_pinhole(
             self.camera_width,
             self.camera_height,
-            camera_fovs=math.radians(args.camera_fov),
+            camera_fov=math.radians(args.camera_fov),
+            device=self.model.device,
         )
         camera = _look_at_transform((1.45, -3.1, 1.35), (0.0, 0.0, 0.95))
-        self.camera_transforms = wp.array([[camera]], dtype=wp.transformf, device=self.model.device)
-        self.color_image = self.sensor.utils.create_color_image_output(self.camera_width, self.camera_height, 1)
-        self.depth_image = self.sensor.utils.create_depth_image_output(self.camera_width, self.camera_height, 1)
+        self.camera_transforms = wp.array([camera], dtype=wp.transformf, device=self.model.device)
+        self.color_image = self.sensor.create_color_image_output(1, self.camera_width, self.camera_height)
+        self.depth_image = self.sensor.create_depth_image_output(1, self.camera_width, self.camera_height)
         self.depth_rgba = wp.empty(
             (1, self.camera_height, self.camera_width, 4), dtype=wp.uint8, device=self.model.device
         )
@@ -227,11 +228,11 @@ class Example:
             self.camera_rays,
             color_image=self.color_image,
             depth_image=self.depth_image,
-            clear_data=SensorTiledCamera.GRAY_CLEAR_DATA,
+            clear_data=SensorCamera.ClearData(clear_color=0xFF666666),
             deformable_visuals=self.visuals,
         )
-        color_rgba = self.sensor.utils.to_rgba_from_color(self.color_image)
-        self.sensor.utils.to_rgba_from_depth(self.depth_image, depth_range=(0.0, 5.0), out_buffer=self.depth_rgba)
+        color_rgba = self.sensor.Utils.to_rgba_from_color(self.color_image)
+        self.sensor.Utils.to_rgba_from_depth(self.depth_image, depth_range=(0.0, 5.0), out_buffer=self.depth_rgba)
         return color_rgba
 
     def render(self):
@@ -246,10 +247,10 @@ class Example:
         self.viewer.end_frame()
 
         if self.recorder.is_active:
-            self.color_rgba_tiled = self.sensor.utils.flatten_color_image_to_rgba(
+            self.color_rgba_tiled = self.sensor.Utils.flatten_color_image_to_rgba(
                 self.color_image, out_buffer=self.color_rgba_tiled
             )
-            self.depth_rgba_tiled = self.sensor.utils.flatten_depth_image_to_rgba(
+            self.depth_rgba_tiled = self.sensor.Utils.flatten_depth_image_to_rgba(
                 self.depth_image, out_buffer=self.depth_rgba_tiled, depth_range=self.depth_range
             )
             self.recorder.write("rgb", self.color_rgba_tiled)
@@ -280,7 +281,7 @@ class Example:
 
         color = self.color_image.numpy()
         depth = self.depth_image.numpy()
-        assert color.shape == (1, 1, self.camera_height, self.camera_width)
+        assert color.shape == (1, self.camera_height, self.camera_width)
         assert depth.shape == color.shape
         assert color.min() < color.max()
         assert depth.min() < depth.max()

@@ -231,6 +231,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         triangle_mesh_id: wp.uint64,
         triangle_mesh_group_roots: wp.array[wp.int32],
         triangle_colors: wp.array[wp.vec3f],
+        triangle_mesh_uvs: wp.array[wp.vec2f],
+        triangle_mesh_texture_ids: wp.array[wp.int32],
         mesh_data: wp.array[MeshData],
         texture_data: wp.array[TextureData],
         light_active: wp.array[wp.bool],
@@ -278,6 +280,19 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                         closest_hit.face_idx,
                     )
                     albedo_color = wp.cw_mul(albedo_color, srgb_to_linear_wp(tex_color))
+            elif wp.static(config.enable_textures) and closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID:
+                if closest_hit.face_idx >= 0 and closest_hit.face_idx < triangle_mesh_texture_ids.shape[0]:
+                    texture_index = triangle_mesh_texture_ids[closest_hit.face_idx]
+                    if texture_index >= 0 and texture_index < texture_data.shape[0] and triangle_mesh_uvs.shape[0] > 0:
+                        tex_color = textures.sample_texture_dynamic_triangle_mesh(
+                            closest_hit.bary_u,
+                            closest_hit.bary_v,
+                            closest_hit.face_idx,
+                            triangle_mesh_id,
+                            triangle_mesh_uvs,
+                            texture_data[texture_index],
+                        )
+                        albedo_color = wp.cw_mul(albedo_color, srgb_to_linear_wp(tex_color))
 
         result.albedo = albedo_color
         if not wp.static(state.render_color) and not wp.static(state.render_hdr_color):
@@ -357,6 +372,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         triangle_mesh_id: wp.uint64,
         triangle_mesh_group_roots: wp.array[wp.int32],
         triangle_colors: wp.array[wp.vec3f],
+        triangle_mesh_uvs: wp.array[wp.vec2f],
+        triangle_mesh_texture_ids: wp.array[wp.int32],
         mesh_data: wp.array[MeshData],
         gaussians_data: wp.array[Gaussian.Data],
         texture_data: wp.array[TextureData],
@@ -443,6 +460,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             triangle_mesh_id,
             triangle_mesh_group_roots,
             triangle_colors,
+            triangle_mesh_uvs,
+            triangle_mesh_texture_ids,
             mesh_data,
             texture_data,
             light_active,
@@ -492,6 +511,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         triangle_mesh_id: wp.uint64,
         triangle_mesh_group_roots: wp.array[wp.int32],
         triangle_colors: wp.array[wp.vec3f],
+        triangle_mesh_uvs: wp.array[wp.vec2f],
+        triangle_mesh_texture_ids: wp.array[wp.int32],
         # Meshes
         mesh_data: wp.array[MeshData],
         # Gaussians
@@ -596,6 +617,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                 triangle_mesh_id,
                 triangle_mesh_group_roots,
                 triangle_colors,
+                triangle_mesh_uvs,
+                triangle_mesh_texture_ids,
                 mesh_data,
                 gaussians_data,
                 texture_data,
@@ -695,6 +718,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     triangle_mesh_id,
                     triangle_mesh_group_roots,
                     triangle_colors,
+                    triangle_mesh_uvs,
+                    triangle_mesh_texture_ids,
                     mesh_data,
                     gaussians_data,
                     texture_data,
@@ -876,6 +901,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                             triangle_mesh_id,
                             triangle_mesh_group_roots,
                             triangle_colors,
+                            triangle_mesh_uvs,
+                            triangle_mesh_texture_ids,
                             mesh_data,
                             texture_data,
                             light_active,

@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.sensors import SensorTiledCamera
+from newton.sensors import SensorCamera
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerNull
 
@@ -449,7 +449,7 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
 class TestDeformableVisualGaussianSensor(unittest.TestCase):
     """Camera consumption through the public deformable visual output."""
 
-    def test_tiled_camera_bounds_cover_large_gaussian_field(self):
+    def test_camera_bounds_cover_large_gaussian_field(self):
         """Render samples outside the first lane of a multi-tile Gaussian field."""
         builder = _soft_builder()
         tet_indices = np.asarray(builder.tet_indices, dtype=np.int32).reshape(-1, 4)
@@ -474,32 +474,34 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
         )
         model = builder.finalize()
         state = model.state()
-        sensor = SensorTiledCamera(
+        sensor = SensorCamera(
             model,
-            default_render_config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
-                gaussians_mode=SensorTiledCamera.GaussianRenderMode.QUALITY,
+                gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY,
                 max_distance=10.0,
             ),
         )
         width = 32
         height = 32
-        camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=math.radians(40.0))
+        camera_rays = sensor.compute_camera_rays_pinhole(
+            width, height, device=model.device, camera_fov=math.radians(40.0)
+        )
         target = corners[3]
         camera_transforms = wp.array(
-            [[wp.transformf(wp.vec3f(float(target[0]), float(target[1]), 2.0), wp.quat_identity())]],
+            [wp.transformf(wp.vec3f(float(target[0]), float(target[1]), 2.0), wp.quat_identity())],
             dtype=wp.transformf,
             device=model.device,
         )
-        depth_image = sensor.utils.create_depth_image_output(width, height, camera_count=1)
+        depth_image = sensor.create_depth_image_output(model.world_count, width, height)
 
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
 
-        center_depth = float(depth_image.numpy()[0, 0, height // 2, width // 2])
+        center_depth = float(depth_image.numpy()[0, height // 2, width // 2])
         self.assertGreater(center_depth, 0.0)
 
-    def test_tiled_camera_tracks_tet_bound_gaussian(self):
+    def test_camera_tracks_tet_bound_gaussian(self):
         """Render a Gaussian visual without a separate static Gaussian shape."""
         builder = _soft_builder()
         tet_indices = np.asarray(builder.tet_indices, dtype=np.int32).reshape(-1, 4)
@@ -521,39 +523,41 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
         model = builder.finalize()
         state = model.state()
 
-        sensor = SensorTiledCamera(
+        sensor = SensorCamera(
             model,
-            default_render_config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
-                gaussians_mode=SensorTiledCamera.GaussianRenderMode.QUALITY,
+                gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY,
                 max_distance=10.0,
             ),
         )
         width = 32
         height = 32
-        camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=math.radians(40.0))
+        camera_rays = sensor.compute_camera_rays_pinhole(
+            width, height, device=model.device, camera_fov=math.radians(40.0)
+        )
         camera_transforms = wp.array(
-            [[wp.transformf(wp.vec3f(float(center[0, 0]), float(center[0, 1]), 2.0), wp.quat_identity())]],
+            [wp.transformf(wp.vec3f(float(center[0, 0]), float(center[0, 1]), 2.0), wp.quat_identity())],
             dtype=wp.transformf,
             device=model.device,
         )
-        depth_image = sensor.utils.create_depth_image_output(width, height, camera_count=1)
+        depth_image = sensor.create_depth_image_output(model.world_count, width, height)
 
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
-        rest_depth = float(depth_image.numpy()[0, 0, height // 2, width // 2])
+        rest_depth = float(depth_image.numpy()[0, height // 2, width // 2])
 
         moved = rest_particles.copy()
         moved[:, 2] += 0.4
         state.particle_q.assign(moved)
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
-        moved_depth = float(depth_image.numpy()[0, 0, height // 2, width // 2])
+        moved_depth = float(depth_image.numpy()[0, height // 2, width // 2])
 
         self.assertGreater(rest_depth, 0.0)
         self.assertGreater(moved_depth, 0.0)
         self.assertAlmostEqual(rest_depth - moved_depth, 0.4, delta=0.1)
 
-    def test_tiled_camera_keeps_replicated_gaussians_independent(self):
+    def test_camera_keeps_replicated_gaussians_independent(self):
         """Render one independently deformed Gaussian field in each world."""
         prototype = _soft_builder()
         tet_indices = np.asarray(prototype.tet_indices, dtype=np.int32).reshape(-1, 4)
@@ -580,24 +584,26 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
         moved[particle_world == 0, 2] += 0.4
         state.particle_q.assign(moved)
 
-        sensor = SensorTiledCamera(
+        sensor = SensorCamera(
             model,
-            default_render_config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
-                gaussians_mode=SensorTiledCamera.GaussianRenderMode.QUALITY,
+                gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY,
                 max_distance=10.0,
             ),
         )
         width = 32
         height = 32
-        camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=math.radians(40.0))
+        camera_rays = sensor.compute_camera_rays_pinhole(
+            width, height, device=model.device, camera_fov=math.radians(40.0)
+        )
         camera = wp.transformf(wp.vec3f(float(center[0, 0]), float(center[0, 1]), 2.0), wp.quat_identity())
-        camera_transforms = wp.array([[camera, camera]], dtype=wp.transformf, device=model.device)
-        depth_image = sensor.utils.create_depth_image_output(width, height, camera_count=1)
+        camera_transforms = wp.array([camera, camera], dtype=wp.transformf, device=model.device)
+        depth_image = sensor.create_depth_image_output(model.world_count, width, height)
 
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
-        depth = depth_image.numpy()[:, 0, height // 2, width // 2]
+        depth = depth_image.numpy()[:, height // 2, width // 2]
 
         self.assertTrue(np.all(depth > 0.0))
         self.assertAlmostEqual(float(depth[1] - depth[0]), 0.4, delta=0.1)

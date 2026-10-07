@@ -23,7 +23,7 @@ from newton.examples.sensors.example_deformable_visual_mesh_camera import (
 from newton.examples.sensors.example_deformable_visual_mesh_camera import (
     _CameraRecorder as DeformableVisualMeshCameraRecorder,
 )
-from newton.sensors import SensorTiledCamera
+from newton.sensors import SensorCamera
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
@@ -881,15 +881,17 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
 
     @staticmethod
     def _camera_setup(sensor, model, width=16, height=16):
-        camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=math.radians(45.0))
+        camera_rays = sensor.compute_camera_rays_pinhole(
+            width, height, device=model.device, camera_fov=math.radians(45.0)
+        )
         camera_transforms = wp.array(
-            [[wp.transformf(wp.vec3f(0.0, 0.0, 2.0), wp.quat_identity())]],
+            [wp.transformf(wp.vec3f(0.0, 0.0, 2.0), wp.quat_identity())],
             dtype=wp.transformf,
             device=model.device,
         )
         return camera_rays, camera_transforms
 
-    def test_tiled_camera_sees_particle_bound_visual_mesh(self):
+    def test_camera_sees_particle_bound_visual_mesh(self):
         builder = newton.ModelBuilder()
         verts = np.array(
             [
@@ -911,25 +913,27 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
         model = builder.finalize()
         state = model.state()
 
-        sensor = SensorTiledCamera(
+        sensor = SensorCamera(
             model,
-            default_render_config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
                 max_distance=10.0,
             ),
         )
         width = 16
         height = 16
-        camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=math.radians(45.0))
+        camera_rays = sensor.compute_camera_rays_pinhole(
+            width, height, device=model.device, camera_fov=math.radians(45.0)
+        )
         camera_transforms = wp.array(
-            [[wp.transformf(wp.vec3f(0.0, 0.0, 2.0), wp.quat_identity())]],
+            [wp.transformf(wp.vec3f(0.0, 0.0, 2.0), wp.quat_identity())],
             dtype=wp.transformf,
             device=model.device,
         )
-        depth_image = sensor.utils.create_depth_image_output(width, height, camera_count=1)
+        depth_image = sensor.create_depth_image_output(model.world_count, width, height)
 
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
-        depth = depth_image.numpy()[0, 0]
+        depth = depth_image.numpy()[0]
 
         self.assertGreater(int(np.count_nonzero(depth > 0.0)), 0)
         self.assertAlmostEqual(float(depth[height // 2, width // 2]), 2.0, delta=0.25)
@@ -939,10 +943,11 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
         state.particle_q = wp.array(moved, dtype=wp.vec3, device=model.device)
 
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
-        moved_depth = depth_image.numpy()[0, 0]
+        moved_depth = depth_image.numpy()[0]
         self.assertAlmostEqual(float(moved_depth[height // 2, width // 2]), 1.5, delta=0.25)
 
-    def test_tiled_camera_consumes_explicit_deformable_visuals_without_updating_again(self):
+    def test_camera_consumes_explicit_deformable_visuals_without_updating_again(self):
+        """Automatic and explicit sync both consume supplied visuals without re-evaluating them."""
         model = self._triangle_surface_with_visual_mesh_behind()
         state = model.state()
         visuals = model.deformable_visuals()
@@ -952,16 +957,16 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
         body_q[:, 2] += 1.0
         state.body_q.assign(body_q)
 
-        sensor = SensorTiledCamera(
+        sensor = SensorCamera(
             model,
-            default_render_config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
                 max_distance=10.0,
             ),
         )
         camera_rays, camera_transforms = self._camera_setup(sensor, model)
-        depth_image = sensor.utils.create_depth_image_output(16, 16, camera_count=1)
+        depth_image = sensor.create_depth_image_output(model.world_count, 16, 16)
 
         sensor.update(
             state,
@@ -971,8 +976,22 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
             deformable_visuals=visuals,
         )
 
-        depth = depth_image.numpy()[0, 0]
+        depth = depth_image.numpy()[0]
         self.assertAlmostEqual(float(depth[8, 8]), 2.5, delta=0.25)
+
+        sensor.sync_deformable_meshes(state, deformable_visuals=visuals)
+        sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image, sync_deformables=False)
+        np.testing.assert_array_equal(depth_image.numpy()[0], depth)
+
+        with self.assertRaisesRegex(ValueError, "requires sync_deformables=True"):
+            sensor.update(
+                state,
+                camera_transforms,
+                camera_rays,
+                depth_image=depth_image,
+                sync_deformables=False,
+                deformable_visuals=visuals,
+            )
 
         with self.assertRaisesRegex(ValueError, "another state"):
             sensor.update(
@@ -983,88 +1002,86 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
                 deformable_visuals=visuals,
             )
 
-    def test_tiled_camera_can_hide_sim_triangles_for_visual_mesh_capture(self):
+    def test_camera_can_hide_sim_triangles_for_visual_mesh_capture(self):
         model = self._triangle_surface_with_visual_mesh_behind()
         state = model.state()
 
-        default_sensor = SensorTiledCamera(
+        default_sensor = SensorCamera(
             model,
-            default_render_config=SensorTiledCamera.RenderConfig(enable_particles=False, max_distance=10.0),
+            default_render_config=SensorCamera.RenderConfig(enable_particles=False, max_distance=10.0),
         )
         camera_rays, camera_transforms = self._camera_setup(default_sensor, model)
-        default_depth_image = default_sensor.utils.create_depth_image_output(16, 16, camera_count=1)
+        default_depth_image = default_sensor.create_depth_image_output(model.world_count, 16, 16)
         default_sensor.update(state, camera_transforms, camera_rays, depth_image=default_depth_image)
-        default_depth = default_depth_image.numpy()[0, 0]
+        default_depth = default_depth_image.numpy()[0]
         self.assertAlmostEqual(float(default_depth[8, 8]), 2.0, delta=0.25)
 
-        visual_sensor = SensorTiledCamera(
+        visual_sensor = SensorCamera(
             model,
-            default_render_config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
                 max_distance=10.0,
             ),
         )
         camera_rays, camera_transforms = self._camera_setup(visual_sensor, model)
-        visual_depth_image = visual_sensor.utils.create_depth_image_output(16, 16, camera_count=1)
+        visual_depth_image = visual_sensor.create_depth_image_output(model.world_count, 16, 16)
         visual_sensor.update(state, camera_transforms, camera_rays, depth_image=visual_depth_image)
-        visual_depth = visual_depth_image.numpy()[0, 0]
+        visual_depth = visual_depth_image.numpy()[0]
         self.assertAlmostEqual(float(visual_depth[8, 8]), 2.5, delta=0.25)
 
-    def test_tiled_camera_colors_dynamic_visual_mesh_rgb_hits(self):
+    def test_camera_colors_dynamic_visual_mesh_rgb_hits(self):
         model = self._triangle_surface_with_visual_mesh_behind()
         state = model.state()
 
-        sensor = SensorTiledCamera(
+        sensor = SensorCamera(
             model,
-            default_render_config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
                 max_distance=10.0,
             ),
         )
         camera_rays, camera_transforms = self._camera_setup(sensor, model)
-        color_image = sensor.utils.create_color_image_output(16, 16, camera_count=1)
+        color_image = sensor.create_color_image_output(model.world_count, 16, 16)
 
         sensor.update(state, camera_transforms, camera_rays, color_image=color_image)
-        rgba = sensor.utils.to_rgba_from_color(color_image).numpy()[0, 8, 8]
+        rgba = sensor.Utils.to_rgba_from_color(color_image).numpy()[0, 8, 8]
 
         self.assertGreater(int(rgba[3]), 0)
         self.assertTrue(int(rgba[0]) != int(rgba[1]) or int(rgba[1]) != int(rgba[2]))
 
-    def test_tiled_camera_keeps_untextured_simulation_triangles_white(self):
-        """Keep the established white albedo for untextured simulation triangles."""
+    def test_camera_keeps_simulation_triangle_colors(self):
+        """Preserve simulation colors when skinned visuals share the triangle buffer."""
         model = self._triangle_surface_with_visual_mesh_behind()
         state = model.state()
 
-        sensor = SensorTiledCamera(
+        sensor = SensorCamera(
             model,
-            default_render_config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
                 max_distance=10.0,
             ),
         )
         camera_rays, camera_transforms = self._camera_setup(sensor, model)
-        albedo_image = sensor.utils.create_albedo_image_output(16, 16, camera_count=1)
+        albedo_image = sensor.create_albedo_image_output(model.world_count, 16, 16)
 
         sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
-        rgba = self._unpack_rgba(albedo_image.numpy()[0, 0, 8, 8])
+        rgba = self._unpack_rgba(albedo_image.numpy()[0, 8, 8])
 
-        self.assertGreater(int(rgba[0]), 240)
-        self.assertGreater(int(rgba[1]), 240)
-        self.assertGreater(int(rgba[2]), 240)
+        np.testing.assert_allclose(rgba[:3], np.asarray(model.tri_color.numpy()[0]) * 255, atol=2)
         self.assertEqual(int(rgba[3]), 255)
 
-    def test_tiled_camera_samples_dynamic_visual_mesh_texture(self):
+    def test_camera_samples_dynamic_visual_mesh_texture(self):
         texture = np.zeros((4, 4, 4), dtype=np.uint8)
         texture[..., 0] = 255
         texture[..., 3] = 255
         model = self._triangle_surface_with_visual_mesh_behind(texture=texture)
         state = model.state()
 
-        sensor = SensorTiledCamera(
+        sensor = SensorCamera(
             model,
-            default_render_config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
                 enable_textures=True,
@@ -1072,17 +1089,17 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
             ),
         )
         camera_rays, camera_transforms = self._camera_setup(sensor, model)
-        albedo_image = sensor.utils.create_albedo_image_output(16, 16, camera_count=1)
+        albedo_image = sensor.create_albedo_image_output(model.world_count, 16, 16)
 
         sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
-        rgba = self._unpack_rgba(albedo_image.numpy()[0, 0, 8, 8])
+        rgba = self._unpack_rgba(albedo_image.numpy()[0, 8, 8])
 
         self.assertGreater(int(rgba[0]), 240)
         self.assertLess(int(rgba[1]), 16)
         self.assertLess(int(rgba[2]), 16)
         self.assertEqual(int(rgba[3]), 255)
 
-    def test_tiled_camera_wraps_dynamic_visual_mesh_texture_uvs(self):
+    def test_camera_wraps_dynamic_visual_mesh_texture_uvs(self):
         texture = np.zeros((4, 4, 4), dtype=np.uint8)
         texture[:, :2, 0] = 255
         texture[:, 2:, 1] = 255
@@ -1099,9 +1116,9 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
         model = self._triangle_surface_with_visual_mesh_behind(texture=texture, visual_uvs=visual_uvs)
         state = model.state()
 
-        sensor = SensorTiledCamera(
+        sensor = SensorCamera(
             model,
-            default_render_config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
                 enable_textures=True,
@@ -1109,15 +1126,90 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
             ),
         )
         camera_rays, camera_transforms = self._camera_setup(sensor, model)
-        albedo_image = sensor.utils.create_albedo_image_output(16, 16, camera_count=1)
+        albedo_image = sensor.create_albedo_image_output(model.world_count, 16, 16)
 
         sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
-        rgba = self._unpack_rgba(albedo_image.numpy()[0, 0, 8, 8])
+        rgba = self._unpack_rgba(albedo_image.numpy()[0, 8, 8])
 
         self.assertGreater(int(rgba[0]), 240)
         self.assertLess(int(rgba[1]), 16)
         self.assertLess(int(rgba[2]), 16)
         self.assertEqual(int(rgba[3]), 255)
+
+    def test_camera_in_memory_visual_textures_with_multisampling(self):
+        """Render opaque RGB and grayscale skinned textures in every sampling mode."""
+        for name, texture, expected in (
+            ("rgb", np.tile(np.array([200, 40, 10], dtype=np.uint8), (4, 4, 1)), (200, 40, 10)),
+            ("gray", np.full((4, 4), 90, dtype=np.uint8), (90, 90, 90)),
+        ):
+            model = self._triangle_surface_with_visual_mesh_behind(texture=texture)
+            state = model.state()
+            sensor = SensorCamera(
+                model,
+                default_render_config=SensorCamera.RenderConfig(
+                    enable_particles=False,
+                    enable_simulation_triangles=False,
+                    enable_textures=True,
+                ),
+            )
+            _, transforms = self._camera_setup(sensor, model)
+            albedo = sensor.create_albedo_image_output(1, 16, 16)
+            for mode in SensorCamera.AntiAliasing:
+                with self.subTest(texture=name, mode=mode):
+                    rays = sensor.compute_camera_rays_pinhole(
+                        16,
+                        16,
+                        camera_fov=math.radians(45),
+                        device=model.device,
+                        sample_count=1 if mode == SensorCamera.AntiAliasing.NONE else 4,
+                    )
+                    sensor.default_render_config.anti_aliasing = mode
+                    sensor.update(state, transforms, rays, albedo_image=albedo)
+                    rgba = self._unpack_rgba(albedo.numpy()[0, 8, 8])
+                    np.testing.assert_allclose(rgba[:3], expected, atol=2)
+                    self.assertEqual(int(rgba[3]), 255)
+
+    def test_camera_checkerboard_preserves_visual_texture(self):
+        """Keep the skinned texture when assigning a separate checkerboard material."""
+        texture = np.tile(np.array([200, 40, 10], dtype=np.uint8), (4, 4, 1))
+        model = self._triangle_surface_with_visual_mesh_behind(texture=texture)
+        sensor = SensorCamera(
+            model,
+            default_render_config=SensorCamera.RenderConfig(
+                enable_particles=False,
+                enable_simulation_triangles=False,
+                enable_textures=True,
+            ),
+        )
+        rays, transforms = self._camera_setup(sensor, model)
+        albedo = sensor.create_albedo_image_output(1, 16, 16)
+        for _ in range(2):
+            sensor.assign_checkerboard_material(shape_indices=[])
+            sensor.update(model.state(), transforms, rays, albedo_image=albedo)
+            rgba = self._unpack_rgba(albedo.numpy()[0, 8, 8])
+            np.testing.assert_allclose(rgba[:3], (200, 40, 10), atol=2)
+
+    def test_camera_maps_views_to_replicated_visual_meshes(self):
+        """Render independently deformed worlds through an explicit per-view mapping."""
+        prototype = newton.ModelBuilder()
+        points = np.array([[-0.5, -0.5, 0], [0.5, -0.5, 0], [0.5, 0.5, 0], [-0.5, 0.5, 0]], dtype=np.float32)
+        particles = [prototype.add_particle(pos=tuple(p), vel=(0, 0, 0), mass=1, radius=0) for p in points]
+        prototype.add_deformable_visual_mesh(points, _QUAD, kind="particle", particles=particles)
+        builder = newton.ModelBuilder()
+        builder.replicate(prototype, 2)
+        model = builder.finalize()
+        state = model.state()
+        moved = state.particle_q.numpy().copy()
+        moved[model.particle_world.numpy() == 0, 2] += 0.4
+        state.particle_q.assign(moved)
+        sensor = SensorCamera(model, default_render_config=SensorCamera.RenderConfig(enable_particles=False))
+        rays, transform = self._camera_setup(sensor, model)
+        transforms = wp.array(np.repeat(transform.numpy(), 3, axis=0), dtype=wp.transformf, device=model.device)
+        worlds = wp.array([1, 0, 1], dtype=wp.int32, device=model.device)
+        depth = sensor.create_depth_image_output(3, 16, 16)
+        sensor.update(state, transforms, rays, world_indices=worlds, depth_image=depth)
+        center_depth = depth.numpy()[:, 8, 8]
+        np.testing.assert_allclose(center_depth, [2.0, 1.6, 2.0], atol=0.03)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

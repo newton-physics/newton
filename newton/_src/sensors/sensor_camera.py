@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
+from ..sim.deformable_visual import DeformableVisuals
 from .sensor_camera_render import Utils
 from .sensor_camera_render.types import (
     AntiAliasing,
@@ -135,7 +136,7 @@ class SensorCamera:
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
                 ``RenderConfig()``.
-            load_textures: Load mesh textures from disk. Set ``False`` for
+            load_textures: Load mesh textures from file paths or in-memory images. Set ``False`` for
                 checkerboard or custom-texture workflows (see
                 :meth:`assign_checkerboard_material`).
         """
@@ -148,7 +149,16 @@ class SensorCamera:
 
         from .sensor_camera_render.render_context import RenderContext  # noqa: PLC0415
 
-        self._render_context = RenderContext(model, load_textures=load_textures)
+        self._render_context = RenderContext(
+            model,
+            load_textures=load_textures,
+            enable_simulation_triangles=self.default_render_config.enable_simulation_triangles,
+        )
+        self._deformable_visuals = (
+            model.deformable_visuals()
+            if model.deformable_visual_mesh_count or model.deformable_visual_gaussian_count
+            else None
+        )
 
     @property
     def device(self) -> wp.Device:
@@ -844,20 +854,40 @@ class SensorCamera:
             shape_indices=shape_indices, resolution=resolution, checker_size=checker_size
         )
 
-    def sync_deformable_meshes(self, state: State) -> None:
+    def sync_deformable_meshes(self, state: State, *, deformable_visuals: DeformableVisuals | None = None) -> None:
         """Synchronize render-only deformable triangle-mesh points from *state*.
 
         :meth:`update` calls this by default (pass ``sync_deformables=False`` to
         skip it when you already synced). Call it explicitly only when you opt
-        out of the automatic sync. It syncs deformable mesh points (rigid-only
-        scenes are a no-op) but does not touch transforms; shape and particle
-        BVHs are refit separately via :meth:`~newton.Model.bvh_refit_shapes` and
-        :meth:`~newton.Model.bvh_refit_particles`.
+        out of the automatic sync. Rigid-only scenes are a no-op. Skinned
+        Gaussian fields also update their bounds and refit the shape BVH. Other
+        shape and particle BVHs are refit separately via
+        :meth:`~newton.Model.bvh_refit_shapes` and :meth:`~newton.Model.bvh_refit_particles`.
 
         Args:
             state: Current simulation state with particle positions.
+            deformable_visuals: Experimental precomputed visual mesh and Gaussian
+                buffers for this state. If omitted, evaluate the sensor's own
+                reusable buffers. Share this argument with a viewer to avoid
+                evaluating the same visuals twice.
         """
-        self._render_context.update(state)
+        model = self._render_context.model
+        if deformable_visuals is None:
+            deformable_visuals = self._deformable_visuals
+            if deformable_visuals is not None:
+                model.update_deformable_visuals(state, deformable_visuals)
+        else:
+            if not isinstance(deformable_visuals, DeformableVisuals):
+                raise TypeError(
+                    f"deformable_visuals must be DeformableVisuals, got {type(deformable_visuals).__name__}"
+                )
+            deformable_visuals._validate_model(model)
+            deformable_visuals._require_updated(state)
+        if deformable_visuals is not None:
+            deformable_visuals.wait()
+            self._render_context.update(state, deformable_visuals)
+        else:
+            self._render_context.update(state)
 
     @staticmethod
     def _validate_render_array(name: str, array: Any, dtype: Any, device: wp.Device) -> None:
@@ -885,6 +915,7 @@ class SensorCamera:
         clear_data: ClearData | None = None,
         render_config: RenderConfig | None = None,
         sync_deformables: bool = True,
+        deformable_visuals: DeformableVisuals | None = None,
     ) -> None:
         """Render this camera sensor.
 
@@ -936,12 +967,18 @@ class SensorCamera:
             sync_deformables: Sync deformable triangle-mesh points from *state*
                 before rendering (a no-op for rigid-only scenes). Set ``False``
                 if you already called :meth:`sync_deformable_meshes` this frame.
+            deformable_visuals: Experimental precomputed visual mesh and Gaussian
+                buffers for this state. If omitted, evaluate the sensor's own
+                buffers. Requires ``sync_deformables=True``; otherwise pass the
+                buffers to :meth:`sync_deformable_meshes` explicitly.
         """
         render_context = self._render_context
         model = render_context.model
 
+        if not sync_deformables and deformable_visuals is not None:
+            raise ValueError("deformable_visuals requires sync_deformables=True")
         if sync_deformables:
-            render_context.update(state)
+            self.sync_deformable_meshes(state, deformable_visuals=deformable_visuals)
 
         self._validate_render_array("camera_transforms", camera_transforms, wp.transformf, model.device)
         if camera_transforms.ndim != 1 or camera_transforms.shape[0] <= 0:
