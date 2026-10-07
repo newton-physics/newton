@@ -5757,17 +5757,6 @@ class SolverFeatherPGS(SolverBase):
         Returns:
             ``state_out``.
         """
-        if self._nvtx is None:
-            return self._advance(state_in, state_out, control, contacts, dt)
-        try:
-            return self._advance(state_in, state_out, control, contacts, dt)
-        finally:
-            self._nvtx_stage(None)
-
-    def _advance(
-        self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
-    ) -> State:
-        """Run the stages of :meth:`step`."""
         if self.contact_compliance:
             # Reject unsupported state before any stage can launch work.
             _contact_compliance.validate_step(self)
@@ -5786,6 +5775,17 @@ class SolverFeatherPGS(SolverBase):
                 "pgs_warmstart=True matches contacts across steps and requires a Contacts buffer created "
                 'with contact matching; create the CollisionPipeline with contact_matching="latest".'
             )
+        if self._nvtx is None:
+            return self._advance(state_in, state_out, control, contacts, dt)
+        try:
+            return self._advance(state_in, state_out, control, contacts, dt)
+        finally:
+            self._nvtx_stage(None)
+
+    def _advance(
+        self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
+    ) -> State:
+        """Run the stages of :meth:`step` after its input checks."""
         if self._contact_torsion_enabled:
             validate_torsion_step(self)
             if self._device_torsion is not None:
