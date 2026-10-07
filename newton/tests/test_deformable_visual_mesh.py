@@ -183,6 +183,39 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         state.particle_q = wp.array(state.particle_q.numpy() + shift, dtype=wp.vec3)
         assert_np_equal(_skin(model, rm, state), skinned + shift, tol=1.0e-4)
 
+    def test_triangle_embedding_uses_closest_edges_and_corners(self):
+        """Euclidean projection must not become independent barycentric clamping."""
+        builder = newton.ModelBuilder()
+        for point in [(0, 0, 0), (2, 0, 0), (1, 1, 0)]:
+            builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+        builder.add_triangle(0, 1, 2)
+        vertices = np.array(
+            [[1, -0.5, 0], [-0.5, 1, 0], [2.5, 1, 0], [-1, -1, 0], [3, -1, 0], [1, 2, 0], [1, 0.2, 3]], dtype=np.float32
+        )
+        expected = np.array([[1, 0, 0], [0.25, 0.25, 0], [1.75, 0.25, 0], [0, 0, 0], [2, 0, 0], [1, 1, 0], [1, 0.2, 0]])
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="triangle", tri_range=(0, 1))
+        model = builder.finalize()
+        assert_np_equal(_skin(model, model.deformable_visual_meshes[0], model.state()), expected, tol=1.0e-6)
+
+    def test_triangle_embedding_selects_closest_nondegenerate_parent(self):
+        builder = newton.ModelBuilder()
+        points = [(0, 0, 0), (2, 0, 0), (1, 1, 0), (0, -1.1, 0), (1, -2, 0), (2, -1.1, 0)]
+        for point in points:
+            builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+        builder.add_triangle(0, 1, 2)
+        builder.add_triangle(3, 4, 5)
+        # A formerly valid triangle can be degenerate in a separate visual bind pose.
+        for point in [(4, 0, 0), (5, 0, 0), (4, 1, 0)]:
+            builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+        builder.add_triangle(6, 7, 8)
+        builder.particle_q[6:9] = [wp.vec3(1, -0.5, 0)] * 3
+        vertices = np.array([[1, -0.5, 0], [1.01, -0.5, 0], [1, -0.49, 0]], dtype=np.float32)
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="triangle", tri_range=(0, 3))
+        model = builder.finalize()
+        mesh = model.deformable_visual_meshes[0]
+        np.testing.assert_array_equal(mesh.parent.numpy(), [0, 0, 0])
+        assert_np_equal(_skin(model, mesh, model.state()), np.array([[1, 0, 0], [1.01, 0, 0], [1, 0, 0]]), tol=1.0e-6)
+
     def test_tet_embedding_partition_of_unity_and_rigid_motion(self):
         """Tet barycentric weights sum to one; embedded vertices follow a rigid
         translation and rotation of the soft body exactly."""

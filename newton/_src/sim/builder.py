@@ -11989,32 +11989,39 @@ class ModelBuilder:
 
         parent = np.empty(len(vertices), dtype=np.int32)
         weights = np.empty((len(vertices), 3), dtype=np.float32)
+        d00 = np.einsum("ij,ij->i", ab, ab)
+        d01 = np.einsum("ij,ij->i", ab, ac)
+        d11 = np.einsum("ij,ij->i", ac, ac)
+        denom = d00 * d11 - d01 * d01
+        nonsingular = np.abs(denom) > 1.0e-20
+        if not np.any(nonsingular):
+            raise ValueError("degenerate_parent: owning triangle range contains no non-degenerate triangle")
+        denom = np.where(nonsingular, denom, 1.0)
+        corners = np.stack([a, b, c], axis=1)
+        bary_corners = np.eye(3)
         for i, p in enumerate(np.asarray(vertices, dtype=np.float64)):
-            # Closest point on each owning triangle via projection + barycentric clamp.
+            # The closest point is either the interior projection or on an edge.
+            # Clamping barycentric coordinates independently is not Euclidean projection.
             ap = p - a
-            d00 = np.einsum("ij,ij->i", ab, ab)
-            d01 = np.einsum("ij,ij->i", ab, ac)
-            d11 = np.einsum("ij,ij->i", ac, ac)
             d20 = np.einsum("ij,ij->i", ap, ab)
             d21 = np.einsum("ij,ij->i", ap, ac)
-            denom = d00 * d11 - d01 * d01
-            nonsingular = np.abs(denom) > 1.0e-20
-            if not np.any(nonsingular):
-                raise ValueError("degenerate_parent: owning triangle range contains no non-degenerate triangle")
-            denom = np.where(nonsingular, denom, 1.0)
-            v = np.clip((d11 * d20 - d01 * d21) / denom, 0.0, 1.0)
-            w = np.clip((d00 * d21 - d01 * d20) / denom, 0.0, 1.0)
-            scale = v + w
-            over = scale > 1.0
-            # np.where evaluates both branches; keep the unused divisor finite.
-            safe_scale = np.where(over, scale, 1.0)
-            v = np.where(over, v / safe_scale, v)
-            w = np.where(over, w / safe_scale, w)
-            closest = a + v[:, None] * ab + w[:, None] * ac
-            distances = np.linalg.norm(closest - p, axis=1)
+            v = (d11 * d20 - d01 * d21) / denom
+            w = (d00 * d21 - d01 * d20) / denom
+            candidates = np.empty((len(a), 4, 3), dtype=np.float64)
+            candidates[:, 0] = np.column_stack([1.0 - v - w, v, w])
+            for edge, (u, vtx) in enumerate(((0, 1), (1, 2), (2, 0)), start=1):
+                direction = corners[:, vtx] - corners[:, u]
+                length2 = np.einsum("ij,ij->i", direction, direction)
+                t = np.clip(
+                    np.einsum("ij,ij->i", p - corners[:, u], direction) / np.where(length2 > 0, length2, 1), 0, 1
+                )
+                candidates[:, edge] = (1 - t[:, None]) * bary_corners[u] + t[:, None] * bary_corners[vtx]
+            closest = np.einsum("tki,tij->tkj", candidates, corners)
+            distances = np.sum((closest - p) ** 2, axis=2)
+            distances[np.any(candidates[:, 0] < 0, axis=1), 0] = np.inf
             distances[~nonsingular] = np.inf
-            best = int(np.argmin(distances))
-            weights[i] = (1.0 - v[best] - w[best], v[best], w[best])
+            best, region = np.unravel_index(np.argmin(distances), distances.shape)
+            weights[i] = candidates[best, region]
             parent[i] = lo + best
         return parent, weights
 
