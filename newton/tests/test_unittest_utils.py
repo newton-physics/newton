@@ -387,14 +387,12 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
 
 
 class TestSkippedTestCleanup(unittest.TestCase):
-    def _gc_calls(self, resultclass, test_case, *, cuda_devices=(), pool_enabled=True, pool_bytes=0):
+    def _gc_calls(self, resultclass, test_case, *, cuda_devices=()):
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(test_case)
         with (
             mock.patch("gc.collect") as collect,
             mock.patch.object(unittest_utils.wp, "get_cuda_devices", return_value=list(cuda_devices)),
-            mock.patch.object(unittest_utils.wp, "is_mempool_enabled", return_value=pool_enabled),
-            mock.patch.object(unittest_utils.wp, "get_mempool_used_mem_current", return_value=pool_bytes),
-            mock.patch.object(unittest_utils.wp, "set_mempool_release_threshold"),
+            mock.patch.object(unittest_utils.wp, "is_mempool_enabled", return_value=False),
         ):
             result = unittest.TextTestRunner(
                 stream=io.StringIO(),
@@ -437,8 +435,7 @@ class TestSkippedTestCleanup(unittest.TestCase):
             with self.subTest(resultclass=resultclass.__name__, outcome="executed"):
                 self.assertEqual(self._gc_calls(resultclass, Executed), 1)
 
-    def test_cpu_and_cuda_batch_cleanup(self):
-        """Collect every eight tests and flush the final partial batch."""
+    def test_cpu_batches_cleanup_but_cuda_cleans_each_test(self):
         methods = {f"test_{i}": lambda self: None for i in range(17)}
         ManyExecuted = type("ManyExecuted", (unittest.TestCase,), methods)
 
@@ -447,43 +444,7 @@ class TestSkippedTestCleanup(unittest.TestCase):
             with self.subTest(resultclass=resultclass.__name__, device="cpu"):
                 self.assertEqual(self._gc_calls(resultclass, ManyExecuted), 3)
             with self.subTest(resultclass=resultclass.__name__, device="cuda"):
-                self.assertEqual(self._gc_calls(resultclass, ManyExecuted, cuda_devices=("cuda:0",)), 3)
-
-    def test_cuda_memory_pressure_keeps_per_test_cleanup(self):
-        """Collect early when a CUDA pool is large or unavailable."""
-        methods = {f"test_{i}": lambda self: None for i in range(3)}
-        ManyExecuted = type("ManyExecuted", (unittest.TestCase,), methods)
-        for resultclass in (unittest_utils.ParallelJunitTestResult, ParallelTextTestResult):
-            for pool_enabled, pool_bytes in ((True, 512 * 1024 * 1024), (False, 0)):
-                with self.subTest(resultclass=resultclass.__name__, pool_enabled=pool_enabled):
-                    self.assertEqual(
-                        self._gc_calls(
-                            resultclass,
-                            ManyExecuted,
-                            cuda_devices=("cuda:0",),
-                            pool_enabled=pool_enabled,
-                            pool_bytes=pool_bytes,
-                        ),
-                        3,
-                    )
-
-    def test_cleanup_metrics_include_final_batch(self):
-        """Measure cleanup separately from test bodies, including the suite flush."""
-        for resultclass in (unittest_utils.ParallelJunitTestResult, ParallelTextTestResult):
-            with (
-                self.subTest(resultclass=resultclass.__name__),
-                mock.patch.object(unittest_utils, "cleanup_test_allocations") as cleanup,
-                mock.patch.object(unittest_utils.wp, "get_cuda_devices", return_value=[]),
-                mock.patch.object(unittest_utils.time, "perf_counter", side_effect=[10.0, 10.25, 20.0, 20.5]),
-            ):
-                result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=resultclass)._makeResult()
-                case = unittest.FunctionTestCase(lambda: None)
-                for _ in range(9):
-                    result.stopTest(case)
-                result.stopTestRun()
-                self.assertEqual(cleanup.call_count, 2)
-                self.assertEqual(result.cleanup_count, 2)
-                self.assertEqual(result.cleanup_seconds, 0.75)
+                self.assertEqual(self._gc_calls(resultclass, ManyExecuted, cuda_devices=("cuda:0",)), 17)
 
 
 if __name__ == "__main__":
