@@ -3744,6 +3744,22 @@ class TestSchemaResolver(unittest.TestCase):
         gravity_enabled = resolver.get_value(physics_scene_prim, PrimType.SCENE, "gravity_enabled")
         self.assertEqual(gravity_enabled, True)
 
+    def test_mjc_damping_key_compatibility(self):
+        """Keep the existing MuJoCo damping key alongside the shared damping key."""
+        stage = Usd.Stage.CreateInMemory()
+        prim = stage.DefinePrim("/joint")
+        attribute = prim.CreateAttribute("mjc:damping", Sdf.ValueTypeNames.Double)
+        resolver = SchemaResolverMjc()
+
+        for value in (None, 0.0, 3.0, None):
+            if value is None:
+                attribute.Block()
+            else:
+                attribute.Set(value)
+            for key in ("damping_per_rad", "damping"):
+                with self.subTest(value=value, key=key):
+                    self.assertEqual(resolver.get_value(prim, PrimType.JOINT, key), value)
+
     def test_mjc_solref(self):
         """Verify that MuJoCo joint solref remains separate from generic Newton gains.
 
