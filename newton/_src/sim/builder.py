@@ -6413,6 +6413,7 @@ class ModelBuilder:
         self,
         joint: int,
         reference_joint: int | None,
+        *,
         coeffs: Vec2 = (0.0, 1.0),
     ) -> None:
         """Configure a joint to mimic another joint with matching dimensions.

@@ -257,7 +257,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         reference = source.add_joint_revolute(-1, body0)
         follower = source.add_joint_revolute(body0, body1)
         source.add_articulation([reference, follower])
-        source.set_joint_mimic(follower, reference, (0.25, -2.0))
+        source.set_joint_mimic(follower, reference, coeffs=(0.25, -2.0))
 
         builder = ModelBuilder()
         builder.replicate(source, 3)
