@@ -1,0 +1,1 @@
+Add browser-based simulation and example controls, transform gizmos, layer-aware force picking with CUDA graph support, and selectable image streams to `ViewerViser`. Support held example buttons and initial pause state through `ViewerViser(paused=True)` or `--paused`, and expose the read-only `server` property for native Viser extensions.

@@ -3,14 +3,18 @@
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 import warnings
+import xml.etree.ElementTree as ET
 from unittest import mock
 
 import newton.tests.unittest_utils as unittest_utils
 from newton.tests.thirdparty.unittest_parallel import _enable_strict_warnings
+from newton.tests.thirdparty.unittest_parallel import main as unittest_parallel_main
 
 NewtonTestCase = unittest_utils.NewtonTestCase
 
@@ -384,6 +388,63 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertTrue(stderr_capture.begin_called)
         self.assertTrue(stdout_capture.end_called)
         self.assertFalse(output_capture.active)
+
+
+class TestShardSelection(unittest.TestCase):
+    def test_invalid_shard_arguments_are_usage_errors(self):
+        """Reject a non-positive shard count and an out-of-range shard index."""
+        cases = (
+            (["--shard-count", "0"], "--shard-count must be greater than 0"),
+            (["--shard-count", "2", "--shard-index", "2"], "--shard-index must be in the range"),
+            (["--shard-count", "2", "--shard-index", "-1"], "--shard-index must be in the range"),
+        )
+        for argv, message in cases:
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as context:
+                    unittest_parallel_main(argv)
+                self.assertEqual(context.exception.code, 2)
+                self.assertIn(message, stderr.getvalue())
+
+    def test_runner_runs_only_the_selected_shard(self):
+        """Run only the selected shard in parallel and serial-fallback modes."""
+        fixture = "import unittest\n" + "".join(
+            f"\n\nclass TestShardFixture{i}(unittest.TestCase):\n    def test_case(self):\n        pass\n"
+            for i in range(3)
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with open(os.path.join(temp_dir, "test_shard_fixture.py"), "w", encoding="utf-8") as f:
+                f.write(fixture)
+
+            def run_shard(shard_count, shard_index, *extra_args):
+                report_path = os.path.join(temp_dir, f"shard{shard_index}.xml")
+                command = [
+                    sys.executable,
+                    "-m",
+                    "newton.tests",
+                    "--start-directory",
+                    temp_dir,
+                    "--pattern",
+                    "test_shard_fixture.py",
+                    "--maxjobs",
+                    "1",
+                    "--no-cache-clear",
+                    "--junit-report-xml",
+                    report_path,
+                    "--shard-count",
+                    str(shard_count),
+                    "--shard-index",
+                    str(shard_index),
+                    *extra_args,
+                ]
+                result = subprocess.run(command, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, msg=f"{result.stdout}\n{result.stderr}")
+                root = ET.parse(report_path).getroot()
+                return int(root.get("tests")), {case.get("classname") for case in root.iter("testcase")}
+
+            self.assertEqual(run_shard(2, 1), (1, {"TestShardFixture1"}))
+            # The serial fallback runs the discovered suite directly, and an empty shard still writes a report.
+            self.assertEqual(run_shard(4, 3, "--serial-fallback"), (0, set()))
 
 
 if __name__ == "__main__":
