@@ -1425,3 +1425,4 @@ class _DeformableImportContext:
     path_attachment_attrs: dict
     # Filled by _scout_deformable_prims so the passes iterate buckets instead of the stage.
     prims: _DeformablePrimBuckets = field(default_factory=_DeformablePrimBuckets)
+    cable_visual_bind_poses: dict[int, wp.transform | ValueError] = field(default_factory=dict)

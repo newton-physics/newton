@@ -56,6 +56,7 @@ from .import_usd_deformable_utils import (
     _warn_subset_material_bindings,
     _warn_unsupported_rest_fields,
 )
+from .import_usd_deformable_visual import _record_cable_visual_bind_poses
 
 
 def _resolve_cable_contact(ctx: _DeformableImportContext, prim: Usd.Prim) -> dict[str, float]:
@@ -935,6 +936,11 @@ def _deformable_prepare_cable_topology(
             wrap_in_articulation=True,
             body_frame_origin="com",
         )
+        point_sources = [[] for _ in node_positions]
+        for key in comp_paths:
+            for point in range(len(curve_recs[key].positions)):
+                point_sources[global_node((key, point))].append((key, point))
+        _record_cable_visual_bind_poses(ctx, rod, body_ids, point_sources)
         edge_radii = [curve_recs[key].segment_radii[segment] for key, segment in edge_owner]
         body_radii = dict(zip(body_ids, edge_radii, strict=True))
         for body, edge_radius in zip(body_ids, edge_radii, strict=True):
@@ -1294,13 +1300,8 @@ def _deformable_import_cable(
             articulation_root = cable_articulation_roots.get(path) if len(vertex_counts) == 1 and not closed else None
             if articulation_root is not None and articulation_root.cable_point == n - 1:
                 curve_joint_radii.reverse()
+            rod = Rod(positions, quaternions=quaternions, radius=curve_radii[0], closed=closed)
             if articulation_root is None:
-                rod = Rod(
-                    positions,
-                    quaternions=quaternions,
-                    radius=curve_radii[0],
-                    closed=closed,
-                )
                 # One deformable object per USD prim is recorded below; a multi-curve prim spans
                 # several add_rod calls, so per-call recording would split it.
                 with builder._suppress_curve_object_recording():
@@ -1342,6 +1343,12 @@ def _deformable_import_cable(
                     ),
                 )
                 path_attachment_map[articulation_root.attachment_path] = articulation_root_joints
+            point_sources = [[(path, start + i)] for i in range(n)]
+            if closed:
+                point_sources.append([(path, start)])
+            _record_cable_visual_bind_poses(
+                ctx, rod, bodies, point_sources, seg_normals if normals is not None else None
+            )
             for body, segment_radius in zip(bodies, curve_radii, strict=True):
                 _set_cable_body_radius(builder, body, segment_radius)
             _apply_local_rod_material_gains(

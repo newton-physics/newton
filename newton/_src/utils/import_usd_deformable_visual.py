@@ -85,6 +85,47 @@ def _read_gaussian_embedding(prim, tet_range: tuple[int, int], count: int):
     return parent, weights
 
 
+def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources, normals=None):
+    """Pair imported segment bodies with reference frames without changing physics."""
+    if not ctx.load_visual_shapes:
+        return
+    from ..sim.rod import Rod  # noqa: PLC0415
+    from ..usd import utils as usd  # noqa: PLC0415
+    from .import_usd_deformable_utils import _cable_segment_quaternions  # noqa: PLC0415
+
+    try:
+        authored = {}
+        for path, _point in (source for sources in point_sources for source in sources):
+            if path in authored:
+                continue
+            prim = ctx.stage.GetPrimAtPath(path)
+            bind = usd._get_deformable_bind_pose(prim, strict=True)
+            if bind is not None:
+                matrix = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
+                bind = _transform_points_np(matrix, bind)
+            authored[path] = bind
+        if all(points is None for points in authored.values()):
+            return
+        points = np.asarray(rod.points, dtype=np.float32).copy()
+        for index, sources in enumerate(point_sources):
+            candidates = [authored[path][point] for path, point in sources if authored[path] is not None]
+            if candidates:
+                if not np.allclose(candidates, candidates[0], atol=1.0e-6, rtol=1.0e-6):
+                    raise ValueError("welded cable points have inconsistent bind poses")
+                points[index] = candidates[0]
+        quaternions = None
+        if normals is not None:
+            quaternions = _cable_segment_quaternions([wp.vec3(*point) for point in points], normals)
+        reference = Rod(points, edges=rod.edges, quaternions=quaternions)
+        for body, (start, end), quat in zip(bodies, reference.edges, reference.quaternions, strict=True):
+            center = 0.5 * (points[start] + points[end])
+            ctx.cable_visual_bind_poses[body] = wp.transform(wp.vec3(*center), wp.quat(*quat))
+    except ValueError as exc:
+        # Invalid graphics references must not prevent the simulation from importing.
+        for body in bodies:
+            ctx.cable_visual_bind_poses[body] = exc
+
+
 def _gaussian_in_world(ctx: _DeformableImportContext, prim, gaussian):
     """Bake the prim placement into Gaussian centers, orientations, and scales."""
     world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
@@ -208,6 +249,15 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                     for key, (curve_bodies, _joints) in ctx.path_cable_map.items():
                         if key == sim_path or key.startswith(f"{sim_path}_curve"):
                             bodies.extend(int(b) for b in curve_bodies)
+                    reference_binding = None
+                    if any(body in ctx.cable_visual_bind_poses for body in bodies):
+                        poses = [ctx.cable_visual_bind_poses.get(body, builder.body_q[body]) for body in bodies]
+                        for pose in poses:
+                            if isinstance(pose, ValueError):
+                                raise pose
+                        reference_binding = builder._bind_visual_vertices_to_bodies(
+                            world_verts, bodies, poses=np.asarray(poses)
+                        )
                     index = builder.add_deformable_visual_mesh(
                         world_verts,
                         indices,
@@ -217,6 +267,9 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                         texture=texture,
                         label=path,
                     )
+                    if reference_binding is not None:
+                        spec = builder._deformable_visual_meshes[index]
+                        spec["parent"], spec["local_offsets"] = reference_binding
             except ValueError as exc:
                 warnings.warn(f"{path}: could not embed visual mesh; skipping ({exc})", stacklevel=2)
                 continue

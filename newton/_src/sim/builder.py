@@ -12019,7 +12019,7 @@ class ModelBuilder:
         return parent, weights
 
     def _bind_visual_vertices_to_bodies(
-        self, vertices: np.ndarray, bodies: list[int] | np.ndarray
+        self, vertices: np.ndarray, bodies: list[int] | np.ndarray, *, poses: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
         """Bind each visual vertex to its nearest candidate rigid body.
 
@@ -12027,15 +12027,22 @@ class ModelBuilder:
         body index and ``local_offsets`` is the bind-pose visual vertex expressed
         in that body's local frame, so skinning can reconstruct the world
         position from the body's current pose each frame.
+
+        ``poses`` optionally supplies reference frames in candidate-body order,
+        without changing the simulation's current body transforms.
         """
         bodies = np.asarray(bodies, dtype=np.int64).reshape(-1)
         if len(bodies) == 0:
             raise ValueError("add_deformable_visual_mesh(kind='body'): requires at least one body")
         if int(bodies.min()) < 0 or int(bodies.max()) >= self.body_count:
             raise ValueError("add_deformable_visual_mesh: bodies reference bodies outside the current builder")
-        body_q = np.asarray(self.body_q, dtype=np.float64).reshape(-1, 7)
-        pos = body_q[bodies, :3]
-        quat = body_q[bodies, 3:7]  # (x, y, z, w)
+        body_q = (
+            np.asarray(self.body_q, dtype=np.float64).reshape(-1, 7)[bodies]
+            if poses is None
+            else np.asarray(poses, dtype=np.float64).reshape(len(bodies), 7)
+        )
+        pos = body_q[:, :3]
+        quat = body_q[:, 3:7]  # (x, y, z, w)
         verts = np.asarray(vertices, dtype=np.float64)
 
         # Nearest body per vertex (the candidate count is small for a cable/rod).

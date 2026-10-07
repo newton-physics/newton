@@ -1725,6 +1725,117 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         model.update_deformable_visuals(model.state(), visuals)
         assert_np_equal(visuals.points.numpy(), vertices, tol=1.0e-6)
 
+    def test_cable_visual_uses_simulation_bind_pose(self):
+        """Move cable graphics from the authored bind pose to the current segment frames."""
+        from pxr import Sdf, UsdGeom
+
+        bind = np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.float32)
+        vertices = np.array([[0.2, 0.1, 0], [0.3, 0.1, 0], [0.2, 0.2, 0]], dtype=np.float32)
+        for rotate in (False, True):
+            with self.subTest(rotate=rotate):
+                rotation = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]]) if rotate else np.eye(3)
+                translation = np.array([0, 0, 10])
+                stage = _deformable_stage()
+                UsdGeom.Xform.Define(stage, "/World/Cable").GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+                curve = _add_cable_curve(stage, "/World/Cable/Sim", (bind @ rotation.T + translation).tolist())
+                curve.CreateNormalsAttr([(0, 0, 1)] * 3)
+                curve.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+                prim = curve.GetPrim()
+                prim.AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+                prim.CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
+                    ["bindPose"]
+                )
+                prim.CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
+                    bind.tolist()
+                )
+                self._add_graphics_mesh(stage, "/World/Cable/Skin", points=vertices.tolist())
+                model = self._import(stage).finalize()
+                visuals = model.deformable_visuals()
+                model.update_deformable_visuals(model.state(), visuals)
+                assert_np_equal(visuals.points.numpy(), vertices @ rotation.T + translation, tol=2.0e-6)
+
+    def test_cable_bind_pose_preserves_curve_and_graph_mapping(self):
+        """Use authored point ownership even when curves share a welded graph node."""
+        from pxr import Sdf, UsdGeom
+
+        from newton.tests._usd_deformable_test_utils import _add_physics_attachment  # noqa: PLC0415
+
+        for graph in (False, True):
+            with self.subTest(graph=graph):
+                stage = self._stage()
+                reference = [
+                    np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=float),
+                    np.array([[1, 0, 0], [1, 1, 0], [1, 2, 0]], dtype=float),
+                ]
+                translation = np.array([0, 0, 10])
+                skins = [
+                    np.array([[0.2, 0.1, 0], [0.3, 0.1, 0], [0.2, 0.2, 0]]),
+                    np.array([[1.1, 1.2, 0], [1.2, 1.2, 0], [1.1, 1.3, 0]]),
+                ]
+                UsdGeom.Xform.Define(stage, "/World/Cable").GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+                # The parent placement is independent of the bind-to-current motion.
+                UsdGeom.Xformable(stage.GetPrimAtPath("/World/Cable")).AddTranslateOp().Set((3, 4, 5))
+                if graph:
+                    curves = [
+                        _add_cable_curve(stage, f"/World/Cable/Part{i}/Sim", points + translation)
+                        for i, points in enumerate(reference)
+                    ]
+                    for i in range(2):
+                        stage.GetPrimAtPath(f"/World/Cable/Part{i}").AddAppliedSchema("PhysicsDeformableBodyAPI")
+                        self._add_graphics_mesh(stage, f"/World/Cable/Part{i}/Skin", skins[i])
+                    _add_physics_attachment(
+                        stage,
+                        "/World/Junction",
+                        src0=curves[0].GetPath(),
+                        src1=curves[1].GetPath(),
+                        type0="point",
+                        type1="point",
+                        indices0=[1],
+                        indices1=[0],
+                    )
+                    binds = reference
+                else:
+                    curves = [_add_cable_curve(stage, "/World/Cable/Sim", np.concatenate(reference) + translation)]
+                    curves[0].CreateCurveVertexCountsAttr([3, 3])
+                    self._add_graphics_mesh(stage, "/World/Cable/Skin0", skins[0])
+                    self._add_graphics_mesh(stage, "/World/Cable/Skin1", skins[1])
+                    binds = [np.concatenate(reference)]
+                for curve, bind in zip(curves, binds, strict=True):
+                    prim = curve.GetPrim()
+                    prim.AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+                    prim.CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
+                        ["bindPose"]
+                    )
+                    prim.CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
+                        bind.tolist()
+                    )
+
+                builder = self._import(stage)
+                physics_only = self._import(stage, load_visual_shapes=False)
+                for field in ("body_q", "joint_q", "joint_target_ke", "body_mass"):
+                    assert_np_equal(np.asarray(getattr(builder, field)), np.asarray(getattr(physics_only, field)))
+                model = builder.finalize()
+                visuals = model.deformable_visuals()
+                model.update_deformable_visuals(model.state(), visuals)
+                assert_np_equal(visuals.points.numpy(), np.concatenate(skins) + translation + [3, 4, 5], tol=3.0e-6)
+
+    def test_invalid_cable_bind_pose_skips_only_visual(self):
+        from pxr import Sdf, UsdGeom
+
+        stage = self._stage()
+        UsdGeom.Xform.Define(stage, "/World/Cable").GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+        curve = _add_cable_curve(stage, "/World/Cable/Sim", [(0, 0, 0), (1, 0, 0), (2, 0, 0)])
+        prim = curve.GetPrim()
+        prim.AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+        prim.CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(["bindPose"])
+        prim.CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set([(0, 0, 0)])
+        self._add_graphics_mesh(stage, "/World/Cable/Skin")
+        with self.assertWarnsRegex(UserWarning, "invalid_bind_pose_count"):
+            builder = self._import(stage)
+        model = builder.finalize()
+        self.assertEqual(model.body_count, 2)
+        self.assertEqual(model.deformable_visual_mesh_count, 0)
+
     def test_uvs_survive_import(self):
         """Vertex-interpolated primvars:st arrive on the visual mesh."""
         from pxr import Sdf, UsdGeom
