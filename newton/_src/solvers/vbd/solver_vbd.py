@@ -400,9 +400,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         collision_frequency_type: Mapping[SolverBase.CollisionSlot, SolverBase.CollisionFrequencyType] | None = None,
     ):
         """
-        Explicit non-``None`` values for deprecated beta, hard-contact, or
-        penalty-seed controls emit a :class:`DeprecationWarning`.
-
         Args:
             model: The `Model` object used to initialize the integrator. Must be identical to the `Model` object passed
                 to the `step` function.
@@ -480,6 +477,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 ``rho`` internally for numerical conditioning. Values used with legacy
                 hard constraints may require retuning for the desired deformation.
                 Values must be finite and representable in float32; infinity is unsupported.
+
+                Explicit non-``None`` values for deprecated beta, hard-contact, or
+                penalty-seed controls emit a :class:`DeprecationWarning`.
 
                 .. deprecated:: 1.6
                     The legacy path selected by ``False`` will be removed in a future

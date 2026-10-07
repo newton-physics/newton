@@ -67,10 +67,7 @@ self-contact family, the self-contact slot of ``collision_frequency`` /
 the deprecated ``rigid_avbd_beta`` ramping, penalty seeds and ceilings,
 ``rigid_contact_hard``, ``rigid_contact_history``).
 
-Compliant ALM replaces the legacy rigid formulation, regardless of
-whether penalty ramping was enabled. Body-particle contacts retain
-their existing penalty formulation; deprecated linear-beta and
-contact-seed controls still apply to them in either rigid mode.
+Deprecated penalty-ramping controls do not affect compliant-ALM rigid constraints.
 
 Until then, the authoritative parameter list with defaults is
 :class:`~newton.solvers.SolverVBD`; the supported-knob summary lives in

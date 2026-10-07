@@ -173,10 +173,7 @@ repository examples spend tuning effort, not a shared solver API.
        deprecated legacy AVBD path during its migration window.
        ``rigid_contact_hard`` selects contact behavior only on that legacy path.
 
-       Compliant ALM replaces the legacy rigid formulation, regardless of
-       whether penalty ramping was enabled. Body-particle contacts retain
-       their existing penalty formulation; deprecated linear-beta and
-       contact-seed controls still apply to them in either rigid mode.
+       Deprecated penalty-ramping controls do not affect compliant-ALM rigid constraints.
        Rigid simulations relying on those controls or on legacy hard constraints may
        require stiffness retuning when enabling compliant ALM. Alpha remains an
        advanced stabilization override.
