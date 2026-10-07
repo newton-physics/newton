@@ -45,14 +45,9 @@ Platform-Specific Requirements
 
 **Linux**
 
-On Linux, the ``importers`` and ``remesh`` extras require GLIBC 2.35 or newer
-because `open3d <https://pypi.org/project/open3d/>`__ publishes its Linux wheels
-for ``manylinux_2_35``, as does
-`usd-exchange <https://pypi.org/project/usd-exchange/>`__ on ARM64. This also
-applies to extras that include ``importers``, such as ``examples`` and ``dev``.
-Distributions with an older GLIBC, including Ubuntu 20.04 (GLIBC 2.31) and RHEL 9
-(GLIBC 2.34), can install the base Newton package but cannot install these
-extras from the published wheels.
+On Linux, the ``importers`` and ``remesh`` extras (and extras that include them,
+such as ``examples`` and ``dev``) require GLIBC 2.35 or newer, e.g. Ubuntu
+22.04+. RHEL 9 and Amazon Linux 2023 can install only the base package.
 
 **Linux aarch64 (ARM64)**
 
