@@ -816,6 +816,40 @@ class TestCollisionPipeline(unittest.TestCase):
             CollisionPipeline.create_from_usd(scene_prim, model, soft_contact_margin=0.2, soft_contact_gap=0.1)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_create_from_usd_requires_newton_usd_schemas(self):
+        """Report the missing newton-usd-schemas dependency, not a misleading 'API is not applied'."""
+        from pxr import Usd, UsdPhysics
+
+        import newton._src.usd as newton_usd  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.5), vel=wp.vec3(0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+
+        stage = Usd.Stage.CreateInMemory()
+        scene_prim = UsdPhysics.Scene.Define(stage, "/physicsScene").GetPrim()
+
+        with mock.patch.object(newton_usd, "_newton_usd_schemas_import_error", ImportError("missing")):
+            with self.assertRaisesRegex(ImportError, "newton-usd-schemas"):
+                CollisionPipeline.create_from_usd(scene_prim, model)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_create_from_usd_requires_collision_pipeline_schema(self):
+        """Report an outdated newton-usd-schemas when the API is not in the registry."""
+        from pxr import Usd, UsdPhysics
+
+        builder = newton.ModelBuilder()
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.5), vel=wp.vec3(0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+
+        stage = Usd.Stage.CreateInMemory()
+        scene_prim = UsdPhysics.Scene.Define(stage, "/physicsScene").GetPrim()
+
+        with mock.patch.object(Usd.SchemaRegistry, "FindAppliedAPIPrimDefinition", return_value=None):
+            with self.assertRaisesRegex(ImportError, r"Upgrade newton-usd-schemas"):
+                CollisionPipeline.create_from_usd(scene_prim, model)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_reports_errors(self):
         """Raise a descriptive, path-prefixed error for each invalid create_from_usd input."""
         from pxr import Usd, UsdGeom, UsdPhysics

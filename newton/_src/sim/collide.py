@@ -1974,16 +1974,26 @@ class CollisionPipeline:
             A :class:`CollisionPipeline` instance.
 
         Raises:
+            ImportError: If ``usd-core`` is not installed, or ``newton-usd-schemas`` is missing or
+                too old to define ``NewtonCollisionPipelineAPI``.
             TypeError: If ``scene_prim`` is not a USD physics scene prim.
             ValueError: If the API is absent, an authored value is invalid, or
                 the stage has non-unit ``metersPerUnit`` and ``model`` contains shapes.
         """
         try:
-            from pxr import UsdGeom, UsdPhysics
+            from pxr import Usd, UsdGeom, UsdPhysics
         except ImportError as error:
             raise ImportError("Creating a CollisionPipeline from USD requires usd-core.") from error
 
+        from ..usd import require_newton_usd_schemas  # noqa: PLC0415
         from ..usd import utils as usd  # noqa: PLC0415
+
+        require_newton_usd_schemas(Usd)
+        if Usd.SchemaRegistry().FindAppliedAPIPrimDefinition("NewtonCollisionPipelineAPI") is None:
+            raise ImportError(
+                "The installed newton-usd-schemas does not define NewtonCollisionPipelineAPI. "
+                "Upgrade newton-usd-schemas."
+            )
 
         get_prim = getattr(scene_prim, "GetPrim", None)
         prim = get_prim() if callable(get_prim) else scene_prim
