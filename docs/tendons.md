@@ -7,7 +7,8 @@
 The massless-tendon API (`TendonGuide`, `TendonGuideType`, `TendonGuideFlags`,
 `ModelBuilder.add_tendon`, the `Model.tendon_*` arrays, and the XPBD/VBD
 `tendon_*` parameters and diagnostics) may change without a deprecation period.
-USD authoring and MuJoCo lowering below are design sketches, not implemented APIs.
+Native routed-tendon USD authoring and MuJoCo lowering below are design sketches,
+not implemented APIs. Existing MuJoCo-provider tendon import is supported separately.
 ```
 
 Newton's tendon model represents a massless cable routed through points on
@@ -156,7 +157,7 @@ its length. A tendon does not exert a bending force while slack or create new
 guides when it touches arbitrary geometry. A roller's radius describes its
 routing geometry, not the cable thickness.
 
-## USD authoring sketch (not implemented)
+## Native USD authoring sketch (not implemented)
 
 Keep one stable prim per tendon, for example `/World/Tendons/DriveCable`, so
 future actuators and observations can target the tendon itself. Give each guide
@@ -178,12 +179,25 @@ for arbitrary collider profiles. Import should resolve body relationships, prese
 authored guide order, and call `add_tendon` once with the complete validated route.
 Neither the property names nor a new schema are registered by this implementation.
 
-Newton's MuJoCo provider already recognizes `MjcTendon` and provider-specific
-`mujoco:tendon` attributes. Its fixed-tendon USD parser reads `mjc:path`, optional
-`mjc:path:indices`, and `mjc:path:coef` joint entries. That representation must
-remain supported. The future native schema should share tendon identity and
-compatible authoring concepts where possible, without interpreting those joint
-coefficients as a geometric guide route or replacing provider-specific data.
+Newton's MuJoCo provider already imports both fixed and spatial `MjcTendon`
+prims into provider-specific `model.mujoco.tendon_*` data. Register
+{meth}`~newton.solvers.SolverMuJoCo.register_custom_attributes` before
+{meth}`~newton.ModelBuilder.add_usd` to enable this path:
+
+- Fixed tendons use `mjc:path`, optional `mjc:path:indices`, and `mjc:path:coef`
+  for weighted joint coordinates.
+- Spatial tendons (also the default when `mjc:type` is unauthored) use an ordered,
+  optionally indexed path through sites and sphere/cylinder wrapping shapes.
+  Pulley branches and wrapping side sites are supported.
+- MuJoCo actuator targets referring to tendon prims resolve to those imported
+  provider tendons, not to native routed tendons.
+
+See {ref}`MuJoCo tendons in the USD importer <usd-mujoco-tendons>`
+for the spatial path attributes. This representation must remain supported. A
+future native schema should share compatible tendon identity and authoring
+concepts without interpreting joint coefficients as geometric guides or
+discarding provider-specific semantics. Importing a MuJoCo tendon does not
+create a native `TendonGuide` route for XPBD or VBD.
 
 ## MuJoCo compatibility
 
