@@ -26,13 +26,12 @@ class Picking:
     def __init__(
         self,
         model: newton.Model,
-        pick_stiffness: float = 50.0,
-        pick_damping: float = 5.0,
+        pick_stiffness: float = 500.0,
+        pick_damping: float = 45.0,
         pick_max_acceleration: float = 5.0,
-        pick_min_inertia_fraction: float = 0.2,
         world_offsets: wp.array[wp.vec3] | None = None,
     ) -> None:
-        """
+        r"""
         Initializes the picking system. All parameters are fixed at construction.
 
         Args:
@@ -43,26 +42,19 @@ class Picking:
                 mass-independent and picking a light distal link is as effective as
                 picking a heavy one.
             pick_damping: Damping of the picking spring, in acceleration per unit
-                velocity of the pick point [1/s].
+                velocity of the pick point [1/s]. The default is close to critical
+                damping, :math:`2\sqrt{k}`, for the default stiffness.
             pick_max_acceleration: Maximum picking acceleration in multiples of g [9.81 m/s^2].
                 Clamps both linear and equivalent rotational acceleration to prevent
                 runaway divergence on light or low-inertia objects.
-            pick_min_inertia_fraction: Lower bound on the operational-space inertia at the
-                pick point, as a fraction of the articulation's total mass.
             world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
 
         Raises:
-            ValueError: If ``pick_max_acceleration`` is negative or non-finite, or if
-                ``pick_min_inertia_fraction`` is outside [0, 1].
+            ValueError: If ``pick_max_acceleration`` is negative or non-finite.
         """
         pick_max_acceleration = float(pick_max_acceleration)
         if not math.isfinite(pick_max_acceleration) or pick_max_acceleration < 0.0:
             raise ValueError("Picking maximum acceleration must be finite and nonnegative.")
-
-        pick_min_inertia_fraction = float(pick_min_inertia_fraction)
-        if not 0.0 <= pick_min_inertia_fraction <= 1.0:
-            raise ValueError("Picking minimum inertia fraction must be in [0, 1].")
-        self.pick_min_inertia_fraction = pick_min_inertia_fraction
 
         self.model = model
         self.world_offsets = world_offsets
@@ -136,13 +128,12 @@ class Picking:
         Computes :math:`\\Lambda = (J H^{-1} J^T)^{-1}` at the pick point, where ``J`` maps
         articulation velocities to the velocity of that point and ``H`` is the joint-space mass
         matrix. This is the inertia actually felt at the grab point, so picking a light distal
-        link is not weaker than picking the base. Eigenvalues are clamped to the articulation
-        total from above, which avoids over-commanding and regularizes singular poses, and from
-        below to the larger of the body's own mass and the share of the articulation implied by
-        ``pick_min_inertia_fraction``. Where the articulation Jacobian is unavailable, as for
-        :attr:`~newton.JointType.ROD` joints, the articulation total stands in, since the
-        whole chain is a closer estimate of what resists than the single link. A body outside
-        an articulation falls back to :math:`m I`, exact for a free body.
+        link is not weaker than picking the base. Eigenvalues are clamped between the body's own
+        mass and the articulation total, which avoids over-commanding and regularizes singular
+        poses. Where the articulation Jacobian is unavailable, as for :attr:`~newton.JointType.ROD`
+        joints, the articulation total stands in, since the whole chain is a closer estimate of
+        what resists than the single link. A body outside an articulation falls back to
+        :math:`m I`, exact for a free body.
 
         Held fixed for the duration of the pick.
 
@@ -154,9 +145,7 @@ class Picking:
         model = self.model
         mass = float(model.body_mass.numpy()[body])
         upper = max(float(self._pick_effective_mass.numpy()[body]), mass)
-        lower = min(max(mass, self.pick_min_inertia_fraction * upper), upper)
-        # Use the conservative bound when no compatible Jacobian is available.
-        lam = np.eye(3) * lower
+        lam = np.eye(3) * mass
 
         joints = np.nonzero(model.joint_child.numpy() == body)[0] if model.articulation_count else []
         if len(joints) and mass > 0.0:
@@ -168,8 +157,9 @@ class Picking:
             first = int(model.articulation_start.numpy()[art])
             end = int(model.articulation_end.numpy()[art])
 
-            # Cable joints do not expose a compatible generalized-coordinate Jacobian.
+            # Rod joints do not expose a compatible generalized-coordinate Jacobian.
             if np.any(model.joint_type.numpy()[first:end] == int(newton.JointType.ROD)):
+                lam = np.eye(3) * upper
                 self._pick_os_inertia.assign(np.ascontiguousarray(lam, dtype=np.float32).reshape(1, 3, 3))
                 return
 
@@ -190,7 +180,7 @@ class Picking:
 
             try:
                 eigenvalues, eigenvectors = np.linalg.eigh(jac_point @ np.linalg.solve(h, jac_point.T))
-                inertia = 1.0 / np.clip(eigenvalues, 1.0 / upper, 1.0 / lower)
+                inertia = 1.0 / np.clip(eigenvalues, 1.0 / upper, 1.0 / mass)
                 lam = eigenvectors @ np.diag(inertia) @ eigenvectors.T
             except np.linalg.LinAlgError:
                 pass

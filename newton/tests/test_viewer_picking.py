@@ -453,8 +453,8 @@ def test_picking_torque_limit_cable(test: TestPickingSetup, device):
     test.assertLess(peak_angular_speed, 3.0)
 
 
-def test_picking_closed_cable_uses_bounded_mass(test: TestPickingSetup, device):
-    """Use the conservative inertia bound without evaluating a closed cable Jacobian."""
+def test_picking_closed_cable_uses_total_mass(test: TestPickingSetup, device):
+    """Use the cable's total mass without evaluating a closed cable Jacobian."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     points = [
         wp.vec3(-0.1, -0.1, 0.3),
@@ -471,9 +471,7 @@ def test_picking_closed_cable_uses_bounded_mass(test: TestPickingSetup, device):
     body = bodies[0]
     point_world = wp.vec3(*state.body_q.numpy()[body, :3])
     picking._update_os_inertia(state, body, point_world)
-    body_mass = model.body_mass.numpy()
-    bounded_mass = max(body_mass[body], picking.pick_min_inertia_fraction * np.sum(body_mass[bodies]))
-    expected = np.eye(3, dtype=np.float32) * bounded_mass
+    expected = np.eye(3, dtype=np.float32) * np.sum(model.body_mass.numpy()[bodies])
     assert_np_equal(picking._pick_os_inertia.numpy()[0], expected, tol=1.0e-5)
 
 
@@ -516,8 +514,8 @@ add_function_test(
 )
 add_function_test(
     TestPickingSetup,
-    "test_picking_closed_cable_uses_bounded_mass",
-    test_picking_closed_cable_uses_bounded_mass,
+    "test_picking_closed_cable_uses_total_mass",
+    test_picking_closed_cable_uses_total_mass,
     devices=get_test_devices(),
 )
 
