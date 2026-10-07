@@ -17,7 +17,8 @@ import warp as wp
 from ...core.reset import reset_world_selected as _reset_world_selected
 from ...geometry import ParticleFlags, ShapeFlags
 from ...sim import JointType, Model, ModelFlags, StateFlags
-from ..solver import SolverBase, SolverObservableFlags, SolverObservables
+from ..observables import SolverObservableFlags, SolverObservables
+from ..solver import SolverBase
 from .interface import (
     CouplingEndpointKind,
     CouplingInterface,

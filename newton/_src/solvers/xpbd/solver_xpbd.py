@@ -9,7 +9,8 @@ from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelFlags, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase, SolverObservableFlags, SolverObservables
+from ..observables import SolverObservableFlags, SolverObservables
+from ..solver import SolverBase
 from . import kernels, restitution_kernels
 from .kernels import (
     accumulate_weighted_contact_impulse,

@@ -32,7 +32,8 @@ from ...sim.collide import _count_soft_particle_rigid_contact_pairs
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ...utils import is_graph_capture_allocation_enabled
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase, SolverObservableFlags, SolverObservables
+from ..observables import SolverObservableFlags, SolverObservables
+from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels

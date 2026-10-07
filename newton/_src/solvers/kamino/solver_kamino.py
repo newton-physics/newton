@@ -37,7 +37,8 @@ from ...sim.collide import (
     _estimate_rigid_contact_max,
 )
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase, SolverObservableFlags, SolverObservables
+from ..observables import SolverObservableFlags, SolverObservables
+from ..solver import SolverBase
 
 if TYPE_CHECKING:
     from .config import (

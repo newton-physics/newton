@@ -8,6 +8,7 @@ from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import eval_mimic_joints, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
+from ..observables import SolverObservableFlags, SolverObservables
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
@@ -23,7 +24,7 @@ from ..semi_implicit.kernels_particle import (
     eval_tetrahedra_forces,
     eval_triangle_forces,
 )
-from ..solver import SolverBase, SolverObservableFlags, SolverObservables
+from ..solver import SolverBase
 from . import kernels
 from .kernels import (
     accumulate_free_distance_joint_f_to_body_force,

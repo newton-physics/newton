@@ -11,7 +11,7 @@ import warp as wp
 from ..geometry.flags import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
-from ..solvers.solver import SolverObservableFlags, SolverObservables
+from ..solvers.observables import SolverObservableFlags, SolverObservables
 from ..utils.selection import match_labels
 
 

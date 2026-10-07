@@ -23,7 +23,7 @@ from ..sim import (
     eval_jacobian,
     eval_mass_matrix,
 )
-from ..solvers.solver import SolverObservables
+from ..solvers.observables import SolverObservables
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator

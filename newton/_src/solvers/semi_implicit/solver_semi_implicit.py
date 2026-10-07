@@ -9,7 +9,8 @@ from ...core.types import override
 from ...sim import Contacts, Control, Model, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase, SolverObservables
+from ..observables import SolverObservables
+from ..solver import SolverBase
 from . import kernels_body, kernels_contact, kernels_muscle, kernels_particle
 from .kernels_body import (
     eval_body_joint_forces,

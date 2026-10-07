@@ -40,7 +40,8 @@ from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
-from ..solver import SolverBase, SolverObservableFlags, SolverObservables
+from ..observables import SolverObservableFlags, SolverObservables
+from ..solver import SolverBase
 from . import kernels
 from .collision_masks import (
     MUJOCO_COLLISION_MASK_DOMAIN_UNSET,

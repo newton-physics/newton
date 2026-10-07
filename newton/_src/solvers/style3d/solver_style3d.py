@@ -7,7 +7,8 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelBuilder, State
-from ..solver import SolverBase, SolverObservables
+from ..observables import SolverObservables
+from ..solver import SolverBase
 from .builder import PDMatrixBuilder
 from .collision import Collision
 from .kernels import (

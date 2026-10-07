@@ -12,7 +12,7 @@ import warp as wp
 
 from ..sim import Contacts, Model, State
 from ..sim.contacts import contact_surface_point
-from ..solvers.solver import SolverObservableFlags, SolverObservables
+from ..solvers.observables import SolverObservableFlags, SolverObservables
 from ..utils.selection import match_labels
 
 _SENSING_KIND_SHAPE = 1
