@@ -21,13 +21,16 @@ from time import perf_counter
 from typing import Any, Literal
 
 import numpy as np
-import warp as wp
 
 import newton as nt
 from newton.selection import ArticulationView
 
 from ..core.types import Axis
 from .gl.gui import UI
+from .transform import transform_assign, transform_assign_matrix, transform_to_matrix
+
+# Width of the left sidebar in logical (96-DPI) pixels.
+_SIDEBAR_WIDTH_PX = 300.0
 
 
 class ViewerGui:
@@ -577,13 +580,13 @@ class ViewerGui:
             was_active = self._gizmo_active.get(gid, False)
             if not ops:
                 if was_active and snap_to is not None:
-                    transform[:] = snap_to
+                    transform_assign(transform, snap_to)
                 self._gizmo_active[gid] = False
                 continue
 
             giz.push_id(str(gid))
 
-            M = wp.transform_to_matrix(transform)
+            M = transform_to_matrix(transform)
             M_ = m44_to_mat16(M)
 
             op_modified = False
@@ -597,10 +600,10 @@ class ViewerGui:
                 is_active = op_modified or (was_active and any_gizmo_is_using)
 
             if was_active and not is_active and snap_to is not None:
-                transform[:] = snap_to
+                transform_assign(transform, snap_to)
             else:
                 M[:] = M_.values.reshape(4, 4, order="F")
-                transform[:] = wp.transform_from_matrix(M)
+                transform_assign_matrix(transform, M)
 
             self._gizmo_active[gid] = is_active
 
@@ -726,6 +729,7 @@ class ViewerGui:
         self._render_left_panel()
         self._render_stats_overlay()
         self._render_scalar_plots()
+        self._render_logged_images()
 
         for callback in self._ui_callbacks["free"]:
             callback(self.ui.imgui)
@@ -749,7 +753,7 @@ class ViewerGui:
         # snapping back on every appearance.
         imgui.set_next_window_pos(imgui.ImVec2(10 * s, 10 * s), imgui.Cond_.first_use_ever)
         imgui.set_next_window_size(
-            imgui.ImVec2(300 * s, io.display_size[1] - 20 * s),
+            imgui.ImVec2(_SIDEBAR_WIDTH_PX * s, io.display_size[1] - 20 * s),
             imgui.Cond_.first_use_ever,
         )
         # Allow generous downsizing while keeping at least one button row plus
@@ -878,6 +882,9 @@ class ViewerGui:
                 # Viewer-specific rendering options (e.g. GL sky/shadows/wireframe)
                 for callback in self._ui_callbacks.get("rendering", []):
                     callback(self.ui.imgui)
+                image_logger = getattr(viewer, "_image_logger", None)
+                if image_logger is not None:
+                    image_logger.draw_controls(imgui)
 
             wind = getattr(viewer, "wind", None)
             if wind is not None:
@@ -1031,6 +1038,12 @@ class ViewerGui:
         if plot_logger is not None:
             plot_logger.draw(self.ui)
 
+    def _render_logged_images(self):
+        """Render the selected :meth:`~newton.viewer.ViewerBase.log_image` window."""
+        image_logger = getattr(self._viewer, "_image_logger", None)
+        if image_logger is not None:
+            image_logger.draw(self.ui, sidebar_width_px=_SIDEBAR_WIDTH_PX)
+
     def _render_selection_panel(self):
         """Render the articulation selection panel."""
         if not self.is_available:
@@ -1104,13 +1117,17 @@ class ViewerGui:
             return
 
         view = state["selected_articulation_view"]
+
+        def text(value):
+            return "varies" if value is None else str(value)
+
         imgui.separator()
         imgui.text(f"  Count: {view.count}")
-        imgui.text(f"  Joints: {view.joint_count}")
-        imgui.text(f"  Links: {view.link_count}")
-        imgui.text(f"  DOFs: {view.joint_dof_count}")
-        imgui.text(f"  Fixed base: {view.is_fixed_base}")
-        imgui.text(f"  Floating base: {view.is_floating_base}")
+        imgui.text(f"  Joints: {text(view.joint_count)}")
+        imgui.text(f"  Links: {text(view.link_count)}")
+        imgui.text(f"  DOFs: {text(view.joint_dof_count)}")
+        imgui.text(f"  Fixed base: {text(view.is_fixed_base)}")
+        imgui.text(f"  Floating base: {text(view.is_floating_base)}")
 
         imgui.spacing()
         imgui.text("Select Attribute:")
@@ -1145,6 +1162,7 @@ class ViewerGui:
                 exclude_joints=exclude_joints,
                 include_links=include_links,
                 exclude_links=exclude_links,
+                allow_partial_layouts=True,
                 verbose=False,
             )
         except Exception as e:

@@ -50,6 +50,41 @@ _PARTIAL_EQ_SOLREF_WARNING = (
 
 class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_material_binding_outside_import_root(self):
+        """Import shared physics materials without importing unrelated bodies."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+        root_path = "/World/envs/env_0"
+        for material_root in (root_path, "/World"):
+            with self.subTest(material_root=material_root):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdGeom.Xform.Define(stage, root_path)
+                material = UsdShade.Material.Define(stage, f"{material_root}/PhysicsMaterials/Shared")
+                physics_material = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+                physics_material.CreateStaticFrictionAttr(0.7)
+                physics_material.CreateDynamicFrictionAttr(0.4)
+                physics_material.CreateRestitutionAttr(0.2)
+
+                for path in (f"{root_path}/Body0", f"{root_path}/Body1", "/World/envs/env_1/Body"):
+                    body = UsdGeom.Cube.Define(stage, path)
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr(1.0)
+                    UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+                    UsdShade.MaterialBindingAPI.Apply(body.GetPrim()).Bind(material, materialPurpose="physics")
+
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, root_path=root_path, load_visual_shapes=False)
+                self.assertEqual(set(result["path_body_map"]), {f"{root_path}/Body0", f"{root_path}/Body1"})
+                self.assertEqual(set(result["path_shape_map"]), {f"{root_path}/Body0", f"{root_path}/Body1"})
+                self.assertEqual(builder.body_count, 2)
+                self.assertEqual(builder.shape_count, 2)
+                for shape in result["path_shape_map"].values():
+                    self.assertAlmostEqual(builder.shape_material_mu[shape], 0.4, places=6)
+                    self.assertAlmostEqual(builder.shape_material_restitution[shape], 0.2, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_per_import_shape_defaults(self):
         """Keep unbound material and shape defaults independent between imports."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7084,6 +7119,49 @@ def Xform "Articulation" (
         inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
         inv_inertia = np.array(builder.body_inv_inertia[body_idx]).reshape(3, 3)
         np.testing.assert_allclose(inertia @ inv_inertia, np.eye(3), atol=1e-5, rtol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_authored_mass_without_colliders_uses_small_sphere_inertia(self):
+        """Authored mass without inertia or colliders gets OpenUSD's small-sphere inertia.
+
+        Bodies with colliders keep the collider inertia scaled to the authored mass.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        for name, mass, geometry, diagonal_inertia in (
+            ("Bare", 2.0, None, None),
+            ("VisualOnly", 1.0, "visual", None),
+            ("Cube", 1.0, "collider", None),
+            ("Authored", 1.0, None, Gf.Vec3f(1.0, 2.0, 3.0)),
+        ):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass_api.CreateMassAttr().Set(mass)
+            if diagonal_inertia is not None:
+                mass_api.CreateDiagonalInertiaAttr().Set(diagonal_inertia)
+            if geometry is not None:
+                cube = UsdGeom.Cube.Define(stage, f"/World/{name}/Geom")
+                cube.CreateSizeAttr().Set(2.0)
+                if geometry == "collider":
+                    UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        def inertia(name):
+            return np.array(builder.body_inertia[result["path_body_map"][f"/World/{name}"]]).reshape(3, 3)
+
+        # Solid sphere of radius 0.1 m: I = 0.4 * m * r**2.
+        np.testing.assert_allclose(inertia("Bare"), np.eye(3) * 0.4 * 2.0 * 0.1**2, rtol=1e-6)
+        np.testing.assert_allclose(inertia("VisualOnly"), np.eye(3) * 0.4 * 1.0 * 0.1**2, rtol=1e-6)
+        # Solid cube of unit mass and edge 2: I = m * s**2 / 6.
+        np.testing.assert_allclose(inertia("Cube"), np.eye(3) * 2.0**2 / 6.0, rtol=1e-5)
+        np.testing.assert_allclose(np.diag(inertia("Authored")), [1.0, 2.0, 3.0], rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):

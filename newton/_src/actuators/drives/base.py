@@ -51,6 +51,16 @@ class DriveBase:
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
 
+    custom_inputs: tuple[str, ...] = ()
+    """Names of extra caller-provided Control arrays this drive reads.
+
+    Set in ``__init__`` when the declaration depends on drive configuration.
+    :class:`~newton.actuators.Actuator` reads the same-named values from
+    ``sim_control`` and passes them to :meth:`compute` as ``custom_inputs``.
+    The actuator routes values without validating them; the drive owns
+    requiredness, fallback behavior, and validation.
+    """
+
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         """Resolve user-provided arguments with defaults.
@@ -90,6 +100,7 @@ class DriveBase:
         state: DriveBase.State | None,
         dt: float,
         device: wp.Device | None = None,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Compute actuator output effort and write to ``forces[i]``.
 
@@ -107,6 +118,10 @@ class DriveBase:
             state: Drive state (``None`` if stateless).
             dt: Timestep [s].
             device: Warp device for kernel launches.
+            custom_inputs: Arrays for the names this drive lists in
+                :attr:`custom_inputs`, keyed by attribute name. Values are
+                passed without validation and may be ``None`` when absent.
+                Empty when the drive names none.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute")
 
@@ -154,6 +169,7 @@ class DriveBase:
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Refresh the parameter pack before an implicit solve step.
 
@@ -163,6 +179,9 @@ class DriveBase:
         state) override this to rewrite the pack built by :meth:`bind_params`
         in place. The default is a no-op — parameter-static laws like PD need
         nothing here.
+
+        ``custom_inputs`` carries the same arrays as the matching argument of
+        :meth:`compute`.
         """
 
     def is_stateful(self) -> bool:
