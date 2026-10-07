@@ -534,7 +534,7 @@ For example, a custom drive needs to implement
        def compute(self, positions, velocities, target_pos, target_vel,
                    feedforward, pos_indices, vel_indices,
                    target_pos_indices, target_vel_indices,
-                   forces, state, dt, device=None, custom_inputs=None):
+                   forces, state, dt, device=None, *, custom_inputs=None):
            # Launch a Warp kernel that writes effort into `forces`
            ...
 
