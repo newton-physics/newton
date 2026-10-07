@@ -232,10 +232,11 @@ class ViewerRTX(ViewerUSD):
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
             ovstage: Populated stage to render instead of a scene built from
-                the model. :meth:`log_state` writes each body's world pose to
-                the prim at the body's label, keeping the prim's authored
-                scale; bodies without such a prim are not rendered. If the
-                import re-oriented the stage (up-axis alignment or ``xform``),
+                the model; see :ref:`viewer-rtx-existing-stage`. :meth:`log_state`
+                writes each body's world pose to the stage prim whose path is
+                the body's ``body_label``, keeping the prim's authored scale;
+                bodies without such a prim are not rendered. If the import
+                re-oriented the stage (up-axis alignment or ``xform``),
                 :meth:`set_model` infers the model-to-stage transform from the
                 root bodies' poses, which must still be the imported ones, and
                 applies it to bodies, camera, and debug geometry. The caller
@@ -2337,8 +2338,7 @@ void main() {
             with wp.ScopedTimer("ViewerRTX::update_transforms", active=PROFILE_ENABLED, use_nvtx=True):
                 if has_prim_rows:
                     if self._borrowed_reset_pending:
-                        # Written matrices are world-space, so bound prims ignore their ancestors from
-                        # now on; until then they keep their authored transforms.
+                        # Written matrices are world-space, so bound prims must ignore their ancestors.
                         self._write_runtime_attribute(
                             self._prim_paths, "omni:resetXformStack", np.ones(self._prim_count, dtype=np.bool_)
                         )
