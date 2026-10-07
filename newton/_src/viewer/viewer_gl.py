@@ -20,6 +20,7 @@ from ..core.types import Axis, override
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
+from .gl.frame_cache import FrameCache
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .image_logger import ImageLogger
 from .picking import Picking
@@ -260,10 +261,10 @@ class ViewerGL(ViewerBase):
             paused: Start the viewer in paused mode.
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
-            num_frames: Number of frames to render in headless mode before
+            num_frames: Number of viewer-loop frames in headless mode before
                 :meth:`is_running` returns False. If None, headless rendering
-                is unbounded; if 0, no frames are rendered. Ignored in
-                windowed mode.
+                is unbounded; if 0, no frames are rendered. Includes
+                rendering-paused frames. Ignored in windowed mode.
             enable_cuda_interop: Render-geometry categories that use CUDA-OpenGL
                 interoperability. Combine :class:`CudaInterop` flags with ``|``.
                 Defaults to :attr:`CudaInterop.DYNAMIC_MESH`.
@@ -283,6 +284,8 @@ class ViewerGL(ViewerBase):
         # Initialized below once self.device is available; declared here so
         # close() can safely run if __init__ raises before that point.
         self._image_logger: ImageLogger | None = None
+        self._displayed_frame = FrameCache()
+        self._has_rendered_frame = False
 
         super().__init__()
 
@@ -520,6 +523,9 @@ class ViewerGL(ViewerBase):
         the currently active layer are destroyed so other layers' models
         keep rendering.
         """
+        self._displayed_frame.clear()
+        self._has_rendered_frame = False
+
         # Only destroy backend objects owned by the active layer so other
         # live layers retain their meshes / instancers / lines / wireframes.
         owns = self._is_layer_owned_path
@@ -2036,16 +2042,46 @@ class ViewerGL(ViewerBase):
         if self.renderer.has_exit():
             return
 
-        if fullscreen_name is not None:
+        if self.gui:
+            self.gui.prepare_frame()
+        if self.renderer.has_exit():
+            return
+
+        if self.is_rendering_paused():
+            frame = self._displayed_frame
+            self.renderer.render_texture(frame.texture, frame.width, frame.height, flip_y=False)
+        elif fullscreen_name is not None:
             texture = self._image_logger.get_texture(fullscreen_name, fullscreen=True)
             self.renderer.render_texture(*(texture or (None, 0, 0)))
+            self._has_rendered_frame = texture is not None
         else:
             self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
+            self._has_rendered_frame = True
+
+        if not self.is_rendering_paused():
+            if self._has_rendered_frame:
+                self._displayed_frame.store(
+                    self.renderer._frame_texture, self.renderer._screen_width, self.renderer._screen_height
+                )
+            else:
+                self._displayed_frame.clear()
 
         if self.gui:
-            self.gui.render_frame(update_fps=True)
+            self.gui.render_prepared_frame()
 
         self.renderer.present()
+
+    @override
+    def set_rendering_paused(self, paused: bool) -> None:
+        """See :meth:`newton.viewer.ViewerBase.set_rendering_paused`."""
+        if bool(paused) == self.is_rendering_paused():
+            return
+        self._rendering_paused = bool(paused)
+        if paused:
+            if self.picking is not None:
+                self.picking.release()
+            if self.gui is not None:
+                self.gui.on_rendering_paused()
 
     @override
     @deprecate_nonkeyword_arguments
@@ -2073,7 +2109,13 @@ class ViewerGL(ViewerBase):
             wp.array: RGB image data on the viewer device with shape
                 `(height, width, 3)` and dtype `wp.uint8`. Origin is top-left
                 (OpenGL's bottom-left is flipped).
+
+        Raises:
+            RuntimeError: Rendering is paused before an image has been displayed.
         """
+
+        if self.is_rendering_paused() and not self._has_rendered_frame:
+            raise RuntimeError("Frame capture requires at least one displayed frame")
 
         gl = RendererGL.gl
         w, h = self.renderer._screen_width, self.renderer._screen_height
@@ -2212,6 +2254,7 @@ class ViewerGL(ViewerBase):
         Close the viewer and clean up resources.
         """
         self._plot_logger.clear()
+        self._displayed_frame.clear()
         self._invalidate_pbo()
         if self._image_logger is not None:
             self._image_logger.clear()

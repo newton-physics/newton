@@ -96,7 +96,62 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
 - :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
 - :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise; prefer this over composing ``is_paused()`` manually
+- :meth:`~newton.viewer.ViewerBase.set_rendering_paused` / :meth:`~newton.viewer.ViewerBase.is_rendering_paused` — freeze or resume the displayed image independently of simulation stepping in GL and RTX
 - :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
+
+**Rendering pause (GL and RTX):**
+
+Click **Pause Rendering**, or call ``viewer.set_rendering_paused(True)``, to
+freeze the last displayed image while simulation may continue. UI controls,
+plots, window resize, and close events remain active. Camera navigation and
+scene picking/gizmos are disabled while the image is frozen. The ordinary
+**Pause** and **Step** controls still govern simulation independently.
+
+Continue calling ``begin_frame()``, logging updates, and ``end_frame()`` during
+rendering pause. The viewer retains the latest scene updates, including
+transforms, visibility, debug geometry, and programmatic camera changes.
+Resuming renders the current state without replaying intervening frames.
+Frame-scoped UI annotations and fullscreen-image requests keep their normal
+per-frame lifetime. A fullscreen image already displayed stays frozen too.
+
+.. code-block:: python
+
+    viewer.set_rendering_paused(True)
+    while viewer.is_running():
+        if viewer.should_step():
+            simulation.step()
+        viewer.begin_frame(simulation.time)
+        viewer.log_state(simulation.state)
+        viewer.end_frame()  # Keep servicing the window and Resume control.
+
+Rendering pause also works programmatically in headless mode. ``num_frames``
+continues to count viewer-loop frames during pause; windowed viewers continue
+to ignore that budget. GL frame capture and RTX screenshots return the frozen
+image while paused. With no previously displayed image, the background is
+empty and capture raises ``RuntimeError``; headless RTX uses the last image
+accepted by the viewer. Clearing or replacing the model invalidates the image
+but preserves the rendering-pause setting. Other backends report ``False``
+and ignore requests to enable rendering pause.
+
+RTX retains its existing rendering modes: the default ``async_rendering=True``
+submits one frame asynchronously and waits for it on the next unpaused
+``end_frame()``; ``False`` renders synchronously. Rendering pause neither
+waits for nor submits a renderer frame. Any outstanding async result is held
+and discarded on resume, so it cannot replace the frozen image. Resume
+publishes the latest retained scene updates and follows the selected mode's
+usual presentation cadence; async mode displays that new result on the
+following frame. Scene updates remain bounded to the latest values per object.
+Initial renderer/model loading, explicit cleanup, and an unpaused render can
+still wait for GPU work. Rendering pause does not interrupt those operations.
+
+Windowed RTX and GL retain a separate RGBA image texture so changes to the
+scene, camera, or fullscreen images cannot overwrite the frozen image. This
+requires four extra bytes per pixel (about 33 MB at 3840 x 2160), plus a GPU
+image copy on every unpaused frame, even if rendering pause is never used.
+The copy preserves the displayed image if a logged fullscreen texture is
+updated or the render target is resized before pause is requested. Headless
+RTX likewise keeps a GPU copy of the last accepted image, independent of any
+outstanding async render.
 
 **Camera and layout:**
 

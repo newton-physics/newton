@@ -256,6 +256,9 @@ class TestViewerRTXOvstage(unittest.TestCase):
         self.viewer._ovstage_ordinal = 1
         self.viewer._ovstage_population_dirty = False
         self.viewer._runtime_scene_changed = False
+        self.viewer._rendering_paused = False
+        self.viewer._render_result = None
+        self.viewer._deferred_prims = set()
         self.ovstage.population.open_usd_from_string(
             self.viewer._ovstage,
             """#usda 1.0
@@ -403,26 +406,22 @@ def Xform "World"
         """Finish the previous async stage read before publishing the next frame."""
         events = []
         self.viewer._phase = self.viewer._PHASE_RENDER
-        self.viewer._async = True
-        self.viewer._render_result = mock.Mock()
-        self.viewer._render_result.wait.side_effect = lambda: events.append("wait")
+        self.viewer._should_close = False
+        self.viewer.gui = None
+        self.viewer._rtx = mock.Mock()
+        self.viewer._discard_render_result = False
+        pending = mock.Mock()
+        self.viewer._render_result = pending
+        pending.wait.side_effect = lambda: events.append("wait") or pending
 
         with (
-            mock.patch.object(
-                self.viewer,
-                "_apply_ovstage_population_changes",
-                side_effect=lambda: events.append("write"),
-            ),
-            mock.patch.object(self.viewer, "_update_ovrtx_camera"),
-            mock.patch.object(self.viewer, "_update_ovrtx_transforms"),
-            mock.patch.object(self.viewer, "_update_ovrtx_instance_visibility"),
-            mock.patch.object(self.viewer, "_update_ovrtx_point_batches"),
-            mock.patch.object(self.viewer, "_update_ovrtx_mesh_points"),
+            mock.patch.object(self.viewer, "_accept_render"),
+            mock.patch.object(self.viewer, "_update_scene", side_effect=lambda: events.append("write")),
             mock.patch.object(self.viewer, "_render_and_display"),
         ):
             self.viewer.end_frame()
 
-        self.assertEqual(events[:2], ["wait", "write"])
+        self.assertEqual(events, ["wait", "write"])
 
 
 def _column_matrix(xform: wp.transform) -> np.ndarray:
@@ -549,16 +548,7 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
     def test_display_uses_ovrtx_05_color_output(self):
         """Blit the fully qualified OVRTX 0.5 color output to the window."""
         viewer = ViewerRTX.__new__(ViewerRTX)
-        viewer._image_logger = mock.Mock()
-        viewer._image_logger.pop_fullscreen.return_value = None
-        viewer._rtx = mock.Mock()
-        viewer._should_close = False
-        viewer._async = False
-        viewer._render_result = None
-        viewer._use_ovstage = True
-        viewer._ovstage_ordinal = 1
-        viewer._render_product_path = "/Render/Product"
-        viewer.fps = 60
+        viewer._headless = False
         viewer._window = mock.Mock(context=object())
 
         render_var = mock.MagicMock()
@@ -566,13 +556,13 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
         pixels = mock.Mock()
         pixels.device.stream.cuda_stream = 17
         frame = mock.Mock(render_vars={"/Render/Vars/LdrColor": render_var})
-        viewer._rtx.step.return_value = {"product": mock.Mock(frames=[frame])}
+        products = {"product": mock.Mock(frames=[frame])}
 
         with (
             mock.patch.object(wp, "from_dlpack", return_value=pixels),
             mock.patch.object(viewer, "_blit_to_window") as blit,
         ):
-            viewer._render_and_display()
+            viewer._accept_render(products)
 
         blit.assert_called_once_with(pixels)
         mapping.unmap.assert_called_once_with(stream=17)
@@ -581,6 +571,7 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
     def test_screenshot_uses_ovrtx_05_color_output(self):
         """Capture the fully qualified OVRTX 0.5 color output."""
         viewer = ViewerRTX.__new__(ViewerRTX)
+        viewer._rendering_paused = False
         expected = np.zeros((2, 3, 4), dtype=np.uint8)
         render_var = mock.MagicMock()
         render_var.map.return_value.__enter__.return_value = expected
