@@ -439,20 +439,11 @@ class Example:
             self.sensor_contact = SensorContact(
                 self.model, request_contact_attributes=False, sensing_bodies=sensing_bodies, counterpart_bodies="*"
             )
-            if hasattr(self.solver, "observables"):
-                self.collision_pipeline = newton.CollisionPipeline(
-                    self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
-                )
-                self.contacts = self.collision_pipeline.contacts()
-                self.solver_observables = self.solver.observables(self.sensor_contact.solver_observable_flags)
-            else:
-                # ASV also runs this workload against revisions predating solver observables.
-                self.contacts = newton.Contacts(
-                    self.solver.get_max_contact_count(),
-                    0,
-                    device=self.model.device,
-                    requested_attributes=self.model.get_requested_contact_attributes(),
-                )
+            self.collision_pipeline = newton.CollisionPipeline(
+                self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+            )
+            self.contacts = self.collision_pipeline.contacts()
+            self.solver_observables = self.solver.observables(self.sensor_contact.solver_observable_flags)
 
         self.graph = None
         if self.use_cuda_graph:
@@ -482,11 +473,7 @@ class Example:
                 self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
         if self.sensor_contact is not None:
-            if self.solver_observables is not None:
-                self.sensor_contact.update(self.state_0, self.contacts, observables=self.solver_observables)
-            else:
-                self.solver.update_contacts(self.contacts, self.state_0)
-                self.sensor_contact.update(self.state_0, self.contacts)
+            self.sensor_contact.update(self.state_0, self.contacts, observables=self.solver_observables)
 
     def init_waypoint_control(self):
         lo, hi = _target_bounds(self.model)
