@@ -241,7 +241,10 @@ class ViewerRTX(ViewerUSD):
                 applies it to bodies, camera, and debug geometry. The caller
                 owns the stage's content, lights, and lifetime; the viewer adds
                 its camera, render product, and debug geometry under
-                ``/__newton_viewer``. :meth:`set_visible_worlds`,
+                ``/__newton_viewer``. The viewer generates no geometry for the
+                model's shapes, cloth, or particles; ``show_triangles`` (off by
+                default here) and ``show_particles`` draw simulated cloth and
+                particles as debug overlays. :meth:`set_visible_worlds`,
                 ``show_collision``, and ``show_visual`` affect only the debug
                 geometry, ``environment`` must stay ``"default"``, and layers
                 are not supported. :meth:`set_model` and :meth:`end_frame`
@@ -2938,6 +2941,9 @@ void main() {
         self._camera_dirty = True
 
         super().clear_model()
+        if self._borrowed_stage is not None:
+            # The stage presents the model, so simulated cloth would duplicate its deformables.
+            self.show_triangles = False
 
     def _has_other_user_layers(self) -> bool:
         active_layer_id = getattr(self, "_active_layer_id", _DEFAULT_LAYER_ID)

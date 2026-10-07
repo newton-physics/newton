@@ -147,6 +147,17 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
             viewer.close()
 
     @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_hides_simulated_cloth_by_default(self):
+        """Leave cloth to the stage unless the simulated cloth is requested as an overlay."""
+        viewer, model = self._borrowed_viewer(["/World/a"], {"/World/a"})
+        try:
+            self.assertFalse(viewer.show_triangles)
+            viewer.set_model(model)
+            self.assertFalse(viewer.show_triangles)
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
     def test_borrowed_stage_rejects_layers(self):
         """Reject user layers, since a borrowed stage binds the bodies of a single model."""
         viewer, _ = self._borrowed_viewer([], set())
