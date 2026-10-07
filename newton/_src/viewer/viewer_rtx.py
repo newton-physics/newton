@@ -137,6 +137,18 @@ def _transforms_to_usd_matrices(xforms: np.ndarray) -> np.ndarray:
     return out
 
 
+def _resolve_usd_type(setting: str, type_name: str):
+    """Resolve a USD type name (``"uint"``) or ``Sdf.ValueTypeNames`` attribute (``"UInt"``)."""
+    from pxr import Sdf
+
+    value_type = Sdf.ValueTypeNames.Find(type_name)
+    if not value_type:
+        value_type = getattr(Sdf.ValueTypeNames, type_name, None)
+    if not isinstance(value_type, Sdf.ValueTypeName):
+        raise ValueError(f"render_settings[{setting!r}]: unknown USD type name {type_name!r}")
+    return value_type
+
+
 class ViewerRTX(ViewerUSD):
     """Real-time ray-traced viewer using NVIDIA OVRTX.
 
@@ -162,7 +174,7 @@ class ViewerRTX(ViewerUSD):
     _borrowed_reference = None
     _prim_paths: Sequence[str] = ()
     _prim_count = 0
-    _rtx_render_settings: Mapping[str, tuple[str, Any]] = MappingProxyType({})
+    _rtx_render_settings: Mapping[str, tuple[Any, Any]] = MappingProxyType({})
     _render_var_path = "/Render/Vars/LdrColor"
 
     @override
@@ -226,7 +238,9 @@ class ViewerRTX(ViewerUSD):
                 GPU hierarchy computation.
             render_settings: ``omni:rtx:*`` attributes to author on the
                 viewer's render product as ``{name: (usd_type_name, value)}``,
-                e.g. ``{"omni:rtx:pt:samplesPerPixel": ("UInt", 4)}``.
+                e.g. ``{"omni:rtx:pt:samplesPerPixel": ("uint", 4)}``. The type
+                is a USD type name or its ``Sdf.ValueTypeNames`` attribute
+                (``"UInt"``).
         """
         # Captured before ``import ovstage`` below rebinds the name.
         self._borrowed_stage = ovstage
@@ -269,7 +283,10 @@ class ViewerRTX(ViewerUSD):
             if environment != "default":
                 raise ValueError("ViewerRTX(ovstage=...) takes its lighting from the stage; leave environment unset")
             self._root_path = "/__newton_viewer"
-        self._rtx_render_settings = dict(render_settings or {})
+        self._rtx_render_settings = {
+            name: (_resolve_usd_type(name, type_name), value)
+            for name, (type_name, value) in (render_settings or {}).items()
+        }
         self._borrowed_reference = None
 
         self._environment = environment.lower()
@@ -722,8 +739,8 @@ void main() {
         rp.CreateAttribute("omni:rtx:quality", Sdf.ValueTypeNames.Int, custom=False).Set(0)
         rp.CreateAttribute("omni:rtx:waitForEvents", Sdf.ValueTypeNames.TokenArray).Set([])
 
-        for name, (type_name, value) in self._rtx_render_settings.items():
-            rp.CreateAttribute(name, getattr(Sdf.ValueTypeNames, type_name)).Set(value)
+        for name, (value_type, value) in self._rtx_render_settings.items():
+            rp.CreateAttribute(name, value_type).Set(value)
 
         # Global render settings belong to the owner of a borrowed stage.
         if self._borrowed_stage is not None:

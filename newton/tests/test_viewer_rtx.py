@@ -427,6 +427,29 @@ class TestViewerRTXRenderSettings(unittest.TestCase):
         finally:
             viewer.close()
 
+    def test_render_settings_accept_usd_type_names(self):
+        """Accept USD type names as well as ``Sdf.ValueTypeNames`` attributes, and reject unknown types up front."""
+        from pxr import Sdf
+
+        viewer = ViewerRTX(
+            headless=True,
+            render_settings={
+                "omni:rtx:pt:samplesPerPixel": ("uint", 4),
+                "omni:rtx:post:tonemap:op": ("token", "aces"),
+            },
+        )
+        try:
+            viewer._add_camera_lights_and_render_product()
+            product = viewer.stage.GetPrimAtPath(viewer._render_product_path)
+            self.assertEqual(product.GetAttribute("omni:rtx:pt:samplesPerPixel").GetTypeName(), Sdf.ValueTypeNames.UInt)
+            self.assertEqual(product.GetAttribute("omni:rtx:post:tonemap:op").GetTypeName(), Sdf.ValueTypeNames.Token)
+        finally:
+            viewer.close()
+
+        for type_name in ("bogus", "Find"):
+            with self.subTest(type_name=type_name), self.assertRaisesRegex(ValueError, "samplesPerPixel"):
+                ViewerRTX(headless=True, render_settings={"omni:rtx:pt:samplesPerPixel": (type_name, 4)})
+
 
 class TestViewerRTXRenderOutput(unittest.TestCase):
     def test_ldr_color_lookup_accepts_legacy_and_ovrtx_05_names(self):

@@ -387,7 +387,7 @@ lights, e.g. an HDR ``DomeLight``, via :meth:`~newton.viewer.ViewerRTX.add_backg
 .. code-block:: python
 
     viewer = newton.viewer.ViewerRTX(
-        environment="none", render_settings={"omni:rtx:pt:samplesPerPixel": ("UInt", 4)}
+        environment="none", render_settings={"omni:rtx:pt:samplesPerPixel": ("uint", 4)}
     )
     viewer.add_background_usd("lighting.usda")
 
