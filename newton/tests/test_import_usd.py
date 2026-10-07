@@ -50,6 +50,41 @@ _PARTIAL_EQ_SOLREF_WARNING = (
 
 class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_material_binding_outside_import_root(self):
+        """Import shared physics materials without importing unrelated bodies."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+        root_path = "/World/envs/env_0"
+        for material_root in (root_path, "/World"):
+            with self.subTest(material_root=material_root):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdGeom.Xform.Define(stage, root_path)
+                material = UsdShade.Material.Define(stage, f"{material_root}/PhysicsMaterials/Shared")
+                physics_material = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+                physics_material.CreateStaticFrictionAttr(0.7)
+                physics_material.CreateDynamicFrictionAttr(0.4)
+                physics_material.CreateRestitutionAttr(0.2)
+
+                for path in (f"{root_path}/Body0", f"{root_path}/Body1", "/World/envs/env_1/Body"):
+                    body = UsdGeom.Cube.Define(stage, path)
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr(1.0)
+                    UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+                    UsdShade.MaterialBindingAPI.Apply(body.GetPrim()).Bind(material, materialPurpose="physics")
+
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, root_path=root_path, load_visual_shapes=False)
+                self.assertEqual(set(result["path_body_map"]), {f"{root_path}/Body0", f"{root_path}/Body1"})
+                self.assertEqual(set(result["path_shape_map"]), {f"{root_path}/Body0", f"{root_path}/Body1"})
+                self.assertEqual(builder.body_count, 2)
+                self.assertEqual(builder.shape_count, 2)
+                for shape in result["path_shape_map"].values():
+                    self.assertAlmostEqual(builder.shape_material_mu[shape], 0.4, places=6)
+                    self.assertAlmostEqual(builder.shape_material_restitution[shape], 0.2, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_per_import_shape_defaults(self):
         """Keep unbound material and shape defaults independent between imports."""
         from pxr import Usd, UsdGeom, UsdPhysics

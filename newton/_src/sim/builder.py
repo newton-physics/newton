@@ -144,6 +144,11 @@ _DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
 _ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
     "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
 )
+_JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
+    "ModelBuilder.joint_twist_lower and ModelBuilder.joint_twist_upper are deprecated in Newton 1.7 and "
+    "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
+    "limits of ModelBuilder.JointDofConfig instead."
+)
 _ADD_ROD_POSITIONS_DEPRECATION_MSG = (
     "ModelBuilder.add_rod(positions=...) is deprecated in Newton 1.6; "
     "construct newton.Rod(...) and pass it with add_rod(rod=...) instead."
@@ -1858,10 +1863,9 @@ class ModelBuilder:
         self.joint_friction: list[float] = []
         """Joint friction values accumulated for :attr:`Model.joint_friction`."""
 
-        self.joint_twist_lower: list[float] = []
-        """Lower twist limits accumulated for :attr:`Model.joint_twist_lower`."""
-        self.joint_twist_upper: list[float] = []
-        """Upper twist limits accumulated for :attr:`Model.joint_twist_upper`."""
+        # Created on first access so a fresh builder has no merge-managed list for them.
+        self._deprecated_joint_twist_lower: list[float] | None = None
+        self._deprecated_joint_twist_upper: list[float] | None = None
 
         self.joint_enabled: list[bool] = []
         """Joint enabled flags accumulated for :attr:`Model.joint_enabled`."""
@@ -3133,6 +3137,42 @@ class ModelBuilder:
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
+    @property
+    def joint_twist_lower(self) -> list[float]:
+        """Lower twist limits, never used by :meth:`finalize` or any solver.
+
+        .. deprecated:: 1.7
+            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
+        """
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        if self._deprecated_joint_twist_lower is None:
+            self._deprecated_joint_twist_lower = []
+        return self._deprecated_joint_twist_lower
+
+    @joint_twist_lower.setter
+    def joint_twist_lower(self, value: list[float]) -> None:
+        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
+        self._deprecated_joint_twist_lower = value
+
+    @property
+    def joint_twist_upper(self) -> list[float]:
+        """Upper twist limits, never used by :meth:`finalize` or any solver.
+
+        .. deprecated:: 1.7
+            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
+        """
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        if self._deprecated_joint_twist_upper is None:
+            self._deprecated_joint_twist_upper = []
+        return self._deprecated_joint_twist_upper
+
+    @joint_twist_upper.setter
+    def joint_twist_upper(self, value: list[float]) -> None:
+        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
+        self._deprecated_joint_twist_upper = value
+
     def _project_target_q_to_dof(self) -> list[float] | np.ndarray:
         """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
         the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped one.
@@ -4271,7 +4311,9 @@ class ModelBuilder:
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
             enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
             apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
-            root_path: The USD path to import, defaults to "/".
+            root_path: The USD path to import, defaults to "/". Bound physics materials
+                outside this subtree are resolved without importing unrelated bodies
+                or shapes.
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
@@ -14280,6 +14322,7 @@ class ModelBuilder:
                     requires_grad=requires_grad,
                 )
 
+                actuator.register_custom_attributes(self)
                 m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)
@@ -14861,8 +14904,6 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "joint_limit_upper": wp.float32,
     "joint_limit_ke": wp.float32,
     "joint_limit_kd": wp.float32,
-    "joint_twist_lower": wp.float32,
-    "joint_twist_upper": wp.float32,
     "joint_world": wp.int32,
     "articulation_world": wp.int32,
     "constraint_mimic_joint0": wp.int32,

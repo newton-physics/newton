@@ -71,6 +71,7 @@ class RenderContext:
         self._shape_texture_ids: wp.array[wp.int32] | None = None
         self._shape_mesh_data_ids: wp.array[wp.int32] | None = None
         self._shape_render_type: wp.array[wp.int32] | None = None
+        self._empty_triangle_colors: wp.array[wp.vec3f] | None = None
 
         self._mesh_data: wp.array[MeshData] | None = None
         self._texture_data: wp.array[TextureData] | None = None
@@ -83,18 +84,18 @@ class RenderContext:
         self._lights_position: wp.array[wp.vec3f] | None = None
         self._lights_orientation: wp.array[wp.vec3f] | None = None
 
-        # Heightfields are triangulated meshes (their wp.Mesh lives in
-        # shape_source_ptr), so the renderer treats them as meshes: it reuses
-        # the MESH ray-intersection path, which keeps heightfield handling out
-        # of the render kernels entirely (no extra shape-type branch, so no
-        # register/occupancy cost). The remapped type array is what the render
-        # kernel dispatches on; model.shape_type (HFIELD) is left untouched for
-        # collision and BVH bounds.
+        # Heightfields and convex hulls are triangle meshes (their wp.Mesh lives
+        # in shape_source_ptr), so the renderer treats them as meshes: it reuses
+        # the MESH ray-intersection path, which keeps them out of the render
+        # kernels entirely (no extra shape-type branch, so no register/occupancy
+        # cost). The remapped type array is what the render kernel dispatches on;
+        # model.shape_type is left untouched for collision and BVH bounds.
         if model.shape_type is not None:
             shape_type_np = model.shape_type.numpy()
-            if np.any(shape_type_np == int(GeoType.HFIELD)):
+            as_mesh = np.isin(shape_type_np, (int(GeoType.HFIELD), int(GeoType.CONVEX_MESH)))
+            if np.any(as_mesh):
                 shape_type_np = shape_type_np.copy()
-                shape_type_np[shape_type_np == int(GeoType.HFIELD)] = int(GeoType.MESH)
+                shape_type_np[as_mesh] = int(GeoType.MESH)
                 self._shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
 
         if model.particle_q is not None and model.particle_q.shape[0]:
@@ -137,6 +138,15 @@ class RenderContext:
     @property
     def up_axis(self) -> Axis:
         return Axis.from_any(self.model.up_axis)
+
+    def _get_triangle_colors(self) -> wp.array[wp.vec3f]:
+        """Per-triangle display colors (sRGB) of the deformable triangle mesh; empty without ``Model.tri_color``."""
+        colors = self.model.tri_color
+        if colors is not None and colors.shape[0] == self.model.tri_count:
+            return colors
+        if self._empty_triangle_colors is None:
+            self._empty_triangle_colors = wp.zeros(0, dtype=wp.vec3f, device=self.device)
+        return self._empty_triangle_colors
 
     def _get_shape_render_type(self) -> wp.array[wp.int32] | None:
         if self._shape_render_type is not None:
@@ -418,7 +428,7 @@ class RenderContext:
                     model.bvh_shapes_group_roots,
                     # Shapes
                     model.bvh_shape_enabled,
-                    self._get_shape_render_type(),  # HFIELD remapped to MESH; renderer treats heightfields as meshes
+                    self._get_shape_render_type(),  # HFIELD and CONVEX_MESH remapped to MESH
                     model.shape_scale,
                     model.shape_color,
                     model.bvh_shape_world_transforms,
@@ -436,6 +446,7 @@ class RenderContext:
                     # Triangle Mesh
                     self._triangle_mesh.id if self._triangle_mesh is not None else 0,
                     self._triangle_mesh_group_roots,
+                    self._get_triangle_colors(),
                     # Meshes
                     self._mesh_data,
                     # Gaussians
@@ -532,7 +543,8 @@ class RenderContext:
         mesh_data_ids = []
         texture_data_ids = []
 
-        for shape in model.shape_source:
+        shape_types = model.shape_type.numpy() if model.shape_type is not None else ()
+        for shape, shape_type in zip(model.shape_source, shape_types, strict=True):
             if isinstance(shape, Mesh):
                 if shape.texture is not None and load_textures:
                     if shape.texture_hash not in texture_hashes:
@@ -564,13 +576,18 @@ class RenderContext:
                 else:
                     texture_data_ids.append(-1)
 
-                if shape.uvs is not None or shape.normals is not None:
+                # A convex hull renders its collision mesh, whose vertices may be deduplicated, so
+                # the per-vertex UVs and normals of its source mesh do not match the hit faces.
+                if shape_type != GeoType.CONVEX_MESH and (shape.uvs is not None or shape.normals is not None):
                     if shape not in mesh_hashes:
                         mesh_hashes[shape] = len(self._mesh_data_source)
 
                         data = MeshData()
                         if shape.uvs is not None:
-                            data.uvs = wp.array(shape.uvs, dtype=wp.vec2f, device=self.device)
+                            # Apply the mesh's authored tiling, offset, and rotation, as the viewers do.
+                            transform = np.asarray(shape.texture_transform, dtype=np.float32)
+                            uvs = np.asarray(shape.uvs, dtype=np.float32) @ transform[:, :2].T + transform[:, 2]
+                            data.uvs = wp.array(uvs, dtype=wp.vec2f, device=self.device)
                         if shape.normals is not None:
                             data.normals = wp.array(shape.normals, dtype=wp.vec3f, device=self.device)
                         self._mesh_data_source.append(data)

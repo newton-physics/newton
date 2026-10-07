@@ -31,7 +31,7 @@ current viewer session, or a persistent artifact:
     * - :class:`~newton.viewer.ViewerRTX`
       - Path-traced visualization on NVIDIA GPUs
       - Real-time display
-      - ovrtx, usd-core, pyglet (``uv sync --extra rtx``)
+      - ovrtx, ovstage, usd-core, pyglet (``uv sync --extra rtx``)
     * - :class:`~newton.viewer.ViewerFile`
       - Persistent state-snapshot recording and visual playback
       - ``.json`` or ``.bin`` file
@@ -111,7 +111,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
 - :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
 - :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — display numeric diagnostics as scalar plots or array visualizations; see :ref:`viewer-live-plots`
-- :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image in :class:`~newton.viewer.ViewerGL` as a dockable window or, with ``fullscreen=True``, as the main viewer surface for the current frame (no-op on other
+- :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image in :class:`~newton.viewer.ViewerGL` or :class:`~newton.viewer.ViewerRTX` as a dockable window or, with ``fullscreen=True``, as the main viewer surface for the current frame (no-op on other
   backends)
 
 **Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance.
@@ -320,8 +320,9 @@ RTX Viewer
 ~~~~~~~~~~
 
 :class:`~newton.viewer.ViewerRTX` provides real-time path-traced rendering using the NVIDIA OVRTX renderer.
-It builds a USD scene on the first frame and updates rigid-body transforms each frame via the OVRTX attribute API,
-presenting the result in a pyglet/OpenGL window.
+It builds a USD scene on the first frame and updates rigid-body transforms each frame via the renderer's runtime
+scene interface, presenting the result in a pyglet/OpenGL window. ViewerRTX selects the legacy OVRTX attribute
+interface for OVRTX versions before 0.4 and the OVStage interface for OVRTX 0.4 and newer.
 
 Debug geometry can be added before or after the first rendered frame using
 :meth:`~newton.viewer.ViewerBase.log_shapes`, :meth:`~newton.viewer.ViewerBase.log_points`,
@@ -334,13 +335,35 @@ and cone heads; their ``width`` specifies the shaft radius in meters.
 .. note::
     The RTX viewer is experimental and may not have the same functionality as the OpenGL viewer.
 
+.. note::
+    The first image can take a while to appear while OVRTX loads and compiles RTX shaders.
+    A blank window during this startup work does not necessarily indicate a rendering failure;
+    wait for shader compilation to finish before diagnosing the viewer.
+
 **Installation**: Requires the ``rtx`` dependency group:
 
 .. code-block:: bash
 
     uv sync --extra rtx
 
-This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in addition to ``pyglet`` for the window.
+This installs ``ovrtx`` (the NVIDIA OVRTX renderer), ``ovstage`` for runtime scene management, and
+``usd-core``, in addition to ``pyglet`` for the window.
+
+ViewerRTX has been validated with the following renderer configurations:
+
+- ``ovrtx==0.3.0.312915`` (local compatibility testing)
+- ``ovrtx==0.5.0.377615`` with ``ovstage==0.2.0.377349`` (GPU CI)
+
+OVRTX 0.4 and newer select the same OVStage interface, but only the exact configurations above are part of
+Newton's validated matrix. The minimum-dependency CI workflow does not install the optional ``rtx`` dependency
+group and therefore does not exercise the OVRTX 0.3 integration.
+
+.. warning::
+    With ``ovrtx==0.5.0.377615`` and ``ovstage==0.2.0.377349``, CUDA-backed runtime transform updates can leave
+    ViewerRTX showing a uniform gray image, commonly after switching examples in the same process. Until this is
+    resolved, use the validated OVRTX 0.3 configuration for reliable interactive switching. CPU staging avoids
+    the symptom but is not enabled because it introduces a per-frame GPU-to-CPU synchronization and copy. See
+    `issue #4283 <https://github.com/newton-physics/newton/issues/4283>`__.
 
 .. code-block:: python
 
@@ -765,8 +788,8 @@ Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gi
 
 Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including per-view
 outputs from :class:`~newton.sensors.SensorCamera`) in
-:class:`~newton.viewer.ViewerGL`. By default, non-headless :class:`~newton.viewer.ViewerGL`
-shows logged images as dockable windows. Pass ``fullscreen=True`` to draw the image
+:class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX`. By default,
+non-headless viewers show logged images as dockable windows. Pass ``fullscreen=True`` to draw the image
 as the main viewer surface for the current frame instead of the 3D scene. Accepted
 shapes are ``(H, W)``, ``(H, W, C)``, ``(N, H, W)``, and ``(N, H, W, C)`` with
 ``C in (1, 3, 4)``. Accepted dtypes are ``uint8`` (values in ``[0, 255]``) and
@@ -830,9 +853,10 @@ The ``fullscreen=True`` selection is per-frame: call
 :meth:`~newton.viewer.ViewerBase.log_image` with ``fullscreen=True`` after
 :meth:`~newton.viewer.ViewerBase.begin_frame` and before
 :meth:`~newton.viewer.ViewerBase.end_frame` on every frame that should show the
-image. If a frame does not log a fullscreen image, :class:`~newton.viewer.ViewerGL`
-renders the 3D scene for that frame. Image rendering is currently implemented only
-by :class:`~newton.viewer.ViewerGL`; other viewer backends inherit the no-op base
+image. If a frame does not log a fullscreen image, the viewer renders the 3D scene
+for that frame. Image rendering is currently implemented by
+:class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX` (which ignores
+images in headless mode); other viewer backends inherit the no-op base
 implementation, so they ignore both the image and the ``fullscreen`` option.
 
 **Camera and world layout:**
