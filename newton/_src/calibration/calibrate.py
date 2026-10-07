@@ -18,9 +18,10 @@ def calibrate(
     """Search a calibration problem and return its result.
 
     The problem supplies ``search_space``, ``objective.evaluate(vectors)``,
-    ``candidate(vector)``, ``build_result(outcome, optimizer=...)``,
-    ``create_writer(output_dir, trace_every=...)`` and ``close()``. This
-    function does not depend on the model type.
+    ``build_result(outcome, optimizer=..., artifacts=...)``,
+    ``create_writer(output_dir, trace_every=...)`` and ``close()``. The writer
+    supplies ``artifacts``, ``write_result(result, history)`` and
+    ``write_traces(history)``. This function does not depend on the model type.
 
     The optimizer supplies ``to_dict()``, which returns its ``kind`` and
     settings, and ``minimize(objective, space)``, which returns a
@@ -33,11 +34,13 @@ def calibrate(
             problem.
         optimizer: The search, for example from
             :func:`~.optimizer.optimizer_from_spec`.
-        output_dir: Artifact directory. It must be absent or empty. ``None``
-            writes no files.
-        trace_every: Record a rendered rollout every N iterations. 0 disables
-            traces. Traces require ``output_dir``. The rollouts are rendered
-            after the search, from :attr:`~.optimizer.SearchOutcome.history`.
+        output_dir: Artifact directory. It must be absent or empty. The
+            result and the search history are written to it before any trace.
+            ``None`` writes no files.
+        trace_every: Render a rollout every N iterations, and of the last
+            iteration. 0 disables traces. Traces require ``output_dir``. The
+            rollouts are rendered after the search, from
+            :attr:`~.optimizer.SearchOutcome.history`.
 
     Returns:
         The result of the problem, a :class:`~.result.CableCalibrationResult` for a
@@ -63,11 +66,12 @@ def calibrate(
             writer = problem.create_writer(output_dir, trace_every=trace_every)
 
         outcome = optimizer.minimize(problem.objective, problem.search_space)
-        result = problem.build_result(outcome, optimizer=optimizer)
+        artifacts = writer.artifacts if writer is not None else {}
+        result = problem.build_result(outcome, optimizer=optimizer, artifacts=artifacts)
         if writer is not None:
-            for iteration, (loss, vector) in enumerate(outcome.history):
-                writer.record_iteration(iteration, problem.candidate(vector), loss)
-            writer.finish(result, problem.candidate(outcome.vector), outcome.iterations)
+            # Write the result before the traces, so a failed trace keeps it.
+            writer.write_result(result, outcome.history)
+            writer.write_traces(outcome.history)
         return result
     finally:
         problem.close()
