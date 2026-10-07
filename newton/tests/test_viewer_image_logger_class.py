@@ -529,6 +529,7 @@ class TestViewerRTXLogImage(unittest.TestCase):
                 viewer._image_logger.get_texture.return_value = texture
                 viewer._rtx = mock.Mock()
                 viewer._should_close = False
+                viewer._async = True
                 viewer._window = mock.Mock()
                 viewer._headless = False
                 viewer._rendering_paused = False
