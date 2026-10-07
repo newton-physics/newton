@@ -106,7 +106,7 @@ def flatten_depth_image(
 @wp.kernel(enable_backward=False)
 def convert_ray_depth_to_forward_depth_kernel(
     depth_image: wp.array3d[wp.float32],
-    camera_rays: wp.array3d[wp.vec3f],
+    camera_rays: wp.array4d[wp.vec3f],
     camera_transforms: wp.array[wp.transformf],
     out_depth: wp.array3d[wp.float32],
 ):
@@ -114,7 +114,7 @@ def convert_ray_depth_to_forward_depth_kernel(
 
     ray_depth = depth_image[world_index, py, px]
     camera_transform = camera_transforms[world_index]
-    camera_ray = camera_rays[py, px, 1]
+    camera_ray = camera_rays[py, px, 0, 1]
     ray_dir_world = wp.transform_vector(camera_transform, camera_ray)
     cam_forward_world = wp.normalize(wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0)))
 
@@ -262,7 +262,7 @@ class Utils:
     def convert_ray_depth_to_forward_depth(
         depth_image: wp.array3d[wp.float32],
         camera_transforms: wp.array[wp.transformf],
-        camera_rays: wp.array3d[wp.vec3f],
+        camera_rays: wp.array4d[wp.vec3f],
         *,
         out_depth: wp.array3d[wp.float32] | None = None,
     ) -> wp.array3d[wp.float32]:
@@ -281,8 +281,11 @@ class Utils:
                 ``(view_count,)``.
             camera_rays: Camera-space rays from
                 :class:`~newton.sensors.SensorCamera`, shape
-                ``(height, width, 2)``. Ray direction vectors must be unit
-                length; non-unit directions scale the converted depth.
+                ``(height, width, 1, 2)``. Ray direction vectors must be unit
+                length; non-unit directions scale the converted depth. This
+                conversion does not support multisampled depth; request
+                ``forward_depth_image`` from :meth:`~newton.sensors.SensorCamera.update`
+                instead.
             out_depth: Output forward-depth array [m] with the same shape as
                 *depth_image*. If ``None``, allocates a new one.
 
@@ -292,12 +295,12 @@ class Utils:
         view_count, height, width = Utils._image_shape("convert_ray_depth_to_forward_depth", depth_image)
         device = depth_image.device
 
-        # The kernel indexes camera_transforms[world] and camera_rays[py, px, 1]
+        # The kernel indexes camera_transforms[world] and camera_rays[py, px, 0, 1]
         # directly; validate on the host to avoid out-of-bounds device reads.
         if camera_transforms.shape != (view_count,):
             raise ValueError(f"camera_transforms shape must be ({view_count},), got {tuple(camera_transforms.shape)}")
-        if camera_rays.shape != (height, width, 2):
-            raise ValueError(f"camera_rays shape must be ({height}, {width}, 2), got {tuple(camera_rays.shape)}")
+        if camera_rays.shape != (height, width, 1, 2):
+            raise ValueError(f"camera_rays shape must be ({height}, {width}, 1, 2), got {tuple(camera_rays.shape)}")
         if camera_transforms.device != device or camera_rays.device != device:
             raise ValueError("camera_transforms and camera_rays must be on the same device as the depth image")
 
