@@ -941,6 +941,43 @@ class ViewerGL(ViewerBase):
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
         """
+        self._log_mesh(
+            name,
+            points,
+            indices,
+            normals,
+            uvs,
+            texture,
+            hidden,
+            backface_culling,
+            color,
+            roughness,
+            metallic,
+            dynamic,
+            opacity,
+        )
+
+    def _log_deformable_visual_mesh(self, name, points, indices, **kwargs):
+        self._log_mesh(name, points, indices, reuse_texture=True, **kwargs)
+
+    def _log_mesh(
+        self,
+        name,
+        points,
+        indices,
+        normals=None,
+        uvs=None,
+        texture=None,
+        hidden=False,
+        backface_culling=True,
+        color=None,
+        roughness=None,
+        metallic=None,
+        dynamic=False,
+        opacity=None,
+        *,
+        reuse_texture=False,
+    ):
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
         assert normals is None or isinstance(normals, wp.array)
@@ -979,7 +1016,7 @@ class ViewerGL(ViewerBase):
                 replacement.color = existing.color
                 replacement.material = existing.material
             try:
-                replacement.update(points, indices, normals, uvs, texture, opacity=opacity)
+                replacement.update(points, indices, normals, uvs, texture, opacity=opacity, reuse_texture=reuse_texture)
             except Exception:
                 replacement.destroy()
                 raise
@@ -992,7 +1029,9 @@ class ViewerGL(ViewerBase):
                 existing.destroy()
 
         if not updated:
-            self.objects[name].update(points, indices, normals, uvs, texture, opacity=opacity)
+            self.objects[name].update(
+                points, indices, normals, uvs, texture, opacity=opacity, reuse_texture=reuse_texture
+            )
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
         # The shader samples the albedo map only when the material's texture flag is

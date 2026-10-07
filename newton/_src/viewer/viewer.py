@@ -3360,6 +3360,10 @@ class ViewerBase(ABC):
                         opacity=opacity,
                     )
 
+    def _log_deformable_visual_mesh(self, name, points, indices, **kwargs):
+        """Let backends reuse the immutable texture while geometry changes."""
+        self.log_mesh(name, points, indices, **kwargs)
+
     def _log_deformable_visual_meshes(self, state: newton.State):
         """Skin and draw the visual meshes embedded in deformables.
 
@@ -3398,7 +3402,15 @@ class ViewerBase(ABC):
             name = self._qualify(f"/model/deformable_visual_meshes/mesh_{rm.index}{suffix}")
             if not (show and self._should_render_world(rm.world)):
                 # Keep valid geometry registered so visibility can toggle back on.
-                self.log_mesh(name, rm.rest_vertices, rm.indices, uvs=rm.uvs, hidden=True, backface_culling=False)
+                self._log_deformable_visual_mesh(
+                    name,
+                    rm.rest_vertices,
+                    rm.indices,
+                    uvs=rm.uvs,
+                    texture=rm.texture,
+                    hidden=True,
+                    backface_culling=False,
+                )
                 continue
 
             n = rm.vertex_count
@@ -3425,7 +3437,7 @@ class ViewerBase(ABC):
                 outputs=[points, normals],
                 device=self.device,
             )
-            self.log_mesh(
+            self._log_deformable_visual_mesh(
                 name,
                 points,
                 rm.indices,

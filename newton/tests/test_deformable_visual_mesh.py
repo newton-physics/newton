@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 import warnings
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -912,6 +913,64 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         finally:
             if os.path.exists(file_path):
                 os.remove(file_path)
+
+    def test_gl_reuses_skinned_textures_but_updates_regular_meshes(self):
+        from newton._src.viewer.gl.opengl import RendererGL  # noqa: PLC0415
+        from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip  # noqa: PLC0415
+
+        with wp.ScopedDevice("cpu"), tempfile.TemporaryDirectory() as directory:
+            texture = np.full((2, 2, 3), 255, dtype=np.uint8)
+            path = Path(directory) / "texture.ppm"
+            path.write_bytes(b"P6\n2 2\n255\n" + texture.tobytes())
+            for source in (str(path), texture):
+                with self.subTest(source=type(source).__name__):
+                    builder = newton.ModelBuilder()
+                    vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+                    for point in vertices:
+                        builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+                    builder.add_deformable_visual_mesh(
+                        vertices,
+                        [0, 1, 2],
+                        kind="particle",
+                        particles=[0, 1, 2],
+                        uvs=[[0, 0], [1, 0], [0, 1]],
+                        texture=source,
+                    )
+                    model = builder.finalize()
+                    viewer = _make_headless_viewer_gl_or_skip(self)
+                    try:
+                        viewer.set_model(model)
+                        state = model.state()
+                        with mock.patch.object(
+                            RendererGL.gl, "glTexImage2D", wraps=RendererGL.gl.glTexImage2D
+                        ) as upload:
+                            for visible in (True, True, False, True):
+                                viewer.show_deformable_visual_meshes = visible
+                                viewer.log_state(state)
+                            self.assertEqual(upload.call_count, 1)
+
+                            mesh = model.deformable_visual_meshes[0]
+                            replacement = np.zeros((2, 2, 3), dtype=np.uint8)
+                            mesh.texture = replacement
+                            viewer.log_state(state)
+                            self.assertEqual(upload.call_count, 2)
+                            mesh.texture = None
+                            viewer.log_state(state)
+                            self.assertEqual(upload.call_count, 2)
+                            viewer.log_mesh(
+                                "ordinary", mesh.rest_vertices, mesh.indices, uvs=mesh.uvs, texture=replacement
+                            )
+                            replacement[:] = 127
+                            viewer.log_mesh(
+                                "ordinary", mesh.rest_vertices, mesh.indices, uvs=mesh.uvs, texture=replacement
+                            )
+                            self.assertEqual(upload.call_count, 4)
+                            mesh.texture = source
+                            viewer.set_model(model)
+                            viewer.log_state(state)
+                            self.assertEqual(upload.call_count, 5)
+                    finally:
+                        viewer.close()
 
 
 class TestDeformableVisualMeshSensor(unittest.TestCase):
