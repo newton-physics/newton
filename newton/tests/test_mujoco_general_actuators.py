@@ -1112,17 +1112,35 @@ class TestMuJoCoMuscleActuators(unittest.TestCase):
 
     def test_muscle_actuator_matches_native_mujoco(self):
         """Match native muscle activation, force and motion through SolverMuJoCo.step."""
+        self._assert_muscle_matches_native_mujoco(MJCF_MUSCLE_ACTUATOR)
+
+    def test_general_muscle_preserves_distinct_bias_parameters(self):
+        """Keep distinct general muscle gain and bias parameters through reconstruction and stepping."""
+        mjcf = MJCF_MUSCLE_ACTUATOR.replace(
+            '<muscle name="drive" joint="slide" lengthrange="0.5 1.5"/>',
+            '<general name="drive" joint="slide" lengthrange="0.5 1.5" '
+            'dyntype="muscle" gaintype="muscle" biastype="muscle" '
+            'dynprm="0.02 0.05 0" '
+            'gainprm="0.8 1.2 5 250 0.6 1.7 1.8 1.4 1.5" '
+            'biasprm="0.8 1.2 5 250 0.6 1.7 1.8 2.5 1.5"/>',
+        )
+        native_model = SolverMuJoCo.import_mujoco()[0].MjModel.from_xml_string(mjcf)
+        self.assertFalse(np.array_equal(native_model.actuator_gainprm, native_model.actuator_biasprm))
+        self._assert_muscle_matches_native_mujoco(mjcf)
+
+    def _assert_muscle_matches_native_mujoco(self, mjcf):
+        """Match native muscle activation, force and motion through SolverMuJoCo.step."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
         configurations = [("cpu", True), ("cpu", False)]
         if wp.is_cuda_available():
             configurations.append(("cuda:0", False))
         for device, use_mujoco_cpu in configurations:
             with self.subTest(device=device, use_mujoco_cpu=use_mujoco_cpu):
-                native_model = mujoco.MjModel.from_xml_string(MJCF_MUSCLE_ACTUATOR)
+                native_model = mujoco.MjModel.from_xml_string(mjcf)
                 native_data = mujoco.MjData(native_model)
                 native_data.qpos[:] = 1.0
                 builder = ModelBuilder()
-                builder.add_mjcf(MJCF_MUSCLE_ACTUATOR, ctrl_direct=True)
+                builder.add_mjcf(mjcf, ctrl_direct=True)
                 model = builder.finalize(device=device)
                 model.joint_q.assign([1.0])
                 solver = SolverMuJoCo(

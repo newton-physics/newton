@@ -3800,6 +3800,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 general_args.get("dyntype") == mujoco.mjtDyn.mjDYN_MUSCLE
                 and general_args.get("gaintype") == mujoco.mjtGain.mjGAIN_MUSCLE
                 and general_args.get("biastype") == mujoco.mjtBias.mjBIAS_MUSCLE
+                # The shortcut overwrites biasprm; general muscles can author it independently.
+                and np.array_equal(general_args["biasprm"][:9], general_args["gainprm"][:9])
             ):
                 dynprm = general_args["dynprm"]
                 gainprm = general_args["gainprm"]
