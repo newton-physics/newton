@@ -173,6 +173,7 @@ class ViewerRTX(ViewerUSD):
     _borrowed_stage = None
     _borrowed_reference = None
     _stage_from_model = None
+    _borrowed_reset_pending = False
     _prim_paths: Sequence[str] = ()
     _prim_count = 0
     _rtx_render_settings: Mapping[str, tuple[Any, Any]] = MappingProxyType({})
@@ -1074,13 +1075,7 @@ void main() {
             self._ovstage, stage.GetRootLayer().ExportToString(), self._root_path
         )
         ovstage.population.apply_usd_changes(self._ovstage, ordinal=self._ovstage_ordinal)
-        if self._prim_paths:
-            # Written matrices are world-space, so bound prims ignore their ancestors.
-            self._write_runtime_attribute(
-                self._prim_paths,
-                "omni:resetXformStack",
-                np.ones(len(self._prim_paths), dtype=np.bool_),
-            )
+        self._borrowed_reset_pending = bool(self._prim_paths)
         self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
 
     def _set_prim_rows(
@@ -2317,6 +2312,13 @@ void main() {
         if self._use_ovstage:
             with wp.ScopedTimer("ViewerRTX::update_transforms", active=PROFILE_ENABLED, use_nvtx=True):
                 if has_prim_rows:
+                    if self._borrowed_reset_pending:
+                        # Written matrices are world-space, so bound prims ignore their ancestors from
+                        # now on; until then they keep their authored transforms.
+                        self._write_runtime_attribute(
+                            self._prim_paths, "omni:resetXformStack", np.ones(self._prim_count, dtype=np.bool_)
+                        )
+                        self._borrowed_reset_pending = False
                     self._launch_prim_world_matrices(self._prim_matrices)
                     self._write_ovstage_matrix_attribute(self._prim_paths, self._prim_matrices)
 
@@ -2845,6 +2847,7 @@ void main() {
         self._prim_paths = ()
         self._prim_count = 0
         self._stage_from_model = None
+        self._borrowed_reset_pending = False
         self._prim_body = None
         self._prim_linear = None
         self._prim_translation = None

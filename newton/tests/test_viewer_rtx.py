@@ -575,6 +575,9 @@ class TestViewerRTXRendering(unittest.TestCase):
 )
 def Xform "World"
 {{
+    double3 xformOp:translate = (0, 0, 0.5)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
     def Xform "Body" (
         prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
     )
@@ -631,6 +634,19 @@ def Xform "World"
                 viewer.begin_frame(frame / 60.0)
                 viewer.log_state(state)
                 viewer.end_frame()
+        finally:
+            viewer.close()
+
+    def test_borrowed_stage_keeps_authored_poses_until_first_state(self):
+        """Render bound bodies at their authored poses on frames before the first logged state."""
+        stage, model = self._borrowed_scene()
+        viewer = ViewerRTX(headless=True, async_rendering=False, ovstage=stage)
+        try:
+            authored = viewer._read_borrowed_world_matrices(["/World/Body"])
+            viewer.set_model(model)
+            viewer.begin_frame(0.0)
+            viewer.end_frame()
+            np.testing.assert_allclose(viewer._read_borrowed_world_matrices(["/World/Body"]), authored, atol=1.0e-5)
         finally:
             viewer.close()
 
