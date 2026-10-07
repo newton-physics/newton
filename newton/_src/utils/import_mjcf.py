@@ -3329,8 +3329,6 @@ def parse_mjcf(
                         else:
                             merged_attrib["ctrlrange"] = f"{mean - radius} {mean + radius}"
                             merged_attrib["ctrllimited"] = "true"
-                if actuator_type == "intvelocity" and "actrange" not in merged_attrib:
-                    raise ValueError("MJCF intvelocity actuator requires actrange or a resolvable inheritrange.")
                 # Non-joint actuators must use CTRL_DIRECT. intvelocity also
                 # carries activation state that JOINT_TARGET cannot represent.
                 if actuator_type == "intvelocity" or trntype != 0 or total_dofs == 0 or ctrl_direct:

@@ -1108,11 +1108,48 @@ class TestMuJoCoIntegratedVelocityActuators(unittest.TestCase):
             np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, atol=1.0e-7)
             np.testing.assert_allclose(solver.mj_data.qpos, native_data.qpos, atol=1.0e-7)
 
-    def test_intvelocity_actuator_requires_activation_range(self):
-        """Reject intvelocity actuators without an activation range."""
-        mjcf = MJCF_INTVELOCITY_ACTUATOR.replace(' actrange="-0.5 0.5"', "")
-        with self.assertRaisesRegex(ValueError, "requires actrange"):
-            ModelBuilder().add_mjcf(mjcf, ctrl_direct=True)
+    def test_intvelocity_actuator_without_activation_range(self):
+        """Match native unbounded integration when no activation range is authored."""
+        mjcf = MJCF_INTVELOCITY_ACTUATOR.replace(' actrange="-0.5 0.5"', "").replace(' range="-1 1"', "")
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        configurations = [("cpu", True), ("cpu", False)]
+        if wp.is_cuda_available():
+            configurations.append(("cuda:0", False))
+        for device, use_mujoco_cpu in configurations:
+            with self.subTest(device=device, use_mujoco_cpu=use_mujoco_cpu):
+                native_model = mujoco.MjModel.from_xml_string(mjcf)
+                native_data = mujoco.MjData(native_model)
+                self.assertFalse(native_model.actuator_actlimited[0])
+                builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                builder.add_mjcf(mjcf)
+                model = builder.finalize(device=device)
+                solver = SolverMuJoCo(
+                    model,
+                    use_mujoco_cpu=use_mujoco_cpu,
+                    integrator=int(native_model.opt.integrator),
+                    disable_contacts=True,
+                )
+                np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
+                np.testing.assert_array_equal(solver.mj_model.actuator_actlimited, native_model.actuator_actlimited)
+                np.testing.assert_allclose(solver.mj_model.actuator_actrange, native_model.actuator_actrange)
+                state_0, state_1 = model.state(), model.state()
+                control = model.control()
+                control.mujoco.ctrl.fill_(10.0)
+                native_data.ctrl[:] = 10.0
+                for _ in range(10):
+                    mujoco.mj_step(native_model, native_data)
+                    solver.step(state_0, state_1, control, None, native_model.opt.timestep)
+                    state_0, state_1 = state_1, state_0
+                    if use_mujoco_cpu:
+                        actual_act = solver.mj_data.act
+                        actual_force = solver.mj_data.actuator_force
+                    else:
+                        actual_act = solver.mjw_data.act.numpy()[0]
+                        actual_force = solver.mjw_data.actuator_force.numpy()[0]
+                    np.testing.assert_allclose(actual_act, native_data.act, rtol=1e-5, atol=1e-7)
+                    np.testing.assert_allclose(actual_force, native_data.actuator_force, rtol=1e-5, atol=1e-6)
+                    np.testing.assert_allclose(state_0.joint_q.numpy(), native_data.qpos, rtol=1e-5, atol=1e-6)
+                self.assertGreater(float(actual_act[0]), 0.5)
 
     def test_intvelocity_actuator_rejects_conflicting_ranges(self):
         """Reject actrange with inheritrange even for an unlimited joint."""
