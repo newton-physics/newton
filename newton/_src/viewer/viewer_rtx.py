@@ -181,6 +181,9 @@ class ViewerRTX(ViewerUSD):
 
     @override
     def activate(self, layer_id: str):
+        # A borrowed stage binds the bodies of a single model.
+        if self._borrowed_stage is not None and layer_id != _DEFAULT_LAYER_ID:
+            raise ValueError("ViewerRTX(ovstage=...) does not support layers")
         if (
             getattr(self, "_phase", self._PHASE_BUILD) == self._PHASE_RENDER
             and layer_id != _DEFAULT_LAYER_ID
@@ -239,12 +242,13 @@ class ViewerRTX(ViewerUSD):
                 its camera, render product, and debug geometry under
                 ``/__newton_viewer``. :meth:`set_visible_worlds`,
                 ``show_collision``, and ``show_visual`` affect only the debug
-                geometry, and ``environment`` must stay ``"default"``.
-                :meth:`end_frame` writes above the stage's current write floor
-                and then advances it, so finish other writes to the stage
-                first. Bound prims keep their last world pose after the viewer
-                releases the stage. Requires OVRTX 0.4 and OVStage 0.2 or
-                newer, and a stage created with GPU hierarchy computation.
+                geometry, ``environment`` must stay ``"default"``, and layers
+                are not supported. :meth:`end_frame` writes above the stage's
+                current write floor and then advances it, so finish other
+                writes to the stage first. Bound prims keep their last world
+                pose after the viewer releases the stage. Requires OVRTX 0.4
+                and OVStage 0.2 or newer, and a stage created with GPU
+                hierarchy computation.
             render_settings: ``omni:rtx:*`` attributes to author on the
                 viewer's render product as ``{name: (usd_type_name, value)}``,
                 e.g. ``{"omni:rtx:pt:samplesPerPixel": ("uint", 4)}``. The type

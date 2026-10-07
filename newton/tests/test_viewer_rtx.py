@@ -132,6 +132,16 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
             viewer.close()
 
     @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_rejects_layers(self):
+        """Reject user layers, since a borrowed stage binds the bodies of a single model."""
+        viewer, _ = self._borrowed_viewer([], set())
+        try:
+            with self.assertRaisesRegex(ValueError, "does not support layers"):
+                viewer.activate("robot")
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
     def test_borrowed_stage_rejects_lighting_preset(self):
         """Reject a lighting preset, since a borrowed stage brings its own lights."""
         import ovrtx
