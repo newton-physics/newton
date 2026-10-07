@@ -31,6 +31,8 @@ __all__ = [
     "_compute_body_weights_and_add",
     "apply_body_weight",
     "compute_body_explicit_wrench",
+    "compute_structural_correction",
+    "is_rotational_structural_row",
     "normalize_symmetric_matrix",
     "unpack_body_solution",
 ]
@@ -107,6 +109,29 @@ def apply_body_weight(weight: mat66f, value: vec6f) -> vec6f:
         angular[1],
         angular[2],
     )
+
+
+@wp.func
+def is_rotational_structural_row(jacobian_a: vec6f, jacobian_b: vec6f) -> bool:
+    """Return whether a structural row constrains a rotation [rad] rather than a translation [m].
+
+    Kamino's rotational constraint rows act on the angular twists alone, so their Jacobians have
+    no linear part on either body.
+    """
+    linear_a = wp.vec3f(jacobian_a[0], jacobian_a[1], jacobian_a[2])
+    linear_b = wp.vec3f(jacobian_b[0], jacobian_b[1], jacobian_b[2])
+    return wp.length_sq(linear_a) + wp.length_sq(linear_b) == 0.0
+
+
+@wp.func
+def compute_structural_correction(
+    residual: wp.float32, dead_zone: wp.float32, max_correction: wp.float32
+) -> wp.float32:
+    """Return the part of a joint residual corrected in one step.
+
+    The part of the residual beyond ``dead_zone`` is corrected, by at most ``max_correction``.
+    """
+    return wp.sign(residual) * wp.clamp(wp.abs(residual) - dead_zone, 0.0, max_correction)
 
 
 @wp.func
@@ -606,6 +631,8 @@ def _assemble_structural_joint_rows(
     model_time_dt: wp.array[wp.float32],
     joint_penalty_scale: wp.array[wp.float32],
     joint_max_correction: wp.float32,
+    joint_translation_dead_zone: wp.float32,
+    joint_rotation_dead_zone: wp.float32,
     # Outputs:
     penalty: wp.array[wp.float32],
     matrix: wp.array[wp.float32],
@@ -650,8 +677,11 @@ def _assemble_structural_joint_rows(
     vector_offset = vector_offsets[block]
     a_jacobian = jacobian_a[joint_row]
     b_jacobian = jacobian_b[joint_row]
-    # A large violation is corrected by at most joint_max_correction per step
-    row_residual = wp.clamp(residual[joint_row], -joint_max_correction, joint_max_correction)
+    # A small violation is left to average out, and a large one is corrected by at most joint_max_correction per step
+    dead_zone = joint_translation_dead_zone
+    if is_rotational_structural_row(a_jacobian, b_jacobian):
+        dead_zone = joint_rotation_dead_zone
+    row_residual = compute_structural_correction(residual[joint_row], dead_zone, joint_max_correction)
     # The rows are linearized about zero dynamic twists and the prescribed twists of the other bodies.
     linearization_velocity = wp.float32(0.0)
     if prescribed_twist and bid_a >= 0 and bid_a_local < 0:

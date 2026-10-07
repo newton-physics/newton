@@ -26,6 +26,7 @@ from .contact import (
     compute_contact_velocity_target,
 )
 from .solver_kernels import atomic_max_nonnegative
+from .system_kernels import compute_structural_correction, is_rotational_structural_row
 
 ###
 # Module interface
@@ -722,7 +723,8 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
     def _update_structural_multipliers(
         # Inputs:
         model_time_dt: wp.array[wp.float32],
-        structural_tolerance: wp.float32,
+        position_tolerance: wp.float32,
+        rotation_tolerance: wp.float32,
         model_joints_wid: wp.array[wp.int32],
         model_joints_dof_type: wp.array[wp.int32],
         model_joints_coords_offset: wp.array[wp.int32],
@@ -748,6 +750,8 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
         penalty: wp.array[wp.float32],
         proximal_relaxation: wp.float32,
         joint_max_correction: wp.float32,
+        joint_translation_dead_zone: wp.float32,
+        joint_rotation_dead_zone: wp.float32,
         # Outputs:
         proximal_defect: wp.array[wp.float32],
         candidate_residual: wp.array[wp.float32],
@@ -859,7 +863,13 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
             if bid_b >= 0:
                 candidate_velocity += wp.dot(row_jacobian_b, twist_b)
 
-            row_residual = wp.clamp(frozen_residual[row], -joint_max_correction, joint_max_correction)
+            rotational = is_rotational_structural_row(row_jacobian_a, row_jacobian_b)
+            dead_zone = joint_translation_dead_zone
+            row_tolerance = position_tolerance
+            if rotational:
+                dead_zone = joint_rotation_dead_zone
+                row_tolerance = rotation_tolerance
+            row_residual = compute_structural_correction(frozen_residual[row], dead_zone, joint_max_correction)
             linear_residual = row_residual + dt * candidate_velocity
             update_residual = linear_residual
             if wp.static(proximal):
@@ -876,7 +886,7 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
                 return
             if wp.static(proximal):
                 proximal_defect[row] = defect
-            residual_max = wp.max(residual_max, wp.abs(update_residual))
+            residual_max = wp.max(residual_max, wp.abs(update_residual) / row_tolerance)
             reaction[row] = next_reaction
             impulse_change_a += reaction_change * row_jacobian_a
             impulse_change_b += reaction_change * row_jacobian_b
@@ -884,7 +894,7 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
             wp.atomic_add(body_impulse, bid_a, dt * impulse_change_a)
         if bid_b >= 0:
             wp.atomic_add(body_impulse, bid_b, dt * impulse_change_b)
-        atomic_max_nonnegative(world_residual, wid, residual_max / structural_tolerance)
+        atomic_max_nonnegative(world_residual, wid, residual_max)
 
     return _update_structural_multipliers
 
