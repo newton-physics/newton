@@ -75,6 +75,7 @@ class _MinimalRTXViewer(ViewerRTX):
 
     def __init__(self):
         self.gui = None
+        self._render_result = None
         self._render_products = None
         self._displayed_frame = FrameCache()
         self._rtx = None

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Exercise synchronous RTX rendering and independent rendering pause."""
+"""Exercise RTX rendering modes and independent rendering pause."""
 
 import importlib.util
 import unittest
@@ -38,10 +38,11 @@ class TestRenderingPauseRTX(unittest.TestCase):
         viewer.set_rendering_paused(False)
         self.assertTrue(viewer.is_paused())
 
-    def test_complete_each_frame_before_returning(self):
+    def test_synchronous_mode_completes_each_frame(self):
         """Complete one current render per unpaused loop in both window modes."""
         viewer = self.viewer
         viewer._phase = viewer._PHASE_RENDER
+        viewer._async = False
         viewer._rtx = mock.Mock()
         viewer._update_scene = mock.Mock()
         viewer._accept_render = mock.Mock()
@@ -50,20 +51,20 @@ class TestRenderingPauseRTX(unittest.TestCase):
             with self.subTest(headless=headless):
                 viewer._headless = headless
                 viewer._window = None if headless else mock.Mock()
-                for i in range(3):
-                    products = {"frame": i}
-                    viewer._rtx.step.return_value = products
-                    viewer.end_frame()
-                    viewer._rtx.step.assert_called_once()
-                    viewer._accept_render.assert_called_once_with(products)
-                    viewer._rtx.step_async.assert_not_called()
-                    viewer._rtx.step.reset_mock()
-                    viewer._accept_render.reset_mock()
-                    viewer.set_rendering_paused(True)
-                    viewer.end_frame()
-                    viewer._rtx.step.assert_not_called()
-                    viewer._accept_render.assert_not_called()
-                    viewer.set_rendering_paused(False)
+                products = {"frame": object()}
+                viewer._rtx.step.return_value = products
+                viewer.end_frame()
+                viewer._accept_render.assert_called_once_with(products)
+                viewer.set_rendering_paused(True)
+                viewer.end_frame()
+                viewer._accept_render.assert_called_once_with(products)
+                viewer.set_rendering_paused(False)
+                viewer.end_frame()
+                self.assertEqual(viewer._rtx.step.call_count, 2)
+                self.assertEqual(viewer._accept_render.call_count, 2)
+                viewer._rtx.step_async.assert_not_called()
+                viewer._rtx.step.reset_mock()
+                viewer._accept_render.reset_mock()
 
     def test_gui_pause_keeps_presentation_active(self):
         """Apply the UI toggle before rendering and keep presenting while paused."""
@@ -72,78 +73,45 @@ class TestRenderingPauseRTX(unittest.TestCase):
         viewer._rtx = mock.Mock()
         viewer._window = mock.Mock()
         viewer._present = mock.Mock()
+        pending = mock.Mock()
+        viewer._render_result = pending
         viewer.gui = mock.Mock()
         viewer.gui.prepare_frame.side_effect = lambda: viewer.set_rendering_paused(True)
-        for _ in range(3):
-            viewer.end_frame()
+        viewer.end_frame()
+        pending.wait.assert_not_called()
         viewer._rtx.step.assert_not_called()
         viewer._rtx.step_async.assert_not_called()
-        self.assertEqual(viewer.gui.prepare_frame.call_count, 3)
-        self.assertEqual(viewer._present.call_count, 3)
+        viewer.gui.prepare_frame.assert_called_once()
+        viewer._present.assert_called_once()
 
-    def test_legacy_async_argument_warns_and_renders_synchronously(self):
-        """Keep old constructor calls working without retaining an async pipeline."""
-        with (
-            wp.ScopedDevice("cpu"),
-            mock.patch.dict("sys.modules", {"ovrtx": mock.Mock(__version__="0.3.0")}),
-            self.assertWarnsRegex(DeprecationWarning, "async_rendering"),
-        ):
-            viewer = ViewerRTX(headless=True, async_rendering=True)
-        self.addCleanup(viewer.close)
+    def test_async_mode_waits_normally_and_discards_paused_result(self):
+        """Keep blocking frame cadence, and never display a pre-pause result on resume."""
+        viewer = self.viewer
         viewer._phase = viewer._PHASE_RENDER
         viewer._rtx = mock.Mock()
         viewer._accept_render = mock.Mock()
+        pending = viewer._rtx.step_async.return_value
         viewer.end_frame()
-        viewer._rtx.step.assert_called_once()
-        viewer._rtx.step_async.assert_not_called()
-
-    def test_point_resize_while_paused_retains_valid_colors(self):
-        """Resize a paused point batch without carrying mismatched pending arrays."""
-        viewer = self.viewer
-        colors = wp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3, device="cpu")
-        radii = wp.array([0.1, 0.2], dtype=float, device="cpu")
-        points = wp.zeros(2, dtype=wp.vec3, device="cpu")
-        viewer.log_points("/points", points, colors=colors)
-        viewer._phase = viewer._PHASE_RENDER
-        viewer._rtx = mock.Mock()
-        viewer._write_runtime_array_attribute = mock.Mock()
+        pending.wait.assert_not_called()
+        viewer._rtx.step_async.assert_called_once()
+        viewer.end_frame()
+        pending.wait.assert_called_once_with()
+        viewer._accept_render.assert_called_once_with(pending.wait.return_value.fetch.return_value)
+        viewer._accept_render.reset_mock()
+        pending.wait.reset_mock()
+        viewer._rtx.step_async.reset_mock()
         viewer.set_rendering_paused(True)
-        viewer.begin_frame(0.0)
-        viewer.log_points("/points", points, radii=radii, colors=colors)
         viewer.end_frame()
-        for count in (3, 1):
-            viewer.begin_frame(float(count))
-            viewer.log_points("/points", wp.zeros(count, dtype=wp.vec3, device="cpu"))
-            viewer.end_frame()
-            self.assertEqual(viewer._point_batch_synced_counts["/points"], count)
-            expected = colors.numpy()[[0, 1, 1] if count == 3 else [0]]
-            np.testing.assert_array_equal(viewer._point_batch_colors["/points"], expected)
-        viewer._rtx.step.assert_not_called()
+        pending.wait.assert_not_called()
         viewer._rtx.step_async.assert_not_called()
         viewer.set_rendering_paused(False)
-        viewer._accept_render = mock.Mock()
         viewer.end_frame()
-        viewer._rtx.step.assert_called_once()
-
-    def test_point_resize_with_multiple_logs_in_one_frame(self):
-        """Let the final point log use cached colors without merging stale radii."""
-        viewer = self.viewer
-        points = wp.zeros(2, dtype=wp.vec3, device="cpu")
-        viewer.log_points("/points", points, colors=(1.0, 0.0, 0.0))
-        viewer._phase = viewer._PHASE_RENDER
-        viewer._rtx = mock.Mock()
-        viewer._accept_render = mock.Mock()
-        viewer._write_runtime_array_attribute = mock.Mock()
-        viewer.begin_frame(0.0)
-        viewer.log_points(
-            "/points",
-            points,
-            radii=wp.array([0.1, 0.2], dtype=float, device="cpu"),
-            colors=wp.ones(2, dtype=wp.vec3, device="cpu"),
-        )
-        viewer.log_points("/points", wp.zeros(3, dtype=wp.vec3, device="cpu"))
+        pending.wait.assert_called_once_with()
+        viewer._accept_render.assert_not_called()
+        viewer._rtx.step_async.assert_called_once()
         viewer.end_frame()
-        self.assertEqual(viewer._point_batch_synced_counts["/points"], 3)
+        viewer._accept_render.assert_called_once_with(pending.wait.return_value.fetch.return_value)
+        viewer._rtx.step.assert_not_called()
 
     def test_paused_headless_capture_and_frame_budget(self):
         """Capture the last completed image while paused loops consume the budget."""
@@ -154,25 +122,24 @@ class TestRenderingPauseRTX(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "frame"):
             viewer._capture_screenshot_pixels()
         pixels = np.full((3, 4, 4), 37, dtype=np.uint8)
-        render_var = mock.MagicMock()
-        render_var.map.return_value.__enter__.return_value = pixels
-        viewer._render_products = {"product": mock.Mock(frames=[mock.Mock(render_vars={"LdrColor": render_var})])}
-        with mock.patch.dict("sys.modules", {"ovrtx": mock.Mock()}):
-            for i in range(4):
-                self.assertTrue(viewer.is_running())
-                viewer.begin_frame(float(i))
-                viewer.end_frame()
-                np.testing.assert_array_equal(viewer._capture_screenshot_pixels(), pixels)
+        viewer._displayed_pixels = wp.array(pixels, dtype=wp.vec4ub, device="cpu")
+        for i in range(4):
+            self.assertTrue(viewer.is_running())
+            viewer.begin_frame(float(i))
+            viewer.end_frame()
+            np.testing.assert_array_equal(viewer._capture_screenshot_pixels(), pixels)
         self.assertFalse(viewer.is_running())
         viewer._rtx.step.assert_not_called()
         viewer._rtx.step_async.assert_not_called()
 
     def test_clear_and_close_release_renderer_once(self):
-        """Clear cached output and preserve pause without asynchronous cleanup."""
+        """Drain a pending frame once and preserve pause through clear and close."""
         viewer = self.viewer
         viewer.set_rendering_paused(True)
         renderer = mock.Mock()
         viewer._rtx = renderer
+        pending = mock.Mock()
+        viewer._render_result = pending
         viewer._render_products = {"old": object()}
         viewer.clear_model()
         renderer.destroy.assert_called_once_with()
@@ -181,6 +148,7 @@ class TestRenderingPauseRTX(unittest.TestCase):
         viewer.close()
         viewer.close()
         renderer.destroy.assert_called_once_with()
+        pending.wait.assert_called_once_with()
 
 
 @unittest.skipUnless(
@@ -189,38 +157,44 @@ class TestRenderingPauseRTX(unittest.TestCase):
 )
 class TestRenderingPauseRTXIntegration(unittest.TestCase):
     def test_moving_scene_capture_stays_frozen_until_resume(self):
-        """Show the first frame immediately and resume directly to the latest state."""
+        """Freeze both modes and resume with the latest scene rather than a stale result."""
         builder = newton.ModelBuilder()
         body = builder.add_body()
         builder.add_shape_box(body, hx=0.3, hy=0.3, hz=0.3, color=(1.0, 0.1, 0.0))
         model = builder.finalize()
-        viewer = ViewerRTX(width=64, height=48, headless=True)
-        try:
-            viewer.set_model(model)
-            viewer.set_camera(wp.vec3(3.0, -4.0, 2.0), pitch=-20.0, yaw=125.0)
-            state = model.state()
-            viewer.begin_frame(0.0)
-            viewer.log_state(state)
-            viewer.end_frame()
-            frozen = viewer._capture_screenshot_pixels().copy()
-            self.assertGreater(np.ptp(frozen[:, :, :3]), 0)
-            viewer.set_rendering_paused(True)
-            for i in range(1, 4):
-                state.body_q.assign([wp.transform(wp.vec3(float(i), 0.0, 0.0), wp.quat_identity())])
-                viewer.begin_frame(i / 60.0)
-                viewer.log_state(state)
-                # Exercise runtime geometry replacement and renderer reset
-                # while retaining the previous render products for capture.
-                viewer.log_points("/runtime_points", wp.zeros(i, dtype=wp.vec3), radii=0.1)
-                viewer.end_frame()
-                np.testing.assert_array_equal(viewer._capture_screenshot_pixels(), frozen)
-            viewer.set_rendering_paused(False)
-            viewer.begin_frame(4.0 / 60.0)
-            viewer.log_state(state)
-            viewer.end_frame()
-            self.assertFalse(np.array_equal(viewer._capture_screenshot_pixels(), frozen))
-        finally:
-            viewer.close()
+        for asynchronous in (False, True):
+            with self.subTest(async_rendering=asynchronous):
+                viewer = ViewerRTX(width=64, height=48, headless=True, async_rendering=asynchronous)
+                try:
+                    viewer.set_model(model)
+                    viewer.set_camera(wp.vec3(3.0, -4.0, 2.0), pitch=-20.0, yaw=125.0)
+                    state = model.state()
+                    for _ in range(2):
+                        viewer.begin_frame(0.0)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                    viewer.set_rendering_paused(True)
+                    frozen = viewer._capture_screenshot_pixels().copy()
+                    self.assertGreater(np.ptp(frozen[:, :, :3]), 0)
+                    for i in range(1, 4):
+                        state.body_q.assign([wp.transform(wp.vec3(float(i), 0.0, 0.0), wp.quat_identity())])
+                        viewer.begin_frame(i / 60.0)
+                        viewer.log_state(state)
+                        viewer.log_points("/runtime_points", wp.zeros(i, dtype=wp.vec3), radii=0.1)
+                        viewer.end_frame()
+                        np.testing.assert_array_equal(viewer._capture_screenshot_pixels(), frozen)
+                    viewer.set_rendering_paused(False)
+                    viewer.begin_frame(4.0 / 60.0)
+                    viewer.log_state(state)
+                    viewer.end_frame()
+                    if asynchronous:
+                        np.testing.assert_array_equal(viewer._displayed_pixels.numpy(), frozen)
+                        viewer.begin_frame(5.0 / 60.0)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                    self.assertFalse(np.array_equal(viewer._capture_screenshot_pixels(), frozen))
+                finally:
+                    viewer.close()
 
 
 if __name__ == "__main__":

@@ -157,7 +157,7 @@ class ViewerRTX(ViewerUSD):
         num_frames: int | None = None,
         scaling: float = 1.0,
         environment: Literal["default", "studio", "none"] = "default",
-        async_rendering: bool = False,
+        async_rendering: bool = True,
         *,
         plot_history_size: int = 250,
     ):
@@ -177,17 +177,12 @@ class ViewerRTX(ViewerUSD):
                 a window is visible.
             scaling: Uniform world-scale applied at the ``/root`` xform.
             environment: Lighting preset; one of :attr:`ENVIRONMENTS`.
-            async_rendering: Deprecated and ignored. Rendering completes
-                synchronously in :meth:`end_frame`. Omit this argument.
+            async_rendering: Submit OVRTX render work asynchronously and
+                present the previous frame while the next one is still in
+                flight.
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
         """
-        if async_rendering:
-            warnings.warn(
-                "async_rendering is deprecated and ignored; ViewerRTX renders synchronously. Omit this argument.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         self._plot_logger = PlotLogger(plot_history_size, get_window=lambda: self._window)
 
         # FIXME: Disable USD checks in OVRTX that refuse to load the library if `usd-core` is present.
@@ -226,8 +221,12 @@ class ViewerRTX(ViewerUSD):
 
         # OVRTX
         self._rtx = None
+        self._async = async_rendering
+        self._render_result = None
+        self._discard_render_result = False
         self._render_products = None
         self._displayed_frame = FrameCache()
+        self._displayed_pixels = None
         self._uses_fractional_opacity = False
         self._transform_binding = None
         self._all_instance_paths = []
@@ -440,6 +439,7 @@ void main() {
             self._should_close = True
 
         self.gui = ViewerGui(self, self._window)
+        self.gui.register_ui_callback(self._ui_populate_rendering_panel, position="rendering")
         # Drain any registrations that arrived before the GUI was ready.
         for callback, position in self._pending_ui_callbacks:
             self.gui.register_ui_callback(callback, position=position)
@@ -923,7 +923,7 @@ void main() {
 
     def _bind_runtime_transforms(self, name: str) -> None:
         """Bind only one runtime-created or replaced instance batch."""
-        if self._use_ovstage:
+        if self._use_ovstage or self._get_path(name) in self._deferred_prims:
             return
 
         from ovrtx import PrimMode, Semantic
@@ -942,6 +942,9 @@ void main() {
 
     def _replace_runtime_prim(self, path: str) -> str:
         """Publish a self-contained USD subtree, including its bound materials."""
+        if self.is_rendering_paused() or self._render_result is not None:
+            self._deferred_prims.add(path)
+            return path
         from pxr import Sdf, Usd, UsdShade
 
         mask = Usd.StagePopulationMask([path])
@@ -1007,6 +1010,20 @@ void main() {
         self._runtime_prim_paths[path] = runtime_path
         self._runtime_scene_changed = True
         return runtime_path
+
+    def _flush_deferred_prims(self) -> None:
+        """Publish the latest runtime geometry after the previous render finishes."""
+        paths, self._deferred_prims = self._deferred_prims, set()
+        for path in paths:
+            runtime_path = self._replace_runtime_prim(path)
+            for name, instances in self._instance_prim_paths.items():
+                if self._get_path(name) == path:
+                    self._instance_prim_paths[name] = [f"{runtime_path}/instance_{i}" for i in range(len(instances))]
+                    self._bind_runtime_transforms(name)
+            for batches in (self._mesh_prim_paths, self._point_batch_paths):
+                for name in batches:
+                    if self._get_path(name) == path:
+                        batches[name] = runtime_path
 
     # ------------------------------------------------ ViewerUSD overrides
 
@@ -1424,13 +1441,7 @@ void main() {
         """
         with wp.ScopedTimer("ViewerRTX::begin_frame", active=PROFILE_ENABLED, use_nvtx=True):
             super().begin_frame(time)
-            self._pending_xforms.clear()
-            self._pending_instance_visibility.clear()
-            self._pending_mesh_points.clear()
-            self._pending_mesh_normals.clear()
-            self._pending_mesh_topology.clear()
-            self._pending_mesh_visibility.clear()
-            self._pending_point_batches.clear()
+            self._point_batch_frame_defaults = self._pending_point_batches.copy()
             self._gizmo_log = {}
 
             if self._window and not self._headless:
@@ -1470,14 +1481,24 @@ void main() {
         with wp.ScopedTimer("ViewerRTX::end_frame", active=PROFILE_ENABLED, use_nvtx=True):
             if self.gui:
                 self.gui.prepare_frame()
-            if self._rtx is not None and not self._should_close:
+            if self._rtx is not None and not self._should_close and not self.is_rendering_paused():
+                # Preserve the original blocking cadence and simulation/render overlap.
+                if self._render_result is not None:
+                    with wp.ScopedTimer("ViewerRTX::rtx_wait", active=PROFILE_ENABLED, use_nvtx=True):
+                        products = self._render_result.wait().fetch()
+                    self._render_result = None
+                    if not self._discard_render_result:
+                        self._accept_render(products)
+                    self._discard_render_result = False
                 self._update_scene()
             self._render_and_display()
 
     def _update_scene(self) -> None:
-        """Apply this frame's scene updates, including while rendering is paused."""
+        """Apply retained scene updates before submitting the next render."""
         if self._use_ovstage:
             self._ovstage_ordinal += 1
+        self._flush_deferred_prims()
+        if self._use_ovstage:
             self._apply_ovstage_population_changes()
         self._update_ovrtx_camera()
         self._update_ovrtx_transforms()
@@ -1492,6 +1513,13 @@ void main() {
         if self._runtime_scene_changed:
             self._rtx.reset(time=self._frame_index / self.fps)
             self._runtime_scene_changed = False
+        self._pending_xforms.clear()
+        self._pending_instance_visibility.clear()
+        self._pending_mesh_points.clear()
+        self._pending_mesh_normals.clear()
+        self._pending_mesh_topology.clear()
+        self._pending_mesh_visibility.clear()
+        self._pending_point_batches.clear()
 
     # ViewerUSD authors PreviewSurface materials while ViewerRTX is in the
     # build phase. RTX fractional opacity is evaluated per ray hit, so the
@@ -1822,6 +1850,21 @@ void main() {
             return self._point_batch_paths[name]
 
         if name in self._point_batch_paths:
+            # Retain appearance across paused frames, but let the last log in
+            # a single frame win. Per-point arrays must follow the new count.
+            previous = self._point_batch_frame_defaults.get(name)
+            if previous is not None:
+                count = len(points) if points is not None else 0
+                previous_count = len(previous[0]) if previous[0] is not None else 0
+                if radii is None and colors is None and count == previous_count:
+                    radii = previous[1]
+                if colors is None and previous[2] is not None:
+                    values = previous[2]
+                    colors = np.asarray(values.numpy() if isinstance(values, wp.array) else values).reshape(-1, 3)
+                    if count > 0 and len(colors) not in (1, count):
+                        colors = np.concatenate(
+                            (colors[:count], np.repeat(colors[-1:], max(0, count - len(colors)), axis=0))
+                        )
             self._pending_point_batches[name] = (points, radii, colors, bool(hidden))
             return self._point_batch_paths[name]
 
@@ -2289,9 +2332,9 @@ void main() {
         return None
 
     def _accept_render(self, products) -> None:
-        """Retain completed render products and update the window's image cache."""
+        """Retain completed render products and an independently owned image."""
         self._render_products = products
-        if self._headless or self._window is None or self._window.context is None:
+        if not self._headless and (self._window is None or self._window.context is None):
             return
 
         from ovrtx import Device
@@ -2303,7 +2346,12 @@ void main() {
                     continue
                 with render_var.map(device=Device.CUDA) as mapping:
                     pixels = wp.from_dlpack(mapping, dtype=wp.vec4ub)
-                    self._blit_to_window(pixels)
+                    if self._headless:
+                        if self._displayed_pixels is None or self._displayed_pixels.shape != pixels.shape:
+                            self._displayed_pixels = wp.empty_like(pixels)
+                        wp.copy(self._displayed_pixels, pixels)
+                    else:
+                        self._blit_to_window(pixels)
                     mapping.unmap(stream=pixels.device.stream.cuda_stream)
                 return
 
@@ -2327,7 +2375,10 @@ void main() {
                 if self._use_ovstage:
                     step_kwargs["ordinal"] = self._ovstage_ordinal
                 with wp.ScopedTimer("ViewerRTX::rtx_step", active=PROFILE_ENABLED, use_nvtx=True):
-                    self._accept_render(self._rtx.step(**step_kwargs))
+                    if self._async:
+                        self._render_result = self._rtx.step_async(**step_kwargs)
+                    else:
+                        self._accept_render(self._rtx.step(**step_kwargs))
 
         if self._window is not None and self._window.context is not None:
             frame = self._displayed_frame
@@ -2396,11 +2447,17 @@ void main() {
             self._window.flip()
 
     def _capture_screenshot_pixels(self) -> np.ndarray:
-        if self.is_rendering_paused() and not self._headless:
+        if self.is_rendering_paused():
+            if self._headless:
+                if self._displayed_pixels is None:
+                    raise RuntimeError("Frame capture requires at least one displayed frame")
+                return self._displayed_pixels.numpy()
             if self._window is not None:
                 self._window.switch_to()
             return self._displayed_frame.pixels()
         products = self._render_products
+        if products is None and self._render_result is not None:
+            products = self._render_result.wait().fetch()
         if products is None:
             raise RuntimeError("save_screenshot() requires at least one completed render frame")
 
@@ -2544,7 +2601,12 @@ void main() {
         self.picking = None
         self.wind = None
 
+        if self._render_result is not None:
+            self._render_result.wait().fetch()
+            self._render_result = None
+        self._discard_render_result = False
         self._render_products = None
+        self._displayed_pixels = None
 
         # Release runtime-scene resources before destroying the renderer.
         self._release_runtime_scene()
@@ -2579,6 +2641,8 @@ void main() {
         self._pending_mesh_topology = {}
         self._pending_mesh_visibility = {}
         self._pending_point_batches = {}
+        self._point_batch_frame_defaults = {}
+        self._deferred_prims = set()
         self._pending_transform_matrices = {}
         self._ovstage_population_dirty = False
 
@@ -2608,6 +2672,10 @@ void main() {
         active_layer_id = getattr(self, "_active_layer_id", _DEFAULT_LAYER_ID)
         layers = getattr(self, "_layers", {})
         return any(layer_id != _DEFAULT_LAYER_ID and layer_id != active_layer_id for layer_id in layers)
+
+    def _ui_populate_rendering_panel(self, imgui):
+        """Render RTX-specific items inside the Rendering Options panel section."""
+        _changed, self._async = imgui.checkbox("Asynchronous Rendering", self._async)
 
     def register_ui_callback(
         self,
@@ -2660,6 +2728,8 @@ void main() {
             return
         self._rendering_paused = bool(paused)
         if paused:
+            if self._render_result is not None:
+                self._discard_render_result = True
             if self.picking is not None:
                 self.picking.release()
             if self.gui is not None:
@@ -2718,11 +2788,15 @@ void main() {
     def close(self) -> None:
         """Close the viewer and release rendering resources.
 
-        Releases the runtime scene and OVRTX renderer, and closes the
-        underlying pyglet window.
+        Waits for any in-flight asynchronous render, releases the runtime
+        scene and OVRTX renderer, and closes the underlying pyglet window.
         """
-        # release render products
+        # Drain the one outstanding frame before releasing its renderer.
+        if self._render_result is not None:
+            self._render_result.wait().fetch()
+            self._render_result = None
         self._render_products = None
+        self._displayed_pixels = None
         self._displayed_frame.clear()
 
         # release runtime-scene resources and renderer

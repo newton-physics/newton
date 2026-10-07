@@ -133,16 +133,25 @@ accepted by the viewer. Clearing or replacing the model invalidates the image
 but preserves the rendering-pause setting. Other backends report ``False``
 and ignore requests to enable rendering pause.
 
-RTX completes each render synchronously in ``end_frame()``. While rendering
-is paused, scene updates and UI processing continue, but no ray-traced render
-is requested. The first resumed frame renders the current state. The
-``async_rendering`` constructor argument is deprecated and ignored; omit it.
-Initial renderer/model loading and an already executing render can still wait
-for GPU work. Rendering pause does not interrupt those operations.
+RTX retains its existing rendering modes: the default ``async_rendering=True``
+submits one frame asynchronously and waits for it on the next unpaused
+``end_frame()``; ``False`` renders synchronously. Rendering pause neither
+waits for nor submits a renderer frame. Any outstanding async result is held
+and discarded on resume, so it cannot replace the frozen image. Resume
+publishes the latest retained scene updates and follows the selected mode's
+usual presentation cadence; async mode displays that new result on the
+following frame. Scene updates remain bounded to the latest values per object.
+Initial renderer/model loading, explicit cleanup, and an unpaused render can
+still wait for GPU work. Rendering pause does not interrupt those operations.
 
 Windowed RTX and GL retain a separate RGBA image texture so changes to the
 scene, camera, or fullscreen images cannot overwrite the frozen image. This
-requires four extra bytes per pixel (about 33 MB at 3840 x 2160).
+requires four extra bytes per pixel (about 33 MB at 3840 x 2160), plus a GPU
+image copy on every unpaused frame, even if rendering pause is never used.
+The copy preserves the displayed image if a logged fullscreen texture is
+updated or the render target is resized before pause is requested. Headless
+RTX likewise keeps a GPU copy of the last accepted image, independent of any
+outstanding async render.
 
 **Camera and layout:**
 
