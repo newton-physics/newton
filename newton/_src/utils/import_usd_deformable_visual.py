@@ -149,6 +149,8 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                 warnings.warn(f"{path}: invalid visual bind pose; skipping ({exc})", stacklevel=2)
                 continue
             points = bind if bind is not None else np.asarray(mesh.vertices, dtype=np.float64)
+            if bind is not None and (source_vertices := getattr(mesh, "_usd_source_point_indices", None)) is not None:
+                points = bind[source_vertices]
             if len(points) != len(mesh.vertices):
                 warnings.warn(
                     f"{path}: bind pose has {len(points)} points but the mesh has "

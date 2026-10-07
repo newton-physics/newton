@@ -1569,6 +1569,7 @@ def get_mesh(
     counts = mesh.GetFaceVertexCountsAttr().Get()
     source_points = points
     source_indices = indices
+    source_vertices = None
 
     uvs = None
     uvs_interpolation = None
@@ -1691,9 +1692,12 @@ def get_mesh(
                     if not uvs_facevarying:
                         corner_uvs = corner_uvs[indices]
 
+                original_indices = indices
                 points, indices, normals, uvs = _split_corners_into_vertices(
                     points, indices, Ndir, corner_uvs, vertex_splitting_angle_threshold_deg
                 )
+                source_vertices = np.empty(len(points), dtype=np.int32)
+                source_vertices[indices] = original_indices
                 # Vertex splitting creates a new per-vertex layout (and UVs
                 # if available). Skip the later faceVarying UV split to avoid
                 # dropping/duplicating UVs.
@@ -1760,7 +1764,8 @@ def get_mesh(
             else:
                 if not preserve_facevarying_uvs:
                     points_original = points
-                    points = points_original[indices[corner_flat]]
+                    source_vertices = indices[corner_flat]
+                    points = points_original[source_vertices]
                     if normals is not None:
                         if len(normals) == len(points_original):
                             normals = normals[indices[corner_flat]]
@@ -1787,6 +1792,7 @@ def get_mesh(
         normals = np.repeat(face_normals, 3, axis=0)
         vertex_indices = faces.reshape(-1)
         points = points[vertex_indices]
+        source_vertices = vertex_indices if source_vertices is None else source_vertices[vertex_indices]
         if (
             uvs is not None
             and uv_indices is None
@@ -1823,6 +1829,9 @@ def get_mesh(
         if material_props.get("texture_transform") is None
         else material_props["texture_transform"],
     )
+    if source_vertices is not None:
+        # Bind poses address authored points, not vertices duplicated for rendering.
+        mesh_out._usd_source_point_indices = source_vertices
     if compute_inertia and visual_topology:
         from ..geometry.inertia import compute_inertia_mesh  # noqa: PLC0415
 

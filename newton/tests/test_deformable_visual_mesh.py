@@ -1492,6 +1492,44 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         # The bind-pose vertices (inside the tet) are the rest vertices.
         self.assertLess(float(rm.rest_vertices.numpy().max()), 1.0)
 
+    def test_bind_pose_survives_face_varying_uvs(self):
+        """Expand authored bind points with UV corners, including coincident source points."""
+        from pxr import Sdf, UsdGeom
+
+        bind_points = np.array([[0.1, 0.1, 0.1], [0.3, 0.1, 0.1], [0.3, 0.3, 0.1], [0.1, 0.3, 0.1]])
+        for indexed in (False, True):
+            with self.subTest(indexed=indexed):
+                stage = self._stage()
+                self._add_volume_body(stage, "/World/Soft")
+                mesh = UsdGeom.Mesh.Define(stage, "/World/Soft/Skin")
+                mesh.CreatePointsAttr([(9.0, 9.0, 9.0)] * 4)
+                mesh.CreateFaceVertexCountsAttr([4])
+                mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+                mesh.GetPrim().AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+                mesh.GetPrim().CreateAttribute(
+                    "physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray
+                ).Set(["bindPose"])
+                mesh.GetPrim().CreateAttribute(
+                    "physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray
+                ).Set(bind_points.tolist())
+                uv = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+                    "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+                )
+                uv.Set([(0, 0), (1, 0), (1, 1), (0, 1)])
+                if indexed:
+                    uv.SetIndices([3, 2, 1, 0])
+
+                model = self._import(stage).finalize()
+                self.assertEqual(model.deformable_visual_mesh_count, 1)
+                visuals = model.deformable_visuals()
+                model.update_deformable_visuals(model.state(), visuals)
+                corners = [0, 1, 2, 0, 2, 3]
+                assert_np_equal(visuals.points.numpy(), bind_points[corners], tol=1.0e-6)
+                expected_uvs = np.array([(0, 0), (1, 0), (1, 1), (0, 1)])
+                if indexed:
+                    expected_uvs = expected_uvs[::-1]
+                assert_np_equal(model.deformable_visual_meshes[0].uvs.numpy(), expected_uvs[corners], tol=1.0e-6)
+
     def test_invalid_simulation_bind_pose_skips_visual_binding(self):
         """An authored simulation bind pose with the wrong count is not replaced silently."""
         from pxr import Sdf
