@@ -396,7 +396,8 @@ with its authored materials and lights. :meth:`~newton.viewer.ViewerRTX.log_stat
 prim at the body's label, as produced by :meth:`~newton.ModelBuilder.add_usd`, keeping the prim's authored scale. The
 viewer keeps its own prims under ``/__newton_viewer`` and never clears the stage. Each
 :meth:`~newton.viewer.ViewerRTX.end_frame` writes above the stage's current write floor and then advances it, so finish
-your own writes to the stage before calling it. The stage needs GPU hierarchy computation:
+your own writes to the stage before calling it. Bound prims keep their last world pose after the viewer releases the
+stage. The stage needs GPU hierarchy computation:
 
 .. code-block:: python
 

@@ -236,8 +236,9 @@ class ViewerRTX(ViewerUSD):
                 geometry, and ``environment`` must stay ``"default"``.
                 :meth:`end_frame` writes above the stage's current write floor
                 and then advances it, so finish other writes to the stage
-                first. Requires OVRTX 0.4 and OVStage 0.2 or newer, and a stage
-                created with GPU hierarchy computation.
+                first. Bound prims keep their last world pose after the viewer
+                releases the stage. Requires OVRTX 0.4 and OVStage 0.2 or
+                newer, and a stage created with GPU hierarchy computation.
             render_settings: ``omni:rtx:*`` attributes to author on the
                 viewer's render product as ``{name: (usd_type_name, value)}``,
                 e.g. ``{"omni:rtx:pt:samplesPerPixel": ("uint", 4)}``. The type
