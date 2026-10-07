@@ -382,6 +382,113 @@ The :ref:`live plots <viewer-live-plots>` use ``imgui_bundle``, included in
 the ``examples`` dependencies. Install both RTX viewer and UI dependencies
 with ``uv sync --extra rtx --extra examples``.
 
+**Lighting and render settings**: For custom lighting, pass ``environment="none"`` and add a USD layer with your
+lights, e.g. an HDR ``DomeLight``, via :meth:`~newton.viewer.ViewerRTX.add_background_usd` before the first frame.
+``render_settings`` authors ``omni:rtx:*`` attributes on the viewer's render product:
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerRTX(
+        environment="none", render_settings={"omni:rtx:pt:samplesPerPixel": ("uint", 4)}
+    )
+    viewer.add_background_usd("lighting.usda")
+
+.. _viewer-rtx-existing-stage:
+
+Rendering an existing USD scene
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+With OVStage 0.2 or newer, ``ViewerRTX(ovstage=stage)`` renders a populated ``ovstage.Stage`` with its authored
+materials and lights instead of building a scene from the model. The stage presents the scene; Newton only moves it:
+
+- **Bodies**: :meth:`~newton.viewer.ViewerRTX.set_model` binds each Newton body to the stage prim whose path equals the
+  body's ``body_label``, and :meth:`~newton.viewer.ViewerRTX.log_state` writes the body's simulated world pose to that
+  prim, keeping the prim's authored scale. :meth:`~newton.ModelBuilder.add_usd` labels each body with the path of its
+  rigid-body prim, so importing the scene the stage holds yields matching labels. Bodies without a matching prim are
+  not rendered and trigger a warning; bodies sharing a label are rejected. Bodies merged by
+  ``collapse_fixed_joints`` leave their prims without a body; such prims move only if they are descendants of the
+  prim they were merged into.
+- **Frames**: If the import re-oriented the stage, through up-axis alignment or ``xform``,
+  :meth:`~newton.viewer.ViewerRTX.set_model` infers the model-to-stage transform from the root bodies, whose poses must
+  still match the stage's. Bodies then stay at their authored poses, and the camera and debug geometry follow the
+  model's frame. Without bound root bodies, the viewer assumes both frames coincide.
+- **Other geometry**: The viewer generates no geometry for the model's shapes, cloth, or particles, and does not
+  update the stage's deformable prims. ``show_triangles``, which is off by default here, and ``show_particles`` draw
+  the simulated cloth and particles as debug overlays.
+- **Stage ownership**: The viewer keeps its camera, render product, and debug geometry under ``/__newton_viewer`` and
+  never clears the stage. :meth:`~newton.viewer.ViewerRTX.set_model` and each
+  :meth:`~newton.viewer.ViewerRTX.end_frame` write above the stage's current write floor and then advance it, so finish
+  your own writes to the stage before calling them. Bound prims keep their last world
+  pose after the viewer releases the stage. The stage needs GPU hierarchy computation.
+
+To replicate an asset across environments, clone it in the stage and replicate the same prototype with
+:meth:`~newton.ModelBuilder.replicate`. Each world must sit where the stage places its clone, and its body labels must
+name the clone's prims. The example below imports ``env_0`` as the prototype, makes its labels relative to ``env_0``,
+and lets ``label_prefixes`` root each world's labels at its own environment:
+
+.. code-block:: python
+
+    import ovrtx
+
+    ovrtx.register_schema_paths()
+
+    import ovstage
+    import warp as wp
+    from pxr import Gf, Usd, UsdGeom, UsdLux
+
+    import newton
+    import newton.examples
+    import newton.viewer
+
+    env_count, spacing = 4, 2.5
+    envs = [f"/World/envs/env_{i}" for i in range(env_count)]
+
+    # Author lights, a ground, one placed Xform per environment, and the robot in env_0.
+    scene = Usd.Stage.CreateNew("scene.usda")
+    UsdGeom.SetStageUpAxis(scene, UsdGeom.Tokens.z)
+    UsdLux.DomeLight.Define(scene, "/World/Light").CreateIntensityAttr(1000.0)
+    ground = UsdGeom.Plane.Define(scene, "/World/Ground")
+    ground.CreateWidthAttr(50.0)
+    ground.CreateLengthAttr(50.0)
+    for i, env in enumerate(envs):
+        UsdGeom.Xform.Define(scene, env).AddTranslateOp().Set(Gf.Vec3d(spacing * i, 0.0, 0.0))
+    scene.DefinePrim(f"{envs[0]}/Robot").GetReferences().AddReference(newton.examples.get_asset("ant.usda"))
+    scene.Save()
+
+    # Populate the stage and clone the robot into the other environments.
+    stage = ovstage.Stage(
+        "scene",
+        config=ovstage.StageConfig(
+            runtime_default_hierarchy_computation_model=ovstage.HierarchyComputationModel.GPU_INCREMENTAL
+        ),
+    )
+    ovstage.population.open_usd(stage, "scene.usda", ordinal=1)
+    stage.clone(f"{envs[0]}/Robot", [f"{env}/Robot" for env in envs[1:]], ordinal=2)
+    stage.advance_write_floor(2).wait()
+
+    # Replicate env_0 at the stage's placements, labeled with each environment's prim paths.
+    prototype = newton.ModelBuilder()
+    prototype.add_usd("scene.usda", root_path=envs[0])
+    for labels in (prototype.body_label, prototype.joint_label, prototype.shape_label, prototype.articulation_label):
+        labels[:] = [label.removeprefix(f"{envs[0]}/") for label in labels]
+    builder = newton.ModelBuilder()
+    builder.replicate(
+        prototype,
+        env_count,
+        xforms=[wp.transform((spacing * i, 0.0, 0.0), wp.quat_identity()) for i in range(env_count)],
+        label_prefixes=envs,
+    )
+    builder.add_ground_plane()
+    model = builder.finalize()
+
+    viewer = newton.viewer.ViewerRTX(ovstage=stage)
+    viewer.set_model(model)
+
+    # at every frame:
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
+
 Recording and Offline Viewers
 -----------------------------
 

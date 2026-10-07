@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 from typing import Any
 
@@ -32,7 +33,7 @@ def _has_attribute_docstring(app: Any, name: str) -> bool:
     if not isinstance(parent, type):
         return False
     for base in parent.__mro__:
-        if name in base.__dict__ or name in base.__dict__.get("__annotations__", {}):
+        if name in base.__dict__ or name in inspect.get_annotations(base):
             try:
                 docs = ModuleAnalyzer.for_module(base.__module__).find_attr_docs()
             except PycodeError:

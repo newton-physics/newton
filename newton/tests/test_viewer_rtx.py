@@ -4,7 +4,10 @@
 """Test ViewerRTX compatibility and runtime scene updates."""
 
 import builtins
+import importlib.metadata
 import importlib.util
+import os
+import tempfile
 import unittest
 import warnings
 from unittest import mock
@@ -12,10 +15,25 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
+import newton
 from newton.viewer import ViewerRTX
 
 OVRTX_AVAILABLE = importlib.util.find_spec("ovrtx") is not None
 OVSTAGE_AVAILABLE = importlib.util.find_spec("ovstage") is not None
+
+
+def _borrowed_stage_supported() -> bool:
+    """Return whether the installed OVRTX and OVStage can render a borrowed stage."""
+    if not (OVRTX_AVAILABLE and OVSTAGE_AVAILABLE):
+        return False
+    from newton._src.viewer.viewer_rtx import _version_prefix  # noqa: PLC0415
+
+    return _version_prefix(importlib.metadata.version("ovrtx"), "OVRTX") >= (0, 4) and _version_prefix(
+        importlib.metadata.version("ovstage"), "OVStage"
+    ) >= (0, 2)
+
+
+BORROWED_STAGE_SUPPORTED = _borrowed_stage_supported()
 
 
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
@@ -56,6 +74,111 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
             self.assertRaisesRegex(ImportError, "OVRTX 0.4 or newer"),
         ):
             ViewerRTX(headless=True)
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_requires_ovstage_0_2(self):
+        """Reject a borrowed stage on OVStage 0.1, whose GPU hierarchy computation misplaces prims."""
+        import ovrtx
+        import ovstage
+
+        with (
+            mock.patch.object(ovrtx, "__version__", "0.4.1"),
+            mock.patch.object(ovstage, "__version__", "0.1.1.355824"),
+            self.assertRaisesRegex(ValueError, "OVStage 0.2 or newer"),
+        ):
+            ViewerRTX(headless=True, ovstage=object())
+
+    def _borrowed_viewer(self, labels, found, positions=None):
+        """Build a borrowed-stage viewer whose stage holds the labels in ``found`` at the origin."""
+        import ovrtx
+        import ovstage
+
+        builder = newton.ModelBuilder()
+        for i, label in enumerate(labels):
+            position = (0.0, 0.0, 0.0) if positions is None else positions[i]
+            builder.add_body(xform=wp.transform(position, wp.quat_identity()), label=label)
+        model = builder.finalize(device="cpu")
+        with (
+            mock.patch.object(ovrtx, "__version__", "0.5.0"),
+            mock.patch.object(ovstage, "__version__", "0.2.0"),
+        ):
+            viewer = ViewerRTX(headless=True, ovstage=object())
+        scale = np.diag([2.0, 2.0, 2.0, 1.0])
+
+        def read(paths):
+            return np.stack([scale if path in found else np.full((4, 4), np.nan) for path in paths])
+
+        viewer._read_borrowed_world_matrices = read
+        return viewer, model
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_binds_bodies_by_label(self):
+        """Drive the stage prim at each body's label and warn about bodies without one."""
+        viewer, model = self._borrowed_viewer(["/World/a", "/World/missing", "code_body"], {"/World/a"})
+        try:
+            with self.assertWarnsRegex(UserWarning, "2 of 3 bodies"):
+                viewer.set_model(model)
+            self.assertEqual(viewer._prim_paths, ("/World/a",))
+            np.testing.assert_allclose(viewer._prim_linear.numpy()[0], np.diag([2.0, 2.0, 2.0]))
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_keeps_model_frame_for_inconsistent_poses(self):
+        """Warn and skip the frame correction when root bodies disagree on the stage-from-model transform."""
+        viewer, model = self._borrowed_viewer(
+            ["/World/a", "/World/b"], {"/World/a", "/World/b"}, positions=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+        )
+        try:
+            with self.assertWarnsRegex(UserWarning, "more than one rigid transform"):
+                viewer.set_model(model)
+            self.assertIsNone(viewer._stage_from_model)
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_rejects_shared_labels(self):
+        """Reject bodies that would drive the same stage prim."""
+        viewer, model = self._borrowed_viewer(["/World/a", "/World/a"], {"/World/a"})
+        try:
+            with self.assertRaisesRegex(ValueError, "share a label"):
+                viewer.set_model(model)
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_hides_simulated_cloth_by_default(self):
+        """Leave cloth to the stage unless the simulated cloth is requested as an overlay."""
+        viewer, model = self._borrowed_viewer(["/World/a"], {"/World/a"})
+        try:
+            self.assertFalse(viewer.show_triangles)
+            viewer.set_model(model)
+            self.assertFalse(viewer.show_triangles)
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_rejects_layers(self):
+        """Reject user layers, since a borrowed stage binds the bodies of a single model."""
+        viewer, _ = self._borrowed_viewer([], set())
+        try:
+            with self.assertRaisesRegex(ValueError, "does not support layers"):
+                viewer.activate("robot")
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_rejects_lighting_preset(self):
+        """Reject a lighting preset, since a borrowed stage brings its own lights."""
+        import ovrtx
+        import ovstage
+
+        with (
+            mock.patch.object(ovrtx, "__version__", "0.5.0"),
+            mock.patch.object(ovstage, "__version__", "0.2.0"),
+            self.assertRaisesRegex(ValueError, "lighting from the stage"),
+        ):
+            ViewerRTX(headless=True, ovstage=object(), environment="studio")
 
 
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
@@ -244,6 +367,34 @@ def Xform "World"
         self.viewer._rtx.add_usd_reference_from_string.assert_not_called()
         self.viewer._rtx.remove_usd.assert_not_called()
 
+    def test_replacing_runtime_prim_releases_its_queries(self):
+        """Drop cached queries of a replaced runtime prim so repeated replacements do not accumulate them."""
+        from pxr import Usd, UsdGeom
+
+        self.viewer._rtx = mock.Mock()
+        self.viewer.stage = Usd.Stage.CreateInMemory()
+        UsdGeom.Xform.Define(self.viewer.stage, "/World/Lines")
+        self.viewer._frame_index = 0
+        self.viewer._runtime_prim_handles = {}
+        self.viewer._runtime_prim_paths = {}
+        self.viewer._runtime_prim_serial = 0
+        self.viewer._pending_hidden_prim_paths = set()
+
+        for _ in range(3):
+            runtime_path = self.viewer._replace_runtime_prim("/World/Lines")
+            self.viewer._get_ovstage_query([runtime_path])
+            self.viewer._get_ovstage_query([f"{runtime_path}/instance_0", f"{runtime_path}/instance_1"])
+        self.viewer._get_ovstage_query(["/World/A"])
+
+        self.assertEqual(
+            set(self.viewer._ovstage_queries),
+            {
+                (runtime_path,),
+                (f"{runtime_path}/instance_0", f"{runtime_path}/instance_1"),
+                ("/World/A",),
+            },
+        )
+
     def test_end_frame_waits_for_async_render_before_stage_writes(self):
         """Finish the previous async stage read before publishing the next frame."""
         events = []
@@ -270,6 +421,116 @@ def Xform "World"
         self.assertEqual(events[:2], ["wait", "write"])
 
 
+def _column_matrix(xform: wp.transform) -> np.ndarray:
+    """Return the 4x4 column-vector matrix of a transform."""
+    x, y, z, w = (float(v) for v in xform[3:])
+    out = np.eye(4)
+    out[:3, :3] = [
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ]
+    out[:3, 3] = [float(v) for v in xform[:3]]
+    return out
+
+
+class TestViewerRTXPrimWorldMatrices(unittest.TestCase):
+    def test_matrices_compose_local_body_and_world_placement(self):
+        """Write ``(layer · offset · body · local · scale)ᵀ`` for body-attached, static, and unplaced prims."""
+        from newton._src.viewer.viewer_rtx import write_prim_world_matrices  # noqa: PLC0415
+
+        rng = np.random.default_rng(0)
+
+        def random_xform():
+            quat = rng.normal(size=4)
+            return wp.transform(wp.vec3(*rng.normal(size=3)), wp.quat(*(quat / np.linalg.norm(quat))))
+
+        body_q = [random_xform(), random_xform()]
+        layer = random_xform()
+        offsets = rng.normal(size=(2, 3))
+        # (body, world); worlds -1 and 5 have no offset.
+        rows = [(0, 0), (-1, -1), (1, 1), (1, 5)]
+        local = [random_xform() for _ in rows]
+        scales = rng.uniform(0.5, 2.0, size=(len(rows), 3))
+
+        linear = np.stack([_column_matrix(xf)[:3, :3] * scale for xf, scale in zip(local, scales, strict=True)])
+        translation = np.stack([_column_matrix(xf)[:3, 3] for xf in local])
+        out = wp.empty(len(rows), dtype=wp.mat44d)
+        wp.launch(
+            write_prim_world_matrices,
+            dim=len(rows),
+            inputs=[
+                wp.array(body_q, dtype=wp.transform),
+                wp.array([body for body, _ in rows], dtype=int),
+                wp.array(linear, dtype=wp.mat33),
+                wp.array(translation, dtype=wp.vec3),
+                wp.array([world for _, world in rows], dtype=int),
+                wp.array(offsets, dtype=wp.vec3),
+                layer,
+                0,
+            ],
+            outputs=[out],
+        )
+
+        for row, ((body, world), xf, scale) in enumerate(zip(rows, local, scales, strict=True)):
+            expected = _column_matrix(xf) @ np.diag([*scale, 1.0])
+            if body >= 0:
+                expected = _column_matrix(body_q[body]) @ expected
+            if 0 <= world < len(offsets):
+                expected[:3, 3] += offsets[world]
+            expected = _column_matrix(layer) @ expected
+            np.testing.assert_allclose(out.numpy()[row], expected.T, atol=1.0e-5)
+
+
+@unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
+class TestViewerRTXRenderSettings(unittest.TestCase):
+    def test_render_settings_override_render_product_attributes(self):
+        """Author typed render settings on the render product, overriding the viewer's defaults."""
+        from pxr import Sdf
+
+        viewer = ViewerRTX(
+            headless=True,
+            render_settings={
+                "omni:rtx:pt:samplesPerPixel": ("UInt", 4),
+                "omni:rtx:quality": ("Int", 100),
+                "omni:rtx:post:tonemap:cm2Factor": ("Float", 1.5),
+            },
+        )
+        try:
+            viewer._add_camera_lights_and_render_product()
+            product = viewer.stage.GetPrimAtPath(viewer._render_product_path)
+            spp = product.GetAttribute("omni:rtx:pt:samplesPerPixel")
+            self.assertEqual((spp.GetTypeName(), spp.Get()), (Sdf.ValueTypeNames.UInt, 4))
+            self.assertEqual(product.GetAttribute("omni:rtx:quality").Get(), 100)
+            factor = product.GetAttribute("omni:rtx:post:tonemap:cm2Factor")
+            self.assertEqual((factor.GetTypeName(), factor.Get()), (Sdf.ValueTypeNames.Float, 1.5))
+        finally:
+            viewer.close()
+
+    def test_render_settings_accept_usd_type_names(self):
+        """Accept USD type names as well as ``Sdf.ValueTypeNames`` attributes, and reject unknown types up front."""
+        from pxr import Sdf
+
+        viewer = ViewerRTX(
+            headless=True,
+            render_settings={
+                "omni:rtx:pt:samplesPerPixel": ("uint", 4),
+                "omni:rtx:post:tonemap:op": ("token", "aces"),
+            },
+        )
+        try:
+            viewer._add_camera_lights_and_render_product()
+            product = viewer.stage.GetPrimAtPath(viewer._render_product_path)
+            self.assertEqual(product.GetAttribute("omni:rtx:pt:samplesPerPixel").GetTypeName(), Sdf.ValueTypeNames.UInt)
+            self.assertEqual(product.GetAttribute("omni:rtx:post:tonemap:op").GetTypeName(), Sdf.ValueTypeNames.Token)
+        finally:
+            viewer.close()
+
+        for type_name in ("bogus", "Find"):
+            with self.subTest(type_name=type_name), self.assertRaisesRegex(ValueError, "samplesPerPixel"):
+                ViewerRTX(headless=True, render_settings={"omni:rtx:pt:samplesPerPixel": (type_name, 4)})
+
+
 class TestViewerRTXRenderOutput(unittest.TestCase):
     def test_ldr_color_lookup_accepts_legacy_and_ovrtx_05_names(self):
         """Find the color output returned by legacy and OVRTX 0.5 renderers."""
@@ -277,7 +538,8 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
             with self.subTest(name=name):
                 render_var = object()
                 frame = mock.Mock(render_vars={name: render_var})
-                self.assertIs(ViewerRTX._get_ldr_color_render_var(frame), render_var)
+                viewer = mock.Mock(_render_var_path="/Render/Vars/LdrColor")
+                self.assertIs(ViewerRTX._get_ldr_color_render_var(viewer, frame), render_var)
 
     @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
     def test_display_uses_ovrtx_05_color_output(self):
@@ -340,6 +602,208 @@ class TestViewerRTXRendering(unittest.TestCase):
                     wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3),
                     wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3),
                     wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3),
+                )
+                viewer.end_frame()
+        finally:
+            viewer.close()
+
+    _BORROWED_USDA = """#usda 1.0
+(
+    upAxis = "{up_axis}"
+)
+def Xform "World"
+{{
+    double3 xformOp:translate = (0, 0, 0.5)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Xform "Body" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {{
+        double3 xformOp:translate = (1, 2, 3)
+        float3 xformOp:rotateXYZ = (10, 20, 30)
+        float3 xformOp:scale = (2, 2, 2)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+        def Cube "geom" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {{
+            double size = 0.2
+        }}
+    }}
+}}
+"""
+
+    def _open_borrowed_stage(self, usda: str):
+        """Write ``usda`` to a file and populate a borrowed stage from it; return the stage and file path."""
+        import ovrtx
+        import ovstage
+
+        ovrtx.register_schema_paths()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "scene.usda")
+        with open(path, "w") as f:
+            f.write(usda)
+        stage = ovstage.Stage(
+            "newton.test.borrowed",
+            config=ovstage.StageConfig(
+                runtime_default_hierarchy_computation_model=ovstage.HierarchyComputationModel.GPU_INCREMENTAL
+            ),
+        )
+        self.addCleanup(stage.destroy)
+        ovstage.population.open_usd(stage, path, ordinal=1)
+        stage.advance_write_floor(1).wait()
+        return stage, path
+
+    def _borrowed_scene(self, up_axis="Z", **add_usd_kwargs):
+        """Populate a borrowed stage and import the same scene into a model."""
+        stage, path = self._open_borrowed_stage(self._BORROWED_USDA.format(up_axis=up_axis))
+        builder = newton.ModelBuilder()
+        builder.add_usd(path, **add_usd_kwargs)
+        return stage, builder.finalize()
+
+    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
+    def test_borrowed_stage_writes_above_caller_advanced_floor(self):
+        """Keep writing to a borrowed stage after its owner advances the write floor."""
+        import ovstage
+
+        stage, model = self._borrowed_scene()
+        state = model.state()
+        viewer = ViewerRTX(headless=True, async_rendering=False, ovstage=stage)
+        try:
+            viewer.set_model(model)
+            for frame in range(2):
+                if frame:
+                    stage.advance_write_floor(viewer._ovstage_ordinal + 5, ovstage.Scope.ALL).wait()
+                viewer.begin_frame(frame / 60.0)
+                viewer.log_state(state)
+                viewer.end_frame()
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
+    def test_borrowed_stage_keeps_authored_poses_until_first_state(self):
+        """Render bound bodies at their authored poses on frames before the first logged state."""
+        stage, model = self._borrowed_scene()
+        viewer = ViewerRTX(headless=True, async_rendering=False, ovstage=stage)
+        try:
+            authored = viewer._read_borrowed_world_matrices(["/World/Body"])
+            viewer.set_model(model)
+            viewer.begin_frame(0.0)
+            viewer.end_frame()
+            np.testing.assert_allclose(viewer._read_borrowed_world_matrices(["/World/Body"]), authored, atol=1.0e-5)
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
+    def test_borrowed_stage_renders_reoriented_import_in_stage_frame(self):
+        """Keep bodies at their stage poses when the import rotated a Y-up stage and applied an ``xform``."""
+        xform = wp.transform((5.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7))
+        stage, model = self._borrowed_scene(up_axis="Y", xform=xform)
+        viewer = ViewerRTX(headless=True, async_rendering=False, ovstage=stage)
+        try:
+            paths = ["/World/Body", viewer._camera_prim_path]
+            authored = viewer._read_borrowed_world_matrices(paths)[0]
+            viewer.set_model(model)
+            viewer.begin_frame(0.0)
+            viewer.log_state(model.state())
+            viewer.end_frame()
+            body, camera = viewer._read_borrowed_world_matrices(paths)
+            np.testing.assert_allclose(body, authored, atol=1.0e-5)
+            # The camera follows the model frame, so its view of the bodies is unchanged.
+            rigid = authored.copy()
+            rigid[:3, :3] /= np.linalg.norm(rigid[:3, :3], axis=1)[:, None]
+            stage_from_model = np.linalg.solve(_column_matrix(model.body_q.numpy()[0]).T, rigid)
+            np.testing.assert_allclose(camera, viewer._compute_camera_matrix() @ stage_from_model, atol=1.0e-5)
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
+    def test_borrowed_stage_binds_replicated_clones(self):
+        """Bind each replicated world's bodies to the prims the stage cloned into its environment."""
+        envs = [f"/World/envs/env_{i}" for i in range(3)]
+        env_xforms = "".join(
+            f"""
+        def Xform "env_{i}"
+        {{
+            double3 xformOp:translate = ({3.0 * i}, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }}"""
+            for i in range(1, len(envs))
+        )
+        stage, path = self._open_borrowed_stage(
+            f"""#usda 1.0
+(
+    upAxis = "Z"
+)
+def Xform "World"
+{{
+    def Xform "envs"
+    {{
+        def Xform "env_0"
+        {{
+            def Xform "Body" (
+                prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+            )
+            {{
+                double3 xformOp:translate = (0, 0, 1)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+                def Cube "geom" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI"]
+                )
+                {{
+                    double size = 0.2
+                }}
+            }}
+        }}{env_xforms}
+    }}
+}}
+"""
+        )
+        stage.clone(f"{envs[0]}/Body", [f"{env}/Body" for env in envs[1:]], ordinal=2)
+        stage.advance_write_floor(2).wait()
+
+        prototype = newton.ModelBuilder()
+        prototype.add_usd(path, root_path=envs[0])
+        prototype.body_label[:] = [label.removeprefix(f"{envs[0]}/") for label in prototype.body_label]
+        builder = newton.ModelBuilder()
+        builder.replicate(
+            prototype,
+            len(envs),
+            xforms=[wp.transform((3.0 * i, 0.0, 0.0), wp.quat_identity()) for i in range(len(envs))],
+            label_prefixes=envs,
+        )
+        model = builder.finalize()
+        state = model.state()
+        body_q = state.body_q.numpy()
+        body_q[:, 2] += 0.5
+        state.body_q.assign(body_q)
+
+        viewer = ViewerRTX(headless=True, async_rendering=False, ovstage=stage)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", UserWarning)
+                viewer.set_model(model)
+            viewer.begin_frame(0.0)
+            viewer.log_state(state)
+            viewer.end_frame()
+            world = viewer._read_borrowed_world_matrices([f"{env}/Body" for env in envs])
+            np.testing.assert_allclose(world[:, 3, :3], [[3.0 * i, 0.0, 1.5] for i in range(len(envs))], atol=1.0e-5)
+        finally:
+            viewer.close()
+
+    def test_resizing_line_batch_after_first_frame(self):
+        """Resize a line batch created before the first frame once rendering has started."""
+        viewer = ViewerRTX(headless=True, async_rendering=False)
+        try:
+            for frame, count in enumerate((2, 2, 5)):
+                viewer.begin_frame(frame / 60.0)
+                viewer.log_lines(
+                    "/resized_lines",
+                    wp.array([wp.vec3(float(i), 0.0, 0.0) for i in range(count)], dtype=wp.vec3),
+                    wp.array([wp.vec3(float(i), 0.0, 1.0) for i in range(count)], dtype=wp.vec3),
+                    (0.0, 1.0, 0.0),
                 )
                 viewer.end_frame()
         finally:
