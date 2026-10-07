@@ -75,6 +75,7 @@ from .rigid_vbd_kernels import (
     compute_body_particle_contact_forces,
     compute_rigid_contact_forces,
     compute_rod_dahl_parameters,
+    create_solve_rigid_body,
     forward_step_rigid_bodies,
     init_body_body_contact_materials,
     init_body_body_contacts_alm,
@@ -84,7 +85,6 @@ from .rigid_vbd_kernels import (
     refresh_joint_material_params,
     reset_rigid_state,
     snapshot_body_body_contact_history,
-    solve_rigid_body,
     step_body_body_contact_C0_lambda,
     step_joint_C0_lambda_rho,
     update_body_velocity,
@@ -894,9 +894,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         )
 
         options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
+        self._solve_rigid_body_kernel = create_solve_rigid_body(model.tendon_count > 0)
         if integrates_rigid_bodies:
             rigid_modules = (
                 rigid_vbd_kernels,
+                self._solve_rigid_body_kernel.module,
                 accumulate_body_body_contacts_per_body.module,
                 compute_rigid_contact_forces.module,
                 update_duals_body_body_contacts.module,
@@ -4278,7 +4280,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 )
 
             wp.launch(
-                kernel=solve_rigid_body,
+                kernel=self._solve_rigid_body_kernel,
                 inputs=[
                     dt,
                     color_group,

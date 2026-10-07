@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton import Axis, TendonGuideType
+from newton._src.solvers.vbd.rigid_vbd_kernels import create_solve_rigid_body
 from newton.tests.test_tendon_capstan import (
     _moving_rolling_route_material_error,
     build_dynamic_pulley_atwood,
@@ -69,6 +70,48 @@ def _hinge_z_angle(body_q, body_idx):
 
 def _make_tendon_vbd_solver(model):
     return newton.solvers.SolverVBD(model, **TENDON_VBD_SOLVER_KWARGS)
+
+
+def test_vbd_no_tendon_specialization(test, device):
+    """Match the tendon-enabled kernel on empty routes, including graph replay and reset."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        free = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        hinged = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_ball(parent=-1, child=hinged)
+        builder.add_articulation([joint])
+        builder.color()
+        model = builder.finalize()
+        solvers = [newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True) for _ in range(2)]
+        test.assertIs(solvers[0]._solve_rigid_body_kernel, create_solve_rigid_body(False))
+        solvers[1]._solve_rigid_body_kernel = create_solve_rigid_body(True)
+        states = [(model.state(), model.state()) for _ in solvers]
+        control = model.control()
+
+        def advance(solver, pair):
+            solver.step(pair[0], pair[1], control, None, 1.0 / 120.0)
+            solver.step(pair[1], pair[0], control, None, 1.0 / 120.0)
+
+        for solver, pair in zip(solvers, states, strict=True):
+            advance(solver, pair)
+        for graph_mode in (False, True):
+            if graph_mode and not wp.get_device(device).is_cuda:
+                continue
+            for solver, pair in zip(solvers, states, strict=True):
+                solver.reset(state=pair[0])
+                if graph_mode:
+                    with wp.ScopedCapture() as capture:
+                        advance(solver, pair)
+                    for _ in range(3):
+                        wp.capture_launch(capture.graph)
+                else:
+                    for _ in range(3):
+                        advance(solver, pair)
+            np.testing.assert_array_equal(states[0][0].body_q.numpy(), states[1][0].body_q.numpy())
+            np.testing.assert_array_equal(states[0][0].body_qd.numpy(), states[1][0].body_qd.numpy())
+            poses = states[0][0].body_q.numpy()
+            test.assertLess(poses[free, 2], 0.0)
+            np.testing.assert_allclose(poses[hinged, :3], 0.0, atol=1.0e-4)
 
 
 def build_single_span_tendon():
@@ -1475,6 +1518,7 @@ add_test(
     test_vbd_moving_rolling_route_conserves_material,
 )
 add_test(TestTendonVBD, "vbd_equal_weight_atwood", devices, test_vbd_equal_weight_atwood)
+add_test(TestTendonVBD, "vbd_no_tendon_specialization", devices, test_vbd_no_tendon_specialization)
 
 
 if __name__ == "__main__":
