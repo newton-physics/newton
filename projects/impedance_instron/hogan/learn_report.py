@@ -21,7 +21,7 @@ import numpy as np
 from ..cartesian import data as reference_data
 from ..cartesian import profile as profile_data
 from ..cartesian.shoe import Shoe
-from .batch import reference_timing, schedule_impedance
+from .batch import pchip, pchip_slopes, reference_timing, schedule_impedance
 from .learn import _load_plan
 from .mechanics import RestOfBody, chain_from_profile
 from .report import _CSS, BASELINE, COORDINATE_INFO, MEASURED, ROTATIONAL, RUN_COLORS, _figure, _plot, _table
@@ -116,14 +116,18 @@ def _gain_plots(schedule, labels: list[str], learned: str) -> str:
     phi = np.linspace(knots[0], knots[-1], 301)
     figures = []
     index = {label: i for i, label in enumerate(labels)}
+
+    def curve(table, label, channel):
+        values = schedule[table][index[label], :, channel]
+        return pchip(knots, values, pchip_slopes(knots, values), phi)
+
     for name in ROTATIONAL:
         channel = 2 + ROTATIONAL.index(name)
         _, _, k_unit, d_unit = COORDINATE_INFO[name]
         for table, unit, title in (("stiffness", k_unit, "K"), ("damping", d_unit, "D")):
-            values = schedule[table]
             series = [
-                ("baseline", phi, np.interp(phi, knots, values[index["baseline"], :, channel]), BASELINE, "6 4"),
-                ("learned", phi, np.interp(phi, knots, values[index[learned], :, channel]), LEARNED_COLOR, ""),
+                ("baseline", phi, curve(table, "baseline", channel), BASELINE, "6 4"),
+                ("learned", phi, curve(table, learned, channel), LEARNED_COLOR, ""),
             ]
             figures.append(
                 _figure(
@@ -242,7 +246,9 @@ def write_report(run: Path) -> Path:
         eval_change=change(eval_agg, "mean_loss"),
         aggregate_table=_aggregate_table(summary, learned),
         eval_table=_eval_table(summary, learned),
-        convergence=_figure("Search convergence", convergence, "Training score includes the small log-gain penalty."),
+        convergence=_figure(
+            "Search convergence", convergence, "Training score includes the gain-size and roughness penalties."
+        ),
         train_loss=_figure("Training stances", _loss_plot(summary, "train", learned)),
         eval_loss=_figure("Held-out stances", _loss_plot(summary, "eval", learned)) if eval_rows else "",
         gain_plots=_gain_plots(schedule, labels, learned),
@@ -253,6 +259,8 @@ def write_report(run: Path) -> Path:
         population=search["population"],
         generations=search["generations"],
         elite=search["elite_count"],
+        regularization=search.get("regularization", 0.01),
+        roughness=search.get("roughness", 0.0),
         phase=summary["phase"],
         scales=summary["loss_scales"],
         run=html.escape(str(run)),
@@ -285,13 +293,13 @@ _PAGE = """<!doctype html>
 {example}
 </section>
 <section id="schedule"><h2>2. Learned schedule</h2>
-<p>Gait phase &phi;: 0&ndash;1 from the window start to measured touchdown, 1&ndash;2 over measured contact (shaded), 2&ndash;3 from toe-off to the window end. Gains are piecewise linear between {knot_count} knots at &phi; = {knots}. Hip x and z gains stay at zero, so the body is carried by the shoe alone.</p>
+<p>Gait phase &phi;: 0&ndash;1 from the window start to measured touchdown, 1&ndash;2 over measured contact (shaded), 2&ndash;3 from toe-off to the window end. Gains follow a monotone cubic (PCHIP) curve through {knot_count} knots at &phi; = {knots}: smooth, with no overshoot between knots. Hip x and z gains stay at zero, so the body is carried by the shoe alone.</p>
 <div class="grid">{gain_plots}</div>
 </section>
 <section id="method"><h2>3. Method</h2>
 <div class="equation">&tau; = &tau;<sub>ff</sub>(t) + K(&phi;) (q<sub>ref</sub>(t) &minus; q) + D(&phi;) (q̇<sub>ref</sub>(t) &minus; q̇)</div>
 <p>Each stance keeps its own reference, inverse-dynamics feedforward, and static height registration (step 1). The pelvis, hip, knee, and ankle K and D are searched as log offsets about the step-1 baseline (K = 500, 500, 300, 300; D critically damped on the mean initial inertia). Reference phase: <b>{phase}</b>.</p>
-<p>Per-stance loss: mean over the four angles of (RMSE / {scales[joint_rad]:g} rad)&sup2; + mean over hip x, z of (RMSE / {scales[hip_m]:g} m)&sup2; + mean over Fx, Fz of (RMSE / {scales[force_n]:g} N)&sup2;, plus {scales[failure_penalty]:g} (scaled up by the unfinished fraction) for a failed rollout. The search minimizes the mean over training stances.</p>
+<p>Per-stance loss: mean over the four angles of (RMSE / {scales[joint_rad]:g} rad)&sup2; + mean over hip x, z of (RMSE / {scales[hip_m]:g} m)&sup2; + mean over Fx, Fz of (RMSE / {scales[force_n]:g} N)&sup2;, plus {scales[failure_penalty]:g} (scaled up by the unfinished fraction) for a failed rollout. The search minimizes the mean over training stances plus {regularization:g} &times; the mean squared log offset and {roughness:g} &times; the mean squared second difference of log offsets across knots, which keeps K(&phi;) and D(&phi;) free of narrow spikes.</p>
 <p>Search: cross-entropy method, {population} candidates per generation (the current mean plus {population} &minus; 1 samples), {elite} elites, {generations} generations. Every candidate runs all training stances in one batched CUDA rollout: one world per (stance, candidate) with the batched column-bed shoe and the chain dynamics in double precision. The batched rollout reproduces the CPU rollout to five significant digits on FR3_2.</p>
 {convergence}
 </section>

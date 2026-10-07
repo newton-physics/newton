@@ -215,6 +215,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--smoothing", type=float, default=0.7, help="CEM update weight of the elite statistics")
     parser.add_argument("--bound", type=float, default=3.0, help="Log-gain offset bound")
     parser.add_argument("--regularization", type=float, default=0.01, help="Weight on the mean squared log offset")
+    parser.add_argument(
+        "--roughness", type=float, default=0.1, help="Weight on the mean squared second difference of log offsets"
+    )
     parser.add_argument("--stances", type=int, help="Use only the first N training stances")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda:0")
@@ -276,6 +279,9 @@ def main(argv: list[str] | None = None) -> None:
         result = train.evaluate(*schedule.tables(theta))
         loss = stance_loss(result, steps)
         score = loss.mean(axis=1) + args.regularization * np.mean(np.square(theta), axis=1)
+        if len(args.knots) > 2:
+            curvature = np.diff(theta.reshape(-1, *schedule.shape), n=2, axis=1)
+            score += args.roughness * np.mean(np.square(curvature), axis=(1, 2, 3))
         order = np.argsort(score)
         elite = theta[order[:elite_count]]
         if score[order[0]] < best["score"]:
@@ -311,6 +317,7 @@ def main(argv: list[str] | None = None) -> None:
         "friction_model": args.friction_model,
         "registration": registrations,
         "knots_phase": list(args.knots),
+        "interpolation": "pchip",
         "baseline": {"stiffness": schedule.stiffness.tolist(), "damping": schedule.damping.tolist()},
         "loss_scales": {
             "joint_rad": JOINT_SCALE_RAD,
@@ -323,6 +330,8 @@ def main(argv: list[str] | None = None) -> None:
             "population": args.population,
             "generations": args.generations,
             "elite_count": elite_count,
+            "regularization": args.regularization,
+            "roughness": args.roughness,
             "seed": args.seed,
             "best_generation": best["generation"],
         },

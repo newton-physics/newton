@@ -12,7 +12,9 @@ are kept on the device, so batch size is bounded by the shoe state.
 
 Gains are scheduled on a normalized gait phase shared by all stances:
 ``[0, 1)`` from the start of the window to the reference touchdown, ``[1, 2)``
-over reference contact, and ``[2, 3]`` to the end of the window.
+over reference contact, and ``[2, 3]`` to the end of the window. Between
+knots the gains follow a monotone cubic (PCHIP) interpolant: C1-smooth, no
+overshoot, so nonnegative knot values give nonnegative gains.
 """
 
 from __future__ import annotations
@@ -28,7 +30,6 @@ from projects.digital_shoe.runtime import FoundationConfig
 
 from ..cartesian.gpu.foundation import FoundationFused
 from ..cartesian.shoe import Shoe
-from .control import Impedance
 from .mechanics import Chain
 from .plan import Plan
 from .rollout import Config
@@ -254,7 +255,7 @@ def _gait_phase(phase: wp.float64, timing: wp.vec3d):
 
 
 @wp.func
-def _gains(knots: wp.array[wp.float64], table: wp.array2d[Vec6], c: int, phi: wp.float64):
+def _gains(knots: wp.array[wp.float64], table: wp.array2d[Vec6], slope: wp.array2d[Vec6], c: int, phi: wp.float64):
     n = knots.shape[0]
     if n == 1 or phi <= knots[0]:
         return table[c, 0]
@@ -264,8 +265,19 @@ def _gains(knots: wp.array[wp.float64], table: wp.array2d[Vec6], c: int, phi: wp
     for j in range(n - 1):
         if knots[j] <= phi:
             i = j
-    w = (phi - knots[i]) / (knots[i + 1] - knots[i])
-    return (wp.float64(1.0) - w) * table[c, i] + w * table[c, i + 1]
+    h = knots[i + 1] - knots[i]
+    t = (phi - knots[i]) / h
+    t2 = t * t
+    t3 = t2 * t
+    one = wp.float64(1.0)
+    two = wp.float64(2.0)
+    three = wp.float64(3.0)
+    return (
+        (two * t3 - three * t2 + one) * table[c, i]
+        + ((t3 - two * t2 + t) * h) * slope[c, i]
+        + (three * t2 - two * t3) * table[c, i + 1]
+        + ((t3 - t2) * h) * slope[c, i + 1]
+    )
 
 
 @wp.func
@@ -367,6 +379,8 @@ def _advance(
     knots: wp.array[wp.float64],
     stiffness: wp.array2d[Vec6],
     damping: wp.array2d[Vec6],
+    stiffness_slope: wp.array2d[Vec6],
+    damping_slope: wp.array2d[Vec6],
     body_f: wp.array[wp.spatial_vector],
     fraction: wp.array[wp.float32],
     state: wp.array[Vec6],
@@ -405,8 +419,8 @@ def _advance(
     v_ref = _sample(ref_v, s, n, position)
     feedforward = _sample(ref_ff, s, n, position)
     phi = _gait_phase(phase, timing[s])
-    gain_k = _gains(knots, stiffness, c, phi)
-    gain_d = _gains(knots, damping, c, phi)
+    gain_k = _gains(knots, stiffness, stiffness_slope, c, phi)
+    gain_d = _gains(knots, damping, damping_slope, c, phi)
     load = feedforward + wp.cw_mul(gain_k, q_ref - q) + wp.cw_mul(gain_d, v_ref - v)
     f = body_f[w]
     fx = wp.float64(f[0])
@@ -497,15 +511,84 @@ def gait_phase(phase_s, timing) -> np.ndarray:
     return np.interp(phase, [0.0, touchdown, toeoff, duration], [0.0, 1.0, 2.0, 3.0])
 
 
-def schedule_impedance(knots_phase, stiffness, damping, timing) -> Impedance:
-    """Convert a normalized-phase schedule to a plan-clock :class:`.control.Impedance` for one stance.
+def _end_slope(h0, h1, d0, d1):
+    s = ((2.0 * h0 + h1) * d0 - h0 * d1) / (h0 + h1)
+    s = np.where(np.sign(s) != np.sign(d0), 0.0, s)
+    return np.where((np.sign(d0) != np.sign(d1)) & (np.abs(s) > 3.0 * np.abs(d0)), 3.0 * d0, s)
 
-    Piecewise-linear gains in the normalized phase stay piecewise linear on the
-    plan clock when the knots include the phase breakpoints 1 and 2.
+
+def pchip_slopes(knots, values) -> np.ndarray:
+    """Return Fritsch-Carlson monotone cubic slopes at the knots, same shape as ``values`` [knots, ...]."""
+    x = np.asarray(knots, dtype=float)
+    y = np.asarray(values, dtype=float)
+    slopes = np.zeros_like(y)
+    if len(x) < 2:
+        return slopes
+    h = np.diff(x).reshape(-1, *([1] * (y.ndim - 1)))
+    delta = np.diff(y, axis=0) / h
+    if len(x) == 2:
+        slopes[:] = delta[0]
+        return slopes
+    w1 = 2.0 * h[1:] + h[:-1]
+    w2 = h[1:] + 2.0 * h[:-1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mean = (w1 + w2) / (w1 / delta[:-1] + w2 / delta[1:])
+    slopes[1:-1] = np.where(delta[:-1] * delta[1:] > 0.0, mean, 0.0)
+    slopes[0] = _end_slope(h[0], h[1], delta[0], delta[1])
+    slopes[-1] = _end_slope(h[-1], h[-2], delta[-1], delta[-2])
+    return slopes
+
+
+def pchip(knots, values, slopes, phi) -> np.ndarray:
+    """Evaluate the cubic Hermite interpolant used by the GPU kernel, held constant outside the knots."""
+    x = np.asarray(knots, dtype=float)
+    y = np.asarray(values, dtype=float)
+    if len(x) == 1:
+        return np.broadcast_to(y[0], (*np.shape(phi), *y.shape[1:])).copy()
+    phi = np.clip(np.asarray(phi, dtype=float), x[0], x[-1])
+    i = np.clip(np.searchsorted(x, phi, side="right") - 1, 0, len(x) - 2)
+    h = x[i + 1] - x[i]
+    t = (phi - x[i]) / h
+    t, h = (a.reshape(a.shape + (1,) * (y.ndim - 1)) for a in (np.asarray(t), np.asarray(h)))
+    t2, t3 = t * t, t * t * t
+    return (
+        (2.0 * t3 - 3.0 * t2 + 1.0) * y[i]
+        + (t3 - 2.0 * t2 + t) * h * slopes[i]
+        + (3.0 * t2 - 2.0 * t3) * y[i + 1]
+        + (t3 - t2) * h * slopes[i + 1]
+    )
+
+
+class PhaseSchedule:
+    """One stance's view of a normalized-phase schedule, usable as the impedance in :func:`.rollout.simulate`.
+
+    Args:
+        knots_phase: Strictly increasing normalized gait phases of the knots, shape [knots].
+        stiffness: Nonnegative stiffness at each knot, shape [knots, 6].
+        damping: Nonnegative damping at each knot, shape [knots, 6].
+        timing: Reference touchdown, toe-off, and duration on the plan clock [s], shape (3,).
     """
-    touchdown, toeoff, duration = timing
-    knot_s = np.interp(np.asarray(knots_phase, dtype=float), [0.0, 1.0, 2.0, 3.0], [0.0, touchdown, toeoff, duration])
-    return Impedance(knot_s, stiffness, damping)
+
+    def __init__(self, knots_phase, stiffness, damping, timing):
+        self.knots_phase = np.asarray(knots_phase, dtype=float)
+        self.stiffness = np.asarray(stiffness, dtype=float)
+        self.damping = np.asarray(damping, dtype=float)
+        self.timing = np.asarray(timing, dtype=float)
+        self.stiffness_slope = pchip_slopes(self.knots_phase, self.stiffness)
+        self.damping_slope = pchip_slopes(self.knots_phase, self.damping)
+
+    def gains(self, phase_s: float) -> tuple[np.ndarray, np.ndarray]:
+        """Return stiffness and damping at a plan-clock phase [s], each shape (6,)."""
+        phi = gait_phase(phase_s, self.timing)
+        return (
+            pchip(self.knots_phase, self.stiffness, self.stiffness_slope, phi),
+            pchip(self.knots_phase, self.damping, self.damping_slope, phi),
+        )
+
+
+def schedule_impedance(knots_phase, stiffness, damping, timing) -> PhaseSchedule:
+    """Map a normalized-phase schedule onto one stance's plan clock for :func:`.rollout.simulate`."""
+    return PhaseSchedule(knots_phase, stiffness, damping, timing)
 
 
 class Batch:
@@ -584,6 +667,8 @@ class Batch:
         self.knots = wp.array(self.knots_phase, dtype=wp.float64, device=d)
         self.stiffness = wp.zeros((self.candidates, len(self.knots_phase)), dtype=Vec6, device=d)
         self.damping = wp.zeros_like(self.stiffness)
+        self.stiffness_slope = wp.zeros_like(self.stiffness)
+        self.damping_slope = wp.zeros_like(self.stiffness)
 
         settings = Settings()
         settings.gravity = cfg.gravity_m_s2
@@ -719,6 +804,8 @@ class Batch:
                 self.knots,
                 self.stiffness,
                 self.damping,
+                self.stiffness_slope,
+                self.damping_slope,
                 self.carriers.body_f,
                 self.fraction,
                 self.state,
@@ -763,6 +850,8 @@ class Batch:
         started = perf_counter()
         self.stiffness.assign(stiffness)
         self.damping.assign(damping)
+        for table, values in ((self.stiffness_slope, stiffness), (self.damping_slope, damping)):
+            table.assign(np.moveaxis(pchip_slopes(self.knots_phase, np.moveaxis(values, 1, 0)), 0, 1))
         self._reset()
         if self.graph is None:
             # Compile and settle host-side caches outside the capture.
