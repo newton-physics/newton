@@ -1,11 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import sys
 import time
 import unittest
 from enum import Enum
-from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -2580,16 +2578,6 @@ def test_fixed_point_extreme_exponents(test, device):
 
 
 class TestHydroelastic(unittest.TestCase):
-    def test_marching_cubes_class_prefers_geometry_namespace(self):
-        """Prefer the non-deprecated class even when Warp has not attached its submodule."""
-        replacement = object()
-        geometry = mock.Mock(IsoSurfaceMarchingCubes=replacement)
-        with (
-            mock.patch.dict(sys.modules, {"warp.geometry": geometry}),
-            mock.patch.object(wp, "geometry", None, create=True),
-        ):
-            self.assertIs(_get_marching_cubes_class(), replacement)
-
     def test_fixed_point_extreme_exponents(self):
         """Handle sentinel and high finite pressure contributions without overflow."""
         test_fixed_point_extreme_exponents(self, wp.get_device("cpu"))

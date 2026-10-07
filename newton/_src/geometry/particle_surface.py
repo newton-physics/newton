@@ -10,7 +10,7 @@ Symposium on Computer Animation, 2010.
 The pipeline computes per-particle anisotropy matrices via Weighted PCA,
 then evaluates a smooth scalar field on a sparse volume using oriented
 ellipsoidal kernels, and extracts the isosurface with
-:class:`warp.MarchingCubes`.
+Warp's marching cubes implementation.
 
 Typical usage::
 

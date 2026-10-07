@@ -30,7 +30,8 @@ Newton releases are tested on the following configurations:
    * - Dependencies
      - Latest known-good versions are pinned in the release branch's ``uv.lock``
    * - CUDA
-     - 13; CUDA 12 GPU support is deprecated in Newton 1.7
+     - 13; 12 is deprecated in Newton 1.7 and covered by the nightly Warp 1.17
+       minimum-dependency tests on an R570 driver
 
 For the minimum requirements to install Newton, see
 :ref:`system-requirements` in the installation guide.

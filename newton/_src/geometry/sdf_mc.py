@@ -12,8 +12,6 @@ are inside (negative SDF) vs outside (positive SDF), producing up to 5
 triangles per voxel along the zero-crossing.
 """
 
-import importlib
-
 import numpy as np
 import warp as wp
 
@@ -56,15 +54,10 @@ def _get_marching_cubes_class():
     ``warp.geometry.IsoSurfaceMarchingCubes``.
     """
     try:
-        geometry = importlib.import_module("warp.geometry")
-    except ModuleNotFoundError as error:
-        if error.name != "warp.geometry":
-            raise
-    else:
-        marching_cubes = getattr(geometry, "IsoSurfaceMarchingCubes", None)
-        if marching_cubes is not None:
-            return marching_cubes
-    return wp.MarchingCubes
+        from warp.geometry import IsoSurfaceMarchingCubes  # noqa: PLC0415 - Warp 1.17 lacks this module
+    except ImportError:
+        return wp.MarchingCubes
+    return IsoSurfaceMarchingCubes
 
 
 def get_mc_tables(device):
