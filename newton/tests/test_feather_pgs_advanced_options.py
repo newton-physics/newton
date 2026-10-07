@@ -11,6 +11,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
+import newton
 from newton.solvers import SolverFeatherPGS
 from newton.tests.test_feather_pgs_contact_compliance import run_fixture as run_compliance_fixture
 from newton.tests.test_feather_pgs_fused_crba import _trajectory, _tree
@@ -196,6 +197,48 @@ def test_debug_logs_split_impulse_changes(test, device):
         np.testing.assert_array_equal(convergence[:, 1:], 0.0)
 
 
+def test_debug_logs_split_free_body_rows(test, device):
+    """Log the free-body rows of a split solve that has no dense rows, without changing the step."""
+    template = newton.ModelBuilder()
+    template.add_ground_plane()
+    body = template.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.099), wp.quat_identity()))
+    template.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder = newton.ModelBuilder()
+    builder.replicate(template, 1)
+    model = builder.finalize(device=device)
+    results = []
+    for debug in (False, True):
+        solver = SolverFeatherPGS(model, pgs_mode="split", pgs_iterations=6, pgs_debug=debug)
+        state, out = model.state(), model.state()
+        state.joint_qd.assign(np.array([1.0, 0.0, -1.0, 0.0, 0.0, 0.0], dtype=np.float32))
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=False)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        solver.step(state, out, model.control(), contacts, 1.0 / 240.0)
+        results.append((solver, out.joint_qd.numpy()))
+    solver = results[1][0]
+    test.assertFalse(solver._has_mixed_contacts)
+    test.assertEqual(int(solver.constraint_count.numpy()[0]), 0)
+    test.assertGreater(int(solver.mf_constraint_count.numpy()[0]), 0)
+    np.testing.assert_array_equal(results[0][1], results[1][1])
+    log = solver.pgs_convergence_log[0]
+    test.assertEqual(log.shape, (6, 4))
+    # The first sweep moves every impulse from zero, so its change is the largest first-sweep impulse.
+    test.assertGreater(log[0, 0], 1.0)
+    test.assertLessEqual(log[-1, 0], log[0, 0])
+
+
+def test_cpu_ignores_contact_only_kernels(test, device):
+    """Run the scalar loop on CPU for every pgs_kernel, including rows the contact-only kernels reject."""
+    model = _build_contact_scene(device)
+    for kernel in ("tiled_contact", "streaming"):
+        for options in ({}, {"enable_contact_friction": False}, {"enable_joint_limits": True}):
+            with test.subTest(kernel=kernel, options=options):
+                solver = SolverFeatherPGS(model, pgs_mode="split", pgs_kernel=kernel, **options)
+                test.assertEqual(solver.pgs_kernel, "loop")
+
+
 def test_debug_rejects_unsupported_combinations(test, device):
     """Reject graph capture, compliance, torsion and the contact-first schedule with pgs_debug."""
     model = _build_contact_scene(device)
@@ -254,6 +297,21 @@ def test_nvtx_annotates_every_stage_without_changing_results(test, device):
         test.assertEqual(fake.events[index + 1][1], index + 1)
 
 
+def test_nvtx_closes_the_open_range_when_a_stage_raises(test, device):
+    """Close the open stage range when a step raises."""
+    fake = _FakeNvtx()
+    mode = {} if device.is_cuda else {"pgs_mode": "split"}
+    model = _build_contact_scene(device)
+    with mock.patch.dict(sys.modules, {"nvtx": fake}):
+        solver = SolverFeatherPGS(model, nvtx=True, **mode)
+    state_in, state_out = model.state(), model.state()
+    with mock.patch.object(solver, "_stage1_crba", side_effect=RuntimeError("injected")):
+        with test.assertRaisesRegex(RuntimeError, "injected"):
+            solver.step(state_in, state_out, model.control(), None, 1.0 / 240.0)
+    test.assertEqual([kind for kind, _ in fake.events], ["start", "end"])
+    test.assertIsNone(solver._nvtx_range)
+
+
 def test_nvtx_requires_the_nvtx_package(test, device):
     """Raise ImportError at construction when nvtx is requested without the nvtx package."""
     with mock.patch.dict(sys.modules, {"nvtx": None}), test.assertRaises(ImportError):
@@ -269,7 +327,9 @@ for _fn in (
     test_launch_options_validate_their_values,
     test_debug_iterations_reproduce_the_whole_solve,
     test_debug_logs_split_impulse_changes,
+    test_debug_logs_split_free_body_rows,
     test_nvtx_annotates_every_stage_without_changing_results,
+    test_nvtx_closes_the_open_range_when_a_stage_raises,
     test_nvtx_requires_the_nvtx_package,
 ):
     add_function_test(TestFeatherPGSAdvancedOptions, _fn.__name__, _fn, devices=get_test_devices())
@@ -283,6 +343,13 @@ for _fn in (
     test_debug_rejects_unsupported_combinations,
 ):
     add_function_test(TestFeatherPGSAdvancedOptions, _fn.__name__, _fn, devices=get_cuda_test_devices())
+
+add_function_test(
+    TestFeatherPGSAdvancedOptions,
+    test_cpu_ignores_contact_only_kernels.__name__,
+    test_cpu_ignores_contact_only_kernels,
+    devices=[device for device in get_test_devices() if device.is_cpu],
+)
 
 
 if __name__ == "__main__":

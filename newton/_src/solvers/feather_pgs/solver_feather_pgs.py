@@ -2166,8 +2166,8 @@ class SolverFeatherPGS(SolverBase):
         )
         if self._serial_kernel_block_dim <= 0 or self._serial_kernel_block_dim % 32:
             raise ValueError("serial_kernel_block_dim must be a positive multiple of 32")
-        if pgs_mode == "matrix_free":
-            # The dense Gauss-Seidel kernels belong to the split solve.
+        if pgs_mode == "matrix_free" or not model.device.is_cuda:
+            # The dense Gauss-Seidel kernels belong to the split solve on CUDA.
             self.pgs_kernel = "loop"
         elif self.pgs_kernel in ("tiled_contact", "streaming") and (
             self.enable_joint_limits
@@ -2441,7 +2441,8 @@ class SolverFeatherPGS(SolverBase):
         """Experimental: per-step convergence of the position solve (``pgs_debug`` only).
 
         One ``(pgs_iterations, 4)`` array per step, with one row per iteration: the largest
-        impulse change of any row, then, for ``pgs_mode="matrix_free"``, the complementarity gap
+        impulse change of any row (in the split solve, of the dense and free-body rows of that iteration
+        together), then, for ``pgs_mode="matrix_free"``, the complementarity gap
         ``sum(lambda_n r_n)`` of contact rows, the residual energy ``sum(r_t^2)`` of sticking
         friction rows and the Fischer-Burmeister merit of contact rows, summed over worlds
         (zero in the split solve). ``r = J v + b`` is a row's biased velocity residual. The list
@@ -5756,6 +5757,17 @@ class SolverFeatherPGS(SolverBase):
         Returns:
             ``state_out``.
         """
+        if self._nvtx is None:
+            return self._advance(state_in, state_out, control, contacts, dt)
+        try:
+            return self._advance(state_in, state_out, control, contacts, dt)
+        finally:
+            self._nvtx_stage(None)
+
+    def _advance(
+        self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
+    ) -> State:
+        """Run the stages of :meth:`step`."""
         if self.contact_compliance:
             # Reject unsupported state before any stage can launch work.
             _contact_compliance.validate_step(self)
@@ -6002,7 +6014,6 @@ class SolverFeatherPGS(SolverBase):
             self._device_torsion.end_step(state_out)
             if self._device_torsion.deferred_errors and not wp.get_stream(model.device).is_capturing:
                 self.validate_contact_torsion()
-        self._nvtx_stage(None)
         self._step += 1
         return state_out
 
@@ -6706,7 +6717,7 @@ class SolverFeatherPGS(SolverBase):
 
         friction_start = self._friction_start_iteration(self.pgs_iterations)
         if not self._has_free_rigid_bodies:
-            self._dense_pgs_solve_logged(friction_start)
+            self._log_split_iterations(self._logged_sweeps(self._dense_pgs_solve, self.impulses, friction_start))
             self._apply_dense_impulses()
             return
 
@@ -6733,9 +6744,10 @@ class SolverFeatherPGS(SolverBase):
                 device=model.device,
             )
         if not self._has_mixed_contacts:
-            self._dense_pgs_solve_logged(friction_start)
+            dense = self._logged_sweeps(self._dense_pgs_solve, self.impulses, friction_start)
             self._apply_dense_impulses()
-            self._mf_pgs_solve(self.pgs_iterations, friction_start_iteration=friction_start)
+            free = self._logged_sweeps(self._mf_pgs_solve, self.mf_impulses, friction_start)
+            self._log_split_iterations([max(pair) for pair in zip(dense, free, strict=True)])
             return
 
         self.v_mf_accum.zero_()
@@ -6769,21 +6781,29 @@ class SolverFeatherPGS(SolverBase):
                     float(np.max(np.abs(current.numpy() - before), initial=0.0))
                     for current, before in zip((self.impulses, self.mf_impulses), previous, strict=True)
                 )
-                log.append([delta, 0.0, 0.0, 0.0])
-        if self.pgs_debug:
-            self._pgs_convergence_log.append(np.array(log, dtype=np.float64).reshape(-1, 4))
+                log.append(delta)
+        self._log_split_iterations(log)
 
-    def _dense_pgs_solve_logged(self, friction_start_iteration: int) -> None:
-        """Run the dense position sweeps, one launch per iteration with ``pgs_debug``."""
+    def _logged_sweeps(self, solve, impulses: wp.array, friction_start_iteration: int) -> list[float]:
+        """Run one row family's position sweeps, one launch per iteration with ``pgs_debug``.
+
+        Returns each iteration's largest impulse change with ``pgs_debug``, else an empty list.
+        """
         if not self.pgs_debug:
-            self._dense_pgs_solve(self.pgs_iterations, friction_start_iteration=friction_start_iteration)
-            return
-        log = []
+            solve(self.pgs_iterations, friction_start_iteration=friction_start_iteration)
+            return []
+        deltas = []
         for iteration in range(self.pgs_iterations):
-            previous = self.impulses.numpy().copy()
-            self._dense_pgs_solve(1, friction_start_iteration=friction_start_iteration, iteration_offset=iteration)
-            log.append([float(np.max(np.abs(self.impulses.numpy() - previous), initial=0.0)), 0.0, 0.0, 0.0])
-        self._pgs_convergence_log.append(np.array(log, dtype=np.float64).reshape(-1, 4))
+            previous = impulses.numpy().copy()
+            solve(1, friction_start_iteration=friction_start_iteration, iteration_offset=iteration)
+            deltas.append(float(np.max(np.abs(impulses.numpy() - previous), initial=0.0)))
+        return deltas
+
+    def _log_split_iterations(self, deltas: list[float]) -> None:
+        """Record the split solve's per-iteration impulse changes (``pgs_debug`` only)."""
+        if self.pgs_debug:
+            rows = [[delta, 0.0, 0.0, 0.0] for delta in deltas]
+            self._pgs_convergence_log.append(np.array(rows, dtype=np.float64).reshape(-1, 4))
 
     def _friction_start_iteration(self, iterations: int) -> int:
         """Return the first of ``iterations`` position iterations that solves friction rows."""
