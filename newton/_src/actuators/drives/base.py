@@ -51,6 +51,14 @@ class DriveBase:
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
 
+    network_dof_count: int = 1
+    """Consecutive actuator DOFs evaluated jointly by one neural network.
+
+    Experimental. Neural drives accept this as a constructor keyword. Other
+    drives retain one independent lane per DOF. All actuator indices and effort
+    buffers remain flat and DOF-major, including when this value exceeds one.
+    """
+
     custom_inputs: tuple[str, ...] = ()
     """Names of extra caller-provided Control arrays this drive reads.
 

@@ -1,0 +1,1 @@
+Add experimental coupled MIMO inference to MLP, LSTM, and GRU actuator drives via `network_dof_count`, with ordered builder/USD groups, world replication, per-DOF delay and clamping, and group-aware recurrent resets. Existing single-DOF inference remains the default; coupled networks require explicit effort mode.

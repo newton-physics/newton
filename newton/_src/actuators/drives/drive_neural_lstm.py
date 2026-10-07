@@ -22,6 +22,7 @@ from ._linearization import (
     _gather_slot_state_kernel,
     _linear_force,
 )
+from ._neural import _network_count, _validate_network_dof_count
 from .base import DriveBase
 
 if typing.TYPE_CHECKING:
@@ -62,9 +63,12 @@ def _scale_effort_to_forces_kernel(
 
 
 @wp.kernel
-def _zero_masked_3d_kernel(buf: wp.array3d[float], mask: wp.array[wp.bool]):
+def _zero_masked_3d_kernel(buf: wp.array3d[float], mask: wp.array[wp.bool], network_dof_count: int):
     layer, b, h = wp.tid()
-    if mask[b]:
+    reset = bool(False)
+    for dof in range(network_dof_count):
+        reset = reset or mask[b * network_dof_count + dof]
+    if reset:
         buf[layer, b, h] = 0.0
 
 
@@ -129,18 +133,42 @@ class DriveNeuralLSTM(DriveBase):
     explicit mode.
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"model_path", "network_dof_count"}
 
     @dataclass
     class State(DriveBase.State):
         """LSTM hidden and cell state."""
 
         hidden: torch.Tensor | wp.array3d[float] | None = None
-        """LSTM hidden state, shape [num_layers, actuator_count, hidden_size]."""
+        """LSTM hidden state, shape [num_layers, network_count, hidden_size]."""
         cell: torch.Tensor | wp.array3d[float] | None = None
-        """LSTM cell state, shape [num_layers, actuator_count, hidden_size]."""
+        """LSTM cell state, shape [num_layers, network_count, hidden_size]."""
+
+        network_dof_count: int = 1
+        """Consecutive actuator DOFs sharing each recurrent-state lane."""
+
+        def assign(self, other: DriveNeuralLSTM.State) -> None:
+            """Copy compatible recurrent state in place."""
+            if self.network_dof_count != other.network_dof_count:
+                raise ValueError("Cannot assign LSTM states with different network_dof_count")
+            for name in ("hidden", "cell"):
+                dst, src = getattr(self, name), getattr(other, name)
+                if dst is None and src is None:
+                    continue
+                if dst is None or src is None or type(dst) is not type(src) or dst.shape != src.shape:
+                    raise ValueError("Cannot assign LSTM states with incompatible arrays")
+                if isinstance(dst, wp.array):
+                    dst.assign(src)
+                else:
+                    import torch
+
+                    with torch.inference_mode():
+                        dst.copy_(src)
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
+            """Reset a whole recurrent lane when any member DOF is selected."""
+            if mask is not None and len(mask) != self.hidden.shape[1] * self.network_dof_count:
+                raise ValueError("mask length must match actuator DOF count")
             if mask is None:
                 if type(self.hidden).__module__.startswith("torch"):
                     self.hidden = self.hidden.new_zeros(self.hidden.shape)
@@ -151,20 +179,20 @@ class DriveNeuralLSTM(DriveBase):
             elif type(self.hidden).__module__.startswith("torch"):
                 # Network outputs are produced under torch.inference_mode(); in-place
                 # writes to them outside that mode raise, so build new tensors instead.
-                t = wp.to_torch(mask).bool().view(1, -1, 1)
+                t = wp.to_torch(mask).bool().reshape(-1, self.network_dof_count).any(dim=1).view(1, -1, 1)
                 self.hidden = self.hidden.masked_fill(t, 0.0)
                 self.cell = self.cell.masked_fill(t, 0.0)
             else:
                 wp.launch(
                     _zero_masked_3d_kernel,
                     dim=self.hidden.shape,
-                    inputs=[self.hidden, mask],
+                    inputs=[self.hidden, mask, self.network_dof_count],
                     device=self.hidden.device,
                 )
                 wp.launch(
                     _zero_masked_3d_kernel,
                     dim=self.cell.shape,
-                    inputs=[self.cell, mask],
+                    inputs=[self.cell, mask, self.network_dof_count],
                     device=self.cell.device,
                 )
 
@@ -175,15 +203,21 @@ class DriveNeuralLSTM(DriveBase):
         model_path = args["model_path"]
         if not model_path:
             raise ValueError("DriveNeuralLSTM requires a non-empty 'model_path'")
-        return {"model_path": model_path}
+        return {
+            "model_path": model_path,
+            "network_dof_count": _validate_network_dof_count(args.get("network_dof_count", 1)),
+        }
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, *, network_dof_count: int = 1):
         """Initialize the LSTM drive from a checkpoint file.
 
         Args:
             model_path: Path to the ``.onnx`` checkpoint or the pt2 archive
                 (``.pt2``, ``.pt``, or ``.pth``).
+            network_dof_count: Consecutive actuator DOFs evaluated jointly.
+                Experimental; defaults to independent per-DOF inference.
         """
+        self.network_dof_count = _validate_network_dof_count(network_dof_count)
         self.model_path = model_path
 
         self._is_torch_checkpoint = _looks_like_torch_checkpoint(model_path)
@@ -245,6 +279,7 @@ class DriveNeuralLSTM(DriveBase):
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
         self._device = device
         self._num_actuators = num_actuators
+        self._network_count = _network_count(num_actuators, self.network_dof_count)
 
         if self._is_torch_checkpoint:
             import torch
@@ -256,7 +291,7 @@ class DriveNeuralLSTM(DriveBase):
         runtime, _ = load_checkpoint(
             self.model_path,
             device=device,
-            batch_size=num_actuators,
+            batch_size=self._network_count,
             input_batch_axes={
                 self._input_name: 1,
                 self._hidden_in_name: 1,
@@ -268,15 +303,15 @@ class DriveNeuralLSTM(DriveBase):
         self.network = runtime
 
         out_shape = _runtime_shape(runtime, self._output_name)
-        if out_shape != (num_actuators, 1):
+        if out_shape != (self._network_count, self.network_dof_count):
             raise ValueError(
                 f"DriveNeuralLSTM: ONNX output '{self._output_name}' has shape {out_shape}, "
-                f"expected {(num_actuators, 1)} (one scalar effort per actuator)"
+                f"expected {(self._network_count, self.network_dof_count)} (one scalar effort per actuator)"
             )
 
         for name in (self._hidden_out_name, self._cell_out_name):
             state_shape = _runtime_shape(runtime, name)
-            expected_state_shape = (self._num_layers, num_actuators, self._hidden_size)
+            expected_state_shape = (self._num_layers, self._network_count, self._hidden_size)
             if tuple(state_shape) != expected_state_shape:
                 raise ValueError(
                     f"DriveNeuralLSTM: ONNX output '{name}' has shape {tuple(state_shape)}, "
@@ -285,12 +320,15 @@ class DriveNeuralLSTM(DriveBase):
 
         self._net_input = wp.zeros((1, num_actuators, 2), dtype=wp.float32, device=device)
         self._net_input.requires_grad = True
+        self._grouped_input = self._net_input.reshape((1, self._network_count, 2 * self.network_dof_count))
+        if _runtime_shape(runtime, self._input_name) != self._grouped_input.shape:
+            raise ValueError(f"DriveNeuralLSTM: expected network input shape {self._grouped_input.shape}")
         self._grad_seed = wp.full((num_actuators, 1), 1.0, dtype=wp.float32, device=device)
         self._next_hidden = wp.zeros(
-            (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
+            (self._num_layers, self._network_count, self._hidden_size), dtype=wp.float32, device=device
         )
         self._next_cell = wp.zeros(
-            (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
+            (self._num_layers, self._network_count, self._hidden_size), dtype=wp.float32, device=device
         )
 
         # Implicit path: per-step linearization packed as [tau0, a, b, q0, qd0] and the
@@ -315,7 +353,7 @@ class DriveNeuralLSTM(DriveBase):
     evaluate_force = _linear_force
 
     def _implicit_supported(self) -> bool:
-        return not self._is_torch_checkpoint and self._network is not None
+        return self.network_dof_count == 1 and not self._is_torch_checkpoint and self._network is not None
 
     def bind_params(self) -> wp.array2d[float] | None:
         """Linearization pack ``[tau0, a, b, q0, qd0]``; ``None`` if implicit unsupported.
@@ -434,14 +472,17 @@ class DriveNeuralLSTM(DriveBase):
         wp.copy(self._next_cell, out[self._cell_out_name].reshape((self._num_layers, n, self._hidden_size)))
 
     def state(self, num_actuators: int, device: wp.Device) -> DriveNeuralLSTM.State:
+        num_actuators = _network_count(num_actuators, self.network_dof_count)
         if self._is_torch_checkpoint:
             import torch
 
             return DriveNeuralLSTM.State(
+                network_dof_count=self.network_dof_count,
                 hidden=torch.zeros(self._num_layers, num_actuators, self._hidden_size, device=self._torch_device),
                 cell=torch.zeros(self._num_layers, num_actuators, self._hidden_size, device=self._torch_device),
             )
         return DriveNeuralLSTM.State(
+            network_dof_count=self.network_dof_count,
             hidden=wp.zeros((self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device),
             cell=wp.zeros((self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device),
         )
@@ -498,7 +539,7 @@ class DriveNeuralLSTM(DriveBase):
 
         out = self._network(
             {
-                self._input_name: self._net_input,
+                self._input_name: self._grouped_input,
                 self._hidden_in_name: state.hidden,
                 self._cell_in_name: state.cell,
             }
@@ -507,13 +548,13 @@ class DriveNeuralLSTM(DriveBase):
         hidden_new = out[self._hidden_out_name]
         cell_new = out[self._cell_out_name]
 
-        wp.copy(self._next_hidden, hidden_new.reshape((self._num_layers, n, self._hidden_size)))
-        wp.copy(self._next_cell, cell_new.reshape((self._num_layers, n, self._hidden_size)))
+        wp.copy(self._next_hidden, hidden_new.reshape(self._next_hidden.shape))
+        wp.copy(self._next_cell, cell_new.reshape(self._next_cell.shape))
 
         wp.launch(
             _scale_effort_to_forces_kernel,
             dim=len(forces),
-            inputs=[effort, forces, self.effort_scale, 1],
+            inputs=[effort, forces, self.effort_scale, self.network_dof_count],
             device=device,
         )
 
@@ -556,7 +597,9 @@ class DriveNeuralLSTM(DriveBase):
         pos_error = target_p[self._torch_target_pos_indices] - current_pos[self._torch_input_indices]
         vel = current_vel[self._torch_vel_indices]
 
-        net_input = torch.stack([pos_error * self.pos_scale, vel * self.vel_scale], dim=1).unsqueeze(1)
+        net_input = torch.stack([pos_error * self.pos_scale, vel * self.vel_scale], dim=1).reshape(
+            self._network_count, 1, 2 * self.network_dof_count
+        )
 
         with torch.inference_mode():
             effort, (self._hidden, self._cell) = self.network(
@@ -564,6 +607,8 @@ class DriveNeuralLSTM(DriveBase):
                 (state.hidden, state.cell),
             )
 
+        if self.network_dof_count > 1 and tuple(effort.shape) != (self._network_count, self.network_dof_count):
+            raise ValueError("DriveNeuralLSTM: network must output one effort per grouped DOF")
         effort = effort.reshape(len(forces)) * self.effort_scale
         effort_wp = wp.from_torch(effort.contiguous(), dtype=wp.float32)
         wp.copy(forces, effort_wp)

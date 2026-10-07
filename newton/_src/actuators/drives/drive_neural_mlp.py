@@ -18,6 +18,7 @@ from ._linearization import (
     _gather_slot_state_kernel,
     _linear_force,
 )
+from ._neural import _network_count, _validate_network_dof_count
 from .base import DriveBase
 
 if typing.TYPE_CHECKING:
@@ -188,7 +189,7 @@ class DriveNeuralMLP(DriveBase):
     checkpoints with ``input_idx == [0]``.
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"model_path", "network_dof_count"}
 
     @dataclass
     class State(DriveBase.State):
@@ -228,15 +229,21 @@ class DriveNeuralMLP(DriveBase):
         model_path = args["model_path"]
         if not model_path:
             raise ValueError("DriveNeuralMLP requires a non-empty 'model_path'")
-        return {"model_path": model_path}
+        return {
+            "model_path": model_path,
+            "network_dof_count": _validate_network_dof_count(args.get("network_dof_count", 1)),
+        }
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, *, network_dof_count: int = 1):
         """Initialize the MLP drive from a checkpoint file.
 
         Args:
             model_path: Path to the ``.onnx`` checkpoint or the pt2 archive
                 (``.pt2``, ``.pt``, or ``.pth``).
+            network_dof_count: Consecutive actuator DOFs evaluated jointly.
+                Experimental; defaults to independent per-DOF inference.
         """
+        self.network_dof_count = _validate_network_dof_count(network_dof_count)
         self.model_path = model_path
         self._is_torch_checkpoint = _looks_like_torch_checkpoint(model_path)
 
@@ -288,6 +295,7 @@ class DriveNeuralMLP(DriveBase):
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
         self._device = device
         self._num_actuators = num_actuators
+        self._network_count = _network_count(num_actuators, self.network_dof_count)
 
         if self._is_torch_checkpoint:
             import torch
@@ -299,7 +307,7 @@ class DriveNeuralMLP(DriveBase):
         runtime, _ = load_checkpoint(
             self.model_path,
             device=device,
-            batch_size=num_actuators,
+            batch_size=self._network_count,
             input_batch_axes=0,
             requires_grad=True,
         )
@@ -325,17 +333,21 @@ class DriveNeuralMLP(DriveBase):
         self._dtau_dq = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self._dtau_dqd = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self._net_input.requires_grad = True
+        self._grouped_input = self._net_input.reshape((self._network_count, feat * self.network_dof_count))
+        expected_input = (self._network_count, feat * self.network_dof_count)
+        if _runtime_shape(runtime, self._net_input_name) != expected_input:
+            raise ValueError(f"DriveNeuralMLP: expected network input shape {expected_input}")
         self._grad_seed = wp.full((num_actuators, 1), 1.0, dtype=wp.float32, device=device)
 
         try:
             out_shape = _runtime_shape(runtime, self._net_output_name)
         except ValueError:
-            runtime({self._net_input_name: self._net_input})
+            runtime({self._net_input_name: self._grouped_input})
             out_shape = _runtime_shape(runtime, self._net_output_name)
-        if out_shape != (num_actuators, 1):
+        if out_shape != (self._network_count, self.network_dof_count):
             raise ValueError(
                 f"DriveNeuralMLP: network output '{self._net_output_name}' has shape {out_shape}, "
-                f"expected {(num_actuators, 1)} (one scalar effort per actuator)"
+                f"expected {(self._network_count, self.network_dof_count)} (one scalar effort per actuator)"
             )
 
     def is_stateful(self) -> bool:
@@ -359,7 +371,8 @@ class DriveNeuralMLP(DriveBase):
         # input_idx == [0], not just history_length == 1: the implicit input
         # assembly writes two columns, so a wider layout would stay part zero.
         return (
-            not self._is_torch_checkpoint
+            self.network_dof_count == 1
+            and not self._is_torch_checkpoint
             and self._network is not None
             and self.history_length == 1
             and list(self.input_idx) == [0]
@@ -568,13 +581,13 @@ class DriveNeuralMLP(DriveBase):
             device=device,
         )
 
-        out = self._network({self._net_input_name: self._net_input})
+        out = self._network({self._net_input_name: self._grouped_input})
         effort = out[self._net_output_name]
 
         wp.launch(
             _scale_and_copy_kernel,
             dim=len(forces),
-            inputs=[effort, forces, self.effort_scale, 1],
+            inputs=[effort, forces, self.effort_scale, self.network_dof_count],
             device=device,
         )
 
@@ -646,7 +659,9 @@ class DriveNeuralMLP(DriveBase):
             net_input = torch.cat([vel_input * self.vel_scale, pos_input * self.pos_scale], dim=1)
 
         with torch.inference_mode():
-            effort = self.network(net_input)
+            effort = self.network(net_input.reshape(self._network_count, -1))
+            if self.network_dof_count > 1 and tuple(effort.shape) != (self._network_count, self.network_dof_count):
+                raise ValueError("DriveNeuralMLP: network must output one effort per grouped DOF")
 
         effort = effort.reshape(len(forces)) * self.effort_scale
         effort_wp = wp.from_torch(effort.contiguous(), dtype=wp.float32)

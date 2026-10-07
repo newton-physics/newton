@@ -344,6 +344,60 @@ the metadata of both pt2 and ONNX checkpoints.
 ``custom_inputs`` that marks one column of ``input_columns`` as an array the
 application supplies each step.
 
+Coupled Neural Drives (MIMO)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. experimental::
+
+   The ``network_dof_count`` parameter and grouped builder/USD inputs are
+   experimental. Coupled inference currently supports explicit effort mode only.
+
+All three neural drives accept ``network_dof_count=K`` (default ``1``).
+Consecutive groups of K entries in the actuator's flat index arrays form
+independent network instances. Their simulation DOF indices need not be
+consecutive. Features are concatenated DOF-major: all features for the first
+member, then all features for the second, and so on. The network returns K
+efforts in that same member order.
+
+For N actuator DOFs, the network batch size is N/K. MLP inputs have shape
+``[N/K, K*F]``, where F is the existing per-DOF history feature count.
+LSTM/GRU inputs use ``[1, N/K, K*F]`` in ONNX; Torch LSTM uses
+``[N/K, 1, K*F]``. Effort outputs have shape ``[N/K, K]``.
+Recurrent state has one lane per group, not per DOF. Existing scaling and GRU
+normalization metadata are shared across members; GRU ``input_columns``
+still describes the per-DOF features. GRU custom inputs remain DOF-shaped.
+
+Pass one complete ordered group per builder call:
+
+.. code-block:: python
+
+   builder.add_actuator(
+       DriveNeuralGRU,
+       index=[left_dof, right_dof],
+       pos_index=[left_coord, right_coord],
+       model_path="coupled_gru.onnx",
+       network_dof_count=2,
+       clamping=[(ClampingMaxEffort, {"max_effort": 50.0})],
+   )
+
+Compatible calls batch whole groups together. Builder replication preserves
+group membership and ordering. Each call broadcasts scalar delay/clamping
+parameters to its members; the finalized parameters remain per-DOF arrays and
+can be edited through :class:`~newton.selection.ArticulationView`.
+Manual :class:`Actuator` construction uses the same consecutive-slot convention;
+the caller must keep each group within the intended environment.
+
+A USD neural actuator's ordered ``newton:targets`` relationship defines one
+group, with K inferred from its length. Every target must resolve to a supported
+one-DOF joint. Non-neural USD actuators retain their existing first-target behavior.
+
+Reset masks remain per-DOF: selecting any member resets the entire GRU/LSTM
+recurrent lane. MLP input history and delay buffers remain per-DOF and reset
+only selected members. To reset a complete environment, select all its DOFs.
+State copying and double buffering keep the existing :class:`Actuator.State`
+interface. Implicit MIMO, ragged groups within one actuator, and unequal input
+and output DOF sets are not supported.
+
 .. _effort-modes:
 
 Effort Modes
