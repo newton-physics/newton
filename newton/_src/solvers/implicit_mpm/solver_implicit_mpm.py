@@ -95,6 +95,9 @@ from .implicit_mpm_solver_kernels import (
     voxel_coordinates,
 )
 
+# Disabled until Warp includes the fix for NVIDIA/warp#2036 (see #4506).
+_ROW_COMPRESSED_CONTACT_CONSTRUCTION = False
+
 
 def _as_2d_array(array, shape, dtype):
     return wp.array(
@@ -1831,11 +1834,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 entry selects global objects whose world index is ``-1``. If
                 ``None``, reset all worlds and global objects.
 
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
-
                 .. experimental::
 
                     Selective per-world MPM reset behavior may change without prior notice.
@@ -3088,7 +3086,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         # Compact maps with many inactive partition rows can still favor triplets,
         # even when Warp packs active-row candidate capacity.
         return (
-            self.model.device.is_cuda
+            _ROW_COMPRESSED_CONTACT_CONSTRUCTION
+            and self.model.device.is_cuda
             and self.velocity_basis == "Q1"
             and self.collider_basis in ("S2", "S3")
             and scratch.collider_node_count <= scratch.collider_fraction_test.space_restriction.node_count()

@@ -13,6 +13,8 @@ env:
   # Prefer the validated US capacity order before Asia-Pacific fallback.
   AWS_REGION_CANDIDATES: ${{ inputs.region-candidates || 'us-east-1 us-east-2 us-west-2 ap-northeast-1 ap-northeast-2' }}
   AWS_INSTANCE_TYPE: ${{ inputs.instance-type || 'g7e.2xlarge' }}
+  # No `|| default` here: an explicitly empty input must disable fallback.
+  AWS_FALLBACK_INSTANCE_TYPE: ${{ inputs.fallback-instance-type }}
   AWS_VOLUME_SIZE: ${{ inputs.volume-size || '92' }}
   AWS_VOLUME_TYPE: gp3
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
@@ -32,6 +34,11 @@ on:
         required: false
         type: string
         default: 'g7e.2xlarge'
+      fallback-instance-type:
+        description: 'EC2 instance type to use when instance-type cannot launch; empty disables fallback'
+        required: false
+        type: string
+        default: 'g6e.2xlarge'
       volume-size:
         description: 'EBS volume size in GB'
         required: false
@@ -58,6 +65,11 @@ on:
         required: false
         type: string
         default: 'g7e.2xlarge'
+      fallback-instance-type:
+        description: 'EC2 instance type to use when instance-type cannot launch; empty disables fallback'
+        required: false
+        type: string
+        default: 'g6e.2xlarge'
       region-candidates:
         description: 'Space-separated AWS regions to try'
         required: false
@@ -84,6 +96,7 @@ jobs:
       label: ${{ steps.start-ec2-runner.outputs.label }}
       ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
       region: ${{ steps.start-ec2-runner.outputs.region }}
+      instance-type: ${{ steps.start-ec2-runner.outputs.instance-type }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
@@ -102,39 +115,25 @@ jobs:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
 
-      - name: Discover AWS runner networking
-        id: discover-runner-config
-        run: python scripts/ci/discover_aws_runner_config.py
-
       - name: Start EC2 runner
         id: start-ec2-runner
-        uses: machulav/ec2-github-runner@343a1b2ae682e681c3cec9a235d882da17ff04ef  # v2.6.1
+        uses: ./.github/actions/start-aws-gpu-runner
         with:
-          mode: start
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
-          ec2-volume-size: ${{ env.AWS_VOLUME_SIZE }}
-          ec2-volume-type: ${{ env.AWS_VOLUME_TYPE }}
-          availability-zones-config: ${{ steps.discover-runner-config.outputs.availability-zones-config }}
-          pre-runner-script: |
-            if [ -d /opt/dlami/nvme ]; then
-              mkdir -p /opt/dlami/nvme/actions-runner/_work
-              mkdir -p /opt/dlami/nvme/actions-runner/.local
-              mkdir -p /opt/dlami/nvme/actions-runner/.cache
-              ln -s /opt/dlami/nvme/actions-runner/_work /actions-runner/_work
-              ln -s /opt/dlami/nvme/actions-runner/.local /actions-runner/.local
-              ln -s /opt/dlami/nvme/actions-runner/.cache /actions-runner/.cache
-            fi
-          aws-resource-tags: >
-            [
-              {"Key": "Name", "Value": "ec2-github-runner"},
-              {"Key": "created-by", "Value": "github-actions-newton-role"},
-              {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"},
-              {"Key": "Newton-Trigger", "Value": ${{ toJSON(inputs['trigger-category']) }}},
-              {"Key": "Newton-Workload", "Value": "gpu-unit-tests"},
-              {"Key": "GitHub-Run-ID", "Value": "${{ github.run_id }}"},
-              {"Key": "GitHub-Run-Attempt", "Value": "${{ github.run_attempt }}"}
-            ]
+          instance-type: ${{ env.AWS_INSTANCE_TYPE }}
+          fallback-instance-type: ${{ env.AWS_FALLBACK_INSTANCE_TYPE }}
+          region-candidates: ${{ env.AWS_REGION_CANDIDATES }}
+          resource-tag: ${{ env.AWS_RUNNER_RESOURCE_TAG }}
+          volume-size: ${{ env.AWS_VOLUME_SIZE }}
+          volume-type: ${{ env.AWS_VOLUME_TYPE }}
+          workload: gpu-unit-tests
+          trigger-category: ${{ inputs.trigger-category }}
+
+      - name: Require a registered runner
+        if: steps.start-ec2-runner.outputs.ready != 'true'
+        run: |
+          echo "::error::Could not start an EC2 runner; see the Start EC2 runner step for details."
+          exit 1
 
   gpu-unit-tests:
     name: Run GPU Unit Tests on AWS EC2
@@ -160,14 +159,21 @@ jobs:
       - name: Set up Python
         run: uv python install
 
+      - name: Detect GPU architecture
+        id: gpu-arch
+        run: |
+          nvidia-smi --query-gpu=name,compute_cap --format=csv | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "sm=sm$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.')" >> "$GITHUB_OUTPUT"
+
+      # Warp kernel binaries are architecture-specific, so each GPU type keeps its own cache.
       - name: Restore Warp kernel cache
         if: github.event_name != 'merge_group'
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: /actions-runner/.cache/warp
-          key: warp-kernels-gpu-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: warp-kernels-gpu-${{ steps.gpu-arch.outputs.sm }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
           restore-keys: |
-            warp-kernels-gpu-
+            warp-kernels-gpu-${{ steps.gpu-arch.outputs.sm }}-
 
       - name: Check disk space
         run: df -h
@@ -178,6 +184,27 @@ jobs:
           # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
           COVERAGE_CORE: "sysmon"
         run: uv run --extra dev --extra torch-cu13 -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+
+      - name: Test ViewerRTX with OVRTX 0.5
+        run: >
+          uv run --extra dev
+          --with ovrtx==0.5.0.377615
+          --with ovstage==0.2.0.377349
+          -m newton.tests
+          -k test_viewer_rtx
+          --strict-warnings
+          --no-cache-clear
+
+      - name: Smoke test ViewerRTX rendering with OVRTX 0.5
+        run: >
+          uv run --extra dev
+          --with ovrtx==0.5.0.377615
+          --with ovstage==0.2.0.377349
+          python -W error::DeprecationWarning
+          -m newton.examples basic_viewer
+          --viewer rtx
+          --headless
+          --num-frames 2
 
       - name: Check disk space (post-test)
         if: always()
@@ -239,9 +266,13 @@ jobs:
 
   codecov-upload:
     name: Upload coverage to Codecov
-    needs: gpu-unit-tests
+    needs:
+      - start-runner
+      - gpu-unit-tests
     if: ${{ !cancelled() && needs.gpu-unit-tests.result != 'skipped' }}
     runs-on: ubuntu-latest
+    env:
+      AWS_INSTANCE_TYPE: ${{ needs.start-runner.outputs.instance-type }}
     # Same-run artifact downloads use the runtime token; contents access is
     # only used to build Codecov's source network for coverage path mapping.
     permissions:

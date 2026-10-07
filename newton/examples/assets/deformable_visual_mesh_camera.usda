@@ -7338,6 +7338,8 @@ def Xform "World"
         )
         {
             float physics:density = 1000
+            float physics:staticFriction = 1
+            float physics:dynamicFriction = 1
             float physics:curvesStretchStiffness = 5000
             float physics:curvesShearStiffness = 5000
             float physics:curvesBendStiffness = 2.5
