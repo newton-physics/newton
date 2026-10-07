@@ -360,10 +360,10 @@ class TestCalibrationCableProblem(unittest.TestCase):
             self.assertEqual(history[-1]["loss"], result.metrics["loss"])
             self.assertIsNone(problem._evaluator)
 
-            stopped = SearchOutcome([2.0], 0.0, 0, True, [(0.0, [2.0])])
-            self.assertEqual(
-                problem.build_result(stopped, optimizer=optimizer, artifacts={}).status, STATUS_INTERRUPTED
-            )
+            stopped = SearchOutcome([2.0], 0.0, 0, True, [(0.0, [2.0])], "interrupted")
+            interrupted = problem.build_result(stopped, optimizer=optimizer, artifacts={})
+            self.assertEqual(interrupted.status, STATUS_INTERRUPTED)
+            self.assertEqual(interrupted.diagnostics["stop_reason"], "interrupted")
 
     @unittest.skipUnless(importlib.util.find_spec("cma"), "requires newton[calibration]")
     def test_failed_trace_keeps_the_result(self):
