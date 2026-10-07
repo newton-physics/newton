@@ -17,6 +17,7 @@ import warp as wp
 import newton
 from newton._src.sim import Model, ModelBuilder, State
 from newton._src.sim.contacts import Contacts
+from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import (
     ContactMode,
     ContactsKamino,
@@ -26,6 +27,8 @@ from newton._src.solvers.kamino._src.geometry.contacts import (
     make_contact_frame_znorm,
 )
 from newton._src.solvers.kamino._src.geometry.keying import KeySorter
+from newton._src.solvers.kamino._src.geometry.primitive.pipeline import CollisionPipelinePrimitive
+from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
 from newton._src.solvers.kamino._src.solvers.warmstart import (
     _count_current_contacts_by_cached_pair,
     warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_backup,
@@ -1716,6 +1719,157 @@ class TestGeometryContactConversions(unittest.TestCase):
             np.zeros_like(force_after),
             err_msg="Culled contacts must not retain stale force data",
         )
+
+    def test_13_skip_fully_prescribed_contacts(self):
+        """Skip contacts whose two bodies are static or zero-mass."""
+
+        def build_scene():
+            builder = ModelBuilder()
+            static_body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.45), wp.quat_identity()))
+            builder.add_shape_box(
+                static_body,
+                hx=0.5,
+                hy=0.5,
+                hz=0.5,
+                cfg=ModelBuilder.ShapeConfig(density=0.0),
+            )
+            dynamic_body = builder.add_body(xform=wp.transform((2.0, 0.0, 0.45), wp.quat_identity()))
+            builder.add_shape_box(
+                dynamic_body,
+                hx=0.5,
+                hy=0.5,
+                hz=0.5,
+                cfg=ModelBuilder.ShapeConfig(density=1.0),
+            )
+            builder.add_ground_plane()
+            return builder
+
+        model, state, contacts = self._setup_newton_scene(builder_fn=build_scene)
+        newton_count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreaterEqual(newton_count, 2)
+
+        shape_body = model.shape_body.numpy()
+        body_inv_mass = model.body_inv_mass.numpy()
+        shape0 = contacts.rigid_contact_shape0.numpy()[:newton_count]
+        shape1 = contacts.rigid_contact_shape1.numpy()[:newton_count]
+        responsive = [
+            (shape_body[s0] >= 0 and body_inv_mass[shape_body[s0]] > 0.0)
+            or (shape_body[s1] >= 0 and body_inv_mass[shape_body[s1]] > 0.0)
+            for s0, s1 in zip(shape0, shape1, strict=True)
+        ]
+        self.assertIn(False, responsive)
+        self.assertIn(True, responsive)
+
+        kamino = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
+        convert_contacts_newton_to_kamino(
+            model,
+            state,
+            contacts,
+            kamino,
+            skip_fully_prescribed_contacts=True,
+        )
+
+        kamino_count = int(kamino.model_active_contacts.numpy()[0])
+        self.assertEqual(kamino_count, sum(responsive))
+        body_b = kamino.bid_AB.numpy()[:kamino_count, 1]
+        self.assertTrue(np.all(body_inv_mass[body_b] > 0.0))
+
+    def test_14_angular_friction_transport(self):
+        """Transport angular friction through the unified and external paths, ignoring it in the primitive path."""
+        with wp.ScopedDevice(self.default_device):
+            builder = ModelBuilder()
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.49), wp.quat_identity()))
+            builder.add_shape_sphere(
+                body,
+                radius=0.5,
+                cfg=builder.ShapeConfig(mu=0.5, mu_torsional=0.02, mu_rolling=0.04),
+            )
+            builder.add_shape_sphere(
+                -1,
+                xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), wp.quat_identity()),
+                radius=0.5,
+                cfg=builder.ShapeConfig(mu=0.5, mu_torsional=0.06, mu_rolling=0.08),
+            )
+            model = builder.finalize(device=self.default_device)
+            kamino = ModelKamino.from_newton(model)
+            contacts = ContactsKamino(model=kamino, device=self.default_device, remappable=True)
+            detector = CollisionPipelineUnifiedKamino(kamino)
+            primitive = CollisionPipelinePrimitive(kamino)
+            state = model.state()
+            data = kamino.data()
+            external_pipeline = newton.CollisionPipeline(model, rigid_contact_max=contacts.model_max_contacts_host)
+            external = external_pipeline.contacts()
+
+            for torsion, rolling in (([0.02, 0.06], [0.04, 0.08]), ([0.1, 0.3], [0.2, 0.6])):
+                model.shape_material_mu_torsional.assign(np.asarray(torsion, dtype=np.float32))
+                model.shape_material_mu_rolling.assign(np.asarray(rolling, dtype=np.float32))
+                expected = np.asarray([np.mean(torsion), np.mean(rolling)], dtype=np.float32)
+                for route in ("unified", "primitive", "external"):
+                    with self.subTest(route=route, expected=expected):
+                        if route == "unified":
+                            detector.collide(data, contacts)
+                        elif route == "primitive":
+                            primitive.collide(data, contacts)
+                        else:
+                            external_pipeline.collide(state, external)
+                            convert_contacts_newton_to_kamino(model, state, external, contacts)
+                        count = int(contacts.model_active_contacts.numpy()[0])
+                        self.assertGreater(count, 0)
+                        np.testing.assert_allclose(
+                            contacts.angular_friction.numpy()[:count],
+                            np.tile(0.0 * expected if route == "primitive" else expected, (count, 1)),
+                            rtol=1.0e-6,
+                        )
+
+            # Native geometries without angular material arrays get zero friction
+            kamino.geoms.torsional_friction = None
+            kamino.geoms.rolling_friction = None
+            CollisionPipelineUnifiedKamino(kamino).collide(data, contacts)
+            count = int(contacts.model_active_contacts.numpy()[0])
+            self.assertGreater(count, 0)
+            np.testing.assert_array_equal(contacts.angular_friction.numpy()[:count], 0.0)
+
+    def test_15_contact_stiffness_transport(self):
+        """Transport per-contact stiffness and damping from Newton contacts; Kamino's own pipelines leave contacts hard."""
+        with wp.ScopedDevice(self.default_device):
+            builder = ModelBuilder()
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.49), wp.quat_identity()))
+            builder.add_shape_sphere(body, radius=0.5)
+            builder.add_shape_sphere(-1, xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), wp.quat_identity()), radius=0.5)
+            model = builder.finalize(device=self.default_device)
+            kamino = ModelKamino.from_newton(model)
+            contacts = ContactsKamino(model=kamino, device=self.default_device, remappable=True)
+            detector = CollisionPipelineUnifiedKamino(kamino)
+            primitive = CollisionPipelinePrimitive(kamino)
+            state = model.state()
+            data = kamino.data()
+            external_pipeline = newton.CollisionPipeline(model, rigid_contact_max=contacts.model_max_contacts_host)
+            external = external_pipeline.contacts()
+
+            # Alternate the routes so each one overwrites the stiffness of the previous one
+            for route, expected in (("external", 1234.0), ("unified", 0.0), ("external", 0.0), ("primitive", 0.0)):
+                with self.subTest(route=route, expected=expected):
+                    if route == "unified":
+                        detector.collide(data, contacts)
+                    elif route == "primitive":
+                        contacts.stiffness.fill_(1.0)
+                        contacts.damping.fill_(1.0)
+                        primitive.collide(data, contacts)
+                    else:
+                        external_pipeline.collide(state, external)
+                        # Allocate the per-contact properties together, as hydroelastic contacts do
+                        for name, value in (
+                            ("rigid_contact_stiffness", expected),
+                            ("rigid_contact_damping", 0.5 * expected),
+                            ("rigid_contact_friction", 0.0),
+                        ):
+                            array = wp.full(external.rigid_contact_max, value, dtype=wp.float32)
+                            setattr(external, name, array if expected > 0.0 else None)
+                        convert_contacts_newton_to_kamino(model, state, external, contacts)
+                    count = int(contacts.model_active_contacts.numpy()[0])
+                    self.assertGreater(count, 0)
+                    np.testing.assert_array_equal(contacts.stiffness.numpy()[:count], expected)
+                    np.testing.assert_array_equal(contacts.damping.numpy()[:count], 0.5 * expected)
 
 
 ###

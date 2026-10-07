@@ -18,6 +18,7 @@ import warp as wp
 from ...core.types import override
 from ...geometry.types import GeoType
 from ...sim import (
+    BodyFlags,
     Contacts,
     Control,
     JointType,
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
         ConstraintStabilizationConfig,
         DVISolverConfig,
         ForwardKinematicsSolverConfig,
+        LOXSolverConfig,
         MaterialManagerConfig,
         PADMMSolverConfig,
     )
@@ -186,8 +188,9 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         sparse_jacobian: bool | None = None
         """
-        Whether to use a sparse Jacobian representation. When unspecified, defaults to `True` for DVI and `False`
-        for PADMM.
+        Whether the solver should use a sparse Jacobian. ``None`` selects the
+        backend default: sparse for DVI and LOX, and dense for PADMM. LOX
+        requires sparse Jacobians.
         """
 
         sparse_dynamics: bool = False
@@ -248,6 +251,13 @@ class SolverKamino(SolverBase, CouplingInterface):
         If `None`, default values will be used.
         """
 
+        lox: LOXSolverConfig | None = None
+        """
+        Configurations for the LOX dynamics solver.\n
+        See :class:`LOXSolverConfig` for more details.\n
+        If `None`, default values will be used.
+        """
+
         fk: ForwardKinematicsSolverConfig | None = None
         """
         Configurations for the forward kinematics solver.\n
@@ -278,7 +288,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         Defaults to `"euler"`.
         """
 
-        dynamics_solver: Literal["padmm", "dvi"] = "padmm"
+        dynamics_solver: Literal["padmm", "dvi", "lox"] = "padmm"
         """
         The forward dynamics solver to use. Construct the config with this value
         so solver-dependent defaults are initialized consistently. Defaults to
@@ -331,6 +341,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             config.CollisionDetectorConfig.register_custom_attributes(builder)
             config.PADMMSolverConfig.register_custom_attributes(builder)
             config.DVISolverConfig.register_custom_attributes(builder)
+            config.LOXSolverConfig.register_custom_attributes(builder)
             config.MaterialManagerConfig.register_custom_attributes(builder)
 
             # Register KaminoSceneAPI custom attributes for each individual solver-level configurations
@@ -385,6 +396,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 "dynamics": config.ConstrainedDynamicsConfig,
                 "padmm": config.PADMMSolverConfig,
                 "dvi": config.DVISolverConfig,
+                "lox": config.LOXSolverConfig,
                 "fk": config.ForwardKinematicsSolverConfig,
                 "materials": config.MaterialManagerConfig,
             }
@@ -417,6 +429,12 @@ class SolverKamino(SolverBase, CouplingInterface):
             from ._src.core.joints import JointCorrectionMode  # noqa: PLC0415
 
             # Ensure that the sparsity settings are compatible with each other
+            if self.dynamics_solver == "lox":
+                if self.sparse_jacobian is None:
+                    self.sparse_jacobian = True
+                elif not self.sparse_jacobian:
+                    raise ValueError("The LOX solver requires `sparse_jacobian=True`.")
+
             if self.sparse_dynamics and not self.sparse_jacobian:
                 raise ValueError(
                     "Sparsity setting mismatch: `sparse_dynamics` solver "
@@ -432,6 +450,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 raise ValueError("PADMM solver config cannot be None.")
             elif self.dvi is None:
                 raise ValueError("DVI solver config cannot be None.")
+            elif self.lox is None:
+                raise ValueError("LOX solver config cannot be None.")
 
             # Validate specialized sub-configurations
             # using their own built-in validations
@@ -443,9 +463,10 @@ class SolverKamino(SolverBase, CouplingInterface):
             self.dynamics.validate()
             self.padmm.validate()
             self.dvi.validate()
+            self.lox.validate()
             self.materials.validate()
 
-            supported_dynamics_solvers = {"padmm", "dvi"}
+            supported_dynamics_solvers = {"padmm", "dvi", "lox"}
             if self.dynamics_solver not in supported_dynamics_solvers:
                 raise ValueError(
                     f"Invalid dynamics solver: {self.dynamics_solver}. Must be one of {supported_dynamics_solvers}."
@@ -461,6 +482,11 @@ class SolverKamino(SolverBase, CouplingInterface):
                 and self.padmm.penalty_update_method != "fixed"
             ):
                 raise ValueError("Adaptive PADMM penalty updates require `sparse_dynamics=True`.")
+            if self.dynamics_solver == "lox":
+                if self.sparse_dynamics:
+                    raise ValueError("The LOX solver requires dense dynamics.")
+                if self.dynamics.linear_solver_type != "LLTB":
+                    raise ValueError("The LOX solver requires the LLTB linear solver.")
 
             # Conversion to JointCorrectionMode will raise an error if the input string is invalid.
             JointCorrectionMode.from_string(self.rotation_correction)
@@ -486,7 +512,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             from . import config  # noqa: PLC0415
 
             if self.sparse_jacobian is None:
-                self.sparse_jacobian = self.dynamics_solver == "dvi"
+                self.sparse_jacobian = self.dynamics_solver in {"dvi", "lox"}
 
             # Default-initialize any sub-configurations that were not explicitly provided by the user
             if self.collision_detector is None and self.use_collision_detector:
@@ -515,6 +541,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 # Storage backends share one convergence schedule; sparse
                 # optimizations must not silently weaken DVI semantics.
                 self.dvi = config.DVISolverConfig()
+            if self.lox is None:
+                self.lox = config.LOXSolverConfig()
             if self.materials is None:
                 self.materials = config.MaterialManagerConfig()
 
@@ -752,9 +780,6 @@ class SolverKamino(SolverBase, CouplingInterface):
         # as class variables if not already done
         self._import_kamino()
 
-        # Validate that the model does not contain unsupported components
-        self._validate_model_compatibility(model)
-
         # Cache configurations; either from the user-provided config or from the model's custom attributes
         # NOTE: `Config.from_model` will default-initialize if no relevant custom attributes were
         # found on the model, so `self._config` will always be fully initialized after this step.
@@ -764,6 +789,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             # Validate the user-provided config. Protects against modifying the config after initialization.
             config.validate()
         self._config = config
+
+        # Validate solver-specific model compatibility after resolving the selected backend.
+        self._validate_model_compatibility(model, self._config)
 
         # Create a Kamino model from the Newton model
         self._model_kamino = self._kamino.ModelKamino.from_newton(model)
@@ -792,7 +820,6 @@ class SolverKamino(SolverBase, CouplingInterface):
         )
         # Scratch scalar for material update validation
         self._material_update_conflict = wp.empty(1, dtype=wp.int32, device=model.device)
-
         # Create a collision detector if enabled in the config, otherwise
         # set to `None` to disable internal collision detection in Kamino
         self._collision_detector_kamino = None
@@ -848,6 +875,11 @@ class SolverKamino(SolverBase, CouplingInterface):
             contacts=self._contacts_kamino,
             config=self._config,
         )
+        self._cull_speculative_contacts = self._config.dynamics.cull_speculative_contacts
+        self._skip_fully_prescribed_contacts = False
+        if self._config.dynamics_solver == "lox":
+            self._cull_speculative_contacts = False
+            self._skip_fully_prescribed_contacts = True
 
         # Initialize the internal Kamino control wrapper
         self._control_kamino = self._kamino.ControlKamino()
@@ -857,8 +889,8 @@ class SolverKamino(SolverBase, CouplingInterface):
     def status(self) -> wp.array[Any]:
         """Per-world terminal solver status on the simulation device.
 
-        The active backend defines the array's Warp struct type. Both PADMM and
-        DVI provide ``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c``
+        The active backend defines the array's Warp struct type. PADMM, DVI, and
+        LOX provide ``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c``
         fields. Backend-specific fields may also be present.
 
         Residuals are absolute maxima, not relative or dimensionless values.
@@ -880,11 +912,55 @@ class SolverKamino(SolverBase, CouplingInterface):
         violation; and ``r_c = max |lambda_k dot v_k|`` [J] is the maximum
         inequality complementarity violation.
 
+        LOX reports its native convergence flag and splitting iteration count.
+        With body twists ``v`` of the smooth solve and ``p`` of the unilateral
+        projection, and the splitting body weight ``W``, LOX reports
+        ``r_p = ||W (v - p)||_inf`` [N·s or N·m·s] and the last change
+        ``r_d = ||v - v_prev||_inf`` [m/s or rad/s] of the smooth solution.
+        Its ``r_c`` [J] is the squared maximum Delassus-scaled natural-map
+        residual of the joint-friction, limit, and contact rows under their
+        contact law, which measures feasibility and complementarity together.
+        These residuals do not require solution metrics; they are NaN before
+        solving and for failed worlds. LOX also provides a ``failed`` field; a
+        world that is neither converged nor failed reached the iteration limit
+        and uses its last projected iterate.
+
         The returned array aliases the solver's device-resident storage; reading
         it does not synchronize or copy data to the host. Terminal status is
         available regardless of :attr:`Config.collect_solver_info`.
         """
         return self._solver_kamino.solver_status
+
+    @property
+    def metrics(self) -> Any | None:
+        """Solution metrics evaluator, or ``None`` when metrics are disabled.
+
+        Enable metrics with :attr:`Config.compute_solution_metrics` and access
+        the per-world metric arrays through ``solver.metrics.data`` after each
+        call to :meth:`step`.
+        """
+        return self._solver_kamino.metrics
+
+    def lox_joint_penalty_scale_seed(self, dt: float) -> wp.array[wp.float32]:
+        """Estimate and apply a timestep-aware LOX joint penalty scale.
+
+        Call this once after constructing a LOX solver and before capturing or
+        stepping the simulation. The operation performs a one-time dense
+        structural analysis and synchronizes with the host.
+
+        Args:
+            dt: Simulation time step [s].
+
+        Returns:
+            The applied dimensionless structural ALM penalty scale for each
+            world, shape ``(world_count,)``.
+
+        Raises:
+            ValueError: If this solver does not use the LOX dynamics backend.
+        """
+        if self._config.dynamics_solver != "lox":
+            raise ValueError("LOX joint penalty scale seeding requires the LOX dynamics backend.")
+        return self._solver_kamino.solver_fd.joint_penalty_scale_seed(dt)
 
     @override
     def reset(
@@ -1054,8 +1130,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._detector = self._collision_detector_kamino
         elif contacts is not None:
             self._detector = None
-            # The contacts container is `None` when the model admits no possible contacts.
-            if self._contacts_kamino is not None:
+            if self.model.body_count > 0 and self._contacts_kamino is not None:
                 self._kamino.convert_contacts_newton_to_kamino(
                     model=self.model,
                     state=state_in,
@@ -1064,12 +1139,14 @@ class SolverKamino(SolverBase, CouplingInterface):
                     convert_forces=False,
                     friction_mix_mode=self._config.materials.friction_mix_mode,
                     restitution_mix_mode=self._config.materials.restitution_mix_mode,
-                    cull_speculative_contacts=self._config.dynamics.cull_speculative_contacts,
+                    cull_speculative_contacts=self._cull_speculative_contacts,
+                    skip_fully_prescribed_contacts=self._skip_fully_prescribed_contacts,
                 )
         else:
             self._detector = None
             # Clear the internal contacts container to avoid using stale contacts from previous steps.
-            self._contacts_kamino.clear()
+            if self._contacts_kamino is not None:
+                self._contacts_kamino.clear()
 
         # Convert Newton body-frame poses to Kamino CoM-frame poses
         self._kamino.convert_body_origin_to_com(
@@ -1101,12 +1178,14 @@ class SolverKamino(SolverBase, CouplingInterface):
                 dt=dt,
             )
 
-        # Convert back from Kamino CoM-frame to Newton body-frame poses
-        self._kamino.convert_body_com_to_origin(
-            body_com=self._model_kamino.bodies.i_r_com_i,
-            body_q_com=state_in_kamino.q_i,
-            body_q=state_in_kamino.q_i,
-        )
+        # Convert back from Kamino CoM-frame to Newton body-frame poses. When
+        # stepping in place, the output write below already does that.
+        if state_in_kamino.q_i.ptr != state_out_kamino.q_i.ptr:
+            self._kamino.convert_body_com_to_origin(
+                body_com=self._model_kamino.bodies.i_r_com_i,
+                body_q_com=state_in_kamino.q_i,
+                body_q=state_in_kamino.q_i,
+            )
         self._kamino.convert_body_com_to_origin(
             body_com=self._model_kamino.bodies.i_r_com_i,
             body_q_com=state_out_kamino.q_i,
@@ -1277,7 +1356,6 @@ class SolverKamino(SolverBase, CouplingInterface):
                 default=0.0,
             )
         )
-
         # Register FK custom actuation types
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -1315,7 +1393,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 raise ImportError("Kamino backend not found.") from e
 
     @staticmethod
-    def _validate_model_compatibility(model: Model):
+    def _validate_model_compatibility(model: Model, config: SolverKamino.Config):
         """
         Validates that the model does not contain components unsupported by SolverKamino:
         - particles
@@ -1323,7 +1401,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         - triangles, edges, tetrahedra
         - muscles
         - distance or rod joints
-        - bodies with singular inertial properties that are attached to movable bodies
+        - bodies with singular inertial properties that are attached to movable bodies for non-LOX backends
 
         Args:
             model: The Newton model to validate.
@@ -1333,6 +1411,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
 
         unsupported_features = []
+        use_lox = config.dynamics_solver == "lox"
         if model.particle_count > 0:
             unsupported_features.append(f"particles (found {model.particle_count})")
         if model.spring_count > 0:
@@ -1364,14 +1443,15 @@ class SolverKamino(SolverBase, CouplingInterface):
                 joint_desc = [f"{name} ({count} instances)" for name, count in unsupported_joint_types.items()]
                 unsupported_features.append("joint types: " + ", ".join(joint_desc))
 
-        singular_bodies = SolverKamino._find_unsupported_singular_inertia_bodies(model)
-        if len(singular_bodies) > 0:
-            unsupported_features.append(
-                "bodies with singular inertial properties that are attached to movable bodies:\n"
-                + "\n".join(f"      - {desc}" for desc in singular_bodies)
-                + "\n    Import with `collapse_fixed_joints=True` to merge these bodies into their neighbors,"
-                "\n    or give them a non-zero mass and inertia."
-            )
+        if not use_lox:
+            singular_bodies = SolverKamino._find_unsupported_singular_inertia_bodies(model)
+            if len(singular_bodies) > 0:
+                unsupported_features.append(
+                    "bodies with singular inertial properties that are attached to movable bodies:\n"
+                    + "\n".join(f"      - {desc}" for desc in singular_bodies)
+                    + "\n    Import with `collapse_fixed_joints=True` to merge these bodies into their neighbors,"
+                    "\n    or give them a non-zero mass and inertia."
+                )
 
         # If any unsupported features were found, raise an error
         if len(unsupported_features) > 0:
@@ -1382,11 +1462,12 @@ class SolverKamino(SolverBase, CouplingInterface):
 
     @staticmethod
     def _find_unsupported_singular_inertia_bodies(model: Model) -> list[str]:
-        """Finds bodies whose singular inertial properties make them unsafe to simulate.
+        """Find bodies whose singular inertial properties make them unsafe to simulate.
 
         A body with singular inverse mass or inertia cannot respond to all applied wrenches in the
-        dual formulation. Such a body is only safe in two situations:
+        dual formulation. Such a body is only safe in these situations:
 
+        - It is explicitly kinematic, so its velocity is prescribed independently of inertia.
         - It is welded to the world, so a permanently frozen velocity is the correct answer.
         - It only has a free joint to the world, and is not attached to any other bodies.
           It then stays at its initial velocity.
@@ -1406,7 +1487,12 @@ class SolverKamino(SolverBase, CouplingInterface):
         inv_mass = model.body_inv_mass.numpy()
         inv_inertia = model.body_inv_inertia.numpy()
         singular_inertia = np.linalg.matrix_rank(inv_inertia) < 3
-        singular = [b for b in range(model.body_count) if inv_mass[b] == 0.0 or singular_inertia[b]]
+        body_flags = model.body_flags.numpy()
+        singular = [
+            b
+            for b in range(model.body_count)
+            if not (body_flags[b] & int(BodyFlags.KINEMATIC)) and (inv_mass[b] == 0.0 or singular_inertia[b])
+        ]
         if not singular:
             return []
 

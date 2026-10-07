@@ -142,6 +142,12 @@ class GeometriesModel:
     Shape of ``(num_geoms,)``.
     """
 
+    torsional_friction: wp.array[wp.float32] | None = None
+    """Per-geometry torsional friction coefficient [m]; ``None`` means zero."""
+
+    rolling_friction: wp.array[wp.float32] | None = None
+    """Per-geometry rolling friction coefficient [m]; ``None`` means zero."""
+
     group: wp.array[wp.int32] | None = None
     """
     Collision group assigned to each collision geometry. These groups are based
