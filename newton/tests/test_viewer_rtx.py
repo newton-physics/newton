@@ -623,27 +623,33 @@ def Xform "World"
 }}
 """
 
-    def _borrowed_scene(self, up_axis="Z", **add_usd_kwargs):
-        """Populate a borrowed stage and import the same scene into a model."""
+    def _open_borrowed_stage(self, usda: str):
+        """Write ``usda`` to a file and populate a borrowed stage from it; return the stage and file path."""
         import ovrtx
         import ovstage
 
         ovrtx.register_schema_paths()
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "scene.usda")
-            with open(path, "w") as f:
-                f.write(self._BORROWED_USDA.format(up_axis=up_axis))
-            stage = ovstage.Stage(
-                "newton.test.borrowed",
-                config=ovstage.StageConfig(
-                    runtime_default_hierarchy_computation_model=ovstage.HierarchyComputationModel.GPU_INCREMENTAL
-                ),
-            )
-            self.addCleanup(stage.destroy)
-            ovstage.population.open_usd(stage, path, ordinal=1)
-            stage.advance_write_floor(1).wait()
-            builder = newton.ModelBuilder()
-            builder.add_usd(path, **add_usd_kwargs)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "scene.usda")
+        with open(path, "w") as f:
+            f.write(usda)
+        stage = ovstage.Stage(
+            "newton.test.borrowed",
+            config=ovstage.StageConfig(
+                runtime_default_hierarchy_computation_model=ovstage.HierarchyComputationModel.GPU_INCREMENTAL
+            ),
+        )
+        self.addCleanup(stage.destroy)
+        ovstage.population.open_usd(stage, path, ordinal=1)
+        stage.advance_write_floor(1).wait()
+        return stage, path
+
+    def _borrowed_scene(self, up_axis="Z", **add_usd_kwargs):
+        """Populate a borrowed stage and import the same scene into a model."""
+        stage, path = self._open_borrowed_stage(self._BORROWED_USDA.format(up_axis=up_axis))
+        builder = newton.ModelBuilder()
+        builder.add_usd(path, **add_usd_kwargs)
         return stage, builder.finalize()
 
     @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
@@ -699,6 +705,80 @@ def Xform "World"
             rigid[:3, :3] /= np.linalg.norm(rigid[:3, :3], axis=1)[:, None]
             stage_from_model = np.linalg.solve(_column_matrix(model.body_q.numpy()[0]).T, rigid)
             np.testing.assert_allclose(camera, viewer._compute_camera_matrix() @ stage_from_model, atol=1.0e-5)
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
+    def test_borrowed_stage_binds_replicated_clones(self):
+        """Bind each replicated world's bodies to the prims the stage cloned into its environment."""
+        envs = [f"/World/envs/env_{i}" for i in range(3)]
+        env_xforms = "".join(
+            f"""
+        def Xform "env_{i}"
+        {{
+            double3 xformOp:translate = ({3.0 * i}, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }}"""
+            for i in range(1, len(envs))
+        )
+        stage, path = self._open_borrowed_stage(
+            f"""#usda 1.0
+(
+    upAxis = "Z"
+)
+def Xform "World"
+{{
+    def Xform "envs"
+    {{
+        def Xform "env_0"
+        {{
+            def Xform "Body" (
+                prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+            )
+            {{
+                double3 xformOp:translate = (0, 0, 1)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+                def Cube "geom" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI"]
+                )
+                {{
+                    double size = 0.2
+                }}
+            }}
+        }}{env_xforms}
+    }}
+}}
+"""
+        )
+        stage.clone(f"{envs[0]}/Body", [f"{env}/Body" for env in envs[1:]], ordinal=2)
+        stage.advance_write_floor(2).wait()
+
+        prototype = newton.ModelBuilder()
+        prototype.add_usd(path, root_path=envs[0])
+        prototype.body_label[:] = [label.removeprefix(f"{envs[0]}/") for label in prototype.body_label]
+        builder = newton.ModelBuilder()
+        builder.replicate(
+            prototype,
+            len(envs),
+            xforms=[wp.transform((3.0 * i, 0.0, 0.0), wp.quat_identity()) for i in range(len(envs))],
+            label_prefixes=envs,
+        )
+        model = builder.finalize()
+        state = model.state()
+        body_q = state.body_q.numpy()
+        body_q[:, 2] += 0.5
+        state.body_q.assign(body_q)
+
+        viewer = ViewerRTX(headless=True, async_rendering=False, ovstage=stage)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", UserWarning)
+                viewer.set_model(model)
+            viewer.begin_frame(0.0)
+            viewer.log_state(state)
+            viewer.end_frame()
+            world = viewer._read_borrowed_world_matrices([f"{env}/Body" for env in envs])
+            np.testing.assert_allclose(world[:, 3, :3], [[3.0 * i, 0.0, 1.5] for i in range(len(envs))], atol=1.0e-5)
         finally:
             viewer.close()
 

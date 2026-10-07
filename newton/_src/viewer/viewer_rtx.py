@@ -244,9 +244,9 @@ class ViewerRTX(ViewerUSD):
                 ``/__newton_viewer``. :meth:`set_visible_worlds`,
                 ``show_collision``, and ``show_visual`` affect only the debug
                 geometry, ``environment`` must stay ``"default"``, and layers
-                are not supported. :meth:`end_frame` writes above the stage's
-                current write floor and then advances it, so finish other
-                writes to the stage first. Bound prims keep their last world
+                are not supported. :meth:`set_model` and :meth:`end_frame`
+                write above the stage's current write floor and then advance
+                it, so finish other writes to the stage first. Bound prims keep their last world
                 pose after the viewer releases the stage. Requires OVRTX 0.4
                 and OVStage 0.2 or newer, and a stage created with GPU
                 hierarchy computation.
@@ -978,7 +978,13 @@ void main() {
 
         stage = self._borrowed_stage
         out = np.full((len(prim_paths), 4, 4), np.nan, dtype=np.float64)
-        ordinal_range = ovstage.OrdinalRange.latest(self._borrowed_write_floor())
+        # World matrices of cloned or moved prims are stale until the hierarchy is recomputed.
+        self._next_ovstage_ordinal()
+        stage.compute_hierarchy(
+            self._ovstage_ordinal - 1, self._ovstage_ordinal, ovstage.HierarchyComputationModel.RUNTIME_DEFAULT
+        )
+        stage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
+        ordinal_range = ovstage.OrdinalRange.latest(self._ovstage_ordinal)
         with ovstage.PathDictionary(stage) as paths:
             path_list = paths.create_path_list_from_strings(list(prim_paths))
             try:
