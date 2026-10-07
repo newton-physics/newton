@@ -7,6 +7,7 @@ import gc
 import math
 import unittest
 import warnings
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
@@ -60,7 +61,11 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     update_duals_body_particle_contacts,
     update_duals_joint,
 )
-from newton._src.solvers.vbd.solver_vbd import _PARTICLE_CONTACT_GATHER_BLOCK_DIM, _is_tet_only_elasticity_model
+from newton._src.solvers.vbd.solver_vbd import (
+    _PARTICLE_CONTACT_GATHER_BLOCK_DIM,
+    _is_tet_only_elasticity_model,
+    _select_rigid_block_dim,
+)
 from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -5043,6 +5048,47 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
     )
 
 
+def _rigid_constraint_adjacency(test, device):
+    """Exclude FREE joints while retaining disabled constraints and applied forces."""
+    with wp.ScopedDevice(device):
+        for constrained in (False, True):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            bodies = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(4)]
+            joints = [builder.add_joint_free(bodies[0]), builder.add_joint_free(bodies[1], parent=bodies[0])]
+            joints.append(
+                builder.add_joint_fixed(bodies[1], bodies[2], enabled=False)
+                if constrained
+                else builder.add_joint_free(bodies[2])
+            )
+            joints.append(
+                builder.add_joint_fixed(bodies[2], bodies[3]) if constrained else builder.add_joint_free(bodies[3])
+            )
+            builder.add_articulation(joints)
+            builder.color()
+            model = builder.finalize(device=device)
+            control = model.control()
+            empty_contacts = newton.CollisionPipeline(model).contacts()
+            forces = np.zeros(model.joint_dof_count, dtype=np.float32)
+            forces[model.joint_qd_start.numpy()[joints[1]]] = 1.0
+            control.joint_f.assign(forces)
+            for compliant in (False, True):
+                solver = newton.solvers.SolverVBD(model, iterations=3, rigid_compliant_alm=compliant)
+                with test.subTest(constrained=constrained, compliant=compliant):
+                    adjacency = solver.rigid_adjacency
+                    np.testing.assert_array_equal(
+                        adjacency.body_adj_joints.numpy(), [2, 2, 3, 3] if constrained else []
+                    )
+                    np.testing.assert_array_equal(
+                        adjacency.body_adj_joints_offsets.numpy(), [0, 0, 1, 3, 4] if constrained else [0, 0, 0, 0, 0]
+                    )
+                    dt = 1.0 / 600.0
+                    for contacts in (None, empty_contacts):
+                        state_in, state_out = model.state(), model.state()
+                        solver.reset(state_in)
+                        solver.step(state_in, state_out, control, contacts, dt)
+                        np.testing.assert_allclose(state_out.body_qd.numpy()[:, 0], [-dt, dt, 0.0, 0.0], rtol=1.0e-6)
+
+
 def _build_rigid_hinge_winding_model(device, **dof_kwargs):
     """Build equivalent revolute and one-axis-D6 hinges in one model."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -5174,6 +5220,16 @@ class TestSolverVBD(unittest.TestCase):
             self.assertEqual(options["deterministic"], wp.DeterministicMode.RUN_TO_RUN)
             self.assertFalse(options["enable_backward"])
 
+    def test_rigid_block_dim(self):
+        """Pin the rigid block ladder and CPU fallback."""
+        device = SimpleNamespace(is_cuda=True, sm_count=81)
+        sizes = (0, 640, 641, 1281, 2561, 5121, 10241, 20481, 1000000)
+        self.assertEqual([_select_rigid_block_dim(n, device) for n in sizes], [4, 4, 8, 16, 32, 64, 128, 256, 256])
+        device.is_cuda = False
+        self.assertEqual(_select_rigid_block_dim(1, device), 256)
+
+
+add_function_test(TestSolverVBD, "test_rigid_constraint_adjacency", _rigid_constraint_adjacency, devices=devices)
 
 add_function_test(TestSolverVBD, "test_rigid_hinge_multiturn_drive", _rigid_hinge_multiturn_drive, devices=devices)
 add_function_test(TestSolverVBD, "test_rigid_hinge_multiturn_limits", _rigid_hinge_multiturn_limits, devices=devices)
