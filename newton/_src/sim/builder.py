@@ -6510,7 +6510,7 @@ class ModelBuilder:
     ) -> int:
         """Adds a mimic constraint to the model.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :meth:`set_joint_mimic` for joints with matching dimensions.
             Mimic metadata is now stored per joint rather than as a separate
             constraint.
@@ -6533,7 +6533,7 @@ class ModelBuilder:
             Constraint index
         """
         warnings.warn(
-            "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.6; "
+            "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.7; "
             "use set_joint_mimic() for joints with matching dimensions instead.",
             DeprecationWarning,
             stacklevel=self._external_warning_stacklevel(),

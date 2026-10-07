@@ -1168,43 +1168,43 @@ class Model:
         self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
         """Follower indices for sparse mimic constraints, shape [constraint_mimic_count], int.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :attr:`joint_mimic_joint` and :meth:`ModelBuilder.set_joint_mimic` instead.
         """
         self.constraint_mimic_joint1: wp.array[wp.int32] | None = None
         """Reference indices for sparse mimic constraints, shape [constraint_mimic_count], int.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :attr:`joint_mimic_joint` and :meth:`ModelBuilder.set_joint_mimic` instead.
         """
         self.constraint_mimic_coef0: wp.array[wp.float32] | None = None
         """Offset coefficients for sparse mimic constraints, shape [constraint_mimic_count], float.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :attr:`joint_mimic_coeffs` and :meth:`ModelBuilder.set_joint_mimic` instead.
         """
         self.constraint_mimic_coef1: wp.array[wp.float32] | None = None
         """Multiplier coefficients for sparse mimic constraints, shape [constraint_mimic_count], float.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :attr:`joint_mimic_coeffs` and :meth:`ModelBuilder.set_joint_mimic` instead.
         """
         self.constraint_mimic_enabled: wp.array[wp.bool] | None = None
         """Active flags for sparse mimic constraints, shape [constraint_mimic_count], bool.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
         """
         self.constraint_mimic_label: list[str] = []
         """Sparse mimic constraint labels, shape [constraint_mimic_count], str.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
         """
         self.constraint_mimic_world: wp.array[wp.int32] | None = None
         """World indices for sparse mimic constraints, shape [constraint_mimic_count], int.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
         """
 
@@ -1237,7 +1237,7 @@ class Model:
         self.constraint_mimic_count: int = 0
         """Total number of sparse mimic constraints in the system.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :attr:`joint_mimic_joint` to identify joints with joint-owned mimic metadata instead.
         """
 
