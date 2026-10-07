@@ -13615,6 +13615,13 @@ class ModelBuilder:
                         if deferred_key in deferred_collision_edges_cache:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
+                        if (
+                            self.shape_force_sdf[i]
+                            and shape_flags & ShapeFlags.COLLIDE_PARTICLES
+                            and mesh_sdf.to_texture_kernel_data() is None
+                        ):
+                            # Let force_sdf build a texture below when only legacy volume data exists.
+                            continue
                         coarse_texture = getattr(mesh_sdf, "_coarse_texture", None)
                         if coarse_texture is not None and (
                             (coarse_texture.num_channels == 2) != sdf_texture_paired_samples

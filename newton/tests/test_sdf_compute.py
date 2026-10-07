@@ -887,6 +887,30 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
                         self.assertEqual(model._texture_sdf_data.shape[0], 0)
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
+    def test_particle_only_force_sdf_rebuilds_volume_only_sdf(self):
+        """Build a usable texture for full-surface contact when only a volume SDF is supplied."""
+        coords = np.linspace(-0.75, 0.75, 7, dtype=np.float32)
+        points = np.stack(np.meshgrid(coords, coords, coords, indexing="ij"), axis=-1)
+        q = np.abs(points) - 0.5
+        distances = np.linalg.norm(np.maximum(q, 0.0), axis=-1) + np.minimum(np.max(q, axis=-1), 0.0)
+        volume = wp.Volume.load_from_numpy(distances, min_world=(-0.75, -0.75, -0.75), voxel_size=0.25, device="cuda:0")
+        mesh = create_box_mesh(self.half_extents)
+        supplied_sdf = newton.SDF.create_from_data(sparse_volume=volume, half_extents=self.half_extents)
+        mesh.sdf = supplied_sdf
+        builder = newton.ModelBuilder()
+        cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True, force_sdf=True)
+        for scale in ((1.0, 1.0, 1.0), (1.0, 1.0, 2.0)):
+            builder.add_shape_mesh(body=-1, mesh=mesh, scale=scale, cfg=cfg)
+        model = builder.finalize(device="cuda:0")
+        newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+        indices = model._shape_sdf_index.numpy()
+        self.assertGreaterEqual(int(indices[0]), 0)
+        self.assertEqual(int(indices[0]), int(indices[1]))
+        self.assertEqual(model._texture_sdf_data.shape[0], 1)
+        self.assertIsNotNone(model._texture_sdf_coarse_textures[int(indices[0])])
+        self.assertIs(mesh.sdf, supplied_sdf)
+
+    @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_mesh_build_sdf_guard_and_clear(self):
         """build_sdf() should guard overwrite until clear_sdf() is called."""
         mesh = create_box_mesh((0.2, 0.2, 0.2))

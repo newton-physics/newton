@@ -51,6 +51,7 @@ from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
 from newton.geometry import BroadPhaseAllPairs, NarrowPhase
 from newton.tests.unittest_utils import (
+    USD_AVAILABLE,
     add_function_test,
     configure_sdf_for_collision_shapes,
     get_cuda_test_devices,
@@ -4941,6 +4942,58 @@ def test_particle_only_mesh_sdf_emits_full_surface_contacts(test, device):
             np.testing.assert_allclose(surface_z, 1.0, atol=5.0e-3)
 
 
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+def test_particle_only_usd_mesh_sdf_near_surface_contacts(test, device):
+    """Keep imported mesh contact normals unit length and contact points on the surface."""
+    from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+    mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    prim = UsdGeom.Mesh.Define(stage, "/Collider")
+    prim.CreatePointsAttr(mesh.vertices.tolist())
+    prim.CreateFaceVertexCountsAttr([3] * (len(mesh.indices) // 3))
+    prim.CreateFaceVertexIndicesAttr(mesh.indices.tolist())
+    prim.AddScaleOp().Set((1.0, 1.0, 2.0))
+    UsdPhysics.CollisionAPI.Apply(prim.GetPrim())
+    resolution_attr = prim.GetPrim().CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int)
+
+    for resolution in (32, 64, 128):
+        with test.subTest(resolution=resolution):
+            resolution_attr.Set(resolution)
+            builder = newton.ModelBuilder()
+            imported = builder.add_usd(stage, load_visual_shapes=False)
+            shape = imported["path_shape_map"]["/Collider"]
+            test.assertEqual(builder.shape_sdf_max_resolution[shape], resolution)
+            builder.shape_flags[shape] &= ~ShapeFlags.COLLIDE_SHAPES
+            builder.add_cloth_grid(
+                pos=wp.vec3(-0.2, -0.2, 0.9995),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0),
+                dim_x=2,
+                dim_y=2,
+                cell_x=0.2,
+                cell_y=0.2,
+                mass=0.1,
+            )
+            model = builder.finalize(device=device)
+            pipeline = newton.CollisionPipeline(
+                model, broad_phase="nxn", soft_contact_gap=0.01, enable_rigid_soft_full_surface_contact=True
+            )
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            count = int(contacts.soft_contact_count.numpy()[0])
+            indices = contacts.soft_contact_indices.numpy()[:count]
+            test.assertTrue(np.any((indices[:, 1] >= 0) & (indices[:, 2] < 0)))
+            test.assertTrue(np.any(indices[:, 2] >= 0))
+            full_surface = indices[:, 1] >= 0
+            normals = contacts.soft_contact_normal.numpy()[:count][full_surface]
+            np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1.0e-5)
+            positions = contacts.soft_contact_body_pos.numpy()[:count][full_surface]
+            np.testing.assert_allclose(positions[:, 2], 1.0, atol=5.0e-5)
+
+
 def test_particle_only_convex_sdf_preserves_voxel_size(test, device):
     """Preserve deferred SDF resolution and distances for a scaled particle-only convex mesh."""
     mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=True, compute_inertia=False)
@@ -4989,6 +5042,14 @@ add_function_test(
     TestFullSurfaceSoftContact,
     "test_particle_only_mesh_sdf_emits_full_surface_contacts",
     test_particle_only_mesh_sdf_emits_full_surface_contacts,
+    devices=get_cuda_test_devices(),
+)
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_particle_only_usd_mesh_sdf_near_surface_contacts",
+    test_particle_only_usd_mesh_sdf_near_surface_contacts,
     devices=get_cuda_test_devices(),
 )
 
