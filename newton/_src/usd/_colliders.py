@@ -24,6 +24,7 @@ from . import utils as usd
 from ._collision_filters import _collect_filtered_pairs
 from ._mass_properties import _is_enabled_collider
 from ._resolution_policy import (
+    _resolve_physics_material,
     _resolve_shape_contact,
     _resolve_shape_hydroelastic,
     _resolve_shape_offsets,
@@ -79,6 +80,33 @@ def _parse_colliders(
     """Add colliders in descriptor order using the importer's shared maps and helpers."""
     from pxr import UsdPhysics
 
+    def _get_physics_material(material_path: str) -> _PhysicsMaterial:
+        """Resolve and cache bound materials outside the selected import range."""
+        if material_path in material_specs:
+            return material_specs[material_path]
+
+        # Native collider descriptors retain binding targets outside root_path,
+        # but that range's material descriptors do not include those targets.
+        external = usd.load_physics_from_range(stage, [material_path])
+        paths, descriptors = external.get(UsdPhysics.ObjectType.RigidBodyMaterial, ((), ()))
+        for path, descriptor in zip(paths, descriptors, strict=False):
+            if str(path) != material_path or warn_invalid_desc(path, descriptor):
+                continue
+            material = _resolve_physics_material(
+                stage.GetPrimAtPath(path),
+                descriptor,
+                R,
+                builder.default_shape_cfg,
+                default_shape_density=default_shape_density,
+                verbose=verbose,
+            )
+            material_specs[material_path] = material
+            return material
+
+        raise ValueError(
+            f"Collider references physics material '{material_path}', but that target could not be parsed."
+        )
+
     # mapping from physics:approximation attribute (lower case) to remeshing method
     approximation_to_remeshing_method = {
         "convexdecomposition": "coacd",
@@ -130,7 +158,7 @@ def _parse_colliders(
                         logger.warning(
                             "More than one material found on shape at '%s'.\nUsing only the first one.", path
                         )
-                    material = material_specs[str(shape_spec.materials[0])]
+                    material = _get_physics_material(str(shape_spec.materials[0]))
                     if verbose:
                         logger.info(
                             "\tMaterial of '%s':\tfriction: %s,\ttorsional friction: %s,\trolling friction: "

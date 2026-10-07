@@ -1,0 +1,1 @@
+Read input ports bound to plain arrays in place and write plain-array outputs directly in the model-free controllers, instead of copying them through internal buffers on every step. Bind output ports to storage that does not overlap any input or other output port, including through views; overlapping bindings are no longer supported and are not validated.

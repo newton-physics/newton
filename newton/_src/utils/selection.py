@@ -1409,6 +1409,7 @@ class ArticulationView:
                     dim=attrib._staging_array.shape,
                     inputs=[attrib._gather_src, attrib._gather_indices],
                     outputs=[attrib._staging_array],
+                    device=self.device,
                 )
                 src_grad = attrib._gather_src.grad
                 dst_grad = attrib._staging_array.grad
@@ -1988,7 +1989,7 @@ class ArticulationView:
         Build mapping from view DOF positions to actuator parameter indices.
 
         Note:
-            Assumes SISO actuators (one DOF per actuator).
+            Assumes one DOF per actuator.
 
         Returns array of shape (world_count * dofs_per_world,) where each element is:
         - actuator parameter index if that DOF is actuated
