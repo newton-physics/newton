@@ -4,6 +4,7 @@
 """Test ViewerRTX compatibility and runtime scene updates."""
 
 import builtins
+import importlib.metadata
 import importlib.util
 import os
 import tempfile
@@ -19,6 +20,20 @@ from newton.viewer import ViewerRTX
 
 OVRTX_AVAILABLE = importlib.util.find_spec("ovrtx") is not None
 OVSTAGE_AVAILABLE = importlib.util.find_spec("ovstage") is not None
+
+
+def _borrowed_stage_supported() -> bool:
+    """Return whether the installed OVRTX and OVStage can render a borrowed stage."""
+    if not (OVRTX_AVAILABLE and OVSTAGE_AVAILABLE):
+        return False
+    from newton._src.viewer.viewer_rtx import _version_prefix  # noqa: PLC0415
+
+    return _version_prefix(importlib.metadata.version("ovrtx"), "OVRTX") >= (0, 4) and _version_prefix(
+        importlib.metadata.version("ovstage"), "OVStage"
+    ) >= (0, 2)
+
+
+BORROWED_STAGE_SUPPORTED = _borrowed_stage_supported()
 
 
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
@@ -631,6 +646,7 @@ def Xform "World"
             builder.add_usd(path, **add_usd_kwargs)
         return stage, builder.finalize()
 
+    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
     def test_borrowed_stage_writes_above_caller_advanced_floor(self):
         """Keep writing to a borrowed stage after its owner advances the write floor."""
         import ovstage
@@ -649,6 +665,7 @@ def Xform "World"
         finally:
             viewer.close()
 
+    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
     def test_borrowed_stage_keeps_authored_poses_until_first_state(self):
         """Render bound bodies at their authored poses on frames before the first logged state."""
         stage, model = self._borrowed_scene()
@@ -662,6 +679,7 @@ def Xform "World"
         finally:
             viewer.close()
 
+    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
     def test_borrowed_stage_renders_reoriented_import_in_stage_frame(self):
         """Keep bodies at their stage poses when the import rotated a Y-up stage and applied an ``xform``."""
         xform = wp.transform((5.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7))
