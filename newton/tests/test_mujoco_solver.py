@@ -7952,25 +7952,69 @@ class TestMuJoCoOptions(unittest.TestCase):
             msg=f"impratio=2.0 should produce valid impratio_invsqrt={expected_invsqrt}",
         )
 
-    def test_scalar_options_constructor_override(self):
-        """
-        Verify that passing scalar options (impratio, tolerance, ls_tolerance, ccd_tolerance, density, viscosity)
-        to the SolverMuJoCo constructor overrides any per-world values from custom attributes.
-        """
+    def test_options_use_custom_attributes(self):
+        """Resolve enum, iteration, and shared numeric options from custom attributes."""
+        model = self._create_multiworld_model(world_count=3)
+        model.mujoco.solver.assign(np.array([1], dtype=np.int32))  # CG
+        model.mujoco.integrator.assign(np.array([0], dtype=np.int32))  # Euler
+        model.mujoco.cone.assign(np.array([1], dtype=np.int32))  # elliptic
+        model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))  # sparse
+        model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
+        model.mujoco.ls_iterations.assign(np.array([75], dtype=np.int32))
+        ccd_iterations = model.mujoco.ccd_iterations.numpy()
+        sdf_iterations = model.mujoco.sdf_iterations.numpy()
+        sdf_initpoints = model.mujoco.sdf_initpoints.numpy()
+        self.assertEqual(len(ccd_iterations), 1, "ONCE frequency should have single value")
+        self.assertEqual(len(sdf_iterations), 1, "ONCE frequency should have single value")
+        self.assertEqual(len(sdf_initpoints), 1, "ONCE frequency should have single value")
+        model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
+        model.mujoco.sdf_iterations.assign(np.array([20], dtype=np.int32))
+        model.mujoco.sdf_initpoints.assign(np.array([50], dtype=np.int32))
+
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        mujoco = SolverMuJoCo._mujoco
+        self.assertEqual(
+            solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_CG, "Should use custom attribute CG, not Newton default"
+        )
+        self.assertEqual(
+            solver.mj_model.opt.integrator,
+            mujoco.mjtIntegrator.mjINT_EULER,
+            "Should use custom attribute Euler, not Newton default implicitfast",
+        )
+        self.assertEqual(
+            solver.mj_model.opt.cone,
+            mujoco.mjtCone.mjCONE_ELLIPTIC,
+            "Should use custom attribute elliptic, not Newton default pyramidal",
+        )
+        self.assertEqual(
+            solver.mj_model.opt.jacobian,
+            mujoco.mjtJacobian.mjJAC_SPARSE,
+            "Should use custom attribute sparse, not Newton default auto",
+        )
+        self.assertEqual(solver.mj_model.opt.iterations, 150, "Should use custom attribute 150, not default 100")
+        self.assertEqual(solver.mj_model.opt.ls_iterations, 75, "Should use custom attribute 75, not default 50")
+        self.assertEqual(solver.mj_model.opt.ccd_iterations, 25)
+        self.assertEqual(solver.mj_model.opt.sdf_iterations, 20)
+        self.assertEqual(solver.mj_model.opt.sdf_initpoints, 50)
+
+    def test_options_constructor_override(self):
+        """Give constructor options precedence over authored values in every world."""
         world_count = 2
         model = self._create_multiworld_model(world_count)
-
-        # Set custom attribute values per world
         model.mujoco.impratio.assign(np.array([1.5, 1.5], dtype=np.float32))
         model.mujoco.tolerance.assign(np.array([1e-6, 1e-7], dtype=np.float32))
         model.mujoco.ls_tolerance.assign(np.array([0.01, 0.02], dtype=np.float32))
         model.mujoco.ccd_tolerance.assign(np.array([1e-6, 1e-7], dtype=np.float32))
         model.mujoco.density.assign(np.array([0.0, 0.0], dtype=np.float32))
         model.mujoco.viscosity.assign(np.array([0.0, 0.0], dtype=np.float32))
+        model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
+        model.mujoco.sdf_iterations.assign(np.array([20], dtype=np.int32))
+        model.mujoco.sdf_initpoints.assign(np.array([50], dtype=np.int32))
+        model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
+        model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
+        model.mujoco.ls_iterations.assign(np.array([75], dtype=np.int32))
 
-        # Create solver WITH constructor overrides
-        # NOTE: density and viscosity must be 0 to avoid triggering MuJoCo Warp's
-        # "fluid model not implemented" error. Non-zero values enable fluid dynamics.
+        # Nonzero density/viscosity require fluid dynamics, which MuJoCo Warp does not support.
         solver = SolverMuJoCo(
             model,
             impratio=3.0,
@@ -7979,26 +8023,26 @@ class TestMuJoCoOptions(unittest.TestCase):
             ccd_tolerance=1e-4,
             density=0.0,
             viscosity=0.0,
-            iterations=1,
+            ccd_iterations=100,
+            sdf_iterations=30,
+            sdf_initpoints=80,
+            jacobian="dense",
+            iterations=5,
+            ls_iterations=3,
             disable_contacts=True,
         )
-
-        # Verify MuJoCo Warp uses constructor-provided values (tiled to all worlds)
         mjw_impratio_invsqrt = solver.mjw_model.opt.impratio_invsqrt.numpy()
         mjw_tolerance = solver.mjw_model.opt.tolerance.numpy()
         mjw_ls_tolerance = solver.mjw_model.opt.ls_tolerance.numpy()
         mjw_ccd_tolerance = solver.mjw_model.opt.ccd_tolerance.numpy()
         mjw_density = solver.mjw_model.opt.density.numpy()
         mjw_viscosity = solver.mjw_model.opt.viscosity.numpy()
-
         self.assertEqual(len(mjw_impratio_invsqrt), world_count)
         self.assertEqual(len(mjw_tolerance), world_count)
         self.assertEqual(len(mjw_ls_tolerance), world_count)
         self.assertEqual(len(mjw_ccd_tolerance), world_count)
         self.assertEqual(len(mjw_density), world_count)
         self.assertEqual(len(mjw_viscosity), world_count)
-
-        # All worlds should have the same constructor-provided values
         expected_impratio_invsqrt = 1.0 / np.sqrt(3.0)
         for world_idx in range(world_count):
             self.assertAlmostEqual(
@@ -8020,6 +8064,49 @@ class TestMuJoCoOptions(unittest.TestCase):
             self.assertAlmostEqual(
                 mjw_viscosity[world_idx], 0.0, places=10, msg=f"viscosity[{world_idx}] should be 0.0"
             )
+        self.assertEqual(solver.mj_model.opt.ccd_iterations, 100, "Constructor should override custom attribute")
+        self.assertEqual(solver.mj_model.opt.sdf_iterations, 30, "Constructor should override custom attribute")
+        self.assertEqual(solver.mj_model.opt.sdf_initpoints, 80, "Constructor should override custom attribute")
+        self.assertEqual(solver.mj_model.opt.jacobian, SolverMuJoCo._mujoco.mjtJacobian.mjJAC_DENSE)
+        self.assertEqual(solver.mj_model.opt.iterations, 5, "Constructor value should override custom attribute")
+        self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
+
+    def test_options_use_defaults(self):
+        """
+        Verify that solver, integrator, cone, and jacobian use Newton defaults
+        when no constructor parameter or custom attribute is provided.
+        """
+        # Create model WITHOUT registering custom attributes
+        builder = newton.ModelBuilder()
+        pendulum = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        builder.add_articulation([joint])
+        model = builder.finalize()
+
+        # Create solver without specifying enum options - should use Newton defaults
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        mujoco = SolverMuJoCo._mujoco
+
+        # Verify Newton defaults are used
+        # Newton defaults: solver=Newton(2), integrator=implicitfast(3), cone=pyramidal(0), jacobian=auto(2)
+        self.assertEqual(
+            solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_NEWTON, "Should use Newton default (Newton solver)"
+        )
+        self.assertEqual(
+            solver.mj_model.opt.integrator,
+            mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+            "Should use Newton default (implicitfast)",
+        )
+        self.assertEqual(
+            solver.mj_model.opt.cone, mujoco.mjtCone.mjCONE_PYRAMIDAL, "Should use Newton default (pyramidal)"
+        )
+        self.assertEqual(
+            solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_AUTO, "Should use Newton default (auto)"
+        )
+
+        self.assertEqual(solver.mj_model.opt.iterations, 100, "Should use MuJoCo default (100)")
+        self.assertEqual(solver.mj_model.opt.ls_iterations, 50, "Should use MuJoCo default (50)")
 
     def test_vector_options_multiworld_conversion(self):
         """
@@ -8076,230 +8163,6 @@ class TestMuJoCoOptions(unittest.TestCase):
                 np.allclose(mjw_magnetic[world_idx], initial_magnetic[world_idx]),
                 msg=f"MuJoCo Warp magnetic[{world_idx}] should be {initial_magnetic[world_idx]}",
             )
-
-    def test_once_numeric_options_shared_across_worlds(self):
-        """
-        Verify that ONCE frequency numeric options (ccd_iterations, sdf_iterations, sdf_initpoints)
-        are shared across all worlds (not per-world arrays).
-        """
-        world_count = 3
-        model = self._create_multiworld_model(world_count)
-
-        # ONCE frequency: single value, not per-world array
-        ccd_iterations = model.mujoco.ccd_iterations.numpy()
-        sdf_iterations = model.mujoco.sdf_iterations.numpy()
-        sdf_initpoints = model.mujoco.sdf_initpoints.numpy()
-        self.assertEqual(len(ccd_iterations), 1, "ONCE frequency should have single value")
-        self.assertEqual(len(sdf_iterations), 1, "ONCE frequency should have single value")
-        self.assertEqual(len(sdf_initpoints), 1, "ONCE frequency should have single value")
-
-        # Set values
-        model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
-        model.mujoco.sdf_iterations.assign(np.array([20], dtype=np.int32))
-        model.mujoco.sdf_initpoints.assign(np.array([50], dtype=np.int32))
-
-        # Create solver without constructor override
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-
-        # Verify MuJoCo model uses the custom attribute values
-        self.assertEqual(solver.mj_model.opt.ccd_iterations, 25)
-        self.assertEqual(solver.mj_model.opt.sdf_iterations, 20)
-        self.assertEqual(solver.mj_model.opt.sdf_initpoints, 50)
-
-    def test_once_numeric_options_constructor_override(self):
-        """
-        Verify that constructor parameters override custom attribute values
-        for ONCE frequency numeric options.
-        """
-        model = self._create_multiworld_model(world_count=2)
-
-        # Set custom attribute values
-        model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
-        model.mujoco.sdf_iterations.assign(np.array([20], dtype=np.int32))
-        model.mujoco.sdf_initpoints.assign(np.array([50], dtype=np.int32))
-
-        # Create solver WITH constructor overrides
-        solver = SolverMuJoCo(
-            model,
-            ccd_iterations=100,
-            sdf_iterations=30,
-            sdf_initpoints=80,
-            iterations=1,
-            disable_contacts=True,
-        )
-
-        # Verify MuJoCo model uses constructor-provided values
-        self.assertEqual(solver.mj_model.opt.ccd_iterations, 100, "Constructor should override custom attribute")
-        self.assertEqual(solver.mj_model.opt.sdf_iterations, 30, "Constructor should override custom attribute")
-        self.assertEqual(solver.mj_model.opt.sdf_initpoints, 80, "Constructor should override custom attribute")
-
-    def test_jacobian_from_custom_attribute(self):
-        """
-        Verify that jacobian option is read from custom attribute when not provided to constructor.
-        """
-        model = self._create_multiworld_model(world_count=2)
-
-        # Set jacobian to sparse (1)
-        model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
-
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-
-        # Verify MuJoCo model uses custom attribute value
-        self.assertEqual(solver.mj_model.opt.jacobian, SolverMuJoCo._mujoco.mjtJacobian.mjJAC_SPARSE)
-
-    def test_jacobian_constructor_override(self):
-        """
-        Verify that jacobian constructor parameter overrides custom attribute value.
-        """
-        model = self._create_multiworld_model(world_count=2)
-
-        # Set jacobian custom attribute to sparse (1)
-        model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
-
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, jacobian="dense")
-
-        # Verify MuJoCo model uses constructor parameter, not custom attribute
-        self.assertEqual(solver.mj_model.opt.jacobian, SolverMuJoCo._mujoco.mjtJacobian.mjJAC_DENSE)
-
-    def test_enum_options_use_custom_attributes_when_not_provided(self):
-        """
-        Verify that solver, integrator, cone, and jacobian options use custom attribute
-        values when no constructor parameter is provided.
-
-        This tests the resolution priority:
-        1. Constructor parameter (if provided)
-        2. Custom attribute (if exists)
-        3. Default value
-        """
-        model = self._create_multiworld_model(world_count=2)
-
-        # Set custom attributes to non-default values
-        # Newton defaults: solver=2 (Newton), integrator=3 (implicitfast), cone=0 (pyramidal), jacobian=2 (auto)
-        # Set to: solver=1 (CG), integrator=0 (Euler), cone=1 (elliptic), jacobian=1 (sparse)
-        model.mujoco.solver.assign(np.array([1], dtype=np.int32))  # CG
-        model.mujoco.integrator.assign(np.array([0], dtype=np.int32))  # Euler
-        model.mujoco.cone.assign(np.array([1], dtype=np.int32))  # elliptic
-        model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))  # sparse
-
-        # Create solver WITHOUT specifying these options - should use custom attributes
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        mujoco = SolverMuJoCo._mujoco
-
-        # Verify MuJoCo model uses custom attribute values, not Newton defaults
-        self.assertEqual(
-            solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_CG, "Should use custom attribute CG, not Newton default"
-        )
-        self.assertEqual(
-            solver.mj_model.opt.integrator,
-            mujoco.mjtIntegrator.mjINT_EULER,
-            "Should use custom attribute Euler, not Newton default implicitfast",
-        )
-        self.assertEqual(
-            solver.mj_model.opt.cone,
-            mujoco.mjtCone.mjCONE_ELLIPTIC,
-            "Should use custom attribute elliptic, not Newton default pyramidal",
-        )
-        self.assertEqual(
-            solver.mj_model.opt.jacobian,
-            mujoco.mjtJacobian.mjJAC_SPARSE,
-            "Should use custom attribute sparse, not Newton default auto",
-        )
-
-    def test_enum_options_use_defaults_when_no_custom_attribute(self):
-        """
-        Verify that solver, integrator, cone, and jacobian use Newton defaults
-        when no constructor parameter or custom attribute is provided.
-        """
-        # Create model WITHOUT registering custom attributes
-        builder = newton.ModelBuilder()
-        pendulum = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
-        builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        builder.add_articulation([joint])
-        model = builder.finalize()
-
-        # Create solver without specifying enum options - should use Newton defaults
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        mujoco = SolverMuJoCo._mujoco
-
-        # Verify Newton defaults are used
-        # Newton defaults: solver=Newton(2), integrator=implicitfast(3), cone=pyramidal(0), jacobian=auto(2)
-        self.assertEqual(
-            solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_NEWTON, "Should use Newton default (Newton solver)"
-        )
-        self.assertEqual(
-            solver.mj_model.opt.integrator,
-            mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-            "Should use Newton default (implicitfast)",
-        )
-        self.assertEqual(
-            solver.mj_model.opt.cone, mujoco.mjtCone.mjCONE_PYRAMIDAL, "Should use Newton default (pyramidal)"
-        )
-        self.assertEqual(
-            solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_AUTO, "Should use Newton default (auto)"
-        )
-
-    def test_iterations_use_custom_attributes_when_not_provided(self):
-        """
-        Verify that iterations and ls_iterations use custom attribute values
-        when no constructor parameter is provided.
-
-        This tests the resolution priority:
-        1. Constructor parameter (if provided)
-        2. Custom attribute (if exists)
-        3. Default value
-        """
-        model = self._create_multiworld_model(world_count=2)
-
-        # Set custom attributes to non-default values
-        # MuJoCo defaults: iterations=100, ls_iterations=50
-        # Set to: iterations=150, ls_iterations=75
-        model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
-        model.mujoco.ls_iterations.assign(np.array([75], dtype=np.int32))
-
-        # Create solver WITHOUT specifying these options - should use custom attributes
-        solver = SolverMuJoCo(model, disable_contacts=True)
-
-        # Verify MuJoCo model uses custom attribute values, not defaults
-        self.assertEqual(solver.mj_model.opt.iterations, 150, "Should use custom attribute 150, not default 100")
-        self.assertEqual(solver.mj_model.opt.ls_iterations, 75, "Should use custom attribute 75, not default 50")
-
-    def test_iterations_use_defaults_when_no_custom_attribute(self):
-        """
-        Verify that iterations and ls_iterations use MuJoCo defaults when no
-        constructor parameter or custom attribute is provided.
-        """
-        # Create model WITHOUT registering custom attributes
-        builder = newton.ModelBuilder()
-        pendulum = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
-        builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        builder.add_articulation([joint])
-        model = builder.finalize()
-
-        # Create solver without specifying iterations - should use MuJoCo defaults
-        solver = SolverMuJoCo(model, disable_contacts=True)
-
-        # Verify MuJoCo defaults are used: iterations=100, ls_iterations=50
-        self.assertEqual(solver.mj_model.opt.iterations, 100, "Should use MuJoCo default (100)")
-        self.assertEqual(solver.mj_model.opt.ls_iterations, 50, "Should use MuJoCo default (50)")
-
-    def test_iterations_constructor_override(self):
-        """
-        Verify that constructor parameters override custom attributes for iterations.
-        """
-        model = self._create_multiworld_model(world_count=2)
-
-        # Set custom attributes
-        model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
-        model.mujoco.ls_iterations.assign(np.array([75], dtype=np.int32))
-
-        # Create solver with explicit constructor values - should override custom attributes
-        solver = SolverMuJoCo(model, iterations=5, ls_iterations=3, disable_contacts=True)
-
-        # Verify constructor values override custom attributes
-        self.assertEqual(solver.mj_model.opt.iterations, 5, "Constructor value should override custom attribute")
-        self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
 
     def test_disable_sensors_computes_rne_state_attributes(self):
         """Compute body_qdd and body_parent_f with sensors disabled.
