@@ -268,10 +268,10 @@ def prepare(
     ):
         raise ValueError("side, selected window, and subject mass are invalid")
     dynamic_root, static_root, output = Path(dynamic_root), Path(static_root), Path(output)
-    valid_refs = {"shank", "ground", "reconstructed_ground", "raw_ground_deprecated"}
+    valid_refs = {"shank", "ground", "reconstructed_ground", "raw_ground_deprecated", "sole_markers"}
     if virtual_foot_reference not in valid_refs:
         raise ValueError(f"virtual_foot_reference must be one of {sorted(valid_refs)}")
-    if virtual_foot_reference in {"ground", "reconstructed_ground", "raw_ground_deprecated"} and (
+    if virtual_foot_reference in {"ground", "reconstructed_ground", "raw_ground_deprecated", "sole_markers"} and (
         shoe_static_pitch_rad is None or not np.isfinite(shoe_static_pitch_rad)
     ):
         raise ValueError("Ground-referenced input requires the fixed shoe static pitch")
@@ -429,6 +429,19 @@ def prepare(
             raise ValueError("Ground interpretation requires an exported virtual-foot angle")
         ground_target = np.unwrap(ankle_angle.copy())
         state[:, 4] = np.unwrap(ground_target + shoe_static_pitch_rad - (state[:, 2] + state[:, 3]) - np.pi / 2)
+    elif virtual_foot_reference == "sole_markers":
+
+        def elevation(heading: np.ndarray) -> np.ndarray:
+            # Elevation of the 3D heading keeps toe-out from scaling the sagittal pitch.
+            return np.arctan2(heading[..., 2], np.linalg.norm(heading[..., :2], axis=-1))
+
+        dynamic_heading = 0.5 * (proc[mask][:, mth_ids[0]] + proc[mask][:, mth_ids[1]]) - proc[mask][:, heel_ids].mean(
+            1
+        )
+        static_elevation = float(elevation(static_mth.mean(0) - static_heel.mean(0)))
+        # The shoe shell is rigid between heel counter and metatarsal heads, unlike the anatomical virtual foot.
+        ground_target = np.unwrap(elevation(dynamic_heading) - static_elevation)
+        state[:, 4] = np.unwrap(ground_target + shoe_static_pitch_rad - (state[:, 2] + state[:, 3]) - np.pi / 2)
     else:
         state[:, 4] = np.unwrap(state[:, 4])
 
@@ -491,6 +504,7 @@ def prepare(
         "state": state,
         "velocity": velocity,
         "hip_target_m": state[:, :2],
+        "ankle_target_m": q[:, 2].copy(),
         "joint_target_rad": state[:, 3:5].copy(),
         "lengths_m": lengths,
         "endpoint_local_m": endpoint_local,
@@ -533,7 +547,11 @@ def prepare(
         "shoe_static_pitch_rad": shoe_static_pitch_rad,
         "reconstruction_method": "3D Cardan rotation matrix transport on calibrated forward axis"
         if virtual_foot_reference in {"ground", "reconstructed_ground"}
-        else "none",
+        else (
+            "heel-cluster to metatarsal-head elevation relative to static"
+            if virtual_foot_reference == "sole_markers"
+            else "none"
+        ),
     }
     metadata = json.loads(str(reference["metadata_json"]))
     metadata["angle_convention"] = angle_convention
@@ -542,6 +560,33 @@ def prepare(
     if ground_target is not None:
         reference["foot_ground_target_rad"] = ground_target
         reference["shoe_static_pitch_rad"] = np.asarray(shoe_static_pitch_rad)
+    # COP on the treadmill frame moves with the belt like the markers. Below the
+    # contact threshold COP is noise, so hold the nearest loaded value instead.
+    cop_x = trial.cop_m[force_mask, 0] + force_time * float(belt_speed_m_s)
+    finite_cop = np.isfinite(cop_x) & (trial.force_n[force_mask, 2] > 50.0)
+    reference["cop_target_m"] = np.interp(force_time, force_time[finite_cop], cop_x[finite_cop])
+    pelvis_names = {
+        "right_asis": ("RASI", "RASIS", "R.ASIS", "R_ASIS"),
+        "left_asis": ("LASI", "LASIS", "L.ASIS", "L_ASIS"),
+        "right_psis": ("RPSI", "RPSIS", "R.PSIS", "R_PSIS"),
+        "left_psis": ("LPSI", "LPSIS", "L.PSIS", "L_PSIS"),
+    }
+    pelvis_labels = {
+        key: next((name for name in names if name in proc_labels and name in labels), None)
+        for key, names in pelvis_names.items()
+    }
+    if all(pelvis_labels.values()):
+        proc_ids = [proc_labels.index(pelvis_labels[key]) for key in pelvis_names]
+        static_ids = [labels.index(pelvis_labels[key]) for key in pelvis_names]
+        if np.all(proc_valid[mask][:, proc_ids]) and np.all(static_valid[:, static_ids]):
+
+            def tilt(points: np.ndarray) -> np.ndarray:
+                axis = 0.5 * (points[..., 0, :] + points[..., 1, :]) - 0.5 * (points[..., 2, :] + points[..., 3, :])
+                return np.arctan2(axis[..., 2], axis[..., 0])
+
+            static_tilt = float(np.mean(tilt(static[:, static_ids])))
+            # Upright standing defines the trunk axis at pi/2; anterior tilt lowers the angle.
+            reference["pelvis_target_rad"] = np.unwrap(tilt(proc[mask][:, proc_ids]) - static_tilt) + np.pi / 2
     validate_reference(reference)
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"output directory is not empty: {output}")
@@ -602,7 +647,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--belt-speed-m-s", type=float)
     parser.add_argument(
         "--virtual-foot-reference",
-        choices=("shank", "ground", "reconstructed_ground", "raw_ground_deprecated"),
+        choices=("shank", "ground", "reconstructed_ground", "raw_ground_deprecated", "sole_markers"),
         default="shank",
     )
     parser.add_argument("--shoe-static-pitch-rad", type=float)

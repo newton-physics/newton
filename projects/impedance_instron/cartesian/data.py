@@ -105,6 +105,12 @@ def validate(reference: dict[str, np.ndarray]) -> None:
         reconstructed = state[:, 2] + state[:, 3] + state[:, 4] + np.pi / 2 - reference[ground_keys[1]]
         if not np.allclose(reconstructed, reference[ground_keys[0]], rtol=0, atol=1e-10):
             raise ValueError("Reference state does not reconstruct the declared ground foot angle")
+    if "cop_target_m" in reference and reference["cop_target_m"].shape != (len(force_time),):
+        raise ValueError("cop_target_m must match the GRF clock")
+    if "pelvis_target_rad" in reference and reference["pelvis_target_rad"].shape != (n,):
+        raise ValueError("pelvis_target_rad must match the motion clock")
+    if "ankle_target_m" in reference and reference["ankle_target_m"].shape != (n, 2):
+        raise ValueError("ankle_target_m must have shape [frames, 2]")
     marker_keys = ("foot_marker_target_m", "foot_marker_local_m")
     if any(name in reference for name in marker_keys):
         if not all(name in reference for name in marker_keys):
