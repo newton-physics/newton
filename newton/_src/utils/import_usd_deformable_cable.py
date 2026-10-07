@@ -21,8 +21,12 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ..sim.rod import _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION, Rod
+from ..usd import utils as usd
+from ..usd._resolution_policy import _resolve_shape_contact
 
 if TYPE_CHECKING:
+    from pxr import Usd
+
     from ..sim.builder import ModelBuilder
 
 from .import_usd_deformable_utils import (
@@ -52,6 +56,15 @@ from .import_usd_deformable_utils import (
     _warn_subset_material_bindings,
     _warn_unsupported_rest_fields,
 )
+
+
+def _resolve_cable_contact(ctx: _DeformableImportContext, prim: Usd.Prim) -> dict[str, float]:
+    """Resolve capsule contact properties through the rigid collider material policy."""
+    material_prim = usd._find_physics_material_prim(prim)
+    material_path = str(material_prim.GetPath()) if material_prim is not None else ""
+    material = ctx.material_specs.get(material_path, ctx.material_specs[""])
+    return _resolve_shape_contact(prim, ctx.resolver, material, ctx.builder.default_shape_cfg, verbose=ctx.verbose)
+
 
 # Attributes introduced after the family-prefix rename; density is shared and intentionally omitted.
 _POST_RENAME_CURVE_MATERIAL_ATTRS = (
@@ -858,16 +871,18 @@ def _deformable_prepare_cable_topology(
                 )
 
         rep = curve_recs[comp_paths[0]]
+        contact_properties = {p: _resolve_cable_contact(ctx, curve_recs[p].prim) for p in comp_paths}
         for key in comp_paths:
             rec = curve_recs[key]
             _warn_geometry_authored_material_attrs(rec.prim, key, "PhysicsCurvesDeformableMaterialAPI", deformable_read)
             _warn_geometry_authored_newton_curve_damping_attrs(rec.prim, key)
             _warn_legacy_curve_material(key, rec.material)
-        # A welded graph necessarily flattens stiffness and damping to one representative
+        # A welded graph flattens stiffness, damping, and contact properties to one representative
         # material. Density and geometry thickness remain per segment.
         if len(comp_paths) > 1:
             sigs = {
                 (
+                    frozenset(contact_properties[p].items()),
                     curve_recs[p].material is not None,
                     frozenset(
                         (name, value) for name, value in (curve_recs[p].material or {}).items() if name != "density"
@@ -877,8 +892,8 @@ def _deformable_prepare_cable_topology(
             }
             if len(sigs) > 1:
                 warnings.warn(
-                    f"cable graph '{cid}': welded curves have differing stiffness/damping; using "
-                    f"'{comp_paths[0]}' as the representative material gains for the whole component. "
+                    f"cable graph '{cid}': welded curves have differing stiffness/damping/contact properties; using "
+                    f"'{comp_paths[0]}' as the representative material for the whole component. "
                     "Density remains local to each curve.",
                     stacklevel=2,
                 )
@@ -905,6 +920,7 @@ def _deformable_prepare_cable_topology(
             graph_weight_density = 1.0
         cfg = replace(
             builder.default_shape_cfg,
+            **contact_properties[comp_paths[0]],
             density=graph_weight_density,
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
@@ -1200,6 +1216,7 @@ def _deformable_import_cable(
         _warn_collision_approximated(path, approximated_from)
         cable_cfg = replace(
             builder.default_shape_cfg,
+            **_resolve_cable_contact(ctx, prim),
             density=resolved_cable_density,
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,

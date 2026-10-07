@@ -318,6 +318,16 @@ def eval_rigid_contact_surface_velocities(
 
 
 @wp.kernel(enable_backward=False)
+def _record_reduction_overflow(
+    insert_failures: wp.array[wp.int32],
+    buffer_overflows: wp.array[wp.int32],
+    overflow: wp.array[wp.int32],
+):
+    """Copy the reducer's loss counters into the contact stream's overflow flag."""
+    overflow[0] = wp.where(insert_failures[0] > 0 or buffer_overflows[0] > 0, 1, 0)
+
+
+@wp.kernel(enable_backward=False)
 def compute_shape_aabbs(
     body_q: wp.array[wp.transform],
     shape_transform: wp.array[wp.transform],
@@ -831,11 +841,11 @@ def _compute_per_world_shape_pairs_max(model: Model) -> int:
         colliding = np.ones(len(sw), dtype=bool)
 
     global_count = int(np.count_nonzero((sw == -1) & colliding))
-    world_ids = np.unique(sw[(sw >= 0) & colliding])
+    _, world_counts = np.unique(sw[(sw >= 0) & colliding], return_counts=True)
 
     total = 0
-    for wid in world_ids:
-        n = int(np.count_nonzero((sw == wid) & colliding)) + global_count
+    for count in world_counts:
+        n = int(count) + global_count
         total += (n * (n - 1)) // 2
 
     # Dedicated global-vs-global segment (appended by precompute_world_map).
@@ -860,20 +870,21 @@ def _compute_per_world_mask_pair_max(
 
     sw = shape_world.numpy()
     colliding = _shape_collide_mask(model, len(sw))
-    global_shapes = sw == -1
-    world_ids = np.unique(sw[(sw >= 0) & colliding])
+    # Group once instead of scanning all shapes for every world's segment.
+    # Compact indices also avoid allocating by the largest (possibly sparse) world ID.
+    world_ids, inverse = np.unique(sw, return_inverse=True)
+    active = (world_ids >= 0) & (np.bincount(inverse[colliding], minlength=len(world_ids)) > 0)
 
-    def count_pairs(segment: np.ndarray) -> int:
-        first_count = int(np.count_nonzero(segment & first_mask))
-        second_count = int(np.count_nonzero(segment & second_mask))
-        overlap = int(np.count_nonzero(segment & first_mask & second_mask))
-        return first_count * second_count - overlap * (overlap + 1) // 2
+    def segment_counts(mask: np.ndarray) -> np.ndarray:
+        counts = np.bincount(inverse[mask], minlength=len(world_ids)).astype(np.int64, copy=False)
+        global_count = counts[world_ids == -1].sum()
+        return np.append(counts[active] + global_count, global_count)
 
-    total = 0
-    for world_id in world_ids:
-        total += count_pairs(global_shapes | (sw == world_id))
-    total += count_pairs(global_shapes)
-    return max(0, total)
+    first_counts = segment_counts(first_mask)
+    second_counts = segment_counts(second_mask)
+    overlaps = segment_counts(first_mask & second_mask)
+    pairs = first_counts * second_counts - overlaps * (overlaps + 1) // 2
+    return max(0, int(pairs.sum()))
 
 
 def _resolve_shape_pairs_max(model: Model, override: int | None) -> int:
@@ -908,8 +919,13 @@ def _compute_generic_convex_pair_stats(
     broad_phase_mode: str,
     shape_pairs_filtered: wp.array[wp.vec2i] | None,
     candidate_pair_work_estimate: int,
+    shape_pairs_host: np.ndarray | None = None,
 ) -> tuple[bool, int]:
-    """Determine whether generic convex pairs exist and estimate their work."""
+    """Determine whether generic convex pairs exist and estimate their work.
+
+    ``shape_pairs_host`` is an optional ``(N, 2)`` host copy of
+    ``shape_pairs_filtered`` that spares another device-to-host read.
+    """
     shape_types_array = getattr(model, "shape_type", None)
     if shape_types_array is None:
         return True, candidate_pair_work_estimate
@@ -918,7 +934,10 @@ def _compute_generic_convex_pair_stats(
     if broad_phase_mode == "explicit":
         if shape_pairs_filtered is None:
             return True, candidate_pair_work_estimate
-        explicit_pairs = shape_pairs_filtered.numpy().reshape(-1, 2)
+        if shape_pairs_host is not None:
+            explicit_pairs = shape_pairs_host
+        else:
+            explicit_pairs = shape_pairs_filtered.numpy().reshape(-1, 2)
         if len(explicit_pairs) == 0:
             return False, 0
         pair_types = shape_types[explicit_pairs]
@@ -1619,21 +1638,34 @@ class CollisionPipeline:
             # Keep mesh and heightfield flags independent: heightfield-only scenes
             # should not trigger mesh-only kernel setup/launches.
             has_meshes = False
+            has_heightfields = model.heightfield_count > 0
             use_lean_gjk_mpr = False
             mesh_sdf_texture_only = False
             mesh_sdf_identity_scale_only = False
             max_mesh_mesh_pairs = self.shape_pairs_max
             max_mesh_plane_pairs = self.shape_pairs_max
+            # Host copy of the explicit pair list, read at most once during setup.
+            explicit_pairs_host = None
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
-                colliding_mask = _shape_collide_mask(model, len(shape_types))
-                colliding_shape_types = shape_types[colliding_mask]
-                mesh_mask = colliding_mask & (shape_types == int(GeoType.MESH))
-                heightfield_mask = colliding_mask & (shape_types == int(GeoType.HFIELD))
-                plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
+                route_mask = _shape_collide_mask(model, len(shape_types))
+                # Shapes that can reach the narrow phase decide which stages it builds.
+                # NXN/SAP pair only shapes that collide with shapes. The explicit list is
+                # authoritative: every listed shape reaches the narrow phase, including
+                # one with shape collision disabled, and an unlisted shape never does.
+                if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
+                    explicit_pairs_host = self.shape_pairs_filtered.numpy().reshape(-1, 2)
+                    route_mask = np.zeros(len(shape_types), dtype=bool)
+                    pair_shapes = explicit_pairs_host.ravel()
+                    route_mask[pair_shapes[(pair_shapes >= 0) & (pair_shapes < len(shape_types))]] = True
+                route_shape_types = shape_types[route_mask]
+                mesh_mask = route_mask & (shape_types == int(GeoType.MESH))
+                heightfield_mask = route_mask & (shape_types == int(GeoType.HFIELD))
+                plane_mask = route_mask & (shape_types == int(GeoType.PLANE))
                 mesh_sdf_pair_mask = mesh_mask | heightfield_mask
                 planar_sdf_mask = np.zeros(len(shape_types), dtype=bool)
                 has_meshes = bool(np.any(mesh_mask))
+                has_heightfields = bool(np.any(heightfield_mask))
                 if (
                     hasattr(model, "_shape_sdf_index")
                     and model._shape_sdf_index is not None
@@ -1642,11 +1674,11 @@ class CollisionPipeline:
                 ):
                     shape_sdf_index = model._shape_sdf_index.numpy()
                     shape_edge_range = model.shape_edge_range.numpy()
-                    planar_sdf_mask = colliding_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
+                    planar_sdf_mask = route_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
                     has_planar_sdf_shapes = bool(np.any(planar_sdf_mask))
                     has_meshes = has_meshes or has_planar_sdf_shapes
                     mesh_sdf_pair_mask |= planar_sdf_mask
-                    mesh_sdf_shapes = colliding_mask & (
+                    mesh_sdf_shapes = route_mask & (
                         (shape_types != int(GeoType.HFIELD))
                         & ((shape_types == int(GeoType.MESH)) | (shape_edge_range[:, 1] > 0))
                     )
@@ -1679,10 +1711,10 @@ class CollisionPipeline:
                         max_mesh_mesh_pairs = 0
                         max_mesh_plane_pairs = 0
                     else:
-                        explicit_pairs = self.shape_pairs_filtered.numpy().reshape(-1, 2)
+                        explicit_pairs = explicit_pairs_host
                         shape_a = explicit_pairs[:, 0]
                         shape_b = explicit_pairs[:, 1]
-                        box_mask = colliding_mask & (shape_types == int(GeoType.BOX))
+                        box_mask = route_mask & (shape_types == int(GeoType.BOX))
                         mesh_mesh_routes = (
                             (mesh_mask[shape_a] & mesh_mask[shape_b])
                             | (heightfield_mask[shape_a] & mesh_mask[shape_b])
@@ -1718,7 +1750,7 @@ class CollisionPipeline:
                     int(GeoType.CYLINDER),
                     int(GeoType.CONE),
                 }
-                use_lean_gjk_mpr = not bool(lean_unsupported & set(colliding_shape_types.tolist()))
+                use_lean_gjk_mpr = not bool(lean_unsupported & set(route_shape_types.tolist()))
 
             if self.broad_phase_mode == "explicit":
                 candidate_pair_work_estimate = self.shape_pairs_max
@@ -1729,6 +1761,7 @@ class CollisionPipeline:
                 broad_phase_mode=self.broad_phase_mode,
                 shape_pairs_filtered=self.shape_pairs_filtered,
                 candidate_pair_work_estimate=candidate_pair_work_estimate,
+                shape_pairs_host=explicit_pairs_host,
             )
             split_pair_count_threshold = (
                 _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD
@@ -1764,7 +1797,7 @@ class CollisionPipeline:
                 shape_voxel_resolution=model._shape_voxel_resolution,
                 hydroelastic_sdf=hydroelastic_sdf,
                 has_meshes=has_meshes,
-                has_heightfields=model.heightfield_count > 0,
+                has_heightfields=has_heightfields,
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
                 convex_support_acceleration=model._convex_support_lut.shape[0] > 1,
                 has_generic_convex_pairs=has_generic_convex_pairs,
@@ -1888,6 +1921,7 @@ class CollisionPipeline:
                 rigid_contact_max,
                 key_bit_count=self._contact_sort_sub_key_bits + 2 * self._contact_sort_shape_index_bits,
                 per_contact_shape_properties=per_contact_props,
+                allocate_simple_scratch=False,
                 device=device,
             )
         else:
@@ -2526,26 +2560,22 @@ class CollisionPipeline:
             **narrow_phase_extension_kwargs,
         )
 
-        # Match contacts against previous frame before sorting.
-        if self._contact_matcher is not None:
-            if contacts.rigid_contact_match_index is None:
-                raise ValueError(
-                    "CollisionPipeline has contact_matching enabled but the "
-                    "Contacts buffer was created without contact_matching. "
-                    "Use pipeline.contacts() to create a compatible buffer."
-                )
-            self._contact_matcher.match(
-                sort_keys=self._sort_key_array,
-                contact_count=contacts.rigid_contact_count,
-                point0=contacts.rigid_contact_point0,
-                point1=contacts.rigid_contact_point1,
-                shape0=contacts.rigid_contact_shape0,
-                shape1=contacts.rigid_contact_shape1,
-                normal=contacts.rigid_contact_normal,
-                body_q=state.body_q,
-                shape_body=model.shape_body,
-                match_index_out=contacts.rigid_contact_match_index,
+        # The reducer's counters are reused by the next pass, so latch losses on this contact stream.
+        reducer = self.narrow_phase.global_contact_reducer
+        if reducer is not None:
+            wp.launch(
+                _record_reduction_overflow,
+                dim=1,
+                inputs=[reducer.ht_insert_failures, reducer.buffer_overflows, contacts._reduction_overflow],
                 device=self.device,
+                record_tape=False,
+            )
+
+        if self._contact_matcher is not None and contacts.rigid_contact_match_index is None:
+            raise ValueError(
+                "CollisionPipeline has contact_matching enabled but the "
+                "Contacts buffer was created without contact_matching. "
+                "Use pipeline.contacts() to create a compatible buffer."
             )
 
         if self.deterministic and self._contact_sorter is not None:
@@ -2565,12 +2595,32 @@ class CollisionPipeline:
                 stiffness=contacts.rigid_contact_stiffness,
                 damping=contacts.rigid_contact_damping,
                 friction=contacts.rigid_contact_friction,
-                match_index=contacts.rigid_contact_match_index,
                 device=self.device,
             )
 
+        # Match the sorted stream against the previous frame: entry i belongs to
+        # final row i, and its value is a row of the previous sorted stream.
+        if self._contact_matcher is not None:
+            self._contact_matcher.match(
+                sort_keys=self._contact_sorter.sorted_keys_view,
+                contact_count=contacts.rigid_contact_count,
+                point0=contacts.rigid_contact_point0,
+                point1=contacts.rigid_contact_point1,
+                shape0=contacts.rigid_contact_shape0,
+                shape1=contacts.rigid_contact_shape1,
+                normal=contacts.rigid_contact_normal,
+                body_q=state.body_q,
+                shape_body=model.shape_body,
+                match_index_out=contacts.rigid_contact_match_index,
+                device=self.device,
+            )
+        elif contacts.rigid_contact_match_index is not None:
+            # A buffer allocated for matching may be reused by a pipeline that
+            # does not match; do not leave a previous producer's indices behind.
+            contacts.rigid_contact_match_index.fill_(-1)
+
         # Sticky mode: overwrite matched rows with the saved previous-frame
-        # contact geometry.  Must run after sort_full (so match_index points at
+        # contact geometry.  Must run after matching (so match_index points at
         # the sorted prev-frame layout *and* we target the final sorted rows)
         # and before save_sorted_state (we save the record we actually used
         # this frame, carrying the sticky history forward).
