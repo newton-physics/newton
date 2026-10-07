@@ -263,8 +263,7 @@ class ViewerGL(ViewerBase):
             num_frames: Number of viewer-loop frames in headless mode before
                 :meth:`is_running` returns False. If None, headless rendering
                 is unbounded; if 0, no frames are rendered. Includes
-                rendering-paused frames. Ignored in
-                windowed mode.
+                rendering-paused frames. Ignored in windowed mode.
             enable_cuda_interop: Render-geometry categories that use CUDA-OpenGL
                 interoperability. Combine :class:`CudaInterop` flags with ``|``.
                 Defaults to :attr:`CudaInterop.DYNAMIC_MESH`.
@@ -2071,10 +2070,15 @@ class ViewerGL(ViewerBase):
 
     @override
     def set_rendering_paused(self, paused: bool) -> None:
-        """See :meth:`ViewerBase.set_rendering_paused`."""
+        """See :meth:`newton.viewer.ViewerBase.set_rendering_paused`."""
         if bool(paused) == self.is_rendering_paused():
             return
-        self._set_rendering_paused(paused)
+        self._rendering_paused = bool(paused)
+        if paused:
+            if self.picking is not None:
+                self.picking.release()
+            if self.gui is not None:
+                self.gui.on_rendering_paused()
 
     def get_frame(self, target_image: wp.array | None = None, render_ui: bool = False) -> wp.array:
         """
@@ -2094,6 +2098,9 @@ class ViewerGL(ViewerBase):
             wp.array: RGB image data on the viewer device with shape
                 `(height, width, 3)` and dtype `wp.uint8`. Origin is top-left
                 (OpenGL's bottom-left is flipped).
+
+        Raises:
+            RuntimeError: Rendering is paused before an image has been displayed.
         """
 
         if self.is_rendering_paused() and not self._has_rendered_frame:

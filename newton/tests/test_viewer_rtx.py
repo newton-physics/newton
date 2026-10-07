@@ -130,7 +130,6 @@ class TestViewerRTXOvstage(unittest.TestCase):
         self.viewer._ovstage_population_dirty = False
         self.viewer._runtime_scene_changed = False
         self.viewer._rendering_paused = False
-        self.viewer._render_result = None
         self.ovstage.population.open_usd_from_string(
             self.viewer._ovstage,
             """#usda 1.0
@@ -289,7 +288,6 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
         render_var.map.return_value.__enter__.return_value = expected
         frame = mock.Mock(render_vars={"/Render/Vars/LdrColor": render_var})
         viewer._render_products = {"product": mock.Mock(frames=[frame])}
-        viewer._render_result = None
 
         np.testing.assert_array_equal(viewer._capture_screenshot_pixels(), expected)
 

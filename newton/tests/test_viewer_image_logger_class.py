@@ -532,7 +532,6 @@ class TestViewerRTXLogImage(unittest.TestCase):
                 viewer._window = mock.Mock()
                 viewer._headless = False
                 viewer._rendering_paused = False
-                viewer._render_result = None
                 viewer._displayed_frame = mock.Mock(texture=expected[0], width=expected[1], height=expected[2])
                 viewer._present = mock.Mock()
 

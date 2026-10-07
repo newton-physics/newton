@@ -487,14 +487,18 @@ class ViewerBase(ABC):
 
         This is independent of simulation pause (:meth:`is_paused`). Backends
         without rendering-pause support always return ``False``.
+
+        Returns:
+            bool: True when updates to the displayed image are paused.
         """
         return self._rendering_paused
 
     def set_rendering_paused(self, paused: bool) -> None:
         """Freeze or resume the displayed image without changing simulation pause.
 
-        Supported by :class:`ViewerGL` and :class:`ViewerRTX`, including
-        headless mode. Continue calling :meth:`begin_frame`, logging state,
+        Supported by :class:`~newton.viewer.ViewerGL` and
+        :class:`~newton.viewer.ViewerRTX`, including headless mode.
+        Continue calling :meth:`begin_frame`, logging state,
         and :meth:`end_frame` while paused to process events and UI. Resume
         displays the latest state, without replaying intermediate updates.
 
@@ -502,25 +506,12 @@ class ViewerBase(ABC):
         raises ``RuntimeError``. Frame budgets still count viewer-loop frames.
         Clearing the model invalidates the image but preserves rendering pause.
 
+        Backends without rendering-pause support ignore this method.
+
         Args:
             paused: Whether to pause rendering.
-
-        Raises:
-            NotImplementedError: Enabling pause on an unsupported backend.
         """
-        if paused:
-            raise NotImplementedError(f"{type(self).__name__} does not support rendering pause")
-
-    def _set_rendering_paused(self, paused: bool) -> None:
-        """Update interactive-viewer state and release scene interaction."""
-        self._rendering_paused = bool(paused)
-        if paused:
-            if getattr(self, "picking", None) is not None:
-                self.picking.release()
-            if getattr(self, "gui", None) is not None:
-                self.gui._cam_vel.fill(0.0)
-                self.gui._gizmo_active.clear()
-            self.gizmo_is_using = False
+        return None
 
     def is_key_down(self, key: str | int) -> bool:
         """Default key query API. Concrete viewers can override.

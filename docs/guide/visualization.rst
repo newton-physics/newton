@@ -131,16 +131,18 @@ image while paused. With no previously displayed image, the background is
 empty and capture raises ``RuntimeError``; headless RTX uses the last image
 accepted by the viewer. Clearing or replacing the model invalidates the image
 but preserves the rendering-pause setting. Other backends report ``False``
-and raise ``NotImplementedError`` if asked to enable rendering pause.
+and ignore requests to enable rendering pause.
 
-RTX retains any outstanding asynchronous operation and polls both completion
-and result retrieval without blocking. A pause invalidates that operation's
-image; it cannot replace the frozen image even after a quick resume. Resume
-waits through polling before submitting the latest state. Windowed asynchronous
-rendering also presents the cache and UI while waiting for a new image.
-Initial renderer/model loading, explicit lifecycle cleanup (``clear_model()``
-and ``close()``), and an already executing synchronous render can still wait
+RTX completes each render synchronously in ``end_frame()``. While rendering
+is paused, scene updates and UI processing continue, but no ray-traced render
+is requested. The first resumed frame renders the current state. The
+``async_rendering`` constructor argument is deprecated and ignored; omit it.
+Initial renderer/model loading and an already executing render can still wait
 for GPU work. Rendering pause does not interrupt those operations.
+
+Windowed RTX and GL retain a separate RGBA image texture so changes to the
+scene, camera, or fullscreen images cannot overwrite the frozen image. This
+requires four extra bytes per pixel (about 33 MB at 3840 x 2160).
 
 **Camera and layout:**
 

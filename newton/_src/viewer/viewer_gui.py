@@ -112,8 +112,14 @@ class ViewerGui:
             return False
         return bool(self.ui.io.want_capture_keyboard)
 
+    def on_rendering_paused(self) -> None:
+        """Release camera motion and gizmos when the displayed image freezes."""
+        self._cam_vel.fill(0.0)
+        self._gizmo_active.clear()
+        self._viewer.gizmo_is_using = False
+
     def should_ignore_mouse_input(self, allow_active_pick_drag: bool = False) -> bool:
-        if getattr(self._viewer, "_rendering_paused", False):
+        if self._viewer.is_rendering_paused():
             return True
         if allow_active_pick_drag and self.is_pick_active():
             return False
@@ -151,7 +157,7 @@ class ViewerGui:
 
     def update_camera_from_keys(self, dt: float, is_key_down):
         """Update camera position from WASD/QE keys. Uses same speed and damping as ViewerGL."""
-        if self.is_capturing() or getattr(self._viewer, "_rendering_paused", False):
+        if self.is_capturing() or self._viewer.is_rendering_paused():
             return
         camera = getattr(self._viewer, "camera", None)
         if camera is None:
