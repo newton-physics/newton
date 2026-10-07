@@ -3522,7 +3522,17 @@ class ModelBuilder:
                 for spec in source_specs:
                     merged = dict(spec)
                     parent_start = int(starts(visual_parent_kinds[spec["kind"]])[world_index])
-                    merged["parent"] = np.asarray(spec["parent"], dtype=np.int32) + parent_start
+                    parents = np.asarray(spec["parent"], dtype=np.int32)
+                    merged["parent"] = np.where(parents >= 0, parents + parent_start, parents)
+                    if "_body_worlds" in spec:
+                        merged["_body_worlds"] = np.full(len(parents), worlds[world_index], dtype=np.int32)
+                    if spec["kind"] == DeformableVisualBinding.Kind.BODY and np.any(parents < 0):
+                        # World-fixed offsets need the same placement as static shapes.
+                        local = np.array(spec["local_offsets"], dtype=np.float32, copy=True)
+                        if xforms[world_index] is not None:
+                            for point in np.flatnonzero(parents < 0):
+                                local[point] = wp.transform_point(xforms[world_index], wp.vec3(*local[point]))
+                        merged["local_offsets"] = local
                     if "shape" in spec:
                         merged["shape"] = spec["shape"] + int(starts("shape")[world_index])
                     merged["label"] = rebase_path(spec.get("label"), path_prefixes[world_index])
@@ -7213,6 +7223,24 @@ class ModelBuilder:
             else:
                 # If no group was assigned, use default -1
                 self.body_world.append(-1)
+
+        for spec in self._deformable_visual_meshes:
+            if spec["kind"] != DeformableVisualBinding.Kind.BODY:
+                continue
+            parents = np.asarray(spec["parent"], dtype=np.int32)
+            if "_body_worlds" not in spec:
+                spec["_body_worlds"] = np.asarray(original_body_group, dtype=np.int32)[parents]
+            local = np.array(spec["local_offsets"], dtype=np.float32, copy=True)
+            remapped = parents.copy()
+            for point, parent in enumerate(parents):
+                survivor = parent
+                if parent in body_merged_parent:
+                    # The merge transform maps the removed body's local frame to its survivor.
+                    local[point] = wp.transform_point(body_merged_transform[parent], wp.vec3(*local[point]))
+                    survivor = body_merged_parent[parent]
+                remapped[point] = body_remap[survivor]
+            spec["parent"] = remapped
+            spec["local_offsets"] = local
 
         # sort joints so they appear in the same order as before
         retained_joints.sort(key=lambda x: x["original_id"])
@@ -13495,7 +13523,9 @@ class ModelBuilder:
             if len(parent) == 0:
                 return -1
             if kind == DeformableVisualMesh.Kind.BODY:
-                worlds = body_world[parent] if body_world is not None else None
+                worlds = spec.get("_body_worlds")
+                if worlds is None:
+                    worlds = body_world[parent] if body_world is not None else None
             else:
                 if particle_world is None:
                     return -1

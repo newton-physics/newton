@@ -579,7 +579,10 @@ def _skin_deformable_visual_mesh_body(
     out_points: wp.array[wp.vec3],
 ):
     i = wp.tid()
-    out_points[out_offset + i] = wp.transform_point(body_q[parent[i]], local_offsets[i])
+    point = local_offsets[i]
+    if parent[i] >= 0:
+        point = wp.transform_point(body_q[parent[i]], point)
+    out_points[out_offset + i] = point
 
 
 @wp.kernel

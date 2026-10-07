@@ -239,6 +239,66 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         assert_np_equal(skinned[:2], verts[:2], tol=1.0e-5)
         assert_np_equal(skinned[2:], verts[2:] + np.array([0.0, 0.0, 2.0], dtype=np.float32), tol=1.0e-5)
 
+    def test_body_visual_survives_unrelated_fixed_joint_collapse(self):
+        """Keep a surviving visual driver when an earlier body is removed."""
+        builder = newton.ModelBuilder()
+        root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        fixed = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        driver = builder.add_link(
+            xform=wp.transform((3.0, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+        )
+        other = builder.add_link(
+            xform=wp.transform((10.0, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+        )
+        builder.add_articulation([builder.add_joint_free(root), builder.add_joint_fixed(root, fixed)])
+        builder.add_articulation([builder.add_joint_free(driver)])
+        builder.add_articulation([builder.add_joint_free(other)])
+        vertices = np.array([[3.0, 0.0, 0.0], [3.0, 1.0, 0.0], [3.0, 0.0, 1.0]], dtype=np.float32)
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="body", bodies=[driver])
+
+        builder.collapse_fixed_joints()
+        model = builder.finalize()
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(model.state(), visuals)
+        assert_np_equal(visuals.points.numpy(), vertices, tol=1.0e-6)
+        self.assertEqual(model.body_count, 3)
+
+    def test_body_visual_follows_merged_driver(self):
+        """Preserve visual points when their driver merges into a body or the world."""
+        vertices = np.array([[2.0, 1.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 1.0]], dtype=np.float32)
+        for fixed_to_world in (False, True):
+            with self.subTest(fixed_to_world=fixed_to_world):
+                builder = newton.ModelBuilder()
+                builder.begin_world()
+                root = -1 if fixed_to_world else builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                pose = wp.transform((2.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), math.pi / 2))
+                child = builder.add_link(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
+                joints = [] if fixed_to_world else [builder.add_joint_free(root)]
+                joints.append(builder.add_joint_fixed(root, child, parent_xform=pose))
+                builder.add_articulation(joints)
+                builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="body", bodies=[child])
+                builder.end_world()
+
+                builder.collapse_fixed_joints()
+                model = builder.finalize()
+                visuals = model.deformable_visuals()
+                model.update_deformable_visuals(model.state(), visuals)
+                assert_np_equal(visuals.points.numpy(), vertices, tol=1.0e-6)
+                self.assertEqual(model.deformable_visual_meshes[0].world, 0)
+                self.assertEqual(model.body_count, 0 if fixed_to_world else 1)
+
+                scene = newton.ModelBuilder()
+                scene.replicate(
+                    builder, 2, xforms=[wp.transform_identity(), wp.transform((0.0, 0.0, 4.0), wp.quat_identity())]
+                )
+                replicated = scene.finalize()
+                output = replicated.deformable_visuals()
+                replicated.update_deformable_visuals(replicated.state(), output)
+                assert_np_equal(
+                    output.points.numpy(), np.vstack((vertices, vertices + np.array([0, 0, 4]))), tol=1.0e-6
+                )
+                self.assertEqual([mesh.world for mesh in replicated.deformable_visual_meshes], [0, 1])
+
     def test_outside_tet_vertex_clamps_within_owning_range(self):
         """A vertex outside every owning tet warns, clamps to the nearest owning
         tet, and still produces a valid partition-of-unity weight row."""
@@ -1607,6 +1667,25 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         self.assertEqual(rm.body_path, "/World/Body")
         parents = rm.parent.numpy()
         self.assertTrue((parents >= 0).all() and (parents < model.body_count).all())
+
+    def test_usd_cable_visual_survives_fixed_joint_collapse(self):
+        """Keep imported cable visuals aligned when import collapses earlier bodies."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        UsdGeom.Xform.Define(stage, "/World/Cable").GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+        _add_cable_curve(stage, "/World/Cable/Sim", [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (2.0, 0.0, 1.0)])
+        vertices = np.array([[0.2, 0.1, 1.0], [0.3, 0.1, 1.0], [0.2, 0.2, 1.0]], dtype=np.float32)
+        self._add_graphics_mesh(stage, "/World/Cable/Skin", points=vertices.tolist())
+        builder = newton.ModelBuilder()
+        root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_articulation([builder.add_joint_free(root), builder.add_joint_fixed(root, child)])
+        builder.add_usd(stage, collapse_fixed_joints=True)
+        model = builder.finalize()
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(model.state(), visuals)
+        assert_np_equal(visuals.points.numpy(), vertices, tol=1.0e-6)
 
     def test_uvs_survive_import(self):
         """Vertex-interpolated primvars:st arrive on the visual mesh."""

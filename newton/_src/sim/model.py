@@ -1745,7 +1745,9 @@ class Model:
         needs_particles = bool(self.deformable_visual_gaussians) or any(
             mesh.kind != DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes
         )
-        needs_bodies = any(mesh.kind == DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes)
+        needs_bodies = self.body_count > 0 and any(
+            mesh.kind == DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes
+        )
         if needs_particles and state.particle_q is None:
             raise ValueError("State.particle_q is required by this model's deformable visual meshes")
         if needs_bodies and state.body_q is None:
