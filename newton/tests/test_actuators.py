@@ -845,7 +845,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
             state,
             dt,
             self.device,
-            custom_inputs,
+            custom_inputs=custom_inputs,
         )
         return forces
 
