@@ -389,14 +389,17 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 flags.add(flag)
         return frozenset(flags)
 
-    def prepare_observables(self, observables: Observables, *, requires_grad: bool) -> None:
-        """Allocate entry-local containers after the global observable arrays."""
-        super().prepare_observables(observables, requires_grad=requires_grad)
-        for entry in self._entries.values():
-            entry_flags = observables.flags if entry.body_indices.shape[0] > 0 else ()
-            observables.entry_observables[entry.name] = entry.solver.observables(
-                entry_flags, requires_grad=requires_grad
-            )
+    def observables(self, flags: Iterable[Enum], *, requires_grad: bool | None = None) -> Observables:
+        """Allocate parent-model observables and matching entry-local containers."""
+        if requires_grad is None:
+            requires_grad = self.model.requires_grad
+        with self._create_observables(flags, requires_grad=requires_grad) as observables:
+            for entry in self._entries.values():
+                entry_flags = observables.flags if entry.body_indices.shape[0] > 0 else ()
+                observables.entry_observables[entry.name] = entry.solver.observables(
+                    entry_flags, requires_grad=requires_grad
+                )
+            return observables
 
     @staticmethod
     def _positive_integer(value: int, label: str) -> int:

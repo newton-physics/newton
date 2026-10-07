@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from copy import copy
 from dataclasses import Field, dataclass, fields
 from dataclasses import field as dataclass_field
@@ -696,6 +697,8 @@ class SolverBase:
         solvers add custom flags to :attr:`SUPPORTED_OBSERVABLE_FLAGS` and
         declare fields on a dataclass derived from :class:`SolverObservables`.
         The default allocator handles both standard and custom fields.
+        Override this factory and delegate to ``super()`` when additional
+        solver-specific initialization is needed.
 
         All requested arrays are allocated before this method returns; ``None``
         always means unrequested. Contact arrays use the model's resolved rigid
@@ -725,6 +728,17 @@ class SolverBase:
             The solver observable API may change while additional solvers and
             observable categories are migrated to it.
         """
+        with self._create_observables(flags, requires_grad=requires_grad) as observables:
+            return observables
+
+    @contextmanager
+    def _create_observables(
+        self,
+        flags: Iterable[Enum],
+        *,
+        requires_grad: bool | None = None,
+    ) -> Iterator[SolverObservables]:
+        """Share built-in factory allocation, freezing capacities only after setup succeeds."""
         requested = frozenset(flags)
         invalid = [flag for flag in requested if not isinstance(flag, Enum) or isinstance(flag, (int, str))]
         if invalid:
@@ -756,62 +770,24 @@ class SolverBase:
         for flag, (name, spec) in declarations.items():
             if flag not in requested:
                 continue
-            array = self.allocate_observable(flag, requires_grad=requires_grad)
-            if not isinstance(array, wp.array) or not wp.types.types_equal(array.dtype, spec.dtype):
-                raise TypeError(f"allocate_observable({flag!r}) must return a Warp array with dtype {spec.dtype}.")
-            if array.device != self.model.device:
-                raise ValueError(f"Observable '{name}' must be allocated on the solver device.")
-            setattr(observables, name, array)
-        self.prepare_observables(observables, requires_grad=requires_grad)
+            setattr(
+                observables,
+                name,
+                wp.zeros(
+                    self.model._attribute_frequency_count(spec.frequency),
+                    dtype=spec.dtype,
+                    device=self.model.device,
+                    requires_grad=requires_grad,
+                ),
+            )
+        yield observables
         if observables._contact_capacity is not None:
             self.model._solver_observable_contact_capacity = observables._contact_capacity
-        return observables
 
     @staticmethod
     def _format_observable_flag(flag: Enum) -> str:
         """Format an observable flag for diagnostics."""
         return f"{type(flag).__name__}.{flag.name}"
-
-    def allocate_observable(self, flag: Enum, *, requires_grad: bool) -> wp.array:
-        """Allocate one array using its declared dtype and row frequency.
-
-        Override this hook only for storage the generic allocator cannot
-        describe. Return an owned array on the solver device with the declared
-        dtype and indexing domain; delegate other flags to ``super()``.
-        This hook is called by :meth:`observables`, never by :meth:`step` or
-        :meth:`SolverObservables.select`.
-
-        Args:
-            flag: Requested flag with a field declaration on :attr:`OBSERVABLES_TYPE`.
-            requires_grad: Whether the allocation requires gradient storage.
-
-        Returns:
-            The allocated observable array.
-
-        .. experimental::
-        """
-        _, spec = self.OBSERVABLES_TYPE._observable_fields()[flag]
-        return wp.zeros(
-            self.model._attribute_frequency_count(spec.frequency),
-            dtype=spec.dtype,
-            device=self.model.device,
-            requires_grad=requires_grad,
-        )
-
-    def prepare_observables(self, observables: SolverObservables, *, requires_grad: bool) -> None:
-        """Prepare solver-specific storage after the requested arrays are allocated.
-
-        Override this hook to initialize auxiliary buffers or nested observable
-        containers. All preparation must finish during :meth:`observables`,
-        before graph capture. Leave the declared output arrays and requests
-        unchanged. The default implementation does nothing.
-
-        Args:
-            observables: Allocated container owned by this solver.
-            requires_grad: Whether additional allocations require gradients.
-
-        .. experimental::
-        """
 
     def validate_observables(self, observables: SolverObservables | None, contacts: Contacts | None = None) -> None:
         """Validate ownership and contact storage before a custom solver step.

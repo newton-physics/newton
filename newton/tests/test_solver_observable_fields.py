@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Test declarative solver observable allocation and extension hooks."""
+"""Test declarative solver observable allocation and factory overrides."""
 
 import unittest
 from dataclasses import dataclass
@@ -13,6 +13,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverBase, SolverObservableFlags, SolverObservables
+from newton.solvers.experimental.coupled import SolverCoupled
 
 
 class CustomFlags(Enum):
@@ -77,7 +78,7 @@ class TestSolverObservableFields(unittest.TestCase):
         self.assertEqual({observables: "identity"}[observables], "identity")
         self.assertNotEqual(observables, solver.observables(flags))
 
-        with patch.object(solver, "allocate_observable", side_effect=AssertionError("unexpected allocation")):
+        with patch("newton._src.solvers.solver.wp.zeros", side_effect=AssertionError("unexpected allocation")):
             selected = observables.select({CustomFlags.TEMPERATURE})
             body_only = observables.select({SolverObservableFlags.BODY_QDD})
         self.assertIs(selected.temperature, observables.temperature)
@@ -162,7 +163,7 @@ class TestSolverObservableFields(unittest.TestCase):
         """Reject inherited fields the solver cannot compute before allocation."""
         solver = self.make_solver(self.model)
         with (
-            patch.object(solver, "allocate_observable", side_effect=AssertionError("unexpected allocation")),
+            patch("newton._src.solvers.solver.wp.zeros", side_effect=AssertionError("unexpected allocation")),
             self.assertRaisesRegex(ValueError, "does not support"),
         ):
             solver.observables({SolverObservableFlags.BODY_PARENT_F})
@@ -179,7 +180,7 @@ class TestSolverObservableFields(unittest.TestCase):
 
         solver.OBSERVABLES_TYPE = DuplicateObservables
         with (
-            patch.object(solver, "allocate_observable", side_effect=AssertionError("unexpected allocation")),
+            patch("newton._src.solvers.solver.wp.zeros", side_effect=AssertionError("unexpected allocation")),
             self.assertRaisesRegex(ValueError, "Duplicate.*TEMPERATURE"),
         ):
             solver.observables({CustomFlags.TEMPERATURE})
@@ -219,61 +220,81 @@ class TestSolverObservableFields(unittest.TestCase):
             with self.subTest(flag=flag), self.assertRaisesRegex(TypeError, "plain enum"):
                 SolverObservables.field(flag=flag, dtype=float, frequency=newton.Model.AttributeFrequency.BODY)
 
-    def test_public_allocation_and_preparation_hooks(self):
-        """Call preparation once after allocating only the requested fields."""
+    def test_public_factory_override(self):
+        """Customize allocation through the public factory without additional hooks."""
         solver_type = type(self.make_solver(self.model))
         calls = []
 
         class CustomSolver(solver_type):
-            def allocate_observable(self, flag, *, requires_grad):
-                calls.append(flag)
-                array = super().allocate_observable(flag, requires_grad=requires_grad)
-                array.fill_(3.0)
-                return array
-
-            def prepare_observables(self, observables, *, requires_grad):
-                calls.append("prepare")
-                self.prepared = observables
-                self.prepared_gradient = requires_grad
-                self.prepared_array = observables.temperature
+            def observables(self, flags, *, requires_grad=None):
+                result = super().observables(flags, requires_grad=requires_grad)
+                calls.append(result.flags)
+                if result.is_requested(CustomFlags.TEMPERATURE):
+                    result.temperature.fill_(3.0)
+                self.created = result
+                return result
 
         solver = CustomSolver(self.model)
-        observables = solver.observables({CustomFlags.TEMPERATURE}, requires_grad=True)
-        self.assertEqual(calls, [CustomFlags.TEMPERATURE, "prepare"])
-        self.assertIs(solver.prepared, observables)
-        self.assertIs(solver.prepared_array, observables.temperature)
+        observables = solver.observables(iter([CustomFlags.TEMPERATURE]), requires_grad=True)
+        self.assertEqual(calls, [frozenset({CustomFlags.TEMPERATURE})])
+        self.assertIs(solver.created, observables)
         self.assertIs(observables.model, self.model)
-        self.assertTrue(solver.prepared_gradient)
+        self.assertTrue(observables.temperature.requires_grad)
         np.testing.assert_array_equal(observables.temperature.numpy(), [3.0])
         observables.select(set())
-        self.assertEqual(calls, [CustomFlags.TEMPERATURE, "prepare"])
+        self.assertEqual(calls, [frozenset({CustomFlags.TEMPERATURE})])
+
+    def test_factory_and_validation_are_the_only_public_lifecycle_methods(self):
+        """Keep allocation and preparation details out of the public solver API."""
+        for solver_type in (SolverBase, newton.solvers.SolverMuJoCo, newton.solvers.SolverKamino, SolverCoupled):
+            with self.subTest(solver=solver_type.__name__):
+                self.assertTrue(callable(solver_type.observables))
+                self.assertTrue(callable(solver_type.validate_observables))
+                self.assertFalse(hasattr(solver_type, "allocate_observable"))
+                self.assertFalse(hasattr(solver_type, "prepare_observables"))
+
+    def test_kamino_factory_failure_can_be_retried(self):
+        """Keep capacity and scratch storage uncommitted when backend setup fails."""
+        newton.CollisionPipeline(self.model, rigid_contact_max=1, soft_contact_max=0)
+        solver = object.__new__(newton.solvers.SolverKamino)
+        SolverBase.__init__(solver, self.model)
+        solver._collision_detector_kamino = None
+        solver._contact_observable_state = None
+        flags = {SolverObservableFlags.CONTACT_F}
+        with (
+            patch("newton._src.solvers.kamino.solver_kamino.wp.empty", side_effect=MemoryError("scratch allocation")),
+            self.assertRaisesRegex(MemoryError, "scratch allocation"),
+        ):
+            solver.observables(flags)
+        self.assertIsNone(solver._contact_observable_state)
+        newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
+        observables = solver.observables(flags)
+        self.assertEqual(observables.contact_f.shape, (2,))
+        self.assertEqual(solver._contact_observable_state.body_q.shape, (self.model.body_count,))
 
     def test_allocation_failure_does_not_freeze_capacity(self):
-        """Leave contact capacities mutable if preparation fails."""
+        """Leave contact capacities mutable if array allocation fails."""
         solver = self.make_solver(self.model)
         newton.CollisionPipeline(self.model, rigid_contact_max=1, soft_contact_max=0)
         with (
-            patch.object(solver, "prepare_observables", side_effect=ValueError("preparation failed")),
-            self.assertRaisesRegex(ValueError, "preparation failed"),
+            patch("newton._src.solvers.solver.wp.zeros", side_effect=MemoryError("array allocation")),
+            self.assertRaisesRegex(MemoryError, "array allocation"),
         ):
             solver.observables({CustomFlags.PRESSURE})
         newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
         self.assertEqual(solver.observables({CustomFlags.PRESSURE}).pressure.shape, (2,))
 
-    def test_invalid_allocation_hook_results(self):
-        """Reject absent, wrong-dtype, and wrong-device arrays before preparation."""
+    def test_empty_request_does_not_allocate(self):
+        """Return an owned empty container without allocating arrays or requiring contacts."""
         solver = self.make_solver(self.model)
-        invalid = [(None, TypeError, "Warp array"), (wp.zeros(1, dtype=int, device="cpu"), TypeError, "dtype")]
-        if wp.is_cuda_available():
-            invalid.append((wp.zeros(1, dtype=float, device="cuda:0"), ValueError, "solver device"))
-        for array, error, message in invalid:
-            with (
-                self.subTest(array=array),
-                patch.object(solver, "allocate_observable", return_value=array),
-                patch.object(solver, "prepare_observables", side_effect=AssertionError("unexpected preparation")),
-                self.assertRaisesRegex(error, message),
-            ):
-                solver.observables({CustomFlags.TEMPERATURE})
+        with patch("newton._src.solvers.solver.wp.zeros", side_effect=AssertionError("unexpected allocation")):
+            observables = solver.observables(set())
+        self.assertIs(observables.model, self.model)
+        self.assertEqual(observables.flags, frozenset())
+        self.assertIsNone(observables.temperature)
+        self.assertIsNone(observables.pressure)
+        self.assertIsNone(observables.contact_f)
+        solver.validate_observables(observables)
 
     def test_custom_field_gradients_and_graph_reuse(self):
         """Differentiate writes and replay CUDA graphs using selected custom arrays."""

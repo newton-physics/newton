@@ -598,19 +598,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         return flags
 
-    def allocate_observable(self, flag: Enum, *, requires_grad: bool) -> wp.array:
-        """Check the backend contact budget before allocating a declared array."""
-        if (
-            flag is SolverObservableFlags.CONTACT_F
-            and self.mjw_model.opt.run_collision_detection
-            and self.mjw_data.naconmax > self.model.rigid_contact_max
-        ):
-            raise ValueError(
-                f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds CollisionPipeline capacity "
-                f"({self.model.rigid_contact_max}). Construct CollisionPipeline with "
-                "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
-            )
-        return super().allocate_observable(flag, requires_grad=requires_grad)
+    def observables(self, flags: Iterable[Enum], *, requires_grad: bool | None = None) -> Observables:
+        """Allocate solver observables with a compatible native contact export budget."""
+        with self._create_observables(flags, requires_grad=requires_grad) as observables:
+            if (
+                observables.is_requested(SolverObservableFlags.CONTACT_F)
+                and self.mjw_model.opt.run_collision_detection
+                and self.mjw_data.naconmax > self.model.rigid_contact_max
+            ):
+                raise ValueError(
+                    f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds CollisionPipeline capacity "
+                    f"({self.model.rigid_contact_max}). Construct CollisionPipeline with "
+                    "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
+                )
+            return observables
 
     EqType = _EqType
     """MuJoCo equality constraint type."""

@@ -9,6 +9,7 @@ simulating constrained multi-body systems for arbitrary mechanical assemblies.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
@@ -1025,27 +1026,25 @@ class SolverKamino(SolverBase, CouplingInterface):
         if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
             config.base_pose = config_cache
 
-    def allocate_observable(self, flag: Enum, *, requires_grad: bool) -> wp.array:
-        """Check the native detector budget before allocating contact observables."""
-        if flag is SolverObservableFlags.CONTACT_F and self._collision_detector_kamino is not None:
-            native_max = self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
-            if native_max > self.model.rigid_contact_max:
-                raise ValueError(
-                    f"Kamino contact capacity ({native_max}) exceeds CollisionPipeline capacity "
-                    f"({self.model.rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
-                )
-        return super().allocate_observable(flag, requires_grad=requires_grad)
-
-    def prepare_observables(self, observables: SolverObservables, *, requires_grad: bool) -> None:
-        """Allocate input-pose storage before contact observables are stepped."""
-        super().prepare_observables(observables, requires_grad=requires_grad)
-        if observables.is_requested(SolverObservableFlags.CONTACT_F) and self._contact_observable_state is None:
-            # Preserve the input body frames even when step() overwrites state_in.
-            # Allocate here, never during stepping or graph capture.
-            self._contact_observable_state = State()
-            self._contact_observable_state.body_q = wp.empty(
-                self.model.body_count, dtype=wp.transform, device=self.device
-            )
+    def observables(self, flags: Iterable[Enum], *, requires_grad: bool | None = None) -> SolverObservables:
+        """Allocate solver observables and the input poses needed for contact export."""
+        with self._create_observables(flags, requires_grad=requires_grad) as observables:
+            if observables.is_requested(SolverObservableFlags.CONTACT_F):
+                if self._collision_detector_kamino is not None:
+                    native_max = (
+                        self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
+                    )
+                    if native_max > self.model.rigid_contact_max:
+                        raise ValueError(
+                            f"Kamino contact capacity ({native_max}) exceeds CollisionPipeline capacity "
+                            f"({self.model.rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
+                        )
+                if self._contact_observable_state is None:
+                    # Preserve input poses for in-place steps; publish scratch only after allocation succeeds.
+                    state = State()
+                    state.body_q = wp.empty(self.model.body_count, dtype=wp.transform, device=self.device)
+                    self._contact_observable_state = state
+            return observables
 
     @override
     def step(

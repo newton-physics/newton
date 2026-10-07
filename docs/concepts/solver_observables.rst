@@ -244,34 +244,31 @@ the simulation, compute a custom diagnostic only when it is requested:
 snippet. ``observables.is_requested(flag)`` tests the request, not freshness.
 The request remains true for zero-length arrays and while they are being allocated.
 
-Specialized allocation
-^^^^^^^^^^^^^^^^^^^^^^
+Customizing the factory
+^^^^^^^^^^^^^^^^^^^^^^^
 
-Most custom fields require no allocation override. Solvers that need specialized
-storage can use two public, experimental extension hooks:
+Most custom fields require no method override: their dtype and row frequency
+fully describe allocation. The public solver lifecycle has two methods:
 
-* :meth:`SolverBase.allocate_observable() <newton.solvers.SolverBase.allocate_observable>`
-  allocates one requested array. Override it for an unusual layout, returning an
-  owned Warp array with the declared dtype and row domain on the model device.
-  Honor ``requires_grad`` and delegate other flags to ``super()``. The generic
-  implementation allocates one element per frequency row; vector and matrix
-  element types are supported through ``dtype``.
-* :meth:`SolverBase.prepare_observables() <newton.solvers.SolverBase.prepare_observables>`
-  runs once after all requested arrays exist and the container has its solver
-  owner. Use it for auxiliary scratch arrays or nested containers. Kamino uses
-  it for saved input poses; the coupled solver uses it for entry-local
-  observables. Do not replace declared arrays or change requests in this hook.
+* :meth:`SolverBase.observables() <newton.solvers.SolverBase.observables>` creates
+  the container and its requested arrays. For additional initialization,
+  override ``observables(flags, *, requires_grad=None)`` and delegate declared
+  array allocation to ``super().observables(...)``. Perform backend preflight
+  checks before delegating, preserve the gradient option, and finish any
+  auxiliary allocation before returning the container.
+* :meth:`SolverBase.validate_observables() <newton.solvers.SolverBase.validate_observables>`
+  checks ownership and contact storage at the start of ``step()``, before
+  launching work or modifying outputs.
 
-Both hooks complete inside ``solver.observables()`` before graph capture.
-Neither ``step()`` nor ``select()`` invokes them. If allocation or preparation
-fails, that call does not freeze the model's contact capacities.
+There are no separate public allocation or preparation hooks. Built-in solvers
+share internal construction bookkeeping so failed backend setup does not freeze
+contact capacities. Kamino's factory also allocates saved input poses, and the
+coupled solver's factory creates entry-local containers. These are implementation
+details, not additional extension points.
 
-This field-declaration API replaces the earlier experimental extension contract
-based on ``ATTRIBUTE_FREQUENCIES``, custom container initializers, and
-``_allocate_observables()``. Solver ``step()`` implementations must still call
-``validate_observables()`` before using the arrays; making the base class own
-the step entry point is a separate migration. The declarations describe
-runtime diagnostics and do not introduce USD-authorable model attributes.
+All factory allocations finish before graph capture. Neither ``step()`` nor
+``select()`` calls the factory. The field declarations describe runtime
+diagnostics and do not introduce USD-authorable model attributes.
 
 Contact row domains
 -------------------

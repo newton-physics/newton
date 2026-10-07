@@ -96,7 +96,7 @@ class TestSolverObservables(unittest.TestCase):
         """Select existing buffers without allocating, copying, or mutating the source."""
         flags = newton.solvers.SolverObservableFlags
         observables = self.solver.observables({flags.BODY_QDD, flags.BODY_PARENT_F}, requires_grad=True)
-        with patch.object(self.solver, "allocate_observable", side_effect=AssertionError("allocated")):
+        with patch("newton._src.solvers.solver.wp.zeros", side_effect=AssertionError("allocated")):
             selected = observables.select({flags.BODY_QDD})
         self.assertIsNot(selected, observables)
         self.assertIs(type(selected), type(observables))
@@ -480,7 +480,7 @@ class TestSolverObservables(unittest.TestCase):
             self.model.rigid_contact_max = 5
 
     def test_native_backend_rejects_insufficient_capacity(self):
-        """Reject native backend budgets before allocating any output arrays."""
+        """Reject incompatible native budgets without freezing the model's capacity."""
         newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
         mujoco = object.__new__(newton.solvers.SolverMuJoCo)
         newton.solvers.SolverBase.__init__(mujoco, self.model)
