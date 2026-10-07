@@ -1,1 +1,0 @@
-Replace the MuJoCo compile-time COM offset with body/simple; the user-facing midphase fix is recorded by #3805.
