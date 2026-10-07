@@ -681,6 +681,8 @@ class SchemaResolverMjc(SchemaResolver):
             "armature": SchemaAttribute("mjc:armature", 0.0),
             # MuJoCo authors angular damping per radian rather than per degree.
             "damping": SchemaAttribute("mjc:damping", None, angular_unit="radians"),
+            # Retain the existing key for direct resolver callers.
+            "damping_per_rad": SchemaAttribute("mjc:damping", None, angular_unit="radians"),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
             "effort_limit": SchemaAttribute(
                 "mjc:actuatorfrcrange:min",
