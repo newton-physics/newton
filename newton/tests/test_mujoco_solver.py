@@ -10185,103 +10185,120 @@ class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
 class TestMuJoCoSolverQpos0(unittest.TestCase):
     """Tests for qpos0, qpos_spring, ref/springref coordinate conversion, and FK correctness."""
 
-    # -- Group A: qpos0 initial values per joint type --
-
-    def test_free_joint_qpos0(self):
-        """Verify free joint qpos0 contains body position and identity quaternion.
-
-        A free joint body at pos="0 0 1.5" should produce qpos0 with
-        position [0, 0, 1.5] and identity quaternion [1, 0, 0, 0] (wxyz).
-        """
+    def test_reference_coordinates_and_roundtrip(self):
+        """Convert reference coordinates, spring coordinates, and state in both directions."""
         mjcf = """<mujoco><worldbody>
-            <body name="b" pos="0 0 1.5">
-                <joint type="free"/>
+            <body name="floating" pos="0 0 1.5">
+                <joint name="free_initial" type="free"/>
                 <geom type="sphere" size="0.1"/>
             </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos0 = solver.mjw_model.qpos0.numpy()
-        np.testing.assert_allclose(qpos0[0, :3], [0, 0, 1.5], atol=1e-6)
-        np.testing.assert_allclose(qpos0[0, 3:7], [1, 0, 0, 0], atol=1e-6)  # wxyz identity
-
-    def test_hinge_with_ref_qpos0(self):
-        """Verify hinge joint qpos0 equals ref in radians.
-
-        A hinge with ref=90 degrees should produce qpos0 approximately
-        equal to pi/2 radians.
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="hinge" axis="0 1 0" ref="90"/>
+            <body name="hinge_ref_base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="hinge_ref_body" pos="0 0 1">
+                    <joint name="hinge_ref" type="hinge" axis="0 1 0" ref="90"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+            <body name="slide_ref_base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="slide_ref_body" pos="0 0 1">
+                    <joint name="slide_ref" type="slide" axis="0 0 1" ref="0.1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+            <body name="hinge_zero_base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="hinge_zero_body" pos="0 0 1">
+                    <joint name="hinge_zero" type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+            <body name="hinge_spring_base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="hinge_spring_body" pos="0 0 1">
+                    <joint name="hinge_spring" type="hinge" axis="0 1 0" springref="30"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+            <body name="free_roundtrip_body" pos="1 2 3">
+                <joint name="free_roundtrip" type="free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+            <body name="slide_spring_base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="slide_spring_body" pos="0 0 1">
+                    <joint name="slide_spring" type="slide" axis="0 0 1" springref="0.25"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+            <body name="slide_roundtrip_base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="slide_roundtrip_body" pos="0 0 1">
+                    <joint name="slide_roundtrip" type="slide" axis="0 0 1" ref="0.5"/>
                     <geom type="box" size="0.1 0.1 0.1"/>
                 </body>
             </body>
         </worldbody></mujoco>"""
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos0 = solver.mjw_model.qpos0.numpy()
-        np.testing.assert_allclose(qpos0[0, 0], np.pi / 2, atol=1e-5)
-
-    def test_slide_with_ref_qpos0(self):
-        """Verify slide joint qpos0 equals ref value.
-
-        A slide joint with ref=0.1 should produce qpos0 equal to 0.1.
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="slide" axis="0 0 1" ref="0.1"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos0 = solver.mjw_model.qpos0.numpy()
-        np.testing.assert_allclose(qpos0[0, 0], 0.1, atol=1e-6)
-
-    def test_ball_joint_qpos0(self):
-        """Verify ball joint qpos0 is an identity quaternion.
-
-        A ball joint should produce qpos0 equal to [1, 0, 0, 0] (wxyz).
-        """
-        builder = newton.ModelBuilder()
+        builder.joint_label = [label.rsplit("/", 1)[-1] for label in builder.joint_label]
         parent = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         builder.add_shape_box(body=parent, hx=0.1, hy=0.1, hz=0.1)
-        j0 = builder.add_joint_fixed(-1, parent)
+        root = builder.add_joint_fixed(-1, parent)
         child = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         builder.add_shape_box(body=child, hx=0.1, hy=0.1, hz=0.1)
-        j1 = builder.add_joint_ball(parent, child)
-        builder.add_articulation([j0, j1])
+        ball = builder.add_joint_ball(parent, child, label="ball")
+        builder.add_articulation([root, ball])
         model = builder.finalize()
         solver = SolverMuJoCo(model)
-        qpos0 = solver.mjw_model.qpos0.numpy()
-        np.testing.assert_allclose(qpos0[0, :4], [1, 0, 0, 0], atol=1e-6)
 
-    def test_hinge_no_ref_qpos0(self):
-        """Verify hinge joint without ref has qpos0 of zero."""
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="hinge" axis="0 1 0"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos0 = solver.mjw_model.qpos0.numpy()
-        np.testing.assert_allclose(qpos0[0, 0], 0.0, atol=1e-6)
+        expected_qpos0 = {
+            "free_initial": ([0, 0, 1.5, 1, 0, 0, 0], 1e-6),
+            "hinge_ref": ([np.pi / 2], 1e-5),
+            "slide_ref": ([0.1], 1e-6),
+            "hinge_zero": ([0.0], 1e-6),
+            "ball": ([1, 0, 0, 0], 1e-6),
+        }
+        qpos0 = solver.mjw_model.qpos0.numpy()[0]
+        qpos_spring = solver.mjw_model.qpos_spring.numpy()[0]
+        for name, (expected, atol) in expected_qpos0.items():
+            with self.subTest(property="qpos0", joint=name):
+                start = int(solver.mj_model.joint(name).qposadr[0])
+                np.testing.assert_allclose(qpos0[start : start + len(expected)], expected, atol=atol)
+        for name, expected, atol in (("hinge_spring", np.pi / 6, 1e-5), ("slide_spring", 0.25, 1e-6)):
+            with self.subTest(property="qpos_spring", joint=name):
+                start = int(solver.mj_model.joint(name).qposadr[0])
+                np.testing.assert_allclose(qpos_spring[start], expected, atol=atol)
+        free_mj_start = int(solver.mj_model.joint("free_roundtrip").qposadr[0])
+        np.testing.assert_allclose(
+            qpos_spring[free_mj_start : free_mj_start + 7], qpos0[free_mj_start : free_mj_start + 7], atol=1e-6
+        )
+
+        q_start = model.joint_q_start.numpy()
+        hinge_start = int(q_start[model.joint_label.index("hinge_ref")])
+        slide_start = int(q_start[model.joint_label.index("slide_roundtrip")])
+        free_start = int(q_start[model.joint_label.index("free_roundtrip")])
+        hinge_mj_start = int(solver.mj_model.joint("hinge_ref").qposadr[0])
+        slide_mj_start = int(solver.mj_model.joint("slide_roundtrip").qposadr[0])
+        state = model.state()
+        original_q = state.joint_q.numpy().copy()
+        original_q[slide_start] = 0.3
+        state.joint_q.assign(original_q)
+        solver._update_mjc_data(solver.mjw_data, model, state)
+        qpos = solver.mjw_data.qpos.numpy()
+        with self.subTest(direction="Newton to MuJoCo"):
+            np.testing.assert_allclose(qpos[0, hinge_mj_start], np.pi / 2, atol=1e-5)
+            np.testing.assert_allclose(qpos[0, slide_mj_start], 0.8, atol=1e-5)
+
+        qpos[0, hinge_mj_start] = np.pi / 2 + 0.1
+        solver.mjw_data.qpos.assign(qpos)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        state_out = model.state()
+        solver._update_newton_state(model, state_out, solver.mjw_data, state_prev=state)
+        actual_q = state_out.joint_q.numpy()
+        with self.subTest(direction="MuJoCo to Newton"):
+            np.testing.assert_allclose(actual_q[hinge_start], 0.1, atol=1e-5)
+            np.testing.assert_allclose(actual_q[slide_start], 0.3, atol=1e-5)
+            np.testing.assert_allclose(
+                actual_q[free_start : free_start + 3], original_q[free_start : free_start + 3], atol=1e-5
+            )
+            q_orig = original_q[free_start + 3 : free_start + 7]
+            q_rt = actual_q[free_start + 3 : free_start + 7]
+            self.assertLess(min(np.linalg.norm(q_orig - q_rt), np.linalg.norm(q_orig + q_rt)), 1e-5)
 
     def test_mixed_model_qpos0(self):
         """Verify qpos0 for a model with free, hinge, and slide joints.
@@ -10315,183 +10332,6 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         np.testing.assert_allclose(qpos0[7], np.deg2rad(45), atol=1e-5)
         # Slide with ref=0.2
         np.testing.assert_allclose(qpos0[8], 0.2, atol=1e-6)
-
-    # -- Group B: qpos_spring values --
-
-    def test_hinge_springref_qpos_spring(self):
-        """Verify hinge qpos_spring equals springref in radians.
-
-        A hinge with springref=30 degrees should produce qpos_spring
-        approximately equal to pi/6 radians.
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="hinge" axis="0 1 0" springref="30"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos_spring = solver.mjw_model.qpos_spring.numpy()
-        np.testing.assert_allclose(qpos_spring[0, 0], np.deg2rad(30), atol=1e-5)
-
-    def test_free_joint_qpos_spring_matches_qpos0(self):
-        """Verify free joint qpos_spring equals qpos0."""
-        mjcf = """<mujoco><worldbody>
-            <body name="b" pos="1 2 3">
-                <joint type="free"/>
-                <geom type="sphere" size="0.1"/>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos0 = solver.mjw_model.qpos0.numpy()
-        qpos_spring = solver.mjw_model.qpos_spring.numpy()
-        np.testing.assert_allclose(qpos_spring, qpos0, atol=1e-6)
-
-    def test_slide_springref_qpos_spring(self):
-        """Verify slide qpos_spring equals springref value."""
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="slide" axis="0 0 1" springref="0.25"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos_spring = solver.mjw_model.qpos_spring.numpy()
-        np.testing.assert_allclose(qpos_spring[0, 0], 0.25, atol=1e-6)
-
-    # -- Group C: Coordinate conversion with ref offset --
-
-    def test_hinge_ref_newton_to_mujoco(self):
-        """Verify Newton-to-MuJoCo conversion adds ref offset.
-
-        With ref=90 degrees, joint_q=0 should map to qpos=pi/2.
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="hinge" axis="0 1 0" ref="90"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        state = model.state()
-        # joint_q defaults to 0 for hinge
-        solver._update_mjc_data(solver.mjw_data, model, state)
-        qpos = solver.mjw_data.qpos.numpy()
-        np.testing.assert_allclose(qpos[0, 0], np.pi / 2, atol=1e-5)
-
-    def test_hinge_ref_mujoco_to_newton(self):
-        """Verify MuJoCo-to-Newton conversion subtracts ref offset.
-
-        With ref=90 degrees, qpos=pi/2+0.1 should map to joint_q=0.1.
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="hinge" axis="0 1 0" ref="90"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        # Set qpos = ref + 0.1
-        qpos = solver.mjw_data.qpos.numpy()
-        qpos[0, 0] = np.pi / 2 + 0.1
-        solver.mjw_data.qpos.assign(qpos)
-        state = model.state()
-        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver._update_newton_state(model, state, solver.mjw_data, state_prev=state)
-        joint_q = state.joint_q.numpy()
-        np.testing.assert_allclose(joint_q[0], 0.1, atol=1e-5)
-
-    def test_slide_ref_roundtrip(self):
-        """Verify slide joint_q survives Newton-MuJoCo-Newton roundtrip with ref.
-
-        Sets joint_q=0.3 with ref=0.5, converts to MuJoCo (expecting qpos=0.8),
-        then back to Newton (expecting joint_q=0.3).
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="slide" axis="0 0 1" ref="0.5"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        state = model.state()
-
-        # Set a known joint_q value
-        test_q = 0.3
-        q = state.joint_q.numpy()
-        q[0] = test_q
-        state.joint_q.assign(q)
-
-        # Newton → MuJoCo
-        solver._update_mjc_data(solver.mjw_data, model, state)
-        qpos = solver.mjw_data.qpos.numpy()
-        np.testing.assert_allclose(qpos[0, 0], test_q + 0.5, atol=1e-5)
-
-        # MuJoCo → Newton
-        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        state2 = model.state()
-        solver._update_newton_state(model, state2, solver.mjw_data, state_prev=state)
-        np.testing.assert_allclose(state2.joint_q.numpy()[0], test_q, atol=1e-5)
-
-    def test_free_joint_position_roundtrip(self):
-        """Verify free joint position survives Newton-MuJoCo-Newton roundtrip.
-
-        Free joints have no ref offset, so joint_q should be preserved
-        exactly through the coordinate conversion cycle.
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="b" pos="1 2 3">
-                <joint type="free"/>
-                <geom type="sphere" size="0.1"/>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        state = model.state()
-        original_q = state.joint_q.numpy().copy()
-
-        # Newton → MuJoCo → Newton
-        solver._update_mjc_data(solver.mjw_data, model, state)
-        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver._update_newton_state(model, state, solver.mjw_data, state_prev=state)
-        roundtrip_q = state.joint_q.numpy()
-
-        np.testing.assert_allclose(roundtrip_q[:3], original_q[:3], atol=1e-5)
-        # Quaternion comparison (sign-invariant)
-        q_orig = original_q[3:7]
-        q_rt = roundtrip_q[3:7]
-        quat_dist = min(np.linalg.norm(q_orig - q_rt), np.linalg.norm(q_orig + q_rt))
-        self.assertLess(quat_dist, 1e-5)
 
     def test_free_joint_anchor_transform_conversion(self):
         parent_xform = wp.transform(wp.vec3(1.0, -0.5, 0.25), wp.quat_rpy(0.2, -0.1, 0.3))
