@@ -1348,11 +1348,8 @@ class SchemaResolverManager:
                 (resolver for resolver in self.resolvers if key in resolver.mapping.get(prim_type, {})),
                 None,
             )
-        if representative is None:
-            return
-
         attribute_names = legacy_endpoint.attribute_names or resolved_endpoint.attribute_names
-        if not attribute_names:
+        if not attribute_names and representative is not None:
             mapping = representative.mapping.get(prim_type, {})
             representative_key = legacy.mapping_key or resolved.mapping_key or key
             spec = mapping.get(representative_key) or mapping.get(key)

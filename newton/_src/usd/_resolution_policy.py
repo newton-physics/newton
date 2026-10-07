@@ -563,6 +563,7 @@ class _UsdResolutionPolicy:
             prim,
             prim_path=prim_path,
             defaults=defaults,
+            rigid_gap=rigid_gap,
             legacy_margin_gap=legacy_margin_gap,
             read_legacy_mjc_gap=read_legacy_mjc_gap,
         )
@@ -621,6 +622,7 @@ class _UsdResolutionPolicy:
         *,
         prim_path: str,
         defaults: Any,
+        rigid_gap: float,
         legacy_margin_gap: bool,
         read_legacy_mjc_gap: Callable[[], float],
     ) -> _ShapeOffsets:
@@ -633,9 +635,8 @@ class _UsdResolutionPolicy:
             return value
 
         def interpret_gap(result: _ResolvedValue) -> float:
-            if result.value is None or result.value == float("-inf"):
-                return defaults.gap
-            return result.value
+            value = defaults.gap if result.value == float("-inf") else result.value
+            return rigid_gap if value is None else value
 
         margin_policies = self._resolver._resolve_interpreted_policies(
             prim,

@@ -146,7 +146,7 @@ class TestImportUsdPhysics(unittest.TestCase):
                     builder = newton.ModelBuilder()
                     result = builder.add_usd(
                         stage,
-                        schema_resolvers=[resolver_type()],
+                        schema_resolvers=[resolver_type(), usd.SchemaResolverNewton()],
                         use_registered_schema_fallbacks=registered,
                         audit_registered_schema_fallbacks=audit,
                     )
@@ -7834,6 +7834,40 @@ def Xform "Articulation" (
         shape2_idx = result["path_shape_map"]["/Articulation/Body/Collider2"]
         self.assertAlmostEqual(model.shape_gap.numpy()[shape1_idx], 0.02, places=4)
         self.assertAlmostEqual(model.shape_gap.numpy()[shape2_idx], 0.01, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_gap_without_resolver_value(self):
+        """Preserve the legacy rigid gap and audit effective default changes."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+
+        for configured_gap in (0.5, 0.1, None):
+            for registered, audit in ((False, False), (False, True), (True, False)):
+                with self.subTest(gap=configured_gap, registered=registered, audit=audit):
+                    builder = newton.ModelBuilder()
+                    builder.default_shape_cfg.gap = configured_gap
+                    builder.rigid_gap = 0.1
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        result = builder.add_usd(
+                            stage,
+                            schema_resolvers=[],
+                            use_registered_schema_fallbacks=registered,
+                            audit_registered_schema_fallbacks=audit,
+                        )
+                    shape = result["path_shape_map"]["/cube"]
+                    self.assertAlmostEqual(
+                        builder.shape_gap[shape], 0.5 if registered and configured_gap == 0.5 else 0.1
+                    )
+                    migration = [item for item in caught if "gap: unresolved -> importer default" in str(item.message)]
+                    self.assertEqual(len(migration), int(audit and configured_gap == 0.5))
+                    if migration:
+                        self.assertIn("gap: unresolved -> importer default", str(migration[0].message))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_gap_uses_importer_default_after_registered_sentinel(self):

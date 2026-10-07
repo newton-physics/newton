@@ -1366,7 +1366,7 @@ class TestSchemaResolver(unittest.TestCase):
             effective_padding = builder.shape_gap[shape] if padding is None else padding
             self.assertEqual(effective_padding, 0.1)
             self.assertFalse(
-                any("deprecated legacy USD property precedence" in str(item.message) for item in caught),
+                any("sdf_padding" in str(item.message) for item in caught),
                 [str(item.message) for item in caught],
             )
 
@@ -1455,7 +1455,7 @@ class TestSchemaResolver(unittest.TestCase):
                     self.assertTrue(builder.shape_flags[shape] & ShapeFlags.HYDROELASTIC)
 
                 messages = [str(item.message) for item in caught_warnings[0]]
-                warned = any("deprecated legacy USD property precedence" in message for message in messages)
+                warned = any("sdf_padding" in message for message in messages)
                 self.assertEqual(warned, should_warn, messages)
 
     def test_shape_mass_settings_audit_interpreted_values(self):
@@ -1738,7 +1738,7 @@ class TestSchemaResolver(unittest.TestCase):
                 audit_registered_schema_fallbacks=True,
             )
 
-        self.assertFalse(any("deprecated legacy USD property precedence" in str(item.message) for item in caught))
+        self.assertFalse(any("gravity_enabled" in str(item.message) for item in caught))
 
     def test_articulation_boolean_audit_compares_truth_values(self):
         """Compare interpreted articulation Boolean values during migration auditing."""
@@ -1789,7 +1789,7 @@ class TestSchemaResolver(unittest.TestCase):
                 audit_registered_schema_fallbacks=True,
             )
 
-        self.assertFalse(any("deprecated legacy USD property precedence" in str(item.message) for item in caught))
+        self.assertFalse(any("self_collision_enabled" in str(item.message) for item in caught))
 
     def test_joint_limit_audit_omits_unchanged_damping(self):
         """Report only joint-limit inputs that change interpreted semantics."""
