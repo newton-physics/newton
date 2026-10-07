@@ -2298,6 +2298,17 @@ per-contact buffers (four ``vec3`` columns for the body-frame points and
 offsets) are only allocated when the mode is ``"sticky"``; ``"latest"`` and
 ``"disabled"`` pay zero additional memory and launch no additional kernels.
 
+**Memory**
+
+Both enabled modes keep the previous frame's sorted keys, uniqueness claims,
+contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
+``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
+``contact_report=True`` adds 4.  ``"disabled"`` allocates no matching history.
+
+The deterministic pipeline's sorter omits the unused simple-layout scratch,
+saving 48 bytes per ``rigid_contact_max`` slot. This more than offsets the
+additional matcher-owned midpoint and normal history.
+
 .. _Contact Reports:
 
 Contact Reports

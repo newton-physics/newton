@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .types import (
+    AntiAliasing,
     ClearData,
     GaussianRenderMode,
     LightType,
@@ -15,6 +16,7 @@ from .types import (
 from .utils import Utils
 
 __all__ = [
+    "AntiAliasing",
     "ClearData",
     "GaussianRenderMode",
     "LightType",
