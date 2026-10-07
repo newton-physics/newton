@@ -463,7 +463,7 @@ def test_picking_closed_cable_uses_bounded_mass(test: TestPickingSetup, device):
         wp.vec3(-0.1, 0.1, 0.3),
         wp.vec3(-0.1, -0.1, 0.3),
     ]
-    bodies, _ = builder.add_rod(positions=points, radius=0.01, closed=True, body_frame_origin="com")
+    bodies, _ = builder.add_rod(rod=newton.Rod(points, radius=0.01, closed=True), body_frame_origin="com")
     model = builder.finalize(device=device)
     state = model.state()
     picking = Picking(model)

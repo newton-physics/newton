@@ -140,7 +140,7 @@ class Picking:
         total from above, which avoids over-commanding and regularizes singular poses, and from
         below to the larger of the body's own mass and the share of the articulation implied by
         ``pick_min_inertia_fraction``. Where the articulation Jacobian is unavailable, as for
-        :attr:`~newton.JointType.CABLE` joints, the articulation total stands in, since the
+        :attr:`~newton.JointType.ROD` joints, the articulation total stands in, since the
         whole chain is a closer estimate of what resists than the single link. A body outside
         an articulation falls back to :math:`m I`, exact for a free body.
 
@@ -169,7 +169,7 @@ class Picking:
             end = int(model.articulation_end.numpy()[art])
 
             # Cable joints do not expose a compatible generalized-coordinate Jacobian.
-            if np.any(model.joint_type.numpy()[first:end] == int(newton.JointType.CABLE)):
+            if np.any(model.joint_type.numpy()[first:end] == int(newton.JointType.ROD)):
                 self._pick_os_inertia.assign(np.ascontiguousarray(lam, dtype=np.float32).reshape(1, 3, 3))
                 return
 
