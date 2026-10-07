@@ -116,9 +116,18 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
         parameter = inspect.signature(SolverFeatherPGS.__init__).parameters["pgs_mode"]
         self.assertEqual(parameter.default, "matrix_free")
         self.assertEqual(typing.get_args(parameter.annotation), ("matrix_free", "split"))
-        for option in ("pgs_kernel", "delassus_kernel", "tile_threads", "pgs_chunk_size"):
+        parameters = inspect.signature(SolverFeatherPGS.__init__).parameters
+        self.assertNotIn("delassus_kernel", parameters)
+        for option, default in (
+            ("pgs_kernel", "auto"),
+            ("pgs_chunk_size", None),
+            ("tile_threads", 64),
+            ("serial_kernel_block_dim", 256),
+            ("pgs_debug", False),
+            ("nvtx", False),
+        ):
             with self.subTest(option=option):
-                self.assertNotIn(option, inspect.signature(SolverFeatherPGS.__init__).parameters)
+                self.assertEqual(parameters[option].default, default)
 
     def test_solver_reads_no_environment_variables(self):
         """Configure the solver only through its constructor, never through the environment."""
