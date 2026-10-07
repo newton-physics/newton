@@ -37,6 +37,9 @@ class SearchOutcome:
     history: list[tuple[float, list[float]]]
     """The best ``(loss, vector)`` so far after each iteration. Entry 0 is the scored start."""
 
+    stop_reason: str
+    """Why the search stopped, for example ``"maxiter"``, a convergence criterion, or ``"interrupted"``."""
+
 
 class OptimizerCMA:
     """CMA-ES over the full decision vector.
@@ -83,7 +86,8 @@ class OptimizerCMA:
 
         The search scores the start first, so the best vector is never worse
         than the start. After each iteration, the best loss and
-        ``space.describe(vector)`` are logged at ``INFO`` level.
+        ``space.describe(vector)`` are logged at ``INFO`` level. The stop
+        reason is the names of the CMA-ES stop criteria that were met.
 
         Args:
             objective: Object with ``evaluate(vectors)``, which returns one
@@ -140,8 +144,10 @@ class OptimizerCMA:
 
         if not history:
             raise RuntimeError("the search stopped before it scored the start.")
+        stop_reason = "interrupted" if interrupted else ", ".join(es.stop())
+        logger.info("search stopped: %s", stop_reason)
         best_loss, best_x = history[-1]
-        return SearchOutcome(list(best_x), best_loss, len(history) - 1, interrupted, history)
+        return SearchOutcome(list(best_x), best_loss, len(history) - 1, interrupted, history, stop_reason)
 
 
 OPTIMIZERS = {"cma": OptimizerCMA}
