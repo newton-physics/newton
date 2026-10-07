@@ -1116,13 +1116,14 @@ class LOXSolverConfig:
     joint_penalty_scale: float = 100.0
     """Dimensionless scale for effective-mass structural penalties and consensus weights."""
 
-    projected_twist_fraction: float = 1.0
+    projected_twist_fraction: float = 0.0
     """Fraction of the projected twist in the structural updates and in the accepted twist, in [0, 1].
 
     The accepted twist, which is integrated and written to the outputs, blends the projected
-    twist with this weight and the smooth twist with its complement. The default integrates the
-    projected twist and reconciles the structural reactions with it. Zero integrates the smooth
-    twist and recovers the global-twist product-space ADMM update.
+    twist with this weight and the smooth twist with its complement. The default of zero
+    integrates the smooth twist and recovers the global-twist product-space ADMM update, like
+    the other Kamino dynamics solvers. One integrates the projected twist and reconciles the
+    structural reactions with it.
     """
 
     joint_warmstart_factor: float = 0.5
