@@ -2169,11 +2169,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 selecting which worlds to reset. The final entry selects global
                 entities whose world is ``-1``. If ``None``, all local and
                 global entities are reset.
-
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling
                 which state quantities sub-solvers should reset. If ``None``,
                 all state quantities are reset.

@@ -791,6 +791,141 @@ def test_sticky_matched_rows_replayed(test, device):
             )
 
 
+def _build_rolling_cylinder_scene(device, *, plane_first):
+    """Build a penetrating cylinder-plane contact with either shape ordering."""
+    builder = newton.ModelBuilder()
+    if plane_first:
+        builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.099), wp.quat_identity()))
+    builder.add_shape_cylinder(
+        body=body,
+        radius=0.1,
+        half_height=0.1,
+        xform=wp.transform(wp.vec3(0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi / 2.0)),
+    )
+    if not plane_first:
+        builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    return model, model.state()
+
+
+def _check_sticky_rotated_witness(test, device, *, plane_first, threshold, use_capture, expect_replay):
+    """Check rotated witnesses, matching identity, reports, and next-frame history."""
+    with wp.ScopedDevice(device):
+        model, state = _build_rolling_cylinder_scene(device, plane_first=plane_first)
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            rigid_contact_max=64,
+            contact_matching="sticky",
+            contact_matching_pos_threshold=threshold,
+            contact_report=True,
+        )
+        contacts = pipeline.contacts()
+        count = int(_collide_once(pipeline, state, contacts))
+        test.assertGreater(count, 0)
+        fields = ("point0", "point1", "offset0", "offset1", "normal")
+        previous = {field: getattr(contacts, f"rigid_contact_{field}").numpy()[:count].copy() for field in fields}
+
+        # The cylinder's geometry stays put while its material witnesses rotate.
+        pose = state.body_q.numpy()
+        pose[0, 3:] = np.asarray(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1))
+        state.body_q.assign(pose)
+        reference = newton.CollisionPipeline(model, broad_phase="nxn", rigid_contact_max=64, deterministic=True)
+        reference_contacts = reference.contacts()
+        test.assertEqual(count, int(_collide_once(reference, state, reference_contacts)))
+        fresh = {
+            field: getattr(reference_contacts, f"rigid_contact_{field}").numpy()[:count].copy() for field in fields
+        }
+        world_points = []
+        shape_body = model.shape_body.numpy()
+        for side in (0, 1):
+            points = fresh[f"point{side}"].copy()
+            shapes = getattr(reference_contacts, f"rigid_contact_shape{side}").numpy()[:count]
+            for row, shape in enumerate(shapes):
+                body = int(shape_body[shape])
+                if body >= 0:
+                    transform = wp.transform(wp.vec3(*pose[body, :3]), wp.quat(*pose[body, 3:]))
+                    points[row] = np.asarray(wp.transform_point(transform, wp.vec3(*points[row])))
+            world_points.append(points)
+        gap = np.sum((world_points[1] - world_points[0]) * fresh["normal"], axis=1)
+        gap -= reference_contacts.rigid_contact_margin0.numpy()[:count]
+        gap -= reference_contacts.rigid_contact_margin1.numpy()[:count]
+        penetrating = gap < -1.0e-5
+        separated = gap > 1.0e-5
+        test.assertTrue(np.any(penetrating), "The scene must contain an unambiguously penetrating contact")
+        drift = max(
+            np.linalg.norm(previous[field][penetrating] - fresh[field][penetrating], axis=1).max()
+            for field in ("point0", "point1")
+        )
+        test.assertGreater(drift, 0.005, "Rotation must move a saved witness by more than 5 mm")
+        if expect_replay:
+            test.assertLess(drift, threshold)
+        else:
+            test.assertGreater(drift, threshold)
+
+        if use_capture:
+            # The initial collision warmed every kernel while retaining the old witnesses.
+            with wp.ScopedCapture(device=device) as capture:
+                pipeline.collide(state, contacts)
+            wp.capture_launch(capture.graph)
+        else:
+            pipeline.collide(state, contacts)
+        test.assertEqual(count, int(contacts.rigid_contact_count.numpy()[0]))
+        match_index = contacts.rigid_contact_match_index.numpy()[:count]
+        test.assertTrue(np.all(match_index >= 0), "The geometric contacts must still match")
+        test.assertEqual(int(contacts.rigid_contact_new_count.numpy()[0]), 0)
+        test.assertEqual(int(contacts.rigid_contact_broken_count.numpy()[0]), 0)
+        for field in fields:
+            current = getattr(contacts, f"rigid_contact_{field}").numpy()[:count]
+            if expect_replay:
+                np.testing.assert_array_equal(current[penetrating], previous[field][match_index[penetrating]])
+                np.testing.assert_array_equal(current[separated], fresh[field][separated])
+            else:
+                np.testing.assert_allclose(current, fresh[field], rtol=0.0, atol=1.0e-6)
+
+        # Replaying again must use the geometry actually retained on the previous frame.
+        retained = {field: getattr(contacts, f"rigid_contact_{field}").numpy()[:count].copy() for field in fields}
+        if use_capture:
+            wp.capture_launch(capture.graph)
+        else:
+            pipeline.collide(state, contacts)
+        test.assertEqual(count, int(contacts.rigid_contact_count.numpy()[0]))
+        match_index = contacts.rigid_contact_match_index.numpy()[:count]
+        test.assertTrue(np.all(match_index >= 0))
+        for field in fields:
+            np.testing.assert_array_equal(
+                getattr(contacts, f"rigid_contact_{field}").numpy()[:count], retained[field][match_index]
+            )
+
+
+def test_sticky_rotated_witness_falls_back_to_fresh(test, device):
+    """Keep fresh contacts when either saved witness moves beyond the sticky threshold."""
+    for plane_first in (True, False):
+        with test.subTest(plane_first=plane_first):
+            _check_sticky_rotated_witness(
+                test, device, plane_first=plane_first, threshold=0.0005, use_capture=False, expect_replay=False
+            )
+
+
+def test_sticky_rotated_witness_within_threshold_replayed(test, device):
+    """Replay rotated witnesses that remain within a caller-specified sticky threshold."""
+    for plane_first in (True, False):
+        with test.subTest(plane_first=plane_first):
+            _check_sticky_rotated_witness(
+                test, device, plane_first=plane_first, threshold=0.02, use_capture=False, expect_replay=True
+            )
+
+
+def test_sticky_rotated_witness_cuda_graph(test, device):
+    """Reject stale witnesses during graph replay and retain fresh geometry for the next replay."""
+    for plane_first in (True, False):
+        with test.subTest(plane_first=plane_first):
+            _check_sticky_rotated_witness(
+                test, device, plane_first=plane_first, threshold=0.0005, use_capture=True, expect_replay=False
+            )
+
+
 def test_sticky_unmatched_rows_pass_through(test, device):
     """STICKY mode: unmatched rows keep the current frame's narrow-phase data.
 
@@ -976,6 +1111,25 @@ add_function_test(
     "test_sticky_disabled_no_sticky_buffers",
     test_sticky_disabled_no_sticky_buffers,
     devices=devices,
+)
+
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_rotated_witness_falls_back_to_fresh",
+    test_sticky_rotated_witness_falls_back_to_fresh,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_rotated_witness_within_threshold_replayed",
+    test_sticky_rotated_witness_within_threshold_replayed,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_rotated_witness_cuda_graph",
+    test_sticky_rotated_witness_cuda_graph,
+    devices=cuda_devices,
 )
 
 if __name__ == "__main__":

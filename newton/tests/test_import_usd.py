@@ -126,6 +126,69 @@ class TestImportUsdPhysics(unittest.TestCase):
                 assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_physx_joint_state_velocity_units(self):
+        """PhysX joint-state angular velocities are authored in deg/s and imported in rad/s."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def connect(joint, body_name):
+            # Each joint attaches its own body to the world.
+            body = UsdGeom.Xform.Define(stage, f"/World/{body_name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr().Set(1.0)
+            joint.CreateBody1Rel().SetTargets([body.GetPath()])
+            return joint.GetPrim()
+
+        def set_state(prim, axis, position, velocity):
+            for quantity, value in (("position", position), ("velocity", velocity)):
+                prim.CreateAttribute(f"state:{axis}:physics:{quantity}", Sdf.ValueTypeNames.Float).Set(value)
+
+        revolute = UsdPhysics.RevoluteJoint.Define(stage, "/World/Revolute")
+        revolute.CreateAxisAttr().Set(UsdPhysics.Tokens.z)
+        set_state(connect(revolute, "Hinge"), "angular", 90.0, 180.0)
+
+        prismatic = UsdPhysics.PrismaticJoint.Define(stage, "/World/Prismatic")
+        prismatic.CreateAxisAttr().Set(UsdPhysics.Tokens.x)
+        set_state(connect(prismatic, "Slider"), "linear", 0.25, 0.5)
+
+        d6 = connect(UsdPhysics.Joint.Define(stage, "/World/D6"), "Gimbal")
+        # Newton creates D6 DOFs only for axes with a limit; rotX is the single rotational DOF.
+        limit = UsdPhysics.LimitAPI.Apply(d6, "rotX")
+        limit.CreateLowAttr().Set(-180.0)
+        limit.CreateHighAttr().Set(180.0)
+        set_state(d6, "rotX", 90.0, 180.0)
+
+        # Two world joints on one body are merged into a single D6 (linear DOFs first).
+        merged_slide = UsdPhysics.PrismaticJoint.Define(stage, "/World/MergedSlide")
+        merged_slide.CreateAxisAttr().Set(UsdPhysics.Tokens.x)
+        set_state(connect(merged_slide, "Merged"), "linear", 0.25, 0.5)
+        merged_hinge = UsdPhysics.RevoluteJoint.Define(stage, "/World/MergedHinge")
+        merged_hinge.CreateAxisAttr().Set(UsdPhysics.Tokens.z)
+        merged_hinge.CreateBody1Rel().SetTargets(["/World/Merged"])
+        set_state(merged_hinge.GetPrim(), "angular", 90.0, 180.0)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()])
+        joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
+        for path, position, velocity in (
+            ("/World/Revolute", 0.5 * np.pi, np.pi),
+            ("/World/Prismatic", 0.25, 0.5),
+            ("/World/D6", 0.5 * np.pi, np.pi),
+        ):
+            with self.subTest(joint=path):
+                joint = result["path_joint_map"][path]
+                self.assertAlmostEqual(joint_q[builder.joint_q_start[joint]], position, places=5)
+                self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint]], velocity, places=5)
+
+        merged = result["path_joint_map"]["/World/MergedHinge"]
+        self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
+        qd_start = builder.joint_qd_start[merged]
+        np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, np.pi], atol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity_with_collapsed_fixed_joint(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -3985,6 +4048,67 @@ def Xform "Articulation" (
         self.assertFalse(hasattr(model.mujoco, "dof_passive_damping"))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_spherical_joint_armature_and_friction_via_schema_resolver(self):
+        """Verify schema-resolved armature and friction reach every spherical-joint DOF."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        parent = UsdGeom.Xform.Define(stage, "/World/Articulation/Parent")
+        child = UsdGeom.Xform.Define(stage, "/World/Articulation/Child")
+        UsdPhysics.RigidBodyAPI.Apply(parent.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(child.GetPrim())
+        child_mass = UsdPhysics.MassAPI.Apply(child.GetPrim())
+        child_mass.CreateMassAttr().Set(1.0)
+        child_mass.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.1))
+
+        # Fix the parent to the world so the ball joint is the only MuJoCo joint.
+        root = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/Root")
+        root.CreateBody1Rel().SetTargets([parent.GetPath()])
+
+        joint = UsdPhysics.SphericalJoint.Define(stage, "/World/Articulation/Joint")
+        joint.CreateBody0Rel().SetTargets([parent.GetPath()])
+        joint.CreateBody1Rel().SetTargets([child.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0))
+        for name, value in (
+            ("newton:armature", 0.25),
+            ("newton:friction", 0.5),
+            ("mjc:armature", 0.125),
+            ("mjc:frictionloss", 0.375),
+            ("physxJoint:armature", 0.0625),
+        ):
+            joint.GetPrim().CreateAttribute(name, Sdf.ValueTypeNames.Float, custom=True).Set(value)
+
+        # SchemaResolverPhysx maps armature only, so friction keeps the builder default.
+        cases = (
+            (usd.SchemaResolverNewton, 0.25, 0.5),
+            (usd.SchemaResolverMjc, 0.125, 0.375),
+            (usd.SchemaResolverPhysx, 0.0625, 0.0),
+        )
+        for resolver_type, armature, friction in cases:
+            with self.subTest(resolver=resolver_type.name):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage, schema_resolvers=[resolver_type()])
+                model = builder.finalize(device="cpu")
+
+                joint_index = model.joint_label.index("/World/Articulation/Joint")
+                dof_start = int(model.joint_qd_start.numpy()[joint_index])
+                dofs = slice(dof_start, dof_start + 3)
+                np.testing.assert_allclose(model.joint_armature.numpy()[dofs], [armature] * 3)
+                np.testing.assert_allclose(model.joint_friction.numpy()[dofs], [friction] * 3)
+
+                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=True)
+                np.testing.assert_allclose(solver.mj_model.dof_armature, [armature] * 3)
+                np.testing.assert_allclose(solver.mj_model.dof_frictionloss, [friction] * 3)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_damping_from_d6_joint_via_schema_resolver(self):
         """Verify MuJoCo USD damping reaches linear and angular D6 DOFs."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
@@ -4020,6 +4144,66 @@ def Xform "Articulation" (
         self.assertEqual(builder.joint_dof_dim[joint_index], (1, 1))
         dof_start = int(model.joint_qd_start.numpy()[joint_index])
         np.testing.assert_allclose(model.joint_damping.numpy()[dof_start : dof_start + 2], [0.75, 0.75])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mjc_actuatorfrcrange_from_joint_via_schema_resolver(self):
+        """Verify a MuJoCo USD joint actuator force range becomes the joint effort limit."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        default_effort_limit = newton.ModelBuilder().default_joint_cfg.effort_limit
+        # (case, actuatorfrcrange, actuatorfrclimited, drive maxForce, expected effort limit)
+        cases = (
+            ("symmetric", (-7.0, 7.0), None, None, 7.0),
+            ("asymmetric", (-2.0, 4.0), None, None, 4.0),
+            ("not_limited", (-7.0, 7.0), "false", None, default_effort_limit),
+            ("tighter_drive", (-7.0, 7.0), None, 5.0, 5.0),
+            ("looser_drive", (-7.0, 7.0), None, 10.0, 7.0),
+            ("empty_auto", (0.0, 0.0), None, None, default_effort_limit),
+        )
+        for case, force_range, limited, max_force, expected in cases:
+            with self.subTest(case=case):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+                UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+                parent = UsdGeom.Xform.Define(stage, "/World/Articulation/Parent")
+                child = UsdGeom.Xform.Define(stage, "/World/Articulation/Child")
+                UsdPhysics.RigidBodyAPI.Apply(parent.GetPrim())
+                UsdPhysics.RigidBodyAPI.Apply(child.GetPrim())
+                child_mass = UsdPhysics.MassAPI.Apply(child.GetPrim())
+                child_mass.CreateMassAttr().Set(1.0)
+                child_mass.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.1))
+
+                # Fix the parent to the world so the revolute joint is the only MuJoCo joint.
+                root = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/Root")
+                root.CreateBody1Rel().SetTargets([parent.GetPath()])
+
+                joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint")
+                joint.CreateBody0Rel().SetTargets([parent.GetPath()])
+                joint.CreateBody1Rel().SetTargets([child.GetPath()])
+                prim = joint.GetPrim()
+                prim.CreateAttribute("mjc:actuatorfrcrange:min", Sdf.ValueTypeNames.Double, True).Set(force_range[0])
+                prim.CreateAttribute("mjc:actuatorfrcrange:max", Sdf.ValueTypeNames.Double, True).Set(force_range[1])
+                if limited is not None:
+                    prim.CreateAttribute("mjc:actuatorfrclimited", Sdf.ValueTypeNames.Token, True).Set(limited)
+                if max_force is not None:
+                    drive = UsdPhysics.DriveAPI.Apply(prim, "angular")
+                    drive.CreateStiffnessAttr(1.0)
+                    drive.CreateMaxForceAttr(max_force)
+
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverMjc(), usd.SchemaResolverNewton()])
+                model = builder.finalize(device="cpu")
+
+                dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Articulation/Joint")])
+                self.assertAlmostEqual(float(model.joint_effort_limit.numpy()[dof]), expected, places=5)
+
+                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=True)
+                np.testing.assert_allclose(solver.mj_model.jnt_actfrcrange, [[-expected, expected]])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_geom_priority_parsing(self):

@@ -3383,7 +3383,7 @@ def _rigid_reset_state_and_history(test, device):
         solver.reset(None)
     with test.assertRaisesRegex(TypeError, "dtype bool"):
         solver.reset(state, world_mask=wp.array([1, 0, 0], dtype=wp.int32, device=device))
-    with test.assertRaisesRegex(ValueError, "world_mask has size 1, expected 2 or 3"):
+    with test.assertRaisesRegex(ValueError, "length 1 must equal model.world_count \\+ 1"):
         solver.reset(state, world_mask=wp.array([True], dtype=wp.bool, device=device))
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 5.0)
 
@@ -3439,8 +3439,7 @@ def _rigid_reset_state_and_history(test, device):
 
     # Phase 4: an all-false reset arms nothing, so the next step finite-differences
     # a known delta for every body (a leaked pose baseline would zero some world).
-    with test.assertWarnsRegex(DeprecationWarning, "world_count \\+ 1"):
-        solver.reset(state, world_mask=wp.array([False, False], dtype=wp.bool, device=device))
+    solver.reset(state, world_mask=wp.array([False, False, False], dtype=wp.bool, device=device))
     all_false_delta = 2.0
     moved_q = base_q.copy()
     moved_q[:, 0] += all_false_delta

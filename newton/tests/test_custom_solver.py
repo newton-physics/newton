@@ -126,7 +126,7 @@ class TestCustomSolver(unittest.TestCase):
         self.assertEqual(int(state.custom_solver.reset_epoch.numpy()[0]), 12)
 
     def test_base_reset_validates_global_world_mask_slot(self):
-        """Require a final global slot while deprecating local-only masks."""
+        """Require a final global slot in reset masks."""
         builder = newton.ModelBuilder()
         builder.begin_world()
         builder.end_world()
@@ -138,10 +138,10 @@ class TestCustomSolver(unittest.TestCase):
 
         solver.reset(state, world_mask=wp.array((True, False, True), dtype=wp.bool, device=model.device))
 
-        with self.assertWarnsRegex(DeprecationWarning, "world_count \\+ 1"):
+        with self.assertRaisesRegex(ValueError, "world_count \\+ 1"):
             solver.reset(state, world_mask=wp.array((True, False), dtype=wp.bool, device=model.device))
 
-        with self.assertRaisesRegex(ValueError, "expected 2 or 3"):
+        with self.assertRaisesRegex(ValueError, "world_count \\+ 1"):
             solver.reset(state, world_mask=wp.array((True,), dtype=wp.bool, device=model.device))
 
 
