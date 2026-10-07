@@ -1791,6 +1791,55 @@ class TestSchemaResolver(unittest.TestCase):
 
         self.assertFalse(any("self_collision_enabled" in str(item.message) for item in caught))
 
+    def test_joint_limit_audit_ignores_equivalent_sources(self):
+        """Warn about changed joint-limit gains, not equivalent force-space sources."""
+        for joint_type, key in (("prismatic", "limit_linear"), ("d6", "limit_transX")):
+
+            class DriveFallback(SchemaResolver):
+                name = "drive_fallback"
+                _schema_ownership: ClassVar = {PrimType.JOINT: "PhysicsDriveAPI:linear"}
+                mapping: ClassVar = {
+                    PrimType.JOINT: {
+                        f"{key}_ke": SchemaResolver.SchemaAttribute("drive:linear:physics:stiffness"),
+                        f"{key}_kd": SchemaResolver.SchemaAttribute("drive:linear:physics:damping"),
+                    }
+                }
+
+            stage = Usd.Stage.CreateInMemory()
+            body = UsdGeom.Xform.Define(stage, "/body")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            if joint_type == "prismatic":
+                joint = UsdPhysics.PrismaticJoint.Define(stage, "/joint")
+                joint.CreateLowerLimitAttr().Set(-1.0)
+                joint.CreateUpperLimitAttr().Set(1.0)
+            else:
+                joint = UsdPhysics.Joint.Define(stage, "/joint")
+                limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "transX")
+                limit.CreateLowAttr().Set(-1.0)
+                limit.CreateHighAttr().Set(1.0)
+            joint.CreateBody1Rel().SetTargets([body.GetPath()])
+            UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "linear")
+
+            for stiffness in (0.0, 3.0):
+                with self.subTest(joint_type=joint_type, stiffness=stiffness):
+                    builder = ModelBuilder()
+                    builder.default_joint_cfg.limit_ke = stiffness
+                    builder.default_joint_cfg.limit_kd = 0.0
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        builder.add_usd(
+                            stage,
+                            schema_resolvers=[DriveFallback()],
+                            audit_registered_schema_fallbacks=True,
+                        )
+                    self.assertEqual(builder.joint_limit_ke, [stiffness])
+                    self.assertEqual(builder.joint_limit_kd, [0.0])
+                    migration = [str(item.message) for item in caught if issubclass(item.category, DeprecationWarning)]
+                    self.assertEqual(len(migration), int(stiffness != 0.0), migration)
+                    if migration:
+                        self.assertIn(f"{key}_ke", migration[0])
+                        self.assertNotIn(f"{key}_kd", migration[0])
+
     def test_joint_limit_audit_omits_unchanged_damping(self):
         """Report only joint-limit inputs that change interpreted semantics."""
 

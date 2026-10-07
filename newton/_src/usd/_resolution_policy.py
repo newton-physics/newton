@@ -299,10 +299,6 @@ class _UsdResolutionPolicy:
         kd_source: Literal["force", "builder_default"]
         """Consumer semantics associated with ``kd``."""
 
-        @property
-        def comparison(self) -> tuple[float, float, str, str]:
-            return self.ke, self.kd, self.ke_source, self.kd_source
-
     @dataclass(frozen=True)
     class _JointLimitAudit:
         """Describe one legacy-to-composed joint-limit comparison."""
@@ -1369,6 +1365,8 @@ class _UsdResolutionPolicy:
         self,
         prim: Any,
         defaults: Mapping[str, JointLimitDefaults],
+        *,
+        interpret_limit_mode: Callable[[str, str], int],
     ) -> dict[str, JointLimitResult]:
         """Resolve and audit generic and per-axis joint-limit gains."""
         read_value = self._resolver._cached_value_reader(prim, PrimType.JOINT)
@@ -1430,7 +1428,7 @@ class _UsdResolutionPolicy:
             )
             changes.append(self._JointLimitAudit(legacy, composed, legacy_owners, composed_owners))
 
-        self._audit_joint_limit_changes(prim, changes, candidates)
+        self._audit_joint_limit_changes(prim, changes, candidates, interpret_limit_mode)
         return active
 
     def _resolve_joint_limit_policy_result(
@@ -1482,25 +1480,29 @@ class _UsdResolutionPolicy:
         prim: Any,
         changes: Sequence[_JointLimitAudit],
         candidates: Mapping[str, SchemaResolverManager._InterpretedPolicyValues],
+        interpret_limit_mode: Callable[[str, str], int],
     ) -> None:
         """Audit the inputs that contribute to assembled joint-limit changes."""
         changed = set()
+        legacy_values = []
+        composed_values = []
         for change in changes:
+            legacy_mode = interpret_limit_mode(change.legacy.ke_source, change.legacy.kd_source)
+            composed_mode = interpret_limit_mode(change.composed.ke_source, change.composed.kd_source)
+            legacy_values.append((change.legacy.ke, change.legacy.kd, legacy_mode))
+            composed_values.append((change.composed.ke, change.composed.kd, composed_mode))
             if not self._resolver._values_equal(change.legacy.ke, change.composed.ke):
                 changed.update((change.legacy_owners[0], change.composed_owners[0]))
             if not self._resolver._values_equal(change.legacy.kd, change.composed.kd):
                 changed.update((change.legacy_owners[1], change.composed_owners[1]))
-            if (
-                change.legacy.ke_source != change.composed.ke_source
-                or change.legacy.kd_source != change.composed.kd_source
-            ):
+            if legacy_mode != composed_mode:
                 changed.update((*change.legacy_owners, *change.composed_owners))
 
         self._resolver._audit_assembled_property(
             prim,
             PrimType.JOINT,
-            tuple(change.legacy.comparison for change in changes),
-            tuple(change.composed.comparison for change in changes),
+            tuple(legacy_values),
+            tuple(composed_values),
             tuple(
                 policies.contribution(key=owner, compare_source=True)
                 for owner, policies in candidates.items()
