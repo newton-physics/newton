@@ -120,6 +120,41 @@ class TestImportUsdPhysics(unittest.TestCase):
                 self.assertAlmostEqual(builder.body_mass[result["path_body_map"]["/Body"]], defaults.density * 8.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_schema_getter_without_mapping(self):
+        """Honor custom getters and tolerate unmapped optional properties."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        class GetterOnly(usd.SchemaResolver):
+            name = "custom"
+
+            def get_value(self, prim, prim_type, key):
+                return 0.025 if prim_type == usd.PrimType.SHAPE and key == "margin" else None
+
+        class EmptyMapping(GetterOnly):
+            mapping: ClassVar = {}
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+
+        for resolver_type in (GetterOnly, EmptyMapping):
+            for registered, audit in ((False, False), (False, True), (True, False)):
+                with self.subTest(resolver=resolver_type.__name__, registered=registered, audit=audit):
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(
+                        stage,
+                        schema_resolvers=[resolver_type()],
+                        use_registered_schema_fallbacks=registered,
+                        audit_registered_schema_fallbacks=audit,
+                    )
+                    shape = result["path_shape_map"]["/Body"]
+                    self.assertAlmostEqual(builder.shape_margin[shape], 0.025)
+                    self.assertIsNone(builder.shape_sdf_padding[shape])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
