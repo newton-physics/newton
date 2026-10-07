@@ -45,6 +45,8 @@ def _pxr_schema_kind(prim: Usd.Prim, schema_name: str) -> Literal["typed", "appl
     """Classify an applicable PXR schema for one prim."""
     from pxr import Usd
 
+    if str(prim.GetTypeName()) == schema_name:
+        return "typed"
     schema_type = Usd.SchemaRegistry.GetTypeFromName(schema_name)
     if schema_type and prim.IsA(schema_type):
         return "typed"

@@ -855,6 +855,38 @@ class TestSchemaResolver(unittest.TestCase):
         shape = result["path_shape_map"]["/cube"]
         self.assertEqual(builder.shape_material_kh[shape], 2.0)
 
+    def test_unregistered_typed_schema_keeps_compatibility_defaults(self):
+        """Match PXR and mapping results for an unregistered typed schema."""
+
+        class CustomTypedResolver(SchemaResolver):
+            name = "custom_typed"
+            _schema_ownership: ClassVar = {PrimType.SHAPE: "UnregisteredTypedSchema"}
+            mapping: ClassVar = {
+                PrimType.SHAPE: {"size": SchemaResolver.SchemaAttribute("custom:size", 4.0)},
+            }
+
+        self.assertFalse(Usd.SchemaRegistry.GetTypeFromName("UnregisteredTypedSchema"))
+        resolution = _composed_resolution([CustomTypedResolver()])
+        stage = Usd.Stage.CreateInMemory()
+        for type_name, expected in (("UnregisteredTypedSchema", 4.0), ("Xform", None)):
+            with self.subTest(type_name=type_name):
+                prim = stage.DefinePrim(f"/{type_name}", type_name)
+                result = self.assert_mapping_matches_pxr(
+                    resolution,
+                    prim,
+                    PrimType.SHAPE,
+                    "size",
+                    {},
+                    schemas={type_name},
+                )
+                self.assertEqual(result.value, expected)
+                self.assertEqual(
+                    result.source,
+                    SchemaResolution.Source.UNRESOLVED
+                    if expected is None
+                    else SchemaResolution.Source.COMPATIBILITY_DEFAULT,
+                )
+
     def test_typed_base_schema_owns_derived_prim_fallback(self):
         """Apply typed-schema ownership to derived concrete prims."""
 
