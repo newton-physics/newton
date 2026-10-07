@@ -1807,14 +1807,17 @@ void main() {
                 self.gui.prepare_frame()
             if self._rtx is not None and not self._should_close and not self.is_rendering_paused():
                 # Preserve the original blocking cadence and simulation/render overlap.
+                products = None
                 if self._render_result is not None:
                     with wp.ScopedTimer("ViewerRTX::rtx_wait", active=PROFILE_ENABLED, use_nvtx=True):
                         products = self._render_result.wait().fetch()
                     self._render_result = None
-                    if not self._discard_render_result:
-                        self._accept_render(products)
+                    if self._discard_render_result:
+                        products = None
                     self._discard_render_result = False
                 self._update_scene()
+                if products is not None:
+                    self._accept_render(products)
             self._render_and_display()
 
     def _update_scene(self) -> None:
@@ -2689,6 +2692,7 @@ void main() {
         if self._should_close:
             return
 
+        step_kwargs = None
         if not self.is_rendering_paused():
             if fullscreen_name is not None and self._window is not None:
                 texture = self._image_logger.get_texture(fullscreen_name, fullscreen=True)
@@ -2703,15 +2707,17 @@ void main() {
                 }
                 if self._use_ovstage:
                     step_kwargs["ordinal"] = self._ovstage_ordinal
-                with wp.ScopedTimer("ViewerRTX::rtx_step", active=PROFILE_ENABLED, use_nvtx=True):
-                    if self._async:
-                        self._render_result = self._rtx.step_async(**step_kwargs)
-                    else:
+                if not self._async:
+                    with wp.ScopedTimer("ViewerRTX::rtx_step", active=PROFILE_ENABLED, use_nvtx=True):
                         self._accept_render(self._rtx.step(**step_kwargs))
 
         if self._window is not None and self._window.context is not None:
             frame = self._displayed_frame
             self._present(frame.texture or None, frame.width, frame.height)
+
+        if self._async and step_kwargs is not None:
+            with wp.ScopedTimer("ViewerRTX::rtx_step_async", active=PROFILE_ENABLED, use_nvtx=True):
+                self._render_result = self._rtx.step_async(**step_kwargs)
 
     def _blit_to_window(self, pixels: wp.array | wp.Texture2D):
         """Copy RTX output into the independently owned presentation cache."""
