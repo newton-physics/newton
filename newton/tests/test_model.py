@@ -2662,14 +2662,13 @@ class TestModelJoints(unittest.TestCase):
         builder.add_joint_fixed(b0, b1)
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
         rod = newton.Rod(pts, radius=0.02)
-        bodies, joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
-        # Record the group the way the USD importer does, so the range remap is exercised.
-        builder._record_cable_group("cable", (bodies[0], bodies[-1] + 1), (joints[0], joints[-1] + 1))
+        bodies, _ = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
+        self.assertEqual(builder.curve_label, ["cable"])
         builder.add_joint_ball(parent=-1, child=bodies[-1], label="att")
         cable_labels_before = [builder.body_label[b] for b in bodies]
         builder.collapse_fixed_joints()
         # The fixed pair merged into one body; the cable bodies stay contiguous and ordered.
-        start, end = builder._cable_body_start[0], builder._cable_body_end[0]
+        start, end = builder._curve_body_start[0], builder._curve_body_end[0]
         self.assertEqual(end - start, len(bodies))
         self.assertEqual([builder.body_label[b] for b in range(start, end)], cable_labels_before)
 
@@ -3426,7 +3425,8 @@ class TestModelJoints(unittest.TestCase):
         builder.add_articulation([joint_a], label="articulation_a")
 
         # ``shared`` is a child in both articulations, so ``joint_b_child`` stays within articulation B.
-        builder.finalize(device="cpu")
+        model = builder.finalize(device="cpu")
+        np.testing.assert_array_equal(model.joint_ancestor.numpy(), [-1, joint_b_root, joint_b_shared, -1])
 
         child_c = builder.add_link(label="child_c")
         joint_c = builder.add_joint_revolute(parent=shared, child=child_c, label="joint_c")

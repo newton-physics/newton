@@ -2106,6 +2106,7 @@ def verify_narrow_phase_buffers(
     reduction_ht_active_slots: wp.array[int],
     reduction_ht_capacity: int,
     reduction_ht_insert_failures: wp.array[int],
+    reduction_buffer_overflows: wp.array[int],
     reduction_ht_warn_load_percent: int,
 ):
     """Check for buffer overflows in the collision pipeline."""
@@ -2199,6 +2200,12 @@ def verify_narrow_phase_buffers(
                 "Increase contact_reduction_hashtable_size_factor or max_triangle_pairs.\n",
                 reduction_ht_insert_failures[0],
             )
+        if reduction_buffer_overflows[0] > 0:
+            wp.printf(
+                "Warning: Contact reduction buffer overflowed; %d contact candidates were dropped. "
+                "Increase max_triangle_pairs.\n",
+                reduction_buffer_overflows[0],
+            )
 
 
 class NarrowPhase:
@@ -2261,7 +2268,8 @@ class NarrowPhase:
             shape_aabb_lower: Optional external AABB lower bounds array (if provided, AABBs won't be computed internally)
             shape_aabb_upper: Optional external AABB upper bounds array (if provided, AABBs won't be computed internally)
             shape_voxel_resolution: Optional per-shape voxel resolution array used for mesh/SDF and
-                hydroelastic contact processing.
+                hydroelastic contact processing. When omitted, :class:`~newton.CollisionPipeline`
+                supplies the model's table. A supplied table must match that model's shape count and device.
             contact_writer_warp_func: Optional custom contact writer function (first arg: ContactData, second arg: custom struct type)
             hydroelastic_sdf: Optional SDF hydroelastic instance. Set is_hydroelastic=True on shapes to enable hydroelastic collisions.
             has_meshes: Whether the scene contains any mesh shapes (GeoType.MESH). When False, mesh-related
@@ -3368,10 +3376,12 @@ class NarrowPhase:
                 reduction_ht_active_slots = self.global_contact_reducer.hashtable.active_slots
                 reduction_ht_capacity = self.global_contact_reducer.hashtable.capacity
                 reduction_ht_insert_failures = self.global_contact_reducer.ht_insert_failures
+                reduction_buffer_overflows = self.global_contact_reducer.buffer_overflows
             else:
                 reduction_ht_active_slots = self.gjk_candidate_pairs_count
                 reduction_ht_capacity = 0
                 reduction_ht_insert_failures = self.gjk_candidate_pairs_count
+                reduction_buffer_overflows = self.gjk_candidate_pairs_count
 
             if self.split_gjk_mpr:
                 split_query_count = candidate_pair_count if self.sparse_gjk_pairs else self.gjk_candidate_pairs_count
@@ -3413,6 +3423,7 @@ class NarrowPhase:
                     reduction_ht_active_slots,
                     reduction_ht_capacity,
                     reduction_ht_insert_failures,
+                    reduction_buffer_overflows,
                     HASHTABLE_WARN_LOAD_PERCENT,
                 ],
                 device=device,

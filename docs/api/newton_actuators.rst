@@ -35,6 +35,7 @@ construction.
    ComponentKind
    Delay
    DriveBase
+   DriveNeuralGRU
    DriveNeuralLSTM
    DriveNeuralMLP
    DrivePD

@@ -150,9 +150,10 @@ class _SolverLayer:
         self._viewer = viewer
         self._sim_substeps = sim_substeps
         self._sim_dt = sim_dt
-        self.graph: wp.Graph | None = self._capture()
+        self.graph: wp.Graph | None = None
 
     def _simulate(self) -> None:
+        self._viewer.activate(self.layer_id)
         contacts = None if self.native_contacts else self.contacts
         for _ in range(self._sim_substeps):
             self.state_0.clear_forces()
@@ -196,7 +197,7 @@ class Example:
 
         # The colors make it easy to tell the solvers apart when toggling layers in the
         # "Layers" group of the viewer sidebar. Each layer captures its own
-        # CUDA graph on construction (where supported).
+        # CUDA graph after binding its model to the viewer (where supported).
         specs = [
             ("XPBD", (0.95, 0.45, 0.10), newton.solvers.SolverXPBD, None, False),
             ("Featherstone", (0.20, 0.70, 0.95), newton.solvers.SolverFeatherstone, None, False),
@@ -241,6 +242,9 @@ class Example:
                 layer.layer_id,
                 wp.transform(wp.vec3(shift, 0.0, 0.0), wp.quat_identity()),
             )
+            # Capture after binding the model so viewer-force kernels use
+            # this layer's picking state, including picks made after capture.
+            layer.graph = layer._capture()
 
     def step(self):
         for layer in self.layers:

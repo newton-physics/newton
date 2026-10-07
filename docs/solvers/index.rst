@@ -41,12 +41,14 @@ method details. For symptom-driven diagnosis and parameter tuning, start with
 Choosing a Solver
 -----------------
 
-MuJoCo and Kamino currently have dedicated backend guides:
+MuJoCo, Kamino, and VBD currently have dedicated backend guides:
 
 - :doc:`MuJoCo <mujoco>` — generalized-coordinate rigid-body simulation and
   MuJoCo or MJCF workflows.
 - :doc:`Kamino <kamino>` — constrained rigid mechanisms with kinematic loops
   and hard frictional contacts; experimental.
+- :doc:`VBD <vbd>` — unified simulation of cloth, soft bodies, and rigid
+  bodies in a single VBD-based solver; experimental.
 
 The other solver backends are documented through their linked API references
 and the comparison tables below.
