@@ -12,7 +12,6 @@ import warp as wp
 from ..utils import (
     _looks_like_torch_checkpoint,
     _parse_metadata_scale,
-    _runtime_shape,
     load_checkpoint,
     load_metadata,
 )
@@ -267,7 +266,12 @@ class DriveNeuralLSTM(DriveBase):
         self._network = runtime
         self.network = runtime
 
-        out_shape = _runtime_shape(runtime, self._output_name)
+        inputs = {
+            spec.name: wp.zeros(spec.shape, dtype=spec.dtype, device=device, requires_grad=True)
+            for spec in runtime.inputs
+        }
+        outputs = runtime(inputs)
+        out_shape = outputs[self._output_name].shape
         if out_shape != (num_actuators, 1):
             raise ValueError(
                 f"DriveNeuralLSTM: ONNX output '{self._output_name}' has shape {out_shape}, "
@@ -275,7 +279,7 @@ class DriveNeuralLSTM(DriveBase):
             )
 
         for name in (self._hidden_out_name, self._cell_out_name):
-            state_shape = _runtime_shape(runtime, name)
+            state_shape = outputs[name].shape
             expected_state_shape = (self._num_layers, num_actuators, self._hidden_size)
             if tuple(state_shape) != expected_state_shape:
                 raise ValueError(
