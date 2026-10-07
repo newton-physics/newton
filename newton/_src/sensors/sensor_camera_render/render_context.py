@@ -14,7 +14,7 @@ from ...geometry import GeoType, Mesh
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
-from .types import ClearData, LightType, MeshData, RenderConfig, RenderOrder, TextureData
+from .types import AntiAliasing, ClearData, LightType, MeshData, RenderConfig, RenderOrder, TextureData
 
 
 class RenderContext:
@@ -84,18 +84,18 @@ class RenderContext:
         self._lights_position: wp.array[wp.vec3f] | None = None
         self._lights_orientation: wp.array[wp.vec3f] | None = None
 
-        # Heightfields are triangulated meshes (their wp.Mesh lives in
-        # shape_source_ptr), so the renderer treats them as meshes: it reuses
-        # the MESH ray-intersection path, which keeps heightfield handling out
-        # of the render kernels entirely (no extra shape-type branch, so no
-        # register/occupancy cost). The remapped type array is what the render
-        # kernel dispatches on; model.shape_type (HFIELD) is left untouched for
-        # collision and BVH bounds.
+        # Heightfields and convex hulls are triangle meshes (their wp.Mesh lives
+        # in shape_source_ptr), so the renderer treats them as meshes: it reuses
+        # the MESH ray-intersection path, which keeps them out of the render
+        # kernels entirely (no extra shape-type branch, so no register/occupancy
+        # cost). The remapped type array is what the render kernel dispatches on;
+        # model.shape_type is left untouched for collision and BVH bounds.
         if model.shape_type is not None:
             shape_type_np = model.shape_type.numpy()
-            if np.any(shape_type_np == int(GeoType.HFIELD)):
+            as_mesh = np.isin(shape_type_np, (int(GeoType.HFIELD), int(GeoType.CONVEX_MESH)))
+            if np.any(as_mesh):
                 shape_type_np = shape_type_np.copy()
-                shape_type_np[shape_type_np == int(GeoType.HFIELD)] = int(GeoType.MESH)
+                shape_type_np[as_mesh] = int(GeoType.MESH)
                 self._shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
 
         if model.particle_q is not None and model.particle_q.shape[0]:
@@ -240,7 +240,7 @@ class RenderContext:
         state: State,
         *,
         camera_transforms: wp.array[wp.transformf],
-        camera_rays: wp.array3d[wp.vec3f],
+        camera_rays: wp.array4d[wp.vec3f],
         world_indices: wp.array[wp.int32] | None = None,
         color_image: wp.array3d[wp.uint32] | None = None,
         hdr_color_image: wp.array3d[wp.vec3f] | None = None,
@@ -271,7 +271,7 @@ class RenderContext:
             camera_transforms: Per-view camera transforms, shape
                 ``(view_count,)``.
             camera_rays: Ray origins and directions, shape
-                ``(height, width, 2)``.
+                ``(height, width, sample_count, 2)``.
             world_indices: Optional per-view world selector, shape
                 ``(view_count,)``, dtype ``int32``. A non-negative entry is the
                 model world index rendered for that view; a negative entry
@@ -296,6 +296,12 @@ class RenderContext:
         model = self.model
         if config is None:
             config = RenderContext.DEFAULT_RENDER_CONFIG
+        try:
+            anti_aliasing = AntiAliasing(config.anti_aliasing)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid anti_aliasing mode: {config.anti_aliasing!r}") from exc
+        if camera_rays.ndim == 4 and camera_rays.shape[2] > 1 and anti_aliasing == AntiAliasing.NONE:
+            raise ValueError("anti_aliasing must be SSAA or MSAA for camera_rays with more than one sample")
 
         if model.shape_count > 0 and model.bvh_shape_enabled is None:
             raise RuntimeError(
@@ -349,8 +355,10 @@ class RenderContext:
                 if image is not None and image.shape != expected:
                     raise ValueError(f"{name} shape must be {expected}, got {tuple(image.shape)}")
 
-            if camera_rays.shape != (height, width, 2):
-                raise ValueError(f"camera_rays shape must be ({height}, {width}, 2), got {tuple(camera_rays.shape)}")
+            if camera_rays.ndim != 4 or camera_rays.shape[2] <= 0 or camera_rays.shape[3] != 2:
+                raise ValueError(
+                    f"camera_rays shape must be ({height}, {width}, sample_count, 2), got {tuple(camera_rays.shape)}"
+                )
             # ``world_indices`` is optional: when ``None`` each view renders its own
             # world (``world_index == view_index``); otherwise validate the mapping.
             if world_indices is not None:
@@ -428,7 +436,7 @@ class RenderContext:
                     model.bvh_shapes_group_roots,
                     # Shapes
                     model.bvh_shape_enabled,
-                    self._get_shape_render_type(),  # HFIELD remapped to MESH; renderer treats heightfields as meshes
+                    self._get_shape_render_type(),  # HFIELD and CONVEX_MESH remapped to MESH
                     model.shape_scale,
                     model.shape_color,
                     model.bvh_shape_world_transforms,
@@ -543,7 +551,8 @@ class RenderContext:
         mesh_data_ids = []
         texture_data_ids = []
 
-        for shape in model.shape_source:
+        shape_types = model.shape_type.numpy() if model.shape_type is not None else ()
+        for shape, shape_type in zip(model.shape_source, shape_types, strict=True):
             if isinstance(shape, Mesh):
                 if shape.texture is not None and load_textures:
                     if shape.texture_hash not in texture_hashes:
@@ -575,7 +584,9 @@ class RenderContext:
                 else:
                     texture_data_ids.append(-1)
 
-                if shape.uvs is not None or shape.normals is not None:
+                # A convex hull renders its collision mesh, whose vertices may be deduplicated, so
+                # the per-vertex UVs and normals of its source mesh do not match the hit faces.
+                if shape_type != GeoType.CONVEX_MESH and (shape.uvs is not None or shape.normals is not None):
                     if shape not in mesh_hashes:
                         mesh_hashes[shape] = len(self._mesh_data_source)
 
