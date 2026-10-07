@@ -687,7 +687,8 @@ class _UsdResolutionPolicy:
             prim,
             PrimType.SHAPE,
             "sdf_target_voxel_size",
-            None,
+            defaults.sdf_target_voxel_size,
+            legacy_default=None,
             interpreter=interpret_target_voxel_size,
         )
         raw_target = target_policies.active.raw_value
@@ -714,7 +715,8 @@ class _UsdResolutionPolicy:
             prim,
             PrimType.SHAPE,
             "sdf_max_resolution",
-            None,
+            defaults.sdf_max_resolution,
+            legacy_default=None,
         )
         target_voxel_size = target_policies.active.value
         raw_max_resolution = max_resolution_policies.active.raw_value
@@ -797,6 +799,8 @@ class _UsdResolutionPolicy:
                 prim,
                 PrimType.SHAPE,
                 "sdf_narrow_band_inner",
+                default=default_narrow_band[0],
+                legacy_default=None,
                 interpreter=lambda result: interpret_narrow_band(result, default_narrow_band[0]),
                 verbose=self._verbose,
             ).value,
@@ -804,6 +808,8 @@ class _UsdResolutionPolicy:
                 prim,
                 PrimType.SHAPE,
                 "sdf_narrow_band_outer",
+                default=default_narrow_band[1],
+                legacy_default=None,
                 interpreter=lambda result: interpret_narrow_band(result, default_narrow_band[1]),
                 verbose=self._verbose,
             ).value,
@@ -818,6 +824,8 @@ class _UsdResolutionPolicy:
             prim,
             PrimType.SHAPE,
             "sdf_texture_format",
+            default=defaults.sdf_texture_format,
+            legacy_default=None,
             interpreter=interpret_texture_format,
         )
         raw_texture_format = texture_format_result.raw_value
@@ -838,7 +846,8 @@ class _UsdResolutionPolicy:
             prim,
             PrimType.SHAPE,
             "sdf_padding",
-            None,
+            defaults.sdf_padding,
+            legacy_default=None,
             interpreter=interpret_padding,
         )
         raw_padding = padding_policies.active.raw_value
