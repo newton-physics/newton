@@ -209,6 +209,8 @@ class Model:
         """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
         WORLD = 15
         """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.world_count`)."""
+        ATTACHMENT_BODY_PARTICLE = 16
+        """Attribute frequency follows the number of body-particle attachments."""
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -367,6 +369,23 @@ class Model:
         "spring_damping": AttributeSpec(AttributeFrequency.SPRING),
         "spring_control": AttributeSpec(AttributeFrequency.SPRING),
         "spring_constraint_lambdas": AttributeSpec(AttributeFrequency.SPRING),
+        # body-particle attachments
+        "attachment_body_particle_body": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+            references=AttributeFrequency.BODY,
+        ),
+        "attachment_body_particle_particle": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+            references=AttributeFrequency.PARTICLE,
+        ),
+        "attachment_body_particle_body_point": AttributeSpec(AttributeFrequency.ATTACHMENT_BODY_PARTICLE),
+        "attachment_body_particle_stiffness": AttributeSpec(AttributeFrequency.ATTACHMENT_BODY_PARTICLE),
+        "attachment_body_particle_damping": AttributeSpec(AttributeFrequency.ATTACHMENT_BODY_PARTICLE),
+        "attachment_body_particle_enabled": AttributeSpec(AttributeFrequency.ATTACHMENT_BODY_PARTICLE),
+        "attachment_body_particle_world": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+            references=AttributeFrequency.WORLD,
+        ),
         "tri_indices": AttributeSpec(
             AttributeFrequency.TRIANGLE,
             references=AttributeFrequency.PARTICLE,
@@ -514,6 +533,7 @@ class Model:
         AttributeFrequency.SPRING: "spring_count",
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
         AttributeFrequency.WORLD: "world_count",
+        AttributeFrequency.ATTACHMENT_BODY_PARTICLE: "attachment_body_particle_count",
     }
 
     class AttributeNamespace:
@@ -846,6 +866,21 @@ class Model:
         self.spring_constraint_lambdas: wp.array[wp.float32] | None = None
         """Lagrange multipliers for spring constraints (internal use)."""
 
+        self.attachment_body_particle_body: wp.array[wp.int32] | None = None
+        """Rigid body indices, shape [attachment_body_particle_count], int."""
+        self.attachment_body_particle_particle: wp.array[wp.int32] | None = None
+        """Particle indices, shape [attachment_body_particle_count], int."""
+        self.attachment_body_particle_body_point: wp.array[wp.vec3] | None = None
+        """Attachment points in body-local coordinates [m], shape [attachment_body_particle_count, 3]."""
+        self.attachment_body_particle_stiffness: wp.array[wp.float32] | None = None
+        """Attachment stiffness [N/m], shape [attachment_body_particle_count]."""
+        self.attachment_body_particle_damping: wp.array[wp.float32] | None = None
+        """Attachment damping [N·s/m], shape [attachment_body_particle_count]."""
+        self.attachment_body_particle_enabled: wp.array[wp.bool] | None = None
+        """Whether each attachment is active, shape [attachment_body_particle_count]."""
+        self.attachment_body_particle_world: wp.array[wp.int32] | None = None
+        """World index for each attachment, shape [attachment_body_particle_count], int."""
+
         self.tri_indices: wp.array[wp.int32] | None = None
         """Triangle element indices, shape [tri_count*3], int."""
         self.tri_poses: wp.array[wp.mat22] | None = None
@@ -1168,43 +1203,43 @@ class Model:
         self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
         """Follower indices for sparse mimic constraints, shape [constraint_mimic_count], int.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :attr:`joint_mimic_joint` and :meth:`ModelBuilder.set_joint_mimic` instead.
         """
         self.constraint_mimic_joint1: wp.array[wp.int32] | None = None
         """Reference indices for sparse mimic constraints, shape [constraint_mimic_count], int.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :attr:`joint_mimic_joint` and :meth:`ModelBuilder.set_joint_mimic` instead.
         """
         self.constraint_mimic_coef0: wp.array[wp.float32] | None = None
         """Offset coefficients for sparse mimic constraints, shape [constraint_mimic_count], float.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :attr:`joint_mimic_coeffs` and :meth:`ModelBuilder.set_joint_mimic` instead.
         """
         self.constraint_mimic_coef1: wp.array[wp.float32] | None = None
         """Multiplier coefficients for sparse mimic constraints, shape [constraint_mimic_count], float.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :attr:`joint_mimic_coeffs` and :meth:`ModelBuilder.set_joint_mimic` instead.
         """
         self.constraint_mimic_enabled: wp.array[wp.bool] | None = None
         """Active flags for sparse mimic constraints, shape [constraint_mimic_count], bool.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
         """
         self.constraint_mimic_label: list[str] = []
         """Sparse mimic constraint labels, shape [constraint_mimic_count], str.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
         """
         self.constraint_mimic_world: wp.array[wp.int32] | None = None
         """World indices for sparse mimic constraints, shape [constraint_mimic_count], int.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
         """
 
@@ -1224,6 +1259,8 @@ class Model:
         """Total number of edges in the system."""
         self.spring_count: int = 0
         """Total number of springs in the system."""
+        self.attachment_body_particle_count: int = 0
+        """Total number of rigid-body-to-particle attachments in the system."""
         self.muscle_count: int = 0
         """Total number of muscles in the system."""
         self.articulation_count: int = 0
@@ -1237,7 +1274,7 @@ class Model:
         self.constraint_mimic_count: int = 0
         """Total number of sparse mimic constraints in the system.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :attr:`joint_mimic_joint` to identify joints with joint-owned mimic metadata instead.
         """
 
@@ -1440,6 +1477,7 @@ class Model:
             "triangle": Model.AttributeFrequency.TRIANGLE,
             "tetrahedron": Model.AttributeFrequency.TETRAHEDRON,
             "spring": Model.AttributeFrequency.SPRING,
+            "attachment_body_particle": Model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
             "world": Model.AttributeFrequency.WORLD,
         }
         frequency = built_in.get(references)

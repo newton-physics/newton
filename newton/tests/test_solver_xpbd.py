@@ -2490,7 +2490,7 @@ def test_xpbd_mimic_couples_compatible_scalar_joint_types(test, device):
     builder.add_articulation([reference, follower])
     offset = 0.1
     multiplier = -1.5
-    builder.set_joint_mimic(follower, reference, (offset, multiplier))
+    builder.set_joint_mimic(follower, reference, coeffs=(offset, multiplier))
     model = builder.finalize(device=device)
 
     initial_reference = 0.35
@@ -2523,7 +2523,7 @@ def test_xpbd_mimic_applies_to_each_d6_coordinate(test, device):
     builder.add_articulation([reference, follower])
     offset = -0.1
     multiplier = 1.5
-    builder.set_joint_mimic(follower, reference, (offset, multiplier))
+    builder.set_joint_mimic(follower, reference, coeffs=(offset, multiplier))
     model = builder.finalize(device=device)
 
     joint_q = _run_xpbd_mimic(model, [0.2, 0.3, 0.8, -0.6])
@@ -2547,7 +2547,7 @@ def test_xpbd_mimic_applies_to_compound_d6_rotations(test, device):
             builder.add_articulation([reference, follower])
             offset = 0.05
             multiplier = -0.8
-            builder.set_joint_mimic(follower, reference, (offset, multiplier))
+            builder.set_joint_mimic(follower, reference, coeffs=(offset, multiplier))
             model = builder.finalize(device=device)
 
             axis_count = len(axes)
