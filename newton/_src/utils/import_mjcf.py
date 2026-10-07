@@ -913,11 +913,18 @@ def parse_mjcf(
             return wp.quat_from_matrix(wp.mat33(rot_matrix))
         if "zaxis" in attrib:
             zaxis = np.array(attrib["zaxis"].split(), dtype=float)
-            zaxis = wp.normalize(wp.vec3(*zaxis))
-            xaxis = wp.normalize(wp.cross(wp.vec3(0, 0, 1), zaxis))
-            yaxis = wp.normalize(wp.cross(zaxis, xaxis))
-            rot_matrix = np.array([xaxis, yaxis, zaxis]).T
-            return wp.quat_from_matrix(wp.mat33(rot_matrix))
+            zaxis /= np.linalg.norm(zaxis)
+            axis = np.array([-zaxis[1], zaxis[0], 0.0])
+            axis_norm_sq = np.dot(axis, axis)
+            # Match MuJoCo's mjuu_z2quat, including mjuu_normvec's mjEPS cutoff.
+            if axis_norm_sq < 1e-14:
+                axis = np.array([1.0, 0.0, 0.0])
+                axis_norm = 0.0
+            else:
+                axis_norm = np.sqrt(axis_norm_sq)
+                axis /= axis_norm
+            half_angle = 0.5 * np.arctan2(axis_norm, zaxis[2])
+            return wp.quat(*(axis * np.sin(half_angle)), np.cos(half_angle))
         return wp.quat_identity()
 
     def parse_fromto_transform(
@@ -1951,10 +1958,14 @@ def parse_mjcf(
                 freejoint_tags[0].attrib, builder_custom_attr_joint, parsing_mode="mjcf"
             )
         else:
-            # DOF index relative to the joint being created (multiple MJCF joints in a body are combined into one Newton joint)
-            current_dof_index = 0
-            # Track MJCF joint names and their DOF offsets within the combined Newton joint
-            mjcf_joint_dof_offsets: list[tuple[str, int]] = []
+            # Multiple MJCF joints in a body are combined into one Newton joint whose DOFs
+            # are ordered linear-first, independent of MJCF declaration order. Per-DOF
+            # custom attributes are therefore collected per motion type (parallel to
+            # linear_axes/angular_axes) and only assigned DOF indices after the loop.
+            linear_dof_attrs: list[dict[str, Any]] = []
+            angular_dof_attrs: list[dict[str, Any]] = []
+            # MJCF joint name -> (is_linear, index into linear_dof_attrs/angular_dof_attrs)
+            mjcf_joint_dof_slots: list[tuple[str, bool, int]] = []
             # frictionloss for a native <joint type="ball"/>; captured in the ball branch
             # and read by the add_joint_ball call. Default 0.0 matches MJCF.
             ball_friction = 0.0
@@ -1986,50 +1997,45 @@ def parse_mjcf(
                         parsing_mode="mjcf",
                         context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                     )
-                    # ball joint has 3 DOFs; replicate attribute value across all of them
-                    for key, value in dof_attr.items():
-                        if key not in dof_custom_attributes:
-                            dof_custom_attributes[key] = {}
-                        for dof_offset in range(3):
-                            dof_custom_attributes[key][current_dof_index + dof_offset] = value
                     if has_solreflimit_mode:
                         # The raw vec2 cannot distinguish authored
                         # solreflimit="0 0" from the "not authored" sentinel.
                         # Track whether MJCF provided a raw value or merely
                         # inherited MuJoCo's implicit default.
-                        solreflimit_mode = imported_joint_solreflimit_mode(joint_attrib)
-                        dof_custom_attributes.setdefault(solreflimit_mode_key, {})
-                        for dof_offset in range(3):
-                            dof_custom_attributes[solreflimit_mode_key][current_dof_index + dof_offset] = (
-                                solreflimit_mode
-                            )
+                        dof_attr[solreflimit_mode_key] = imported_joint_solreflimit_mode(joint_attrib)
                     if has_solreflimit_gain_baseline:
-                        gain_baseline = wp.vec2(default_joint_limit_ke, default_joint_limit_kd)
-                        dof_custom_attributes.setdefault(solreflimit_gain_baseline_key, {})
-                        for dof_offset in range(3):
-                            dof_custom_attributes[solreflimit_gain_baseline_key][current_dof_index + dof_offset] = (
-                                gain_baseline
-                            )
+                        dof_attr[solreflimit_gain_baseline_key] = wp.vec2(
+                            default_joint_limit_ke, default_joint_limit_kd
+                        )
+                    # ball joint has 3 angular DOFs; replicate attribute values across all of them
+                    mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs)))
+                    angular_dof_attrs.extend(dof_attr for _ in range(3))
                     # Lift frictionloss and damping into the builder's per-DOF arrays
                     # so they reach the MuJoCo spec on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
                     ball_damping = parse_float(joint_attrib, "damping", default_joint_damping)
-                    mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
-                    current_dof_index += 3
                     break
                 is_angular = joint_type_str == "hinge"
+                is_linear = joint_type_str == "slide"
+                if is_linear:
+                    mjcf_slide_joint_names.add(joint_name[-1])
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 1.0))
                 # Only convert deg->rad when an explicit range is given; the default
                 # sentinel (+/-MAXVAL) represents "unlimited" and must not be scaled.
                 has_range = "range" in joint_attrib
                 limit_lower = np.deg2rad(joint_range[0]) if has_range and is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
+                if has_range and is_linear:
+                    limit_lower *= scale
+                    limit_upper *= scale
                 # MJCF ranges use absolute qpos, while Newton joint coordinates use qpos - ref.
                 # SolverMuJoCo adds ref back when it builds jnt_range.
                 if has_range:
                     joint_ref_value = parse_float(joint_attrib, "ref", 0.0)
                     if is_angular and use_degrees:
                         joint_ref_value = np.deg2rad(joint_ref_value)
+                    elif is_linear:
+                        joint_ref_value *= scale
                     limit_lower -= joint_ref_value
                     limit_upper -= joint_ref_value
 
@@ -2078,23 +2084,17 @@ def parse_mjcf(
                     effort_limit=effort_limit,
                     actuator_mode=JointTargetMode.NONE,  # Will be set by parse_actuators
                 )
-                if is_angular:
-                    angular_axes.append(ax)
-                else:
-                    linear_axes.append(ax)
-
+                # Only store custom attribute values that were explicitly specified in the source.
                 dof_attr = parse_custom_attributes(
                     joint_attrib,
                     builder_custom_attr_dof,
                     parsing_mode="mjcf",
                     context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                 )
-                # assemble custom attributes for each DOF (dict mapping DOF index to value)
-                # Only store values that were explicitly specified in the source.
-                for key, value in dof_attr.items():
-                    if key not in dof_custom_attributes:
-                        dof_custom_attributes[key] = {}
-                    dof_custom_attributes[key][current_dof_index] = value
+                if is_linear:
+                    for attr_name in ("mujoco:dof_ref", "mujoco:dof_springref", "mujoco:limit_margin"):
+                        if attr_name in dof_attr:
+                            dof_attr[attr_name] *= scale
                 if has_solreflimit_mode:
                     # The mode keeps native MJCF semantics separate from
                     # Newton-authored force-space ``joint_limit_ke``/``kd``:
@@ -2102,16 +2102,29 @@ def parse_mjcf(
                     # unauthored limit starts from MuJoCo's implicit default
                     # and only switches to Newton scaling after the generic
                     # gains are edited.
-                    solreflimit_mode = imported_joint_solreflimit_mode(joint_attrib)
-                    dof_custom_attributes.setdefault(solreflimit_mode_key, {})[current_dof_index] = solreflimit_mode
+                    dof_attr[solreflimit_mode_key] = imported_joint_solreflimit_mode(joint_attrib)
                 if has_solreflimit_gain_baseline:
-                    dof_custom_attributes.setdefault(solreflimit_gain_baseline_key, {})[current_dof_index] = wp.vec2(
-                        limit_ke, limit_kd
-                    )
+                    dof_attr[solreflimit_gain_baseline_key] = wp.vec2(limit_ke, limit_kd)
 
-                # Track this MJCF joint's name and DOF offset within the combined Newton joint
-                mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
-                current_dof_index += 1
+                # Keep each DOF's attributes next to its axis so both share Newton's DOF order.
+                if is_angular:
+                    mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs)))
+                    angular_axes.append(ax)
+                    angular_dof_attrs.append(dof_attr)
+                else:
+                    mjcf_joint_dof_slots.append((joint_name[-1], True, len(linear_dof_attrs)))
+                    linear_axes.append(ax)
+                    linear_dof_attrs.append(dof_attr)
+
+            # Assign DOF indices in Newton's order: all linear DOFs, then all angular DOFs.
+            for dof_index, dof_attr in enumerate(linear_dof_attrs + angular_dof_attrs):
+                for key, value in dof_attr.items():
+                    dof_custom_attributes.setdefault(key, {})[dof_index] = value
+            num_linear_dofs = len(linear_dof_attrs)
+            mjcf_joint_dof_offsets = [
+                (name, slot if is_linear_slot else num_linear_dofs + slot)
+                for name, is_linear_slot, slot in mjcf_joint_dof_slots
+            ]
 
         body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
         link = builder.add_link(
@@ -2706,6 +2719,7 @@ def parse_mjcf(
     # Maps individual MJCF joint names to their specific DOF index.
     # Used to resolve actuators targeting specific joints within combined Newton joints.
     mjcf_joint_name_to_dof: dict[str, int] = {}
+    mjcf_slide_joint_names: set[str] = set()
     # Maps tendon names to their index in the tendon custom attributes.
     # Used to resolve actuators targeting tendons.
     tendon_name_to_idx: dict[str, int] = {}
@@ -3295,6 +3309,7 @@ def parse_mjcf(
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
 
             # Extract gains based on actuator type
+            ctrlrange_is_derived = False
             if actuator_type == "position":
                 kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1
                 kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
@@ -3329,6 +3344,7 @@ def parse_mjcf(
                         radius = (upper - lower) / 2.0 * inheritrange
                         merged_attrib["ctrlrange"] = f"{mean - radius} {mean + radius}"
                         merged_attrib["ctrllimited"] = "true"
+                        ctrlrange_is_derived = True
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
                 if trntype != 0 or total_dofs == 0 or ctrl_direct:
                     ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
@@ -3368,8 +3384,38 @@ def parse_mjcf(
                             builder.joint_target_mode[dof_idx] = int(JointTargetMode.VELOCITY)
                         builder.joint_target_kd[dof_idx] = kv
 
+            elif actuator_type == "intvelocity":
+                kp = parse_float(merged_attrib, "kp", 1.0)
+                kv = parse_float(merged_attrib, "kv", 0.0)
+                dampratio = parse_float(merged_attrib, "dampratio", 0.0)
+                gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, -kp, -kv if kv > 0.0 else dampratio, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+                actrange_is_derived = False
+                inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
+                if inheritrange > 0 and joint_name and qd_start >= 0:
+                    # Joint limits are stored relative to ref; activation bounds use absolute qpos.
+                    dof_ref_value = 0.0
+                    ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
+                    if ref_attr is not None and isinstance(ref_attr.values, dict):
+                        dof_ref_value = float(ref_attr.values.get(qd_start, ref_attr.default))
+                    lower = builder.joint_limit_lower[qd_start] + dof_ref_value
+                    upper = builder.joint_limit_upper[qd_start] + dof_ref_value
+                    if lower < upper:
+                        mean = (upper + lower) / 2.0
+                        radius = (upper - lower) / 2.0 * inheritrange
+                        merged_attrib["actrange"] = f"{mean - radius} {mean + radius}"
+                        merged_attrib["actlimited"] = "true"
+                        actrange_is_derived = True
+
             elif actuator_type == "motor":
                 gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+
+            elif actuator_type == "damper":
+                kv = parse_float(merged_attrib, "kv", 1.0)
+                gainprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
@@ -3397,6 +3443,20 @@ def parse_mjcf(
                 parsing_mode="mjcf",
                 context={"actuator_name": act_name},
             )
+            if (
+                actuator_type in {"position", "velocity", "intvelocity"}
+                and target_joint_name in mjcf_slide_joint_names
+                and not ctrlrange_is_derived
+                and "mujoco:actuator_ctrlrange" in parsed_attrs
+            ):
+                parsed_attrs["mujoco:actuator_ctrlrange"] *= scale
+            if (
+                actuator_type == "intvelocity"
+                and target_joint_name in mjcf_slide_joint_names
+                and not actrange_is_derived
+                and "mujoco:actuator_actrange" in parsed_attrs
+            ):
+                parsed_attrs["mujoco:actuator_actrange"] *= scale
             if crank_length is not None:
                 parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 
@@ -3408,6 +3468,12 @@ def parse_mjcf(
             shortcut_type_defaults = {
                 "position": {"mujoco:actuator_biastype": 1},  # affine
                 "velocity": {"mujoco:actuator_biastype": 1},  # affine
+                "intvelocity": {"mujoco:actuator_biastype": 1, "mujoco:actuator_dyntype": 1},
+                "damper": {
+                    "mujoco:actuator_gaintype": 1,  # affine
+                    "mujoco:actuator_biastype": 0,  # none
+                    "mujoco:actuator_ctrllimited": 1,  # true
+                },
             }
             for key, value in shortcut_type_defaults.get(actuator_type, {}).items():
                 if key not in parsed_attrs:

@@ -46,7 +46,7 @@ class _DofParams:
     target_vel: float
     target_ke: float
     target_kd: float
-    effort_limit: float
+    effort_limit: float | None
     actuator_mode: JointTargetMode
     initial_position: float | None
     initial_velocity: float | None
@@ -117,7 +117,7 @@ class _UsdJointProperties:
         """Resolve limits, drive, and initial state for one revolute/prismatic DOF.
 
         Returns values in Newton units (radians for revolute DOFs). Initial state
-        stays ``None`` when unauthored so callers can apply their own fallback;
+        and effort limits stay ``None`` when unauthored so callers can apply their own fallback;
         drive targets/gains are zero when ``has_drive`` is False.
         """
         limit_gains_scaling = self.degrees_to_radian if is_revolute else 1.0
@@ -148,7 +148,9 @@ class _UsdJointProperties:
         target_vel = jd.drive.targetVelocity if has_drive else 0.0
         target_ke = jd.drive.stiffness if has_drive else 0.0
         target_kd = jd.drive.damping if has_drive else 0.0
-        effort_limit = jd.drive.forceLimit if has_drive else np.inf
+        effort_limit = self.resolution.resolve_joint_effort_limit(
+            jp_prim, drive_limit=jd.drive.forceLimit if has_drive else None
+        )
         if has_drive:
             actuator_mode = JointTargetMode.from_gains(
                 target_ke, target_kd, force_position_velocity_actuation, has_drive=True
@@ -174,6 +176,8 @@ class _UsdJointProperties:
                 target_kd /= self.degrees_to_radian / joint_drive_gains_scaling
             if initial_position is not None:
                 initial_position *= self.degrees_to_radian
+            if initial_velocity is not None:
+                initial_velocity *= self.degrees_to_radian
 
         return _DofParams(
             armature=armature,
@@ -326,12 +330,12 @@ def parse_joint(
         joint_params["friction"] = dof.friction
         joint_params["damping"] = dof.damping
         joint_params["velocity_limit"] = dof.velocity_limit
+        joint_params["effort_limit"] = dof.effort_limit
         if dof.has_drive:
             joint_params["target_vel"] = dof.target_vel
             joint_params["target_pos"] = dof.target_pos
             joint_params["target_ke"] = dof.target_ke
             joint_params["target_kd"] = dof.target_kd
-            joint_params["effort_limit"] = dof.effort_limit
         joint_params["actuator_mode"] = dof.actuator_mode
 
         # Initial joint state, applied after creation (already in Newton units)
@@ -343,6 +347,13 @@ def parse_joint(
         else:
             joint_index = builder.add_joint_prismatic(**joint_params)
     elif key == UsdPhysics.ObjectType.SphericalJoint:
+        joint_params["armature"], joint_params["friction"] = (
+            joint_properties.resolution.resolve_joint_passive_properties(
+                joint_prim,
+                default_armature=default_joint_armature,
+                default_friction=default_joint_friction,
+            )
+        )
         joint_params["damping"] = joint_properties.resolution.resolve_joint_damping(joint_prim, revolute=(True,))[0]
         joint_index = builder.add_joint_ball(**joint_params)
     elif key == UsdPhysics.ObjectType.D6Joint:
@@ -623,10 +634,10 @@ def parse_joint(
                     print(f"Set D6 joint {joint_index} {axis_name} position to {pos} ({'deg' if is_rot else 'm'})")
 
             if vel is not None and qd_start + dof_idx < qd_end:
-                vel_val = vel  # D6 velocities are already in correct units
+                vel_val = vel * DegreesToRadian if is_rot else vel
                 builder.joint_qd[qd_start + dof_idx] = vel_val
                 if verbose:
-                    print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} rad/s")
+                    print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} ({'deg/s' if is_rot else 'm/s'})")
 
     return joint_index
 
@@ -828,7 +839,7 @@ def parse_merged_joints(
             damping=dof.damping,
             armature=dof.armature,
             friction=dof.friction,
-            effort_limit=dof.effort_limit,
+            effort_limit=dof.effort_limit if dof.effort_limit is not None else np.inf,
             velocity_limit=dof.velocity_limit if dof.velocity_limit is not None else default_joint_velocity_limit,
             actuator_mode=dof.actuator_mode,
         )

@@ -148,6 +148,7 @@ class DrivePD(DriveBase):
         state: DriveBase.State | None,
         dt: float,
         device: wp.Device | None = None,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         wp.launch(
             kernel=_pd_effort_kernel,

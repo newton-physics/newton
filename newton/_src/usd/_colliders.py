@@ -69,6 +69,42 @@ def _parse_colliders(
     """Add colliders in descriptor order using the importer's shared maps and helpers."""
     from pxr import UsdPhysics
 
+    def _get_physics_material(material_path: str) -> _UsdResolutionPolicy.PhysicsMaterial:
+        """Resolve and cache bound materials outside the selected import range."""
+        if material_path in material_specs:
+            return material_specs[material_path]
+
+        # Native collider descriptors retain binding targets outside root_path,
+        # but that range's material descriptors do not include those targets.
+        external = usd.load_physics_from_range(stage, [material_path])
+        paths, descriptors = external.get(UsdPhysics.ObjectType.RigidBodyMaterial, ((), ()))
+        for path, descriptor in zip(paths, descriptors, strict=False):
+            if str(path) != material_path or warn_invalid_desc(path, descriptor):
+                continue
+            if not math.isfinite(descriptor.density):
+                warnings.warn(
+                    f"{path}: authored material density must be finite; treating it as unspecified.",
+                    stacklevel=3,
+                )
+            material = resolution.resolve_material(
+                stage.GetPrimAtPath(path),
+                static_friction=descriptor.staticFriction,
+                dynamic_friction=descriptor.dynamicFriction,
+                restitution=descriptor.restitution,
+                density=(
+                    descriptor.density
+                    if math.isfinite(descriptor.density) and descriptor.density > 0.0
+                    else default_shape_density
+                ),
+                default_shape=builder.default_shape_cfg,
+            )
+            material_specs[material_path] = material
+            return material
+
+        raise ValueError(
+            f"Collider references physics material '{material_path}', but that target could not be parsed."
+        )
+
     # mapping from physics:approximation attribute (lower case) to remeshing method
     approximation_to_remeshing_method = {
         "convexdecomposition": "coacd",
@@ -120,7 +156,7 @@ def _parse_colliders(
                     if len(shape_spec.materials) > 1 and verbose:
                         print(f"Warning: More than one material found on shape at '{path}'.\nUsing only the first one.")
                     material_path = str(shape_spec.materials[0])
-                    material = material_specs[material_path]
+                    material = _get_physics_material(material_path)
                     if verbose:
                         print(
                             f"\tMaterial of '{path}':\tfriction: {material.dynamic_friction},\ttorsional friction: {material.torsional_friction},\trolling friction: {material.rolling_friction},\trestitution: {material.restitution},\tdensity: {material.density}"

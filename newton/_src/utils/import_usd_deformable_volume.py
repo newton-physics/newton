@@ -244,11 +244,6 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             "particle": (soft_p0, builder.particle_count),
             "tet": (soft_t0, builder.tet_count),
         }
-        builder._record_soft_group(
-            path,
-            (soft_p0, builder.particle_count),
-            (soft_t0, builder.tet_count),
-        )
         # Marked proposal deformables always supply the resolved density explicitly;
         # bare TetMeshes retain their legacy material-then-builder-default behavior.
         effective_density = add_soft_mesh_kwargs.get("density", tetmesh_for_builder.density)

@@ -59,8 +59,7 @@ class Example:
             float(args.close_time) if args.close_time is not None else (0.3 if self.scenario == "harsh" else 0.8)
         )
 
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(0.32, -0.42, 0.34), pitch=-24.0, yaw=136.0)
+        self.viewer.set_camera(pos=wp.vec3(0.32, -0.42, 0.34), pitch=-24.0, yaw=136.0)
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverMuJoCo.register_custom_attributes(builder)
