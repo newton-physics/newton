@@ -41,93 +41,6 @@ BORROWED_STAGE_SUPPORTED = _borrowed_stage_supported()
 
 
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-class TestViewerRTXGetFrame(unittest.TestCase):
-    def test_headless_frame_capture(self):
-        """Capture the latest moving scene across render mode changes."""
-        if not wp.is_cuda_available():
-            self.skipTest("Requires an NVIDIA RTX-capable GPU")
-
-        builder = newton.ModelBuilder()
-        body = builder.add_body()
-        builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, color=(1.0, 0.0, 0.0))
-        model = builder.finalize()
-        state = model.state()
-        for async_rendering in (False, True):
-            with self.subTest(async_rendering=async_rendering):
-                viewer = ViewerRTX(width=64, height=48, headless=True, async_rendering=async_rendering)
-                try:
-                    viewer.set_model(model)
-                    viewer.set_camera(pos=wp.vec3(2.0, 0.0, 0.0), pitch=0.0, yaw=180.0)
-                    modes = (async_rendering, not async_rendering, async_rendering)
-                    for frame_index, (render_async, y) in enumerate(zip(modes, (-0.5, 0.5, -0.5), strict=True)):
-                        # Exercise the same mode flag exposed by the viewer UI.
-                        viewer._async = render_async
-                        state.body_q.assign([wp.transform((0.0, y, 0.0), wp.quat_identity())])
-                        viewer.begin_frame(frame_index / 60)
-                        viewer.log_state(state)
-                        viewer.end_frame()
-                        frame = viewer.get_frame()
-                        self.assertEqual(frame.shape, (48, 64, 3))
-                        self.assertEqual(frame.dtype, wp.uint8)
-                        self.assertEqual(frame.device, model.device)
-                        rgb = frame.numpy()
-                        red_pixels = (rgb[:, :, 0] > 32) & (rgb[:, :, 1] < rgb[:, :, 0] // 2)
-                        _, columns = np.nonzero(red_pixels)
-                        self.assertGreater(columns.size, 0)
-                        # The box must appear on the side logged in this frame.
-                        self.assertGreater(y * (columns.mean() - 32), 0)
-
-                    target = wp.empty_like(frame)
-                    self.assertIs(viewer.get_frame(target_image=target), target)
-                    np.testing.assert_array_equal(target.numpy(), rgb)
-
-                finally:
-                    viewer.close()
-
-    @unittest.skipUnless(importlib.util.find_spec("imageio_ffmpeg") is not None, "Requires imageio-ffmpeg")
-    def test_headless_video_recording(self):
-        """Encode and decode a real RTX recording without OpenGL renderer attributes."""
-        if not wp.is_cuda_available():
-            self.skipTest("Requires an NVIDIA RTX-capable GPU")
-
-        import imageio_ffmpeg as ffmpeg  # noqa: PLC0415
-        from PIL import Image
-
-        viewer = ViewerRTX(width=64, height=48, headless=True)
-        try:
-            self.assertTrue(enable_recording(viewer))
-            with tempfile.TemporaryDirectory() as directory:
-                path = Path(directory) / "recording.mp4"
-                viewer.start_clip(str(path), max_frames=2, video_folder=str(Path(directory) / "frames"))
-                for frame_index in range(2):
-                    viewer.begin_frame(frame_index / 60)
-                    self.assertTrue(viewer.should_step())
-                    viewer.end_frame()
-
-                self.assertTrue(path.is_file())
-                subprocess.run(
-                    [
-                        ffmpeg.get_ffmpeg_exe(),
-                        "-v",
-                        "error",
-                        "-i",
-                        str(path),
-                        str(Path(directory) / "decoded-%02d.png"),
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
-                decoded = sorted(Path(directory).glob("decoded-*.png"))
-                self.assertEqual(len(decoded), 2)
-                for frame_path in decoded:
-                    with Image.open(frame_path) as frame:
-                        self.assertEqual(frame.size, (64, 48))
-        finally:
-            viewer.close()
-
-
-@unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
 class TestViewerRTXVersionCompatibility(unittest.TestCase):
     def test_legacy_ovrtx_does_not_require_ovstage(self):
         """Construct ViewerRTX with legacy OVRTX without importing OVStage."""
@@ -678,8 +591,90 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
         np.testing.assert_array_equal(viewer._capture_screenshot_pixels(), expected)
 
 
-@unittest.skipUnless(OVRTX_AVAILABLE and OVSTAGE_AVAILABLE and wp.is_cuda_available(), "Requires OVRTX and CUDA")
+@unittest.skipUnless(OVRTX_AVAILABLE and wp.is_cuda_available(), "Requires OVRTX and CUDA")
 class TestViewerRTXRendering(unittest.TestCase):
+    """Keep real rendering in one suite so renderer initialization runs sequentially."""
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_headless_frame_capture(self):
+        """Capture the latest moving scene across render mode changes."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, color=(1.0, 0.0, 0.0))
+        model = builder.finalize()
+        state = model.state()
+        for async_rendering in (False, True):
+            with self.subTest(async_rendering=async_rendering):
+                viewer = ViewerRTX(width=64, height=48, headless=True, async_rendering=async_rendering)
+                try:
+                    viewer.set_model(model)
+                    viewer.set_camera(pos=wp.vec3(2.0, 0.0, 0.0), pitch=0.0, yaw=180.0)
+                    modes = (async_rendering, not async_rendering, async_rendering)
+                    for frame_index, (render_async, y) in enumerate(zip(modes, (-0.5, 0.5, -0.5), strict=True)):
+                        # Exercise the same mode flag exposed by the viewer UI.
+                        viewer._async = render_async
+                        state.body_q.assign([wp.transform((0.0, y, 0.0), wp.quat_identity())])
+                        viewer.begin_frame(frame_index / 60)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                        frame = viewer.get_frame()
+                        self.assertEqual(frame.shape, (48, 64, 3))
+                        self.assertEqual(frame.dtype, wp.uint8)
+                        self.assertEqual(frame.device, model.device)
+                        rgb = frame.numpy()
+                        red_pixels = (rgb[:, :, 0] > 32) & (rgb[:, :, 1] < rgb[:, :, 0] // 2)
+                        _, columns = np.nonzero(red_pixels)
+                        self.assertGreater(columns.size, 0)
+                        # The box must appear on the side logged in this frame.
+                        self.assertGreater(y * (columns.mean() - 32), 0)
+
+                    target = wp.empty_like(frame)
+                    self.assertIs(viewer.get_frame(target_image=target), target)
+                    np.testing.assert_array_equal(target.numpy(), rgb)
+
+                finally:
+                    viewer.close()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @unittest.skipUnless(importlib.util.find_spec("imageio_ffmpeg") is not None, "Requires imageio-ffmpeg")
+    def test_headless_video_recording(self):
+        """Encode and decode a real RTX recording without OpenGL renderer attributes."""
+        import imageio_ffmpeg as ffmpeg  # noqa: PLC0415
+        from PIL import Image
+
+        viewer = ViewerRTX(width=64, height=48, headless=True)
+        try:
+            self.assertTrue(enable_recording(viewer))
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "recording.mp4"
+                viewer.start_clip(str(path), max_frames=2, video_folder=str(Path(directory) / "frames"))
+                for frame_index in range(2):
+                    viewer.begin_frame(frame_index / 60)
+                    self.assertTrue(viewer.should_step())
+                    viewer.end_frame()
+
+                self.assertTrue(path.is_file())
+                subprocess.run(
+                    [
+                        ffmpeg.get_ffmpeg_exe(),
+                        "-v",
+                        "error",
+                        "-i",
+                        str(path),
+                        str(Path(directory) / "decoded-%02d.png"),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                decoded = sorted(Path(directory).glob("decoded-*.png"))
+                self.assertEqual(len(decoded), 2)
+                for frame_path in decoded:
+                    with Image.open(frame_path) as frame:
+                        self.assertEqual(frame.size, (64, 48))
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
     def test_runtime_line_batch_has_no_deprecation_warnings(self):
         """Render a line batch first created after the runtime scene is active."""
         viewer = ViewerRTX(headless=True, async_rendering=False)
@@ -885,6 +880,7 @@ def Xform "World"
         finally:
             viewer.close()
 
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
     def test_resizing_line_batch_after_first_frame(self):
         """Resize a line batch created before the first frame once rendering has started."""
         viewer = ViewerRTX(headless=True, async_rendering=False)
