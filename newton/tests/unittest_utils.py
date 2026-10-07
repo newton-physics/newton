@@ -785,10 +785,9 @@ def cleanup_test_allocations():
 
 
 class AllocationCleanupTestResultMixin:
-    """Batch cleanup unless retained CUDA allocations warrant an early collection."""
+    """Amortize cleanup across tests and flush partial batches at suite boundaries."""
 
     _CLEANUP_INTERVAL = 8
-    _CUDA_CLEANUP_BYTES = 512 * 1024 * 1024
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -808,10 +807,7 @@ class AllocationCleanupTestResultMixin:
         if is_statically_skipped_test(test):
             return
         self._tests_since_cleanup += 1
-        if self._tests_since_cleanup >= self._CLEANUP_INTERVAL or any(
-            not wp.is_mempool_enabled(device) or wp.get_mempool_used_mem_current(device) >= self._CUDA_CLEANUP_BYTES
-            for device in wp.get_cuda_devices()
-        ):
+        if self._tests_since_cleanup >= self._CLEANUP_INTERVAL:
             self._cleanup_allocations()
 
     def stopTestRun(self):
