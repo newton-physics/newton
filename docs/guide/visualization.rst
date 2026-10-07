@@ -394,8 +394,9 @@ lights, e.g. an HDR ``DomeLight``, via :meth:`~newton.viewer.ViewerRTX.add_backg
 **Rendering an existing USD scene**: With OVStage 0.2 or newer, ViewerRTX can render a populated ``ovstage.Stage``
 with its authored materials and lights. :meth:`~newton.viewer.ViewerRTX.log_state` writes each body's world pose to the
 prim at the body's label, as produced by :meth:`~newton.ModelBuilder.add_usd`, keeping the prim's authored scale. The
-viewer keeps its own prims under ``/__newton_viewer`` and never clears the stage. The stage needs GPU hierarchy
-computation:
+viewer keeps its own prims under ``/__newton_viewer`` and never clears the stage. Each
+:meth:`~newton.viewer.ViewerRTX.end_frame` writes above the stage's current write floor and then advances it, so finish
+your own writes to the stage before calling it. The stage needs GPU hierarchy computation:
 
 .. code-block:: python
 

@@ -233,9 +233,11 @@ class ViewerRTX(ViewerUSD):
                 its camera, render product, and debug geometry under
                 ``/__newton_viewer``. :meth:`set_visible_worlds`,
                 ``show_collision``, and ``show_visual`` affect only the debug
-                geometry, and ``environment`` must stay ``"default"``. Requires
-                OVRTX 0.4 and OVStage 0.2 or newer, and a stage created with
-                GPU hierarchy computation.
+                geometry, and ``environment`` must stay ``"default"``.
+                :meth:`end_frame` writes above the stage's current write floor
+                and then advances it, so finish other writes to the stage
+                first. Requires OVRTX 0.4 and OVStage 0.2 or newer, and a stage
+                created with GPU hierarchy computation.
             render_settings: ``omni:rtx:*`` attributes to author on the
                 viewer's render product as ``{name: (usd_type_name, value)}``,
                 e.g. ``{"omni:rtx:pt:samplesPerPixel": ("uint", 4)}``. The type
@@ -944,6 +946,12 @@ void main() {
         finally:
             stage.release_ordinal_query(query).wait()
 
+    def _next_ovstage_ordinal(self) -> None:
+        """Move to the ordinal for the next write batch."""
+        # The owner of a borrowed stage may have advanced its floor since our last write.
+        floor = self._ovstage_ordinal if self._borrowed_stage is None else self._borrowed_write_floor()
+        self._ovstage_ordinal = max(self._ovstage_ordinal, floor) + 1
+
     def _read_borrowed_world_matrices(self, prim_paths: Sequence[str]) -> np.ndarray:
         """Read ``omni:fabric:worldMatrix`` rows in ``prim_paths`` order; missing prims stay NaN."""
         import ovstage
@@ -1018,7 +1026,7 @@ void main() {
         self._rtx.attach_ovstage(self._ovstage)
         self._ovstage_attached = True
         self._ovstage_paths = ovstage.PathDictionary(self._ovstage)
-        self._ovstage_ordinal = self._borrowed_write_floor() + 1
+        self._next_ovstage_ordinal()
         self._borrowed_reference = ovstage.population.add_usd_reference_from_string(
             self._ovstage, stage.GetRootLayer().ExportToString(), self._root_path
         )
@@ -1717,7 +1725,7 @@ void main() {
                 # read before publishing changes for the next frame.
                 self._render_result.wait()
             if self._use_ovstage:
-                self._ovstage_ordinal += 1
+                self._next_ovstage_ordinal()
                 self._apply_ovstage_population_changes()
             self._update_ovrtx_camera()
             self._update_ovrtx_transforms()
@@ -2213,7 +2221,7 @@ void main() {
             ovstage.population.remove_usd(self._ovstage, handle)
         self._runtime_prim_handles = {}
         self._borrowed_reference = None
-        self._ovstage_ordinal += 1
+        self._next_ovstage_ordinal()
         ovstage.population.apply_usd_changes(self._ovstage, ordinal=self._ovstage_ordinal)
         self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
 

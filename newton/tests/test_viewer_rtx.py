@@ -5,6 +5,8 @@
 
 import builtins
 import importlib.util
+import os
+import tempfile
 import unittest
 import warnings
 from unittest import mock
@@ -552,6 +554,63 @@ class TestViewerRTXRendering(unittest.TestCase):
                 viewer.end_frame()
         finally:
             viewer.close()
+
+    def test_borrowed_stage_writes_above_caller_advanced_floor(self):
+        """Keep writing to a borrowed stage after its owner advances the write floor."""
+        import ovrtx
+        import ovstage
+
+        ovrtx.register_schema_paths()
+        usda = """#usda 1.0
+(
+    upAxis = "Z"
+)
+def Xform "World"
+{
+    def Xform "Body" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "geom" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "scene.usda")
+            with open(path, "w") as f:
+                f.write(usda)
+            stage = ovstage.Stage(
+                "newton.test.borrowed",
+                config=ovstage.StageConfig(
+                    runtime_default_hierarchy_computation_model=ovstage.HierarchyComputationModel.GPU_INCREMENTAL
+                ),
+            )
+            ovstage.population.open_usd(stage, path, ordinal=1)
+            stage.advance_write_floor(1).wait()
+            builder = newton.ModelBuilder()
+            builder.add_usd(path)
+            model = builder.finalize()
+
+        state = model.state()
+        viewer = ViewerRTX(headless=True, async_rendering=False, ovstage=stage)
+        try:
+            viewer.set_model(model)
+            for frame in range(2):
+                if frame:
+                    stage.advance_write_floor(viewer._ovstage_ordinal + 5, ovstage.Scope.ALL).wait()
+                viewer.begin_frame(frame / 60.0)
+                viewer.log_state(state)
+                viewer.end_frame()
+        finally:
+            viewer.close()
+            stage.destroy()
 
     def test_resizing_line_batch_after_first_frame(self):
         """Resize a line batch created before the first frame once rendering has started."""
