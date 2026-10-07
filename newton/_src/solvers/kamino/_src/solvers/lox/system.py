@@ -281,12 +281,16 @@ class LOXSystem:
         joint_penalty_scale: wp.array[wp.float32],
         penalty: wp.array[wp.float32],
         joint_max_correction: float,
+        joint_translation_dead_zone: float,
+        joint_rotation_dead_zone: float,
         prescribed_twist: wp.array[vec6f] | None = None,
     ) -> None:
         """Add the frozen augmented penalty terms of the structural rows and write their penalties.
 
         The multiplier terms are added to the candidate right-hand side of each iteration.
-        Each row corrects its residual up to ``joint_max_correction`` in one step.
+        Each row corrects the part of its residual beyond ``joint_translation_dead_zone``, or
+        ``joint_rotation_dead_zone`` for the rotational rows, by at most ``joint_max_correction``
+        in one step.
         """
         row_count = row_world.shape[0]
         if row_count == 0:
@@ -311,6 +315,8 @@ class LOXSystem:
                 time_step,
                 joint_penalty_scale,
                 joint_max_correction,
+                joint_translation_dead_zone,
+                joint_rotation_dead_zone,
             ],
             outputs=[penalty, self._data.matrix, self._data.right_hand_side],
             device=self.device,

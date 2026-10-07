@@ -1059,8 +1059,10 @@ class LOXSolverConfig:
     joint_max_correction: float = 1.0e-3
     """Largest joint residual corrected in one step [m or rad].
 
-    Each structural joint row corrects its begin-step residual in full up to this value, and by
-    this value beyond it, so that a large joint violation is recovered over several steps.
+    Each structural joint row corrects the part of its begin-step residual beyond
+    :attr:`position_tolerance` for a translation, or :attr:`rotation_tolerance` for a rotation,
+    by at most this value, so that a large joint violation is recovered over several steps.
+    Residuals within the tolerances are left to average out over the steps.
     """
 
     joint_proximal_relaxation: float = 0.0
@@ -1076,10 +1078,16 @@ class LOXSolverConfig:
     """
 
     position_tolerance: float = 1.0e-5
-    """Translational end-of-step convergence tolerance [m]."""
+    """Translational end-of-step convergence tolerance [m].
+
+    Also the translational joint residual left uncorrected (see :attr:`joint_max_correction`).
+    """
 
     rotation_tolerance: float = 1.0e-5
-    """Rotational end-of-step convergence tolerance [rad]."""
+    """Rotational end-of-step convergence tolerance [rad].
+
+    Also the rotational joint residual left uncorrected (see :attr:`joint_max_correction`).
+    """
 
     velocity_tolerance: float = 1.0e-5
     """Velocity-space convergence tolerance [m/s or rad/s].

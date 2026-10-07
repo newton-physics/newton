@@ -496,6 +496,9 @@ class LOXSolver:
         self._problem.begin_time_step(
             self._model.time.dt,
             joint_max_correction=self._config.joint_max_correction,
+            # Joint residuals within the position and rotation tolerances are left to average out
+            joint_translation_dead_zone=self._config.position_tolerance,
+            joint_rotation_dead_zone=self._config.rotation_tolerance,
             limit_stabilization_fraction=constraints.beta,
             contact_stabilization_fraction=constraints.gamma,
             contact_dead_zone=constraints.delta,
@@ -622,7 +625,8 @@ class LOXSolver:
             )
         problem.update_structural_multipliers_from_twist(
             time_step,
-            min(config.position_tolerance, config.rotation_tolerance),
+            config.position_tolerance,
+            config.rotation_tolerance,
             splitting.global_twist,
             splitting.projected_twist,
             splitting.world_active,
