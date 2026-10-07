@@ -94,6 +94,7 @@ rtx = [
     "newton[importers]",    # include import dependencies (USD)
     "pyglet>=2.1.6,<3",     # for the viewer window/presentation
     "ovrtx>=0.3",           # NVIDIA OVRTX renderer
+    "ovstage>=0.1.1",       # runtime scene management for OVRTX 0.4+
 ]
 
 # PyTorch is not required for ONNX policy inference. These extras cover
@@ -239,6 +240,7 @@ banned-module-level-imports = [
     "networkx",
     "open3d",
     "openmesh",
+    "ovstage",
     "ovrtx",
     "PIL",
     "point_cloud_utils",

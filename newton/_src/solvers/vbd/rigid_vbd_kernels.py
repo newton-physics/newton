@@ -5393,6 +5393,149 @@ def create_accumulate_body_body_contacts_per_body():
     return accumulate_body_body_contacts_per_body
 
 
+@wp.func
+def _evaluate_body_body_contact_slot(
+    contact_idx: int,
+    dt: float,
+    # Contact data
+    rigid_contact_shape0: wp.array[int],
+    rigid_contact_shape1: wp.array[int],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_surface_velocity: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_margin0: wp.array[float],
+    rigid_contact_margin1: wp.array[float],
+    # Model/state
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    # Contact material properties (per-contact)
+    contact_penalty_k: wp.array[float],
+    contact_normal_rho: wp.array[float],
+    contact_material_ke: wp.array[float],
+    contact_material_kd: wp.array[float],
+    contact_material_mu: wp.array[float],
+    contact_tangent_rho: wp.array[float],
+    contact_lambda: wp.array[wp.vec3],
+    contact_C0: wp.array[wp.vec3],
+    stab_alpha: float,
+    legacy_hard_contacts: int,
+    contact_compliant_alm: int,
+    friction_epsilon: float,
+):
+    """Evaluate one active body-body contact slot at the given poses.
+
+    Shared by the contact force reporting kernels. Returns ``(body0, body1, point0_world,
+    point1_world, force_0, torque_0, force_1)``: the bodies of shape 0 and shape 1 (``-1`` for a
+    static shape, or both ``-1`` for an invalid slot), the offset-shifted world-space surface
+    points, the force on body 0 with its torque about body 0's COM (the world origin for a static
+    shape), and the force on body 1 -- as the solve applies them through
+    :func:`evaluate_rigid_contact_from_collision`. Invalid slots return zeros; separated or
+    inactive contacts return zero forces with valid bodies and points.
+    """
+    zero = wp.vec3(0.0)
+    s0 = rigid_contact_shape0[contact_idx]
+    s1 = rigid_contact_shape1[contact_idx]
+    if s0 < 0 or s1 < 0:
+        return wp.int32(-1), wp.int32(-1), zero, zero, zero, zero, zero
+
+    b0 = shape_body[s0]
+    b1 = shape_body[s1]
+
+    cp0_local = rigid_contact_point0[contact_idx]
+    cp1_local = rigid_contact_point1[contact_idx]
+    cp0_offset_local = rigid_contact_offset0[contact_idx]
+    cp1_offset_local = rigid_contact_offset1[contact_idx]
+    contact_normal = rigid_contact_normal[contact_idx]
+
+    # Normal C_n uses the unprojected (skeleton) points: ``thickness`` already accounts
+    # for the radial extent, so adding the offset here would double-count it.
+    cp0_world = wp.transform_point(body_q[b0], cp0_local) if b0 >= 0 else cp0_local
+    cp1_world = wp.transform_point(body_q[b1], cp1_local) if b1 >= 0 else cp1_local
+    point0_world = (
+        wp.transform_point(body_q[b0], cp0_local + cp0_offset_local) if b0 >= 0 else cp0_local + cp0_offset_local
+    )
+    point1_world = (
+        wp.transform_point(body_q[b1], cp1_local + cp1_offset_local) if b1 >= 0 else cp1_local + cp1_offset_local
+    )
+
+    C_n = -contact_surface_separation(
+        cp0_world, cp1_world, contact_normal, rigid_contact_margin0[contact_idx], rigid_contact_margin1[contact_idx]
+    )
+
+    lam_n = float(0.0)
+    C_eff = C_n
+    lam_vec = wp.vec3(0.0)
+    normal_solve_weight = _load_solve_weight(contact_penalty_k, contact_normal_rho, contact_idx, contact_compliant_alm)
+    material_k = contact_material_ke[contact_idx]
+    friction_c0 = wp.vec3(0.0)
+
+    if legacy_hard_contacts == 1 or contact_compliant_alm == 1:
+        lam_vec = contact_lambda[contact_idx]
+        lam_n = wp.dot(lam_vec, contact_normal)
+        C0_vec = contact_C0[contact_idx]
+        C0_n = wp.dot(contact_normal, C0_vec)
+        # C0 stabilization: normal uses C_n - alpha*C0_n;
+        # tangent caches (1 - alpha)*C0_t for the later tangential update.
+        C_eff = C_n - stab_alpha * C0_n
+        friction_c0 = (1.0 - stab_alpha) * (C0_vec - contact_normal * C0_n)
+
+    normal_primal_k, lambda_n_eff = _material_force_terms(normal_solve_weight, material_k, lam_n, contact_compliant_alm)
+    f_n_check = normal_primal_k * C_eff + lambda_n_eff
+    if (C_n <= _SMALL_LENGTH_EPS or f_n_check <= 0.0) and lam_n <= 0.0:
+        return b0, b1, point0_world, point1_world, zero, zero, zero
+
+    contact_kd = contact_material_kd[contact_idx]
+    contact_mu = contact_material_mu[contact_idx]
+
+    surface_velocity = wp.vec3(0.0)
+    if rigid_contact_surface_velocity:
+        surface_velocity = rigid_contact_surface_velocity[contact_idx]
+
+    (
+        force_0,
+        torque_0,
+        _h_ll_0,
+        _h_al_0,
+        _h_aa_0,
+        force_1,
+        _torque_1,
+        _h_ll_1,
+        _h_al_1,
+        _h_aa_1,
+    ) = evaluate_rigid_contact_from_collision(
+        int(b0),
+        int(b1),
+        body_q,
+        body_q_prev,
+        body_com,
+        cp0_local,
+        cp1_local,
+        surface_velocity,
+        cp0_offset_local,
+        cp1_offset_local,
+        contact_normal,
+        C_eff,
+        normal_solve_weight,
+        material_k,
+        contact_tangent_rho[contact_idx],
+        contact_kd,
+        lam_vec,
+        contact_mu,
+        friction_epsilon,
+        legacy_hard_contacts,
+        contact_compliant_alm,
+        dt,
+        friction_c0,
+    )
+
+    return b0, b1, point0_world, point1_world, force_0, torque_0, force_1
+
+
 @functools.cache
 def create_compute_rigid_contact_forces():
     """Create the rigid contact force kernel."""
@@ -5450,113 +5593,40 @@ def create_compute_rigid_contact_forces():
             out_force_on_body1[contact_idx] = wp.vec3(0.0)
             return
 
-        s0 = rigid_contact_shape0[contact_idx]
-        s1 = rigid_contact_shape1[contact_idx]
-        if s0 < 0 or s1 < 0:
-            out_body0[contact_idx] = wp.int32(-1)
-            out_body1[contact_idx] = wp.int32(-1)
-            out_point0_world[contact_idx] = wp.vec3(0.0)
-            out_point1_world[contact_idx] = wp.vec3(0.0)
-            out_force_on_body1[contact_idx] = wp.vec3(0.0)
-            return
-
-        b0 = shape_body[s0]
-        b1 = shape_body[s1]
-        out_body0[contact_idx] = b0
-        out_body1[contact_idx] = b1
-
-        cp0_local = rigid_contact_point0[contact_idx]
-        cp1_local = rigid_contact_point1[contact_idx]
-        cp0_offset_local = rigid_contact_offset0[contact_idx]
-        cp1_offset_local = rigid_contact_offset1[contact_idx]
-        contact_normal = rigid_contact_normal[contact_idx]
-
-        # Normal C_n uses the unprojected (skeleton) points: ``thickness`` already accounts
-        # for the radial extent, so adding the offset here would double-count it.
-        cp0_world = wp.transform_point(body_q[b0], cp0_local) if b0 >= 0 else cp0_local
-        cp1_world = wp.transform_point(body_q[b1], cp1_local) if b1 >= 0 else cp1_local
-        out_point0_world[contact_idx] = (
-            wp.transform_point(body_q[b0], cp0_local + cp0_offset_local) if b0 >= 0 else cp0_local + cp0_offset_local
-        )
-        out_point1_world[contact_idx] = (
-            wp.transform_point(body_q[b1], cp1_local + cp1_offset_local) if b1 >= 0 else cp1_local + cp1_offset_local
-        )
-
-        C_n = -contact_surface_separation(
-            cp0_world, cp1_world, contact_normal, rigid_contact_margin0[contact_idx], rigid_contact_margin1[contact_idx]
-        )
-
-        lam_n = float(0.0)
-        C_eff = C_n
-        lam_vec = wp.vec3(0.0)
-        normal_solve_weight = _load_solve_weight(
-            contact_penalty_k, contact_normal_rho, contact_idx, contact_compliant_alm
-        )
-        material_k = contact_material_ke[contact_idx]
-        friction_c0 = wp.vec3(0.0)
-
-        if legacy_hard_contacts == 1 or contact_compliant_alm == 1:
-            lam_vec = contact_lambda[contact_idx]
-            lam_n = wp.dot(lam_vec, contact_normal)
-            C0_vec = contact_C0[contact_idx]
-            C0_n = wp.dot(contact_normal, C0_vec)
-            # C0 stabilization: normal uses C_n - alpha*C0_n;
-            # tangent caches (1 - alpha)*C0_t for the later tangential update.
-            C_eff = C_n - stab_alpha * C0_n
-            friction_c0 = (1.0 - stab_alpha) * (C0_vec - contact_normal * C0_n)
-
-        normal_primal_k, lambda_n_eff = _material_force_terms(
-            normal_solve_weight, material_k, lam_n, contact_compliant_alm
-        )
-        f_n_check = normal_primal_k * C_eff + lambda_n_eff
-        if (C_n <= _SMALL_LENGTH_EPS or f_n_check <= 0.0) and lam_n <= 0.0:
-            out_force_on_body1[contact_idx] = wp.vec3(0.0)
-            return
-
-        contact_kd = contact_material_kd[contact_idx]
-        contact_mu = contact_material_mu[contact_idx]
-
-        surface_velocity = wp.vec3(0.0)
-        if rigid_contact_surface_velocity:
-            surface_velocity = rigid_contact_surface_velocity[contact_idx]
-
-        (
-            _force_0,
-            _torque_0,
-            _h_ll_0,
-            _h_al_0,
-            _h_aa_0,
-            force_1,
-            _torque_1,
-            _h_ll_1,
-            _h_al_1,
-            _h_aa_1,
-        ) = evaluate_rigid_contact_from_collision(
-            int(b0),
-            int(b1),
+        b0, b1, point0_world, point1_world, _force_0, _torque_0, force_1 = _evaluate_body_body_contact_slot(
+            contact_idx,
+            dt,
+            rigid_contact_shape0,
+            rigid_contact_shape1,
+            rigid_contact_point0,
+            rigid_contact_point1,
+            rigid_contact_surface_velocity,
+            rigid_contact_offset0,
+            rigid_contact_offset1,
+            rigid_contact_normal,
+            rigid_contact_margin0,
+            rigid_contact_margin1,
+            shape_body,
             body_q,
             body_q_prev,
             body_com,
-            cp0_local,
-            cp1_local,
-            surface_velocity,
-            cp0_offset_local,
-            cp1_offset_local,
-            contact_normal,
-            C_eff,
-            normal_solve_weight,
-            material_k,
-            contact_tangent_rho[contact_idx],
-            contact_kd,
-            lam_vec,
-            contact_mu,
-            friction_epsilon,
+            contact_penalty_k,
+            contact_normal_rho,
+            contact_material_ke,
+            contact_material_kd,
+            contact_material_mu,
+            contact_tangent_rho,
+            contact_lambda,
+            contact_C0,
+            stab_alpha,
             legacy_hard_contacts,
             contact_compliant_alm,
-            dt,
-            friction_c0,
+            friction_epsilon,
         )
-
+        out_body0[contact_idx] = b0
+        out_body1[contact_idx] = b1
+        out_point0_world[contact_idx] = point0_world
+        out_point1_world[contact_idx] = point1_world
         out_force_on_body1[contact_idx] = force_1
 
     # ``module="unique"`` kernels do not inherit this file's module options.
@@ -5565,6 +5635,89 @@ def create_compute_rigid_contact_forces():
 
 
 compute_rigid_contact_forces = create_compute_rigid_contact_forces()
+
+
+@wp.kernel
+def compute_body_body_contact_forces(
+    dt: float,
+    # Contact data
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[int],
+    rigid_contact_shape1: wp.array[int],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_surface_velocity: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_margin0: wp.array[float],
+    rigid_contact_margin1: wp.array[float],
+    # Model/state
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    # Contact material properties (per-contact)
+    contact_penalty_k: wp.array[float],
+    contact_normal_rho: wp.array[float],
+    contact_material_ke: wp.array[float],
+    contact_material_kd: wp.array[float],
+    contact_material_mu: wp.array[float],
+    contact_tangent_rho: wp.array[float],
+    contact_lambda: wp.array[wp.vec3],
+    contact_C0: wp.array[wp.vec3],
+    stab_alpha: float,
+    legacy_hard_contacts: int,
+    contact_compliant_alm: int,
+    friction_epsilon: float,
+    # Output (length >= rigid_contact_max)
+    contact_force: wp.array[wp.spatial_vector],
+):
+    """Evaluate one wrench per body-body contact record at the given poses.
+
+    One thread per rigid-contact slot. Each active record is written as the force on body 0 (the
+    body of shape 0) with its torque about that body's COM -- the world origin for a static
+    shape -- in world frame, exactly as the solve applies it (see
+    :func:`_evaluate_body_body_contact_slot`). Slots at or beyond the active count, invalid slots,
+    and separated contacts are zero. This is a read-only evaluation: nothing is accumulated into
+    solver state.
+    """
+    contact_idx = wp.tid()
+    if contact_idx >= rigid_contact_count[0]:
+        contact_force[contact_idx] = wp.spatial_vector()
+        return
+
+    _b0, _b1, _point0_world, _point1_world, force_0, torque_0, _force_1 = _evaluate_body_body_contact_slot(
+        contact_idx,
+        dt,
+        rigid_contact_shape0,
+        rigid_contact_shape1,
+        rigid_contact_point0,
+        rigid_contact_point1,
+        rigid_contact_surface_velocity,
+        rigid_contact_offset0,
+        rigid_contact_offset1,
+        rigid_contact_normal,
+        rigid_contact_margin0,
+        rigid_contact_margin1,
+        shape_body,
+        body_q,
+        body_q_prev,
+        body_com,
+        contact_penalty_k,
+        contact_normal_rho,
+        contact_material_ke,
+        contact_material_kd,
+        contact_material_mu,
+        contact_tangent_rho,
+        contact_lambda,
+        contact_C0,
+        stab_alpha,
+        legacy_hard_contacts,
+        contact_compliant_alm,
+        friction_epsilon,
+    )
+    contact_force[contact_idx] = wp.spatial_vector(force_0, torque_0)
 
 
 accumulate_body_body_contacts_per_body = create_accumulate_body_body_contacts_per_body()
@@ -5751,6 +5904,129 @@ def accumulate_body_particle_contacts_per_body(
     wp.atomic_add(body_hessian_ll, body_id, h_ll_acc)
     wp.atomic_add(body_hessian_al, body_id, h_al_acc)
     wp.atomic_add(body_hessian_aa, body_id, h_aa_acc)
+
+
+@wp.kernel
+def compute_body_particle_contact_forces(
+    dt: float,
+    # Particle state
+    particle_q: wp.array[wp.vec3],
+    particle_q_prev: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    # Rigid body state
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    # AVBD body-particle soft contact penalties and material properties
+    friction_epsilon: float,
+    rigid_body_particle_contact_use_log_barrier: bool,
+    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_kd: wp.array[float],
+    body_particle_contact_material_mu: wp.array[float],
+    # Soft contact data (body-particle)
+    body_particle_contact_count: wp.array[int],
+    soft_contact_indices: wp.array[wp.vec3i],
+    body_particle_contact_shape: wp.array[int],
+    body_particle_contact_body_pos: wp.array[wp.vec3],
+    body_particle_contact_body_vel: wp.array[wp.vec3],
+    body_particle_contact_normal: wp.array[wp.vec3],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
+    # Output (length >= soft_contact_max)
+    contact_force: wp.array[wp.spatial_vector],
+):
+    """Evaluate one wrench per body-particle soft contact record at the given configuration.
+
+    One thread per soft-contact slot. Active records use the same dispatch and force law as the
+    solve (``_eval_body_particle_contact`` for a particle record, ``_eval_soft_ef_contact`` for an
+    edge/face record) with the per-contact AVBD penalty and pre-mixed material. Each row stores the
+    force on the contacted shape's body (the reaction to the force on the soft point) and its torque
+    about that body's COM -- the world origin for a static shape -- in world frame. Slots at or
+    beyond the active count are zeroed. This is a read-only evaluation: nothing is accumulated into
+    solver state.
+    """
+    tid = wp.tid()
+    if tid >= body_particle_contact_count[0]:
+        contact_force[tid] = wp.spatial_vector()
+        return
+
+    corners = soft_contact_indices[tid]
+    shape_index = body_particle_contact_shape[tid]
+    if corners[0] < 0 or shape_index < 0:
+        contact_force[tid] = wp.spatial_vector()
+        return
+
+    body_index = shape_body[shape_index]
+    X_wb = wp.transform_identity()
+    com_world = wp.vec3(0.0)
+    if body_index >= 0:
+        X_wb = body_q[body_index]
+        com_world = wp.transform_point(X_wb, body_com[body_index])
+
+    contact_ke = body_particle_contact_penalty_k[tid]
+    contact_kd = body_particle_contact_material_kd[tid]
+    contact_mu = body_particle_contact_material_mu[tid]
+
+    f_soft = wp.vec3(0.0)
+    cp_world = wp.vec3(0.0)
+    if corners[1] < 0:
+        # Particle record (p, -1, -1): same single-particle evaluation as the particle-side gather.
+        particle_index = corners[0]
+        f_soft, _h_soft = _eval_body_particle_contact(
+            particle_index,
+            particle_q[particle_index],
+            particle_q_prev[particle_index],
+            tid,
+            contact_ke,
+            contact_kd,
+            contact_mu,
+            friction_epsilon,
+            particle_radius,
+            shape_body,
+            body_q,
+            body_q_prev,
+            body_qd,
+            body_com,
+            body_particle_contact_shape,
+            body_particle_contact_body_pos,
+            body_particle_contact_body_vel,
+            body_particle_contact_normal,
+            shape_margin,
+            dt,
+            rigid_body_particle_contact_use_log_barrier,
+        )
+        cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[tid])
+    else:
+        # Edge/face record: barycentric contact point over the record's 2-3 soft particles.
+        f_soft, _h_soft, cp_world = _eval_soft_ef_contact(
+            tid,
+            corners,
+            soft_contact_barycentric[tid],
+            particle_q,
+            particle_q_prev,
+            particle_radius,
+            contact_ke,
+            contact_kd,
+            contact_mu,
+            friction_epsilon,
+            shape_body,
+            body_q,
+            body_q_prev,
+            body_qd,
+            body_com,
+            body_particle_contact_shape,
+            body_particle_contact_body_pos,
+            body_particle_contact_body_vel,
+            body_particle_contact_normal,
+            shape_margin,
+            dt,
+            rigid_body_particle_contact_use_log_barrier,
+        )
+
+    f_body = -f_soft
+    contact_force[tid] = wp.spatial_vector(f_body, wp.cross(cp_world - com_world, f_body))
 
 
 @wp.kernel

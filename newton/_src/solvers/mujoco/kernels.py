@@ -2202,17 +2202,13 @@ def update_actuator_properties_kernel(
 
 
 @wp.kernel
-def update_dof_properties_kernel(
+def update_dof_force_properties_kernel(
     mjc_dof_to_newton_dof: wp.array2d[wp.int32],
-    newton_dof_to_body: wp.array[wp.int32],
-    body_flags: wp.array[wp.int32],
-    joint_armature: wp.array[float],
     joint_friction: wp.array[float],
     joint_damping: wp.array[float],
     dof_solimp: wp.array[vec5],
     dof_solref: wp.array[wp.vec2],
     # outputs
-    dof_armature: wp.array2d[float],
     dof_frictionloss: wp.array2d[float],
     dof_damping: wp.array2d[float],
     dof_solimp_out: wp.array2d[vec5],
@@ -2221,17 +2217,13 @@ def update_dof_properties_kernel(
     """Update MuJoCo DOF properties from Newton DOF properties.
 
     Iterates over MuJoCo DOFs [world, dof], looks up Newton DOF,
-    and copies armature, friction, damping, solimp, solref.
-    Armature updates are skipped for DOFs whose child body is marked kinematic.
+    and copies friction, damping, solimp, and solref.
     """
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
     if newton_dof < 0:
         return
 
-    newton_body = newton_dof_to_body[newton_dof]
-    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) == 0:
-        dof_armature[world, mjc_dof] = joint_armature[newton_dof]
     dof_frictionloss[world, mjc_dof] = joint_friction[newton_dof]
     if joint_damping:
         dof_damping[world, mjc_dof] = joint_damping[newton_dof]
@@ -2278,7 +2270,9 @@ def update_jnt_properties_kernel(
     solimplimit: wp.array[vec5],
     joint_stiffness: wp.array[float],
     limit_margin: wp.array[float],
-    dof_ref: wp.array[wp.float32],
+    jnt_type: wp.array[int],
+    jnt_qposadr: wp.array[int],
+    qpos0: wp.array2d[float],
     # outputs
     jnt_solimp: wp.array2d[vec5],
     jnt_stiffness: wp.array2d[float],
@@ -2293,8 +2287,8 @@ def update_jnt_properties_kernel(
 
     ``jnt_solref`` for joint limits is **not** written here. This kernel writes
     the current ``jnt_solimp`` values; ``update_jnt_solref_from_invweight0_kernel``
-    must run later, after MuJoCo refreshes ``dof_invweight0`` via
-    ``set_const_0`` / ``mj_setConst``.
+    runs later using the cached ``dof_invweight0``, refreshed first if inertia
+    or reference poses also changed.
     """
     world, mjc_jnt = wp.tid()
     newton_dof = mjc_jnt_to_newton_dof[world, mjc_jnt]
@@ -2314,12 +2308,33 @@ def update_jnt_properties_kernel(
         jnt_margin[world, mjc_jnt] = limit_margin[newton_dof]
 
     ref = float(0.0)
-    if dof_ref:
-        ref = dof_ref[newton_dof]
+    if jnt_type[mjc_jnt] >= 2:  # mjJNT_SLIDE or mjJNT_HINGE
+        ref = qpos0[world, jnt_qposadr[mjc_jnt]]
     jnt_range[world, mjc_jnt] = wp.vec2(joint_limit_lower[newton_dof] + ref, joint_limit_upper[newton_dof] + ref)
     # update joint actuator force range (effort limit)
     effort_limit = joint_effort_limit[newton_dof]
     jnt_actfrcrange[world, mjc_jnt] = wp.vec2(-effort_limit, effort_limit)
+
+
+@wp.kernel
+def update_jnt_reference_kernel(
+    mjc_jnt_to_newton_dof: wp.array2d[int],
+    jnt_type: wp.array[int],
+    jnt_qposadr: wp.array[int],
+    qpos0: wp.array2d[float],
+    dof_ref: wp.array[float],
+    jnt_range: wp.array2d[wp.vec2],
+):
+    """Shift scalar joint limits to a new reference without changing their relative bounds."""
+    world, jnt = wp.tid()
+    dof = mjc_jnt_to_newton_dof[world, jnt]
+    if dof < 0 or jnt_type[jnt] < 2:
+        return
+    ref = float(0.0)
+    if dof_ref:
+        ref = dof_ref[dof]
+    delta = ref - qpos0[world, jnt_qposadr[jnt]]
+    jnt_range[world, jnt] = jnt_range[world, jnt] + wp.vec2(delta, delta)
 
 
 @wp.kernel
