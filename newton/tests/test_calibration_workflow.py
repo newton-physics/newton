@@ -248,6 +248,7 @@ class TestCalibrationOrchestration(unittest.TestCase):
         result = calibrate(self.Problem(start=(0.0, 0.0)), optimizer=OptimizerCMA(seed=1, popsize=4, maxiter=2))
         self.assertEqual(result.vector, [0.0, 0.0])
         self.assertEqual(result.loss, 0.0)
+        self.assertEqual(result.stop_reason, "maxiter")
 
     def test_problem_is_closed_when_evaluation_fails(self):
         """Verify a non-finite objective value stops the search and closes the problem."""
@@ -271,6 +272,7 @@ class TestCalibrationOrchestration(unittest.TestCase):
         problem.evaluate = interrupt_third_batch
         result = calibrate(problem, optimizer=OptimizerCMA(seed=1, popsize=4, maxiter=5))
         self.assertTrue(result.interrupted)
+        self.assertEqual(result.stop_reason, "interrupted")
         self.assertEqual(result.iterations, 1)
         self.assertEqual(result.history[-1], (result.loss, result.vector))
         self.assertLessEqual(result.loss, 13.0)
