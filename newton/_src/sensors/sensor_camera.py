@@ -870,6 +870,10 @@ class SensorCamera:
                 buffers for this state. If omitted, evaluate the sensor's own
                 reusable buffers. Share this argument with a viewer to avoid
                 evaluating the same visuals twice.
+
+        .. experimental::
+
+            The ``deformable_visuals`` argument is experimental.
         """
         model = self._render_context.model
         if deformable_visuals is None:
@@ -971,6 +975,11 @@ class SensorCamera:
                 buffers for this state. If omitted, evaluate the sensor's own
                 buffers. Requires ``sync_deformables=True``; otherwise pass the
                 buffers to :meth:`sync_deformable_meshes` explicitly.
+
+        .. experimental::
+
+            The ``deformable_visuals`` argument is experimental. Other camera
+            arguments retain their existing API status.
         """
         render_context = self._render_context
         model = render_context.model

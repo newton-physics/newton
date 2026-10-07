@@ -3319,6 +3319,12 @@ class ModelBuilder:
             destination_path_prefixes: Destination namespace for each replicated
                 world. Must be passed with ``source_path_prefix`` and contain
                 ``world_count`` entries.
+
+        .. experimental::
+
+            ``source_path_prefix`` and ``destination_path_prefixes`` are part of
+            the experimental deformable visual API. Other replication arguments
+            retain their existing API status.
         """
         gc_was_enabled = gc.isenabled()
         gc.disable()
@@ -11670,6 +11676,10 @@ class ModelBuilder:
         Returns:
             The invariant index of the new visual mesh in
             :attr:`~newton.Model.deformable_visual_meshes`.
+
+        .. experimental::
+
+            Deformable visual APIs may change without a formal deprecation cycle.
         """
         vertices = np.asarray(vertices, dtype=np.float32).reshape(-1, 3)
         indices = np.asarray(indices, dtype=np.int32).reshape(-1)

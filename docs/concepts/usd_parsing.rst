@@ -297,11 +297,25 @@ Known gaps of the experimental importer, tracked as follow-ups:
   proposal's graphics geometry) imports as a visual mesh embedded in the simulation
   geometry and skinned from the simulation state each frame (see
   :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`). ``PhysicsDeformablePoseAPI``
-  bind poses are honored. When replicating an imported template into cloned USD
+  bind points are used for both the visual mesh and its simulation geometry.
+  UV-seam vertex splitting preserves that correspondence. Cable reference frames
+  use the simulation bind points without changing the imported physics pose.
+  Missing bind poses fall back to the imported geometry. Invalid bind points warn
+  and skip the affected visual rather than silently using a different reference.
+  When replicating an imported template into cloned USD
   namespaces, pass ``source_path_prefix`` and ``destination_path_prefixes`` to
   :meth:`~newton.ModelBuilder.replicate`; the finalized visual labels and ownership paths
   then refer to the corresponding destination prims. Other point-based graphics geometry
   (e.g. a graphics TetMesh or BasisCurves) cannot be embedded yet: it warns and is skipped.
+* **Gaussian graphics (experimental)** -- a volume-owned
+  ``ParticleField3DGaussianSplat`` can use automatic tet embedding or paired
+  ``newton:deformableSkin:tetIndices`` and
+  ``newton:deformableSkin:influenceWeights`` attributes. Each Gaussian has one
+  tet index local to the owning simulation mesh and four weights. These are
+  temporary Newton attributes, not standard USD deformable schema fields.
+  Centers must be authored in the visual bind configuration. The simulation
+  bind pose drives both center motion and covariance deformation, separately
+  from the solver's rest shape. See :ref:`deformable-visual-rendering`.
 * **Collision geometry** -- a dedicated point-based collider (every one warns) only
   toggles the simulation geometry's collision as described above and never becomes a
   separate rigid shape. Deformable-owned geometry is owned exclusively by the deformable

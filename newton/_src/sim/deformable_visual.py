@@ -30,10 +30,12 @@ if TYPE_CHECKING:
 class DeformableVisualBinding:
     """Payload-neutral binding from visual points to simulation drivers.
 
-    The binding is independent of the payload being skinned. Today the payload
-    is a triangle mesh; the same binding data can later drive other visual
-    payloads, such as Gaussian splats, without changing how importer code
-    selects simulation drivers.
+    The same binding structure drives visual meshes and Gaussian fields.
+    Gaussian fields currently support tetrahedral bindings only.
+
+    .. experimental::
+
+        Deformable visual APIs may change without a formal deprecation cycle.
     """
 
     class Kind(IntEnum):
@@ -100,6 +102,10 @@ class DeformableVisualMesh:
     simulation fields can be projected onto the visual vertices.
 
     Attributes are device :class:`warp.array` objects unless noted otherwise.
+
+    .. experimental::
+
+        Deformable visual APIs may change without a formal deprecation cycle.
     """
 
     Kind = DeformableVisualBinding.Kind
@@ -140,7 +146,8 @@ class DeformableVisualMesh:
         for :attr:`Kind.PARTICLE`, a triangle index into
         :attr:`newton.Model.tri_indices` for :attr:`Kind.TRIANGLE`, a tetrahedron
         index into :attr:`newton.Model.tet_indices` for :attr:`Kind.TET`, and a
-        body index into ``State.body_q`` for :attr:`Kind.BODY`."""
+        body index into ``State.body_q`` for :attr:`Kind.BODY`. After fixed-joint
+        collapse, ``-1`` denotes a world-fixed point whose offset is in world space."""
         self.weights = weights
         """Barycentric weights: shape [vertex_count, 4] (vec4) for
         :attr:`Kind.TET`, shape [vertex_count, 3] (vec3) for
@@ -151,7 +158,8 @@ class DeformableVisualMesh:
         self.uvs = uvs
         """Per-visual-vertex texture coordinates, shape [vertex_count, 2], or ``None``."""
         self.texture = texture
-        """Albedo texture as an image array (H, W, C) or a path, or ``None``."""
+        """Albedo texture as an image array (H, W, C) or a path, or ``None``.
+        Viewers may cache this asset; do not edit its image contents in place."""
         self.world = world
         """World index this visual mesh belongs to (-1 for global)."""
         self.label = label
@@ -182,7 +190,7 @@ class DeformableVisualGaussian:
 
     Instances are immutable model output created by
     :meth:`newton.ModelBuilder.add_deformable_visual_gaussian`. Current sample
-    transforms and scales will be stored separately in :class:`DeformableVisuals`.
+    transforms and scales are stored separately in :class:`DeformableVisuals`.
 
     .. experimental::
 
@@ -265,6 +273,9 @@ class DeformableVisuals:
     populate it with :meth:`newton.Model.update_deformable_visuals`. One result
     can be reused as simulation states are swapped. Allocate separate results
     when multiple states must remain available simultaneously.
+
+    Mesh output contains positions and normals. Gaussian output contains center
+    transforms and axis scales; the rest opacity and appearance remain unchanged.
 
     .. experimental::
 

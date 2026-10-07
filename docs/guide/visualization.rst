@@ -128,6 +128,59 @@ All viewers support ``set_visible_worlds()`` to limit visualization to a subset 
     viewer.set_model(model)
     viewer.set_visible_worlds(range(4))
 
+.. _deformable-visual-rendering:
+
+Deformable Visual Meshes and Gaussians
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+
+    Deformable visual APIs may change without a formal deprecation cycle.
+
+Detailed visual meshes can follow simulation particles, triangles, tetrahedra,
+or cable segment bodies. They add no mass or collision. Register them with
+:meth:`~newton.ModelBuilder.add_deformable_visual_mesh`. Standard viewers draw
+their evaluated points and normals. The skinned-mesh visibility control is
+independent of the coarse simulation surface.
+
+Gaussian fields can follow tetrahedra through
+:meth:`~newton.ModelBuilder.add_deformable_visual_gaussian`. Their centers,
+orientations, and scales deform; opacity and spherical-harmonic appearance do
+not. :class:`~newton.sensors.SensorCamera` renders these fields. GL, RTX, and
+Viser do not yet draw the evaluated Gaussian data through ``log_state()``;
+show the camera image instead. Static Gaussian rendering is unchanged.
+
+Both paths share :class:`~newton.DeformableVisuals`. Allocate it once and update
+it after simulation. A viewer or camera can also evaluate its own buffers when
+no shared result is supplied.
+
+.. code-block:: python
+
+    visuals = model.deformable_visuals()
+    viewer.set_deformable_visuals(visuals)
+
+    # After simulation updates state:
+    model.update_deformable_visuals(state, visuals)
+    viewer.log_state(state)
+    camera.update(state, camera_transforms, camera_rays,
+                  deformable_visuals=visuals, color_image=rgb)
+
+The camera's normal shape/particle BVH update requirements still apply; see
+:meth:`~newton.sensors.SensorCamera.update`. Visual evaluation reuses fixed
+device buffers. Binding is a one-time CPU operation and can be expensive for
+large meshes. Supply precomputed triangle or tet weights for large assets.
+
+Visual mesh textures are asset data. GL reuses them between geometry updates;
+do not mutate a visual texture image in place. Ordinary ``log_mesh()`` calls
+still upload image changes. Texture projection for UV-less skinned meshes is
+not supported yet; provide texture coordinates for textured visuals.
+
+:class:`~newton.viewer.ViewerFile` preserves mesh and Gaussian records in JSON
+and binary recordings. Loading rebuilds Gaussian device data. Before camera
+rendering a loaded model, build its shape BVH with
+:meth:`~newton.Model.bvh_build_shapes` and its particle BVH if particles are
+enabled. See :ref:`usd_parsing` for imported graphics and bind-pose support.
+
 .. _viewer-live-plots:
 
 Live Plots

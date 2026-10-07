@@ -905,9 +905,17 @@ class Model:
         """High-resolution visual meshes embedded in deformables, skinned from the
         simulation state for visualization and sensors only (see
         :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`). Empty when no
-        visual meshes were attached."""
+        visual meshes were attached.
+
+        .. experimental::
+            Deformable visual APIs may change without a formal deprecation cycle.
+        """
         self.deformable_visual_gaussians: list[DeformableVisualGaussian] = []
-        """Gaussian fields embedded in deformables for visualization and sensors."""
+        """Gaussian fields embedded in deformables for visualization and sensors.
+
+        .. experimental::
+            Deformable visual APIs may change without a formal deprecation cycle.
+        """
 
         self.muscle_start: wp.array[wp.int32] | None = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
@@ -1245,9 +1253,17 @@ class Model:
         self.muscle_count: int = 0
         """Total number of muscles in the system."""
         self.deformable_visual_mesh_count: int = 0
-        """Total number of deformable visual meshes in the system."""
+        """Total number of deformable visual meshes in the system.
+
+        .. experimental::
+            Deformable visual APIs may change without a formal deprecation cycle.
+        """
         self.deformable_visual_gaussian_count: int = 0
-        """Total number of deformable Gaussian visuals in the system."""
+        """Total number of deformable Gaussian visuals in the system.
+
+        .. experimental::
+            Deformable visual APIs may change without a formal deprecation cycle.
+        """
         self.articulation_count: int = 0
         """Total number of articulations in the system."""
         self.joint_dof_count: int = 0
@@ -1703,7 +1719,7 @@ class Model:
         self.bvh_particles.refit()
 
     def deformable_visuals(self) -> DeformableVisuals:
-        """Allocate current points and normals for deformable visual meshes.
+        """Allocate current mesh and Gaussian output for deformable visuals.
 
         The returned buffers are model-compatible and reusable across
         simulation states. Populate them with
@@ -1720,7 +1736,7 @@ class Model:
         return DeformableVisuals(self)
 
     def update_deformable_visuals(self, state: State, visuals: DeformableVisuals) -> DeformableVisuals:
-        """Update current deformable visual points and normals from a state.
+        """Update visual mesh points/normals and Gaussian transforms/scales.
 
         This method reuses the fixed buffers allocated by
         :meth:`deformable_visuals` and performs no structural allocation.
