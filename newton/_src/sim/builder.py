@@ -10370,9 +10370,7 @@ class ModelBuilder:
                 # Active if either stiffness or damping is non-zero
                 bending_edge_active_mask = (bending_edge_props[:, 0] != 0.0) | (bending_edge_props[:, 1] != 0.0)
 
-            # Active if either Lame parameter is non-zero, matching the condition SolverVBD uses to
-            # decide whether to evaluate an element. A product would deactivate elements the solver
-            # still integrates, leaving their vertices in the same color group.
+            # Match SolverVBD: an element is active if either Lame parameter is non-zero.
             tri_active_mask = (
                 (tri_materials[:, 0] != 0.0) | (tri_materials[:, 1] != 0.0) if len(tri_materials) else None
             )
