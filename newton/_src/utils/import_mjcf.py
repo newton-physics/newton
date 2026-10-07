@@ -55,6 +55,48 @@ from .mesh import load_meshes_from_file
 _MIN_EXPLICIT_MASS_REFERENCE_MASS = 1.0e-12
 
 
+def _parse_mesh_ref_pose(mesh_attrib: dict[str, str], label: str) -> tuple[np.ndarray, np.ndarray]:
+    """Parse and validate an MJCF mesh reference pose."""
+    try:
+        refpos = np.array(mesh_attrib.get("refpos", "0 0 0").split(), dtype=np.float32)
+    except ValueError as exc:
+        raise ValueError(f"{label} has invalid refpos data.") from exc
+    try:
+        refquat = np.array(mesh_attrib.get("refquat", "1 0 0 0").split(), dtype=np.float32)
+    except ValueError as exc:
+        raise ValueError(f"{label} has invalid refquat data.") from exc
+    if refpos.shape != (3,):
+        raise ValueError(f"{label} refpos must have 3 values.")
+    if refquat.shape != (4,):
+        raise ValueError(f"{label} refquat must have 4 values.")
+    refquat_norm = np.linalg.norm(refquat)
+    if not np.isfinite(refquat_norm) or refquat_norm == 0.0:
+        raise ValueError(f"{label} refquat must be finite and nonzero.")
+    if not np.all(np.isfinite(refpos)):
+        raise ValueError(f"{label} refpos must contain only finite values.")
+    return refpos, refquat / refquat_norm
+
+
+def _apply_mesh_ref_pose(
+    vertices: np.ndarray,
+    normals: np.ndarray | None,
+    refpos: np.ndarray,
+    refquat: np.ndarray,
+    scaling: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Subtract the reference position, rotate by inverse quaternion, then scale."""
+    rotation = np.asarray(
+        wp.quat_to_matrix(wp.quat(refquat[1], refquat[2], refquat[3], refquat[0])),
+        dtype=np.float32,
+    ).reshape(3, 3)
+    vertices = ((vertices - refpos) @ rotation) * scaling
+    if normals is not None:
+        normals = (normals @ rotation) / scaling
+        lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+        normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 0.0)
+    return vertices, normals
+
+
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
     """Default path resolver - joins base_dir with file_path.
 
@@ -572,7 +614,14 @@ def parse_mjcf(
                 if not os.path.isabs(fname):
                     fname = os.path.abspath(os.path.join(mjcf_dirname, fname))
                 name = mesh_name or ".".join(os.path.basename(fname).split(".")[:-1])
-                mesh_assets[name] = {"file": fname, "scale": mesh_scale, "maxhullvert": maxhullvert}
+                refpos, refquat = _parse_mesh_ref_pose(mesh_attrib, f"MJCF mesh {name!r}")
+                mesh_assets[name] = {
+                    "file": fname,
+                    "scale": mesh_scale,
+                    "refpos": refpos,
+                    "refquat": refquat,
+                    "maxhullvert": maxhullvert,
+                }
             elif "vertex" in mesh_attrib:
                 name = mesh_name
                 if not name:
@@ -631,24 +680,7 @@ def parse_mjcf(
                         )
                     texcoords = texcoords.reshape(-1, 2)
 
-                try:
-                    refpos = np.array(mesh_attrib.get("refpos", "0 0 0").split(), dtype=np.float32)
-                except ValueError as exc:
-                    raise ValueError(f"Inline MJCF mesh {name!r} has invalid refpos data.") from exc
-                try:
-                    refquat = np.array(mesh_attrib.get("refquat", "1 0 0 0").split(), dtype=np.float32)
-                except ValueError as exc:
-                    raise ValueError(f"Inline MJCF mesh {name!r} has invalid refquat data.") from exc
-                if refpos.shape != (3,):
-                    raise ValueError(f"Inline MJCF mesh {name!r} refpos must have 3 values.")
-                if refquat.shape != (4,):
-                    raise ValueError(f"Inline MJCF mesh {name!r} refquat must have 4 values.")
-                refquat_norm = np.linalg.norm(refquat)
-                if not np.isfinite(refquat_norm) or refquat_norm == 0.0:
-                    raise ValueError(f"Inline MJCF mesh {name!r} refquat must be finite and nonzero.")
-                if not np.all(np.isfinite(refpos)):
-                    raise ValueError(f"Inline MJCF mesh {name!r} refpos must contain only finite values.")
-                refquat /= refquat_norm
+                refpos, refquat = _parse_mesh_ref_pose(mesh_attrib, f"Inline MJCF mesh {name!r}")
 
                 mesh_assets[name] = {
                     "vertices": vertices,
@@ -725,27 +757,44 @@ def parse_mjcf(
     ) -> list[Mesh]:
         mesh_asset = mesh_assets[mesh_name]
         if "file" in mesh_asset:
-            return load_meshes_from_file(
+            refpos = mesh_asset["refpos"]
+            refquat = mesh_asset["refquat"]
+            has_ref_pose = not (np.all(refpos == 0.0) and np.array_equal(refquat, (1.0, 0.0, 0.0, 0.0)))
+            meshes = load_meshes_from_file(
                 mesh_asset["file"],
-                scale=scaling,
+                scale=(1.0, 1.0, 1.0) if has_ref_pose else scaling,
                 maxhullvert=maxhullvert,
                 override_color=override_color,
                 override_texture=override_texture,
             )
+            if not has_ref_pose:
+                return meshes
 
-        refquat = mesh_asset["refquat"]
-        rotation = np.asarray(
-            wp.quat_to_matrix(wp.quat(refquat[1], refquat[2], refquat[3], refquat[0])),
-            dtype=np.float32,
-        ).reshape(3, 3)
-        vertices = ((mesh_asset["vertices"] - mesh_asset["refpos"]) @ rotation) * scaling
+            transformed_meshes = []
+            for mesh in meshes:
+                vertices, normals = _apply_mesh_ref_pose(mesh.vertices, mesh.normals, refpos, refquat, scaling)
+                transformed_meshes.append(
+                    Mesh(
+                        vertices=vertices,
+                        indices=mesh.indices,
+                        normals=normals,
+                        uvs=mesh.uvs,
+                        compute_inertia=mesh.has_inertia,
+                        is_solid=mesh.is_solid,
+                        maxhullvert=mesh.maxhullvert,
+                        color=mesh.color,
+                        roughness=mesh.roughness,
+                        metallic=mesh.metallic,
+                        texture=mesh.texture,
+                    )
+                )
+            return transformed_meshes
+
+        vertices, normals = _apply_mesh_ref_pose(
+            mesh_asset["vertices"], mesh_asset["normals"], mesh_asset["refpos"], mesh_asset["refquat"], scaling
+        )
         faces = mesh_asset["faces"]
-        normals = mesh_asset["normals"]
         texcoords = mesh_asset["texcoords"]
-        if normals is not None:
-            normals = (normals @ rotation) / scaling
-            lengths = np.linalg.norm(normals, axis=1, keepdims=True)
-            normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 0.0)
 
         if faces is None:
             hull_vertices, faces = remesh_convex_hull(vertices, maxhullvert=maxhullvert)
@@ -913,11 +962,18 @@ def parse_mjcf(
             return wp.quat_from_matrix(wp.mat33(rot_matrix))
         if "zaxis" in attrib:
             zaxis = np.array(attrib["zaxis"].split(), dtype=float)
-            zaxis = wp.normalize(wp.vec3(*zaxis))
-            xaxis = wp.normalize(wp.cross(wp.vec3(0, 0, 1), zaxis))
-            yaxis = wp.normalize(wp.cross(zaxis, xaxis))
-            rot_matrix = np.array([xaxis, yaxis, zaxis]).T
-            return wp.quat_from_matrix(wp.mat33(rot_matrix))
+            zaxis /= np.linalg.norm(zaxis)
+            axis = np.array([-zaxis[1], zaxis[0], 0.0])
+            axis_norm_sq = np.dot(axis, axis)
+            # Match MuJoCo's mjuu_z2quat, including mjuu_normvec's mjEPS cutoff.
+            if axis_norm_sq < 1e-14:
+                axis = np.array([1.0, 0.0, 0.0])
+                axis_norm = 0.0
+            else:
+                axis_norm = np.sqrt(axis_norm_sq)
+                axis /= axis_norm
+            half_angle = 0.5 * np.arctan2(axis_norm, zaxis[2])
+            return wp.quat(*(axis * np.sin(half_angle)), np.cos(half_angle))
         return wp.quat_identity()
 
     def parse_fromto_transform(
@@ -1138,11 +1194,7 @@ def parse_mjcf(
                         print(f"Warning: mesh asset for fitting not found for {geom_name}, skipping geom")
                     continue
                 else:
-                    if "mesh" in geom_defaults:
-                        mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[mesh_name]["scale"])
-                    else:
-                        mesh_scale = mesh_assets[mesh_name]["scale"]
-                    scaling = np.array(mesh_scale) * scale
+                    scaling = np.asarray(mesh_assets[mesh_name]["scale"]) * scale
                     maxhullvert = mesh_assets[mesh_name].get("maxhullvert", mesh_maxhullvert)
 
                     m_meshes = load_mesh_asset(mesh_name, scaling, maxhullvert)
@@ -2009,18 +2061,26 @@ def parse_mjcf(
                     ball_damping = parse_float(joint_attrib, "damping", default_joint_damping)
                     break
                 is_angular = joint_type_str == "hinge"
+                is_linear = joint_type_str == "slide"
+                if is_linear:
+                    mjcf_slide_joint_names.add(joint_name[-1])
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 1.0))
                 # Only convert deg->rad when an explicit range is given; the default
                 # sentinel (+/-MAXVAL) represents "unlimited" and must not be scaled.
                 has_range = "range" in joint_attrib
                 limit_lower = np.deg2rad(joint_range[0]) if has_range and is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
+                if has_range and is_linear:
+                    limit_lower *= scale
+                    limit_upper *= scale
                 # MJCF ranges use absolute qpos, while Newton joint coordinates use qpos - ref.
                 # SolverMuJoCo adds ref back when it builds jnt_range.
                 if has_range:
                     joint_ref_value = parse_float(joint_attrib, "ref", 0.0)
                     if is_angular and use_degrees:
                         joint_ref_value = np.deg2rad(joint_ref_value)
+                    elif is_linear:
+                        joint_ref_value *= scale
                     limit_lower -= joint_ref_value
                     limit_upper -= joint_ref_value
 
@@ -2076,6 +2136,10 @@ def parse_mjcf(
                     parsing_mode="mjcf",
                     context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                 )
+                if is_linear:
+                    for attr_name in ("mujoco:dof_ref", "mujoco:dof_springref", "mujoco:limit_margin"):
+                        if attr_name in dof_attr:
+                            dof_attr[attr_name] *= scale
                 if has_solreflimit_mode:
                     # The mode keeps native MJCF semantics separate from
                     # Newton-authored force-space ``joint_limit_ke``/``kd``:
@@ -2700,6 +2764,7 @@ def parse_mjcf(
     # Maps individual MJCF joint names to their specific DOF index.
     # Used to resolve actuators targeting specific joints within combined Newton joints.
     mjcf_joint_name_to_dof: dict[str, int] = {}
+    mjcf_slide_joint_names: set[str] = set()
     # Maps tendon names to their index in the tendon custom attributes.
     # Used to resolve actuators targeting tendons.
     tendon_name_to_idx: dict[str, int] = {}
@@ -3289,6 +3354,7 @@ def parse_mjcf(
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
 
             # Extract gains based on actuator type
+            ctrlrange_is_derived = False
             if actuator_type == "position":
                 kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1
                 kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
@@ -3323,6 +3389,7 @@ def parse_mjcf(
                         radius = (upper - lower) / 2.0 * inheritrange
                         merged_attrib["ctrlrange"] = f"{mean - radius} {mean + radius}"
                         merged_attrib["ctrllimited"] = "true"
+                        ctrlrange_is_derived = True
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
                 if trntype != 0 or total_dofs == 0 or ctrl_direct:
                     ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
@@ -3362,6 +3429,30 @@ def parse_mjcf(
                             builder.joint_target_mode[dof_idx] = int(JointTargetMode.VELOCITY)
                         builder.joint_target_kd[dof_idx] = kv
 
+            elif actuator_type == "intvelocity":
+                kp = parse_float(merged_attrib, "kp", 1.0)
+                kv = parse_float(merged_attrib, "kv", 0.0)
+                dampratio = parse_float(merged_attrib, "dampratio", 0.0)
+                gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, -kp, -kv if kv > 0.0 else dampratio, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+                actrange_is_derived = False
+                inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
+                if inheritrange > 0 and joint_name and qd_start >= 0:
+                    # Joint limits are stored relative to ref; activation bounds use absolute qpos.
+                    dof_ref_value = 0.0
+                    ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
+                    if ref_attr is not None and isinstance(ref_attr.values, dict):
+                        dof_ref_value = float(ref_attr.values.get(qd_start, ref_attr.default))
+                    lower = builder.joint_limit_lower[qd_start] + dof_ref_value
+                    upper = builder.joint_limit_upper[qd_start] + dof_ref_value
+                    if lower < upper:
+                        mean = (upper + lower) / 2.0
+                        radius = (upper - lower) / 2.0 * inheritrange
+                        merged_attrib["actrange"] = f"{mean - radius} {mean + radius}"
+                        merged_attrib["actlimited"] = "true"
+                        actrange_is_derived = True
+
             elif actuator_type == "motor":
                 gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -3397,6 +3488,20 @@ def parse_mjcf(
                 parsing_mode="mjcf",
                 context={"actuator_name": act_name},
             )
+            if (
+                actuator_type in {"position", "velocity", "intvelocity"}
+                and target_joint_name in mjcf_slide_joint_names
+                and not ctrlrange_is_derived
+                and "mujoco:actuator_ctrlrange" in parsed_attrs
+            ):
+                parsed_attrs["mujoco:actuator_ctrlrange"] *= scale
+            if (
+                actuator_type == "intvelocity"
+                and target_joint_name in mjcf_slide_joint_names
+                and not actrange_is_derived
+                and "mujoco:actuator_actrange" in parsed_attrs
+            ):
+                parsed_attrs["mujoco:actuator_actrange"] *= scale
             if crank_length is not None:
                 parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 
@@ -3408,6 +3513,7 @@ def parse_mjcf(
             shortcut_type_defaults = {
                 "position": {"mujoco:actuator_biastype": 1},  # affine
                 "velocity": {"mujoco:actuator_biastype": 1},  # affine
+                "intvelocity": {"mujoco:actuator_biastype": 1, "mujoco:actuator_dyntype": 1},
                 "damper": {
                     "mujoco:actuator_gaintype": 1,  # affine
                     "mujoco:actuator_biastype": 0,  # none
