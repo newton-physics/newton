@@ -1207,6 +1207,8 @@ void main() {
 
         self._freeze_time_samples(stage)
 
+        if self._use_ovstage:
+            self._evict_ovstage_queries(self._runtime_prim_paths.get(path, path))
         handle = self._runtime_prim_handles.pop(path, None)
         if handle is not None:
             if self._use_ovstage:
@@ -2080,6 +2082,14 @@ void main() {
             entry = (path_list, query)
             self._ovstage_queries[key] = entry
         return entry[1]
+
+    def _evict_ovstage_queries(self, root: str) -> None:
+        """Release cached queries that touch ``root`` or its descendants."""
+        prefix = root + "/"
+        for key in [key for key in self._ovstage_queries if any(p == root or p.startswith(prefix) for p in key)]:
+            path_list, query = self._ovstage_queries.pop(key)
+            query.release().wait()
+            self._ovstage_paths.destroy_path_list(path_list)
 
     def _write_runtime_attribute(
         self,

@@ -315,6 +315,34 @@ def Xform "World"
         self.viewer._rtx.add_usd_reference_from_string.assert_not_called()
         self.viewer._rtx.remove_usd.assert_not_called()
 
+    def test_replacing_runtime_prim_releases_its_queries(self):
+        """Drop cached queries of a replaced runtime prim so repeated replacements do not accumulate them."""
+        from pxr import Usd, UsdGeom
+
+        self.viewer._rtx = mock.Mock()
+        self.viewer.stage = Usd.Stage.CreateInMemory()
+        UsdGeom.Xform.Define(self.viewer.stage, "/World/Lines")
+        self.viewer._frame_index = 0
+        self.viewer._runtime_prim_handles = {}
+        self.viewer._runtime_prim_paths = {}
+        self.viewer._runtime_prim_serial = 0
+        self.viewer._pending_hidden_prim_paths = set()
+
+        for _ in range(3):
+            runtime_path = self.viewer._replace_runtime_prim("/World/Lines")
+            self.viewer._get_ovstage_query([runtime_path])
+            self.viewer._get_ovstage_query([f"{runtime_path}/instance_0", f"{runtime_path}/instance_1"])
+        self.viewer._get_ovstage_query(["/World/A"])
+
+        self.assertEqual(
+            set(self.viewer._ovstage_queries),
+            {
+                (runtime_path,),
+                (f"{runtime_path}/instance_0", f"{runtime_path}/instance_1"),
+                ("/World/A",),
+            },
+        )
+
     def test_end_frame_waits_for_async_render_before_stage_writes(self):
         """Finish the previous async stage read before publishing the next frame."""
         events = []
