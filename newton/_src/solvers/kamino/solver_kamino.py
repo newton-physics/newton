@@ -1257,18 +1257,23 @@ class SolverKamino(SolverBase, CouplingInterface):
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """Convert Kamino contacts to legacy Newton contact-force storage.
+        """Update contact geometry and optional legacy force storage from Kamino.
+
+        Geometry-only export remains supported when ``contacts.force`` is ``None``.
 
         .. deprecated:: 1.7
-            Request :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` and
-            pass the resulting container to :meth:`step` instead.
+            Exporting ``contacts.force`` is deprecated. Request
+            :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` and pass the
+            resulting container to :meth:`step` instead. Geometry-only export
+            is not deprecated.
         """
-        warnings.warn(
-            "SolverKamino.update_contacts() is deprecated in Newton 1.7; request SolverObservableFlags.CONTACT_F and pass "
-            "SolverObservables to step().",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        if contacts.force is not None:
+            warnings.warn(
+                "SolverKamino.update_contacts() force export is deprecated in Newton 1.7; request "
+                "SolverObservableFlags.CONTACT_F and pass SolverObservables to step().",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self._populate_contact_observables(contacts, state, contacts.force)
 
     def _populate_contact_observables(

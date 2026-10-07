@@ -5,6 +5,7 @@
 
 import time
 import unittest
+import warnings
 from typing import Literal
 from unittest import mock
 
@@ -619,8 +620,55 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         self.assertEqual(solver._contacts_kamino.model_max_contacts_host, 1002)
 
         contacts = newton.CollisionPipeline(model).contacts()
-        with self.assertWarns(DeprecationWarning), self.assertNoLogs(level="WARNING"):
+        with warnings.catch_warnings(), self.assertNoLogs(level="WARNING"):
+            warnings.simplefilter("error", DeprecationWarning)
             solver.update_contacts(contacts, model.state())
+
+    def test_update_contacts_warns_only_for_force_export(self):
+        """Keep geometry-only export warning-free and deprecate only legacy forces."""
+        for native in (False, True):
+            for export_forces in (False, True):
+                with self.subTest(native=native, export_forces=export_forces):
+                    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                    SolverKamino.register_custom_attributes(builder)
+                    basics.build_sphere_on_plane(builder=builder, z_offset=-0.01)
+                    model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+                    solver = SolverKamino(
+                        model, config=SolverKamino.Config(integrator="euler", use_collision_detector=native)
+                    )
+                    pipeline = newton.CollisionPipeline(model)
+                    contacts = newton.Contacts(
+                        pipeline.rigid_contact_max,
+                        pipeline.soft_contact_max,
+                        device=self.default_device,
+                        requested_attributes={"force"} if export_forces else None,
+                    )
+                    state_in, state_out = model.state(), model.state()
+                    if not native:
+                        pipeline.collide(state_in, contacts)
+                    solver.step(state_in, state_out, None, None if native else contacts, SIM_DT)
+
+                    if export_forces:
+                        with self.assertWarnsRegex(
+                            DeprecationWarning, r"SolverKamino\.update_contacts\(\) force export.*1\.7"
+                        ) as warning:
+                            solver.update_contacts(contacts, state_in)
+                        self.assertEqual(warning.filename, __file__)
+                    else:
+                        self.assertIsNone(contacts.force)
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("error", DeprecationWarning)
+                            solver.update_contacts(contacts, state_in)
+
+                    count = int(contacts.rigid_contact_count.numpy()[0])
+                    self.assertGreater(count, 0)
+                    self.assertTrue(np.all(np.isfinite(contacts.rigid_contact_point0.numpy()[:count])))
+                    self.assertTrue(np.all(np.isfinite(contacts.rigid_contact_point1.numpy()[:count])))
+                    np.testing.assert_allclose(
+                        np.linalg.norm(contacts.rigid_contact_normal.numpy()[:count], axis=1), 1.0, atol=1e-6
+                    )
+                    if export_forces:
+                        self.assertGreater(np.linalg.norm(contacts.force.numpy()[:count, :3]), 0.0)
 
     def test_step_with_zero_max_contacts(self):
         """Verify SolverKamino.step() succeeds when the model admits no possible contacts."""

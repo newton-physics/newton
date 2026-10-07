@@ -126,7 +126,7 @@ Standard observables
    * - ``CONTACT_F`` / ``observables.contact_f``
      - Contact spatial forces aligned with the bound contacts
      - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
-       :class:`~newton.solvers.SolverXPBD`, and
+       :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`, and
        :class:`~newton.solvers.SolverKamino`
 
 :class:`~newton.solvers.SolverKamino` computes acceleration as the discrete
@@ -404,6 +404,104 @@ can still request their own work. MuJoCo currently keeps its post-constraint RNE
 stage enabled after its first request, so omitting those observables does not
 necessarily avoid that internal computation on subsequent steps.
 
+.. _vbd_contact_forces:
+
+Contact forces from SolverVBD
+-----------------------------
+
+:class:`~newton.solvers.SolverVBD` exports one wrench per contact record it solves -- body-body
+contacts, and rigid-soft particle, edge, and face records against rigid shapes -- through
+:attr:`~newton.solvers.SolverObservables.contact_f`:
+
+1. Create the :class:`~newton.CollisionPipeline` to establish contact capacities, then request
+   ``SolverObservableFlags.CONTACT_F`` with ``solver.observables()``. This allocates the entire
+   force array before stepping or graph capture; no contact attributes need to be requested.
+2. Each frame, run collision detection and pass the container to ``solver.step(...,
+   observables=observables)``. The step evaluates the wrenches directly into the array only
+   when ``CONTACT_F`` is selected, without changing the simulation result. Omit ``observables``
+   or pass a selection without ``CONTACT_F`` to skip reporting on earlier substeps.
+3. Rows ``[0, rigid_contact_max)`` hold the body-body contacts (``i < rigid_contact_count``) when
+   VBD integrates the rigid bodies: the force on body 0 by body 1 with its torque about body 0's
+   center of mass, the convention shared by every solver writing ``contact_f``. With
+   ``integrate_with_external_rigid_solver=True``, VBD's rigid rows are zero: request and consume
+   the external solver's forces through its own observable container. Rows
+   ``rigid_contact_max + i`` for ``i < soft_contact_count`` hold the rigid-soft records. Rows
+   past either active count are zero.
+
+Each soft row is expressed in world frame. Its first three entries are the force [N] exerted on
+the contacted shape's body (``model.shape_body[contacts.soft_contact_shape[i]]``, ``-1`` for a
+static shape) by the soft feature; its last three entries are the torque [N·m] of that force about
+the body's center of mass, or about the world origin for a static shape. The force acts at the
+shape-side contact point (``soft_contact_body_pos`` mapped to world space). Negate the force to get
+the force on the soft contact point, and distribute it to the record's particles with
+``soft_contact_barycentric``. All values are the solver's own contact law evaluated once at the
+final configuration of the step -- the forces the last iteration balanced -- not time-step
+averages; records without penetration are zero.
+
+For soft contacts this is the penalty law at the final per-contact stiffness, damping while
+the contact point approaches the surface, and regularized Coulomb friction on the step's slip,
+bounded by the elastic normal load. Body-body contacts use the compliant ALM or legacy AVBD
+contact law with its multipliers. Both evaluations retain the step-start pose history used
+by the iterations.
+
+Soft self-contact forces are not exported. :class:`~newton.sensors.SensorContact` reads the
+rigid-contact rows, so it reports VBD's body-body contacts, but it does not read the soft rows.
+Construct it with ``request_contact_attributes=False`` and pass the container as
+``sensor.update(state_out, contacts, observables=observables)``.
+
+.. testcode::
+
+   import numpy as np
+   import warp as wp
+   import newton
+   from newton.solvers import SolverObservableFlags
+
+   builder = newton.ModelBuilder()
+   builder.add_ground_plane()
+   builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.045), vel=wp.vec3(0.0), mass=1.0, radius=0.05)
+   ball = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.099), wp.quat_identity()))
+   ball_shape = builder.add_shape_sphere(ball, radius=0.1)
+   builder.color()
+   model = builder.finalize()
+
+   pipeline = newton.CollisionPipeline(model)
+   contacts = pipeline.contacts()
+   solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+   observables = solver.observables({SolverObservableFlags.CONTACT_F})
+   state_in, state_out = model.state(), model.state()
+
+   pipeline.collide(state_in, contacts)
+   solver.step(state_in, state_out, None, contacts, dt=1.0 / 60.0, observables=observables)
+
+   # Body-body rows: force on body 0 by body 1; flip the sign of rows where the ball is shape 1.
+   n_rigid = int(contacts.rigid_contact_count.numpy()[0])
+   rigid = observables.contact_f.numpy()[:n_rigid]
+   shape0 = contacts.rigid_contact_shape0.numpy()[:n_rigid]
+   sign = np.where(shape0 == ball_shape, 1.0, -1.0)
+   force_on_ball = (sign[:, None] * rigid[:, :3]).sum(axis=0)  # [N], world frame
+
+   # Soft rows follow the rigid rows.
+   n_soft = int(contacts.soft_contact_count.numpy()[0])
+   start = contacts.rigid_contact_max
+   wrenches = observables.contact_f.numpy()[start : start + n_soft]
+   force_on_shape = wrenches[:, :3]  # [N], on the ground (static shape), world frame
+   torque = wrenches[:, 3:]  # [N·m], about the world origin for the static ground
+
+   # Reaction on the soft side: negate and distribute by barycentric weights.
+   corners = contacts.soft_contact_indices.numpy()[:n_soft]
+   weights = contacts.soft_contact_barycentric.numpy()[:n_soft]
+   particle_force = np.zeros((model.particle_count, 3))
+   for row in range(n_soft):
+       for corner, weight in zip(corners[row], weights[row]):
+           if corner >= 0:
+               particle_force[corner] -= weight * force_on_shape[row]
+
+   print(n_rigid > 0, force_on_ball[2] > 0.0, n_soft, force_on_shape[0, 2] < 0.0, particle_force[0, 2] > 0.0)
+
+.. testoutput::
+
+   True True 1 True True
+
 Deprecated extended attributes
 ------------------------------
 
@@ -439,7 +537,7 @@ The following compatibility paths remain available for a deprecation period:
      - Pass contact observables to ``solver.step(..., observables=observables)``
 
 The request methods and legacy force export via ``update_contacts()`` emit
-:class:`DeprecationWarning`. MuJoCo's geometry-only ``update_contacts()`` remains
+:class:`DeprecationWarning`. MuJoCo and Kamino keep geometry-only ``update_contacts()``
 supported without a warning when ``contacts.force`` is ``None``.
 ``SensorIMU`` and ``SensorContact`` retain their legacy
 ``request_state_attributes=True`` and ``request_contact_attributes=True`` defaults
@@ -461,96 +559,3 @@ Existing custom model, state, and control data remain supported; the migration
 only covers built-in solver-produced diagnostics. The new ``CONTACT*`` frequencies
 are reserved for solver observables: ``ModelBuilder.add_custom_attribute()`` rejects
 them because builder finalization does not allocate dynamic contact rows.
-
-The VBD contact-force export added on ``main`` currently uses the legacy
-``Contacts.force`` path below; it does not yet advertise ``CONTACT_F`` observables.
-
-.. _vbd_contact_forces:
-
-Contact forces from SolverVBD
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-:class:`~newton.solvers.SolverVBD` exports one wrench per contact record it solves -- body-body
-contacts, and rigid-soft particle, edge, and face records against rigid shapes -- through
-:attr:`~newton.Contacts.force`:
-
-1. Request ``"force"`` on the builder or the finalized model *before* creating the
-   :class:`~newton.Contacts` buffer; a buffer allocated earlier has ``force is None`` and the
-   export stays off.
-2. Each frame, run collision detection, step the solver with that buffer, then call
-   :meth:`~newton.solvers.SolverVBD.update_contacts` with the same buffer. The step evaluates
-   the wrenches only when ``contacts.force`` is allocated; the extra cost is one kernel over
-   each contact capacity, and the evaluation never changes the simulation result.
-3. Rows ``[0, rigid_contact_max)`` hold the body-body contacts (``i < rigid_contact_count``) when
-   VBD integrates the rigid bodies: the force on body 0 by body 1 with its torque about body 0's
-   center of mass, the convention shared by every solver writing ``force``. With an external rigid
-   solver these rows are left to that solver; call its ``update_contacts`` first, because
-   :meth:`~newton.solvers.SolverXPBD.update_contacts` clears the whole array. Rows
-   ``rigid_contact_max + i`` for ``i < soft_contact_count`` hold the rigid-soft records. Rows
-   past either active count are zero.
-
-Each soft row is expressed in world frame. Its first three entries are the force [N] exerted on
-the contacted shape's body (``model.shape_body[contacts.soft_contact_shape[i]]``, ``-1`` for a
-static shape) by the soft feature; its last three entries are the torque [N·m] of that force about
-the body's center of mass, or about the world origin for a static shape. The force acts at the
-shape-side contact point (``soft_contact_body_pos`` mapped to world space). Negate the force to get
-the force on the soft contact point, and distribute it to the record's particles with
-``soft_contact_barycentric``. All values are the solver's own contact law evaluated once at the
-final configuration of the step -- the forces the last iteration balanced -- not time-step
-averages; records without penetration are zero.
-
-Soft self-contact forces are not exported. :class:`~newton.sensors.SensorContact` reads the
-rigid-contact rows, so it reports VBD's body-body contacts, but it does not read the soft rows.
-
-.. testcode::
-
-   import numpy as np
-   import warp as wp
-   import newton
-
-   builder = newton.ModelBuilder()
-   builder.add_ground_plane()
-   builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.045), vel=wp.vec3(0.0), mass=1.0, radius=0.05)
-   ball = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.099), wp.quat_identity()))
-   ball_shape = builder.add_shape_sphere(ball, radius=0.1)
-   builder.color()
-   builder.request_contact_attributes("force")  # before pipeline.contacts()
-   model = builder.finalize()
-
-   pipeline = newton.CollisionPipeline(model)
-   contacts = pipeline.contacts()
-   solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
-   state_in, state_out = model.state(), model.state()
-
-   pipeline.collide(state_in, contacts)
-   solver.step(state_in, state_out, None, contacts, dt=1.0 / 60.0)
-   solver.update_contacts(contacts, state_out)
-
-   # Body-body rows: force on body 0 by body 1; flip the sign of rows where the ball is shape 1.
-   n_rigid = int(contacts.rigid_contact_count.numpy()[0])
-   rigid = contacts.force.numpy()[:n_rigid]
-   shape0 = contacts.rigid_contact_shape0.numpy()[:n_rigid]
-   sign = np.where(shape0 == ball_shape, 1.0, -1.0)
-   force_on_ball = (sign[:, None] * rigid[:, :3]).sum(axis=0)  # [N], world frame
-
-   # Soft rows follow the rigid rows.
-   n_soft = int(contacts.soft_contact_count.numpy()[0])
-   start = contacts.rigid_contact_max
-   wrenches = contacts.force.numpy()[start : start + n_soft]
-   force_on_shape = wrenches[:, :3]  # [N], on the ground (static shape), world frame
-   torque = wrenches[:, 3:]  # [N·m], about the world origin for the static ground
-
-   # Reaction on the soft side: negate and distribute by barycentric weights.
-   corners = contacts.soft_contact_indices.numpy()[:n_soft]
-   weights = contacts.soft_contact_barycentric.numpy()[:n_soft]
-   particle_force = np.zeros((model.particle_count, 3))
-   for row in range(n_soft):
-       for corner, weight in zip(corners[row], weights[row]):
-           if corner >= 0:
-               particle_force[corner] -= weight * force_on_shape[row]
-
-   print(n_rigid > 0, force_on_ball[2] > 0.0, n_soft, force_on_shape[0, 2] < 0.0, particle_force[0, 2] > 0.0)
-
-.. testoutput::
-
-   True True 1 True True

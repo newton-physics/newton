@@ -1666,11 +1666,11 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
 .. note::
 
    :class:`~solvers.SolverVBD` populates the rigid-contact rows of
-   :attr:`~Contacts.force` when it integrates the rigid bodies, and the
+   :attr:`~solvers.SolverObservables.contact_f` when it integrates the rigid bodies, and the
    soft-contact rows (row ``rigid_contact_max + i`` for soft contact ``i``) for
-   rigid-soft particle, edge, and face records. With an external rigid solver the
-   rigid rows are left to that solver. See
-   :meth:`~solvers.SolverVBD.update_contacts` for the sign and torque convention.
+   rigid-soft particle, edge, and face records. With an external rigid solver, VBD's
+   rigid rows are zero; consume that solver's forces from its own observables.
+   See :ref:`vbd_contact_forces` for the sign and torque convention.
 
 Example usage:
 

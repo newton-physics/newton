@@ -117,9 +117,7 @@ def run_conveyor(
         model, rigid_contact_max=solver.get_max_contact_count() if solver_name == "mujoco" else None
     )
     contacts = collision_pipeline.contacts()
-    solver_observables = None
-    if solver_name != "vbd":
-        solver_observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    solver_observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)
@@ -151,10 +149,9 @@ def run_conveyor(
         for _ in range(substeps):
             state_0.clear_forces()
             conveyor.apply(state_0)
-            conveyor.snapshot_prev(solver)
             collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt, observables=solver_observables)
-            conveyor.update(solver, contacts, solver_observables, state_1, sim_dt)
+            conveyor.update(contacts, solver_observables, state_1, sim_dt)
             if collect_diagnostics:
                 belt_contact_counts[sample] = conveyor.body_contact_count.numpy()[box_body]
                 conveyor_force_norms[sample] = np.linalg.norm(conveyor.conveyor_body_f.numpy()[box_body][:3])
@@ -240,9 +237,7 @@ def run_multi_belt(device, solver_name, belts, box_xy, *, box_half=(0.45, 0.2, 0
         model, rigid_contact_max=solver.get_max_contact_count() if solver_name == "mujoco" else None
     )
     contacts = collision_pipeline.contacts()
-    solver_observables = None
-    if solver_name != "vbd":
-        solver_observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    solver_observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)
@@ -260,10 +255,9 @@ def run_multi_belt(device, solver_name, belts, box_xy, *, box_half=(0.45, 0.2, 0
         for _ in range(substeps):
             state_0.clear_forces()
             conveyor.apply(state_0)
-            conveyor.snapshot_prev(solver)
             collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt, observables=solver_observables)
-            conveyor.update(solver, contacts, solver_observables, state_1, sim_dt)
+            conveyor.update(contacts, solver_observables, state_1, sim_dt)
             state_0, state_1 = state_1, state_0
         q = state_0.body_q.numpy()[box_body]
         positions[f + 1], quats[f + 1] = q[:3], q[3:7]
