@@ -25,7 +25,7 @@ def Xform "Bear" (
     {
         custom float physics:density = 300
         custom float physics:poissonsRatio = 0.35
-        custom float physics:youngsModulus = 50000
+        custom float physics:youngsModulus = 125000
     }
 
     def ParticleField3DGaussianSplat "Gaussian" (

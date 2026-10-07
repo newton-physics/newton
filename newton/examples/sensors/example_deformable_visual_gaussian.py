@@ -256,13 +256,10 @@ class Example:
             self.recorder.write("rgb", self.color_rgba_tiled)
             self.recorder.write("depth", self.depth_rgba_tiled)
 
-    def test_final(self):
-        self._render_camera()
-        self.recorder.close()
-
+    def test_post_step(self):
+        """Detect transient inversions during impact, not only after settling."""
         positions = self.state_0.particle_q.numpy()
         assert np.all(np.isfinite(positions))
-        assert float(np.mean(positions[:, 2])) < self.initial_center_height - 0.05
         assert float(np.min(positions[:, 2])) > -0.2
 
         tet_indices = self.model.tet_indices.numpy()
@@ -277,7 +274,15 @@ class Example:
                 axis=2,
             )
         )
-        assert np.all(signed_six_volumes > 0.0)
+        assert np.all(signed_six_volumes > 0.0), "The bear has inverted tetrahedra during the drop"
+
+    def test_final(self):
+        self.test_post_step()
+        self._render_camera()
+        self.recorder.close()
+
+        positions = self.state_0.particle_q.numpy()
+        assert float(np.mean(positions[:, 2])) < self.initial_center_height - 0.05
 
         color = self.color_image.numpy()
         depth = self.depth_image.numpy()
