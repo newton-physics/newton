@@ -659,6 +659,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         model.joint_qd_start,
                         state_in.joint_q,
                         state_aug.joint_qd_internal_in,
+                        None,  # joint_qdd
                         model.joint_axis,
                         model.joint_dof_dim,
                         self.body_I_m,

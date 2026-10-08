@@ -3243,10 +3243,19 @@ class TestActuatorStep(unittest.TestCase):
             return effort
 
         for step_i in range(steps):
-            check_effort(f"step {step_i}", kp_now, kd_now, integral)
+            effort = check_effort(f"step {step_i}", kp_now, kd_now, integral)
             act_a, act_b = act_b, act_a
             solver.step(state_in, state_out, control, None, dt=dt)
             state_in, state_out = state_out, state_in
+            if bias_force:
+                # With gravity and Coriolis in the prediction, the predicted end-of-step
+                # state is the one the solver reached, so the PD law there gives the effort.
+                q_end = state_in.joint_q.numpy().astype(np.float64)[:n]
+                qd_end = state_in.joint_qd.numpy().astype(np.float64)[:n]
+                law = kp_now * (target - q_end) - kd_now * qd_end
+                np.testing.assert_allclose(
+                    effort[:n][act], law[act], rtol=2.0e-3, atol=1.0e-3, err_msg=f"step {step_i}: law at end state"
+                )
 
         if retune:
             kp_now, kd_now = (4.0 * kp).astype(np.float32), (4.0 * kd).astype(np.float32)
@@ -3398,12 +3407,29 @@ class TestActuatorStep(unittest.TestCase):
         )
 
     def test_pipeline_pd_bias_force_implicit(self):
-        """Verify the implicit solve includes gravity and Coriolis passed as the bias force."""
-        for dofs, gains in ((1, {}), (2, {"kp": [4000.0, 3000.0], "kd": [40.0, 30.0]})):
-            with self.subTest(dofs=dofs):
+        """Verify the implicit solve includes gravity and Coriolis passed as the bias force.
+
+        The partially actuated case puts bias on a DOF the actuator does not
+        drive, which still moves the driven one through the coupled response.
+        """
+        chain = {"dofs": 2, "kp": [4000.0, 3000.0], "kd": [40.0, 30.0]}
+        cases = {"pendulum": {}, "chain": chain, "chain_tip_only_two_worlds": {**chain, "actuated": [1], "worlds": 2}}
+        for name, config in cases.items():
+            with self.subTest(case=name):
                 self.run_test_actuator_pipeline(
-                    drive="pd", dofs=dofs, q0=0.3, qd0=1.5, target=0.6, steps=3, bias_force=True, **gains
+                    drive="pd", q0=0.3, qd0=1.5, target=0.6, steps=3, bias_force=True, **config
                 )
+
+        device = wp.get_device()
+        model = _build_pendulum(device)
+        actuator, response = _make_implicit_actuator(
+            model, device, wp.array([500.0], dtype=float, device=device), wp.array([5.0], dtype=float, device=device)
+        )
+        state, control = model.state(), model.control()
+        response.refresh(state)
+        for bad in (wp.zeros(2, dtype=float, device=device), wp.zeros(1, dtype=wp.float64, device=device)):
+            with self.assertRaises(ValueError):
+                actuator.step(state, control, dt=0.01, bias_force=bad)
 
     def test_pipeline_pd_partially_actuated_implicit(self):
         """Drive only the tip joint of the two-link chain."""

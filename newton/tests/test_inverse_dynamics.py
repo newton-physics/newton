@@ -1563,6 +1563,34 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 np.testing.assert_allclose(measured_linear, expected_linear, atol=1e-5, rtol=1e-5)
                 np.testing.assert_allclose(measured_angular, expected_angular, atol=1e-5, rtol=1e-5)
 
+    def test_coriolis_floating_root_with_child_link(self):
+        """Free-joint Coriolis must cover the links below the floating body.
+
+        A free base translates and rotates at once, with a link hinged to it
+        whose CoM lies on the rotation axis. With no force acting nothing in
+        this system accelerates, so ``C(q, q_dot)*q_dot`` is zero on every
+        DOF. The single-body tests above cannot see whether the
+        ``omega x v_com`` correction also reaches the linked body.
+        """
+        identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
+        base = builder.add_link(xform=identity_xform, mass=1.0, inertia=self.I_UNIT)
+        arm = builder.add_link(xform=identity_xform, mass=2.0, inertia=self.I_UNIT, com=wp.vec3(0.3, 0.0, 0.0))
+        j_root = builder.add_joint_free(parent=-1, child=base, parent_xform=identity_xform, child_xform=identity_xform)
+        j_arm = builder.add_joint_revolute(parent=base, child=arm, axis=wp.vec3(0.0, 0.0, 1.0))
+        builder.add_articulation([j_root, j_arm], label="floating_base_with_link")
+
+        model = builder.finalize(device=self.device)
+        state = model.state()
+        state.joint_q.assign(np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32))
+        state.joint_qd.assign(np.array([0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32))
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        inverse_dynamics = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(model, state, _PassiveOutput.CORIOLIS_FORCE, inverse_dynamics)
+
+        np.testing.assert_allclose(inverse_dynamics.coriolis_force.numpy(), np.zeros(7), atol=1e-5)
+
     def test_coriolis_floating_root_with_non_identity_child_xform(self):
         """Verify free-joint Coriolis with a non-identity child_xform on the free joint.
 

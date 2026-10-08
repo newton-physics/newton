@@ -1,1 +1,1 @@
-Add an optional `bias_force` argument to `Actuator.step()`. In implicit effort mode the predicted end-of-step velocity includes it, so stiff implicit drives counter gravity and Coriolis forces from `newton.eval_inverse_dynamics_passive()` instead of sagging under them.
+Add an optional `bias_force` argument to `Actuator.step()`. In implicit effort mode the predicted end-of-step velocity includes it, so stiff implicit drives anticipate gravity and Coriolis forces from `newton.eval_inverse_dynamics_passive()` instead of only reacting after the joint has moved.

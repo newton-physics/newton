@@ -19,8 +19,8 @@ and ``A`` is the coupled inverse-mass response supplied by
 ``b`` is the optional bias force passed to
 :meth:`Actuator.step <newton.actuators.Actuator.step>`, in the sign convention
 of the manipulator equation ``tau = M qdd + b``: the Coriolis and gravity
-forces ``C qd + g`` that the step applies besides this actuator, as returned by
-:func:`~newton.eval_inverse_dynamics_passive`. Without it, ``b`` is zero and
+forces ``C qd + g`` from :func:`~newton.eval_inverse_dynamics_passive`. The
+step itself applies ``-b``. Without it, ``b`` is zero and
 ``qd(p)`` advances the step-start velocity by this actuator's own impulse alone.
 """
 
@@ -657,10 +657,15 @@ class _EffortModeImplicit:
         inverse_blocks = self._response.inverse_blocks
         bias_velocity = None
         if bias_force is not None:
-            if bias_force.shape[0] != self._joint_dof_count:
+            if not isinstance(bias_force, wp.array):
+                raise TypeError(f"bias_force must be a wp.array, got {type(bias_force).__name__}")
+            if bias_force.ndim != 1 or bias_force.dtype != wp.float32 or bias_force.shape[0] != self._joint_dof_count:
                 raise ValueError(
-                    f"bias_force has {bias_force.shape[0]} entries; expected joint_dof_count = {self._joint_dof_count}"
+                    f"bias_force must be a 1-D float32 array with joint_dof_count = {self._joint_dof_count} entries; "
+                    f"got shape {bias_force.shape} and dtype {wp.types.type_repr(bias_force.dtype)}"
                 )
+            if bias_force.device != self._device:
+                raise ValueError(f"bias_force is on {bias_force.device}, but the actuator runs on {self._device}")
             bias_velocity = self._bias_velocity
             wp.launch(
                 _bias_velocity_kernel,
