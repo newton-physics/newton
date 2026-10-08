@@ -144,6 +144,24 @@ def _merge_options(base_options: dict[str, Any], device_options: dict[str, Any])
     return merged_options
 
 
+def _run_example_subprocess(module, argv, timeout, *, allow_deprecation_warnings=False):
+    env = os.environ.copy()
+    env.pop("PYTHONWARNINGS", None)
+    if wp.config.kernel_cache_dir is not None:
+        env["WARP_CACHE_PATH"] = os.path.dirname(wp.config.kernel_cache_dir)
+    strict_warnings = newton.tests.unittest_utils.strict_warnings and not allow_deprecation_warnings
+    warning_args = newton.tests.unittest_utils.get_strict_warning_args() if strict_warnings else []
+    command = [sys.executable, *warning_args]
+    if newton.tests.unittest_utils.coverage_enabled:
+        with tempfile.NamedTemporaryFile(dir=newton.tests.unittest_utils.coverage_temp_dir, delete=False) as coverage:
+            pass
+        command.extend(["-m", "coverage", "run", f"--data-file={coverage.name}"])
+        if newton.tests.unittest_utils.coverage_branch:
+            command.append("--branch")
+    command.extend(["-m", module, *argv])
+    return subprocess.run(command, capture_output=True, text=True, env=env, timeout=timeout, check=False)
+
+
 def add_example_test(
     cls: type,
     name: str,
@@ -155,178 +173,37 @@ def add_example_test(
     test_suffix: str | None = None,
     expect_output_regexes: list[_OutputRegexSpec] | None = None,
     allow_output_regexes: list[_OutputRegexSpec] | None = None,
+    *,
+    variants: list[dict[str, Any]] | None = None,
 ):
-    """Registers a Newton example to run on ``devices`` as a TestCase."""
-
-    if (expect_output_regexes is not None or allow_output_regexes is not None) and not issubclass(cls, NewtonTestCase):
+    """Register an example, optionally sharing a subprocess across argument variants."""
+    if variants is None:
+        variants = [
+            {
+                "test_options": test_options or {},
+                "test_options_cpu": test_options_cpu or {},
+                "test_options_cuda": test_options_cuda or {},
+                "expect_output_regexes": expect_output_regexes,
+                "allow_output_regexes": allow_output_regexes,
+                "test_suffix": test_suffix,
+            }
+        ]
+    if not issubclass(cls, NewtonTestCase) and any(
+        variant.get(key) is not None
+        for variant in variants
+        for key in ("expect_output_regexes", "allow_output_regexes")
+    ):
         raise TypeError("Output regex expectations require a NewtonTestCase subclass")
-
-    # verify the module exists (use package-relative path so this works from any CWD)
-    _examples_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
-    if not os.path.exists(os.path.join(_examples_dir, f"{name.replace('.', '/')}.py")):
+    examples_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
+    if not os.path.exists(os.path.join(examples_dir, f"{name.replace('.', '/')}.py")):
         raise ValueError(f"Example {name} does not exist")
-
     _registered_examples.add(name)
-
-    if test_options is None:
-        test_options = {}
-    if test_options_cpu is None:
-        test_options_cpu = {}
-    if test_options_cuda is None:
-        test_options_cuda = {}
-
-    def run(test, device):
-        is_cuda = wp.get_device(device).is_cuda
-        if is_cuda:
-            options = _merge_options(test_options, test_options_cuda)
-        else:
-            options = _merge_options(test_options, test_options_cpu)
-
-        # Mark the test as skipped if ONNX policy inference is not installed but required.
-        onnx_required = options.pop("onnx_required", False)
-        torch_required = options.pop("torch_required", False)
-        onnx_required = onnx_required or torch_required
-        if onnx_required and not _HAS_ONNX_RUNTIME:
-            test.skipTest("onnx or warp-nn not installed")
-
-        # Mark the test as skipped if USD is not installed but required
-        usd_required = options.pop("usd_required", False)
-        if usd_required and not USD_AVAILABLE:
-            test.skipTest("Requires usd-core")
-
-        # Escalate deprecations to errors in the example subprocess only when the
-        # runner was invoked with --strict-warnings (CI) and the example has not
-        # opted out.
-        allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
-        strict_warnings = newton.tests.unittest_utils.strict_warnings and not allow_deprecation_warnings
-
-        # Pass the parent dir; the subprocess's init_kernel_cache appends the version.
-        warp_cache_path = wp.config.kernel_cache_dir
-
-        env_vars = os.environ.copy()
-        if warp_cache_path is not None:
-            env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
-        # Drop any ambient PYTHONWARNINGS so a stray policy in the caller's
-        # environment cannot turn a lenient run strict; govern the policy solely
-        # through the -W flags below.
-        env_vars.pop("PYTHONWARNINGS", None)
-        warning_args = newton.tests.unittest_utils.get_strict_warning_args() if strict_warnings else []
-
-        if newton.tests.unittest_utils.coverage_enabled:
-            # Generate a random coverage data file name - file is deleted along with containing directory
-            with tempfile.NamedTemporaryFile(
-                dir=newton.tests.unittest_utils.coverage_temp_dir, delete=False
-            ) as coverage_file:
-                pass
-
-            command = [sys.executable, *warning_args, "-m", "coverage", "run", f"--data-file={coverage_file.name}"]
-
-            if newton.tests.unittest_utils.coverage_branch:
-                command.append("--branch")
-
-        else:
-            command = [sys.executable, *warning_args]
-
-        # Append Warp commands
-        command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
-
-        # Forward any --warp-config overrides from the test runner
-        for entry in newton.tests.unittest_utils.warp_config_overrides:
-            command.extend(["--warp-config", entry])
-
-        if not use_viewer:
-            stage_path = (
-                options.pop(
-                    "stage_path",
-                    os.path.join(os.path.dirname(__file__), f"outputs/{name}_{sanitize_identifier(device)}.usd"),
-                )
-                if USD_AVAILABLE
-                else "None"
-            )
-
-            if stage_path:
-                command.extend(["--stage-path", stage_path])
-                try:
-                    os.remove(stage_path)
-                except OSError:
-                    pass
-        else:
-            # new-style example, use null viewer for tests (no disk I/O needed)
-            stage_path = "None"
-            command.extend(["--viewer", "null"])
-            # Remove viewer/stage_path from options so they can't override the null viewer
-            options.pop("viewer", None)
-            options.pop("stage_path", None)
-
-        command.extend(_build_command_line_options(options))
-
-        # Set the test timeout in seconds
-        test_timeout = options.pop("test_timeout", 600)
-
-        # Can set active=True when tuning the test parameters
-        with wp.ScopedTimer(f"{name}_{sanitize_identifier(device)}", active=False):
-            # Run the script as a subprocess
-            result = subprocess.run(
-                command, capture_output=True, text=True, env=env_vars, timeout=test_timeout, check=False
-            )
-
-        if isinstance(test, NewtonTestCase):
-            _register_output_regexes(test, expect_output_regexes, required=True)
-            _register_example_allow_output_regexes(
-                test,
-                is_cuda=is_cuda,
-            )
-            _register_output_regexes(test, allow_output_regexes, required=False)
-            test.assertSubprocessSuccess(result, command=command)
-        else:
-            # print any error messages (e.g.: module not found)
-            if result.stderr != "":
-                print(result.stderr)
-
-            # Check the return code (0 is standard for success)
-            test.assertEqual(
-                result.returncode,
-                0,
-                msg=(
-                    f"Failed with return code {result.returncode}, command: {' '.join(command)}\n\n"
-                    f"Output:\n{result.stdout}\n{result.stderr}"
-                ),
-            )
-
-        # Clean up output file for old-style examples that may have created one
-        if stage_path and stage_path != "None" and result.returncode == 0:
-            try:
-                os.remove(stage_path)
-            except OSError:
-                pass
-
-    test_name = f"test_{name}_{test_suffix}" if test_suffix else f"test_{name}"
-    add_function_test(cls, test_name, run, devices=devices, check_output=False)
-
-
-def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpec] | None, *, required: bool):
-    add_regex = test.expectOutputRegex if required else test.allowOutputRegex
-    for regex_spec in regexes or ():
-        if isinstance(regex_spec, tuple):
-            regex, stream = regex_spec
-        else:
-            regex, stream = regex_spec, "any"
-        add_regex(regex, stream=stream)
-
-
-def add_example_batch(cls: type, name: str, variants: list[dict[str, Any]]):
-    """Share a subprocess across an example's variants on each device."""
-    _registered_examples.add(name)
-    devices = {str(device): device for variant in variants for device in variant["devices"]}
 
     def run(test, device):
         is_cuda = wp.get_device(device).is_cuda
         cases = []
         for variant in variants:
-            if str(device) not in map(str, variant["devices"]):
-                continue
-            label = variant.get("test_suffix", "default")
-            with test.subTest(variant=label):
+            with test.subTest(variant=variant.get("test_suffix")):
                 options = _merge_options(
                     variant.get("test_options", {}),
                     variant.get("test_options_cuda" if is_cuda else "test_options_cpu", {}),
@@ -337,95 +214,130 @@ def add_example_batch(cls: type, name: str, variants: list[dict[str, Any]]):
                     test.skipTest("onnx or warp-nn not installed")
                 if options.pop("usd_required", False) and not USD_AVAILABLE:
                     test.skipTest("Requires usd-core")
-
                 timeout = options.pop("test_timeout", 600)
-                allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
-                options.pop("viewer", None)
-                options.pop("stage_path", None)
-                argv = ["--device", str(device), "--test", "--quiet", "--viewer", "null"]
+                allow_deprecations = options.pop("allow_deprecation_warnings", False)
+                argv = ["--device", str(device), "--test", "--quiet"]
                 for entry in newton.tests.unittest_utils.warp_config_overrides:
                     argv.extend(["--warp-config", entry])
+                stage_path = None
+                if use_viewer:
+                    argv.extend(["--viewer", "null"])
+                    options.pop("viewer", None)
+                    options.pop("stage_path", None)
+                else:
+                    stage_path = (
+                        options.pop(
+                            "stage_path",
+                            os.path.join(
+                                os.path.dirname(__file__), f"outputs/{name}_{sanitize_identifier(device)}.usd"
+                            ),
+                        )
+                        if USD_AVAILABLE
+                        else "None"
+                    )
+                    if stage_path:
+                        argv.extend(["--stage-path", stage_path])
+                        with contextlib.suppress(OSError):
+                            os.remove(stage_path)
                 argv.extend(_build_command_line_options(options))
-                allowed = list(_EXAMPLE_ALLOW_OUTPUT_REGEXES) if issubclass(cls, NewtonTestCase) else []
-                if issubclass(cls, NewtonTestCase) and not is_cuda:
-                    allowed.append((_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"))
-                allowed.extend(variant.get("allow_output_regexes", ()))
                 cases.append(
                     {
-                        "label": label,
+                        "variant": variant,
                         "argv": argv,
+                        "stage_path": stage_path,
                         "timeout": timeout,
-                        "allow_deprecation_warnings": allow_deprecation_warnings,
-                        "check_output": issubclass(cls, NewtonTestCase),
-                        "allowed": allowed,
-                        "expected": variant.get("expect_output_regexes", []),
+                        "allow_deprecation_warnings": allow_deprecations,
                     }
                 )
         if not cases:
             return
 
-        env = os.environ.copy()
-        env.pop("PYTHONWARNINGS", None)
-        if wp.config.kernel_cache_dir is not None:
-            env["WARP_CACHE_PATH"] = os.path.dirname(wp.config.kernel_cache_dir)
-        warning_args = (
-            newton.tests.unittest_utils.get_strict_warning_args() if newton.tests.unittest_utils.strict_warnings else []
-        )
-        command = [sys.executable, *warning_args]
-        if newton.tests.unittest_utils.coverage_enabled:
-            with tempfile.NamedTemporaryFile(
-                dir=newton.tests.unittest_utils.coverage_temp_dir, delete=False
-            ) as coverage:
-                pass
-            command.extend(["-m", "coverage", "run", f"--data-file={coverage.name}"])
-            if newton.tests.unittest_utils.coverage_branch:
-                command.append("--branch")
-        with tempfile.TemporaryDirectory() as directory:
-            manifest = os.path.join(directory, "variants.json")
-            with open(manifest, "w", encoding="utf-8") as stream:
-                json.dump(
-                    {
-                        "module": f"newton.examples.{name}",
-                        "cases": cases,
-                        "strict_warnings": newton.tests.unittest_utils.strict_warnings,
-                        "allowed_deprecation_warnings": newton.tests.unittest_utils.allowed_deprecation_warnings,
-                    },
-                    stream,
+        module = f"newton.examples.{name}"
+        if len(cases) == 1:
+            case = cases[0]
+            results = [
+                _run_example_subprocess(
+                    module,
+                    case["argv"],
+                    case["timeout"],
+                    allow_deprecation_warnings=case["allow_deprecation_warnings"],
                 )
-            command.extend(["-m", "newton.tests.example_batch", manifest])
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=sum(case["timeout"] for case in cases),
-                check=False,
-            )
-        if isinstance(test, NewtonTestCase):
-            test.assertSubprocessSuccess(result, command=command)
+            ]
         else:
-            test.assertEqual(result.returncode, 0, f"{name} batch failed:\n{result.stdout}\n{result.stderr}")
-            if result.stderr:
-                print(result.stderr)
+            with tempfile.TemporaryDirectory() as directory:
+                manifest = os.path.join(directory, "variants.json")
+                output = os.path.join(directory, "results.json")
+                with open(manifest, "w", encoding="utf-8") as stream:
+                    json.dump(
+                        {
+                            "module": module,
+                            "cases": [
+                                {"argv": case["argv"], "allow_deprecation_warnings": case["allow_deprecation_warnings"]}
+                                for case in cases
+                            ],
+                        },
+                        stream,
+                    )
+                batch = _run_example_subprocess(
+                    "newton.tests.example_batch", [manifest, output], sum(case["timeout"] for case in cases)
+                )
+                _check_example_result(test, batch, is_cuda=is_cuda)
+                with open(output, encoding="utf-8") as stream:
+                    results = [
+                        subprocess.CompletedProcess(args=case["argv"], **result)
+                        for case, result in zip(cases, json.load(stream), strict=True)
+                    ]
 
+        for case, result in zip(cases, results, strict=True):
+            with test.subTest(variant=case["variant"].get("test_suffix")):
+                _check_example_result(test, result, is_cuda=is_cuda, variant=case["variant"])
+                if case["stage_path"] and case["stage_path"] != "None":
+                    with contextlib.suppress(OSError):
+                        os.remove(case["stage_path"])
+
+    test_name = f"test_{name}_{test_suffix}" if test_suffix else f"test_{name}"
+    add_function_test(cls, test_name, run, devices=devices, check_output=False)
+
+
+def _check_example_result(test, result, *, is_cuda, variant=None):
+    test.assertEqual(result.returncode, 0, f"Example failed: {result.args}\n{result.stdout}\n{result.stderr}")
+    if not isinstance(test, NewtonTestCase):
+        if result.stderr:
+            print(result.stderr)
+        return
+    variant = variant or {}
+    output = newton.tests.unittest_utils._OutputCapture()
+    _register_output_regexes(output, variant.get("expect_output_regexes"), required=True)
+    _register_example_allow_output_regexes(output, is_cuda=is_cuda)
+    _register_output_regexes(output, variant.get("allow_output_regexes"), required=False)
+    output.record("stdout", result.stdout)
+    output.record("stderr", result.stderr)
+    failure = output._check_output()
+    if failure:
+        test.fail(failure)
+
+
+def _register_output_regexes(output, regexes: list[_OutputRegexSpec] | None, *, required: bool):
+    for regex_spec in regexes or ():
+        regex, stream = regex_spec if isinstance(regex_spec, tuple) else (regex_spec, "any")
+        output.add_pattern(regex, stream=stream, required=required)
+
+
+def _register_example_allow_output_regexes(output, *, is_cuda: bool) -> None:
+    _register_output_regexes(output, _EXAMPLE_ALLOW_OUTPUT_REGEXES, required=False)
+    if not is_cuda:
+        output.add_pattern(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, stream="stderr", required=False)
+
+
+def add_example_batch(cls: type, name: str, variants: list[dict[str, Any]]):
+    """Share a subprocess across an example's variants on each device."""
+    devices = {str(device): device for variant in variants for device in variant["devices"]}
     if not devices:
-        add_function_test(cls, f"test_{name}_batch", run, devices=[], check_output=False)
+        add_example_test(cls, name, devices=[], use_viewer=True, test_suffix="batch", variants=variants)
     for device in devices.values():
         selected = [variant for variant in variants if str(device) in map(str, variant["devices"])]
-        if len(selected) == 1:
-            add_example_test(cls, name, use_viewer=True, **{**selected[0], "devices": [device]})
-        else:
-            add_function_test(cls, f"test_{name}_batch", run, devices=[device], check_output=False)
-
-
-def _register_example_allow_output_regexes(
-    test: NewtonTestCase,
-    *,
-    is_cuda: bool,
-) -> None:
-    _register_output_regexes(test, _EXAMPLE_ALLOW_OUTPUT_REGEXES, required=False)
-    if not is_cuda:
-        test.allowOutputRegex(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, stream="stderr")
+        suffix = selected[0].get("test_suffix") if len(selected) == 1 else "batch"
+        add_example_test(cls, name, devices=[device], use_viewer=True, test_suffix=suffix, variants=selected)
 
 
 class TestExampleOutputRegexes(unittest.TestCase):
@@ -516,15 +428,15 @@ class TestExampleOutputRegexes(unittest.TestCase):
 
     def test_warp_cuda_unavailable_output_is_registered_only_for_cpu(self):
         """Register CUDA driver initialization diagnostics only for CPU examples."""
-        cpu_test = create_autospec(NewtonTestCase, instance=True)
-        cuda_test = create_autospec(NewtonTestCase, instance=True)
+        cpu_test = create_autospec(newton.tests.unittest_utils._OutputCapture, instance=True)
+        cuda_test = create_autospec(newton.tests.unittest_utils._OutputCapture, instance=True)
 
         _register_example_allow_output_regexes(cpu_test, is_cuda=False)
         _register_example_allow_output_regexes(cuda_test, is_cuda=True)
 
-        warp_cuda_call = call(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, stream="stderr")
-        self.assertIn(warp_cuda_call, cpu_test.allowOutputRegex.call_args_list)
-        self.assertNotIn(warp_cuda_call, cuda_test.allowOutputRegex.call_args_list)
+        warp_cuda_call = call(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, stream="stderr", required=False)
+        self.assertIn(warp_cuda_call, cpu_test.add_pattern.call_args_list)
+        self.assertNotIn(warp_cuda_call, cuda_test.add_pattern.call_args_list)
 
     def test_warp_cuda_unavailable_output_is_allowed(self):
         """Allow CUDA driver initialization diagnostics emitted on CPU-only systems."""
