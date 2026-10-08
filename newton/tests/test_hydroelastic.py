@@ -2136,6 +2136,72 @@ def test_translational_friction_invariance(test, device):
             )
 
 
+def test_moment_matching_preserves_small_patch_friction(test, device):
+    """Preserve lateral and torsional friction capacity on small contact patches."""
+    for scale in (0.1, 1.0, 10.0):
+        builder = newton.ModelBuilder()
+        common = {
+            "is_hydroelastic": True,
+            "margin": 0.0,
+            "gap": 0.0005 * scale,
+            "sdf_narrow_band_range": (-0.001 * scale, 0.001 * scale),
+            "sdf_padding": 0.001 * scale,
+            "sdf_texture_format": "float32",
+        }
+        builder.add_shape_box(
+            body=-1,
+            xform=wp.transform((0.0, 0.0, -0.002 * scale), wp.quat_identity()),
+            hx=0.0155 * scale,
+            hy=0.008 * scale,
+            hz=0.002 * scale,
+            cfg=newton.ModelBuilder.ShapeConfig(kh=1.0e11, sdf_target_voxel_size=0.0002 * scale, **common),
+        )
+        body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.00197 * scale), wp.quat_identity()))
+        builder.add_shape_box(
+            body=body,
+            hx=0.002 * scale,
+            hy=0.002 * scale,
+            hz=0.002 * scale,
+            cfg=newton.ModelBuilder.ShapeConfig(
+                kh=1.0e12,
+                density=1.0 / (0.004 * scale) ** 3,
+                sdf_target_voxel_size=0.00025 * scale,
+                **common,
+            ),
+        )
+        model = builder.finalize(device=device)
+        state = model.state()
+        for deterministic in (False, True):
+            with test.subTest(scale=scale, deterministic=deterministic):
+                configs = [
+                    HydroelasticSDF.Config(reduce_contacts=False),
+                    HydroelasticSDF.Config(reduce_contacts=True, moment_matching=True),
+                ]
+                measurements = []
+                anchor = None
+                for pipe, contacts in _make_pipelines(model, configs, [8192, 500], deterministic=deterministic):
+                    pipe.collide(state, contacts)
+                    if anchor is None:
+                        anchor = _compute_force_weighted_anchor(contacts, model, state)
+                    measurements.append(
+                        (
+                            np.linalg.norm(_compute_net_force(contacts, model, state)),
+                            _compute_total_friction_capacity(contacts, model, state),
+                            _compute_net_moment(contacts, model, state, anchor=anchor),
+                        )
+                    )
+                test.assertTrue(np.all(np.asarray(measurements[0]) > 0.0))
+                np.testing.assert_allclose(
+                    measurements[1][:2],
+                    measurements[0][:2],
+                    rtol=0.01,
+                    atol=0.0,
+                    err_msg="Moment matching must preserve pressure force and lateral capacity together",
+                )
+                # Match the existing cube-patch tolerance for friction moment capacity.
+                test.assertAlmostEqual(measurements[1][2], measurements[0][2], delta=0.05 * measurements[0][2])
+
+
 def test_exported_margin_stiffness_matches_shape_series_combination(test, device):
     """Verify exported margin stiffness uses the pairwise series combination."""
     margin_contact_area = 0.0125
@@ -2920,6 +2986,14 @@ add_function_test(
     devices=cuda_devices,
     check_output=False,
 )
+add_function_test(
+    TestHydroelastic,
+    "test_moment_matching_preserves_small_patch_friction",
+    test_moment_matching_preserves_small_patch_friction,
+    devices=cuda_devices,
+    check_output=False,
+)
+
 add_function_test(
     TestHydroelastic,
     "test_exported_margin_stiffness_matches_shape_series_combination",
