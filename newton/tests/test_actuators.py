@@ -13,6 +13,7 @@ import types
 import unittest
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -845,7 +846,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
             state,
             dt,
             self.device,
-            custom_inputs,
+            custom_inputs=custom_inputs,
         )
         return forces
 
@@ -1786,35 +1787,74 @@ class TestDriveNeuralMLP(unittest.TestCase):
             DriveNeuralMLP(model_path=path)
 
     def test_finalize_fixed_batch_onnx_with_multiple_actuators(self):
-        """Fixed-batch ONNX exports can still run one scalar per actuator."""
+        """Preserve inference when fixed export and actuator batch sizes differ."""
         weights = np.array([[2.0, 0.0]], dtype=np.float32)
         bias = np.array([1.0], dtype=np.float32)
-        path = self._save_mlp(weights, bias, filename="fixed_batch_mlp.onnx", batch_dim=1)
+        for batch_dim in (1, 3):
+            for n in (1, 3):
+                with self.subTest(batch_dim=batch_dim, num_actuators=n):
+                    path = self._save_mlp(weights, bias, filename="fixed_batch_mlp.onnx", batch_dim=batch_dim)
 
-        n = 3
-        ctrl = DriveNeuralMLP(model_path=path)
-        ctrl.finalize(self.device, n)
-        self.assertEqual(ctrl._network._shapes[ctrl._net_input_name], (n, 2))
-        self.assertEqual(ctrl._network._shapes[ctrl._net_output_name], (n, 1))
+                    ctrl = DriveNeuralMLP(model_path=path)
+                    ctrl.finalize(self.device, n)
+                    self.assertEqual(ctrl._net_input.shape, (n, 2))
+                    self.assertEqual(
+                        ctrl._network({ctrl._net_input_name: ctrl._net_input})[ctrl._net_output_name].shape, (n, 1)
+                    )
 
-        indices = wp.array([0, 1, 2], dtype=wp.uint32, device=self.device)
-        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
-        ctrl.compute(
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.array([1.0, 2.0, 3.0], dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            ctrl.state(n, self.device),
-            0.01,
-            self.device,
+                    indices = wp.array(np.arange(n, dtype=np.uint32), dtype=wp.uint32, device=self.device)
+                    forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+                    ctrl.compute(
+                        wp.zeros(n, dtype=wp.float32, device=self.device),
+                        wp.zeros(n, dtype=wp.float32, device=self.device),
+                        wp.array(np.arange(1, n + 1, dtype=np.float32), dtype=wp.float32, device=self.device),
+                        wp.zeros(n, dtype=wp.float32, device=self.device),
+                        None,
+                        indices,
+                        indices,
+                        indices,
+                        indices,
+                        forces,
+                        ctrl.state(n, self.device),
+                        0.01,
+                        self.device,
+                    )
+                    np.testing.assert_allclose(
+                        forces.numpy(), 2.0 * np.arange(1, n + 1, dtype=np.float32) + 1.0, rtol=1e-5
+                    )
+
+    def test_fixed_batch_external_weights_preserve_checkpoint(self):
+        """Rebatch external ONNX weights without editing files or breaking capture."""
+        onnx, _, _, _ = _onnx_modules()
+        weights = np.array([[2.0, 3.0]], dtype=np.float32)
+        bias = np.array([1.0], dtype=np.float32)
+        path = self._save_mlp(weights, bias, batch_dim=1)
+        model = onnx.load(path)
+        onnx.save_model(
+            model,
+            path,
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location="weights.bin",
+            size_threshold=0,
         )
-        np.testing.assert_allclose(forces.numpy(), np.array([3.0, 5.0, 7.0], dtype=np.float32), rtol=1e-5)
+        files = (Path(path), Path(self._tmp_dir) / "weights.bin")
+        original = [file.read_bytes() for file in files]
+
+        drive = DriveNeuralMLP(model_path=path)
+        drive.finalize(self.device, 3)
+        inputs = np.array([[1.0, 2.0], [-1.0, 0.5], [0.0, 4.0]], dtype=np.float32)
+        drive._net_input.assign(inputs)
+        arguments = {drive._net_input_name: drive._net_input}
+        if self.device.is_cuda:
+            with wp.ScopedCapture(device=self.device) as capture:
+                outputs = drive._network(arguments)
+            wp.capture_launch(capture.graph)
+        else:
+            outputs = drive._network(arguments)
+        np.testing.assert_allclose(outputs[drive._net_output_name].numpy(), inputs @ weights.T + bias)
+        self.assertEqual([file.read_bytes() for file in files], original)
+        self.assertEqual(onnx.load(path).graph.input[0].type.tensor_type.shape.dim[0].dim_value, 1)
 
     def test_neural_mlp_implicit_linear_net(self):
         """A 1-layer (linear) neural drive solves implicitly, exact.
@@ -2018,6 +2058,64 @@ class TestDriveNeuralLSTM(unittest.TestCase):
         path = os.path.join(self._tmp_dir, filename)
         _build_lstm_onnx(path, hidden_size=hidden, num_layers=1, metadata=metadata)
         return path
+
+    def test_finalize_fixed_batch_onnx(self):
+        """Preserve LSTM inference with individually fixed input batch axes."""
+        onnx_mod, _, _, _ = _onnx_modules()
+        dynamic_path = self._save_lstm(filename="dynamic_lstm.onnx")
+        for input_names in (("input",), ("h_in",), ("c_in",), ("input", "h_in", "c_in")):
+            path = self._save_lstm()
+            model = onnx_mod.load(path)
+            for value in model.graph.input:
+                if value.name in input_names:
+                    value.type.tensor_type.shape.dim[1].dim_value = 1
+            onnx_mod.save(model, path)
+            for n in (1, 3):
+                with self.subTest(input_names=input_names, num_actuators=n):
+                    ctrl = DriveNeuralLSTM(model_path=path)
+                    ctrl.finalize(self.device, n)
+                    reference = DriveNeuralLSTM(model_path=dynamic_path)
+                    reference.finalize(self.device, n)
+                    inputs = {
+                        "input": wp.ones((1, n, 2), dtype=wp.float32, device=self.device),
+                        "h_in": wp.zeros((1, n, 8), dtype=wp.float32, device=self.device),
+                        "c_in": wp.zeros((1, n, 8), dtype=wp.float32, device=self.device),
+                    }
+                    outputs = ctrl._network(inputs)
+                    expected = reference._network(inputs)
+                    self.assertEqual(outputs["output"].shape, (n, 1))
+                    self.assertEqual(outputs["h_out"].shape, (1, n, 8))
+                    self.assertEqual(outputs["c_out"].shape, (1, n, 8))
+                    for name in outputs:
+                        np.testing.assert_allclose(outputs[name].numpy(), expected[name].numpy(), rtol=1e-5, atol=1e-6)
+
+    def test_finalize_preserves_symbolic_sequence_length(self):
+        """Keep a symbolic LSTM sequence axis independent of the actuator batch."""
+        onnx_mod, _, _, _ = _onnx_modules()
+        path = self._save_lstm()
+        model = onnx_mod.load(path)
+        model.graph.input[0].type.tensor_type.shape.dim[0].dim_param = "sequence"
+        # Exercise adaptation of a fixed state batch alongside a symbolic sequence.
+        model.graph.input[1].type.tensor_type.shape.dim[1].dim_value = 1
+        onnx_mod.save(model, path)
+        original = Path(path).read_bytes()
+
+        ctrl = DriveNeuralLSTM(model_path=path)
+        ctrl.finalize(self.device, 3)
+        inputs = {
+            "input": wp.ones((1, 3, 2), dtype=wp.float32, device=self.device),
+            "h_in": wp.zeros((1, 3, 8), dtype=wp.float32, device=self.device),
+            "c_in": wp.zeros((1, 3, 8), dtype=wp.float32, device=self.device),
+        }
+        if self.device.is_cuda:
+            with wp.ScopedCapture(device=self.device) as capture:
+                outputs = ctrl._network(inputs)
+            wp.capture_launch(capture.graph)
+        else:
+            outputs = ctrl._network(inputs)
+        self.assertEqual(outputs["output"].shape, (3, 1))
+        self.assertTrue(np.all(np.isfinite(outputs["output"].numpy())))
+        self.assertEqual(Path(path).read_bytes(), original)
 
     def _run_lstm_compute(self, ctrl: DriveNeuralLSTM) -> None:
         n = 1

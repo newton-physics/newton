@@ -6072,6 +6072,69 @@ class TestMuJoCoContactForce(unittest.TestCase):
     BOX_MASS = 8.0  # density=1000 kg/m³ * volume=(0.2*0.2*0.2) m³
     GRAVITY = 9.81
 
+    def test_legacy_geometry_export_without_force_buffer(self):
+        """Keep geometry-only contact export available without a deprecation warning."""
+        model, _ = self._build_box_on_ground()
+        solver = SolverMuJoCo(model)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count())
+        contacts = pipeline.contacts()
+        self.assertIsNone(contacts.force)
+        solver.step(model.state(), model.state(), None, None, 0.002)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            solver.update_contacts(contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 0)
+        self.assertTrue(np.isfinite(contacts.rigid_contact_point0.numpy()[:count]).all())
+        self.assertIsNone(contacts.force)
+
+    def test_external_contact_observables_preserve_input_geometry(self):
+        """Keep collision rows stable across substeps and map forces past culled rows."""
+        model, _ = self._build_box_on_ground()
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=16)
+        self.assertLess(model.rigid_contact_max, solver.get_max_contact_count())
+        contacts = pipeline.contacts()
+        state_in, state_out = model.state(), model.state()
+        joint_q = state_in.joint_q.numpy()
+        joint_q[2] = 0.09  # Start in contact, rather than waiting for gravity to close the gap.
+        state_in.joint_q.assign(joint_q)
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        pipeline.collide(state_in, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 1)
+        # An invalid first row is culled during Newton -> MuJoCo conversion,
+        # making the compacted MuJoCo indices differ from the input row indices.
+        shapes = contacts.rigid_contact_shape0.numpy()
+        shapes[0] = -1
+        contacts.rigid_contact_shape0.assign(shapes)
+        fields = (
+            "rigid_contact_count",
+            "rigid_contact_shape0",
+            "rigid_contact_shape1",
+            "rigid_contact_point0",
+            "rigid_contact_point1",
+            "rigid_contact_normal",
+            "rigid_contact_offset0",
+            "rigid_contact_offset1",
+            "rigid_contact_margin0",
+            "rigid_contact_margin1",
+            "contact_generation",
+        )
+        snapshots = {field: getattr(contacts, field).numpy().copy() for field in fields}
+        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        for _ in range(3):
+            observables.contact_f.fill_(float("nan"))
+            solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
+            for field, expected in snapshots.items():
+                np.testing.assert_array_equal(getattr(contacts, field).numpy(), expected, err_msg=field)
+            forces = observables.contact_f.numpy()
+            np.testing.assert_array_equal(forces[0], 0.0)
+            np.testing.assert_array_equal(forces[count:], 0.0)
+            self.assertTrue(np.isfinite(forces).all())
+            self.assertGreater(np.linalg.norm(forces[1:count, :3]), 0.0)
+            state_in, state_out = state_out, state_in
+
     def _build_box_on_ground(self, *, friction: float = 1.0):
         """Create a box resting on a ground plane with the given friction."""
         builder = newton.ModelBuilder()
@@ -6083,7 +6146,6 @@ class TestMuJoCoContactForce(unittest.TestCase):
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
         builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize()
-        model.request_contact_attributes("force")
         return model, ground_shape
 
     def _run_and_collect_forces(self, model, cone: str = "pyramidal", settle: int = 10, avg: int = 10):
@@ -6101,26 +6163,28 @@ class TestMuJoCoContactForce(unittest.TestCase):
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        collision_pipeline = newton.CollisionPipeline(model)
+        collision_pipeline = newton.CollisionPipeline(
+            model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
+        )
         contacts = collision_pipeline.contacts()
+        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
         dt = 0.002
         for _ in range(settle):
             state_in.clear_forces()
-            solver.step(state_in, state_out, control, contacts, dt)
+            solver.step(state_in, state_out, control, contacts, dt, observables=observables)
             state_in, state_out = state_out, state_in
 
         force_acc = np.zeros(3)
         for _ in range(avg):
             state_in.clear_forces()
-            solver.step(state_in, state_out, control, contacts, dt)
+            solver.step(state_in, state_out, control, contacts, dt, observables=observables)
             state_in, state_out = state_out, state_in
 
-            solver.update_contacts(contacts, state_in)
             nacon = int(solver.mjw_data.nacon.numpy()[0])
             if nacon > 0:
-                f = contacts.force.numpy()[:nacon, :3]
+                f = observables.contact_f.numpy()[:nacon, :3]
                 force_acc += np.sum(f, axis=0)
 
         total_force = force_acc / avg
@@ -6168,7 +6232,6 @@ class TestMuJoCoContactForce(unittest.TestCase):
         body = builder.add_body(xform=wp.transform(wp.vec3(*box_center), ramp_q))
         builder.add_shape_box(body=body, hx=hz, hy=hz, hz=hz)
         model = builder.finalize()
-        model.request_contact_attributes("force")
         return model, ramp_shape
 
     def test_contact_forces_on_incline(self):
@@ -8302,16 +8365,32 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
 
     def test_disable_sensors_computes_rne_state_attributes(self):
-        """Compute body_qdd and body_parent_f with sensors disabled.
+        """Compute legacy body diagnostics even with sensors disabled."""
+        self._check_disable_sensors_rne(legacy_state_attributes=True)
+
+    def test_disable_sensors_computes_rne_observables(self):
+        """Compute each RNE observable without requesting legacy state arrays."""
+        for flag in (
+            newton.solvers.SolverObservableFlags.BODY_QDD,
+            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
+        ):
+            with self.subTest(flag=flag):
+                self._check_disable_sensors_rne(observable_flag=flag)
+
+    def _check_disable_sensors_rne(self, legacy_state_attributes=False, observable_flag=None):
+        """Compare diagnostics against a sensors-enabled reference.
 
         A horizontal pendulum released from rest has nonzero body acceleration
         and joint wrench, so stale zero-initialized outputs would not match the
         sensors-enabled reference.
         """
         results = {}
+        attributes = ("body_qdd", "body_parent_f") if legacy_state_attributes else (observable_flag.value,)
         for disable_sensors in (False, True):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
-            builder.request_state_attributes("body_qdd", "body_parent_f")
+            if legacy_state_attributes:
+                with self.assertWarnsRegex(DeprecationWarning, r"ModelBuilder\.request_state_attributes.*1\.7"):
+                    builder.request_state_attributes(*attributes)
             link = builder.add_link()
             builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
             joint = builder.add_joint_revolute(
@@ -8326,15 +8405,19 @@ class TestMuJoCoOptions(unittest.TestCase):
             solver = SolverMuJoCo(model, disable_sensors=disable_sensors, disable_contacts=True)
             state_in, state_out = model.state(), model.state()
             newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
-            solver.step(state_in, state_out, None, None, 1.0e-3)
-            results[disable_sensors] = (state_out.body_qdd.numpy(), state_out.body_parent_f.numpy())
+            observables = None
+            if not legacy_state_attributes:
+                observables = solver.observables({observable_flag})
+                self.assertIsNone(state_out.body_qdd)
+                self.assertIsNone(state_out.body_parent_f)
+            solver.step(state_in, state_out, None, None, 1.0e-3, observables=observables)
+            source = state_out if legacy_state_attributes else observables
+            results[disable_sensors] = [getattr(source, attribute).numpy() for attribute in attributes]
+            self.assertTrue(solver.mjw_model.opt.run_rne_postconstraint)
 
-        qdd_ref, parent_f_ref = results[False]
-        qdd, parent_f = results[True]
-        self.assertGreater(np.linalg.norm(qdd_ref), 0.1)
-        self.assertGreater(np.linalg.norm(parent_f_ref), 0.1)
-        np.testing.assert_allclose(qdd, qdd_ref, rtol=1.0e-5, atol=1.0e-5)
-        np.testing.assert_allclose(parent_f, parent_f_ref, rtol=1.0e-5, atol=1.0e-5)
+        for result, reference in zip(results[True], results[False], strict=True):
+            self.assertGreater(np.linalg.norm(reference), 0.1)
+            np.testing.assert_allclose(result, reference, rtol=1.0e-5, atol=1.0e-5)
 
     def test_disable_sensors_allows_unrelated_state_attributes(self):
         """Step with disabled sensors when no RNE-derived state attribute is requested."""
@@ -8342,6 +8425,40 @@ class TestMuJoCoOptions(unittest.TestCase):
         solver = SolverMuJoCo(model, disable_sensors=True)
         state_in, state_out = model.state(), model.state()
         solver.step(state_in, state_out, model.control(), None, 0.01)
+
+    def test_selected_actuator_observable_skips_rne_request(self):
+        """Select a custom actuator field without requesting allocated body diagnostics."""
+        model = self._create_multiworld_model(world_count=1)
+        solver = SolverMuJoCo(model, disable_sensors=True)
+        flags = newton.solvers.SolverObservableFlags
+        actuator_flag = SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR
+        observables = solver.observables({flags.BODY_QDD, actuator_flag})
+        selected = observables.select({actuator_flag})
+        self.assertIs(type(selected), SolverMuJoCo.Observables)
+        self.assertIs(selected.qfrc_actuator, observables.qfrc_actuator)
+        observables.body_qdd.fill_(wp.spatial_vector(-1.0))
+        observables.qfrc_actuator.fill_(float("nan"))
+        state_in, state_out = model.state(), model.state()
+        solver.step(state_in, state_out, model.control(), None, 0.01, observables=selected)
+        self.assertFalse(solver.mjw_model.opt.run_rne_postconstraint)
+        np.testing.assert_array_equal(observables.body_qdd.numpy(), np.full((model.body_count, 6), -1.0))
+        self.assertTrue(np.isfinite(observables.qfrc_actuator.numpy()).all())
+
+    def test_native_cpu_observable_capabilities(self):
+        """Reject unsupported body/contact exports while retaining native actuator forces."""
+        model = self._create_multiworld_model(world_count=1)
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        for flag in newton.solvers.SolverObservableFlags:
+            with self.subTest(flag=flag):
+                self.assertNotIn(flag, solver.supported_observable_flags)
+                with self.assertRaisesRegex(ValueError, "does not support"):
+                    solver.observables({flag})
+        flag = SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR
+        observables = solver.observables({flag})
+        observables.qfrc_actuator.fill_(float("nan"))
+        solver.mjw_data.qfrc_actuator.fill_(1234.0)
+        solver.step(model.state(), model.state(), model.control(), None, 0.01, observables=observables)
+        np.testing.assert_allclose(observables.qfrc_actuator.numpy(), solver.mj_data.qfrc_actuator, atol=1e-6)
 
     def test_enable_multiccd_default_off(self):
         """Verify that multi-CCD is disabled by default (Newton default differs from MuJoCo 3.8+)."""
@@ -9189,9 +9306,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), child_rot),
         )
         builder.add_articulation([ball_j])
-        builder.request_state_attributes("mujoco:qfrc_actuator")
         model = builder.finalize()
         solver = SolverMuJoCo(model)
+        observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
 
         q_start = int(model.joint_q_start.numpy()[ball_j])
         qd_start = int(model.joint_qd_start.numpy()[ball_j])
@@ -9228,7 +9345,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 qfrc_np[qd_start : qd_start + 3] = [tau_mj[0], tau_mj[1], tau_mj[2]]
                 solver.mj_data.qfrc_actuator[:] = qfrc_np
 
-                solver._update_newton_state(model, state, solver.mj_data, state_prev=state)
+                solver._update_newton_state(model, state, solver.mj_data, state_prev=state, observables=observables)
 
                 # Expected: tau_newton = R(c^{-1} * q_mj) * tau_mj, where q_mj = c * r * c^{-1}.
                 r_np = np.array([r[0], r[1], r[2], r[3]], dtype=np.float64)
@@ -9236,7 +9353,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 q_mj = qmul(qmul(c, r_np), qinv(c))
                 expected = qrot(qmul(qinv(c), q_mj), tau_mj_np)
 
-                tau_newton = state.mujoco.qfrc_actuator.numpy()[qd_start : qd_start + 3]
+                tau_newton = observables.qfrc_actuator.numpy()[qd_start : qd_start + 3]
                 err = float(np.max(np.abs(tau_newton - expected)))
                 self.assertLess(err, 1e-5, f"got={tau_newton}, expected={expected}, err={err:.2e}")
 
@@ -9715,7 +9832,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([reference, follower])
-        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        builder.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
         model = builder.finalize()
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -9745,7 +9862,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([reference, follower])
-        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        builder.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
         model = builder.finalize()
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -9767,7 +9884,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         template.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
         template.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
         template.add_articulation([reference, follower])
-        template.set_joint_mimic(follower, reference, (0.5, 2.0))
+        template.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
 
         builder = newton.ModelBuilder()
         builder.replicate(template, 2)
@@ -11386,12 +11503,10 @@ class TestMultiWorldQfrcActuatorCom(unittest.TestCase):
         def make_template(com):
             t = newton.ModelBuilder()
             t.add_mjcf(cls.MJCF, ctrl_direct=True)
-            t.request_state_attributes("mujoco:qfrc_actuator")
             t.body_com[0] = com
             return t
 
         builder = newton.ModelBuilder()
-        builder.request_state_attributes("mujoco:qfrc_actuator")
         builder.add_world(make_template(wp.vec3(0.0, 0.0, 0.0)))
         builder.add_world(make_template(wp.vec3(0.1, -0.05, 0.03)))
         cls.model = builder.finalize()
@@ -11400,11 +11515,12 @@ class TestMultiWorldQfrcActuatorCom(unittest.TestCase):
     def test_world1_uses_own_com(self):
         """World 1 angular qfrc must reflect its non-zero CoM, not world 0's."""
         state = self.model.state()
+        observables = self.solver.observables({self.solver.ObservableFlags.QFRC_ACTUATOR})
         ctrl = self.model.control()
         ctrl.mujoco.ctrl = wp.array([10.0, 10.0], dtype=wp.float32)
-        self.solver.step(state, state, ctrl, None, dt=0.01)
+        self.solver.step(state, state, ctrl, None, dt=0.01, observables=observables)
 
-        qfrc = state.mujoco.qfrc_actuator.numpy()
+        qfrc = observables.qfrc_actuator.numpy()
         dofs_per_world = self.model.joint_dof_count // self.model.world_count
 
         # World 0 has CoM at origin — cross product is zero
@@ -12126,8 +12242,8 @@ class TestEqualityJointObjType(unittest.TestCase):
         )
 
 
-class TestUpdateContactsPointPositions(unittest.TestCase):
-    """Test that update_contacts populates rigid_contact_point0/point1."""
+class TestContactObservablePointPositions(unittest.TestCase):
+    """Test that contact observables populate rigid_contact_point0/point1."""
 
     def test_contact_points_populated(self):
         """Drop a box onto a ground plane with use_mujoco_contacts and verify contact points are nonzero."""
@@ -12153,19 +12269,16 @@ class TestUpdateContactsPointPositions(unittest.TestCase):
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = newton.Contacts(
-            rigid_contact_max=solver.mjw_data.naconmax,
-            soft_contact_max=0,
-            device=model.device,
-        )
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
+        contacts = pipeline.contacts()
+        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
         dt = 1.0 / 200.0
         found_contacts = False
         for _ in range(200):
             state_0.clear_forces()
-            solver.step(state_0, state_1, control, contacts, dt)
-            solver.update_contacts(contacts, state_0)
+            solver.step(state_0, state_1, control, contacts, dt, observables=observables)
             state_0, state_1 = state_1, state_0
 
             n = contacts.rigid_contact_count.numpy()[0]
