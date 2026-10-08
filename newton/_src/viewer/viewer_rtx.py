@@ -327,6 +327,7 @@ class ViewerRTX(ViewerUSD):
         self._render_products = None
         self._displayed_frame = FrameCache()
         self._displayed_pixels = None
+        self._last_frame_is_fullscreen = False
         self._uses_fractional_opacity = False
         self._transform_binding = None
         self._all_instance_paths = []
@@ -2692,6 +2693,8 @@ void main() {
         if self._should_close:
             return
 
+        # UI changes made while presenting take effect on the next frame.
+        async_rendering = self._async
         step_kwargs = None
         if not self.is_rendering_paused():
             if fullscreen_name is not None and self._window is not None:
@@ -2700,14 +2703,16 @@ void main() {
                     self._displayed_frame.store(*texture)
                 else:
                     self._displayed_frame.clear()
+                self._last_frame_is_fullscreen = True
             elif self._rtx is not None:
+                self._last_frame_is_fullscreen = False
                 step_kwargs = {
                     "render_products": {self._render_product_path},
                     "delta_time": 1.0 / self.fps,
                 }
                 if self._use_ovstage:
                     step_kwargs["ordinal"] = self._ovstage_ordinal
-                if not self._async:
+                if not async_rendering:
                     with wp.ScopedTimer("ViewerRTX::rtx_step", active=PROFILE_ENABLED, use_nvtx=True):
                         self._accept_render(self._rtx.step(**step_kwargs))
 
@@ -2715,7 +2720,7 @@ void main() {
             frame = self._displayed_frame
             self._present(frame.texture or None, frame.width, frame.height)
 
-        if self._async and step_kwargs is not None:
+        if async_rendering and step_kwargs is not None:
             with wp.ScopedTimer("ViewerRTX::rtx_step_async", active=PROFILE_ENABLED, use_nvtx=True):
                 self._render_result = self._rtx.step_async(**step_kwargs)
 
@@ -2781,6 +2786,66 @@ void main() {
         with wp.ScopedTimer("ViewerRTX::swap_buffers", active=PROFILE_ENABLED, use_nvtx=True):
             self._window.flip()
 
+    @override
+    def get_frame(
+        self, target_image: wp.array3d[wp.uint8] | None = None, *, render_ui: bool = False
+    ) -> wp.array3d[wp.uint8]:
+        """Retrieve the last rendered frame as RGB image data.
+
+        Like :meth:`ViewerGL.get_frame`, this returns a Warp array on the
+        viewer device. Call ``.numpy()`` on the result for a NumPy array.
+        Works in headless mode and reads the RTX render output through CPU
+        memory. Call after :meth:`end_frame`. With asynchronous rendering,
+        capture waits for the render submitted by that call so the image
+        contains the latest logged state. While rendering is paused, capture
+        returns the frozen displayed image without waiting for a pending render.
+        Capturing fullscreen images displayed with
+        ``log_image(..., fullscreen=True)`` is not supported; capture
+        resumes after the next scene render.
+
+        Args:
+            target_image: Optional pre-allocated Warp array on the viewer
+                device with shape ``(height, width, 3)`` and dtype ``wp.uint8``.
+                If ``None``, a new array is created.
+            render_ui: Whether to include UI overlays. Only ``False`` is
+                supported because RTX capture reads the renderer output.
+
+        Returns:
+            RGB image data on the viewer device with shape
+            ``(height, width, 3)`` and dtype ``wp.uint8``. The origin is
+            top-left and the dimensions are the fixed render resolution.
+            If supplied, returns ``target_image``.
+
+        Raises:
+            RuntimeError: No rendered frame or color output is available.
+            ValueError: The target shape, dtype, or device is incompatible.
+            NotImplementedError: ``render_ui`` is ``True`` or the last frame
+                displayed a fullscreen logged image.
+        """
+        if render_ui:
+            raise NotImplementedError("ViewerRTX.get_frame() does not support render_ui=True")
+        if self._last_frame_is_fullscreen:
+            raise NotImplementedError("ViewerRTX.get_frame() does not support capturing fullscreen logged images")
+
+        h, w = self._render_height, self._render_width
+        if target_image is None:
+            target_image = wp.empty(shape=(h, w, 3), dtype=wp.uint8, device=self.device)
+        else:
+            if target_image.shape != (h, w, 3):
+                raise ValueError(f"Shape of `target_image` must be ({h}, {w}, 3), got {target_image.shape}")
+            if target_image.dtype != wp.uint8:
+                raise ValueError(f"The dtype of `target_image` must be wp.uint8, got {target_image.dtype}")
+            if target_image.device != self.device:
+                raise ValueError(f"The device of `target_image` must be {self.device}, got {target_image.device}")
+
+        # Async presentation retains the previous frame; capture needs the latest.
+        if not self.is_rendering_paused() and self._render_result is not None:
+            self._render_products = self._render_result.wait().fetch()
+
+        pixels = self._capture_screenshot_pixels()
+        target_image.assign(np.ascontiguousarray(pixels[:, :, :3]))
+        return target_image
+
     def _capture_screenshot_pixels(self) -> np.ndarray:
         if self.is_rendering_paused():
             if self._headless:
@@ -2794,7 +2859,7 @@ void main() {
         if products is None and self._render_result is not None:
             products = self._render_result.wait().fetch()
         if products is None:
-            raise RuntimeError("save_screenshot() requires at least one completed render frame")
+            raise RuntimeError("Frame capture requires at least one completed render frame")
 
         from ovrtx import Device
 
@@ -2806,10 +2871,14 @@ void main() {
                         pixels = np.array(np.from_dlpack(mapping), copy=True)
                     return pixels
 
-        raise RuntimeError("save_screenshot() could not find the LdrColor render output")
+        raise RuntimeError("Frame capture could not find the LdrColor render output")
 
     def save_screenshot(self, path: str) -> None:
         """Save the last rendered frame to an image file.
+
+        .. deprecated:: 1.7
+            Use :meth:`get_frame` and an image library instead, for example
+            ``PIL.Image.fromarray(viewer.get_frame().numpy()).save(path)``.
 
         The file format is inferred from the extension (e.g. ``.png``, ``.jpg``).
         Call this after at least one completed frame has been rendered (e.g.
@@ -2823,6 +2892,12 @@ void main() {
             RuntimeError: No completed image exists, or the renderer has no
                 color output.
         """
+        warnings.warn(
+            "ViewerRTX.save_screenshot() is deprecated in Newton 1.7; "
+            "use get_frame().numpy() and an image library such as Pillow to save the image instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         from PIL import Image
 
         pixels = self._capture_screenshot_pixels()
@@ -2942,6 +3017,7 @@ void main() {
         self._discard_render_result = False
         self._render_products = None
         self._displayed_pixels = None
+        self._last_frame_is_fullscreen = False
 
         # Release runtime-scene resources before destroying the renderer.
         self._release_runtime_scene()
@@ -3145,6 +3221,7 @@ void main() {
         self._render_products = None
         self._displayed_pixels = None
         self._displayed_frame.clear()
+        self._last_frame_is_fullscreen = False
 
         # release runtime-scene resources and renderer
         self._release_runtime_scene()

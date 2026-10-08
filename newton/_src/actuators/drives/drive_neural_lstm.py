@@ -339,6 +339,7 @@ class DriveNeuralLSTM(DriveBase):
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
+        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Refresh the linearization of the network about the current state.
@@ -461,6 +462,7 @@ class DriveNeuralLSTM(DriveBase):
         state: DriveNeuralLSTM.State,
         dt: float,
         device: wp.Device | None = None,
+        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         device = device or self._device
