@@ -194,6 +194,8 @@ jobs:
 
       # The first OVRTX renderer otherwise spends minutes compiling Vulkan
       # shaders in the driver. Those are specific to the GPU and driver.
+      # Unlike the Warp cache, post-submit runs restore it too: the driver
+      # validates its own entries, so a stale cache cannot hide failures.
       - name: Restore OVRTX shader cache
         id: restore-ovrtx-shader-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
