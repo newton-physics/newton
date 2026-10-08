@@ -1244,22 +1244,23 @@ class TestSolverCoupledBasic(unittest.TestCase):
         builder.color()
         model = builder.finalize(device="cpu")
 
-        coupled = SolverCoupled(
-            model,
-            (
-                SolverCoupled.Entry(
-                    "other",
-                    _StepCountingCopySolver,
-                    particles=(external_particle,),
+        with self.assertWarns(DeprecationWarning):
+            coupled = SolverCoupled(
+                model,
+                (
+                    SolverCoupled.Entry(
+                        "other",
+                        _StepCountingCopySolver,
+                        particles=(external_particle,),
+                    ),
+                    SolverCoupled.Entry(
+                        "vbd",
+                        lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
+                        bodies=(body_a, body_b),
+                        particles=(owned_particle,),
+                    ),
                 ),
-                SolverCoupled.Entry(
-                    "vbd",
-                    lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
-                    bodies=(body_a, body_b),
-                    particles=(owned_particle,),
-                ),
-            ),
-        )
+            )
         view = coupled.view("vbd")
 
         # The view compacts bodies but keeps every particle visible, so the retained row pairs a

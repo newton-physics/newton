@@ -99,7 +99,6 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=2,
-                rigid_compliant_alm=True,
             )
         elif self.solver_type == "kamino":
             self.update_step_interval = 1

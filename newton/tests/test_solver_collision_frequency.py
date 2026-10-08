@@ -129,14 +129,15 @@ def test_frequency_validation_and_ownership(test, device):
         _NonOwning(model, collision_frequency_type={Slot.RIGID: Frequency.PRE_INIT})
 
     # VBD supports rigid detection on both sides of solver initialization.
-    SolverVBD(
-        model,
-        iterations=1,
-        collision_pipeline=pipeline,
-        rigid_contact_history=False,
-        rigid_compliant_alm=False,
-        collision_frequency_type={Slot.RIGID: Frequency.PRE_POST_INIT},
-    )
+    with test.assertWarns(DeprecationWarning):
+        SolverVBD(
+            model,
+            iterations=1,
+            collision_pipeline=pipeline,
+            rigid_contact_history=False,
+            rigid_compliant_alm=False,
+            collision_frequency_type={Slot.RIGID: Frequency.PRE_POST_INIT},
+        )
     with test.assertRaisesRegex(ValueError, "requires contact matching"):
         _StubSolver(
             model,
@@ -174,14 +175,15 @@ def test_vbd_rigid_none_refreshes_external_contacts(test, device):
     """Refresh externally populated owned contacts while rigid detection is disabled."""
     model = _build_model(device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
-    solver = SolverVBD(
-        model,
-        iterations=1,
-        collision_pipeline=pipeline,
-        rigid_contact_history=False,
-        rigid_compliant_alm=False,
-        collision_frequency_type={Slot.RIGID: Frequency.NONE, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
-    )
+    with test.assertWarns(DeprecationWarning):
+        solver = SolverVBD(
+            model,
+            iterations=1,
+            collision_pipeline=pipeline,
+            rigid_contact_history=False,
+            rigid_compliant_alm=False,
+            collision_frequency_type={Slot.RIGID: Frequency.NONE, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
+        )
     state_a, state_b = model.state(), model.state()
     observables = solver.observables(set())
 
@@ -213,14 +215,15 @@ def test_vbd_rigid_iterations_mode(test, device):
         builder.color()
         model = builder.finalize(device=device)
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
-        solver = SolverVBD(
-            model,
-            iterations=3,
-            collision_pipeline=pipeline,
-            rigid_compliant_alm=False,
-            collision_frequency={Slot.RIGID: freq},
-            collision_frequency_type={Slot.RIGID: mode, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
-        )
+        with test.assertWarns(DeprecationWarning):
+            solver = SolverVBD(
+                model,
+                iterations=3,
+                collision_pipeline=pipeline,
+                rigid_compliant_alm=False,
+                collision_frequency={Slot.RIGID: freq},
+                collision_frequency_type={Slot.RIGID: mode, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
+            )
         s0, s1 = model.state(), model.state()
         for _ in range(3):
             solver.step(s0, s1, None, None, 1e-3)
@@ -248,14 +251,15 @@ def test_vbd_rigid_pre_post_init_mode(test, device):
 
     model = _build_model(device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
-    solver = _TrackingSolver(
-        model,
-        iterations=1,
-        collision_pipeline=pipeline,
-        rigid_contact_history=False,
-        rigid_compliant_alm=False,
-        collision_frequency_type={Slot.RIGID: Frequency.PRE_POST_INIT},
-    )
+    with test.assertWarns(DeprecationWarning):
+        solver = _TrackingSolver(
+            model,
+            iterations=1,
+            collision_pipeline=pipeline,
+            rigid_contact_history=False,
+            rigid_compliant_alm=False,
+            collision_frequency_type={Slot.RIGID: Frequency.PRE_POST_INIT},
+        )
 
     solver.step(model.state(), model.state(), None, None, 1e-3)
 
@@ -315,15 +319,16 @@ def test_vbd_rigid_iterations_preserves_contact_duals(test, device):
 
     model = _build_model(device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
-    solver = _TrackingSolver(
-        model,
-        iterations=3,
-        collision_pipeline=pipeline,
-        rigid_contact_history=False,
-        rigid_compliant_alm=False,
-        collision_frequency={Slot.RIGID: 1},
-        collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS},
-    )
+    with test.assertWarns(DeprecationWarning):
+        solver = _TrackingSolver(
+            model,
+            iterations=3,
+            collision_pipeline=pipeline,
+            rigid_contact_history=False,
+            rigid_compliant_alm=False,
+            collision_frequency={Slot.RIGID: 1},
+            collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS},
+        )
 
     solver.step(model.state(), model.state(), None, None, 1e-3)
 
@@ -383,15 +388,16 @@ def test_vbd_rigid_iterations_refreshes_body_particle_contacts(test, device):
     builder.color()
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1, contact_matching="latest")
-    solver = _TrackingSolver(
-        model,
-        iterations=3,
-        collision_pipeline=pipeline,
-        rigid_contact_history=False,
-        rigid_compliant_alm=False,
-        collision_frequency={Slot.RIGID: 1},
-        collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
-    )
+    with test.assertWarns(DeprecationWarning):
+        solver = _TrackingSolver(
+            model,
+            iterations=3,
+            collision_pipeline=pipeline,
+            rigid_contact_history=False,
+            rigid_compliant_alm=False,
+            collision_frequency={Slot.RIGID: 1},
+            collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
+        )
 
     state_a, state_b = model.state(), model.state()
     solver.step(state_a, state_b, None, None, 1e-3)

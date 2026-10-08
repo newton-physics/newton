@@ -390,7 +390,6 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=1,
-                rigid_compliant_alm=True,
                 rigid_body_contact_buffer_size=512,
             )
         elif solver_type == "kamino":

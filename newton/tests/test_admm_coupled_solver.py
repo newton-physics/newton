@@ -1102,9 +1102,12 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         self.assertTrue(any("only SolverVBD" in message for message in logs.output))
 
     def test_single_vbd_entry_attachment_is_left_to_vbd(self):
-        """Leave a same-entry model attachment to SolverVBD without warning."""
+        """Leave a same-entry model attachment to SolverVBD without an attachment warning."""
         model = _build_body_particle_attachment_scene()
-        with self.assertNoLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING"):
+        with (
+            self.assertNoLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING"),
+            self.assertWarns(DeprecationWarning),
+        ):
             solver = SolverCoupledADMM(
                 model,
                 [
