@@ -475,21 +475,18 @@ class TestSensorCameraRays(unittest.TestCase):
         np.testing.assert_allclose(got_camera.numpy(), expected, atol=1e-6)
         np.testing.assert_allclose(got_multisample.numpy(), expected_multisample.numpy(), atol=1e-6)
 
-        # RC1 calls still work, including optional USD time and preallocated output.
         out_rays = wp.empty_like(got_multisample)
-        with self.assertWarnsRegex(DeprecationWarning, "compute_camera_rays_pinhole_usd") as warning:
-            alias_result = SensorCamera.compute_camera_rays_usd_pinhole(
-                width,
-                height,
-                camera,
-                time=Usd.TimeCode.Default(),
-                sample_count=4,
-                out_rays=out_rays,
-                device="cpu",
-            )
-        self.assertEqual(warning.filename, __file__)
-        self.assertIs(alias_result, out_rays)
-        np.testing.assert_allclose(alias_result.numpy(), expected_multisample.numpy(), atol=1e-6)
+        got_preallocated = SensorCamera.compute_camera_rays_pinhole_usd(
+            width,
+            height,
+            camera,
+            time=Usd.TimeCode.Default(),
+            sample_count=4,
+            out_rays=out_rays,
+            device="cpu",
+        )
+        self.assertIs(got_preallocated, out_rays)
+        np.testing.assert_allclose(got_preallocated.numpy(), expected_multisample.numpy(), atol=1e-6)
 
     @unittest.skipIf(Usd is None, "Requires USD Python bindings")
     def test_sensor_camera_usd_pinhole_rejects_invalid_prim(self):

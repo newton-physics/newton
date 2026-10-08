@@ -201,22 +201,6 @@ class TestSensorCamera(unittest.TestCase):
             self.assertEqual(ray_bundle.shape, (height, width, 1, 2))
             self.assertEqual(ray_bundle.dtype, wp.vec3f)
 
-    def test_image_output_aliases_preserve_buffers_and_warn(self) -> None:
-        """Keep RC1 factory names functional and point callers to the canonical names."""
-        _, camera = self._build_sphere_scene()
-        for kind in ("color", "depth", "forward_depth", "shape_index", "normal", "albedo", "hdr_color"):
-            old_name = f"create_{kind}_image_output"
-            new_name = f"create_image_output_{kind}"
-            with self.subTest(kind=kind):
-                expected = getattr(camera, new_name)(2, 3, 4)
-                with self.assertWarnsRegex(DeprecationWarning, new_name) as warning:
-                    actual = getattr(camera, old_name)(view_count=2, width=3, height=4)
-                self.assertEqual(warning.filename, __file__)
-                self.assertEqual(actual.shape, expected.shape)
-                self.assertEqual(actual.dtype, expected.dtype)
-                self.assertEqual(actual.device, expected.device)
-                np.testing.assert_array_equal(actual.numpy(), expected.numpy())
-
     def test_camera_ray_helpers_support_preallocated_output(self) -> None:
         """Verify camera ray helpers can write into caller output arrays."""
         width, height = 4, 3

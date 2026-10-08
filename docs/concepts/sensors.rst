@@ -125,9 +125,7 @@ Camera image allocation helpers share the ``create_image_output_`` prefix:
 ``color``, ``depth``, ``forward_depth``, ``shape_index``, ``normal``, ``albedo``,
 and ``hdr_color``. For example, use
 :meth:`~newton.sensors.SensorCamera.create_image_output_color` for a packed RGBA
-buffer. The earlier ``create_<kind>_image_output`` names and
-``compute_camera_rays_usd_pinhole`` remain available as deprecated aliases;
-use ``create_image_output_<kind>`` and ``compute_camera_rays_pinhole_usd``.
+buffer.
 
 :class:`~newton.sensors.SensorCamera` renders one view per world-space camera transform passed to
 :meth:`~newton.sensors.SensorCamera.update`. The caller owns the camera-space rays and the per-view transforms.
