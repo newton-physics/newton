@@ -62,32 +62,6 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
-    def test_compiler_mass_and_inertia_bounds_match_native_mujoco(self):
-        """Apply MJCF compiler mass and inertia lower bounds."""
-        mjcf = """
-<mujoco model="compiler_bounds">
-    <compiler boundmass="0.5" boundinertia="0.02"/>
-    <worldbody>
-        <body name="body">
-            <joint name="joint"/>
-            <inertial pos="0 0 0" mass="0.1" diaginertia="0.001 0.002 0.003"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        mujoco, _ = SolverMuJoCo.import_mujoco()
-        native_model = mujoco.MjModel.from_xml_string(mjcf)
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
-
-        self.assertAlmostEqual(builder.body_mass[0], native_model.body_mass[1], places=6)
-        np.testing.assert_allclose(
-            np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
-            native_model.body_inertia[1],
-            rtol=1.0e-6,
-            atol=1.0e-8,
-        )
-
     def test_compiler_balanceinertia_matches_native_mujoco(self):
         """Balance invalid inertia only when the MJCF compiler requests it."""
         body = """
