@@ -1,10 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
+import os
 import sys
 import tempfile
 import unittest
 import warnings
+from io import StringIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest import mock
@@ -98,6 +101,60 @@ class TestGenerateApiSolverSubmodules(unittest.TestCase):
         self.assertIn(".. autofunction:: add_cloth_grid", page)
         self.assertIn(".. autofunction:: add_cloth_mesh", page)
         self.assertNotIn("newton._src", page)
+
+    @unittest.skipUnless(autodoc_filter is not None, "requires the docs extra")
+    def test_style3d_helpers_preserve_source_links(self):
+        """Render source links for both helpers under their public identities."""
+        from sphinx.application import Sphinx  # noqa: PLC0415
+
+        from newton.solvers import style3d  # noqa: PLC0415
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.dict(os.environ),
+            mock.patch.object(sys, "path", sys.path.copy()),
+        ):
+            # Loading the docs configuration adjusts the environment and import path.
+            from docs.conf import github_version, linkcode_resolve  # noqa: PLC0415
+
+            root = Path(tmp)
+            source_dir = root / "source"
+            with (
+                mock.patch.object(generate_api, "OUTPUT_DIR", source_dir),
+                mock.patch.object(generate_api, "REPO_ROOT", root),
+            ):
+                generate_api.write_module_page("newton.solvers.style3d", api_toctree_modules=set())
+
+            warnings_stream = StringIO()
+            app = Sphinx(
+                srcdir=str(source_dir),
+                confdir=None,
+                outdir=str(root / "html"),
+                doctreedir=str(root / "doctrees"),
+                buildername="html",
+                confoverrides={
+                    "extensions": ["sphinx.ext.autodoc", "sphinx.ext.napoleon", "sphinx.ext.linkcode"],
+                    "root_doc": "newton_solvers_style3d",
+                    "linkcode_resolve": linkcode_resolve,
+                },
+                status=StringIO(),
+                warning=warnings_stream,
+                warningiserror=True,
+                freshenv=True,
+            )
+            app.build()
+            self.assertEqual(app.statuscode, 0, warnings_stream.getvalue())
+            page = (root / "html" / "newton_solvers_style3d.html").read_text(encoding="utf-8")
+
+        for name in ("add_cloth_grid", "add_cloth_mesh"):
+            with self.subTest(helper=name):
+                _, line_number = inspect.getsourcelines(getattr(style3d, name))
+                source_url = (
+                    f"https://github.com/newton-physics/newton/blob/{github_version}/"
+                    f"newton/_src/solvers/style3d/cloth.py#L{line_number}"
+                )
+                self.assertIn(f'id="newton.solvers.style3d.{name}"', page)
+                self.assertTrue(f'href="{source_url}"' in page, f"Missing source link for {name}: {source_url}")
 
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
