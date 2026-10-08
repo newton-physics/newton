@@ -2398,7 +2398,7 @@ class TestTrianglePairCapacityEstimator(unittest.TestCase):
             builder.add_shape_mesh(body, mesh=_flat_mesh())
         model = builder.finalize(device="cpu")
 
-        # 190 mesh-mesh pairs, but at most 20 * 6 / 2 = 60 touch at once.
+        # 190 mesh-mesh pairs, budgeted in aggregate as 20 * 6 / 2 = 60 (a heuristic, not a contact bound).
         self.assertEqual(model.shape_contact_pair_count, 190)
         expected_pairs = 20 * _TRIANGLE_PAIR_NEIGHBORS_PER_SHAPE // 2
         self.assertEqual(self._capacity(model), expected_pairs * _TRIANGLE_PAIRS_PER_MESH_PAIR)
@@ -2413,11 +2413,49 @@ class TestTrianglePairCapacityEstimator(unittest.TestCase):
         self.assertEqual(CollisionPipeline(model, max_triangle_pairs=4096).narrow_phase.max_triangle_pairs, 4096)
         self.assertEqual(CollisionPipeline(model).narrow_phase.max_triangle_pairs, _TRIANGLE_PAIRS_MIN_CAPACITY)
         with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_PER_MESH_PAIR", 1 << 20):
-            self.assertEqual(
-                CollisionPipeline(model, deterministic=True).narrow_phase.max_triangle_pairs, (1 << 20) - 1
-            )
+            with self.assertWarnsRegex(RuntimeWarning, "deterministic contact reduction"):
+                pipeline = CollisionPipeline(model, deterministic=True)
+            self.assertEqual(pipeline.narrow_phase.max_triangle_pairs, (1 << 20) - 1)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                unreduced = CollisionPipeline(model, deterministic=True, reduce_contacts=False)
+            self.assertEqual(unreduced.narrow_phase.max_triangle_pairs, 3 << 20)
         with self.assertRaises(ValueError):
             CollisionPipeline(model, max_triangle_pairs=0)
+
+    def test_counts_without_stored_pairs_match_pair_list(self):
+        """Count NXN/SAP mesh pairs from shape types when the model has no stored pair list."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=_flat_mesh())
+        self._boxes(builder, 1)
+        for world in range(4):
+            sub = newton.ModelBuilder()
+            if world % 2 == 0:
+                sub.add_shape_mesh(-1, mesh=_flat_mesh())
+            self._boxes(sub, 2)
+            builder.add_world(sub)
+        model = builder.finalize(device="cpu")
+
+        expected = self._capacity(model)
+        # Per world: 2 or 3 pairs with the global mesh, plus 2 with a local mesh; global mesh-box once.
+        self.assertEqual(expected, (2 * 5 + 2 * 2 + 1) * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+        model.shape_contact_pairs = None
+        for broad_phase in ("nxn", "sap"):
+            with self.subTest(broad_phase=broad_phase):
+                self.assertEqual(self._capacity(model, broad_phase=broad_phase), expected)
+
+    def test_counts_without_stored_pairs_ignore_filters(self):
+        """Overcount, never undercount, when filtered pairs cannot be seen without a pair list."""
+        builder = newton.ModelBuilder()
+        mesh = builder.add_shape_mesh(-1, mesh=_flat_mesh())
+        self._boxes(builder, 3)
+        builder.add_shape_collision_filter_pair(mesh, builder.shape_count - 1)
+        model = builder.finalize(device="cpu")
+
+        with_pairs = self._capacity(model, broad_phase="nxn")
+        model.shape_contact_pairs = None
+        self.assertEqual(with_pairs, 2 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+        self.assertEqual(self._capacity(model, broad_phase="nxn"), 3 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
 
     def test_large_automatic_estimate_warns(self):
         """Warn when the automatic estimate needs large buffers, and stay silent for explicit values."""
@@ -2427,7 +2465,9 @@ class TestTrianglePairCapacityEstimator(unittest.TestCase):
         model = builder.finalize(device="cpu")
 
         with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_LARGE_BUFFER_BYTES", 1):
-            with self.assertWarnsRegex(RuntimeWarning, r"max_triangle_pairs=1,000,000.*MiB.*3 budgeted mesh pairs"):
+            with self.assertWarnsRegex(
+                RuntimeWarning, r"max_triangle_pairs=1,000,000.*MiB.*3 budgeted of 3 mesh-routed pairs from shape pairs"
+            ):
                 CollisionPipeline(model)
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")

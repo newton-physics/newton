@@ -821,7 +821,7 @@ _TRIANGLE_PAIRS_PER_MESH_PAIR = 128
 _TRIANGLE_PAIR_NEIGHBORS_PER_SHAPE = 6
 # Legacy fixed default; automatic sizing never allocates less.
 _TRIANGLE_PAIRS_MIN_CAPACITY = 1_000_000
-_TRIANGLE_PAIRS_LARGE_BUFFER_BYTES = 1024 * 1024 * 1024
+_TRIANGLE_PAIRS_LARGE_BUFFER_BYTES = 256 * 1024 * 1024
 
 
 @dataclasses.dataclass(frozen=True)
@@ -833,11 +833,13 @@ class _TrianglePairCountEstimate:
     mesh_pair_count: int
     budgeted_pair_count: int
     busiest_world_pair_count: int
+    source: Literal["none", "shape pairs", "shape counts"]
 
 
 def _estimate_triangle_pair_details(
     model: Model,
     shape_pairs: np.ndarray | None,
+    collide_mask: np.ndarray,
     mesh_like_mask: np.ndarray,
     planar_sdf_mask: np.ndarray,
     hydroelastic: bool,
@@ -846,21 +848,29 @@ def _estimate_triangle_pair_details(
 
     The estimate sums per-world budgets, so a batch in which only some worlds
     contain meshes is sized by those worlds rather than ``world_count`` times the
-    busiest one. For each world it counts the colliding shape pairs routed to the
-    mesh path (at least one mesh or heightfield, or two planar-SDF shapes), caps
-    them at ``_TRIANGLE_PAIR_NEIGHBORS_PER_SHAPE`` simultaneous neighbors per
-    participating shape, and budgets ``_TRIANGLE_PAIRS_PER_MESH_PAIR`` candidates
-    per pair. Global shapes count once in every world they can touch, and
-    global-global pairs count once.
+    busiest one. For each world it counts the shape pairs routed to the mesh path
+    (at least one mesh or heightfield, or two planar-SDF shapes), limits that
+    count to ``_TRIANGLE_PAIR_NEIGHBORS_PER_SHAPE`` times half the participating
+    shapes, and budgets ``_TRIANGLE_PAIRS_PER_MESH_PAIR`` candidates per pair.
+    Global shapes count once in every world they can touch, and global-global
+    pairs count once.
 
-    This is a heuristic, not a worst-case bound: it assumes a small contact patch
-    per pair. Dense meshes or heightfields under convex shapes, or large detection
-    gaps, can exceed it; the overflow warning then names ``max_triangle_pairs``.
+    With ``shape_pairs`` the routed pairs are counted exactly. Without them
+    (NXN/SAP on a model with no stored pair list) they are counted per world from
+    shape-type counts, skipping static-static pairs; this ignores group,
+    filter-pair, kinematic, and hydroelastic culling and so can only overcount.
+
+    This is a heuristic, not a worst-case bound. The neighbor limit is an
+    aggregate budget, not a per-shape guarantee, and the per-pair budget assumes
+    small contact patches. Dense meshes or heightfields under convex shapes, large
+    detection gaps, or worlds where most pairs touch at once can exceed it; the
+    overflow warning then names ``max_triangle_pairs``.
 
     Args:
         model: The simulation model.
-        shape_pairs: ``(N, 2)`` colliding shape pairs after world, group, and
-            filter-pair culling, or ``None`` when the model has none.
+        shape_pairs: ``(N, 2)`` candidate shape pairs (the explicit list or the
+            builder's ``shape_contact_pairs``), or ``None`` to count from masks.
+        collide_mask: Shapes the broad phase pairs; used only without ``shape_pairs``.
         mesh_like_mask: Routed mesh and heightfield shapes.
         planar_sdf_mask: Routed shapes with SDF edge data.
         hydroelastic: Whether hydroelastic-hydroelastic pairs use their own reducer.
@@ -869,9 +879,57 @@ def _estimate_triangle_pair_details(
         The estimated capacity, never below ``_TRIANGLE_PAIRS_MIN_CAPACITY``, and its inputs.
     """
     world_count = int(getattr(model, "world_count", 0) or 0)
-    if shape_pairs is None or len(shape_pairs) == 0:
-        return _TrianglePairCountEstimate(_TRIANGLE_PAIRS_MIN_CAPACITY, world_count, 0, 0, 0)
+    shape_world_array = getattr(model, "shape_world", None)
+    if shape_pairs is None and shape_world_array is None:
+        return _TrianglePairCountEstimate(_TRIANGLE_PAIRS_MIN_CAPACITY, world_count, 0, 0, 0, "none")
+    shape_world = (
+        shape_world_array.numpy().astype(np.int64)
+        if shape_world_array is not None
+        else np.zeros(len(mesh_like_mask), dtype=np.int64)
+    )
 
+    if shape_pairs is not None:
+        pairs_per_bucket, participants_per_bucket = _count_routed_pairs(
+            model, shape_pairs, shape_world, mesh_like_mask, planar_sdf_mask, hydroelastic
+        )
+        source = "shape pairs"
+    else:
+        pairs_per_bucket, participants_per_bucket = _count_routed_pairs_from_masks(
+            shape_world,
+            model.shape_body.numpy(),
+            collide_mask,
+            mesh_like_mask,
+            planar_sdf_mask,
+            model.shape_type.numpy(),
+        )
+        source = "shape counts"
+
+    neighbor_budget = (participants_per_bucket * _TRIANGLE_PAIR_NEIGHBORS_PER_SHAPE + 1) // 2
+    budgeted_pairs = np.minimum(pairs_per_bucket, neighbor_budget)
+    budgeted_pair_count = int(budgeted_pairs.sum())
+    return _TrianglePairCountEstimate(
+        capacity=max(_TRIANGLE_PAIRS_MIN_CAPACITY, budgeted_pair_count * _TRIANGLE_PAIRS_PER_MESH_PAIR),
+        world_count=world_count,
+        mesh_pair_count=int(pairs_per_bucket.sum()),
+        budgeted_pair_count=budgeted_pair_count,
+        busiest_world_pair_count=int(budgeted_pairs[1:].max(initial=0)),
+        source=source,
+    )
+
+
+def _count_routed_pairs(
+    model: Model,
+    shape_pairs: np.ndarray,
+    shape_world: np.ndarray,
+    mesh_like_mask: np.ndarray,
+    planar_sdf_mask: np.ndarray,
+    hydroelastic: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Count routed pairs and their participating shapes per bucket from an explicit pair list.
+
+    Bucket 0 holds global-global pairs and bucket ``w + 1`` holds pairs of world ``w``;
+    an explicit cross-world pair is counted once, in the bucket of its larger world.
+    """
     shape_types = model.shape_type.numpy()
     shape_a = shape_pairs[:, 0]
     shape_b = shape_pairs[:, 1]
@@ -890,49 +948,119 @@ def _estimate_triangle_pair_details(
     shape_a = shape_a[routed].astype(np.int64)
     shape_b = shape_b[routed].astype(np.int64)
     if len(shape_a) == 0:
-        return _TrianglePairCountEstimate(_TRIANGLE_PAIRS_MIN_CAPACITY, world_count, 0, 0, 0)
+        return np.zeros(1, dtype=np.int64), np.zeros(1, dtype=np.int64)
 
-    # Bucket 0 holds global-global pairs; bucket w + 1 holds pairs of world w.
-    shape_world = model.shape_world.numpy().astype(np.int64)
     bucket = np.maximum(shape_world[shape_a], shape_world[shape_b]) + 1
     bucket_count = int(bucket.max()) + 1
     pairs_per_bucket = np.bincount(bucket, minlength=bucket_count)
     participant_keys = np.unique(np.concatenate((shape_a, shape_b)) * bucket_count + np.concatenate((bucket, bucket)))
     participants_per_bucket = np.bincount(participant_keys % bucket_count, minlength=bucket_count)
-    neighbor_budget = (participants_per_bucket * _TRIANGLE_PAIR_NEIGHBORS_PER_SHAPE + 1) // 2
-    budgeted_pairs = np.minimum(pairs_per_bucket, neighbor_budget)
-    budgeted_pair_count = int(budgeted_pairs.sum())
-    return _TrianglePairCountEstimate(
-        capacity=max(_TRIANGLE_PAIRS_MIN_CAPACITY, budgeted_pair_count * _TRIANGLE_PAIRS_PER_MESH_PAIR),
-        world_count=world_count,
-        mesh_pair_count=len(shape_a),
-        budgeted_pair_count=budgeted_pair_count,
-        busiest_world_pair_count=int(budgeted_pairs[1:].max(initial=0)),
-    )
+    return pairs_per_bucket, participants_per_bucket
 
 
-def _triangle_pair_allocation_bytes(capacity: int, hashtable_size_factor: float) -> int:
-    """Return the bytes allocated for a triangle-pair capacity by the narrow phase."""
-    # Reducer contact slot (40 B) and triangle-pair slot (12 B); each hashtable entry stores
-    # a key, an active-slot index, and one value per reduction slot (68 B).
+def _count_routed_pairs_from_masks(
+    shape_world: np.ndarray,
+    shape_body: np.ndarray,
+    collide_mask: np.ndarray,
+    mesh_like_mask: np.ndarray,
+    planar_sdf_mask: np.ndarray,
+    shape_types: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Bound routed pairs and their participating shapes per bucket from per-world shape counts.
+
+    Uses the same buckets as :func:`_count_routed_pairs`. Each world's segment holds its own
+    shapes plus the global ones; global-global pairs are removed from it and counted once.
+    """
+    heightfield = mesh_like_mask & (shape_types == int(GeoType.HFIELD))
+    planar_only = planar_sdf_mask & ~mesh_like_mask
+    bucket_count = int(shape_world.max(initial=-1)) + 2
+
+    def counts(mask: np.ndarray) -> np.ndarray:
+        selected = collide_mask & mask
+        per_bucket = np.bincount(shape_world[selected] + 1, minlength=bucket_count).astype(np.int64)
+        # Every world segment also contains the global shapes.
+        per_bucket[1:] += per_bucket[0]
+        return per_bucket
+
+    def pairs(n: np.ndarray) -> np.ndarray:
+        return n * (n - 1) // 2
+
+    def routed_pairs(mask: np.ndarray) -> np.ndarray:
+        # At least one mesh-like shape, minus heightfield-heightfield, plus planar-SDF pairs.
+        n = counts(mask)
+        return (
+            pairs(n)
+            - pairs(n - counts(mask & mesh_like_mask))
+            - pairs(counts(mask & heightfield))
+            + pairs(counts(mask & planar_only))
+        )
+
+    shapes = counts(np.ones_like(collide_mask))
+    mesh_like = counts(mesh_like_mask)
+    planar = counts(planar_only)
+    # Pairs between two static shapes never reach the narrow phase.
+    routed = routed_pairs(np.ones_like(collide_mask)) - routed_pairs(shape_body < 0)
+    participants = np.where(mesh_like > 0, shapes, np.where(planar > 1, planar, 0))
+    participants = np.where(routed > 0, participants, 0)
+    # Remove the global-global pairs repeated in every world segment.
+    routed[1:] -= routed[0]
+    participants[1:] = np.where(routed[1:] > 0, participants[1:], 0)
+    return routed, participants
+
+
+def _resolve_auto_triangle_pairs(
+    estimate: _TrianglePairCountEstimate,
+    *,
+    has_reducer: bool,
+    deterministic: bool,
+    speculative: bool,
+    hashtable_size_factor: float,
+) -> int:
+    """Apply route limits to an automatic estimate and warn about clipping or large allocations."""
+    capacity = estimate.capacity
+    # Deterministic reduction packs reducer buffer indices into CONTACT_ID_BITS.
+    packing_limit = (1 << int(CONTACT_ID_BITS)) - 1
+    if has_reducer and deterministic and capacity > packing_limit:
+        warnings.warn(
+            f"CollisionPipeline estimated max_triangle_pairs={capacity:,} but deterministic contact reduction "
+            f"(deterministic=True or contact matching) supports at most {packing_limit:,}, so mesh contacts may "
+            "be dropped. Split the worlds across pipelines, or disable determinism and contact matching if "
+            "acceptable.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        capacity = packing_limit
+
+    allocation_bytes = _triangle_pair_allocation_bytes(capacity, hashtable_size_factor, has_reducer, speculative)
+    if allocation_bytes >= _TRIANGLE_PAIRS_LARGE_BUFFER_BYTES:
+        legacy_bytes = _triangle_pair_allocation_bytes(
+            _TRIANGLE_PAIRS_MIN_CAPACITY, hashtable_size_factor, has_reducer, speculative
+        )
+        warnings.warn(
+            f"CollisionPipeline automatically selected max_triangle_pairs={capacity:,}, requiring about "
+            f"{allocation_bytes / (1024 * 1024):,.1f} MiB for triangle-pair and contact-reduction buffers "
+            f"(the minimum of {_TRIANGLE_PAIRS_MIN_CAPACITY:,} needs {legacy_bytes / (1024 * 1024):,.1f} MiB). "
+            f"Estimate inputs -- {estimate.budgeted_pair_count:,} budgeted of {estimate.mesh_pair_count:,} "
+            f"mesh-routed pairs from {estimate.source}, at most {estimate.busiest_world_pair_count:,} in one of "
+            f"{estimate.world_count:,} worlds, {_TRIANGLE_PAIRS_PER_MESH_PAIR} candidates per pair. Pass "
+            "max_triangle_pairs explicitly to choose the memory budget and silence this warning.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    return capacity
+
+
+def _triangle_pair_allocation_bytes(
+    capacity: int, hashtable_size_factor: float, has_reducer: bool, speculative: bool
+) -> int:
+    """Return the bytes the narrow phase allocates for a triangle-pair capacity."""
+    # Triangle-pair slot (12 B). With reduction: reducer contact slot (40 B), and per hashtable
+    # entry a key, an active-slot index, and one value per reduction slot (68 B).
+    if not has_reducer:
+        return capacity * 12
     hashtable_entries = 1 << (max(int(capacity * hashtable_size_factor), 1024) - 1).bit_length()
-    return capacity * 52 + hashtable_entries * 68
-
-
-def _warn_large_triangle_pair_estimate(estimate: _TrianglePairCountEstimate, hashtable_size_factor: float) -> None:
-    """Warn when an automatic triangle-pair estimate implies a large allocation."""
-    allocation_bytes = _triangle_pair_allocation_bytes(estimate.capacity, hashtable_size_factor)
-    if allocation_bytes < _TRIANGLE_PAIRS_LARGE_BUFFER_BYTES:
-        return
-    warnings.warn(
-        f"CollisionPipeline automatically selected max_triangle_pairs={estimate.capacity:,}, requiring about "
-        f"{allocation_bytes / (1024 * 1024):,.1f} MiB for triangle-pair and contact-reduction buffers "
-        f"({estimate.budgeted_pair_count:,} budgeted mesh pairs of {estimate.mesh_pair_count:,} colliding, "
-        f"at most {estimate.busiest_world_pair_count:,} in one of {estimate.world_count:,} worlds). "
-        "Pass max_triangle_pairs explicitly to choose the capacity and silence this warning.",
-        RuntimeWarning,
-        stacklevel=3,
-    )
+    reclaim_bytes = (capacity // 32 + 1) * 4 if speculative else 0
+    return capacity * 52 + hashtable_entries * 68 + reclaim_bytes
 
 
 def _compute_per_world_shape_pairs_max(model: Model) -> int:
@@ -1444,14 +1572,19 @@ class CollisionPipeline:
                 scenes with large/complex meshes or heightfields report
                 triangle-pair or contact-reduction overflow warnings.
                 If None (the default), estimate it from the model: each world
-                budgets 128 candidates per colliding mesh, heightfield, or
-                planar-SDF pair, for at most 6 such neighbors per shape, and
-                the per-world budgets are summed. The estimate never falls
-                below 1,000,000, is limited to ``2**20 - 1`` when contacts are
-                deterministic, and warns when its buffers require at least
-                1 GiB. It assumes small contact patches, so dense meshes under
-                convex shapes may still need an explicit value. Ignored when
-                ``narrow_phase`` is provided.
+                budgets 128 candidates per candidate mesh, heightfield, or
+                planar-SDF pair, limited in aggregate to 6 neighbors per
+                participating shape, and the per-world budgets are summed.
+                Pairs come from the explicit pair list or
+                ``model.shape_contact_pairs``; without either (NXN/SAP), they
+                are counted per world from shape types, which can overcount.
+                The estimate never falls below 1,000,000 and warns when its
+                buffers require at least 256 MiB. With deterministic contact
+                reduction (``deterministic=True`` or contact matching) it is
+                limited to ``2**20 - 1`` and warns when that drops part of the
+                estimate. It is a heuristic that assumes small contact patches,
+                so dense meshes under convex shapes may still need an explicit
+                value. Ignored when ``narrow_phase`` is provided.
             contact_reduction_hashtable_size_factor: Multiplier applied to
                 ``max_triangle_pairs`` when allocating the global contact
                 reduction hashtable. Increase this if hashtable fill/failure
@@ -1884,25 +2017,27 @@ class CollisionPipeline:
                 if max_triangle_pairs is None:
                     if explicit_pairs_host is not None:
                         estimate_pairs = explicit_pairs_host
-                    elif model.shape_contact_pairs is not None and model.shape_contact_pair_count > 0:
+                    elif model.shape_contact_pairs is not None:
                         estimate_pairs = model.shape_contact_pairs.numpy().reshape(-1, 2)
                     else:
+                        # NXN/SAP on a model without a stored pair list: count from shape masks.
                         estimate_pairs = None
                     triangle_pair_estimate = _estimate_triangle_pair_details(
                         model,
                         estimate_pairs,
+                        route_mask,
                         mesh_mask | heightfield_mask,
                         planar_sdf_mask,
                         hydroelastic=hydroelastic_sdf is not None,
                     )
-                    max_triangle_pairs = triangle_pair_estimate.capacity
-                    if deterministic:
-                        # Deterministic reduction packs buffer indices into CONTACT_ID_BITS.
-                        max_triangle_pairs = min(max_triangle_pairs, (1 << int(CONTACT_ID_BITS)) - 1)
-                    else:
-                        _warn_large_triangle_pair_estimate(
-                            triangle_pair_estimate, contact_reduction_hashtable_size_factor
-                        )
+                    max_triangle_pairs = _resolve_auto_triangle_pairs(
+                        triangle_pair_estimate,
+                        # Mirrors NarrowPhase: the global reducer exists only for reduced mesh routes.
+                        has_reducer=self.reduce_contacts and (has_meshes or has_heightfields),
+                        deterministic=deterministic,
+                        speculative=self._speculative_enabled,
+                        hashtable_size_factor=contact_reduction_hashtable_size_factor,
+                    )
             if max_triangle_pairs is None:
                 max_triangle_pairs = _TRIANGLE_PAIRS_MIN_CAPACITY
 
