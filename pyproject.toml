@@ -94,6 +94,7 @@ rtx = [
     "newton[importers]",    # include import dependencies (USD)
     "pyglet>=2.1.6,<3",     # for the viewer window/presentation
     "ovrtx>=0.3",           # NVIDIA OVRTX renderer
+    "ovstage>=0.1.1",       # runtime scene management for OVRTX 0.4+
 ]
 
 # PyTorch is not required for ONNX policy inference. These extras cover
@@ -112,6 +113,7 @@ torch-cu13 = [
 dev = [
     "newton[examples]",      # includes examples, which pulls in sim and visualization
     "coverage[toml]>=7.8.0", # for code coverage testing
+    "viser>=1.1.1",          # exercise browser viewer interactions in CPU and GPU CI
 ]
 
 # Documentation dependencies
@@ -129,8 +131,7 @@ docs = [
     "pypandoc>=1.11",               # required by nbsphinx for notebook conversion
     "pypandoc_binary>=1.11",        # bundled pandoc binary
     "GitPython>=3.1.58",            # for downloading tutorial assets via newton.utils.download_asset()
-    # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
-    "viser==1.0.26",
+    "viser>=1.1.1",
 ]
 
 # Dependencies for Jupyter notebook compatibility
@@ -139,8 +140,7 @@ notebook = [
     "rerun-sdk[notebook]>=0.27.1; python_version < '3.14'",
     "jupyterlab>=4.5.7",
     "jupyter-server-proxy>=4.5.0",
-    # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
-    "viser==1.0.26",
+    "viser>=1.1.1",
 ]
 
 [tool.uv.build-backend]
@@ -217,6 +217,10 @@ ignore = [
     "F821",
 ]
 
+[tool.ruff.lint.flake8-bugbear]
+# This helper returns dataclass field metadata, not a shared mutable default.
+extend-immutable-calls = ["newton.solvers.SolverObservables.field"]
+
 [tool.ruff.lint.per-file-ignores]
 "asv/benchmarks/**/*" = ["RUF012", "E402"]
 "newton/examples/**/*" = ["E402", "TID253"]
@@ -239,6 +243,7 @@ banned-module-level-imports = [
     "networkx",
     "open3d",
     "openmesh",
+    "ovstage",
     "ovrtx",
     "PIL",
     "point_cloud_utils",
