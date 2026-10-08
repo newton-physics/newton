@@ -9,8 +9,9 @@ Run with::
 
 Without --bundle, the example downloads its bundle from newton-assets.
 Without --run-spec, the example reads run-spec.json from the bundle directory.
-Use optimizer.kind="cma" for CMA-ES. Install newton[calibration]; rendered traces
-also need newton[calibration-trace]. A null output.directory writes no files.
+Use optimizer.kind="cma" for CMA-ES. Install newton[calibration]. A null
+output.directory writes no files. The search logs its progress after each
+iteration; the result is in result.json and the search history in history.json.
 Trace masks come from visible cable shape IDs, independently of material color;
 the Chamfer objective uses projected cable geometry and needs no simulation mask.
 The run spec separates physical setup from fitting configuration.
@@ -28,7 +29,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
+import logging
+import sys
 from pathlib import Path
 
 
@@ -41,15 +43,17 @@ class Example:
 
     def run(self):
         """Fit the configured problem through the public calibration API."""
-        from newton.calibration import (  # noqa: PLC0415 -- keep CLI help lightweight
-            CableCalibrationProblem,
-            CableEvidenceBundle,
-            CableRunSpec,
-            calibrate,
-            optimizer_from_spec,
-        )
-
+        # The calibration module is private until its public PR; import it from _src for now.
         import newton.utils  # noqa: PLC0415 -- keep CLI help lightweight
+        from newton._src.calibration.calibrate import calibrate  # noqa: PLC0415
+        from newton._src.calibration.evidence import CableEvidenceBundle  # noqa: PLC0415
+        from newton._src.calibration.optimizer import optimizer_from_spec  # noqa: PLC0415
+        from newton._src.calibration.problem import CableCalibrationProblem  # noqa: PLC0415
+        from newton._src.calibration.run_spec import CableRunSpec  # noqa: PLC0415
+
+        # Show the progress lines that the search logs after each iteration.
+        logging.basicConfig(stream=sys.stdout, format="%(message)s", level=logging.WARNING)
+        logging.getLogger("newton._src.calibration").setLevel(logging.INFO)
 
         # Physical setup is independent of objective, search, and solver policy.
         # This driver selects the optimizer and output explicitly.
@@ -62,33 +66,19 @@ class Example:
         optimizer = optimizer_from_spec(run_spec.optimizer)
 
         problem = CableCalibrationProblem.from_bundle(bundle, bundle_dir, run_spec)
-        self._scalar_names = problem.search_space.searched_scalars()
-        self._header_printed = False
-        self._t0 = time.perf_counter()
         self.result = calibrate(
             problem,
             optimizer=optimizer,
             output_dir=run_spec.output.directory,
             trace_every=run_spec.output.trace_every,
-            on_iteration=self.report_iteration,
         )
 
-        print(f"Fit status: {self.result.status}; objective: {self.result.metrics['loss']:.6g}")
+        print(
+            f"Fit status: {self.result.status} ({self.result.diagnostics['stop_reason']}); "
+            f"objective: {self.result.metrics['loss']:.6g}"
+        )
         print(json.dumps(self.result.fit, indent=2))
         return self.result
-
-    def report_iteration(self, iteration, candidate, loss, diagnostics):
-        """Display one row per iteration: elapsed time, objective, and each searched scalar."""
-        elapsed = time.perf_counter() - self._t0
-        if not self._header_printed:
-            names = "".join(f" {n:>15}" for n in self._scalar_names)
-            print(f"{'iter':>5} {'elapsed[s]':>10} {'objective':>12}{names}", flush=True)
-            self._header_printed = True
-        values = "".join(f" {getattr(candidate, n):>15.6g}" for n in self._scalar_names)
-        # Only some optimizers report diagnostics (e.g. fdgrad's grad_norm/step);
-        # CMA passes an empty dict, so omit it rather than print "diagnostics={}".
-        extra = f"  {diagnostics}" if diagnostics else ""
-        print(f"{iteration:>5} {elapsed:>10.1f} {loss:>12.6g}{values}{extra}", flush=True)
 
     def test_final(self):
         """Check that the driver received a valid result."""
