@@ -1,1 +1,0 @@
-Supply the model's voxel-resolution table to custom `NarrowPhase` instances when omitted, preventing invalid memory access in mesh contact reduction, and reject supplied tables with a mismatched shape count or device.
