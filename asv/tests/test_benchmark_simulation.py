@@ -345,6 +345,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         cases = []
 
         def create_example(**kwargs):
+            self.assertFalse(kwargs["randomize"])
             cases.append((kwargs["robot"], kwargs["world_count"]))
             kwargs["startup_phase_times"].update(model=4.0, replication=1.0, finalize=2.0, solver=3.0)
             return SimpleNamespace(graph=object(), step=Mock())

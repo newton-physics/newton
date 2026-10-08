@@ -46,7 +46,7 @@ class _KpiInitialize:
         workload = Example(
             robot=robot,
             world_count=world_count,
-            randomize=True,
+            randomize=False,
             headless=True,
             actuation="random",
             startup_phase_times=startup_phase_times,
