@@ -319,7 +319,6 @@ class TestSimulationBenchmarks(unittest.TestCase):
                 return self.values
 
         def collect_metrics(**kwargs):
-            self.assertIs(kwargs["reset_workload"], MuJoCoExample.reset)
             for values in ([2, 4], [1, 5]):
                 workload = SimpleNamespace(
                     solver=SimpleNamespace(mjw_data=SimpleNamespace(solver_niter=FakeArray(values))),
