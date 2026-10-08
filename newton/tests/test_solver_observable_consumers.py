@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import newton
-from newton.solvers import SolverObservableFlags, SolverXPBD
+from newton.solvers import SolverObservableKind, SolverXPBD
 from newton.viewer import ViewerNull
 
 
@@ -50,7 +50,7 @@ class TestSolverObservableConsumers(unittest.TestCase):
         for domain in (frequency.CONTACT, frequency.CONTACT_RIGID, frequency.CONTACT_SOFT):
             with self.subTest(frequency=domain):
                 attribute = newton.ModelBuilder.CustomAttribute(name="pressure", frequency=domain, dtype=float)
-                with self.assertRaisesRegex(ValueError, "SolverObservables"):
+                with self.assertRaisesRegex(ValueError, "SolverBase.Observables"):
                     builder.add_custom_attribute(attribute)
                 self.assertNotIn("pressure", builder.custom_attributes)
 
@@ -61,7 +61,7 @@ class TestSolverObservableConsumers(unittest.TestCase):
         model = builder.finalize(device="cpu")
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=2, soft_contact_max=0)
         contacts = pipeline.contacts()
-        observables = SolverXPBD(model).observables({SolverObservableFlags.CONTACT_F})
+        observables = SolverXPBD(model).observables({SolverObservableKind.CONTACT_F})
         viewer = ViewerNull()
         viewer.set_model(model)
         viewer.show_contacts = False
@@ -87,7 +87,7 @@ class TestSolverObservableConsumers(unittest.TestCase):
         solver = newton.solvers.SolverKamino(model, config=config)
         solver.step(model.state(), model.state(), model.control(), None, 0.001)
         with self.assertRaisesRegex(ValueError, "exceeds CollisionPipeline capacity"):
-            solver.observables({SolverObservableFlags.CONTACT_F})
+            solver.observables({SolverObservableKind.CONTACT_F})
 
 
 if __name__ == "__main__":

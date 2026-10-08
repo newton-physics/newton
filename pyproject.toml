@@ -218,7 +218,7 @@ ignore = [
 
 [tool.ruff.lint.flake8-bugbear]
 # This helper returns dataclass field metadata, not a shared mutable default.
-extend-immutable-calls = ["newton.solvers.SolverObservables.field"]
+extend-immutable-calls = ["newton.solvers.SolverBase.Observables.field"]
 
 [tool.ruff.lint.per-file-ignores]
 "asv/benchmarks/**/*" = ["RUF012", "E402"]

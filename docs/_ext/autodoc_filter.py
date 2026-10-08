@@ -7,6 +7,7 @@ import inspect
 import sys
 from typing import Any
 
+from sphinx.ext.autodoc import ClassDocumenter
 from sphinx.pycode import ModuleAnalyzer, PycodeError
 
 # NOTE: This file is *imported by Sphinx* when building the docs.
@@ -16,6 +17,27 @@ from sphinx.pycode import ModuleAnalyzer, PycodeError
 # ---------------------------------------------------------------------------
 
 # Skip handler implementation
+
+
+class _NestedClassDocumenter(ClassDocumenter):
+    """Give skip handlers the full class path when filtering nested members."""
+
+    def filter_members(self, members, want_all):
+        # Sphinx otherwise exposes only objpath[0], the outermost class.
+        document = getattr(self.env, "current_document", None)
+        if document is not None:
+            previous = document.autodoc_class
+            document.autodoc_class = ".".join(self.objpath)
+        else:  # Sphinx 7 stores this context in temp_data.
+            previous = self.env.temp_data.get("autodoc:class", "")
+            self.env.temp_data["autodoc:class"] = ".".join(self.objpath)
+        try:
+            return super().filter_members(members, want_all)
+        finally:
+            if document is not None:
+                document.autodoc_class = previous
+            else:
+                self.env.temp_data["autodoc:class"] = previous
 
 
 def _has_attribute_docstring(app: Any, name: str) -> bool:
@@ -121,6 +143,7 @@ def _should_skip_member(
 def setup(app):  # type: ignore[override]
     """Hook into the Sphinx build."""
 
+    app.add_autodocumenter(_NestedClassDocumenter, override=True)
     app.connect("autodoc-skip-member", _should_skip_member)
     # Tell Sphinx our extension is parallel-safe.
     return {

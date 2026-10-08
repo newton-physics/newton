@@ -1651,7 +1651,7 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
 
    * - Observable
      - Description
-   * - ``SolverObservableFlags.CONTACT_F`` / ``SolverObservables.contact_f``
+   * - ``SolverObservableKind.CONTACT_F`` / ``SolverBase.Observables.contact_f``
      - Contact spatial forces (used by :class:`~sensors.SensorContact`).
        Bind the observable allocation to the contacts buffer and pass it to the
        solver step.
@@ -1660,13 +1660,13 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
 
    :class:`~solvers.SolverXPBD` with ``rigid_contact_con_weighting`` enabled
    (the default) does not conserve momentum at contacts.  The per-contact
-   forces written to ``SolverObservables.contact_f`` are
+   forces written to ``SolverBase.Observables.contact_f`` are
    approximate -- see that method's documentation for details.
 
 .. note::
 
    :class:`~solvers.SolverVBD` populates the rigid-contact rows of
-   :attr:`~solvers.SolverObservables.contact_f` when it integrates the rigid bodies, and the
+   :attr:`~solvers.SolverBase.Observables.contact_f` when it integrates the rigid bodies, and the
    soft-contact rows (row ``rigid_contact_max + i`` for soft contact ``i``) for
    rigid-soft particle, edge, and face records. With an external rigid solver, VBD's
    rigid rows are zero; consume that solver's forces from its own observables.

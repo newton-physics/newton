@@ -297,7 +297,7 @@ class Example:
             self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
         )
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableKind.CONTACT_F})
 
         self.viewer.set_model(self.model)
         self.viewer.vsync = True

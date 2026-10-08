@@ -485,7 +485,7 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         """Allocate from published native capacity and populate bound contacts."""
         model = self._make_three_world_model()
         solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
-        flags = {newton.solvers.SolverObservableFlags.CONTACT_F}
+        flags = {newton.solvers.SolverObservableKind.CONTACT_F}
         with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
             solver.observables(flags)
         pipeline = newton.CollisionPipeline(model)
@@ -567,7 +567,7 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
                     )
                     pipeline = newton.CollisionPipeline(model)
                     contacts = pipeline.contacts()
-                    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+                    observables = solver.observables({newton.solvers.SolverObservableKind.CONTACT_F})
                     state_in = model.state()
                     state_in.body_qd.assign(
                         np.array([[1.0, 0.0, -0.2, 0.0, 3.0, 0.0], [-1.0, 0.0, 0.2, 0.0, -3.0, 0.0]], dtype=np.float32)

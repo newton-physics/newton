@@ -443,7 +443,7 @@ class Example:
                 self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
             )
             self.contacts = self.collision_pipeline.contacts()
-            self.solver_observables = self.solver.observables(self.sensor_contact.solver_observable_flags)
+            self.solver_observables = self.solver.observables(self.sensor_contact.solver_observable_kinds)
 
         self.graph = None
         if self.use_cuda_graph:

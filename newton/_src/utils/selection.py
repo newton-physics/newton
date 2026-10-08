@@ -23,7 +23,7 @@ from ..sim import (
     eval_jacobian,
     eval_mass_matrix,
 )
-from ..solvers.observables import SolverObservables
+from ..solvers.solver import SolverBase
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -1262,7 +1262,7 @@ class ArticulationView:
     def _get_attribute_array(
         self,
         name: str,
-        source: Model | State | Control | SolverObservables,
+        source: Model | State | Control | SolverBase.Observables,
         _slice: Slice | int | None = None,
         layout=None,
     ):
@@ -1272,9 +1272,13 @@ class ArticulationView:
         return self._attribute_array_cache[key]
 
     def _create_attribute_array(
-        self, name: str, source: Model | State | Control | SolverObservables, _slice: Slice | int | None, layout=None
+        self,
+        name: str,
+        source: Model | State | Control | SolverBase.Observables,
+        _slice: Slice | int | None,
+        layout=None,
     ):
-        is_observable = isinstance(source, SolverObservables)
+        is_observable = isinstance(source, SolverBase.Observables)
         if is_observable and source.model is not self.model:
             raise ValueError("Solver observables and ArticulationView must use the same model.")
         # get the attribute (handle namespaced attributes like "mujoco.tendon_stiffness")
@@ -1411,7 +1415,11 @@ class ArticulationView:
         return attrib
 
     def _get_attribute_values(
-        self, name: str, source: Model | State | Control | SolverObservables, _slice: slice | None = None, layout=None
+        self,
+        name: str,
+        source: Model | State | Control | SolverBase.Observables,
+        _slice: slice | None = None,
+        layout=None,
     ):
         attrib = self._get_attribute_array(name, source, _slice=_slice, layout=layout)
         if hasattr(attrib, "_staging_array"):
@@ -1437,7 +1445,7 @@ class ArticulationView:
     def _set_attribute_values(
         self,
         name: str,
-        target: Model | State | Control | SolverObservables,
+        target: Model | State | Control | SolverBase.Observables,
         values,
         mask=None,
         _slice: slice | None = None,
@@ -1501,7 +1509,7 @@ class ArticulationView:
             else:
                 raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
 
-    def get_attribute(self, name: str, source: Model | State | Control | SolverObservables):
+    def get_attribute(self, name: str, source: Model | State | Control | SolverBase.Observables):
         """
         Get an attribute from a model, state, control, or solver observable container.
 
@@ -1514,7 +1522,7 @@ class ArticulationView:
 
         .. experimental::
 
-            ``SolverObservables`` sources use their declared row frequencies
+            ``SolverBase.Observables`` sources use their declared row frequencies
             and must belong to this view's model. Dynamic contact frequencies
             are not supported; they need endpoint-based filtering or reduction.
         """
@@ -1523,7 +1531,7 @@ class ArticulationView:
     def set_attribute(
         self,
         name: str,
-        target: Model | State | Control | SolverObservables,
+        target: Model | State | Control | SolverBase.Observables,
         values: wp.array[Any],
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:

@@ -12,11 +12,11 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverBase, SolverObservableFlags, SolverObservables
+from newton.solvers import SolverBase, SolverObservableKind
 from newton.solvers.experimental.coupled import SolverCoupled
 
 
-class CustomFlags(Enum):
+class CustomKind(Enum):
     """Use opaque identities unrelated to the Python field names."""
 
     TEMPERATURE = 0
@@ -38,33 +38,75 @@ class TestSolverObservableFields(unittest.TestCase):
         builder.add_body(mass=0.0)
         self.model = builder.finalize(device="cpu")
 
+    def test_nested_container_dispatch(self):
+        """Allocate the nested subtype and preserve inherited fields and selections."""
+
+        class ThermalSolver(SolverBase):
+            @dataclass(eq=False)
+            class Observables(SolverBase.Observables):
+                temperature: wp.array[float] | None = SolverBase.Observables.field(
+                    kind=CustomKind.TEMPERATURE, dtype=float, frequency=newton.Model.AttributeFrequency.BODY
+                )
+
+            SUPPORTED_OBSERVABLE_KINDS = frozenset(
+                {newton.solvers.SolverObservableKind.BODY_QDD, CustomKind.TEMPERATURE}
+            )
+
+        class DerivedSolver(ThermalSolver):
+            @dataclass(eq=False)
+            class Observables(ThermalSolver.Observables):
+                pressure: wp.array[float] | None = SolverBase.Observables.field(
+                    kind=CustomKind.PRESSURE, dtype=float, frequency=newton.Model.AttributeFrequency.BODY
+                )
+
+            SUPPORTED_OBSERVABLE_KINDS = ThermalSolver.SUPPORTED_OBSERVABLE_KINDS | {CustomKind.PRESSURE}
+
+        solver = DerivedSolver(self.model)
+        observables = solver.observables(solver.supported_observable_kinds, requires_grad=True)
+        self.assertIs(type(observables), DerivedSolver.Observables)
+        self.assertIsInstance(observables, ThermalSolver.Observables)
+        self.assertIsInstance(observables, SolverBase.Observables)
+        self.assertEqual(observables.body_qdd.shape, (self.model.body_count,))
+        self.assertEqual(observables.temperature.shape, (self.model.body_count,))
+        self.assertEqual(observables.pressure.shape, (self.model.body_count,))
+        with patch("newton._src.solvers.solver.wp.zeros", side_effect=AssertionError("unexpected allocation")):
+            selected = observables.select({CustomKind.TEMPERATURE})
+        self.assertIs(type(selected), DerivedSolver.Observables)
+        self.assertIs(selected.temperature, observables.temperature)
+        self.assertIs(selected.temperature.grad, observables.temperature.grad)
+        self.assertIsNone(selected.pressure)
+        self.assertIsNotNone(observables.pressure)
+        solver.validate_observables(selected)
+        with self.assertRaisesRegex(ValueError, "solver instance"):
+            DerivedSolver(self.model).validate_observables(selected)
+
     @staticmethod
     def make_solver(model):
         """Declare custom fields using only the public extension API."""
 
         @dataclass(eq=False)
-        class ThermalObservables(SolverObservables):
-            temperature: wp.array[float] | None = SolverObservables.field(
-                flag=CustomFlags.TEMPERATURE, dtype=float, frequency=newton.Model.AttributeFrequency.BODY
+        class ThermalObservables(SolverBase.Observables):
+            temperature: wp.array[float] | None = SolverBase.Observables.field(
+                kind=CustomKind.TEMPERATURE, dtype=float, frequency=newton.Model.AttributeFrequency.BODY
             )
 
         @dataclass(eq=False)
         class ContactObservables(ThermalObservables):
-            pressure: wp.array[float] | None = SolverObservables.field(
-                flag=CustomFlags.PRESSURE, dtype=wp.float32, frequency=newton.Model.AttributeFrequency.CONTACT_RIGID
+            pressure: wp.array[float] | None = SolverBase.Observables.field(
+                kind=CustomKind.PRESSURE, dtype=wp.float32, frequency=newton.Model.AttributeFrequency.CONTACT_RIGID
             )
 
         class Solver(SolverBase):
-            OBSERVABLES_TYPE = ContactObservables
-            SUPPORTED_OBSERVABLE_FLAGS = frozenset({*CustomFlags, SolverObservableFlags.BODY_QDD})
+            Observables = ContactObservables
+            SUPPORTED_OBSERVABLE_KINDS = frozenset({*CustomKind, SolverObservableKind.BODY_QDD})
 
         return Solver(model)
 
-    def test_inherited_fields_and_opaque_flags(self):
-        """Allocate inherited scalar and spatial fields without name-based flags."""
+    def test_inherited_fields_and_opaque_kinds(self):
+        """Allocate inherited scalar and spatial fields without name-based kinds."""
         solver = self.make_solver(self.model)
-        flags = {CustomFlags.TEMPERATURE, SolverObservableFlags.BODY_QDD}
-        observables = solver.observables(flags, requires_grad=True)
+        kinds = {CustomKind.TEMPERATURE, SolverObservableKind.BODY_QDD}
+        observables = solver.observables(kinds, requires_grad=True)
         self.assertEqual(observables.temperature.shape, (1,))
         self.assertIs(observables.temperature.dtype, wp.float32)
         self.assertIs(observables.body_qdd.dtype, wp.spatial_vector)
@@ -74,30 +116,30 @@ class TestSolverObservableFields(unittest.TestCase):
         self.assertIsNone(self.model.rigid_contact_max)
         self.assertIsNotNone(observables.temperature.grad)
         self.assertIsNotNone(observables.body_qdd.grad)
-        self.assertEqual(observables.flags, flags)
+        self.assertEqual(observables.kinds, kinds)
         self.assertEqual({observables: "identity"}[observables], "identity")
-        self.assertNotEqual(observables, solver.observables(flags))
+        self.assertNotEqual(observables, solver.observables(kinds))
 
         with patch("newton._src.solvers.solver.wp.zeros", side_effect=AssertionError("unexpected allocation")):
-            selected = observables.select({CustomFlags.TEMPERATURE})
-            body_only = observables.select({SolverObservableFlags.BODY_QDD})
+            selected = observables.select({CustomKind.TEMPERATURE})
+            body_only = observables.select({SolverObservableKind.BODY_QDD})
         self.assertIs(selected.temperature, observables.temperature)
         self.assertIs(selected.temperature.grad, observables.temperature.grad)
         self.assertIsNone(selected.body_qdd)
         self.assertIsNone(body_only.temperature)
-        self.assertTrue(selected.is_requested(CustomFlags.TEMPERATURE))
+        self.assertTrue(selected.is_requested(CustomKind.TEMPERATURE))
         self.assertIsNone(selected.select(set()).temperature)
 
     def test_custom_contact_field_binds_storage(self):
-        """Apply contact rules using the declaration rather than the flag value."""
+        """Apply contact rules using the declaration rather than the kind value."""
         solver = self.make_solver(self.model)
         with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
-            solver.observables({CustomFlags.PRESSURE})
+            solver.observables({CustomKind.PRESSURE})
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=0, soft_contact_max=0)
-        observables = solver.observables({CustomFlags.PRESSURE})
-        selected = observables.select({CustomFlags.PRESSURE})
+        observables = solver.observables({CustomKind.PRESSURE})
+        selected = observables.select({CustomKind.PRESSURE})
         self.assertEqual(selected.pressure.shape, (0,))
-        self.assertTrue(selected.is_requested(CustomFlags.PRESSURE))
+        self.assertTrue(selected.is_requested(CustomKind.PRESSURE))
         contacts = pipeline.contacts()
         solver.validate_observables(selected, contacts)
         self.assertIs(observables.contacts, contacts)
@@ -106,32 +148,32 @@ class TestSolverObservableFields(unittest.TestCase):
     def test_redeclarations_and_enum_namespaces_are_independent(self):
         """Keep cached base declarations intact when a child overrides a field."""
         solver = self.make_solver(self.model)
-        original = solver.observables({CustomFlags.TEMPERATURE})
+        original = solver.observables({CustomKind.TEMPERATURE})
 
-        class OtherFlags(Enum):
-            TENSOR = 0  # Same value as TEMPERATURE, but a different flag.
+        class OtherKind(Enum):
+            TENSOR = 0  # Same value as TEMPERATURE, but a different kind.
 
         @dataclass(eq=False)
-        class DerivedObservables(solver.OBSERVABLES_TYPE):
-            temperature: wp.array[wp.vec3] | None = SolverObservables.field(
-                flag=CustomFlags.TEMPERATURE, dtype=wp.vec3, frequency=newton.Model.AttributeFrequency.PARTICLE
+        class DerivedObservables(solver.Observables):
+            temperature: wp.array[wp.vec3] | None = SolverBase.Observables.field(
+                kind=CustomKind.TEMPERATURE, dtype=wp.vec3, frequency=newton.Model.AttributeFrequency.PARTICLE
             )
-            tensor: wp.array[wp.mat33] | None = SolverObservables.field(
-                flag=OtherFlags.TENSOR, dtype=wp.mat33, frequency=newton.Model.AttributeFrequency.ONCE
+            tensor: wp.array[wp.mat33] | None = SolverBase.Observables.field(
+                kind=OtherKind.TENSOR, dtype=wp.mat33, frequency=newton.Model.AttributeFrequency.ONCE
             )
 
         class DerivedSolver(type(solver)):
-            OBSERVABLES_TYPE = DerivedObservables
-            SUPPORTED_OBSERVABLE_FLAGS = solver.SUPPORTED_OBSERVABLE_FLAGS | {OtherFlags.TENSOR}
+            Observables = DerivedObservables
+            SUPPORTED_OBSERVABLE_KINDS = solver.SUPPORTED_OBSERVABLE_KINDS | {OtherKind.TENSOR}
 
-        derived = DerivedSolver(self.model).observables({CustomFlags.TEMPERATURE, OtherFlags.TENSOR})
+        derived = DerivedSolver(self.model).observables({CustomKind.TEMPERATURE, OtherKind.TENSOR})
         self.assertEqual(derived.temperature.shape, (0,))
         self.assertIs(derived.temperature.dtype, wp.vec3)
         self.assertEqual(derived.tensor.shape, (1,))
         self.assertIs(derived.tensor.dtype, wp.mat33)
-        self.assertIsNone(derived.select({CustomFlags.TEMPERATURE}).tensor)
+        self.assertIsNone(derived.select({CustomKind.TEMPERATURE}).tensor)
         self.assertEqual(original.get_attribute_frequency("temperature"), newton.Model.AttributeFrequency.BODY)
-        self.assertIs(solver.observables({CustomFlags.TEMPERATURE}).temperature.dtype, wp.float32)
+        self.assertIs(solver.observables({CustomKind.TEMPERATURE}).temperature.dtype, wp.float32)
 
     def test_custom_frequency_allocation(self):
         """Use registered model counts for custom string row domains."""
@@ -145,16 +187,16 @@ class TestSolverObservableFields(unittest.TestCase):
         model = builder.finalize(device="cpu")
 
         @dataclass(eq=False)
-        class SampleObservables(SolverObservables):
-            temperature: wp.array[float] | None = SolverObservables.field(
-                flag=CustomFlags.TEMPERATURE, dtype=float, frequency="sample"
+        class SampleObservables(SolverBase.Observables):
+            temperature: wp.array[float] | None = SolverBase.Observables.field(
+                kind=CustomKind.TEMPERATURE, dtype=float, frequency="sample"
             )
 
         class SampleSolver(SolverBase):
-            OBSERVABLES_TYPE = SampleObservables
-            SUPPORTED_OBSERVABLE_FLAGS = frozenset({CustomFlags.TEMPERATURE})
+            Observables = SampleObservables
+            SUPPORTED_OBSERVABLE_KINDS = frozenset({CustomKind.TEMPERATURE})
 
-        observables = SampleSolver(model).observables({CustomFlags.TEMPERATURE})
+        observables = SampleSolver(model).observables({CustomKind.TEMPERATURE})
         self.assertEqual(observables.temperature.shape, (3,))
         self.assertEqual(observables.get_attribute_frequency("temperature"), "sample")
         self.assertIsNone(model.rigid_contact_max)
@@ -166,59 +208,59 @@ class TestSolverObservableFields(unittest.TestCase):
             patch("newton._src.solvers.solver.wp.zeros", side_effect=AssertionError("unexpected allocation")),
             self.assertRaisesRegex(ValueError, "does not support"),
         ):
-            solver.observables({SolverObservableFlags.BODY_PARENT_F})
+            solver.observables({SolverObservableKind.BODY_PARENT_F})
 
-    def test_duplicate_flags_are_rejected_before_allocation(self):
-        """Reject two fields declaring the same flag, including inherited fields."""
+    def test_duplicate_kinds_are_rejected_before_allocation(self):
+        """Reject two fields declaring the same kind, including inherited fields."""
         solver = self.make_solver(self.model)
 
         @dataclass(eq=False)
-        class DuplicateObservables(solver.OBSERVABLES_TYPE):
-            duplicate: wp.array[float] | None = SolverObservables.field(
-                flag=CustomFlags.TEMPERATURE, dtype=float, frequency=newton.Model.AttributeFrequency.BODY
+        class DuplicateObservables(solver.Observables):
+            duplicate: wp.array[float] | None = SolverBase.Observables.field(
+                kind=CustomKind.TEMPERATURE, dtype=float, frequency=newton.Model.AttributeFrequency.BODY
             )
 
-        solver.OBSERVABLES_TYPE = DuplicateObservables
+        solver.Observables = DuplicateObservables
         with (
             patch("newton._src.solvers.solver.wp.zeros", side_effect=AssertionError("unexpected allocation")),
             self.assertRaisesRegex(ValueError, "Duplicate.*TEMPERATURE"),
         ):
-            solver.observables({CustomFlags.TEMPERATURE})
+            solver.observables({CustomKind.TEMPERATURE})
 
     def test_require_identity_dataclasses(self):
         """Reject value equality that would make observable sources unhashable."""
         solver = self.make_solver(self.model)
 
         @dataclass
-        class ValueObservables(solver.OBSERVABLES_TYPE):
+        class ValueObservables(solver.Observables):
             pass
 
-        solver.OBSERVABLES_TYPE = ValueObservables
+        solver.Observables = ValueObservables
         with self.assertRaisesRegex(TypeError, "eq=False"):
-            solver.observables({CustomFlags.TEMPERATURE})
+            solver.observables({CustomKind.TEMPERATURE})
 
     def test_missing_dataclass_decorator(self):
         """Reject new field declarations that dataclasses have not processed."""
         solver = self.make_solver(self.model)
 
-        class UndecoratedObservables(SolverObservables):
-            temperature: wp.array[float] | None = SolverObservables.field(
-                flag=CustomFlags.TEMPERATURE, dtype=float, frequency=newton.Model.AttributeFrequency.BODY
+        class UndecoratedObservables(SolverBase.Observables):
+            temperature: wp.array[float] | None = SolverBase.Observables.field(
+                kind=CustomKind.TEMPERATURE, dtype=float, frequency=newton.Model.AttributeFrequency.BODY
             )
 
-        solver.OBSERVABLES_TYPE = UndecoratedObservables
+        solver.Observables = UndecoratedObservables
         with self.assertRaisesRegex(TypeError, "dataclass"):
-            solver.observables({CustomFlags.TEMPERATURE})
+            solver.observables({CustomKind.TEMPERATURE})
 
-    def test_reject_value_like_flags(self):
-        """Reject integer-like flags even when declarations use opaque values."""
+    def test_reject_value_like_kinds(self):
+        """Reject integer-like kinds even when declarations use opaque values."""
 
-        class IntegerFlags(IntEnum):
+        class IntegerKind(IntEnum):
             VALUE = 0
 
-        for flag in (0, "temperature", IntegerFlags.VALUE):
-            with self.subTest(flag=flag), self.assertRaisesRegex(TypeError, "plain enum"):
-                SolverObservables.field(flag=flag, dtype=float, frequency=newton.Model.AttributeFrequency.BODY)
+        for kind in (0, "temperature", IntegerKind.VALUE):
+            with self.subTest(kind=kind), self.assertRaisesRegex(TypeError, "plain enum"):
+                SolverBase.Observables.field(kind=kind, dtype=float, frequency=newton.Model.AttributeFrequency.BODY)
 
     def test_public_factory_override(self):
         """Customize allocation through the public factory without additional hooks."""
@@ -226,23 +268,23 @@ class TestSolverObservableFields(unittest.TestCase):
         calls = []
 
         class CustomSolver(solver_type):
-            def observables(self, flags, *, requires_grad=None):
-                result = super().observables(flags, requires_grad=requires_grad)
-                calls.append(result.flags)
-                if result.is_requested(CustomFlags.TEMPERATURE):
+            def observables(self, kinds, *, requires_grad=None):
+                result = super().observables(kinds, requires_grad=requires_grad)
+                calls.append(result.kinds)
+                if result.is_requested(CustomKind.TEMPERATURE):
                     result.temperature.fill_(3.0)
                 self.created = result
                 return result
 
         solver = CustomSolver(self.model)
-        observables = solver.observables(iter([CustomFlags.TEMPERATURE]), requires_grad=True)
-        self.assertEqual(calls, [frozenset({CustomFlags.TEMPERATURE})])
+        observables = solver.observables(iter([CustomKind.TEMPERATURE]), requires_grad=True)
+        self.assertEqual(calls, [frozenset({CustomKind.TEMPERATURE})])
         self.assertIs(solver.created, observables)
         self.assertIs(observables.model, self.model)
         self.assertTrue(observables.temperature.requires_grad)
         np.testing.assert_array_equal(observables.temperature.numpy(), [3.0])
         observables.select(set())
-        self.assertEqual(calls, [frozenset({CustomFlags.TEMPERATURE})])
+        self.assertEqual(calls, [frozenset({CustomKind.TEMPERATURE})])
 
     def test_factory_and_validation_are_the_only_public_lifecycle_methods(self):
         """Keep allocation and preparation details out of the public solver API."""
@@ -260,15 +302,15 @@ class TestSolverObservableFields(unittest.TestCase):
         SolverBase.__init__(solver, self.model)
         solver._collision_detector_kamino = None
         solver._contact_observable_state = None
-        flags = {SolverObservableFlags.CONTACT_F}
+        kinds = {SolverObservableKind.CONTACT_F}
         with (
             patch("newton._src.solvers.kamino.solver_kamino.wp.empty", side_effect=MemoryError("scratch allocation")),
             self.assertRaisesRegex(MemoryError, "scratch allocation"),
         ):
-            solver.observables(flags)
+            solver.observables(kinds)
         self.assertIsNone(solver._contact_observable_state)
         newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
-        observables = solver.observables(flags)
+        observables = solver.observables(kinds)
         self.assertEqual(observables.contact_f.shape, (2,))
         self.assertEqual(solver._contact_observable_state.body_q.shape, (self.model.body_count,))
 
@@ -280,9 +322,9 @@ class TestSolverObservableFields(unittest.TestCase):
             patch("newton._src.solvers.solver.wp.zeros", side_effect=MemoryError("array allocation")),
             self.assertRaisesRegex(MemoryError, "array allocation"),
         ):
-            solver.observables({CustomFlags.PRESSURE})
+            solver.observables({CustomKind.PRESSURE})
         newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
-        self.assertEqual(solver.observables({CustomFlags.PRESSURE}).pressure.shape, (2,))
+        self.assertEqual(solver.observables({CustomKind.PRESSURE}).pressure.shape, (2,))
 
     def test_empty_request_does_not_allocate(self):
         """Return an owned empty container without allocating arrays or requiring contacts."""
@@ -290,7 +332,7 @@ class TestSolverObservableFields(unittest.TestCase):
         with patch("newton._src.solvers.solver.wp.zeros", side_effect=AssertionError("unexpected allocation")):
             observables = solver.observables(set())
         self.assertIs(observables.model, self.model)
-        self.assertEqual(observables.flags, frozenset())
+        self.assertEqual(observables.kinds, frozenset())
         self.assertIsNone(observables.temperature)
         self.assertIsNone(observables.pressure)
         self.assertIsNone(observables.contact_f)
@@ -305,8 +347,8 @@ class TestSolverObservableFields(unittest.TestCase):
                 builder.add_body(mass=0.0)
                 model = builder.finalize(device=device, requires_grad=True)
                 solver = self.make_solver(model)
-                observables = solver.observables({CustomFlags.TEMPERATURE, SolverObservableFlags.BODY_QDD})
-                selected = observables.select({CustomFlags.TEMPERATURE})
+                observables = solver.observables({CustomKind.TEMPERATURE, SolverObservableKind.BODY_QDD})
+                selected = observables.select({CustomKind.TEMPERATURE})
                 source = wp.ones(1, device=device, requires_grad=True)
                 with wp.Tape() as tape:
                     wp.launch(double_values, dim=1, inputs=[source], outputs=[selected.temperature], device=device)

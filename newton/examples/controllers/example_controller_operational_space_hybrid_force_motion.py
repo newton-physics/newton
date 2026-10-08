@@ -245,7 +245,7 @@ class Example:
             self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
         )
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables(self.force_sensor.solver_observable_flags)
+        self.solver_observables = self.solver.observables(self.force_sensor.solver_observable_kinds)
 
         # The tool site's world pose, not the raw body's -- the two only
         # coincide when the site's own body-local transform is identity

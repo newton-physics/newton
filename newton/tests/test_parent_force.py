@@ -68,7 +68,7 @@ def test_parent_force_static_pendulum(test, device, solver_fn):
                 parent_xform=xform,
             )
             solver = solver_fn(model)
-            observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+            observables = solver.observables({newton.solvers.SolverObservableKind.BODY_PARENT_F})
             state_0, state_1 = model.state(), model.state()
 
             newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
@@ -89,7 +89,7 @@ def test_parent_force_solver_observables(test, device, solver_fn):
         child_offset=wp.vec3(0, 0, 1),
     )
     solver = solver_fn(model)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
 
     test.assertIsNone(state_1.body_parent_f)
@@ -97,7 +97,7 @@ def test_parent_force_solver_observables(test, device, solver_fn):
     observables.body_parent_f.fill_(wp.spatial_vector(-1.0))
     solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(set()))
     np.testing.assert_array_equal(observables.body_parent_f.numpy(), np.full((model.body_count, 6), -1.0))
-    solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(observables.flags))
+    solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(observables.kinds))
 
     parent_f = observables.body_parent_f.numpy()[0]
     weight = model.body_mass.numpy()[0] * 9.81
@@ -113,14 +113,14 @@ def test_parent_force_solver_observables_xpbd(test, device):
         child_offset=wp.vec3(0, 0, 1),
     )
     solver = newton.solvers.SolverXPBD(model, iterations=8)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     observables.body_parent_f.fill_(wp.spatial_vector(-1.0))
     solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(set()))
     np.testing.assert_array_equal(observables.body_parent_f.numpy(), np.full((model.body_count, 6), -1.0))
-    solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(observables.flags))
+    solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(observables.kinds))
 
     test.assertIsNone(state_1.body_parent_f)
     parent_f = observables.body_parent_f.numpy()[0]
@@ -139,7 +139,7 @@ def test_parent_force_centrifugal(test, device, solver_fn):
         child_offset=wp.vec3(-r, 0, 0),
     )
     solver = solver_fn(model)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
 
     omega = 5.0
@@ -194,7 +194,7 @@ def test_apply_body_f(test, device, solver_fn):
     builder.add_articulation([joint0, joint1])
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_PARENT_F})
 
     masses = model.body_mass.numpy()
     total_weight = (masses[0] + masses[1]) * 9.81

@@ -1293,7 +1293,7 @@ class ViewerBase(ABC):
         contacts: newton.Contacts,
         state: newton.State,
         *,
-        observables: newton.solvers.SolverObservables | None = None,
+        observables: newton.solvers.SolverBase.Observables | None = None,
     ):
         """Render contact visualizations.
 

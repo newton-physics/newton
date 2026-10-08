@@ -8,7 +8,7 @@ from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import eval_mimic_joints, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
-from ..observables import SolverObservableFlags, SolverObservables
+from ..observables import SolverObservableKind
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
@@ -106,8 +106,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         See :ref:`Joint feature support` for the full comparison across solvers.
 
     Solver observables:
-        :attr:`~newton.solvers.SolverObservables.body_parent_f` is populated when
-        :attr:`~newton.solvers.SolverObservableFlags.BODY_PARENT_F` is requested
+        :attr:`~newton.solvers.SolverBase.Observables.body_parent_f` is populated when
+        :attr:`~newton.solvers.SolverObservableKind.BODY_PARENT_F` is requested
         from :meth:`~newton.solvers.SolverBase.observables`. The reported wrench is
         the per-body net spatial force from the RNEA backward pass
         translated to the body's COM (linear ``[N]`` first, torque ``[N·m]``
@@ -138,7 +138,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     """
 
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset({SolverObservableFlags.BODY_PARENT_F})
+    SUPPORTED_OBSERVABLE_KINDS = frozenset({SolverObservableKind.BODY_PARENT_F})
 
     def __init__(
         self,
@@ -486,7 +486,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         contacts: Contacts,
         dt: float,
         *,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         self._apply_module_options()
         self.validate_observables(observables)
@@ -502,7 +502,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         model = self.model
         body_parent_f = (
             observables.body_parent_f
-            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F)
+            if observables is not None and observables.is_requested(SolverObservableKind.BODY_PARENT_F)
             else None
         )
         if body_parent_f is None:

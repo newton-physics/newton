@@ -353,10 +353,10 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
 class _BodyObservableCopySolver(_StepCountingCopySolver):
     """Copy solver that fills body-indexed solver observables."""
 
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset(
+    SUPPORTED_OBSERVABLE_KINDS = frozenset(
         {
-            newton.solvers.SolverObservableFlags.BODY_QDD,
-            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
+            newton.solvers.SolverObservableKind.BODY_QDD,
+            newton.solvers.SolverObservableKind.BODY_PARENT_F,
         }
     )
 
@@ -366,9 +366,9 @@ class _BodyObservableCopySolver(_StepCountingCopySolver):
         if observables is None:
             return
         value = 1.0 if self.model.name == "left" else 2.0
-        if observables.is_requested(newton.solvers.SolverObservableFlags.BODY_QDD):
+        if observables.is_requested(newton.solvers.SolverObservableKind.BODY_QDD):
             observables.body_qdd.fill_(value)
-        if observables.is_requested(newton.solvers.SolverObservableFlags.BODY_PARENT_F):
+        if observables.is_requested(newton.solvers.SolverObservableKind.BODY_PARENT_F):
             observables.body_parent_f.fill_(value + 10.0)
 
 
@@ -1134,8 +1134,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
             ],
         )
         flags = {
-            newton.solvers.SolverObservableFlags.BODY_QDD,
-            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
+            newton.solvers.SolverObservableKind.BODY_QDD,
+            newton.solvers.SolverObservableKind.BODY_PARENT_F,
         }
         observables = coupled.observables(flags)
         state_in, state_out = self.model.state(), self.model.state()
@@ -1155,7 +1155,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 SolverCoupled.Entry("left", _BodyObservableCopySolver, bodies=[0]),
             ],
         )
-        flags = newton.solvers.SolverObservableFlags
+        flags = newton.solvers.SolverObservableKind
         observables = coupled.observables({flags.BODY_QDD, flags.BODY_PARENT_F}, requires_grad=True)
         seeds = np.arange(12, dtype=np.float32).reshape(2, 6)
         with wp.Tape() as tape:
@@ -1180,7 +1180,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 SolverCoupled.Entry("right", _BodyObservableCopySolver, bodies=[1]),
             ],
         )
-        flags = newton.solvers.SolverObservableFlags
+        flags = newton.solvers.SolverObservableKind
         observables = coupled.observables({flags.BODY_QDD, flags.BODY_PARENT_F})
         observables.body_parent_f.fill_(-1.0)
         for entry in observables.entry_observables.values():
@@ -1220,9 +1220,9 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 SolverCoupled.Entry("particles", _StepCountingCopySolver, particles=[0]),
             ],
         )
-        flags = newton.solvers.SolverObservableFlags
+        flags = newton.solvers.SolverObservableKind
         observables = coupled.observables({flags.BODY_QDD})
-        self.assertEqual(observables.entry_observables["particles"].flags, frozenset())
+        self.assertEqual(observables.entry_observables["particles"].kinds, frozenset())
 
         state_in, state_out = model.state(), model.state()
         coupled.step(state_in, state_out, None, None, 0.01, observables=observables)

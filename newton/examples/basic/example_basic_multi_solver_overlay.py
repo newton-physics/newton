@@ -138,7 +138,7 @@ class _SolverLayer:
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
         self.solver_observables = (
-            self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F}) if native_contacts else None
+            self.solver.observables({newton.solvers.SolverObservableKind.CONTACT_F}) if native_contacts else None
         )
 
         self._viewer = viewer

@@ -15,38 +15,36 @@ import warp as wp
 import newton
 
 
-class DummyObservableFlags(Enum):
+class DummyObservableKind(Enum):
     """Solver-specific observables used to exercise extension behavior."""
 
     BODY_TEMPERATURE = "body_temperature"
 
 
-class IntegerObservableFlags(IntEnum):
+class IntegerObservableKind(IntEnum):
     """Invalid value-like enum used to verify collision prevention."""
 
     BODY_TEMPERATURE = 0
 
 
-@dataclass(eq=False)
-class DummySolverObservables(newton.solvers.SolverObservables):
-    """Extend the standard observable container with a custom body array."""
-
-    body_temperature: wp.array[wp.float32] | None = newton.solvers.SolverObservables.field(
-        flag=DummyObservableFlags.BODY_TEMPERATURE, dtype=wp.float32, frequency=newton.Model.AttributeFrequency.BODY
-    )
-
-
 class DummySolver(newton.solvers.SolverBase):
     """Minimal solver that consumes extension flags and custom attributes."""
+
+    @dataclass(eq=False)
+    class Observables(newton.solvers.SolverBase.Observables):
+        """Extend the standard observable container with a custom body array."""
+
+        body_temperature: wp.array[wp.float32] | None = newton.solvers.SolverBase.Observables.field(
+            kind=DummyObservableKind.BODY_TEMPERATURE, dtype=wp.float32, frequency=newton.Model.AttributeFrequency.BODY
+        )
 
     # These bits intentionally live outside Newton's built-in flag range.
     MODEL_ATTRIBUTE_CHANGED = 1 << 20
     STATE_ATTRIBUTE_RESET = 1 << 21
-    OBSERVABLES_TYPE = DummySolverObservables
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset(
+    SUPPORTED_OBSERVABLE_KINDS = frozenset(
         {
-            newton.solvers.SolverObservableFlags.BODY_QDD,
-            DummyObservableFlags.BODY_TEMPERATURE,
+            newton.solvers.SolverObservableKind.BODY_QDD,
+            DummyObservableKind.BODY_TEMPERATURE,
         }
     )
 
@@ -181,14 +179,14 @@ class TestCustomSolver(unittest.TestCase):
         model = self._build_model()
         solver = DummySolver(model)
         requested = {
-            newton.solvers.SolverObservableFlags.BODY_QDD,
-            DummyObservableFlags.BODY_TEMPERATURE,
+            newton.solvers.SolverObservableKind.BODY_QDD,
+            DummyObservableKind.BODY_TEMPERATURE,
         }
 
         observables = solver.observables(requested)
 
-        self.assertIsInstance(observables, DummySolverObservables)
-        self.assertEqual(observables.flags, frozenset(requested))
+        self.assertIsInstance(observables, DummySolver.Observables)
+        self.assertEqual(observables.kinds, frozenset(requested))
         self.assertEqual(observables.body_qdd.shape, (model.body_count,))
         self.assertEqual(observables.body_temperature.shape, (model.body_count,))
         self.assertIsNone(observables.body_parent_f)
@@ -199,7 +197,7 @@ class TestCustomSolver(unittest.TestCase):
         solver = DummySolver(model)
 
         with self.assertRaisesRegex(ValueError, "BODY_PARENT_F"):
-            solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+            solver.observables({newton.solvers.SolverObservableKind.BODY_PARENT_F})
 
     def test_observables_reject_value_like_flags(self):
         """Reject string and integer enum keys that can collide across extensions."""
@@ -209,20 +207,20 @@ class TestCustomSolver(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "plain enum"):
             solver.observables({"body_qdd"})
         with self.assertRaisesRegex(TypeError, "IntEnum"):
-            solver.observables({IntegerObservableFlags.BODY_TEMPERATURE})
+            solver.observables({IntegerObservableKind.BODY_TEMPERATURE})
 
     def test_extended_attribute_requests_are_deprecated(self):
         """Keep legacy allocation requests while directing callers to solver observables."""
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(DeprecationWarning, "SolverObservables"):
+        with self.assertWarnsRegex(DeprecationWarning, "SolverBase.Observables"):
             builder.request_state_attributes("body_qdd")
-        with self.assertWarnsRegex(DeprecationWarning, "SolverObservables"):
+        with self.assertWarnsRegex(DeprecationWarning, "SolverBase.Observables"):
             builder.request_contact_attributes("force")
 
         model = builder.finalize()
-        with self.assertWarnsRegex(DeprecationWarning, "SolverObservables"):
+        with self.assertWarnsRegex(DeprecationWarning, "SolverBase.Observables"):
             model.request_state_attributes("body_parent_f")
-        with self.assertWarnsRegex(DeprecationWarning, "SolverObservables"):
+        with self.assertWarnsRegex(DeprecationWarning, "SolverBase.Observables"):
             model.request_contact_attributes("force")
 
 

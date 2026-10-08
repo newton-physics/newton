@@ -100,7 +100,7 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
-        self.observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        self.observables = self.solver.observables({newton.solvers.SolverObservableKind.CONTACT_F})
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)

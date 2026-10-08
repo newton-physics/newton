@@ -18,7 +18,7 @@ Most Newton sensors follow a common pattern:
 
 .. note::
 
-   Solver-dependent sensors expose ``solver_observable_flags``. Combine these sets,
+   Solver-dependent sensors expose ``solver_observable_kinds``. Combine these sets,
    allocate :doc:`solver observables <solver_observables>` once, and pass the
    container to the solver and sensor updates.
 
@@ -44,7 +44,7 @@ Most Newton sensors follow a common pattern:
 
    # Create solver and state
    solver = newton.solvers.SolverMuJoCo(model)
-   observables = solver.observables(imu.solver_observable_flags)
+   observables = solver.observables(imu.solver_observable_kinds)
    state = model.state()
 
    # Simulation loop
@@ -177,8 +177,8 @@ they use an off-center pair so the sample pattern remains centered on the pixel.
 Solver Observables
 ------------------
 
-``SensorIMU`` requires ``SolverObservableFlags.BODY_QDD`` and ``SensorContact``
-requires ``SolverObservableFlags.CONTACT_F``. Their ``solver_observable_flags``
+``SensorIMU`` requires ``SolverObservableKind.BODY_QDD`` and ``SensorContact``
+requires ``SolverObservableKind.CONTACT_F``. Their ``solver_observable_kinds``
 properties provide these requirements without mutating the model. Union the
 sets when both sensors are present. Construct the collision pipeline before
 requesting contact-indexed observables, then pass its contacts buffer to the solver
@@ -186,8 +186,8 @@ step and sensor. The first step binds the observable container to that storage:
 
 .. code-block:: python
 
-   flags = imu.solver_observable_flags | contact_sensor.solver_observable_flags
-   observables = solver.observables(flags)
+   kinds = imu.solver_observable_kinds | contact_sensor.solver_observable_kinds
+   observables = solver.observables(kinds)
 
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
    imu.update(state_out, observables=observables)
@@ -211,7 +211,7 @@ every step -- this lets Newton pre-allocate output arrays and avoid per-frame
 overhead.
 
 Requested solver observables may add nontrivial cost to the solver step itself.
-Request only the flags consumed by the application and reuse the allocation.
+Request only the kinds consumed by the application and reuse the allocation.
 
 See Also
 --------
