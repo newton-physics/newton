@@ -180,6 +180,19 @@ left unchanged. By default the function updates the input state in place; pass
 a different output state to copy the input coordinates and update the
 followers in that state instead.
 
+Pass ``mask=`` or ``indices=`` to select articulations, as with
+:func:`newton.eval_fk` and :func:`newton.eval_ik`. The selectors are mutually
+exclusive and refer to articulation indices, not world or joint indices.
+Only selected articulations are copied and updated, including when a separate
+output state is supplied; unselected output coordinates retain their existing
+values. For example, use the same device-resident selection in both calls
+during a partial reset:
+
+.. code-block:: python
+
+  newton.eval_mimic(model, state, indices=articulation_indices)
+  newton.eval_fk(model, state.joint_q, state.joint_qd, state, indices=articulation_indices)
+
 Mimic chains are not supported. The reference joint must be independent, and a
 joint that is already the reference for a follower cannot itself become a
 follower. :meth:`newton.ModelBuilder.set_joint_mimic` raises an error if either
