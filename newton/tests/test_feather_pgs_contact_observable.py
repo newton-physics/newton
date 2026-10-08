@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton._src.solvers.feather_pgs.kernels
 from newton._src.geometry.sdf_hydroelastic import HydroelasticSDF
 from newton.solvers import SolverFeatherPGS, SolverObservableFlags
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
@@ -211,6 +212,89 @@ def test_contact_f_of_compliant_hydroelastic_rows(test, device):
         test.assertGreater(np.abs(contact_f[:, 2]).sum(), 0.0)
 
 
+def test_overflowing_contact_count_stays_in_the_rigid_rows(test, device, capture=False):
+    """Bound rigid rows by the capacity when the contact count overflows it, leaving soft rows zero."""
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.09), wp.quat_identity()))
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    model = builder.finalize(device=device)
+    # Built before the pipeline, the solver's contact scratch is larger than the contact buffer.
+    pgs_mode = "matrix_free" if wp.get_device(device).is_cuda else "split"
+    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, warn_constraint_overflow=False)
+    rigid_capacity, soft_capacity = 4, 2
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=rigid_capacity, soft_contact_max=soft_capacity)
+    observables = solver.observables({SolverObservableFlags.CONTACT_F})
+    test.assertEqual(observables.contact_f.shape[0], rigid_capacity + soft_capacity)
+    contacts = pipeline.contacts()
+    state_in, state_out, control = model.state(), model.state(), model.control()
+    overflow_count = wp.array([rigid_capacity + soft_capacity + 3], dtype=wp.int32, device=device)
+
+    def step():
+        pipeline.collide(state_in, contacts)
+        # The collision counter keeps counting past the capacity when the buffer overflows.
+        wp.copy(contacts.rigid_contact_count, overflow_count)
+        solver.step(state_in, state_out, control, contacts, DT, observables=observables)
+
+    pipeline.collide(state_in, contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), rigid_capacity)
+    step()
+    observables.contact_f.fill_(wp.spatial_vector(FILL, FILL, FILL, FILL, FILL, FILL))
+    if capture:
+        with wp.ScopedCapture(device) as recorded:
+            step()
+        observables.contact_f.fill_(wp.spatial_vector(FILL, FILL, FILL, FILL, FILL, FILL))
+        wp.capture_launch(recorded.graph)
+    else:
+        step()
+    contact_f = observables.contact_f.numpy()
+    solver.update_contacts(contacts)
+    np.testing.assert_array_equal(contact_f[:rigid_capacity, :3], contacts.rigid_contact_force.numpy())
+    np.testing.assert_array_equal(contact_f[:rigid_capacity, 3:], 0.0)
+    np.testing.assert_array_equal(contact_f[rigid_capacity:], 0.0)
+
+
+def test_contact_force_kernel_reads_only_rigid_rows(test, device):
+    """Read no rigid contact data past the capacity when the count overflows into the soft rows."""
+    rigid_capacity, soft_capacity = 1, 2
+    rows = rigid_capacity + soft_capacity
+    backing = []
+
+    def rigid_view(values, dtype):
+        # Valid storage past the view makes a read beyond the rigid capacity deterministic.
+        full = wp.array(values, dtype=dtype, device=device)
+        backing.append(full)
+        return wp.array(ptr=full.ptr, shape=(rigid_capacity,), dtype=dtype, device=device)
+
+    impulses = wp.array([[3.0]], dtype=wp.float32, device=device)
+    row_count = wp.array([1], dtype=wp.int32, device=device)
+    contact_f = wp.full(rows, wp.spatial_vector(FILL, FILL, FILL, FILL, FILL, FILL), device=device)
+    wp.launch(
+        newton._src.solvers.feather_pgs.kernels.compute_contact_spatial_force_from_impulses,
+        dim=rows,
+        inputs=[
+            wp.array([rows + 4], dtype=wp.int32, device=device),
+            rigid_view([[0.0, 0.0, -1.0]] * rows, wp.vec3),
+            rigid_view([0] * rows, wp.int32),
+            rigid_view([0] * rows, wp.int32),
+            rigid_view([0] * rows, wp.int32),
+            rigid_view([1] * rows, wp.int32),
+            impulses,
+            impulses,
+            impulses,
+            row_count,
+            row_count,
+            row_count,
+            10.0,
+            rigid_capacity,
+        ],
+        outputs=[contact_f],
+        device=device,
+    )
+    np.testing.assert_allclose(contact_f.numpy()[0], [0.0, 0.0, 30.0, 0.0, 0.0, 0.0])
+    np.testing.assert_array_equal(contact_f.numpy()[rigid_capacity:], 0.0)
+
+
 class TestFeatherPGSContactObservable(unittest.TestCase):
     pass
 
@@ -250,6 +334,25 @@ add_function_test(
     TestFeatherPGSContactObservable,
     "test_unrequested_contact_f_is_left_untouched",
     test_unrequested_contact_f_is_left_untouched,
+    devices=all_devices,
+)
+add_function_test(
+    TestFeatherPGSContactObservable,
+    "test_overflowing_contact_count_stays_in_the_rigid_rows",
+    test_overflowing_contact_count_stays_in_the_rigid_rows,
+    devices=all_devices,
+)
+add_function_test(
+    TestFeatherPGSContactObservable,
+    "test_overflowing_contact_count_stays_in_the_rigid_rows_captured",
+    test_overflowing_contact_count_stays_in_the_rigid_rows,
+    devices=cuda_devices,
+    capture=True,
+)
+add_function_test(
+    TestFeatherPGSContactObservable,
+    "test_contact_force_kernel_reads_only_rigid_rows",
+    test_contact_force_kernel_reads_only_rigid_rows,
     devices=all_devices,
 )
 add_function_test(

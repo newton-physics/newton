@@ -2150,13 +2150,17 @@ def compute_contact_spatial_force_from_impulses(
     mf_constraint_count: wp.array[wp.int32],
     propagation_constraint_count: wp.array[wp.int32],
     inv_dt: float,
+    rigid_contact_max: int,
     # outputs
     contact_f: wp.array[wp.spatial_vector],
 ):
-    """Write every row of a ``CONTACT_F`` observable: the linear force of live rigid contacts, zero elsewhere."""
+    """Write every row of a ``CONTACT_F`` observable: the linear force of live rigid contacts, zero elsewhere.
+
+    The collision count can exceed the rigid capacity, so rigid rows stop at the capacity.
+    """
     c = wp.tid()
     force = wp.vec3(0.0)
-    if c < contact_count[0]:
+    if c < wp.min(contact_count[0], rigid_contact_max):
         force = contact_linear_force_from_impulses(
             c,
             contact_normal,

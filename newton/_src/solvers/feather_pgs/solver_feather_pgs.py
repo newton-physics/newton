@@ -1237,8 +1237,12 @@ class SolverFeatherPGS(SolverBase):
         normal and friction impulses of the step divided by ``dt``; the torque part is zero
         (torsional friction is not reported). Contacts whose rows were dropped for capacity,
         and contacts of sleeping islands whose rows are skipped (``sleep_skip_constraints``),
-        report zero, as do rows beyond the contact count and the soft-contact rows. These
-        are the forces :meth:`update_contacts` reports.
+        report zero, as do rows beyond the contact count or the rigid capacity and the
+        soft-contact rows. These are the forces :meth:`update_contacts` reports. A zero force
+        under a sleeping body does not mean the contact was lost: force-threshold logic and
+        :class:`~newton.sensors.SensorContact` see an apparent unloading while the island
+        sleeps; pass ``sleep_skip_constraints=False`` (or leave sleeping off) to keep the
+        solved forces.
 
     Example:
 
@@ -5810,7 +5814,7 @@ class SolverFeatherPGS(SolverBase):
             wp.launch(
                 compute_contact_spatial_force_from_impulses,
                 dim=observables.contact_f.shape[0],
-                inputs=self._contact_force_inputs(contacts, inv_dt),
+                inputs=[*self._contact_force_inputs(contacts, inv_dt), contacts.rigid_contact_max],
                 outputs=[observables.contact_f],
                 device=self.model.device,
             )
