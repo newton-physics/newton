@@ -26,11 +26,11 @@ current viewer session, or a persistent artifact:
       - Dependencies
     * - :class:`~newton.viewer.ViewerGL`
       - Interactive development and live debugging
-      - Real-time display; frame capture in headless mode
+      - Real-time display; frame capture
       - pyglet, imgui_bundle
     * - :class:`~newton.viewer.ViewerRTX`
       - Path-traced visualization on NVIDIA GPUs
-      - Real-time display
+      - Real-time display; frame capture
       - ovrtx, ovstage, usd-core, pyglet (``uv sync --extra rtx``)
     * - :class:`~newton.viewer.ViewerFile`
       - Persistent state-snapshot recording and visual playback
@@ -96,7 +96,62 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
 - :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
 - :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise; prefer this over composing ``is_paused()`` manually
+- :meth:`~newton.viewer.ViewerBase.set_rendering_paused` / :meth:`~newton.viewer.ViewerBase.is_rendering_paused` — freeze or resume the displayed image independently of simulation stepping in GL and RTX
 - :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
+
+**Rendering pause (GL and RTX):**
+
+Click **Pause Rendering**, or call ``viewer.set_rendering_paused(True)``, to
+freeze the last displayed image while simulation may continue. UI controls,
+plots, window resize, and close events remain active. Camera navigation and
+scene picking/gizmos are disabled while the image is frozen. The ordinary
+**Pause** and **Step** controls still govern simulation independently.
+
+Continue calling ``begin_frame()``, logging updates, and ``end_frame()`` during
+rendering pause. The viewer retains the latest scene updates, including
+transforms, visibility, debug geometry, and programmatic camera changes.
+Resuming renders the current state without replaying intervening frames.
+Frame-scoped UI annotations and fullscreen-image requests keep their normal
+per-frame lifetime. A fullscreen image already displayed stays frozen too.
+
+.. code-block:: python
+
+    viewer.set_rendering_paused(True)
+    while viewer.is_running():
+        if viewer.should_step():
+            simulation.step()
+        viewer.begin_frame(simulation.time)
+        viewer.log_state(simulation.state)
+        viewer.end_frame()  # Keep servicing the window and Resume control.
+
+Rendering pause also works programmatically in headless mode. ``num_frames``
+continues to count viewer-loop frames during pause; windowed viewers continue
+to ignore that budget. GL frame capture and RTX screenshots return the frozen
+image while paused. With no previously displayed image, the background is
+empty and capture raises ``RuntimeError``; headless RTX uses the last image
+accepted by the viewer. Clearing or replacing the model invalidates the image
+but preserves the rendering-pause setting. Other backends report ``False``
+and ignore requests to enable rendering pause.
+
+RTX retains its existing rendering modes: the default ``async_rendering=True``
+submits one frame asynchronously and waits for it on the next unpaused
+``end_frame()``; ``False`` renders synchronously. Rendering pause neither
+waits for nor submits a renderer frame. Any outstanding async result is held
+and discarded on resume, so it cannot replace the frozen image. Resume
+publishes the latest retained scene updates and follows the selected mode's
+usual presentation cadence; async mode displays that new result on the
+following frame. Scene updates remain bounded to the latest values per object.
+Initial renderer/model loading, explicit cleanup, and an unpaused render can
+still wait for GPU work. Rendering pause does not interrupt those operations.
+
+Windowed RTX and GL retain a separate RGBA image texture so changes to the
+scene, camera, or fullscreen images cannot overwrite the frozen image. This
+requires four extra bytes per pixel (about 33 MB at 3840 x 2160), plus a GPU
+image copy on every unpaused frame, even if rendering pause is never used.
+The copy preserves the displayed image if a logged fullscreen texture is
+updated or the render target is resized before pause is requested. Headless
+RTX likewise keeps a GPU copy of the last accepted image, independent of any
+outstanding async render.
 
 **Camera and layout:**
 
@@ -170,6 +225,78 @@ scalars and ``keep_historical_data`` for arrays. It ignores ``clear`` and
 Real-time Viewers
 -----------------
 
+.. _viewer-frame-capture:
+
+Headless Mode and Frame Capture
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX` support
+``headless=True`` to render off-screen without opening a window. Both implement
+:meth:`~newton.viewer.ViewerBase.get_frame` to capture the last rendered frame
+as an RGB Warp array on the viewer device with shape ``(height, width, 3)``,
+dtype ``wp.uint8``, and a top-left origin. Other viewers inherit the base
+implementation, which raises ``NotImplementedError`` because they do not
+support frame capture. Call it after ``end_frame()`` in either headless or
+windowed mode:
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerGL(headless=True)  # Or ViewerRTX(headless=True)
+    viewer.set_model(model)
+
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
+
+    frame = viewer.get_frame()
+    rgb = frame.numpy()  # NumPy uint8 array with shape (height, width, 3)
+
+    # Reuse the output buffer after rendering subsequent frames.
+    viewer.get_frame(target_image=frame)
+
+Use an image library to save the captured pixels, for example:
+
+.. code-block:: python
+
+    from PIL import Image
+
+    Image.fromarray(rgb).save("screenshot.png")
+
+UI overlays are excluded by default. ``ViewerGL`` supports
+``get_frame(render_ui=True)`` to include them; ``ViewerRTX`` does not support
+that option. RTX also does not support capturing fullscreen images displayed
+with ``log_image(..., fullscreen=True)``: ``get_frame()`` raises
+``NotImplementedError`` for those frames. Capture resumes after the next scene
+render. RTX capture uses the fixed render resolution and reads through CPU
+memory. With asynchronous rendering, ``get_frame()`` waits for the render
+submitted by the latest ``end_frame()`` so each captured image contains the
+latest logged state. Capturing a frame therefore blocks until that render
+completes.
+
+.. note::
+
+    For ``ViewerGL`` on a machine without a display, pyglet must also be put in headless mode.
+    pyglet binds its display backend the first time that backend is imported, and Newton imports pyglet's window
+    and display modules when the first :class:`~newton.viewer.ViewerGL` is constructed, so the
+    option has to be set before that point. Otherwise the snippet above fails with
+    ``pyglet.display.xlib.NoSuchDisplayException: Cannot connect to "None"`` on Linux, since
+    pyglet defaults to Xlib. Either set the environment variable::
+
+        PYGLET_HEADLESS=1 python your_script.py
+
+    or set the option in Python before creating the viewer::
+
+        import newton
+        import pyglet
+
+        pyglet.options["headless"] = True
+
+        viewer = newton.viewer.ViewerGL(headless=True)
+
+    On a machine with several GPUs, ``PYGLET_HEADLESS_DEVICE`` (or
+    ``pyglet.options["headless_device"]``) selects which one renders; it defaults to ``0``,
+    which is not necessarily the device the rest of the simulation runs on.
+
 OpenGL Viewer
 ~~~~~~~~~~~~~
 
@@ -208,48 +335,6 @@ Keys can be specified as single-character strings (``'w'``), special key names (
 
     if viewer.is_key_down('r'):
         state = model.state()  # reset
-
-**Headless mode and frame capture:**
-
-In headless mode (``headless=True``), the viewer renders off-screen without opening a window.
-Use :meth:`~newton.viewer.ViewerGL.get_frame` to retrieve the rendered image as a
-Warp array on the viewer device:
-
-.. code-block:: python
-
-    viewer = newton.viewer.ViewerGL(headless=True)
-    viewer.set_model(model)
-
-    viewer.begin_frame(sim_time)
-    viewer.log_state(state)
-    viewer.end_frame()
-
-    # Returns a wp.array with shape (height, width, 3), dtype wp.uint8
-    frame = viewer.get_frame()
-
-.. note::
-
-    On a machine without a display, pyglet must also be put in headless mode. pyglet binds its
-    display backend the first time that backend is imported, and Newton imports pyglet's window
-    and display modules when the first :class:`~newton.viewer.ViewerGL` is constructed, so the
-    option has to be set before that point. Otherwise the snippet above fails with
-    ``pyglet.display.xlib.NoSuchDisplayException: Cannot connect to "None"`` on Linux, since
-    pyglet defaults to Xlib. Either set the environment variable::
-
-        PYGLET_HEADLESS=1 python your_script.py
-
-    or set the option in Python before creating the viewer::
-
-        import newton
-        import pyglet
-
-        pyglet.options["headless"] = True
-
-        viewer = newton.viewer.ViewerGL(headless=True)
-
-    On a machine with several GPUs, ``PYGLET_HEADLESS_DEVICE`` (or
-    ``pyglet.options["headless_device"]``) selects which one renders; it defaults to ``0``,
-    which is not necessarily the device the rest of the simulation runs on.
 
 **Custom UI panels:**
 

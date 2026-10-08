@@ -251,6 +251,52 @@ class TestSimulationBenchmarks(unittest.TestCase):
         self.assertEqual(example.benchmark_time, 0.25)
         self.assertEqual(example.sim_time, 0.01)
 
+    def test_mujoco_contact_observables_only_update_on_last_substep(self):
+        """Pass final-substep contact observables to the sensor without legacy exports."""
+        for substeps in (1, 2, 3):
+            with self.subTest(substeps=substeps):
+                example = MuJoCoExample.__new__(MuJoCoExample)
+                example.sim_substeps = substeps
+                example.sim_dt = 0.01
+                example.state_0, example.state_1 = Mock(), Mock()
+                example.control = Mock()
+                example.contacts = Mock()
+                example.solver = Mock()
+                example.sensor_contact = Mock()
+                example.solver_observables = Mock()
+
+                example.simulate()
+
+                self.assertEqual(example.solver.step.call_count, substeps)
+                for step_call in example.solver.step.call_args_list[:-1]:
+                    self.assertEqual(step_call.kwargs, {})
+                self.assertEqual(example.solver.step.call_args.kwargs, {"observables": example.solver_observables})
+                example.sensor_contact.update.assert_called_once_with(
+                    example.state_0, example.contacts, observables=example.solver_observables
+                )
+                example.solver.update_contacts.assert_not_called()
+
+    def test_mujoco_benchmark_supports_sensorless_steps(self):
+        """Keep sensorless workloads free of observable requests and contact exports."""
+        for substeps in (1, 2, 3):
+            with self.subTest(substeps=substeps):
+                example = MuJoCoExample.__new__(MuJoCoExample)
+                example.sim_substeps = substeps
+                example.sim_dt = 0.01
+                example.state_0, example.state_1 = Mock(), Mock()
+                example.control = Mock()
+                example.contacts = None
+                example.solver = Mock()
+                example.sensor_contact = None
+                example.solver_observables = None
+
+                example.simulate()
+
+                self.assertEqual(example.solver.step.call_count, example.sim_substeps)
+                for step_call in example.solver.step.call_args_list:
+                    self.assertEqual(step_call.kwargs, {})
+                example.solver.update_contacts.assert_not_called()
+
     def test_mujoco_kpi_requires_cuda_graph(self):
         """Reject KPI workloads that fail CUDA graph capture."""
         benchmark = bench_mujoco.FastCartpole()

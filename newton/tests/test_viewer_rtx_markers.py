@@ -127,20 +127,54 @@ class TestViewerRTXMarkers(unittest.TestCase):
         self.assertIn("/points", self.viewer._pending_point_batches)
 
     def test_point_resize_reuses_per_point_colors(self):
-        """Resize a runtime point batch without requiring colors to be resent."""
+        """Preserve colors and valid scales through paused growth and shrinkage."""
+        viewer = self.viewer
         points = wp.array([[0, 0, 0], [1, 0, 0]], dtype=wp.vec3, device="cpu")
         colors = wp.array([[1, 0, 0], [0, 1, 0]], dtype=wp.vec3, device="cpu")
-        self.viewer.log_points("/points", points, colors=colors)
+        radii = wp.array([0.2, 0.3], dtype=float, device="cpu")
+        viewer.log_points("/points", points, colors=colors)
 
-        resized_points = wp.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=wp.vec3, device="cpu")
-        self.viewer.log_points("/points", resized_points)
-        self.viewer._update_ovrtx_point_batches()
+        for paused in (False, True):
+            with self.subTest(paused=paused):
+                viewer.set_rendering_paused(paused)
+                viewer.begin_frame(0.0)
+                viewer.log_points("/points", points, radii=radii, colors=colors)
+                viewer.end_frame()
+                for count in (3, 1):
+                    viewer._rtx.write_array_attribute.reset_mock()
+                    if paused and count == 1:
+                        viewer.begin_frame(0.5)
+                        viewer.log_points("/points", points, radii=radii, colors=colors)
+                        viewer.end_frame()
+                    viewer.begin_frame(float(count))
+                    viewer.log_points("/points", wp.zeros(count, dtype=wp.vec3, device="cpu"))
+                    viewer.end_frame()
+                    if paused:
+                        viewer.set_rendering_paused(False)
+                        viewer.end_frame()
+                        viewer.set_rendering_paused(True)
+                    attributes = {
+                        call.args[1]: call.args[2][0] for call in viewer._rtx.write_array_attribute.call_args_list
+                    }
+                    expected = colors.numpy()[[0, 1, 1] if count == 3 else [0]]
+                    np.testing.assert_allclose(attributes["primvars:displayColor"], expected)
+                    np.testing.assert_allclose(attributes["scales"], np.full((count, 3), 0.1))
+                    self.assertEqual(viewer._point_batch_synced_counts["/points"], count)
 
-        self.assertEqual(self.viewer._point_batch_synced_counts["/points"], 3)
-        np.testing.assert_allclose(
-            self.viewer._point_batch_colors["/points"],
-            [[1, 0, 0], [0, 1, 0], [0, 1, 0]],
-        )
+    def test_final_point_log_does_not_merge_stale_appearance(self):
+        """Use cached colors and default radii when the final log omits appearance."""
+        viewer = self.viewer
+        points = wp.zeros(2, dtype=wp.vec3, device="cpu")
+        viewer.log_points("/points", points, colors=(1.0, 0.0, 0.0))
+        viewer.begin_frame(0.0)
+        viewer.log_points("/points", points, radii=0.3, colors=(0.0, 1.0, 0.0))
+        viewer.log_points("/points", wp.zeros(3, dtype=wp.vec3, device="cpu"))
+        viewer.end_frame()
+        attributes = {call.args[1]: call.args[2][0] for call in viewer._rtx.write_array_attribute.call_args_list}
+        np.testing.assert_allclose(attributes["positions"], np.zeros((3, 3)))
+        np.testing.assert_allclose(attributes["scales"], np.full((3, 3), 0.1))
+        np.testing.assert_allclose(attributes["primvars:displayColor"], [[1.0, 0.0, 0.0]])
+        np.testing.assert_array_equal(attributes["primvars:displayColor:indices"], [0, 0, 0])
 
     def test_hidden_point_updates_preserve_appearance(self):
         """Apply hidden point appearance updates before revealing the batch."""
@@ -179,7 +213,6 @@ class TestViewerRTXMarkers(unittest.TestCase):
         with (
             mock.patch.object(self.viewer, "_update_ovrtx_camera"),
             mock.patch.object(self.viewer, "_update_ovrtx_transforms"),
-            mock.patch.object(self.viewer, "_render_and_display"),
         ):
             self.viewer.end_frame()
             self.viewer.end_frame()
