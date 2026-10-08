@@ -42,8 +42,7 @@ sim = [
 
 # Optional ONNX policy inference for neural actuators and RL policy examples.
 onnx = [
-    # Pin operator support from NVIDIA/warp-nn#8 until it is released.
-    "warp-nn[onnx] @ git+https://github.com/NVIDIA/warp-nn.git@d9334ff1b00cb429e8336bb373bdfa1a948f8d49",
+    "warp-nn[onnx]~=0.4.0",
 ]
 
 # Asset import and mesh processing dependencies
@@ -115,6 +114,7 @@ torch-cu13 = [
 dev = [
     "newton[examples]",      # includes examples, which pulls in sim and visualization
     "coverage[toml]>=7.8.0", # for code coverage testing
+    "viser>=1.1.1",          # exercise browser viewer interactions in CPU and GPU CI
 ]
 
 # Documentation dependencies
@@ -132,8 +132,7 @@ docs = [
     "pypandoc>=1.11",               # required by nbsphinx for notebook conversion
     "pypandoc_binary>=1.11",        # bundled pandoc binary
     "GitPython>=3.1.58",            # for downloading tutorial assets via newton.utils.download_asset()
-    # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
-    "viser==1.0.26",
+    "viser>=1.1.1",
 ]
 
 # Dependencies for Jupyter notebook compatibility
@@ -142,8 +141,7 @@ notebook = [
     "rerun-sdk[notebook]>=0.27.1; python_version < '3.14'",
     "jupyterlab>=4.5.7",
     "jupyter-server-proxy>=4.5.0",
-    # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
-    "viser==1.0.26",
+    "viser>=1.1.1",
 ]
 
 [tool.uv.build-backend]
@@ -219,6 +217,10 @@ ignore = [
     "TC003",
     "F821",
 ]
+
+[tool.ruff.lint.flake8-bugbear]
+# This helper returns dataclass field metadata, not a shared mutable default.
+extend-immutable-calls = ["newton.solvers.SolverObservables.field"]
 
 [tool.ruff.lint.per-file-ignores]
 "asv/benchmarks/**/*" = ["RUF012", "E402"]
