@@ -580,6 +580,48 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
 
 @unittest.skipUnless(OVRTX_AVAILABLE and OVSTAGE_AVAILABLE and wp.is_cuda_available(), "Requires OVRTX and CUDA")
 class TestViewerRTXRendering(unittest.TestCase):
+    """Keep real OVRTX renders in one class so class-level parallelism runs them serially."""
+
+    def test_moving_scene_capture_stays_frozen_until_resume(self):
+        """Freeze both modes and resume with the latest scene rather than a stale result."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_box(body, hx=0.3, hy=0.3, hz=0.3, color=(1.0, 0.1, 0.0))
+        model = builder.finalize()
+        for asynchronous in (False, True):
+            with self.subTest(async_rendering=asynchronous):
+                viewer = ViewerRTX(width=64, height=48, headless=True, async_rendering=asynchronous)
+                try:
+                    viewer.set_model(model)
+                    viewer.set_camera(wp.vec3(3.0, -4.0, 2.0), pitch=-20.0, yaw=125.0)
+                    state = model.state()
+                    for _ in range(2):
+                        viewer.begin_frame(0.0)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                    viewer.set_rendering_paused(True)
+                    frozen = viewer._capture_screenshot_pixels().copy()
+                    self.assertGreater(np.ptp(frozen[:, :, :3]), 0)
+                    for i in range(1, 4):
+                        state.body_q.assign([wp.transform(wp.vec3(float(i), 0.0, 0.0), wp.quat_identity())])
+                        viewer.begin_frame(i / 60.0)
+                        viewer.log_state(state)
+                        viewer.log_points("/runtime_points", wp.zeros(i, dtype=wp.vec3), radii=0.1)
+                        viewer.end_frame()
+                        np.testing.assert_array_equal(viewer._capture_screenshot_pixels(), frozen)
+                    viewer.set_rendering_paused(False)
+                    viewer.begin_frame(4.0 / 60.0)
+                    viewer.log_state(state)
+                    viewer.end_frame()
+                    if asynchronous:
+                        np.testing.assert_array_equal(viewer._displayed_pixels.numpy(), frozen)
+                        viewer.begin_frame(5.0 / 60.0)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                    self.assertFalse(np.array_equal(viewer._capture_screenshot_pixels(), frozen))
+                finally:
+                    viewer.close()
+
     def test_runtime_line_batch_has_no_deprecation_warnings(self):
         """Render a line batch first created after the runtime scene is active."""
         viewer = ViewerRTX(headless=True, async_rendering=False)
