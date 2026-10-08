@@ -443,7 +443,7 @@ Newton supports the following geometry types via :class:`~GeoType`:
    * - ``ELLIPSOID``
      - Ellipsoid
    * - ``MESH``
-     - Triangle mesh (arbitrary, including non-convex)
+     - Triangle mesh (arbitrary, including non-convex; :class:`~newton.solvers.SolverMuJoCo` collides its convex hull, see :doc:`/solvers/mujoco`)
    * - ``CONVEX_MESH``
      - Convex hull mesh
 
