@@ -604,6 +604,7 @@ class TestCollisionPipeline(unittest.TestCase):
         prim.GetAttribute("newton:collisionPipeline:maxRigidContacts").Set(-1)
         prim.GetAttribute("newton:collisionPipeline:maxSoftContacts").Set(-1)
         prim.GetAttribute("newton:collisionPipeline:maxShapePairs").Set(-1)
+        prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Set(-1)
         # -inf is the documented sentinel for optional float attributes.
         prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(float("-inf"))
         prim.GetAttribute("newton:collisionPipeline:maxSpeculativeContactGap").Set(float("-inf"))
@@ -890,10 +891,10 @@ class TestCollisionPipeline(unittest.TestCase):
             CollisionPipeline.create_from_usd(scene_prim, model)
         scene_prim.GetAttribute("newton:collisionPipeline:broadPhase").Clear()
 
-        # Negative integer where only non-negative (or -1) is allowed.
+        # Negative integers other than the -1 sentinel are illegal.
         scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Set(-5)
         with self.assertRaisesRegex(
-            ValueError, r"newton:collisionPipeline:maxTrianglePairs must be non-negative, got -5"
+            ValueError, r"newton:collisionPipeline:maxTrianglePairs must be a positive integer or -1, got -5"
         ):
             CollisionPipeline.create_from_usd(scene_prim, model)
         scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Clear()
@@ -901,7 +902,7 @@ class TestCollisionPipeline(unittest.TestCase):
         # 0 is illegal for maxTrianglePairs.
         scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Set(0)
         with self.assertRaisesRegex(
-            ValueError, r"newton:collisionPipeline:maxTrianglePairs must be a positive integer, got 0"
+            ValueError, r"newton:collisionPipeline:maxTrianglePairs must be a positive integer or -1, got 0"
         ):
             CollisionPipeline.create_from_usd(scene_prim, model)
         scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Clear()
