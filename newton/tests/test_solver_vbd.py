@@ -29,6 +29,7 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
     evaluate_volumetric_neo_hookean_force_and_hessian,
     gather_particle_body_contact_force_and_hessian,
     make_solve_elasticity_tile,
+    scatter_particle_body_contact_force_and_hessian,
 )
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
@@ -39,11 +40,14 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _eval_soft_ef_contact,
     _evaluate_rigid_soft_contact_force_norm,
     _joint_angular_rho_seed,
+    _point_force_to_body_torque_and_hessian,
     accumulate_body_body_contacts_per_body,
+    accumulate_body_particle_attachments_per_body,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
     compute_rigid_contact_forces,
     evaluate_angular_constraint_force_hessian,
+    evaluate_body_particle_attachment_particle_force_hessian,
     evaluate_body_particle_contact,
     evaluate_linear_constraint_force_hessian,
     evaluate_rigid_contact_from_collision,
@@ -70,6 +74,38 @@ from newton.tests.unittest_utils import (
 devices = get_test_devices()
 cpu_devices = [device for device in devices if device.is_cpu]
 cuda_devices = [device for device in devices if device.is_cuda]
+
+
+@wp.kernel
+def _evaluate_body_particle_attachment_kernel(
+    particle_pos: wp.vec3,
+    body_pose: wp.transform,
+    body_com: wp.vec3,
+    body_point: wp.vec3,
+    stiffness: float,
+    particle_force: wp.array[wp.vec3],
+    body_force: wp.array[wp.vec3],
+    body_torque: wp.array[wp.vec3],
+):
+    """Expose attachment force evaluation for action-reaction testing."""
+    f_particle, hessian = evaluate_body_particle_attachment_particle_force_hessian(
+        particle_pos,
+        particle_pos,
+        body_pose,
+        body_pose,
+        body_point,
+        stiffness,
+        0.0,
+        1.0,
+    )
+    f_body = -f_particle
+    anchor = wp.transform_point(body_pose, body_point)
+    com_world = wp.transform_point(body_pose, body_com)
+    r = anchor - com_world
+    torque, _h_al, _h_aa = _point_force_to_body_torque_and_hessian(r, f_body, hessian)
+    particle_force[0] = f_particle
+    body_force[0] = f_body
+    body_torque[0] = torque
 
 
 def _quat_rotate_np(q, v):
@@ -1886,6 +1922,7 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
                 joint_limit_ke,
                 joint_limit_kd,
                 joint_rest_angle,
+                joint_rest_angle,
                 drive_limit_support,
                 1.0 / 60.0,
             ],
@@ -1982,6 +2019,7 @@ def _rod_soft_dual_slots_clear_preserved_lambda(test, device):
                 joint_limit_upper,
                 joint_limit_ke,
                 joint_limit_kd,
+                joint_rest_angle,
                 joint_rest_angle,
                 drive_limit_support,
                 1.0 / 60.0,
@@ -2343,7 +2381,7 @@ def _particle_contact_adjacency_follows_swapped_contacts(test, device):
         pipeline.collide(state_in, contacts_a)
         test.assertGreater(int(contacts_a.soft_contact_count.numpy()[0]), 0)
 
-        solver = newton.solvers.SolverVBD(model, iterations=1)
+        solver = newton.solvers.SolverVBD(model, iterations=1, deterministic=wp.DeterministicMode.RUN_TO_RUN)
         solver.step(state_in, state_out, None, contacts_a, 1.0 / 120.0)
         members_a = solver._particle_contact_head.numpy() >= 0
         test.assertTrue(np.any(members_a))
@@ -2484,7 +2522,7 @@ def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
         active_count = min(int(contacts.soft_contact_count.numpy()[0]), contacts.soft_contact_max)
         test.assertGreater(active_count, 0)
 
-        solver = newton.solvers.SolverVBD(model, iterations=1)
+        solver = newton.solvers.SolverVBD(model, iterations=1, deterministic=wp.DeterministicMode.RUN_TO_RUN)
         solver.step(state_in, state_out, None, contacts, 1.0 / 120.0)
         test.assertTrue(solver._particle_contact_adjacency_initialized)
 
@@ -2534,6 +2572,176 @@ def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
             deterministic_solver.step(state_a, state_b, None, contacts, 1.0 / 120.0)
             results.append(state_b.particle_q.numpy().copy())
         np.testing.assert_array_equal(results[0], results[1])
+
+
+def _launch_particle_contact_scatter(data, contact_count, worker_count, forces, hessians, device):
+    for current_color, _color_group in enumerate(data["color_groups"]):
+        wp.launch(
+            scatter_particle_body_contact_force_and_hessian,
+            dim=worker_count,
+            inputs=[
+                0.01,
+                current_color,
+                data["particle_q_prev"],
+                data["particle_q"],
+                data["particle_colors"],
+                1.0,
+                False,  # rigid_body_particle_contact_use_log_barrier
+                data["particle_radius"],
+                data["contact_indices"],
+                contact_count,
+                data["capacity"],
+                worker_count,
+                *_particle_contact_gather_material_inputs(data),
+            ],
+            outputs=[forces, hessians],
+            device=device,
+        )
+
+
+def _particle_contact_scatter_matches_gather(test, device):
+    """Per-record accumulation over the active prefix matches the per-particle gather for any worker grid."""
+    with wp.ScopedDevice(device):
+        data = _make_particle_contact_gather_data(device)
+        capacity = data["capacity"]
+        boundary = data["boundary"]
+        particle_count = data["particle_count"]
+
+        for raw_count in (0, 1, boundary - 1, boundary, boundary + 1, capacity, capacity + 2):
+            contact_count = wp.array([raw_count], dtype=int, device=device)
+            contact_head = wp.full(particle_count, -1, dtype=int, device=device)
+            contact_next = wp.empty(3 * capacity, dtype=int, device=device)
+            gather_forces = wp.zeros(particle_count, dtype=wp.vec3, device=device)
+            gather_hessians = wp.zeros(particle_count, dtype=wp.mat33, device=device)
+            _launch_particle_contact_gather(
+                data, contact_count, contact_head, contact_next, gather_forces, gather_hessians, device
+            )
+            if raw_count > 0:
+                test.assertTrue(np.any(gather_forces.numpy() != 0.0))
+
+            # Worker grids smaller than the record count exercise the grid stride.
+            for worker_count in (1, 4, capacity):
+                forces = wp.zeros_like(gather_forces)
+                hessians = wp.zeros_like(gather_hessians)
+                _launch_particle_contact_scatter(data, contact_count, worker_count, forces, hessians, device)
+                with test.subTest(raw_count=raw_count, worker_count=worker_count):
+                    np.testing.assert_allclose(forces.numpy(), gather_forces.numpy(), rtol=1.0e-5, atol=1.0e-6)
+                    np.testing.assert_allclose(hessians.numpy(), gather_hessians.numpy(), rtol=1.0e-5, atol=1.0e-6)
+
+
+def _particle_contact_scatter_capture_replays_device_count(test, device):
+    """A captured per-record accumulation must consume a changing device-side count."""
+    with wp.ScopedDevice(device):
+        data = _make_particle_contact_gather_data(device)
+        capacity = data["capacity"]
+        particle_count = data["particle_count"]
+        worker_count = 4
+        raw_count = wp.zeros(1, dtype=int, device=device)
+        contact_count = wp.zeros(1, dtype=int, device=device)
+        unused_head = wp.full(particle_count, -1, dtype=int, device=device)
+        forces = wp.zeros(particle_count, dtype=wp.vec3, device=device)
+        hessians = wp.zeros(particle_count, dtype=wp.mat33, device=device)
+
+        wp.launch(
+            _prepare_particle_contact_gather_replay,
+            dim=particle_count,
+            inputs=[raw_count, contact_count, unused_head, forces, hessians],
+            device=device,
+        )
+        _launch_particle_contact_scatter(data, contact_count, worker_count, forces, hessians, device)
+        wp.synchronize_device(device)
+
+        with wp.ScopedCapture(device=device) as capture:
+            wp.launch(
+                _prepare_particle_contact_gather_replay,
+                dim=particle_count,
+                inputs=[raw_count, contact_count, unused_head, forces, hessians],
+                device=device,
+            )
+            _launch_particle_contact_scatter(data, contact_count, worker_count, forces, hessians, device)
+        graph = capture.graph
+        test.assertIsNotNone(graph)
+
+        for replay_count in (0, data["boundary"] + 1, capacity + 2, 1):
+            reference_count = wp.array([replay_count], dtype=int, device=device)
+            reference_forces = wp.zeros_like(forces)
+            reference_hessians = wp.zeros_like(hessians)
+            _launch_particle_contact_scatter(
+                data, reference_count, worker_count, reference_forces, reference_hessians, device
+            )
+
+            raw_count.assign([replay_count])
+            wp.capture_launch(graph)
+            with test.subTest(replay_count=replay_count):
+                test.assertEqual(int(contact_count.numpy()[0]), replay_count)
+                np.testing.assert_allclose(forces.numpy(), reference_forces.numpy(), rtol=1.0e-5, atol=1.0e-6)
+                np.testing.assert_allclose(hessians.numpy(), reference_hessians.numpy(), rtol=1.0e-5, atol=1.0e-6)
+
+
+def _particle_contact_scatter_solver_step_dispatch(test, device):
+    """The default mode accumulates per record without building the incidence lists; deterministic mode gathers."""
+    with wp.ScopedDevice(device):
+        model, _vertices = _build_edge_over_post(device)
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            soft_contact_gap=0.1,
+            enable_rigid_soft_full_surface_contact=True,
+        )
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+        test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
+
+        default_solver = newton.solvers.SolverVBD(
+            model, iterations=1, deterministic=wp.DeterministicMode.NOT_GUARANTEED
+        )
+        gather_solver = newton.solvers.SolverVBD(model, iterations=1, deterministic=wp.DeterministicMode.RUN_TO_RUN)
+        test.assertFalse(default_solver._particle_contact_use_gather)
+        test.assertTrue(gather_solver._particle_contact_use_gather)
+
+        # step() writes the truncated iterate back into state_in, so each solver gets its own copy.
+        out_default = model.state()
+        out_gather = model.state()
+        default_solver.step(model.state(), out_default, None, contacts, 1.0 / 120.0)
+        gather_solver.step(model.state(), out_gather, None, contacts, 1.0 / 120.0)
+
+        test.assertGreater(default_solver._particle_contact_worker_count, 0)
+        test.assertLessEqual(default_solver._particle_contact_worker_count, contacts.soft_contact_max)
+        # The default path never builds the per-particle incidence lists; the gather path does.
+        test.assertTrue(np.all(default_solver._particle_contact_head.numpy() == -1))
+        test.assertTrue(np.any(gather_solver._particle_contact_head.numpy() >= 0))
+        np.testing.assert_allclose(
+            out_default.particle_q.numpy(), out_gather.particle_q.numpy(), rtol=1.0e-5, atol=1.0e-6
+        )
+        np.testing.assert_allclose(
+            out_default.particle_qd.numpy(), out_gather.particle_qd.numpy(), rtol=1.0e-4, atol=1.0e-5
+        )
+
+        if device.is_cuda:
+            # Captured steps must follow a changing device-side count without host involvement.
+            active_count = min(int(contacts.soft_contact_count.numpy()[0]), contacts.soft_contact_max)
+            raw_count = wp.array([active_count], dtype=int, device=device)
+            state_in = model.state()
+            with wp.ScopedCapture(device=device) as capture:
+                wp.launch(
+                    _prepare_particle_contact_gather_replay,
+                    dim=model.particle_count,
+                    inputs=[
+                        raw_count,
+                        contacts.soft_contact_count,
+                        default_solver._particle_contact_head,
+                        default_solver.particle_forces,
+                        default_solver.particle_hessians,
+                    ],
+                    device=device,
+                )
+                default_solver.step(state_in, out_default, None, contacts, 1.0 / 120.0)
+            for replay_count in (0, active_count):
+                raw_count.assign([replay_count])
+                wp.capture_launch(capture.graph)
+                with test.subTest(replay_count=replay_count):
+                    test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), replay_count)
+                    test.assertTrue(np.all(np.isfinite(out_default.particle_q.numpy())))
 
 
 def _make_body_particle_dual_prefix_data(device, capacity):
@@ -3383,7 +3591,7 @@ def _rigid_reset_state_and_history(test, device):
         solver.reset(None)
     with test.assertRaisesRegex(TypeError, "dtype bool"):
         solver.reset(state, world_mask=wp.array([1, 0, 0], dtype=wp.int32, device=device))
-    with test.assertRaisesRegex(ValueError, "world_mask has size 1, expected 2 or 3"):
+    with test.assertRaisesRegex(ValueError, "length 1 must equal model.world_count \\+ 1"):
         solver.reset(state, world_mask=wp.array([True], dtype=wp.bool, device=device))
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 5.0)
 
@@ -3439,8 +3647,7 @@ def _rigid_reset_state_and_history(test, device):
 
     # Phase 4: an all-false reset arms nothing, so the next step finite-differences
     # a known delta for every body (a leaked pose baseline would zero some world).
-    with test.assertWarnsRegex(DeprecationWarning, "world_count \\+ 1"):
-        solver.reset(state, world_mask=wp.array([False, False], dtype=wp.bool, device=device))
+    solver.reset(state, world_mask=wp.array([False, False, False], dtype=wp.bool, device=device))
     all_false_delta = 2.0
     moved_q = base_q.copy()
     moved_q[:, 0] += all_false_delta
@@ -4571,6 +4778,316 @@ def _soft_contact_presize_is_world_aware(test, device):
         test.assertEqual(sizes[4], 4 * sizes[1], f"{globals_kind=}")
 
 
+def _body_particle_attachment_is_native_vbd(test, device):
+    """Verify SolverVBD transfers motion through a native body-particle attachment."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body(
+        mass=1.0,
+        inertia=wp.mat33(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1),
+        lock_inertia=True,
+    )
+    particle = builder.add_particle(
+        pos=wp.vec3(0.0, 0.0, 0.0),
+        vel=wp.vec3(1.0, 0.0, 0.0),
+        mass=1.0,
+    )
+    attachment = builder.add_attachment_body_particle(
+        body,
+        particle,
+        stiffness=2.0e4,
+        damping=100.0,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+
+    test.assertEqual(model.attachment_body_particle_count, 1)
+    test.assertEqual(int(model.attachment_body_particle_body.numpy()[attachment]), body)
+    test.assertEqual(int(model.attachment_body_particle_particle.numpy()[attachment]), particle)
+
+    state_in = model.state()
+    state_out = model.state()
+    control = model.control()
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False)
+    dt = 2.0e-3
+    for _ in range(20):
+        state_in.clear_forces()
+        solver.step(state_in, state_out, control, None, dt)
+        state_in, state_out = state_out, state_in
+
+    particle_pos = state_in.particle_q.numpy()[particle]
+    body_pose = state_in.body_q.numpy()[body]
+    anchor_pos = _transform_point_np(body_pose, np.zeros(3))
+    test.assertLess(np.linalg.norm(particle_pos - anchor_pos), 2.0e-2)
+    test.assertGreater(anchor_pos[0], 1.0e-3)
+
+
+def _body_particle_attachment_validates_inputs(test, device):
+    """Reject invalid native body-particle attachment endpoints and coefficients."""
+    builder = newton.ModelBuilder()
+    body = builder.add_body()
+    particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+
+    with test.assertRaises(IndexError):
+        builder.add_attachment_body_particle(body + 1, particle)
+    with test.assertRaises(IndexError):
+        builder.add_attachment_body_particle(body, particle + 1)
+    with test.assertRaises(ValueError):
+        builder.add_attachment_body_particle(body, particle, stiffness=-1.0)
+    with test.assertRaises(ValueError):
+        builder.add_attachment_body_particle(body, particle, damping=-1.0)
+
+    body_world = newton.ModelBuilder()
+    body_world.add_body()
+    particle_world = newton.ModelBuilder()
+    particle_world.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+    composed = newton.ModelBuilder()
+    composed.add_world(body_world)
+    composed.add_world(particle_world)
+    with test.assertRaisesRegex(ValueError, "different worlds"):
+        composed.add_attachment_body_particle(0, 0)
+
+
+def _body_particle_attachment_rejects_external_rigid_solver(test, device):
+    """Reject attachments when SolverVBD delegates rigid integration."""
+    builder = newton.ModelBuilder()
+    body = builder.add_body()
+    particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+    builder.add_attachment_body_particle(body, particle)
+    builder.color()
+    model = builder.finalize(device=device)
+
+    with test.assertRaisesRegex(ValueError, "integrate both endpoints"):
+        newton.solvers.SolverVBD(model, integrate_with_external_rigid_solver=True)
+
+
+def _body_particle_attachment_composes_with_worlds(test, device):
+    """Remap native attachment endpoints when composing builder worlds."""
+    template = newton.ModelBuilder()
+    body = template.add_body()
+    particle = template.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+    template.add_attachment_body_particle(body, particle)
+
+    builder = newton.ModelBuilder()
+    builder.add_world(template)
+    builder.add_world(template, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
+    builder.color()
+    model = builder.finalize(device=device)
+
+    test.assertEqual(model.attachment_body_particle_count, 2)
+    np.testing.assert_array_equal(model.attachment_body_particle_body.numpy(), [0, 1])
+    np.testing.assert_array_equal(model.attachment_body_particle_particle.numpy(), [0, 1])
+    np.testing.assert_array_equal(model.attachment_body_particle_world.numpy(), [0, 1])
+
+
+def _body_particle_attachment_force_balance(test, device):
+    """Apply balanced forces and torque with a rotated body and offset center of mass."""
+    particle_force = wp.zeros(1, dtype=wp.vec3, device=device)
+    body_force = wp.zeros(1, dtype=wp.vec3, device=device)
+    body_torque = wp.zeros(1, dtype=wp.vec3, device=device)
+    rotation = wp.quat(0.0, 0.0, math.sqrt(0.5), math.sqrt(0.5))
+    body_pose = wp.transform(wp.vec3(2.0, 3.0, 4.0), rotation)
+    body_com = wp.vec3(0.5, -0.25, 0.75)
+    body_point = wp.vec3(0.0, 1.0, 0.0)
+    particle_pos = wp.vec3(4.0, 5.0, 7.0)
+
+    wp.launch(
+        _evaluate_body_particle_attachment_kernel,
+        dim=1,
+        inputs=[particle_pos, body_pose, body_com, body_point, 10.0],
+        outputs=[particle_force, body_force, body_torque],
+        device=device,
+    )
+
+    f_particle = particle_force.numpy()[0]
+    f_body = body_force.numpy()[0]
+    torque = body_torque.numpy()[0]
+    np.testing.assert_allclose(f_particle + f_body, 0.0, atol=1.0e-6)
+    body_pose_np = np.asarray(body_pose)
+    anchor = _transform_point_np(body_pose_np, np.asarray(body_point))
+    com_world = _transform_point_np(body_pose_np, np.asarray(body_com))
+    np.testing.assert_allclose(torque, np.cross(anchor - com_world, f_body), atol=1.0e-5)
+
+
+def _body_particle_attachment_accumulates_body_csr(test, device):
+    """Accumulate multiple enabled attachments for one body and skip a disabled row."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    particles = [builder.add_particle(pos=wp.vec3(x, 0.0, 0.0), vel=wp.vec3(), mass=1.0) for x in (1.0, 2.0, 100.0)]
+    builder.add_attachment_body_particle(body, particles[0], stiffness=10.0)
+    builder.add_attachment_body_particle(body, particles[1], stiffness=20.0)
+    builder.add_attachment_body_particle(body, particles[2], stiffness=1000.0, enabled=False)
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, iterations=0, rigid_compliant_alm=False)
+
+    np.testing.assert_array_equal(solver.body_particle_attachment_offsets.numpy(), [0, 3])
+    np.testing.assert_array_equal(solver.body_particle_attachment_indices.numpy(), [0, 1, 2])
+
+    body_forces = wp.zeros(model.body_count, dtype=wp.vec3, device=device)
+    body_torques = wp.zeros(model.body_count, dtype=wp.vec3, device=device)
+    body_hessian_ll = wp.zeros(model.body_count, dtype=wp.mat33, device=device)
+    body_hessian_al = wp.zeros(model.body_count, dtype=wp.mat33, device=device)
+    body_hessian_aa = wp.zeros(model.body_count, dtype=wp.mat33, device=device)
+    wp.launch(
+        accumulate_body_particle_attachments_per_body,
+        dim=1,
+        inputs=[
+            1.0,
+            wp.array([body], dtype=int, device=device),
+            model.particle_q,
+            model.particle_q,
+            model.body_q,
+            model.body_q,
+            model.body_com,
+            model.body_inv_mass,
+            model.attachment_body_particle_particle,
+            model.attachment_body_particle_body_point,
+            model.attachment_body_particle_stiffness,
+            model.attachment_body_particle_damping,
+            model.attachment_body_particle_enabled,
+            solver.body_particle_attachment_offsets,
+            solver.body_particle_attachment_indices,
+        ],
+        outputs=[
+            body_forces,
+            body_torques,
+            body_hessian_ll,
+            body_hessian_al,
+            body_hessian_aa,
+        ],
+        device=device,
+    )
+
+    np.testing.assert_allclose(body_forces.numpy()[body], [50.0, 0.0, 0.0], atol=1.0e-6)
+    np.testing.assert_allclose(body_hessian_ll.numpy()[body], 30.0 * np.eye(3), atol=1.0e-6)
+
+
+def _body_particle_attachment_deformable_under_load(test, device, deformable_kind):
+    """Keep an attached cloth or solid node on its rigid anchor under gravity."""
+    anchor = wp.vec3(0.0, 0.0, 1.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    body = builder.add_body(xform=wp.transform(anchor, wp.quat_identity()), is_kinematic=True)
+    particle = builder.particle_count
+
+    if deformable_kind == "cloth":
+        builder.add_cloth_grid(
+            pos=anchor,
+            rot=wp.quat_identity(),
+            vel=wp.vec3(),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=1.0,
+            tri_ke=1.0e3,
+            tri_ka=1.0e3,
+            tri_kd=1.0e-1,
+        )
+    else:
+        builder.add_soft_grid(
+            pos=anchor,
+            rot=wp.quat_identity(),
+            vel=wp.vec3(),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            density=100.0,
+            k_mu=1.0e4,
+            k_lambda=1.0e4,
+            k_damp=1.0e-2,
+        )
+
+    builder.add_attachment_body_particle(
+        body,
+        particle,
+        stiffness=1.0e5,
+        damping=100.0,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    initial_q = model.particle_q.numpy()
+
+    state_in = model.state()
+    state_out = model.state()
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False)
+    dt = 2.0e-3
+    for _ in range(30):
+        state_in.clear_forces()
+        solver.step(state_in, state_out, None, None, dt)
+        state_in, state_out = state_out, state_in
+
+    particle_q = state_in.particle_q.numpy()
+    body_q = state_in.body_q.numpy()
+    anchor_pos = _transform_point_np(body_q[body], np.zeros(3))
+    test.assertTrue(np.isfinite(particle_q).all())
+    test.assertLess(np.linalg.norm(particle_q[particle] - anchor_pos), 2.0e-2)
+    test.assertLess(np.mean(particle_q[1:, 2]), np.mean(initial_q[1:, 2]))
+
+
+def _body_particle_attachment_to_cable_capsule(test, device):
+    """Transfer attachment forces between a particle and a VBD cable capsule.
+
+    The rod is free-floating under zero gravity, so the only force in the scene is the
+    attachment. Both endpoints must therefore move toward each other, which verifies that
+    a cable capsule is a usable rigid endpoint and that the reaction reaches the rod.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
+    cfg = newton.ModelBuilder.ShapeConfig()
+    cfg.density = 100.0
+
+    rod = newton.Rod.create_straight(
+        start=wp.vec3(0.0, 0.0, 0.0),
+        direction=wp.vec3(1.0, 0.0, 0.0),
+        length=0.4,
+        segment_count=4,
+        radius=0.01,
+    )
+    bodies, _joints = builder.add_rod(
+        rod=rod,
+        cfg=cfg,
+        stretch_stiffness=1.0e6,
+        stretch_damping=1.0e-4,
+        bend_stiffness=1.0e-4,
+        bend_damping=1.0e-4,
+        label="cable",
+        body_frame_origin="com",
+    )
+    capsule = int(bodies[-1])
+    # Comparable to one capsule's mass so both endpoints move measurably.
+    particle = builder.add_particle(pos=wp.vec3(0.4, 0.0, 0.1), vel=wp.vec3(), mass=0.005)
+    builder.add_attachment_body_particle(capsule, particle, stiffness=2.0e2, damping=1.0)
+    builder.color(balance_colors=False)
+    model = builder.finalize(device=device)
+
+    state_in = model.state()
+    state_out = model.state()
+    control = model.control()
+    initial_particle_pos = state_in.particle_q.numpy()[particle].copy()
+    initial_anchor_pos = _transform_point_np(state_in.body_q.numpy()[capsule], np.zeros(3))
+    initial_gap = float(np.linalg.norm(initial_particle_pos - initial_anchor_pos))
+
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False)
+    dt = 2.0e-3
+    for _ in range(40):
+        state_in.clear_forces()
+        solver.step(state_in, state_out, control, None, dt)
+        state_in, state_out = state_out, state_in
+
+    particle_q = state_in.particle_q.numpy()
+    body_q = state_in.body_q.numpy()
+    anchor_pos = _transform_point_np(body_q[capsule], np.zeros(3))
+
+    test.assertTrue(np.isfinite(particle_q).all())
+    test.assertTrue(np.isfinite(body_q).all())
+    test.assertLess(float(np.linalg.norm(particle_q[particle] - anchor_pos)), 0.05 * initial_gap)
+    # Both endpoints have to move: the reaction reaches the rod, not only the particle.
+    test.assertGreater(float(np.linalg.norm(anchor_pos - initial_anchor_pos)), 1.0e-3)
+    test.assertGreater(float(np.linalg.norm(particle_q[particle] - initial_particle_pos)), 1.0e-3)
+
+
 def _two_particle_tile_solve_matches_legacy_bits(test, device):
     """Pack odd-sized, high-valence cloth work without changing any result bit."""
     ring_count = 20
@@ -4871,6 +5388,113 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
     )
 
 
+def _build_rigid_hinge_winding_model(device, **dof_kwargs):
+    """Build equivalent revolute and one-axis-D6 hinges in one model."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    inertia = wp.mat33(np.eye(3))
+
+    revolute_body = builder.add_link(mass=1.0, inertia=inertia)
+    revolute_joint = builder.add_joint_revolute(parent=-1, child=revolute_body, axis=newton.Axis.Z, **dof_kwargs)
+    builder.add_articulation([revolute_joint])
+
+    JointDofConfig = newton.ModelBuilder.JointDofConfig
+    d6_body = builder.add_link(mass=1.0, inertia=inertia)
+    d6_joint = builder.add_joint_d6(
+        parent=-1,
+        child=d6_body,
+        linear_axes=[JointDofConfig.create_unlimited(newton.Axis.X)],
+        angular_axes=[JointDofConfig(axis=newton.Axis.Z, **dof_kwargs)],
+    )
+    builder.add_articulation([d6_joint])
+    builder.color()
+    model = builder.finalize(device=device)
+
+    joint_indices = np.array([revolute_joint, d6_joint], dtype=np.int32)
+    linear_counts = model.joint_dof_dim.numpy()[joint_indices, 0]
+    target_indices = model.joint_target_q_start.numpy()[joint_indices] + linear_counts
+    dof_indices = model.joint_qd_start.numpy()[joint_indices] + linear_counts
+    return model, target_indices, dof_indices
+
+
+def _accumulate_body_z_angles(state, angles):
+    """Accumulate continuous Z angles from body quaternion samples."""
+    rotations = state.body_q.numpy()[:, 3:]
+    samples = 2.0 * np.arctan2(rotations[:, 2], rotations[:, 3])
+    delta = samples - angles
+    return angles + np.arctan2(np.sin(delta), np.cos(delta))
+
+
+def _step_rigid_pair(solver, state_in, state_out, control, dt):
+    """Advance two steps while keeping the first State as the final output."""
+    solver.step(state_in, state_out, control, None, dt)
+    solver.step(state_out, state_in, control, None, dt)
+
+
+def _rigid_hinge_multiturn_drive(test, device):
+    """Verify scalar hinge drives retain winding across pi and captured resets."""
+    model, target_indices, _ = _build_rigid_hinge_winding_model(device, target_ke=100.0, target_kd=20.0)
+    dt = 0.02
+
+    for compliant_alm in (True, False) if device.is_cpu else (True,):
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=compliant_alm, iterations=10)
+        state_in, state_out = model.state(), model.state()
+        control = model.control()
+        target_values = np.zeros(control.joint_target_q.shape[0], dtype=np.float32)
+
+        graph = None
+        if device.is_cuda:
+            with wp.ScopedCapture(device=device) as capture:
+                _step_rigid_pair(solver, state_in, state_out, control, dt)
+            graph = capture.graph
+
+        targets = (-2.0 * math.pi, 2.0 * math.pi) if compliant_alm else (-2.0 * math.pi,)
+        for target in targets:
+            solver.reset(state_in)
+            angles = np.zeros(model.body_count)
+            for frame in range(75):
+                target_values[target_indices] = target * min((frame + 1) * 2.0 * dt / 2.0, 1.0)
+                control.joint_target_q.assign(target_values)
+                if graph is None:
+                    _step_rigid_pair(solver, state_in, state_out, control, dt)
+                else:
+                    wp.capture_launch(graph)
+                angles = _accumulate_body_z_angles(state_in, angles)
+
+            np.testing.assert_allclose(angles, target, rtol=0.0, atol=2.0e-3, err_msg=f"{compliant_alm=}")
+
+
+def _rigid_hinge_multiturn_limits(test, device):
+    """Verify scalar hinge limits beyond pi hold torque in both directions."""
+    model, _, dof_indices = _build_rigid_hinge_winding_model(
+        device,
+        limit_lower=-4.0,
+        limit_upper=4.0,
+        limit_ke=1.0e4,
+        limit_kd=200.0,
+    )
+
+    for compliant_alm in (True, False) if device.is_cpu else (True,):
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=compliant_alm, iterations=10)
+        state_in, state_out = model.state(), model.state()
+        control = model.control()
+        joint_forces = np.zeros(control.joint_f.shape[0], dtype=np.float32)
+
+        torques = (-1.0, 1.0) if compliant_alm else (-1.0,)
+        for torque in torques:
+            solver.reset(state_in)
+            joint_forces[dof_indices] = torque
+            control.joint_f.assign(joint_forces)
+            angles = np.zeros(model.body_count)
+            for _ in range(150):
+                solver.step(state_in, state_out, control, None, 0.02)
+                state_in, state_out = state_out, state_in
+                angles = _accumulate_body_z_angles(state_in, angles)
+
+            expected = math.copysign(4.0, torque)
+            np.testing.assert_allclose(angles, expected, rtol=0.0, atol=2.0e-3, err_msg=f"{compliant_alm=}")
+            test.assertLess(np.max(np.abs(state_in.body_qd.numpy()[:, 5])), 1.0e-2)
+
+
 class TestSolverVBD(unittest.TestCase):
     def test_contact_kernel_modules_follow_deterministic_mode(self):
         """Apply VBD deterministic options to rigid contact kernels."""
@@ -4896,6 +5520,64 @@ class TestSolverVBD(unittest.TestCase):
             self.assertFalse(options["enable_backward"])
 
 
+add_function_test(TestSolverVBD, "test_rigid_hinge_multiturn_drive", _rigid_hinge_multiturn_drive, devices=devices)
+add_function_test(TestSolverVBD, "test_rigid_hinge_multiturn_limits", _rigid_hinge_multiturn_limits, devices=devices)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_attachment_is_native_vbd",
+    _body_particle_attachment_is_native_vbd,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_attachment_validates_inputs",
+    _body_particle_attachment_validates_inputs,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_attachment_rejects_external_rigid_solver",
+    _body_particle_attachment_rejects_external_rigid_solver,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_attachment_composes_with_worlds",
+    _body_particle_attachment_composes_with_worlds,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_attachment_force_balance",
+    _body_particle_attachment_force_balance,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_attachment_accumulates_body_csr",
+    _body_particle_attachment_accumulates_body_csr,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_attachment_cloth_under_load",
+    _body_particle_attachment_deformable_under_load,
+    devices=devices,
+    deformable_kind="cloth",
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_attachment_solid_under_load",
+    _body_particle_attachment_deformable_under_load,
+    devices=devices,
+    deformable_kind="solid",
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_attachment_to_cable_capsule",
+    _body_particle_attachment_to_cable_capsule,
+    devices=devices,
+)
 add_function_test(
     TestSolverVBD,
     "test_body_body_contact_lists_skip_static_kinematic",
@@ -5054,6 +5736,24 @@ add_function_test(
     "test_particle_contact_adjacency_follows_swapped_contacts",
     _particle_contact_adjacency_follows_swapped_contacts,
     devices=cuda_devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_particle_contact_scatter_matches_gather",
+    _particle_contact_scatter_matches_gather,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_particle_contact_scatter_capture_replays_device_count",
+    _particle_contact_scatter_capture_replays_device_count,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_particle_contact_scatter_solver_step_dispatch",
+    _particle_contact_scatter_solver_step_dispatch,
+    devices=devices,
 )
 add_function_test(
     TestSolverVBD,

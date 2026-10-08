@@ -247,15 +247,20 @@ class Contacts:
         self.clear_buffers = clear_buffers
         self._contact_matching_mode: Literal["disabled", "latest", "sticky"] = "disabled"
         with wp.ScopedDevice(device):
-            # One int32[2] array holding two independent contact counts: [0] rigid, [1] soft.
+            # One int32[3] array holding two independent contact counts, [0] rigid and [1] soft,
+            # plus [2] an internal flag set when global contact reduction lost candidates.
             # rigid_contact_count (the [0:1] view) and soft_contact_count (the [1:2] view) index
             # into this same array, so each remains a separate count; they share one array only so
-            # a single kernel can reset both to zero in one launch instead of two. The reset
+            # a single kernel can reset all slots to zero in one launch. The reset
             # happens at the start of every collision pass -- folded into the first kernel that
             # runs, compute_shape_aabbs -- and clear() resets them as well.
-            self.contact_counters = wp.zeros(2, dtype=wp.int32)
+            self.contact_counters = wp.zeros(3, dtype=wp.int32)
             # Sliced view for the rigid counter (no additional allocation)
             self.rigid_contact_count = self.contact_counters[0:1]
+            # Nonzero when the collision pass that filled this buffer dropped contact candidates
+            # inside global contact reduction (reducer buffer or hashtable full). Owned by this
+            # contact stream rather than aliased to a pipeline's reusable reducer counters.
+            self._reduction_overflow = self.contact_counters[2:3]
 
             self.contact_generation = wp.zeros(1, dtype=wp.int32)
             """Device-side generation counter, incremented each time :meth:`clear` is called.
@@ -431,7 +436,14 @@ class Contacts:
             """Contact forces (spatial) [N, N·m], shape (rigid_contact_max + soft_contact_max,), dtype :class:`spatial_vector`.
             Force and torque exerted on body0 by body1, referenced to the center of mass (COM) of body0, and in world frame, where body0 and body1 are the bodies of shape0 and shape1.
             First three entries: linear force [N]; last three entries: torque (moment) [N·m].
-            When both rigid and soft contacts are present, soft contact forces follow rigid contact forces.
+            Rigid contact ``i`` occupies row ``i``; soft contact ``i`` occupies row ``rigid_contact_max + i``.
+
+            For a soft contact the contacted shape (:attr:`soft_contact_shape`) takes the role of shape0 and the
+            soft feature -- particle, edge, or face -- the role of shape1: the row holds the force exerted on the
+            shape's body by the soft feature, applied at the shape-side contact point (:attr:`soft_contact_body_pos`
+            in world space), and its torque about that body's COM, or about the world origin when the shape is
+            static. Negating the force gives the force on the soft contact point. Which rows a solver populates
+            is documented by its ``update_contacts`` method; unpopulated rows are left unwritten.
 
             This is an extended contact attribute; see :ref:`extended_contact_attributes` for more information.
             """

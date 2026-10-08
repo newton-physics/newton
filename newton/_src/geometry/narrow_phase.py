@@ -1506,6 +1506,51 @@ def create_narrow_phase_kernels_gjk_mpr_split(
 
 
 @wp.kernel(enable_backward=False)
+def narrow_phase_find_heightfield_triangle_overlaps_kernel(
+    shape_types: wp.array[int],
+    shape_transform: wp.array[wp.transform],
+    shape_gap: wp.array[float],
+    shape_data: wp.array[wp.vec4],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
+    shape_pairs: wp.array[wp.vec2i],
+    shape_pairs_count: wp.array[int],
+    total_num_threads: int,
+    # outputs
+    triangle_pairs: wp.array[wp.vec3i],
+    triangle_pairs_count: wp.array[int],
+):
+    """Find heightfield triangles that overlap with a convex shape, one pair per thread.
+
+    Used when the scene has heightfields but no meshes: every pair in
+    ``shape_pairs`` is then a heightfield pair, whose cell enumeration is
+    serial, so packing pairs into every lane avoids the idle lanes of the
+    tiled mesh BVH launch.
+    """
+    for i in range(wp.tid(), shape_pairs_count[0], total_num_threads):
+        pair = shape_pairs[i]
+        hfd = heightfield_data[shape_heightfield_index[pair[0]]]
+        heightfield_vs_convex_midphase(
+            pair[0],
+            pair[1],
+            hfd,
+            heightfield_elevations,
+            shape_transform,
+            shape_collision_aabb_lower,
+            shape_collision_aabb_upper,
+            shape_data,
+            shape_gap,
+            triangle_pairs,
+            triangle_pairs_count,
+            # A plane's cached local AABB does not bound its surface.
+            shape_types[pair[1]] != GeoType.PLANE,
+        )
+
+
+@wp.kernel(enable_backward=False)
 def narrow_phase_find_mesh_triangle_overlaps_kernel(
     shape_types: wp.array[int],
     shape_transform: wp.array[wp.transform],
@@ -1567,6 +1612,8 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
                 shape_gap,
                 triangle_pairs,
                 triangle_pairs_count,
+                # A plane's cached local AABB does not bound its surface.
+                type_b != GeoType.PLANE,
             )
             continue
 
@@ -2106,6 +2153,7 @@ def verify_narrow_phase_buffers(
     reduction_ht_active_slots: wp.array[int],
     reduction_ht_capacity: int,
     reduction_ht_insert_failures: wp.array[int],
+    reduction_buffer_overflows: wp.array[int],
     reduction_ht_warn_load_percent: int,
 ):
     """Check for buffer overflows in the collision pipeline."""
@@ -2182,7 +2230,10 @@ def verify_narrow_phase_buffers(
         )
     if reduction_ht_capacity > 0:
         reduction_ht_active_count = reduction_ht_active_slots[reduction_ht_capacity]
-        if reduction_ht_active_count * 100 >= reduction_ht_capacity * reduction_ht_warn_load_percent:
+        # Promote before multiplying: large tables can overflow either int32 product.
+        if wp.int64(reduction_ht_active_count) * wp.int64(100) >= wp.int64(reduction_ht_capacity) * wp.int64(
+            reduction_ht_warn_load_percent
+        ):
             wp.printf(
                 "Warning: Contact reduction hashtable fill ratio exceeded %d%% (%d / %d). "
                 "Increase contact_reduction_hashtable_size_factor or max_triangle_pairs.\n",
@@ -2195,6 +2246,12 @@ def verify_narrow_phase_buffers(
                 "Warning: Contact reduction hashtable insert failures %d. "
                 "Increase contact_reduction_hashtable_size_factor or max_triangle_pairs.\n",
                 reduction_ht_insert_failures[0],
+            )
+        if reduction_buffer_overflows[0] > 0:
+            wp.printf(
+                "Warning: Contact reduction buffer overflowed; %d contact candidates were dropped. "
+                "Increase max_triangle_pairs.\n",
+                reduction_buffer_overflows[0],
             )
 
 
@@ -2258,7 +2315,8 @@ class NarrowPhase:
             shape_aabb_lower: Optional external AABB lower bounds array (if provided, AABBs won't be computed internally)
             shape_aabb_upper: Optional external AABB upper bounds array (if provided, AABBs won't be computed internally)
             shape_voxel_resolution: Optional per-shape voxel resolution array used for mesh/SDF and
-                hydroelastic contact processing.
+                hydroelastic contact processing. When omitted, :class:`~newton.CollisionPipeline`
+                supplies the model's table. A supplied table must match that model's shape count and device.
             contact_writer_warp_func: Optional custom contact writer function (first arg: ContactData, second arg: custom struct type)
             hydroelastic_sdf: Optional SDF hydroelastic instance. Set is_hydroelastic=True on shapes to enable hydroelastic collisions.
             has_meshes: Whether the scene contains any mesh shapes (GeoType.MESH). When False, mesh-related
@@ -2337,6 +2395,9 @@ class NarrowPhase:
         self.reduce_contacts = reduce_contacts
         self.has_meshes = has_meshes
         self.has_heightfields = has_heightfields
+        # Heightfield cell queries are serial per pair; without meshes, pack them
+        # into every lane instead of the tiled mesh BVH launch's lane zero.
+        self._heightfield_packed_pairs = has_heightfields and not has_meshes
         self.convex_support_acceleration = convex_support_acceleration
         self.mesh_sdf_texture_only = mesh_sdf_texture_only
         self.has_generic_convex_pairs = has_generic_convex_pairs
@@ -3024,12 +3085,30 @@ class NarrowPhase:
                     record_tape=False,
                 )
 
-            # Launch midphase: finds overlapping triangles for both mesh and heightfield pairs
-            second_dim = self.tile_size_mesh_convex if ENABLE_TILE_BVH_QUERY else 1
-            wp.launch(
-                kernel=narrow_phase_find_mesh_triangle_overlaps_kernel,
-                dim=[self.num_tile_blocks, second_dim],
-                inputs=[
+            # Launch midphase: finds overlapping triangles for both mesh and heightfield pairs.
+            # Heightfield-only scenes use scalar cell queries instead of tiled BVH traversal.
+            if self._heightfield_packed_pairs:
+                midphase_kernel = narrow_phase_find_heightfield_triangle_overlaps_kernel
+                midphase_dim = self.total_num_threads
+                midphase_inputs = [
+                    shape_types,
+                    shape_transform,
+                    shape_gap,
+                    shape_data,
+                    shape_collision_aabb_lower,
+                    shape_collision_aabb_upper,
+                    shape_heightfield_index,
+                    heightfield_data,
+                    heightfield_elevations,
+                    self.shape_pairs_mesh,
+                    self.shape_pairs_mesh_count,
+                    self.total_num_threads,
+                ]
+            else:
+                midphase_kernel = narrow_phase_find_mesh_triangle_overlaps_kernel
+                second_dim = self.tile_size_mesh_convex if ENABLE_TILE_BVH_QUERY else 1
+                midphase_dim = [self.num_tile_blocks, second_dim]
+                midphase_inputs = [
                     shape_types,
                     shape_transform,
                     shape_source,
@@ -3044,7 +3123,11 @@ class NarrowPhase:
                     self.shape_pairs_mesh,
                     self.shape_pairs_mesh_count,
                     self.num_tile_blocks,
-                ],
+                ]
+            wp.launch(
+                kernel=midphase_kernel,
+                dim=midphase_dim,
+                inputs=midphase_inputs,
                 outputs=[
                     self.triangle_pairs,
                     self.triangle_pairs_count,
@@ -3365,10 +3448,12 @@ class NarrowPhase:
                 reduction_ht_active_slots = self.global_contact_reducer.hashtable.active_slots
                 reduction_ht_capacity = self.global_contact_reducer.hashtable.capacity
                 reduction_ht_insert_failures = self.global_contact_reducer.ht_insert_failures
+                reduction_buffer_overflows = self.global_contact_reducer.buffer_overflows
             else:
                 reduction_ht_active_slots = self.gjk_candidate_pairs_count
                 reduction_ht_capacity = 0
                 reduction_ht_insert_failures = self.gjk_candidate_pairs_count
+                reduction_buffer_overflows = self.gjk_candidate_pairs_count
 
             if self.split_gjk_mpr:
                 split_query_count = candidate_pair_count if self.sparse_gjk_pairs else self.gjk_candidate_pairs_count
@@ -3410,6 +3495,7 @@ class NarrowPhase:
                     reduction_ht_active_slots,
                     reduction_ht_capacity,
                     reduction_ht_insert_failures,
+                    reduction_buffer_overflows,
                     HASHTABLE_WARN_LOAD_PERCENT,
                 ],
                 device=device,

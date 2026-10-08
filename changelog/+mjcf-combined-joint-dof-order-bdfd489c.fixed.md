@@ -1,0 +1,1 @@
+Fix MJCF import assigning per-DOF MuJoCo attributes (such as `ref`, `margin`, and `stiffness`) and actuator targets to the wrong DOF when a body combines hinge and slide joints with a slide declared after a hinge.

@@ -4,7 +4,6 @@
 """Smoke tests for the coupled solver prototype."""
 
 import unittest
-import warnings
 from typing import ClassVar
 from unittest import mock
 
@@ -918,15 +917,10 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                 for name, expected in parent_before.items():
                     np.testing.assert_array_equal(getattr(parent, name).numpy(), expected)
 
-        legacy_mask = wp.array((True, False), dtype=wp.bool, device=model.device)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", DeprecationWarning)
-            coupled.reset(parent, world_mask=legacy_mask, flags=0)
-        deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
-        self.assertEqual(len(deprecations), 1)
-        forwarded_mask = entry.solver.reset_calls[-1][1]
-        self.assertIsNot(forwarded_mask, legacy_mask)
-        np.testing.assert_array_equal(forwarded_mask.numpy(), (True, False, False))
+        reset_call_count = len(entry.solver.reset_calls)
+        with self.assertRaisesRegex(ValueError, "world_count \\+ 1"):
+            coupled.reset(parent, world_mask=wp.array((True, False), dtype=wp.bool, device=model.device), flags=0)
+        self.assertEqual(len(entry.solver.reset_calls), reset_call_count)
 
         model = newton.ModelBuilder().finalize(device="cpu")
         with self.assertRaises(ValueError):
@@ -1105,6 +1099,90 @@ class TestSolverCoupledBasic(unittest.TestCase):
         builder.add_shape_sphere(body=1, radius=0.2)
 
         self.model = builder.finalize(device="cpu")
+
+    def test_compacted_vbd_view_remaps_same_entry_attachments(self):
+        """Compact native attachments only when both endpoints belong to the VBD entry."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body_a = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body_b = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+        external_particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+        owned_particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+        builder.add_attachment_body_particle(body_a, owned_particle)
+        builder.add_attachment_body_particle(body_b, external_particle)
+        builder.color()
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model,
+            (
+                SolverCoupled.Entry(
+                    "other",
+                    _StepCountingCopySolver,
+                    particles=(external_particle,),
+                ),
+                SolverCoupled.Entry(
+                    "vbd",
+                    lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
+                    bodies=(body_a, body_b),
+                    particles=(owned_particle,),
+                ),
+            ),
+        )
+        view = coupled.view("vbd")
+
+        # The view compacts bodies but keeps every particle visible, so the retained row pairs a
+        # view-local body index with the unchanged global particle index.
+        self.assertEqual(view.attachment_body_particle_count, 1)
+        np.testing.assert_array_equal(view.attachment_body_particle_body.numpy(), [0])
+        np.testing.assert_array_equal(view.attachment_body_particle_particle.numpy(), [owned_particle])
+
+    def test_noncompact_views_hide_cross_entry_attachments(self):
+        """Filter attachment ownership even when heterogeneous worlds prevent compaction."""
+        world = newton.ModelBuilder()
+        body = world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        particle = world.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+        world.add_attachment_body_particle(body, particle)
+
+        builder = newton.ModelBuilder()
+        builder.add_world(world)
+        builder.add_world(world)
+        builder.color()
+        model = builder.finalize(device="cpu")
+        body_start = model.body_world_start.numpy()
+        particle_start = model.particle_world_start.numpy()
+
+        coupled = SolverCoupled(
+            model,
+            (
+                SolverCoupled.Entry(
+                    "world0",
+                    _StepCountingCopySolver,
+                    bodies=(int(body_start[0]),),
+                    particles=(int(particle_start[0]),),
+                ),
+                SolverCoupled.Entry(
+                    "world1",
+                    _StepCountingCopySolver,
+                    bodies=(int(body_start[1]),),
+                    particles=(int(particle_start[1]),),
+                ),
+            ),
+        )
+
+        for world_index, name in enumerate(("world0", "world1")):
+            view = coupled.view(name)
+            self.assertEqual(view.body_count, model.body_count)
+            self.assertEqual(view.attachment_body_particle_count, 1)
+            np.testing.assert_array_equal(
+                view.attachment_body_particle_body.numpy(),
+                [body_start[world_index]],
+            )
+            np.testing.assert_array_equal(
+                view.attachment_body_particle_particle.numpy(),
+                [particle_start[world_index]],
+            )
 
     def test_rejects_solver_without_coupling_interface_during_construction(self):
         with self.assertRaisesRegex(TypeError, "cannot participate in a coupled simulation"):
@@ -1397,6 +1475,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
     def test_compacted_joint_targets_use_local_layout(self):
         """Joint targets and their derived starts should use compact layout."""
         builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         free_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         free_joint = builder.add_joint_free(child=free_body)
         builder.add_articulation([free_joint])
@@ -1441,6 +1520,36 @@ class TestSolverCoupledBasic(unittest.TestCase):
         coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
         np.testing.assert_array_equal(view.joint_target_q.numpy(), [17.0, 18.0])
         np.testing.assert_array_equal(view.joint_target_ke.numpy(), [106.0, 107.0])
+
+        model.joint_armature.fill_(3.0)
+        model.mujoco.dof_ref.fill_(0.2)
+        model.mujoco.dof_springref.fill_(0.3)
+        model.joint_damping.fill_(0.8)
+        model.joint_target_ke.fill_(25.0)
+        model.joint_friction.fill_(0.4)
+        solref = model.mujoco.solreffriction.numpy()
+        solref[:, 0] = -100.0
+        solref[:, 1] = -10.0
+        model.mujoco.solreffriction.assign(solref)
+        solimp = model.mujoco.solimpfriction.numpy()
+        solimp[:, 0] = 0.8
+        model.mujoco.solimpfriction.assign(solimp)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+        np.testing.assert_allclose(view.joint_friction.numpy(), 0.4)
+        np.testing.assert_allclose(view.mujoco.solreffriction.numpy(), solref[-2:])
+        np.testing.assert_allclose(view.mujoco.solimpfriction.numpy(), solimp[-2:])
+        np.testing.assert_allclose(view.joint_damping.numpy(), 0.8)
+        np.testing.assert_allclose(view.joint_target_ke.numpy(), 25.0)
+        np.testing.assert_allclose(view.joint_armature.numpy(), 0.0)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+        np.testing.assert_allclose(view.joint_armature.numpy(), 3.0)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.2)
+        np.testing.assert_allclose(view.mujoco.dof_springref.numpy(), 0.3)
 
     def test_custom_control_arrays_are_mapped_to_entries(self):
         """Custom CONTROL attributes should follow their compact frequency map."""
@@ -3596,13 +3705,13 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         model.test.namespace_marker = "parent"
 
         self.assertEqual(
-            model._attribute_reference_frequency("test:linkage_body0"),
+            model._attribute_spec("test:linkage_body0").references,
             newton.Model.AttributeFrequency.BODY,
         )
         linkage_spec = model._attribute_spec("test:linkage_bodies")
         self.assertEqual(linkage_spec.frequency, "test:linkage")
         self.assertEqual(linkage_spec.references, newton.Model.AttributeFrequency.BODY)
-        self.assertEqual(model._attribute_reference_frequency("test:link_entity"), "test:entity")
+        self.assertEqual(model._attribute_spec("test:link_entity").references, "test:entity")
         self.assertEqual(
             model.attribute_assignment.get("test:linkage_body0", newton.Model.AttributeAssignment.MODEL),
             newton.Model.AttributeAssignment.MODEL,
@@ -3615,9 +3724,9 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
             ("tri_materials", newton.Model.AttributeFrequency.TRIANGLE),
         ):
             with self.subTest(core_attribute=name):
-                self.assertEqual(model._resolve_attribute_frequency(name), frequency)
+                self.assertEqual(model.get_attribute_frequency(name), frequency)
         self.assertEqual(
-            model._resolve_attribute_frequency("joint_q"),
+            model.get_attribute_frequency("joint_q"),
             newton.Model.AttributeFrequency.JOINT_COORD,
         )
 

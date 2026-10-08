@@ -19,6 +19,7 @@ if USD_AVAILABLE:
 class TestViewerRTXMarkers(unittest.TestCase):
     def setUp(self):
         self.ovrtx = mock.MagicMock()
+        self.ovrtx.__version__ = "0.3.0"
         patcher = mock.patch.dict("sys.modules", {"ovrtx": self.ovrtx})
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -26,6 +27,7 @@ class TestViewerRTXMarkers(unittest.TestCase):
         self.addCleanup(self.viewer.close)
         self.viewer._phase = ViewerRTX._PHASE_RENDER
         self.viewer._rtx = self.ovrtx.Renderer()
+        self.viewer._make_laned_array_dltensor = mock.Mock(side_effect=lambda values, lanes: values)
 
     def _log_spheres(self, count, *, hidden=False, color=(1.0, 0.0, 0.0)):
         xforms = wp.array([wp.transform_identity()] * count, dtype=wp.transform, device="cpu")
@@ -174,9 +176,6 @@ class TestViewerRTXMarkers(unittest.TestCase):
         runtime_path = self.viewer._rtx.add_usd_reference_from_string.call_args.kwargs["prefix_path"]
         self.assertNotEqual(path, runtime_path)
         self.assertEqual(self.viewer._instance_prim_paths["/markers/spheres"], [f"{runtime_path}/instance_0"])
-        self.viewer._rtx.write_attribute.assert_any_call(
-            prim_paths=[path], attribute_name="visibility", tensor=["invisible"]
-        )
         with (
             mock.patch.object(self.viewer, "_update_ovrtx_camera"),
             mock.patch.object(self.viewer, "_update_ovrtx_transforms"),
@@ -184,6 +183,9 @@ class TestViewerRTXMarkers(unittest.TestCase):
         ):
             self.viewer.end_frame()
             self.viewer.end_frame()
+        self.viewer._rtx.write_attribute.assert_any_call(
+            prim_paths=[path], attribute_name="visibility", tensor=["invisible"]
+        )
         self.viewer._rtx.reset.assert_called_once_with(time=0.0)
 
     def test_arrows_have_heads_and_correct_endpoints(self):

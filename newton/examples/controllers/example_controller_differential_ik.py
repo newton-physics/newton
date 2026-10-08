@@ -351,7 +351,7 @@ class Example:
 
         # Set such that Franka at y=0, UR10 at y=1.8, planar arm at y=3.6,
         # and the 5-DOF arm at y=5.4 are all in view together.
-        self.viewer.set_camera(pos=wp.vec3(4.0, -2.4, 3.0), pitch=-20.0, yaw=15.0)
+        self.viewer.set_camera(pos=wp.vec3(4.0, -2.4, 3.0), pitch=-22.6114, yaw=125.2176)
         if hasattr(self.viewer, "camera"):
             self.viewer.camera.look_at(wp.vec3(0.4, 2.7, 0.4))
 
