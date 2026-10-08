@@ -2,8 +2,8 @@
   "schema_version": 1,
   "setup": {
     "schema_version": 1,
-    "num_capsules": 8,
-    "capsule_length": 0.05,
+    "num_elements": 8,
+    "segment_length": 0.05,
     "cable_radius": 0.007,
     "cable_mass": 0.05,
     "angle_parametrization": "exp_map",
@@ -13,8 +13,6 @@
     "stretch_stiffness": 1000.0
   },
   "loss": "chamfer",
-  "score_scale": 1.0,
-  "curvature_reg_weight": 0.0,
   "opt_rest_config": true,
   "opt_bend_stiffness": true,
   "opt_bend_damping": false,
