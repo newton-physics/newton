@@ -13,6 +13,37 @@ import newton
 
 
 class TestTendonBuilder(unittest.TestCase):
+    def test_collapse_preserves_tendons_and_particle_attachments(self):
+        """Retain world-fixed bodies needed by either tendon guides or particle attachments."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        tendon_anchor = builder.add_link(mass=1.0)
+        particle_anchor = builder.add_link(xform=wp.transform(p=(1.0, 0.0, 0.0)), mass=1.0)
+        endpoint = builder.add_body(xform=wp.transform(p=(2.0, 0.0, 0.0)), mass=1.0)
+        for body in (tendon_anchor, particle_anchor):
+            joint = builder.add_joint_fixed(-1, body, parent_xform=builder.body_q[body])
+            builder.add_articulation([joint])
+        particle = builder.add_particle(pos=wp.vec3(1.0, 0.0, 0.0), vel=wp.vec3(), mass=1.0)
+        builder.add_attachment_body_particle(particle_anchor, particle)
+        builder.add_tendon(
+            [newton.TendonGuide(body=tendon_anchor), newton.TendonGuide(body=endpoint, compliance=1.0e-3)]
+        )
+
+        builder.collapse_fixed_joints()
+        self.assertEqual(builder.body_count, 3)
+        self.assertEqual(builder.tendon_guide_body, [0, 2])
+        self.assertEqual(builder.attachment_body_particle_body, [1])
+        builder.color()
+        for device in wp.get_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                solver = newton.solvers.SolverVBD(model, iterations=2)
+                state, output = model.state(), model.state()
+                solver.step(state, output, model.control(), None, 1.0 / 240.0)
+                np.testing.assert_allclose(output.body_q.numpy(), state.body_q.numpy(), atol=1.0e-6)
+                np.testing.assert_allclose(output.particle_q.numpy(), state.particle_q.numpy(), atol=1.0e-6)
+                self.assertEqual(model.tendon_count, 1)
+                self.assertEqual(model.attachment_body_particle_count, 1)
+
     def test_collapse_preserves_guides_across_fixed_joint_chain(self):
         """Compose local guide transforms across more than one collapsed joint."""
         builder = newton.ModelBuilder()
