@@ -4,6 +4,7 @@
 """Report contact candidates dropped inside global contact reduction."""
 
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -26,7 +27,7 @@ def _fill_reducer(data: GlobalContactReducerData, allocated: wp.array[int]):
     allocated[tid] = export_contact_to_buffer(0, 1, wp.vec3(0.0), wp.vec3(0.0, 0.0, 1.0), -0.01, tid, data)
 
 
-def _boxes_on_mesh_model(device, height: float = 0.095):
+def _boxes_on_mesh_model(device, height: float = 0.095, world_count: int | None = None):
     """Three boxes resting on a 4x4-cell triangle-mesh ground, which uses global reduction."""
     cells = 4
     xs, ys = np.meshgrid(np.linspace(-1.0, 1.0, cells + 1), np.linspace(-1.0, 1.0, cells + 1))
@@ -41,6 +42,10 @@ def _boxes_on_mesh_model(device, height: float = 0.095):
     for k in range(3):
         body = builder.add_body(xform=wp.transform(wp.vec3(-0.5 + 0.5 * k, 0.0, height), wp.quat_identity()))
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    if world_count is not None:
+        root = newton.ModelBuilder()
+        root.replicate(builder, world_count)
+        builder = root
     return builder.finalize(device=device)
 
 
@@ -185,6 +190,34 @@ def test_coupled_entry_contacts_keep_reduction_loss(test, device):
     test.assertEqual(int(coupled.entry_contacts("all", other)._reduction_overflow.numpy()[0]), 0)
 
 
+def test_default_capacity_scales_with_world_count(test, device):
+    """Size the default reducer for every world, where a fixed capacity fits only a few."""
+    world_count = 8
+    single = newton.CollisionPipeline(_boxes_on_mesh_model(device), max_triangle_pairs=100_000)
+    single.collide(single.model.state(), single.contacts())
+    world_candidates = int(single.narrow_phase.global_contact_reducer.contact_count.numpy()[0])
+
+    model = _boxes_on_mesh_model(device, world_count=world_count)
+    state = model.state()
+    # A fixed capacity that holds two worlds' candidates stands in for the fixed legacy default.
+    fixed_capacity = 2 * world_candidates
+    fixed = newton.CollisionPipeline(model, max_triangle_pairs=fixed_capacity, verify_buffers=False)
+    fixed_contacts = fixed.contacts()
+    fixed.collide(state, fixed_contacts)
+    test.assertGreater(int(fixed.narrow_phase.global_contact_reducer.buffer_overflows.numpy()[0]), 0)
+    test.assertEqual(int(fixed_contacts._reduction_overflow.numpy()[0]), 1)
+
+    with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_MIN_CAPACITY", fixed_capacity):
+        auto = newton.CollisionPipeline(model, verify_buffers=False)
+    auto_contacts = auto.contacts()
+    auto.collide(state, auto_contacts)
+    reducer = auto.narrow_phase.global_contact_reducer
+    test.assertGreaterEqual(reducer.capacity, world_count * world_candidates)
+    test.assertEqual(int(reducer.buffer_overflows.numpy()[0]), 0)
+    test.assertEqual(int(reducer.contact_count.numpy()[0]), world_count * world_candidates)
+    test.assertEqual(int(auto_contacts._reduction_overflow.numpy()[0]), 0)
+
+
 class TestContactReductionOverflow(unittest.TestCase):
     pass
 
@@ -218,6 +251,13 @@ add_function_test(
     TestContactReductionOverflow,
     "test_coupled_entry_contacts_keep_reduction_loss",
     test_coupled_entry_contacts_keep_reduction_loss,
+    devices=devices,
+)
+
+add_function_test(
+    TestContactReductionOverflow,
+    "test_default_capacity_scales_with_world_count",
+    test_default_capacity_scales_with_world_count,
     devices=devices,
 )
 

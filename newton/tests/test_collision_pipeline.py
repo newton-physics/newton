@@ -36,6 +36,9 @@ from newton._src.geometry.soft_contacts_sdf import (
 from newton._src.sim.collide import (
     _GENERIC_CONVEX_PAIR_LOOKUP,
     _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD,
+    _TRIANGLE_PAIR_NEIGHBORS_PER_SHAPE,
+    _TRIANGLE_PAIRS_MIN_CAPACITY,
+    _TRIANGLE_PAIRS_PER_MESH_PAIR,
     CollisionPipeline,
     _build_soft_edge_rigid_contact_pairs,
     _build_soft_face_rigid_contact_pairs,
@@ -2305,6 +2308,131 @@ class TestContactCountEstimator(unittest.TestCase):
 
         estimate = _estimate_rigid_contact_max(model)
         self.assertEqual(estimate, 1500)
+
+
+def _flat_mesh(cells: int = 2) -> newton.Mesh:
+    xs, ys = np.meshgrid(np.linspace(-1.0, 1.0, cells + 1), np.linspace(-1.0, 1.0, cells + 1))
+    vertices = np.stack([xs.ravel(), ys.ravel(), np.zeros(xs.size)], axis=1).astype(np.float32)
+    indices = []
+    for i in range(cells):
+        for j in range(cells):
+            a = i * (cells + 1) + j
+            indices += [a, a + 1, a + cells + 2, a, a + cells + 2, a + cells + 1]
+    return newton.Mesh(vertices, np.array(indices, dtype=np.int32), compute_inertia=False)
+
+
+class TestTrianglePairCapacityEstimator(unittest.TestCase):
+    """Size the triangle-pair and contact-reducer capacity from the model's mesh pairs."""
+
+    @staticmethod
+    def _capacity(model, **kwargs):
+        # Remove the legacy floor so small scenes expose the per-world budget.
+        with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_MIN_CAPACITY", 1):
+            return CollisionPipeline(model, **kwargs).narrow_phase.max_triangle_pairs
+
+    @staticmethod
+    def _boxes(builder, count, z=0.1):
+        for k in range(count):
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.3 * k, 0.0, z), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+
+    def test_heterogeneous_worlds_sum_per_world_pairs(self):
+        """Budget only the worlds that contain meshes, not world_count times the busiest world."""
+        builder = newton.ModelBuilder()
+        for world in range(4):
+            sub = newton.ModelBuilder()
+            if world == 0:
+                sub.add_shape_mesh(-1, mesh=_flat_mesh())
+            else:
+                sub.add_shape_box(-1, hx=1.0, hy=1.0, hz=0.01)
+            self._boxes(sub, 3)
+            builder.add_world(sub)
+        model = builder.finalize(device="cpu")
+
+        # World 0 has three mesh-box pairs; the box-only worlds add nothing.
+        self.assertEqual(self._capacity(model), 3 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+
+    def test_world_count_scales_capacity(self):
+        """Grow the default with the number of worlds that contain mesh pairs."""
+        sub = newton.ModelBuilder()
+        sub.add_shape_mesh(-1, mesh=_flat_mesh())
+        self._boxes(sub, 3)
+        for world_count in (1, 8):
+            with self.subTest(world_count=world_count):
+                builder = newton.ModelBuilder()
+                builder.replicate(sub, world_count)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(self._capacity(model), world_count * 3 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+
+    def test_global_mesh_counts_once_per_world(self):
+        """Count a global mesh's pairs in each world and global-global pairs once."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=_flat_mesh())
+        self._boxes(builder, 1)
+        for _ in range(3):
+            sub = newton.ModelBuilder()
+            self._boxes(sub, 2)
+            builder.add_world(sub)
+        model = builder.finalize(device="cpu")
+
+        # 3 worlds x 2 mesh-box pairs, plus the global mesh-box pair; global box-box pairs are not mesh pairs.
+        self.assertEqual(self._capacity(model), 7 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+
+    def test_filtered_and_non_colliding_shapes_are_excluded(self):
+        """Skip filtered pairs and shapes that do not collide with shapes."""
+        builder = newton.ModelBuilder()
+        mesh = builder.add_shape_mesh(-1, mesh=_flat_mesh())
+        visual = newton.ModelBuilder.ShapeConfig(has_shape_collision=False)
+        builder.add_shape_mesh(-1, mesh=_flat_mesh(), cfg=visual)
+        self._boxes(builder, 3)
+        builder.add_shape_collision_filter_pair(mesh, builder.shape_count - 1)
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(self._capacity(model), 2 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+
+    def test_neighbor_budget_caps_dense_mesh_worlds(self):
+        """Cap all-pairs mesh counts at a fixed number of neighbors per participating shape."""
+        builder = newton.ModelBuilder()
+        for k in range(20):
+            body = builder.add_body(xform=wp.transform(wp.vec3(3.0 * k, 0.0, 0.0), wp.quat_identity()))
+            builder.add_shape_mesh(body, mesh=_flat_mesh())
+        model = builder.finalize(device="cpu")
+
+        # 190 mesh-mesh pairs, but at most 20 * 6 / 2 = 60 touch at once.
+        self.assertEqual(model.shape_contact_pair_count, 190)
+        expected_pairs = 20 * _TRIANGLE_PAIR_NEIGHBORS_PER_SHAPE // 2
+        self.assertEqual(self._capacity(model), expected_pairs * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+
+    def test_explicit_capacity_and_floor(self):
+        """Keep explicit capacities, the legacy floor, and the deterministic packing limit."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=_flat_mesh())
+        self._boxes(builder, 3)
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(CollisionPipeline(model, max_triangle_pairs=4096).narrow_phase.max_triangle_pairs, 4096)
+        self.assertEqual(CollisionPipeline(model).narrow_phase.max_triangle_pairs, _TRIANGLE_PAIRS_MIN_CAPACITY)
+        with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_PER_MESH_PAIR", 1 << 20):
+            self.assertEqual(
+                CollisionPipeline(model, deterministic=True).narrow_phase.max_triangle_pairs, (1 << 20) - 1
+            )
+        with self.assertRaises(ValueError):
+            CollisionPipeline(model, max_triangle_pairs=0)
+
+    def test_large_automatic_estimate_warns(self):
+        """Warn when the automatic estimate needs large buffers, and stay silent for explicit values."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=_flat_mesh())
+        self._boxes(builder, 3)
+        model = builder.finalize(device="cpu")
+
+        with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_LARGE_BUFFER_BYTES", 1):
+            with self.assertWarnsRegex(RuntimeWarning, r"max_triangle_pairs=1,000,000.*MiB.*3 budgeted mesh pairs"):
+                CollisionPipeline(model)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                CollisionPipeline(model, max_triangle_pairs=4096)
+        self.assertEqual([w for w in caught if "max_triangle_pairs" in str(w.message)], [])
 
 
 class TestShapePairsMaxScaling(unittest.TestCase):
