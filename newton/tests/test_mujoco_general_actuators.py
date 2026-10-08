@@ -8,6 +8,7 @@ import io
 import os
 import tempfile
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -204,6 +205,7 @@ USD_MJC_DCMOTOR_ACTUATOR = """        def MjcActuator "HingeDCMotor"
             uniform double mjc:forceRange:max = 2
             uniform token mjc:forceLimited = "true"
             uniform double mjc:damping = 0.7
+            uniform double2 mjc:dampingPoly = (0.2, 0.1)
             uniform double mjc:armature = 0.02
             rel mjc:target = </Root/Hinge>
         }
@@ -367,15 +369,14 @@ class TestMuJoCoActuators(unittest.TestCase):
         np.testing.assert_allclose(mj_model.actuator_forcerange[0], [-2, 2])
         np.testing.assert_allclose(mj_model.actuator_gear[0], [3, 0, 0, 0, 0, 0])
         np.testing.assert_allclose(mj_model.actuator_damping[0], 0.7)
+        np.testing.assert_allclose(mj_model.actuator_dampingpoly[0], [0.2, 0.1])
         np.testing.assert_allclose(mj_model.actuator_armature[0], 0.02)
         for attribute in ("actuator_dynprm", "actuator_biasprm", "actuator_forcerange", "actuator_gear"):
             np.testing.assert_allclose(
                 getattr(solver.mjw_model, attribute).numpy()[0],
                 getattr(mj_model, attribute),
             )
-        expected_gainprm = mj_model.actuator_gainprm.copy()
-        expected_gainprm[0, 8] = 1.0  # MuJoCo-Warp's legacy position-input slot
-        np.testing.assert_allclose(solver.mjw_model.actuator_gainprm.numpy()[0], expected_gainprm)
+        np.testing.assert_allclose(solver.mjw_model.actuator_gainprm.numpy()[0], mj_model.actuator_gainprm)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_mjc_dcmotor_rejects_unsupported_control_signatures(self):
@@ -417,6 +418,7 @@ class TestMuJoCoActuators(unittest.TestCase):
             "actuator_forcerange",
             "actuator_gear",
             "actuator_damping",
+            "actuator_dampingpoly",
             "actuator_armature",
         ):
             np.testing.assert_allclose(getattr(generated_model, attribute), getattr(native_model, attribute))
@@ -429,9 +431,7 @@ class TestMuJoCoActuators(unittest.TestCase):
                 getattr(solver.mjw_model, attribute).numpy()[0],
                 getattr(native_model, attribute),
             )
-        expected_gainprm = native_model.actuator_gainprm.copy()
-        expected_gainprm[0, 8] = 1.0  # MuJoCo-Warp's legacy position-input slot
-        np.testing.assert_allclose(solver.mjw_model.actuator_gainprm.numpy()[0], expected_gainprm)
+        np.testing.assert_allclose(solver.mjw_model.actuator_gainprm.numpy()[0], native_model.actuator_gainprm)
 
         state_0 = model.state()
         state_1 = model.state()
@@ -456,6 +456,72 @@ class TestMuJoCoActuators(unittest.TestCase):
         for attribute in ("actuator_dynprm", "actuator_gainprm", "actuator_biasprm"):
             np.testing.assert_allclose(getattr(solver.mj_model, attribute), getattr(native_model, attribute))
 
+    def test_mjcf_actuator_damping_coefficients(self):
+        """Preserve inherited linear and polynomial actuator damping on the CPU backend."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        for actuator, damping in (
+            ('motor gear="3"', "0.7"),
+            ('motor gear="3"', "0.7 0.2"),
+            ('motor gear="3"', "0.7 0.2 0.1"),
+            ('position kp="10"', "0.7 0.2 0.1"),
+            ('velocity kv="10"', "0.7 0.2 0.1"),
+        ):
+            with self.subTest(actuator=actuator, damping=damping):
+                kind = actuator.split()[0]
+                mjcf = MJCF_DCMOTOR_SIMPLE.replace(
+                    '<dcmotor name="dc" joint="hinge" motorconst="0.05" resistance="2"/>',
+                    f'<{actuator} name="drive" joint="hinge"/>',
+                ).replace(
+                    "<worldbody>",
+                    f'<default><{kind} damping="{damping}" armature="0.02"/></default><worldbody>',
+                )
+                native_model = mujoco.MjModel.from_xml_string(mjcf)
+                builder = ModelBuilder()
+                builder.add_mjcf(mjcf)
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+
+                for attribute in ("actuator_damping", "actuator_dampingpoly", "actuator_armature"):
+                    np.testing.assert_allclose(getattr(solver.mj_model, attribute), getattr(native_model, attribute))
+                    np.testing.assert_allclose(
+                        getattr(model.mujoco, attribute).numpy(), getattr(native_model, attribute)
+                    )
+
+                state_0, state_1 = model.state(), model.state()
+                state_0.joint_qd.assign([0.5])
+                control = model.control()
+                control.mujoco.ctrl.assign([0.1])
+                control.joint_target_q.assign([0.1])
+                control.joint_target_qd.assign([0.1])
+                reference_data = mujoco.MjData(native_model)
+                reference_data.qvel[0] = 0.5
+                reference_data.ctrl[0] = 0.1
+                native_model.opt.timestep = 0.001
+                native_model.opt.integrator = solver.mj_model.opt.integrator
+                for _ in range(5):
+                    solver.step(state_0, state_1, control, None, dt=0.001)
+                    state_0, state_1 = state_1, state_0
+                    mujoco.mj_step(native_model, reference_data)
+                    np.testing.assert_allclose(state_0.joint_qd.numpy(), reference_data.qvel, rtol=1.0e-5, atol=1.0e-7)
+
+    def test_actuator_passive_properties_warn_on_warp(self):
+        """Warn only when nonzero actuator damping or armature is ignored by MuJoCo-Warp."""
+        for attributes in ('damping="0.7"', 'damping="0 0.2 0.1"', 'armature="0.02"', ""):
+            for use_mujoco_cpu in (False, True):
+                with self.subTest(attributes=attributes, use_mujoco_cpu=use_mujoco_cpu):
+                    mjcf = MJCF_DCMOTOR_SIMPLE.replace('resistance="2"', f'resistance="2" {attributes}')
+                    builder = ModelBuilder()
+                    builder.add_mjcf(mjcf)
+                    model = builder.finalize()
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                    passive_warnings = [w for w in caught if "actuator damping or armature" in str(w.message)]
+                    self.assertEqual(len(passive_warnings), int(bool(attributes) and not use_mujoco_cpu))
+                    if passive_warnings:
+                        self.assertTrue(issubclass(passive_warnings[0].category, RuntimeWarning))
+                        self.assertIn("use_mujoco_cpu=True", str(passive_warnings[0].message))
+
     def test_mjcf_dcmotor_rejects_unsupported_control_signatures(self):
         """Reject DC-motor signatures that do not map one control to one actuator row."""
         for control_signature in ("ff", "none", "pos vel"):
@@ -467,10 +533,8 @@ class TestMuJoCoActuators(unittest.TestCase):
     def test_mjcf_dcmotor_dynamics_match_native_mujoco(self):
         """Match native DC-motor activation and force on the CPU and MuJoCo-Warp backends."""
         mujoco = SolverMuJoCo.import_mujoco()[0]
-        parity_mjcf = MJCF_DCMOTOR_ACTUATOR.replace(
-            'controller="5 1 0.2 10 2 3"',
-            'controller="5 1 0.2 0 2 3"',
-        )
+        # MuJoCo-Warp 3.14 does not implement actuator damping or armature.
+        parity_mjcf = MJCF_DCMOTOR_ACTUATOR.replace('damping="0.7" armature="0.02"', "")
 
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
@@ -482,41 +546,34 @@ class TestMuJoCoActuators(unittest.TestCase):
                     iterations=1,
                     disable_contacts=True,
                     use_mujoco_cpu=use_mujoco_cpu,
+                    # Isolate import parity from MuJoCo-Warp's approximate implicit DC-motor derivatives.
+                    integrator="euler",
                 )
                 state_0 = model.state()
                 state_1 = model.state()
+                state_0.joint_q.assign([0.2])
+                state_0.joint_qd.assign([0.5])
                 control = model.control()
                 control.mujoco.ctrl.assign([0.25])
                 solver.mj_model.opt.timestep = 0.001
                 reference_data = mujoco.MjData(solver.mj_model)
                 reference_data.ctrl[0] = 0.25
+                reference_data.qpos[0] = 0.2
+                reference_data.qvel[0] = 0.5
 
-                solver.step(state_0, state_1, control, None, dt=0.001)
-                state_0, state_1 = state_1, state_0
-                mujoco.mj_step(solver.mj_model, reference_data)
+                for _ in range(10):
+                    solver.step(state_0, state_1, control, None, dt=0.001)
+                    state_0, state_1 = state_1, state_0
+                    mujoco.mj_step(solver.mj_model, reference_data)
 
-                if use_mujoco_cpu:
-                    actual_act = solver.mj_data.act
-                    actual_actuator_force = solver.mj_data.actuator_force
-                    actual_qfrc_actuator = solver.mj_data.qfrc_actuator
-                else:
-                    actual_act = solver.mjw_data.act.numpy()[0]
-                    actual_actuator_force = solver.mjw_data.actuator_force.numpy()[0]
-                    actual_qfrc_actuator = solver.mjw_data.qfrc_actuator.numpy()[0]
-
-                np.testing.assert_allclose(actual_act, reference_data.act, rtol=1.0e-4, atol=1.0e-7)
-                np.testing.assert_allclose(
-                    actual_actuator_force,
-                    reference_data.actuator_force,
-                    rtol=1.0e-4,
-                    atol=1.0e-7,
-                )
-                np.testing.assert_allclose(
-                    actual_qfrc_actuator,
-                    reference_data.qfrc_actuator,
-                    rtol=1.0e-4,
-                    atol=1.0e-7,
-                )
+                    for name in ("act", "actuator_force", "qfrc_actuator"):
+                        actual = (
+                            getattr(solver.mj_data, name)
+                            if use_mujoco_cpu
+                            else getattr(solver.mjw_data, name).numpy()[0]
+                        )
+                        np.testing.assert_allclose(actual, getattr(reference_data, name), rtol=1.0e-4, atol=1.0e-7)
+                    np.testing.assert_allclose(state_0.joint_qd.numpy(), reference_data.qvel, rtol=1.0e-4, atol=1.0e-7)
 
                 solver.reset(state_0)
                 reset_act = solver.mj_data.act if use_mujoco_cpu else solver.mjw_data.act.numpy()[0]

@@ -559,7 +559,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
           :attr:`~newton.JointTargetMode.POSITION_VELOCITY` mode, kd is handled by the separate velocity actuator.
         - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_qd`, syncs gains from :attr:`~newton.Model.joint_target_kd`
         - :attr:`GENERAL`: Used with :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode for motor/general actuators
-        - :attr:`DCMOTOR`: Recreates the MuJoCo ``dcmotor`` shortcut from its high-level MJCF parameters
+        - :attr:`DCMOTOR`: Set by the MJCF importer to reconstruct ``<dcmotor>`` from importer-managed parameters.
+          Do not set this value manually. Runtime edits to ``actuator_gainprm``, ``actuator_biasprm``,
+          ``actuator_dynprm``, and ``actuator_forcerange`` are ignored for these rows.
+          Compiled USD DC motors instead use :attr:`GENERAL` with ``actuator_gaintype`` set to DC motor.
         """
 
         POSITION = 0
@@ -883,7 +886,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 raise NotImplementedError(
                     "SolverMuJoCo supports one DC-motor control input per actuator row: "
                     "'voltage', 'pos', or 'vel'. MuJoCo 'ff', 'none', and combined input "
-                    "signatures require control handling that MuJoCo-Warp does not yet provide."
+                    "signatures are not supported by Newton's one-control-per-actuator mapping."
                 )
             return control_signature
 
@@ -1999,7 +2002,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "affine": _ActuatorGainType.AFFINE,
             "muscle": _ActuatorGainType.MUSCLE,
             "dcmotor": _ActuatorGainType.DCMOTOR,
-            "so3": _ActuatorGainType.SO3,
             "user": _ActuatorGainType.USER,
         }
         actuator_bias_types = {
@@ -2007,7 +2009,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "affine": _ActuatorBiasType.AFFINE,
             "muscle": _ActuatorBiasType.MUSCLE,
             "dcmotor": _ActuatorBiasType.DCMOTOR,
-            "so3": _ActuatorBiasType.SO3,
             "user": _ActuatorBiasType.USER,
         }
 
@@ -2022,6 +2023,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         def parse_biastype(s: str, context: dict[str, Any] | None = None) -> int:
             return parse_actuator_enum(s, actuator_bias_types, "biastype", context)
+
+        def parse_actuator_damping(s: str, _context: dict[str, Any] | None = None) -> float:
+            return float(string_to_warp(s, wp.vec3, wp.vec3(0.0))[0])
+
+        def parse_actuator_dampingpoly(s: str, _context: dict[str, Any] | None = None) -> wp.vec2:
+            coefficients = string_to_warp(s, wp.vec3, wp.vec3(0.0))
+            return wp.vec2(coefficients[1], coefficients[2])
 
         def parse_bool(value: Any, context: dict[str, Any] | None = None) -> bool:
             """Parse MJCF/USD boolean values to bool."""
@@ -2570,7 +2578,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 default=0.0,
                 namespace="mujoco",
                 mjcf_attribute_name="damping",
+                mjcf_value_transformer=parse_actuator_damping,
                 usd_attribute_name="mjc:damping",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_dampingpoly",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="damping",
+                mjcf_value_transformer=parse_actuator_dampingpoly,
+                usd_attribute_name="mjc:dampingPoly",
             )
         )
         builder.add_custom_attribute(
@@ -2713,7 +2735,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
-                mjcf_attribute_name="ctrlspec",
                 usd_attribute_name="mjc:ctrlSpec",
             )
         )
@@ -3794,6 +3815,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         ctrlspec_arr = mujoco_attrs.actuator_ctrlspec.numpy() if hasattr(mujoco_attrs, "actuator_ctrlspec") else None
         damping_arr = mujoco_attrs.actuator_damping.numpy() if hasattr(mujoco_attrs, "actuator_damping") else None
+        dampingpoly_arr = (
+            mujoco_attrs.actuator_dampingpoly.numpy() if hasattr(mujoco_attrs, "actuator_dampingpoly") else None
+        )
         armature_arr = mujoco_attrs.actuator_armature.numpy() if hasattr(mujoco_attrs, "actuator_armature") else None
         has_dcmotor_shortcut = ctrl_type_arr is not None and np.any(ctrl_type_arr == int(SolverMuJoCo.CtrlType.DCMOTOR))
         missing_dcmotor_parameters = (
@@ -3965,8 +3989,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if hasattr(mujoco_attrs, "actuator_cranklength"):
                 cranklength = float(mujoco_attrs.actuator_cranklength.numpy()[mujoco_act_idx])
                 general_args["cranklength"] = cranklength
-            if damping_arr is not None:
-                general_args["damping"] = float(damping_arr[mujoco_act_idx])
+            if damping_arr is not None or dampingpoly_arr is not None:
+                damping = float(damping_arr[mujoco_act_idx]) if damping_arr is not None else 0.0
+                dampingpoly = dampingpoly_arr[mujoco_act_idx] if dampingpoly_arr is not None else (0.0, 0.0)
+                general_args["damping"] = [damping, *dampingpoly]
             if armature_arr is not None:
                 general_args["armature"] = float(armature_arr[mujoco_act_idx])
             # Only pass range to MuJoCo when explicitly set in MJCF (has_*range flags),
@@ -4013,7 +4039,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 raise NotImplementedError(
                     "SolverMuJoCo supports one DC-motor control input per actuator row: "
                     "'voltage', 'pos', or 'vel'. MuJoCo 'ff', 'none', and combined input "
-                    "signatures require control handling that MuJoCo-Warp does not yet provide."
+                    "signatures are not supported by Newton's one-control-per-actuator mapping."
                 )
             # Apply shortcut helpers after add_actuator so MuJoCo derives all
             # compiled parameters exactly as it does for native MJCF.
@@ -5240,16 +5266,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.jnt_range[:] = self.mjw_model.jnt_range.numpy()[0]
                 self.mj_model.jnt_actfrcrange[:] = self.mjw_model.jnt_actfrcrange.numpy()[0]
             if flags & ModelFlags.ACTUATOR_PROPERTIES:
-                gainprm = self.mjw_model.actuator_gainprm.numpy()[0].copy()
-                # MuJoCo-Warp's compatibility bridge uses gainprm[8] for
-                # MuJoCo 3.12 DC motors, while MuJoCo-C owns the input mode in
-                # actuator_ctrlspec. Keep the native compiled slot unchanged.
-                modern_dcmotor = (self.mj_model.actuator_gaintype == self._mujoco.mjtGain.mjGAIN_DCMOTOR) & (
-                    self.mj_model.actuator_ctrlspec > 0
-                )
-                gainprm[modern_dcmotor, 8] = self.mj_model.actuator_gainprm[modern_dcmotor, 8]
-                self.mj_model.actuator_gainprm[:] = gainprm
                 for name in (
+                    "actuator_gainprm",
                     "actuator_biasprm",
                     "actuator_dynprm",
                     "actuator_ctrlrange",
@@ -7022,7 +7040,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # This is needed for CTRL_DIRECT actuators targeting joints within combined Newton joints.
         mjc_joint_names: list[str] = []
 
-        # Saved ctrl/force ranges. The rebuild drops them, so re-attach after.
+        # Saved ranges and passive properties. The rebuild drops them, so re-attach after.
         # Key = (dof, is_position): position and velocity sub-actuators can have
         # different ranges.
         joint_target_ranges: dict[tuple[int, bool], dict[str, Any]] = {}
@@ -7039,6 +7057,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             jt_has_forcerange = get_custom_attribute("actuator_has_forcerange")
             jt_forcerange = get_custom_attribute("actuator_forcerange")
             jt_forcelimited = get_custom_attribute("actuator_forcelimited")
+            jt_damping = get_custom_attribute("actuator_damping")
+            jt_dampingpoly = get_custom_attribute("actuator_dampingpoly")
+            jt_armature = get_custom_attribute("actuator_armature")
 
             # Which sub-actuator a row feeds (as is_position): position->position only,
             # velocity->velocity only, unknown->both.
@@ -7075,16 +7096,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     "has_forcerange": bool(jt_has_forcerange[row]) if jt_has_forcerange is not None else False,
                     "forcerange": tuple(jt_forcerange[row]) if jt_forcerange is not None else None,
                     "forcelimited": int(jt_forcelimited[row]) if jt_forcelimited is not None else None,
+                    "damping": [
+                        float(jt_damping[row]) if jt_damping is not None else 0.0,
+                        *(jt_dampingpoly[row] if jt_dampingpoly is not None else (0.0, 0.0)),
+                    ],
+                    "armature": float(jt_armature[row]) if jt_armature is not None else 0.0,
                 }
                 for is_position in classify_joint_target_kinds(row):
                     joint_target_ranges[(dof, is_position)] = info
 
         def joint_target_actuator_kwargs(base: dict[str, Any], dof: int, is_position: bool) -> dict[str, Any]:
-            """Merge the matching row's authored ctrl/force ranges onto a sub-actuator's kwargs."""
+            """Merge the matching row's authored ranges and passive properties onto a sub-actuator."""
             kwargs = dict(base)
             info = joint_target_ranges.get((dof, is_position))
             if info is None:
                 return kwargs
+            kwargs["damping"] = info["damping"]
+            kwargs["armature"] = info["armature"]
             if info["ctrllimited"] is not None:
                 kwargs["ctrllimited"] = info["ctrllimited"]
             if info["has_ctrlrange"] and info["ctrlrange"] is not None:
@@ -7961,6 +7989,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ]
 
         self.mj_model = spec.compile()
+        if not self.use_mujoco_cpu and (
+            np.any(self.mj_model.actuator_damping != 0.0)
+            or np.any(self.mj_model.actuator_dampingpoly != 0.0)
+            or np.any(self.mj_model.actuator_armature != 0.0)
+        ):
+            warnings.warn(
+                "SolverMuJoCo's MuJoCo-Warp backend does not support actuator damping or armature "
+                "(including polynomial damping). These properties are ignored; use use_mujoco_cpu=True "
+                "to preserve their dynamics.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         # Keep the compiled qM layout, but restore the physical COM and derived constants.
         for body_id, body, body_ipos in full_inertia_bodies:
             body.ipos = body_ipos
@@ -10002,8 +10042,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         actuator_biasprm = getattr(mujoco_attrs, "actuator_biasprm", None)
         actuator_dynprm = getattr(mujoco_attrs, "actuator_dynprm", None)
         actuator_ctrl_type = getattr(mujoco_attrs, "ctrl_type", None)
-        actuator_gain_type = getattr(mujoco_attrs, "actuator_gaintype", None)
-        actuator_ctrlspec = getattr(mujoco_attrs, "actuator_ctrlspec", None)
         actuator_ctrlrange = getattr(mujoco_attrs, "actuator_ctrlrange", None)
         actuator_forcerange = getattr(mujoco_attrs, "actuator_forcerange", None)
         actuator_actrange = getattr(mujoco_attrs, "actuator_actrange", None)
@@ -10014,8 +10052,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             or actuator_biasprm is None
             or actuator_dynprm is None
             or actuator_ctrl_type is None
-            or actuator_gain_type is None
-            or actuator_ctrlspec is None
             or actuator_ctrlrange is None
             or actuator_forcerange is None
             or actuator_actrange is None
@@ -10034,8 +10070,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjc_actuator_ctrl_source,
                 self.mjc_actuator_to_newton_actuator_idx,
                 actuator_ctrl_type,
-                actuator_gain_type,
-                actuator_ctrlspec,
                 actuator_gainprm,
                 actuator_biasprm,
                 actuator_dynprm,
