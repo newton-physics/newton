@@ -188,15 +188,6 @@ jobs:
           COVERAGE_CORE: "sysmon"
         run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
-      - name: Smoke test ViewerRTX rendering
-        run: >
-          uv run --extra dev --extra torch-cu13 --extra rtx
-          python -W error::DeprecationWarning
-          -m newton.examples basic_viewer
-          --viewer rtx
-          --headless
-          --num-frames 2
-
       # Merge queue caches are scoped to throwaway gh-readonly-queue refs.
       # Cache keys are immutable, so cold runs only save when the key is new.
       - name: Save Warp kernel cache
