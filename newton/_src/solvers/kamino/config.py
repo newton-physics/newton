@@ -798,6 +798,24 @@ class PADMMSolverConfig:
 class DVIAPGDConfig:
     """Controls for the APGD unilateral subsolver.
 
+    Select APGD and set these controls before constructing the solver::
+
+        config = newton.solvers.SolverKamino.Config(dynamics_solver="dvi")
+        config.dvi.unilateral_solver = "apgd"
+        config.dvi.apgd.max_iterations = 64
+        config.dvi.apgd.max_nonlinear_corrections = 1
+        config.dvi.apgd.tolerance = 1.0e-5
+        solver = newton.solvers.SolverKamino(model, config=config)
+
+    Iteration budgets are upper limits. The inner and nonlinear loops stop
+    early in each world when their residual meets :attr:`tolerance`.
+    The nonlinear correction loop is separate
+    from the bilateral/unilateral alternation controlled by
+    :attr:`DVISolverConfig.max_alternating_iterations` and
+    :attr:`DVISolverConfig.bilateral_solve_interval`. Schur mode eliminates
+    bilateral rows during the unilateral solve and recovers their impulses
+    afterward.
+
     These runtime solver controls are Python-only; they do not author a
     material model or add USD schema attributes.
     CUDA execution requires a Warp build and CUDA driver supporting CUDA
@@ -806,10 +824,22 @@ class DVIAPGDConfig:
     """
 
     max_iterations: int = 64
-    """Maximum accelerated iterations per frozen-correction quadratic solve."""
+    """Maximum accepted APGD steps per frozen-correction quadratic solve.
+
+    After an accepted step, the inner loop stops if its frozen-correction
+    residual meets :attr:`tolerance`. If the budget is exhausted, the nonlinear
+    loop relaxes the partial solution, checks its fresh residual, and starts
+    another correction if needed and budget remains.
+    """
 
     max_backtracks: int = 24
-    """Maximum trial steps per iteration, including the initial trial."""
+    """Maximum trial steps per APGD iteration, including the initial trial.
+
+    The search stops on a finite step satisfying the quadratic curvature test,
+    which has a roundoff allowance independent of :attr:`tolerance`. Exhaustion
+    or non-finite data sets ``apgd_line_search_failed`` in the terminal status,
+    retains the last accepted impulses, and stops all APGD loops for that world.
+    """
 
     max_nonlinear_corrections: int = 1
     """Maximum De Saxce fixed-point iterations per unilateral phase.
@@ -818,19 +848,28 @@ class DVIAPGDConfig:
     default of one performs a single frozen-correction approximation.
     Increase this budget for tighter nonlinear contact accuracy; increasing
     ``max_iterations`` alone cannot resolve a stale correction. The nonlinear
-    residual remains available when the budget is exhausted.
+    loop stops when the fresh residual meets :attr:`tolerance`. Exhaustion
+    returns the last accepted, possibly unconverged impulses without raising
+    an exception; the residual remains available in the terminal status.
     """
 
     tolerance: float = 1.0e-5
     """Shared absolute infinity-norm tolerance on inner and nonlinear natural maps.
 
     The inner map uses the frozen correction; the nonlinear map recomputes
-    it at the accepted impulse. Backtracking uses a curvature test instead.
-    Full-system status checks use :attr:`DVISolverConfig.tolerance`.
+    it at the accepted impulse after relaxation. Both use a unit projection
+    step, independent of the APGD step size and contact count. The residual
+    type is fixed. Backtracking uses a curvature test instead. Full-system
+    status checks use the independent :attr:`DVISolverConfig.tolerance`.
     """
 
     relaxation: float = 1.0
-    """Damping of each De Saxce impulse update, in ``(0, 1]``."""
+    """Damping of each De Saxce impulse update, in ``(0, 1]``.
+
+    After each inner solve, blend its output with the impulse at the start of
+    the correction before testing the nonlinear residual. This convex
+    combination preserves feasibility. A failed line search skips relaxation.
+    """
 
     def validate(self) -> None:
         """Reject non-finite tolerances and invalid nonlinear or inner budgets."""

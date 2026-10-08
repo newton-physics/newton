@@ -1,7 +1,115 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""APGD unilateral phases using Kamino's existing dense or sparse operator."""
+"""APGD unilateral phases using Kamino's existing dense or sparse operator.
+
+**Velocity and contact correction.** During a unilateral phase, let ``x`` be
+the constraint impulse, ``A`` the unilateral Delassus operator (or its Schur
+complement), and ``b`` the fixed velocity bias. Every velocity evaluation uses
+the same relation ``v(x) = A x + b``. Contact rows are ordered ``[t0, t1, n]``;
+the De Saxce shift is ``s(v) = (0, 0, mu * norm(v_t))`` for each contact and
+zero for bounds and limits. Let ``K`` denote the product of the bound
+intervals, limit half-lines, and Coulomb cones.
+
+**Nested algorithm.** Each nonlinear correction freezes ``s`` and solves
+the convex QP ``min_{x in K} 0.5 * x.T A x + (b + s).T x`` using APGD:
+
+.. code-block:: text
+
+   L_seed = estimate_scale(A)             # Once per DVI solve, on the device
+   L = L_seed                            # Retain L across alternating phases
+   x = project_K(initial_impulse)
+   for each nonlinear correction (at most max_nonlinear_corrections):
+       if this is a later frozen QP in the same DVI solve:
+           L = max(L_seed, 0.9 * L)
+       x_outer = x
+       s = correction(A x_outer + b)
+       y = x; t = 1                      # Restart acceleration
+       for each APGD iteration (at most max_iterations):
+           g = A y + b + s
+           backtrack for at most max_backtracks trials:
+               z = project_K(y - g / L); d = z - y
+               abort search on a non-finite trial or denominator
+               accept if d.T A d <= L * norm(d)**2 + roundoff
+               otherwise double L and retry, keeping y and s fixed
+           if the search fails: return x with a failure flag
+           t_next = (1 + sqrt(1 + 4 * t**2)) / 2
+           beta = (t - 1) / t_next
+           if dot(y - z, z - x) > 0: t_next = 1; beta = 0
+           y = z + beta * (z - x); x = z; t = t_next
+           if norm_inf(x - project_K(x - (A x + b + s))) <= tolerance:
+               break
+       x = x_outer + relaxation * (x - x_outer)
+       s_fresh = correction(A x + b)
+       if norm_inf(x - project_K(x - (A x + b + s_fresh))) <= tolerance:
+           break
+   return x and the fresh nonlinear residual
+
+APGD updates the velocity ``A y + b`` at every extrapolated iterate ``y``;
+only the correction remains fixed during the inner solve. A new outer
+iteration refreshes that correction from the updated impulse. This makes
+the correction consistent with the resulting contact velocity while keeping
+one convex objective throughout each inner solve. It does not guarantee
+convergence of the outer fixed point for every frictional contact problem.
+
+The inner residual is ``norm_inf(x - project_K(x - (A x + b + s)))``.
+The nonlinear residual uses the same expression with ``s`` recomputed from
+``A x + b``. Both use a unit projection step. Inner convergence alone does
+not establish nonlinear Coulomb convergence.
+
+**Step size.** At the first unilateral phase of each DVI solve, device
+kernels initialize ``L = norm(A d) / norm(d)`` using a normalized constant
+probe over unilateral rows. The product uses the effective operator, including
+the factored bilateral response in Schur mode. A null or non-finite probe
+triggers one centered-ramp probe for the affected worlds. If neither gives a
+positive finite estimate, ``L`` starts at one and backtracking validates the
+trial steps. The estimate is directional, not a certified spectral bound.
+
+The operator estimate is recomputed from current device data on each graph
+replay and reused across alternating blocks within a solve. Backtracking
+can only increase ``L`` inside a frozen QP. At the next QP, where acceleration
+restarts, ``L`` is reduced to ``max(initial_estimate, 0.9 * L)``. This lets
+an oversized learned denominator recover without changing the momentum
+recurrence inside the QP. No decrease is applied between inner APGD iterations.
+With one correction and one unilateral phase, ``L`` never decreases during
+the solve. Additional corrections or alternating phases enable the reduction.
+
+For backtracking, ``d = candidate - y``. The numerical allowance is
+``1e-6 * max(abs(d.T A d), L * norm(d)**2) + 1e-20``; it is not a solver
+convergence tolerance. A rejected finite trial doubles ``L`` and retries.
+
+**Correction accuracy.** The default performs one frozen-correction
+approximation. Workloads requiring tighter Coulomb accuracy can set
+``max_nonlinear_corrections`` to a larger value, such as 20, before constructing
+the solver. More inner APGD iterations
+cannot remove error caused by a stale correction. For example, with
+``A = I``, ``b = (10, 0, -1)``, ``mu = 0.5``, and zero initial impulse, one
+correction gives ``(-0.4, 0, 0.8)``. Repeated corrections approach the Coulomb
+solution ``(-0.5, 0, 1)``. Accuracy tests therefore select their correction
+budget explicitly and retain the same physical assertions.
+
+APGD uses the full Coulomb cone and the existing stabilized free velocity;
+it does not apply PGS's heuristic reduction of the friction load for
+penetration recovery.
+
+**Device execution.** Each loop maintains a per-world active mask and an
+integer condition counting worlds that need another iteration. The condition
+is cleared and recomputed on every pass. A Warp conditional loop exits when
+that count reaches zero;
+worlds that finish sooner remain masked while other worlds continue. Nonempty
+worlds perform at least one trial: residual checks occur after updates, not
+before the first step. Projection differences use double precision and direct
+gradient expressions in the interior to avoid false convergence from
+cancellation at large impulses; operator products and impulses remain float32.
+
+CUDA APGD requires a Warp build and CUDA driver supporting CUDA 12.4+
+conditional graphs; unsupported runtimes raise an error during solver
+allocation. Each loop body is captured once, so graph size does not grow with
+the iteration budgets. All estimates, reductions, and stopping decisions run
+on the GPU during graph replay using preallocated arrays. Uncaptured CUDA
+execution reads loop conditions back to the host. CPU execution also supports
+early termination. There is no fixed-loop fallback.
+"""
 
 import warp as wp
 
