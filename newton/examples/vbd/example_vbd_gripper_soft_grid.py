@@ -176,6 +176,8 @@ class Example:
         if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = self.params["camera_fov"]
 
+        self.capture()
+
     # ── model construction ──────────────────────────────────────────────
 
     def _build_gripper(self, builder):
@@ -322,6 +324,13 @@ class Example:
 
     # ── simulation loop ─────────────────────────────────────────────────
 
+    def capture(self):
+        self.graph = None
+        if self.model.device.is_cuda and not wp.config.verify_cuda:
+            with wp.ScopedCapture(device=self.model.device) as capture:
+                self.simulate()
+            self.graph = capture.graph
+
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -333,7 +342,10 @@ class Example:
     def step(self):
         self.frame += 1
         self._advance_waypoint()
-        self.simulate()
+        if self.graph is not None:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def render(self):
