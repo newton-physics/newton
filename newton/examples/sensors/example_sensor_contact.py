@@ -90,7 +90,7 @@ class Example:
             soft_contact_max=0,
         )
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables(self.plate_contact_sensor.solver_observable_kinds)
+        self.solver_observables = self.solver.observables(kinds=self.plate_contact_sensor.solver_observable_kinds)
 
         self.viewer.set_model(self.model)
 

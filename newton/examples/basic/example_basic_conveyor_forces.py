@@ -499,7 +499,7 @@ class ConveyorForceModel:
         if contacts.rigid_contact_max <= 0:
             raise ValueError("Contacts must have nonzero rigid-contact capacity.")
         if solver_observables is None or solver_observables.contact_f is None:
-            raise ValueError("Request SolverObservableKind.CONTACT_F before finalizing the conveyor force model.")
+            raise ValueError("Request SolverBase.ObservableKind.CONTACT_F before finalizing the conveyor force model.")
 
         d = self.device
         self.conv_field_type = wp.array(self._field_type, dtype=wp.int32, device=d)
@@ -825,7 +825,7 @@ class Example:
             rigid_contact_max=self.solver.get_max_contact_count() if self.solver_type == "mujoco" else None,
         )
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableKind.CONTACT_F})
+        self.solver_observables = self.solver.observables(kinds={self.solver.ObservableKind.CONTACT_F})
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 

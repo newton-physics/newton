@@ -19,7 +19,7 @@ from newton.sensors import SensorIMU
 class SolverBodyQdd(newton.solvers.SolverBase):
     """Minimal solver declaring acceleration-output support for sensor tests."""
 
-    SUPPORTED_OBSERVABLE_KINDS = frozenset({newton.solvers.SolverObservableKind.BODY_QDD})
+    SUPPORTED_OBSERVABLES = frozenset({newton.solvers.SolverBase.ObservableKind.BODY_QDD})
 
 
 class TestSensorIMU(unittest.TestCase):
@@ -27,7 +27,7 @@ class TestSensorIMU(unittest.TestCase):
 
     @staticmethod
     def _observables(model, sensor):
-        return SolverBodyQdd(model).observables(sensor.solver_observable_kinds)
+        return SolverBodyQdd(model).observables(kinds=sensor.solver_observable_kinds)
 
     def test_legacy_attribute_request_warns_at_caller(self):
         """Warn once at the caller when opting into deprecated state allocation."""
@@ -196,7 +196,7 @@ class TestSensorIMU(unittest.TestCase):
 
         sensor = SensorIMU(model, sites=[site], request_state_attributes=False)
         solver = SolverBodyQdd(model)
-        observables = solver.observables(sensor.solver_observable_kinds)
+        observables = solver.observables(kinds=sensor.solver_observable_kinds)
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
 

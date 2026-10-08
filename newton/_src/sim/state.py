@@ -132,7 +132,7 @@ class State:
         last three: angular acceleration [rad/s²] in world frame.
 
         .. deprecated:: 1.7
-            Request :attr:`newton.solvers.SolverObservableKind.BODY_QDD` from the solver and read
+            Request :attr:`newton.solvers.SolverBase.ObservableKind.BODY_QDD` from the solver and read
             :attr:`newton.solvers.SolverBase.Observables.body_qdd` instead.
         """
 
@@ -150,7 +150,7 @@ class State:
         First three entries: linear force [N]; last three: torque [N·m].
 
         .. deprecated:: 1.7
-            Request :attr:`newton.solvers.SolverObservableKind.BODY_PARENT_F` from the solver and read
+            Request :attr:`newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F` from the solver and read
             :attr:`newton.solvers.SolverBase.Observables.body_parent_f` instead.
 
         .. note::

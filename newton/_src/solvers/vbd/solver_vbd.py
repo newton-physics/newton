@@ -33,7 +33,6 @@ from ...sim.joint_mimic import has_supported_joint_mimics
 from ...utils import is_graph_capture_allocation_enabled
 from ...utils.mesh import build_vertex_adjacency_with_warp
 from ..coupled.interface import CouplingInterface
-from ..observables import SolverObservableKind
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
@@ -259,7 +258,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         one uncaptured solver step before capture.
 
     Contact force observables:
-        Request :attr:`~newton.solvers.SolverObservableKind.CONTACT_F` with :meth:`observables`
+        Request :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` with :meth:`observables`
         and pass the container to :meth:`step` to evaluate one wrench per body-body contact
         (when this solver integrates the rigid bodies) and per rigid-soft contact record --
         particle, edge, and face -- at the final configuration. The step writes directly into
@@ -319,7 +318,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     supports_collision_pipeline = True
 
-    SUPPORTED_OBSERVABLE_KINDS = frozenset({SolverObservableKind.CONTACT_F})
+    SUPPORTED_OBSERVABLES = frozenset({SolverBase.ObservableKind.CONTACT_F})
 
     class JointSlot:
         """Named constraint slot indices for :meth:`set_joint_constraint_mode`.
@@ -2582,7 +2581,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         # Opt-in contact force export: evaluate at the final iterate while the pose history the
         # iterations used is still intact (finalization advances it below).
-        if observables is not None and observables.is_requested(SolverObservableKind.CONTACT_F):
+        if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
             self._export_contact_forces(state_in, state_out, contacts, dt, observables.contact_f)
 
         # Snapshot solved rigid contact state for next-frame warm-start.

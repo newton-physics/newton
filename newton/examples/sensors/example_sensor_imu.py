@@ -128,8 +128,8 @@ class Example:
             soft_contact_max=0,
         )
         self.contacts = self.collision_pipeline.contacts()
-        observable_kinds = self.imu.solver_observable_kinds | {newton.solvers.SolverObservableKind.CONTACT_F}
-        self.solver_observables = self.solver.observables(observable_kinds)
+        observable_kinds = self.imu.solver_observable_kinds | {newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+        self.solver_observables = self.solver.observables(kinds=observable_kinds)
         self.imu_observables = self.solver_observables.select(self.imu.solver_observable_kinds)
 
         self.buffer = wp.zeros(self.n_cubes, dtype=wp.vec3)

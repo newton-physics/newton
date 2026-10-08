@@ -7,18 +7,12 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
-from enum import Enum, IntEnum
+from enum import IntEnum
 
 import numpy as np
 import warp as wp
 
 import newton
-
-
-class DummyObservableKind(Enum):
-    """Solver-specific observables used to exercise extension behavior."""
-
-    BODY_TEMPERATURE = "body_temperature"
 
 
 class IntegerObservableKind(IntEnum):
@@ -30,21 +24,26 @@ class IntegerObservableKind(IntEnum):
 class DummySolver(newton.solvers.SolverBase):
     """Minimal solver that consumes extension flags and custom attributes."""
 
+    class ObservableKind(newton.solvers.SolverBase.ObservableKind):
+        """Add a custom kind while inheriting the standard observable names."""
+
+        BODY_TEMPERATURE = "body_temperature"
+
     @dataclass(eq=False)
     class Observables(newton.solvers.SolverBase.Observables):
         """Extend the standard observable container with a custom body array."""
 
         body_temperature: wp.array[wp.float32] | None = newton.solvers.SolverBase.Observables.field(
-            kind=DummyObservableKind.BODY_TEMPERATURE, dtype=wp.float32, frequency=newton.Model.AttributeFrequency.BODY
+            dtype=wp.float32, frequency=newton.Model.AttributeFrequency.BODY
         )
 
     # These bits intentionally live outside Newton's built-in flag range.
     MODEL_ATTRIBUTE_CHANGED = 1 << 20
     STATE_ATTRIBUTE_RESET = 1 << 21
-    SUPPORTED_OBSERVABLE_KINDS = frozenset(
+    SUPPORTED_OBSERVABLES = frozenset(
         {
-            newton.solvers.SolverObservableKind.BODY_QDD,
-            DummyObservableKind.BODY_TEMPERATURE,
+            ObservableKind.BODY_QDD,
+            ObservableKind.BODY_TEMPERATURE,
         }
     )
 
@@ -179,11 +178,11 @@ class TestCustomSolver(unittest.TestCase):
         model = self._build_model()
         solver = DummySolver(model)
         requested = {
-            newton.solvers.SolverObservableKind.BODY_QDD,
-            DummyObservableKind.BODY_TEMPERATURE,
+            solver.ObservableKind.BODY_QDD,
+            solver.ObservableKind.BODY_TEMPERATURE,
         }
 
-        observables = solver.observables(requested)
+        observables = solver.observables(kinds=requested)
 
         self.assertIsInstance(observables, DummySolver.Observables)
         self.assertEqual(observables.kinds, frozenset(requested))
@@ -196,18 +195,20 @@ class TestCustomSolver(unittest.TestCase):
         model = self._build_model()
         solver = DummySolver(model)
 
-        with self.assertRaisesRegex(ValueError, "BODY_PARENT_F"):
-            solver.observables({newton.solvers.SolverObservableKind.BODY_PARENT_F})
+        with self.assertRaisesRegex(ValueError, "body_parent_f"):
+            solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
 
-    def test_observables_reject_value_like_flags(self):
-        """Reject string and integer enum keys that can collide across extensions."""
+    def test_observables_reject_invalid_names(self):
+        """Reject empty names, bare strings, and non-string request entries."""
         model = self._build_model()
         solver = DummySolver(model)
 
-        with self.assertRaisesRegex(TypeError, "plain enum"):
-            solver.observables({"body_qdd"})
-        with self.assertRaisesRegex(TypeError, "IntEnum"):
-            solver.observables({IntegerObservableKind.BODY_TEMPERATURE})
+        with self.assertRaisesRegex(TypeError, "nonempty strings"):
+            solver.observables(kinds={""})
+        with self.assertRaisesRegex(TypeError, "nonempty strings"):
+            solver.observables(kinds={IntegerObservableKind.BODY_TEMPERATURE})
+        with self.assertRaisesRegex(TypeError, "collection of strings"):
+            solver.observables(kinds="body_qdd")
 
     def test_extended_attribute_requests_are_deprecated(self):
         """Keep legacy allocation requests while directing callers to solver observables."""

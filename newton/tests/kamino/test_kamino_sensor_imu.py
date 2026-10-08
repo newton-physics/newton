@@ -66,7 +66,7 @@ def test_free_fall_body_acceleration_and_imu(test, device, integrator):
         with_imu=True,
     )
     solver = _make_solver(model, integrator)
-    observables = solver.observables(sensor.solver_observable_kinds)
+    observables = solver.observables(kinds=sensor.solver_observable_kinds)
     state_in = model.state()
     state_out = model.state()
 
@@ -89,7 +89,7 @@ def test_body_acceleration_observable_ownership(test, device):
     control = model.control()
     state_a = model.state()
     state_b = model.state()
-    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_QDD})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_QDD})
     observables.body_qdd.fill_(17.0)
 
     velocity_a = state_a.body_qd.numpy().copy()
@@ -143,7 +143,7 @@ def test_heterogeneous_world_step_isolation(test, device):
 
     model = builder.finalize(device=device)
     solver = _make_solver(model)
-    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_QDD})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_QDD})
     state_in = model.state()
     state_out = model.state()
     initial_velocity = np.array(
@@ -188,7 +188,7 @@ def test_rotating_body_acceleration(test, device):
     """Report angular acceleration for a rotating body."""
     model, _, _ = _make_free_body_scene(device, gravity=(0.0, 0.0, 0.0))
     solver = _make_solver(model)
-    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_QDD})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_QDD})
     state_in = model.state()
     state_out = model.state()
     state_in.body_qd.assign([[0.0, 0.0, 0.0, 0.0, 0.0, 2.0]])
@@ -218,7 +218,7 @@ def test_contact_body_acceleration(test, device):
         model,
         config=newton.solvers.SolverKamino.Config(use_collision_detector=True),
     )
-    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_QDD})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_QDD})
     state_in = model.state()
     state_out = model.state()
     control = model.control()
@@ -289,7 +289,7 @@ def test_body_acceleration_cuda_graph(test, device):
     solver = _make_solver(model)
     state = model.state()
     control = model.control()
-    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_QDD})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_QDD})
     pointer = observables.body_qdd.ptr
 
     solver.step(state, state, control, None, DT, observables=observables)

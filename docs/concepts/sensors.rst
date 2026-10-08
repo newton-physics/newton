@@ -44,7 +44,7 @@ Most Newton sensors follow a common pattern:
 
    # Create solver and state
    solver = newton.solvers.SolverMuJoCo(model)
-   observables = solver.observables(imu.solver_observable_kinds)
+   observables = solver.observables(kinds=imu.solver_observable_kinds)
    state = model.state()
 
    # Simulation loop
@@ -177,8 +177,8 @@ they use an off-center pair so the sample pattern remains centered on the pixel.
 Solver Observables
 ------------------
 
-``SensorIMU`` requires ``SolverObservableKind.BODY_QDD`` and ``SensorContact``
-requires ``SolverObservableKind.CONTACT_F``. Their ``solver_observable_kinds``
+``SensorIMU`` requires ``SolverBase.ObservableKind.BODY_QDD`` and ``SensorContact``
+requires ``SolverBase.ObservableKind.CONTACT_F``. Their ``solver_observable_kinds``
 properties provide these requirements without mutating the model. Union the
 sets when both sensors are present. Construct the collision pipeline before
 requesting contact-indexed observables, then pass its contacts buffer to the solver
@@ -187,7 +187,7 @@ step and sensor. The first step binds the observable container to that storage:
 .. code-block:: python
 
    kinds = imu.solver_observable_kinds | contact_sensor.solver_observable_kinds
-   observables = solver.observables(kinds)
+   observables = solver.observables(kinds=kinds)
 
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
    imu.update(state_out, observables=observables)

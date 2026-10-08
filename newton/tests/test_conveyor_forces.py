@@ -117,7 +117,7 @@ def run_conveyor(
         model, rigid_contact_max=solver.get_max_contact_count() if solver_name == "mujoco" else None
     )
     contacts = collision_pipeline.contacts()
-    solver_observables = solver.observables({newton.solvers.SolverObservableKind.CONTACT_F})
+    solver_observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)
@@ -237,7 +237,7 @@ def run_multi_belt(device, solver_name, belts, box_xy, *, box_half=(0.45, 0.2, 0
         model, rigid_contact_max=solver.get_max_contact_count() if solver_name == "mujoco" else None
     )
     contacts = collision_pipeline.contacts()
-    solver_observables = solver.observables({newton.solvers.SolverObservableKind.CONTACT_F})
+    solver_observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)

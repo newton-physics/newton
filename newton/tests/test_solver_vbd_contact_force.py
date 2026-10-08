@@ -19,7 +19,7 @@ import warp as wp
 
 import newton
 from newton.sensors import SensorContact
-from newton.solvers import SolverObservableKind
+from newton.solvers import SolverBase
 from newton.tests.unittest_utils import (
     add_function_test,
     configure_sdf_for_collision_shapes,
@@ -306,7 +306,7 @@ def test_vbd_soft_contact_force_static_equilibrium(test, device):
     contacts = pipeline.contacts()
     test.assertIsNone(contacts.force)
     solver = newton.solvers.SolverVBD(model, iterations=10)
-    observables = solver.observables({SolverObservableKind.CONTACT_F})
+    observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
 
     dt = 1.0 / 60.0
@@ -340,7 +340,7 @@ def test_vbd_soft_contact_force_zero_when_separated(test, device):
     pipeline = newton.CollisionPipeline(model, soft_contact_gap=gap)
     contacts = pipeline.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=2)
-    observables = solver.observables({SolverObservableKind.CONTACT_F})
+    observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
 
     pipeline.collide(state_in, contacts)
@@ -374,7 +374,7 @@ def _check_moving_box_contact(test, device, *, external_rigid, tangential_speed)
         rigid_compliant_alm=True,
         integrate_with_external_rigid_solver=external_rigid,
     )
-    observables = solver.observables({SolverObservableKind.CONTACT_F})
+    observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
 
     twist = np.zeros((1, 6), dtype=np.float32)
@@ -513,7 +513,7 @@ def test_vbd_soft_contact_force_face_records_support_body(test, device):
     )
     contacts = pipeline.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
-    observables = solver.observables({SolverObservableKind.CONTACT_F})
+    observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
 
     dt = 1.0 / 60.0
@@ -555,7 +555,7 @@ def test_vbd_soft_contact_force_edge_records_match_law(test, device):
     )
     contacts = pipeline.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=10, friction_epsilon=friction_epsilon)
-    observables = solver.observables({SolverObservableKind.CONTACT_F})
+    observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
 
     pipeline.collide(state_in, contacts)
@@ -600,7 +600,7 @@ def _settle_sphere_on_ground(device, *, with_particle, sensor=False, steps=300):
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
-    observables = solver.observables({SolverObservableKind.CONTACT_F})
+    observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
 
     dt = 1.0 / 60.0
@@ -683,7 +683,7 @@ def test_vbd_contact_force_external_rigid_zeros_rigid_rows(test, device):
     solver = newton.solvers.SolverVBD(
         model, iterations=4, rigid_compliant_alm=True, integrate_with_external_rigid_solver=True
     )
-    observables = solver.observables({SolverObservableKind.CONTACT_F})
+    observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
     # The external solver stands still: the body keeps its pose through the step.
     wp.copy(state_out.body_q, state_in.body_q)
@@ -714,7 +714,7 @@ def test_vbd_soft_contact_force_export_leaves_simulation_unchanged(test, device)
         test.assertIsNone(contacts.force)
         solver_kwargs = {"rigid_compliant_alm": True} if model.body_count > 0 else {}
         solver = newton.solvers.SolverVBD(model, iterations=4, **solver_kwargs)
-        observables = solver.observables({SolverObservableKind.CONTACT_F}) if request_force else None
+        observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F}) if request_force else None
         state_in, state_out = model.state(), model.state()
         for _ in range(steps):
             pipeline.collide(state_in, contacts)
@@ -763,7 +763,7 @@ def test_vbd_contact_force_layout(test, device):
     test.assertGreater(contacts.rigid_contact_max, 0)
     test.assertEqual(contacts.soft_contact_max, 4)
     solver = newton.solvers.SolverVBD(model, iterations=4, rigid_compliant_alm=True)
-    observables = solver.observables({SolverObservableKind.CONTACT_F})
+    observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
 
     pipeline.collide(state_in, contacts)
@@ -790,13 +790,13 @@ def test_vbd_contact_force_selection(test, device):
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=2)
-    observables = solver.observables({SolverObservableKind.CONTACT_F})
-    selected = observables.select({SolverObservableKind.CONTACT_F})
+    observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
+    selected = observables.select({SolverBase.ObservableKind.CONTACT_F})
     unselected = observables.select(set())
     test.assertIs(selected.contact_f, observables.contact_f)
     test.assertIsNone(unselected.contact_f)
-    test.assertTrue(selected.is_requested(SolverObservableKind.CONTACT_F))
-    test.assertFalse(unselected.is_requested(SolverObservableKind.CONTACT_F))
+    test.assertTrue(selected.is_requested(SolverBase.ObservableKind.CONTACT_F))
+    test.assertFalse(unselected.is_requested(SolverBase.ObservableKind.CONTACT_F))
     test.assertIsNone(contacts.force)
     force_buffer = observables.contact_f
     force_buffer.fill_(wp.spatial_vector(7.0, 7.0, 7.0, 7.0, 7.0, 7.0))
@@ -825,7 +825,7 @@ def test_vbd_contact_force_validation(test, device):
     pipeline = newton.CollisionPipeline(model, soft_contact_max=4)
     contacts = pipeline.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=2)
-    observables = solver.observables({SolverObservableKind.CONTACT_F})
+    observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
     other_solver = newton.solvers.SolverVBD(model, iterations=2)
     other_contacts = newton.Contacts(contacts.rigid_contact_max, 8, device=device)
     state_in, state_out = model.state(), model.state()
@@ -849,7 +849,7 @@ def test_vbd_contact_force_owned_pipeline(test, device):
     model = _build_particle_on_ground(device, pos=(0.0, 0.0, 0.046), radius=0.05)
     pipeline = newton.CollisionPipeline(model)
     solver = newton.solvers.SolverVBD(model, iterations=2, collision_pipeline=pipeline)
-    observables = solver.observables({SolverObservableKind.CONTACT_F})
+    observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
     solver.step(state_in, state_out, None, None, 1.0 / 60.0, observables=observables)
     test.assertIs(observables.contacts, solver.contacts)
@@ -866,7 +866,7 @@ def test_vbd_contact_force_empty_segments(test, device):
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=0, soft_contact_max=soft_max)
             contacts = pipeline.contacts()
             solver = newton.solvers.SolverVBD(model, iterations=2, rigid_compliant_alm=True)
-            observables = solver.observables({SolverObservableKind.CONTACT_F})
+            observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
             test.assertEqual(observables.contact_f.shape, (soft_max,))
             observables.contact_f.fill_(wp.spatial_vector(7.0, 7.0, 7.0, 7.0, 7.0, 7.0))
             state_in, state_out = model.state(), model.state()
@@ -909,11 +909,18 @@ def test_vbd_contact_force_graph_capture(test, device):
         pipeline = newton.CollisionPipeline(model, **pipeline_kwargs)
         contacts = pipeline.contacts()
         solver = newton.solvers.SolverVBD(model, iterations=4, **solver_kwargs)
-        observables = solver.observables({SolverObservableKind.CONTACT_F})
+        observables = solver.observables(kinds={SolverBase.ObservableKind.CONTACT_F})
         state_in, state_out = model.state(), model.state()
         if twist is not None:
             state_in.body_qd.assign(twist)
-        return pipeline, solver, contacts, state_in, state_out, observables.select({SolverObservableKind.CONTACT_F})
+        return (
+            pipeline,
+            solver,
+            contacts,
+            state_in,
+            state_out,
+            observables.select({SolverBase.ObservableKind.CONTACT_F}),
+        )
 
     with wp.ScopedDevice(device):
         for name, (build, pipeline_kwargs, solver_kwargs, twist, expect_rigid) in scenes.items():

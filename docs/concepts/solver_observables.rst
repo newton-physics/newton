@@ -16,24 +16,28 @@ Solver Observables
 Quantities produced by a solver but not required to advance simulation belong
 in :class:`newton.solvers.SolverBase.Observables`, separately from
 :class:`~newton.State` and :class:`~newton.Contacts`. Request only the arrays
-an application needs by composing :class:`newton.solvers.SolverObservableKind`
-members in a set:
+an application needs by composing entries from ``solver.ObservableKind`` in a set:
 
 .. code-block:: python
 
-   from newton.solvers import SolverObservableKind, SolverMuJoCo
+   from newton.solvers import SolverMuJoCo
 
    solver = SolverMuJoCo(model)
    observables = solver.observables(
-       {
-           SolverObservableKind.BODY_QDD,
-           SolverObservableKind.BODY_PARENT_F,
+       kinds={
+           solver.ObservableKind.BODY_QDD,
+           solver.ObservableKind.BODY_PARENT_F,
        }
    )
 
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
    acceleration = observables.body_qdd
    parent_wrench = observables.body_parent_f
+
+The ``kinds`` argument is optional and keyword-only. Calling ``solver.observables()``
+or ``solver.observables(kinds=None)`` allocates every observable supported by the
+configured solver, including its solver-specific entries. Pass ``kinds={...}``
+to request a subset, or ``kinds=set()`` to allocate an empty container.
 
 Allocate an observable container once and reuse it across steps. The container is
 owned by the solver instance that allocated it. For contact-indexed observables,
@@ -45,7 +49,7 @@ capacities without needing a :class:`~newton.Contacts` instance:
 
    pipeline = newton.CollisionPipeline(model)
    solver = newton.solvers.SolverXPBD(model)
-   observables = solver.observables({SolverObservableKind.CONTACT_F})
+   observables = solver.observables(kinds={solver.ObservableKind.CONTACT_F})
    contacts = pipeline.contacts()
 
    pipeline.collide(state_in, contacts)
@@ -58,6 +62,8 @@ field is ``None``; a requested field with zero capacity is an empty array.
 uninitialized capacities and nonnegative integers for resolved capacities.
 Requesting contact observables before pipeline construction raises an error.
 Body-only observables do not require a pipeline.
+The same setup requirement applies when omitting ``kinds`` if the solver's
+supported observables include contact arrays.
 
 The live contact counts do not determine allocation sizes. ``contact_f`` has
 ``model.rigid_contact_max + model.soft_contact_max`` entries, with rigid slots
@@ -77,7 +83,7 @@ needs deferred observable allocation. Other solver scratch buffers may still nee
 their usual warmup.
 
 Native collision backends
-^^^^^^^^^^^^^^^^^^^^^^^^^
+-------------------------
 
 With MuJoCo's internal collision detection, construct the solver first and size
 the pipeline for the backend's export capacity:
@@ -88,7 +94,7 @@ the pipeline for the backend's export capacity:
    pipeline = newton.CollisionPipeline(
        model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
    )
-   observables = solver.observables({SolverObservableKind.CONTACT_F})
+   observables = solver.observables(kinds={solver.ObservableKind.CONTACT_F})
    contacts = pipeline.contacts()
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
 
@@ -99,7 +105,7 @@ pipeline capacity during contact-observable allocation instead of resizing array
 inside a step.
 
 A solver advertises available entries through
-:attr:`~newton.solvers.SolverBase.supported_observable_kinds` and rejects an
+:attr:`~newton.solvers.SolverBase.supported_observables` and rejects an
 unsupported request during allocation. Passing an observable container to a
 different solver, or using contact observables with different contact storage, is
 also rejected.
@@ -111,7 +117,7 @@ Standard observables
    :header-rows: 1
    :widths: 29 40 31
 
-   * - Flag and field
+   * - Kind and field
      - Description
      - Solvers
    * - ``BODY_QDD`` / ``observables.body_qdd``
@@ -153,145 +159,31 @@ filtered entry contacts require an explicit contact-index remapping contract.
 Solver-specific observables
 ---------------------------
 
-Solvers can derive their container from
-:class:`~newton.solvers.SolverBase.Observables` and define a separate observable enum. For
-example, MuJoCo adds ``SolverMuJoCo.ObservableKind.QFRC_ACTUATOR`` and returns a
-``SolverMuJoCo.Observables`` instance with ``qfrc_actuator``:
+A solver may expose additional kinds through ``solver.ObservableKind``. For
+example, MuJoCo adds ``QFRC_ACTUATOR`` and returns a
+``SolverMuJoCo.Observables`` container with a ``qfrc_actuator`` array:
 
 .. code-block:: python
 
    solver = newton.solvers.SolverMuJoCo(model)
    observables = solver.observables(
-       {
-           newton.solvers.SolverObservableKind.BODY_QDD,
+       kinds={
+           solver.ObservableKind.BODY_QDD,
            solver.ObservableKind.QFRC_ACTUATOR,
        }
    )
 
-Sets may contain members from both enums without coordinating bit values.
-Observable enums must derive directly from :class:`enum.Enum`, not
-:class:`enum.IntEnum` or a string-mixin enum. Integer and string enum members
-can compare equal across enum classes and silently collide in a set.
-
-Declare each array on a ``@dataclass(eq=False)`` container using
-:meth:`SolverBase.Observables.field() <newton.solvers.SolverBase.Observables.field>`.
-The declaration associates the field with a kind, Warp dtype, and row frequency.
-Kind values are opaque identifiers: they do not need to match Python field names.
-Frequency means indexing domain, not how often an observable is updated.
-
-Derived containers inherit the standard fields and any custom fields from their
-base classes. There is no separate frequency map or handwritten initializer.
-The generic allocator handles standard and custom arrays alike. Inherited
-declarations do not imply that a solver can compute those quantities:
-``SUPPORTED_OBSERVABLE_KINDS`` remains the capability declaration, and
-``solver.supported_observable_kinds`` reports the effective instance capabilities.
-Contact dependencies follow the declared frequency:
+The constants are strings, so literal names work too:
 
 .. code-block:: python
 
-   from dataclasses import dataclass
-   from enum import Enum
+   observables = solver.observables(kinds={"body_qdd", "qfrc_actuator"})
 
-   import warp as wp
-
-   class CustomObservableKind(Enum):
-       CONTACT_PRESSURE = 0
-
-   class CustomSolver(newton.solvers.SolverBase):
-       @dataclass(eq=False)
-       class Observables(newton.solvers.SolverBase.Observables):
-           contact_pressure: wp.array[float] | None = newton.solvers.SolverBase.Observables.field(
-               kind=CustomObservableKind.CONTACT_PRESSURE,
-               dtype=float,
-               frequency=newton.Model.AttributeFrequency.CONTACT_RIGID,
-           )
-           """Rigid contact pressure [Pa], shape (rigid_contact_max,)."""
-
-       SUPPORTED_OBSERVABLE_KINDS = frozenset({CustomObservableKind.CONTACT_PRESSURE})
-
-The factory instantiates ``self.Observables()``. Solvers that do not extend the
-container inherit ``SolverBase.Observables``; a derived solver that adds fields
-must explicitly derive its nested class from its parent's ``Observables``.
-
-The dataclass helper defaults every declared array to ``None`` and excludes it
-from constructor arguments. Only ``solver.observables(kinds)`` allocates the
-requested arrays, in declaration order, on the model's device with the requested
-gradient setting. ``eq=False`` preserves object identity and hashing for
-articulation-view caches. A derived container may redeclare a field with a new
-dtype or frequency; its siblings and base class are not modified. Two fields
-cannot declare the same kind. Missing declarations, duplicate kinds, and missing
-dataclass decorators are rejected before array allocation.
-
-The base solver requires pipeline initialization, freezes capacities, and binds
-contact storage for any requested contact frequency, including custom fields
-requested without ``CONTACT_F``. Body- and joint-indexed fields do not require
-a collision pipeline.
-
-Use :meth:`~newton.solvers.SolverBase.Observables.is_requested` in stepping code.
-For example, after validating the container and advancing
-the simulation, compute a custom diagnostic only when it is requested:
-
-.. code-block:: python
-
-   self.validate_observables(observables, contacts)
-   if observables is not None and observables.is_requested(CustomObservableKind.CONTACT_PRESSURE):
-       wp.launch(
-           compute_contact_pressure,
-           dim=contacts.rigid_contact_max,
-           inputs=[contacts.rigid_contact_count],
-           outputs=[observables.contact_pressure],
-           device=self.model.device,
-       )
-
-``compute_contact_pressure`` is a solver-specific kernel, not provided by this
-snippet. ``observables.is_requested(kind)`` tests the request, not freshness.
-The request remains true for zero-length arrays and while they are being allocated.
-
-Customizing the factory
-^^^^^^^^^^^^^^^^^^^^^^^
-
-Most custom fields require no method override: their dtype and row frequency
-fully describe allocation. The public solver lifecycle has two methods:
-
-* :meth:`SolverBase.observables() <newton.solvers.SolverBase.observables>` creates
-  the container and its requested arrays. For additional initialization,
-  override ``observables(kinds, *, requires_grad=None)`` and delegate declared
-  array allocation to ``super().observables(...)``. Perform backend preflight
-  checks before delegating, preserve the gradient option, and finish any
-  auxiliary allocation before returning the container.
-* :meth:`SolverBase.validate_observables() <newton.solvers.SolverBase.validate_observables>`
-  checks ownership and contact storage at the start of ``step()``, before
-  launching work or modifying outputs.
-
-There are no separate public allocation or preparation hooks. Built-in solvers
-share internal construction bookkeeping so failed backend setup does not freeze
-contact capacities. Kamino's factory also allocates saved input poses, and the
-coupled solver's factory creates entry-local containers. These are implementation
-details, not additional extension points.
-
-All factory allocations finish before graph capture. Neither ``step()`` nor
-``select()`` calls the factory. The field declarations describe runtime
-diagnostics and do not introduce USD-authorable model attributes.
-
-Contact row domains
--------------------
-
-Three experimental frequencies describe the existing contact storage layouts:
-
-* ``CONTACT_RIGID``: ``rigid_contact_max`` rigid-rigid slots.
-* ``CONTACT_SOFT``: ``soft_contact_max`` soft-rigid slots. This does not include
-  the separate soft self-contact storage.
-* ``CONTACT``: the packed sum of both capacities, used by ``contact_f`` for
-  compatibility. The soft segment begins at ``rigid_contact_max``, not at the
-  live rigid contact count.
-
-These frequencies currently describe solver observables, not builder custom
-attributes. Capacity determines allocation; live counts determine which slots
-can be read. Packed storage does not guarantee that a solver produces forces for
-both segments. :class:`~newton.sensors.SensorContact` currently consumes only
-rigid-rigid forces, using ``rigid_contact_count`` and rigid shape endpoints.
-Soft-force production and soft-contact sensor aggregation are separate future
-features.
+Pass a collection even for one kind, such as ``{"body_qdd"}``. Bare strings and
+unknown names are rejected. ``ObservableKind`` is not iterable; query
+``solver.supported_observables`` for the names accepted by the configured backend,
+or call ``solver.observables()`` to allocate all of them. An inherited name does
+not imply support for that observable.
 
 Selection
 ---------
@@ -330,7 +222,7 @@ container, and pass it through the step:
 
    kinds = imu.solver_observable_kinds | contact_sensor.solver_observable_kinds
    # Construct a pipeline with a compatible capacity before requesting contacts.
-   observables = solver.observables(kinds)
+   observables = solver.observables(kinds=kinds)
 
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
    imu.update(state_out, observables=observables)
@@ -360,7 +252,7 @@ pipeline, and sensors as above:
 .. code-block:: python
 
    kinds = imu.solver_observable_kinds | contact_sensor.solver_observable_kinds
-   observables = solver.observables(kinds)
+   observables = solver.observables(kinds=kinds)
    every_substep = observables.select(imu.solver_observable_kinds)
    substep_dt = frame_dt / num_substeps
 
@@ -380,11 +272,6 @@ Selecting a field absent from the source raises :class:`ValueError`; selecting
 an existing subset can only narrow it. Select from the original container to
 create a different combination. Do not temporarily replace fields with ``None``.
 
-The same selection mechanism handles standard and custom kinds. Simple derived
-containers inherit it unchanged. Containers with nested observable containers
-should override ``select()``, call ``super()``, and select their children in the
-returned object. :class:`~newton.solvers.experimental.coupled.SolverCoupled`
-does this for its entry-local containers. Other custom metadata is shallow-copied.
 Contact-indexed subsets share one contact binding with their source and siblings,
 even if they are created before the first step. A body-only subset needs no
 contact binding even when the original container includes contact fields.
@@ -417,7 +304,7 @@ contacts, and rigid-soft particle, edge, and face records against rigid shapes -
 :attr:`~newton.solvers.SolverBase.Observables.contact_f`:
 
 1. Create the :class:`~newton.CollisionPipeline` to establish contact capacities, then request
-   ``SolverObservableKind.CONTACT_F`` with ``solver.observables()``. This allocates the entire
+   ``SolverBase.ObservableKind.CONTACT_F`` with ``solver.observables()``. This allocates the entire
    force array before stepping or graph capture; no contact attributes need to be requested.
 2. Each frame, run collision detection and pass the container to ``solver.step(...,
    observables=observables)``. The step evaluates the wrenches directly into the array only
@@ -457,7 +344,7 @@ Construct it with ``request_contact_attributes=False`` and pass the container as
    import numpy as np
    import warp as wp
    import newton
-   from newton.solvers import SolverObservableKind
+   from newton.solvers import SolverBase
 
    builder = newton.ModelBuilder()
    builder.add_ground_plane()
@@ -470,7 +357,7 @@ Construct it with ``request_contact_attributes=False`` and pass the container as
    pipeline = newton.CollisionPipeline(model)
    contacts = pipeline.contacts()
    solver = newton.solvers.SolverVBD(model)
-   observables = solver.observables({SolverObservableKind.CONTACT_F})
+   observables = solver.observables(kinds={solver.ObservableKind.CONTACT_F})
    state_in, state_out = model.state(), model.state()
 
    pipeline.collide(state_in, contacts)
@@ -522,20 +409,20 @@ The following compatibility paths remain available for a deprecation period:
    * - Deprecated destination
      - Replacement
    * - ``State.body_qdd``
-     - ``SolverObservableKind.BODY_QDD`` and ``observables.body_qdd``
+     - ``SolverBase.ObservableKind.BODY_QDD`` and ``observables.body_qdd``
    * - ``State.body_parent_f``
-     - ``SolverObservableKind.BODY_PARENT_F`` and ``observables.body_parent_f``
+     - ``SolverBase.ObservableKind.BODY_PARENT_F`` and ``observables.body_parent_f``
    * - ``State.mujoco.qfrc_actuator``
      - ``SolverMuJoCo.ObservableKind.QFRC_ACTUATOR`` and
        ``observables.qfrc_actuator``
    * - ``Contacts.force``
-     - ``SolverObservableKind.CONTACT_F`` and ``observables.contact_f``
+     - ``SolverBase.ObservableKind.CONTACT_F`` and ``observables.contact_f``
    * - ``Model.request_state_attributes()`` and
        ``ModelBuilder.request_state_attributes()``
-     - ``solver.observables({...})``
+     - ``solver.observables(kinds={...})``
    * - ``Model.request_contact_attributes()`` and
        ``ModelBuilder.request_contact_attributes()``
-     - ``solver.observables({...})``
+     - ``solver.observables(kinds={...})``
    * - ``solver.update_contacts()``
      - Pass contact observables to ``solver.step(..., observables=observables)``
 
@@ -562,3 +449,120 @@ Existing custom model, state, and control data remain supported; the migration
 only covers built-in solver-produced diagnostics. The new ``CONTACT*`` frequencies
 are reserved for solver observables: ``ModelBuilder.add_custom_attribute()`` rejects
 them because builder finalization does not allocate dynamic contact rows.
+
+Adding solver observables
+-------------------------
+
+Solver developers extend :class:`~newton.solvers.SolverBase.ObservableKind` with
+string constants and :class:`~newton.solvers.SolverBase.Observables` with array
+fields. Declare the kinds the solver computes in ``SUPPORTED_OBSERVABLES``;
+``solver.supported_observables`` reports the effective instance capabilities.
+
+.. code-block:: python
+
+   from dataclasses import dataclass
+
+   import warp as wp
+
+   class CustomSolver(newton.solvers.SolverBase):
+       class ObservableKind(newton.solvers.SolverBase.ObservableKind):
+           CONTACT_PRESSURE = "contact_pressure"
+
+       @dataclass(eq=False)
+       class Observables(newton.solvers.SolverBase.Observables):
+           contact_pressure: wp.array[float] | None = newton.solvers.SolverBase.Observables.field(
+               dtype=float,
+               frequency=newton.Model.AttributeFrequency.CONTACT_RIGID,
+           )
+           """Rigid contact pressure [Pa], shape (rigid_contact_max,)."""
+
+       SUPPORTED_OBSERVABLES = frozenset({ObservableKind.CONTACT_PRESSURE})
+
+The field name supplies its kind, so the string is declared only once. Pass
+``kind="another_name"`` to
+:meth:`SolverBase.Observables.field() <newton.solvers.SolverBase.Observables.field>`
+when the public kind differs from the field name, for example a qualified name
+such as ``"thermal:temperature"``. Each field also declares its Warp dtype and
+row frequency: the indexing domain, not how often it is updated.
+
+``ObservableKind`` subclasses inherit standard and custom constants without
+modifying their parents. Class definition rejects empty or non-string public
+attributes, changes to inherited values, and duplicate strings under different
+names, including conflicts across multiple parents. Redeclaring the same name
+and value is allowed; private attributes starting with ``_`` are ignored.
+
+The factory instantiates ``self.Observables()``. Solvers inherit the base
+container unless they extend it; a solver adding fields must derive its nested
+class from its parent's ``Observables`` and use ``@dataclass(eq=False)``.
+The dataclass defaults declared arrays to ``None`` and excludes them from
+constructor arguments. ``eq=False`` preserves identity and hashing for
+articulation-view caches.
+
+``solver.observables()`` allocates requested arrays in declaration order on the
+model's device, using the requested gradient setting. Derived containers inherit
+fields and may redeclare a field's dtype or frequency without changing their
+parents or siblings. Missing declarations, duplicate kinds, and missing
+dataclass decorators are rejected before allocation.
+
+Contact dependencies follow the field's frequency. The base solver requires
+pipeline initialization, freezes capacities, and binds contact storage for any
+requested contact frequency, including custom fields requested without
+``CONTACT_F``. Body- and joint-indexed fields do not require a collision pipeline.
+
+In ``step()``, call :meth:`~newton.solvers.SolverBase.validate_observables` before
+launching work or modifying outputs. Compute diagnostics only when requested:
+
+.. code-block:: python
+
+   self.validate_observables(observables, contacts)
+   # Advance the simulation, then compute the requested diagnostic.
+   if observables is not None and observables.is_requested(self.ObservableKind.CONTACT_PRESSURE):
+       wp.launch(
+           compute_contact_pressure,
+           dim=contacts.rigid_contact_max,
+           inputs=[contacts.rigid_contact_count],
+           outputs=[observables.contact_pressure],
+           device=self.model.device,
+       )
+
+Here ``compute_contact_pressure`` is a solver-specific kernel.
+:meth:`~newton.solvers.SolverBase.Observables.is_requested` tests the request,
+including for zero-length arrays; it does not indicate freshness.
+
+Customizing the factory and selection
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Most custom fields need only their declarations. For additional initialization,
+override ``observables(*, kinds=None, requires_grad=None)`` and delegate to
+``super().observables(kinds=kinds, requires_grad=requires_grad)``. Preserve both
+defaults. Perform backend preflight checks before delegating and finish auxiliary
+allocation before returning the container. All factory allocations must finish
+before graph capture; neither ``step()`` nor ``select()`` calls the factory.
+
+Simple derived containers inherit ``select()`` unchanged. Containers with nested
+observable containers must override it, call ``super()``, and select their
+children in the returned object. See
+:class:`~newton.solvers.experimental.coupled.SolverCoupled` for an example.
+Other custom metadata is shallow-copied.
+
+Field declarations describe runtime diagnostics and do not introduce
+USD-authorable model attributes.
+
+Contact row domains
+^^^^^^^^^^^^^^^^^^^
+
+Three experimental frequencies describe the existing contact storage layouts:
+
+* ``CONTACT_RIGID``: ``rigid_contact_max`` rigid-rigid slots.
+* ``CONTACT_SOFT``: ``soft_contact_max`` soft-rigid slots. This does not include
+  the separate soft self-contact storage.
+* ``CONTACT``: the packed sum of both capacities, used by ``contact_f`` for
+  compatibility. The soft segment begins at ``rigid_contact_max``, not at the
+  live rigid contact count.
+
+These frequencies currently describe solver observables, not builder custom
+attributes. Capacity determines allocation; live counts determine which slots
+can be read. Packed storage does not guarantee that a solver produces forces for
+both segments. :class:`~newton.sensors.SensorContact` currently consumes only
+rigid-rigid forces, using ``rigid_contact_count`` and rigid shape endpoints.
+See :ref:`vbd_contact_forces` for SolverVBD's soft-contact output.

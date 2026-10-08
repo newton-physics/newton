@@ -135,7 +135,7 @@ class Contacts:
 
     .. deprecated:: 1.7
 
-        Request :attr:`newton.solvers.SolverObservableKind.CONTACT_F` from the
+        Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from the
         solver instead.
     """
 
@@ -444,7 +444,7 @@ class Contacts:
             is documented by its ``update_contacts`` method; unpopulated rows are left unwritten.
 
             .. deprecated:: 1.7
-                Request :attr:`newton.solvers.SolverObservableKind.CONTACT_F` and read
+                Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` and read
                 :attr:`newton.solvers.SolverBase.Observables.contact_f` instead.
             """
             if requested_attributes and "force" in requested_attributes:

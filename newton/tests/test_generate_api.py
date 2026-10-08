@@ -92,6 +92,9 @@ class TestObservableFieldDocs(unittest.TestCase):
             for name in ("body_qdd", "body_parent_f", "contact_f"):
                 with self.subTest(name=name):
                     self.assertIn(f"newton.solvers.SolverBase.Observables.{name}", objects)
+            for name in ("BODY_QDD", "BODY_PARENT_F", "CONTACT_F"):
+                with self.subTest(kind=name):
+                    self.assertIn(f"newton.solvers.SolverBase.ObservableKind.{name}", objects)
 
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")

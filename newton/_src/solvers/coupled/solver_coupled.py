@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -17,7 +16,6 @@ import warp as wp
 from ...core.reset import reset_world_selected as _reset_world_selected
 from ...geometry import ParticleFlags, ShapeFlags
 from ...sim import JointType, Model, ModelFlags, StateFlags
-from ..observables import SolverObservableKind
 from ..solver import SolverBase
 from .interface import (
     CouplingEndpointKind,
@@ -364,13 +362,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     @dataclass(eq=False)
     class Observables(SolverBase.Observables):
-        """Global observables and the entry-local containers that populate them."""
+        """Global observables and the entry-local containers that populate them.
+
+        See :ref:`solver_observables` for coupled solver support and selection.
+        """
 
         entry_observables: dict[str, SolverBase.Observables] = field(default_factory=dict, init=False, repr=False)
         """Observable containers allocated by each owning sub-solver."""
 
-        def select(self, kinds: Iterable[Enum]) -> SolverCoupled.Observables:
-            """Select global fields and matching entry-local arrays without allocating."""
+        def select(self, kinds: Iterable[str]) -> SolverCoupled.Observables:
+            """Select global fields and matching entry-local arrays without allocating.
+
+            See :ref:`solver_observables` for selection examples.
+            """
             selected = super().select(kinds)
             selected.entry_observables = {
                 name: entry.select(selected.kinds.intersection(entry.kinds))
@@ -379,24 +383,38 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return selected
 
     @property
-    def supported_observable_kinds(self):
-        """Return body observables supported by every entry that owns bodies."""
+    def supported_observables(self):
+        """Return body observables supported by every entry that owns bodies.
+
+        See :ref:`solver_observables` for solver support.
+        """
         kinds = set()
         body_entries = [entry for entry in self._entries.values() if entry.body_indices.shape[0] > 0]
-        for kind in (SolverObservableKind.BODY_QDD, SolverObservableKind.BODY_PARENT_F):
-            if body_entries and all(kind in entry.solver.supported_observable_kinds for entry in body_entries):
+        for kind in (SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F):
+            if body_entries and all(kind in entry.solver.supported_observables for entry in body_entries):
                 kinds.add(kind)
         return frozenset(kinds)
 
-    def observables(self, kinds: Iterable[Enum], *, requires_grad: bool | None = None) -> SolverCoupled.Observables:
-        """Allocate parent-model observables and matching entry-local containers."""
+    def observables(
+        self, *, kinds: Iterable[str] | None = None, requires_grad: bool | None = None
+    ) -> SolverCoupled.Observables:
+        """Allocate parent-model observables and matching entry-local containers.
+
+        If ``kinds`` is omitted or ``None``, allocate all :attr:`supported_observables`.
+        An empty collection allocates no arrays. ``requires_grad=None`` uses the
+        model's gradient setting.
+
+        See :meth:`SolverBase.observables() <newton.solvers.SolverBase.observables>`
+        for the shared allocation contract and errors, and :ref:`solver_observables`
+        for usage and solver support.
+        """
         if requires_grad is None:
             requires_grad = self.model.requires_grad
         with self._create_observables(kinds, requires_grad=requires_grad) as observables:
             for entry in self._entries.values():
                 entry_kinds = observables.kinds if entry.body_indices.shape[0] > 0 else ()
                 observables.entry_observables[entry.name] = entry.solver.observables(
-                    entry_kinds, requires_grad=requires_grad
+                    kinds=entry_kinds, requires_grad=requires_grad
                 )
             return observables
 
@@ -2355,21 +2373,21 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     def _reconcile_observables(self, observables: Observables) -> None:
         """Merge body-indexed entry observables into global observable arrays."""
-        for flag in (SolverObservableKind.BODY_QDD, SolverObservableKind.BODY_PARENT_F):
+        for flag in (SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F):
             if observables.is_requested(flag):
-                getattr(observables, flag.value).zero_()
+                getattr(observables, flag).zero_()
 
         for entry in self._entries.values():
             entry_observables = observables.entry_observables[entry.name]
-            for flag in (SolverObservableKind.BODY_QDD, SolverObservableKind.BODY_PARENT_F):
+            for flag in (SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F):
                 if (
                     not observables.is_requested(flag)
                     or not entry_observables.is_requested(flag)
                     or entry.body_indices.shape[0] == 0
                 ):
                     continue
-                src = getattr(entry_observables, flag.value)
-                dst = getattr(observables, flag.value)
+                src = getattr(entry_observables, flag)
+                dst = getattr(observables, flag)
                 wp.launch(
                     _scatter_spatial_observables_mapped,
                     dim=entry.body_indices.shape[0],

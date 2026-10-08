@@ -12,7 +12,6 @@ import warp as wp
 
 from ..sim import Contacts, Model, State
 from ..sim.contacts import contact_surface_point
-from ..solvers.observables import SolverObservableKind
 from ..solvers.solver import SolverBase
 from ..utils.selection import match_labels
 
@@ -300,7 +299,7 @@ class SensorContact:
     .. rubric:: Construction and update order
 
     Construct a :class:`~newton.CollisionPipeline` before requesting
-    :attr:`~newton.solvers.SolverObservableKind.CONTACT_F` from the solver. Pass the resulting
+    :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` from the solver. Pass the resulting
     :class:`~newton.solvers.SolverBase.Observables` and the pipeline's :class:`~newton.Contacts`
     buffer to both the solver step and :meth:`update`.
 
@@ -328,7 +327,7 @@ class SensorContact:
                 model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
             )
             contacts = collision_pipeline.contacts()
-            observables = solver.observables(sensor.solver_observable_kinds)
+            observables = solver.observables(kinds=sensor.solver_observable_kinds)
 
             solver.step(state, state, None, contacts, dt=1.0 / 60.0, observables=observables)
             sensor.update(state, contacts, observables=observables)
@@ -338,7 +337,7 @@ class SensorContact:
         ValueError: If the configuration of sensing/counterpart objects is invalid.
     """
 
-    solver_observable_kinds = frozenset({SolverObservableKind.CONTACT_F})
+    solver_observable_kinds = frozenset({SolverBase.ObservableKind.CONTACT_F})
     """Solver observables required by :meth:`update`.
 
     .. experimental::
@@ -445,7 +444,7 @@ class SensorContact:
         if request_contact_attributes:
             warnings.warn(
                 "SensorContact(request_contact_attributes=True) is deprecated in Newton 1.7; "
-                "allocate SolverBase.Observables with solver.observables(sensor.solver_observable_kinds) "
+                "allocate SolverBase.Observables with solver.observables(kinds=sensor.solver_observable_kinds) "
                 "and pass them to update(..., observables=...).",
                 DeprecationWarning,
                 stacklevel=2,
@@ -642,7 +641,7 @@ class SensorContact:
         if contact_f is None:
             raise ValueError(
                 "SensorContact requires contact-force solver observables. Request "
-                "SolverObservableKind.CONTACT_F and pass the SolverBase.Observables to update()."
+                "SolverBase.ObservableKind.CONTACT_F and pass the SolverBase.Observables to update()."
             )
         if observables is not None:
             observables.bind_contacts(contacts)

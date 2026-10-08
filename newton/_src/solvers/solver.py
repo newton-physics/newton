@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from copy import copy
 from dataclasses import Field, dataclass, fields
 from dataclasses import field as dataclass_field
-from enum import Enum, IntEnum
+from enum import IntEnum
 from types import MappingProxyType
 from typing import Any, ClassVar
 
@@ -17,7 +17,6 @@ import warp as wp
 from ..core.reset import normalize_reset_world_mask
 from ..geometry import ParticleFlags
 from ..sim import BodyFlags, CollisionPipeline, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
-from .observables import SolverObservableKind
 
 
 def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool:
@@ -199,9 +198,21 @@ def _update_effective_inv_mass_inertia(
 class _ObservableField:
     """Immutable allocation metadata stored on a dataclass field."""
 
-    kind: Enum
+    kind: str | None
     dtype: type
     frequency: Model.AttributeFrequency | str
+
+
+def _normalize_observable_kinds(kinds: Iterable[str]) -> frozenset[str]:
+    """Validate a collection of names before allocation or subset selection."""
+    if isinstance(kinds, str):
+        raise TypeError("Pass observable kinds as a collection of strings, for example {'body_qdd'}.")
+    requested = frozenset(kinds)
+    invalid = [kind for kind in requested if not isinstance(kind, str) or not kind]
+    if invalid:
+        values = ", ".join(repr(kind) for kind in invalid)
+        raise TypeError(f"Solver observable kinds must be nonempty strings; got: {values}.")
+    return requested
 
 
 class SolverBase:
@@ -212,6 +223,68 @@ class SolverBase:
     override :py:meth:`step` as well as :py:meth:`notify_model_changed` where
     necessary.
     """
+
+    class ObservableKind:
+        """Inheritable names for standard and solver-specific observable kinds.
+
+        Access kinds through ``solver.ObservableKind`` and compose requests as
+        sets. This is an ordinary namespace class of string constants: solvers
+        may subclass it and declare new entries, such as
+        ``BODY_TEMPERATURE = "body_temperature"``. Inherited names remain available.
+        Literal strings and these constants are interchangeable in requests.
+        Kind strings must be unique within a solver's observable declarations.
+
+        Subclasses are checked when defined. Every public attribute must be a
+        nonempty string. Changing an inherited name's value or assigning one
+        string to different names raises an error, including conflicts between
+        multiple parents. Redeclaring the same name with the same value is allowed.
+        Attributes beginning with an underscore are excluded from these checks.
+
+        The available names do not imply solver support. Query
+        :attr:`SolverBase.supported_observables` for the effective capabilities
+        of a configured solver. Use that set for iteration or requesting all
+        supported observables; the namespace itself is not iterable.
+
+        See :ref:`solver_observables` for request and extension examples.
+
+        .. experimental::
+
+            The solver observable API may change without prior notice.
+        """
+
+        BODY_QDD = "body_qdd"
+        """Rigid-body spatial accelerations."""
+
+        BODY_PARENT_F = "body_parent_f"
+        """Incoming parent-joint wrenches on rigid bodies."""
+
+        CONTACT_F = "contact_f"
+        """Spatial contact forces aligned with a :class:`~newton.Contacts` container."""
+
+        def __init_subclass__(cls, **kwargs: Any) -> None:
+            """Reject invalid or conflicting kind declarations when a subclass is defined."""
+            super().__init_subclass__(**kwargs)
+            kinds_by_name: dict[str, str] = {}
+            names_by_kind: dict[str, str] = {}
+            # Inspect every declaration so MRO shadowing cannot conceal parent conflicts.
+            for base in reversed(cls.__mro__):
+                for name, kind in vars(base).items():
+                    if name.startswith("_"):
+                        continue
+                    if not isinstance(kind, str) or not kind:
+                        raise TypeError(f"{cls.__qualname__}.{name} must be a nonempty string; got {kind!r}.")
+                    if name in kinds_by_name and kinds_by_name[name] != kind:
+                        raise ValueError(
+                            f"Conflicting observable kind {name} in {cls.__qualname__}: "
+                            f"{kinds_by_name[name]!r} and {kind!r}."
+                        )
+                    if kind in names_by_kind and names_by_kind[kind] != name:
+                        raise ValueError(
+                            f"Duplicate observable kind {kind!r} for {names_by_kind[kind]} "
+                            f"and {name} in {cls.__qualname__}."
+                        )
+                    kinds_by_name[name] = kind
+                    names_by_kind[kind] = name
 
     @dataclass(eq=False)
     class Observables:
@@ -224,6 +297,8 @@ class SolverBase:
         arrays with :meth:`field`. Identity equality keeps containers usable as
         sources in :class:`~newton.selection.ArticulationView` caches.
 
+        See :ref:`solver_observables` for allocation, selection, and custom field examples.
+
         .. experimental::
 
             The solver observable API may change while additional solvers and observable
@@ -231,28 +306,30 @@ class SolverBase:
         """
 
         @staticmethod
-        def field(*, kind: Enum, dtype: type, frequency: Model.AttributeFrequency | str) -> Any:
+        def field(*, dtype: type, frequency: Model.AttributeFrequency | str, kind: str | None = None) -> Any:
             """Declare an optional observable array on a dataclass container.
 
+            See :ref:`solver_observables` for custom observable declarations.
+
             Args:
-                kind: Plain enum member identifying this observable. Its value
-                    need not match the Python field name.
                 dtype: Warp element type, such as ``wp.float32`` or ``wp.vec3``.
                 frequency: Row domain, not update cadence. Custom string
                     frequencies use model count and articulation-ownership metadata.
+                kind: Nonempty string identifying this observable. If omitted or
+                    ``None``, use the Python field name.
 
             Returns:
                 A dataclass field defaulting to ``None``. No array is allocated
                 until :meth:`SolverBase.observables` requests it.
 
             Raises:
-                TypeError: If the kind is not a plain enum member or the frequency
+                TypeError: If an explicit kind is not a nonempty string or the frequency
                     is not an attribute frequency or nonempty string.
 
             .. experimental::
             """
-            if not isinstance(kind, Enum) or isinstance(kind, (int, str)):
-                raise TypeError("Solver observable kinds must be plain enum.Enum members.")
+            if kind is not None and (not isinstance(kind, str) or not kind):
+                raise TypeError("Solver observable kinds must be nonempty strings.")
             if not isinstance(frequency, (Model.AttributeFrequency, str)) or frequency == "":
                 raise TypeError(f"Invalid observable frequency for {kind!r}: {frequency!r}.")
             return dataclass_field(
@@ -264,28 +341,28 @@ class SolverBase:
 
         # These helpers return dataclass fields, not shared mutable defaults.
         body_qdd: wp.array[wp.spatial_vector] | None = field(  # noqa: RUF009
-            kind=SolverObservableKind.BODY_QDD, dtype=wp.spatial_vector, frequency=Model.AttributeFrequency.BODY
+            dtype=wp.spatial_vector, frequency=Model.AttributeFrequency.BODY
         )
         """Rigid-body accelerations [m/s², rad/s²], shape ``(body_count,)``."""
 
         body_parent_f: wp.array[wp.spatial_vector] | None = field(  # noqa: RUF009
-            kind=SolverObservableKind.BODY_PARENT_F, dtype=wp.spatial_vector, frequency=Model.AttributeFrequency.BODY
+            dtype=wp.spatial_vector, frequency=Model.AttributeFrequency.BODY
         )
         """Incoming parent-joint wrenches [N, N·m], shape ``(body_count,)``."""
 
         contact_f: wp.array[wp.spatial_vector] | None = field(  # noqa: RUF009
-            kind=SolverObservableKind.CONTACT_F, dtype=wp.spatial_vector, frequency=Model.AttributeFrequency.CONTACT
+            dtype=wp.spatial_vector, frequency=Model.AttributeFrequency.CONTACT
         )
         """Contact forces [N, N·m], shape ``(rigid_contact_max + soft_contact_max,)``."""
 
-        _kinds: frozenset[Enum] = dataclass_field(default_factory=frozenset, init=False, repr=False)
+        _kinds: frozenset[str] = dataclass_field(default_factory=frozenset, init=False, repr=False)
         _solver: SolverBase | None = dataclass_field(default=None, init=False, repr=False)
         _contacts: Contacts | None = dataclass_field(default=None, init=False, repr=False)
         _contact_capacity: tuple[int, int] | None = dataclass_field(default=None, init=False, repr=False)
         _source: SolverBase.Observables | None = dataclass_field(default=None, init=False, repr=False)
 
         @classmethod
-        def _observable_fields(cls) -> Mapping[Enum, tuple[str, _ObservableField]]:
+        def _observable_fields(cls) -> Mapping[str, tuple[str, _ObservableField]]:
             """Compile inherited declarations once per concrete container type."""
             cached = cls.__dict__.get("_observable_fields_cache")
             if cached is not None:
@@ -311,32 +388,31 @@ class SolverBase:
                     or isinstance(SolverBase.Observables.__dict__.get(declared.name), property)
                 ):
                     raise ValueError(f"Observable field '{declared.name}' conflicts with the container API.")
-                if spec.kind in declarations:
-                    other_name, _ = declarations[spec.kind]
-                    raise ValueError(
-                        f"Duplicate observable kind {spec.kind!r} for '{other_name}' and '{declared.name}'."
-                    )
-                declarations[spec.kind] = (declared.name, spec)
+                kind = declared.name if spec.kind is None else spec.kind
+                if kind in declarations:
+                    other_name, _ = declarations[kind]
+                    raise ValueError(f"Duplicate observable kind {kind!r} for '{other_name}' and '{declared.name}'.")
+                declarations[kind] = (declared.name, spec)
             cls._observable_fields_cache = MappingProxyType(declarations)
             return cls._observable_fields_cache
 
         @property
-        def kinds(self) -> frozenset[Enum]:
+        def kinds(self) -> frozenset[str]:
             """Observable kinds requested by this container or selected subset."""
             return self._kinds
 
-        def is_requested(self, kind: Enum) -> bool:
+        def is_requested(self, kind: str) -> bool:
             """Return whether this container requests an observable on the current call.
 
             This checks the request, not whether its values are fresh. It also
             returns True for requested zero-length arrays and during allocation.
 
             Args:
-                kind: A standard or solver-specific observable enum member.
+                kind: A standard or solver-specific observable name.
             """
             return kind in self._kinds
 
-        def select(self, kinds: Iterable[Enum]) -> SolverBase.Observables:
+        def select(self, kinds: Iterable[str]) -> SolverBase.Observables:
             """Return a reusable subset sharing this container's allocated arrays.
 
             The result has the same concrete type, solver owner, and selected
@@ -352,6 +428,8 @@ class SolverBase:
             this method, call super(), and select their children in the result.
             Other solver-specific metadata is shallow-copied.
 
+            See :ref:`solver_observables` for selection examples.
+
             Args:
                 kinds: Subset of :attr:`kinds` to request. An empty set requests
                     no observables. Selecting a selection can only narrow it.
@@ -360,12 +438,13 @@ class SolverBase:
                 A same-type container referencing the selected arrays.
 
             Raises:
+                TypeError: If kinds is not a collection of nonempty strings.
                 ValueError: If this container was not allocated by a solver or a
                     kind is not requested by this container.
             """
             if self._solver is None:
                 raise ValueError("Solver observables must be allocated by a solver before selecting fields.")
-            requested = frozenset(kinds)
+            requested = _normalize_observable_kinds(kinds)
             missing = requested.difference(self.kinds)
             if missing:
                 raise ValueError(f"Cannot select observable kinds not requested by this container: {missing}.")
@@ -429,6 +508,8 @@ class SolverBase:
             solver step. Selections share the binding with their source; subsequent
             uses must retain the same storage. No device allocation is performed.
 
+            See :ref:`solver_observables` for contact allocation and storage requirements.
+
             Args:
                 contacts: Contact geometry whose rows correspond to these arrays.
 
@@ -486,8 +567,13 @@ class SolverBase:
     """
 
     _module_options_revision = 0
-    SUPPORTED_OBSERVABLE_KINDS: ClassVar[frozenset[Enum]] = frozenset()
-    """Class-level capabilities; query :attr:`supported_observable_kinds` for an instance."""
+
+    SUPPORTED_OBSERVABLES: ClassVar[frozenset[str]] = frozenset()
+    """Names of observables supported by this solver class.
+
+    Entries are string identifiers, such as :attr:`ObservableKind.BODY_QDD`.
+    Query :attr:`supported_observables` for the capabilities of an instance.
+    """
 
     def __init__(
         self,
@@ -651,39 +737,45 @@ class SolverBase:
         self.collision_pipeline.collide(state, self._pipeline_contacts, dt=dt)
 
     @property
-    def supported_observable_kinds(self) -> frozenset[Enum]:
-        """Effective capabilities accepted by :meth:`observables` on this instance.
+    def supported_observables(self) -> frozenset[str]:
+        """Names accepted by :meth:`observables` on this instance.
 
-        Defaults to :attr:`SUPPORTED_OBSERVABLE_KINDS`. Solvers may narrow the
+        Defaults to :attr:`SUPPORTED_OBSERVABLES`. Solvers may narrow the
         class declaration for backend limitations, or derive capabilities from
         child solvers. Applications should query this property.
+
+        See :ref:`solver_observables` for available observables and backend limitations.
         """
-        return self.SUPPORTED_OBSERVABLE_KINDS
+        return self.SUPPORTED_OBSERVABLES
 
     def observables(
         self,
-        kinds: Iterable[Enum],
         *,
+        kinds: Iterable[str] | None = None,
         requires_grad: bool | None = None,
     ) -> SolverBase.Observables:
         """Allocate reusable arrays for requested solver observables.
 
+        See :ref:`solver_observables` for allocation and usage examples.
+
         A container is owned by the solver that allocates it and can be passed
         to that solver's :meth:`step` method on every time step. Derived
-        solvers add custom kinds to :attr:`SUPPORTED_OBSERVABLE_KINDS` and
+        solvers add custom kinds to :attr:`SUPPORTED_OBSERVABLES` and
         declare fields on a dataclass derived from :class:`SolverBase.Observables`.
         The default allocator handles both standard and custom fields.
         Override this factory and delegate to ``super()`` when additional
         solver-specific initialization is needed.
 
-        All requested arrays are allocated before this method returns; ``None``
-        always means unrequested. Contact arrays use the model's resolved rigid
+        All requested arrays are allocated before this method returns; unrequested
+        fields remain ``None``. Contact arrays use the model's resolved rigid
         and soft capacities, not the live contact count. Allocate before graph
         capture and pass matching :class:`~newton.Contacts` to :meth:`step`.
 
         Args:
-            kinds: Set or other iterable of standard and solver-specific observable
-                enum members.
+            kinds: Set or other iterable of observable names. Entries from
+                :class:`ObservableKind` and literal strings are interchangeable.
+                If omitted or ``None``, allocate all :attr:`supported_observables`
+                for this instance. An empty collection allocates no arrays.
             requires_grad: Whether allocated arrays require gradients. If
                 ``None``, use the model's setting.
 
@@ -691,7 +783,7 @@ class SolverBase:
             A solver-owned observable container with requested arrays allocated.
 
         Raises:
-            TypeError: If a request is not a plain enum member or the
+            TypeError: If a request is not a collection of nonempty strings or the
                 configured observable type does not derive from
                 :class:`SolverBase.Observables`.
             ValueError: If this solver does not support a requested observable
@@ -710,22 +802,16 @@ class SolverBase:
     @contextmanager
     def _create_observables(
         self,
-        kinds: Iterable[Enum],
+        kinds: Iterable[str] | None,
         *,
         requires_grad: bool | None = None,
     ) -> Iterator[SolverBase.Observables]:
         """Share built-in factory allocation, freezing capacities only after setup succeeds."""
-        requested = frozenset(kinds)
-        invalid = [kind for kind in requested if not isinstance(kind, Enum) or isinstance(kind, (int, str))]
-        if invalid:
-            values = ", ".join(repr(kind) for kind in invalid)
-            raise TypeError(
-                "Solver observable kinds must be plain enum.Enum members, not strings, integers, IntEnum members, "
-                f"or string-mixin enum members; got: {values}."
-            )
-        unsupported = requested.difference(self.supported_observable_kinds)
+        supported = self.supported_observables
+        requested = _normalize_observable_kinds(supported if kinds is None else kinds)
+        unsupported = requested.difference(supported)
         if unsupported:
-            names = ", ".join(self._format_observable_kind(kind) for kind in unsupported)
+            names = ", ".join(repr(kind) for kind in sorted(unsupported))
             raise ValueError(f"{type(self).__name__} does not support solver observable(s): {names}.")
 
         if not issubclass(self.Observables, SolverBase.Observables):
@@ -733,7 +819,7 @@ class SolverBase:
         declarations = self.Observables._observable_fields()
         missing = requested.difference(declarations)
         if missing:
-            names = ", ".join(self._format_observable_kind(kind) for kind in missing)
+            names = ", ".join(repr(kind) for kind in sorted(missing))
             raise ValueError(f"No observable field declared for {names}.")
         observables = self.Observables()
         observables._kinds = requested
@@ -760,11 +846,6 @@ class SolverBase:
         if observables._contact_capacity is not None:
             self.model._solver_observable_contact_capacity = observables._contact_capacity
 
-    @staticmethod
-    def _format_observable_kind(kind: Enum) -> str:
-        """Format an observable kind for diagnostics."""
-        return f"{type(kind).__name__}.{kind.name}"
-
     def validate_observables(
         self, observables: SolverBase.Observables | None, contacts: Contacts | None = None
     ) -> None:
@@ -772,6 +853,8 @@ class SolverBase:
 
         Call this at the start of :meth:`step`, before launching work or writing
         observable arrays. Passing ``None`` is a no-op.
+
+        See :ref:`solver_observables` for custom solver integration.
 
         Args:
             observables: Optional container allocated by this solver.
@@ -1042,7 +1125,7 @@ class SolverBase:
 
         .. deprecated:: 1.7
 
-            Request :attr:`SolverObservableKind.CONTACT_F` using :meth:`observables`
+            Request :attr:`ObservableKind.CONTACT_F` using :meth:`observables`
             and pass the resulting container to :meth:`step` instead.
 
         Args:

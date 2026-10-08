@@ -11,7 +11,6 @@ import warp as wp
 from ..geometry.flags import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
-from ..solvers.observables import SolverObservableKind
 from ..solvers.solver import SolverBase
 from ..utils.selection import match_labels
 
@@ -79,7 +78,7 @@ class SensorIMU:
     given sites. Each site defines an IMU frame; outputs are expressed in that
     frame.
 
-    This sensor requires the :attr:`~newton.solvers.SolverObservableKind.BODY_QDD`
+    This sensor requires the :attr:`~newton.solvers.SolverBase.ObservableKind.BODY_QDD`
     solver observable. The solver must support computing ``body_qdd``
     (e.g. :class:`~newton.solvers.SolverKamino` or
     :class:`~newton.solvers.SolverMuJoCo`). The extended
@@ -109,7 +108,7 @@ class SensorIMU:
 
             imu = SensorIMU(model, sites="imu_*", request_state_attributes=False)
             solver = newton.solvers.SolverMuJoCo(model)
-            observables = solver.observables(imu.solver_observable_kinds)
+            observables = solver.observables(kinds=imu.solver_observable_kinds)
             state = model.state()
 
             # after solver step
@@ -125,7 +124,7 @@ class SensorIMU:
     gyroscope: wp.array[wp.vec3]
     """Angular velocity readings [rad/s] in sensor frame, shape ``(n_sensors,)``."""
 
-    solver_observable_kinds = frozenset({SolverObservableKind.BODY_QDD})
+    solver_observable_kinds = frozenset({SolverBase.ObservableKind.BODY_QDD})
     """Solver observables required to update this sensor."""
 
     def __init__(
@@ -180,7 +179,7 @@ class SensorIMU:
             warnings.warn(
                 "SensorIMU(request_state_attributes=True) is deprecated in Newton 1.7; "
                 "pass request_state_attributes=False, allocate SolverBase.Observables with "
-                "solver.observables(sensor.solver_observable_kinds), pass them to solver.step(observables=...), "
+                "solver.observables(kinds=sensor.solver_observable_kinds), pass them to solver.step(observables=...), "
                 "and pass them to update(..., observables=...).",
                 DeprecationWarning,
                 stacklevel=2,
@@ -225,7 +224,7 @@ class SensorIMU:
         if body_qdd is None:
             raise ValueError(
                 "SensorIMU requires SolverBase.Observables with BODY_QDD allocated. "
-                "Call solver.observables(sensor.solver_observable_kinds) and pass the result to solver.step() and sensor.update()."
+                "Call solver.observables(kinds=sensor.solver_observable_kinds) and pass the result to solver.step() and sensor.update()."
             )
 
         wp.launch(

@@ -12024,7 +12024,7 @@ class ModelBuilder:
 
         .. deprecated:: 1.7
 
-            Request :attr:`newton.solvers.SolverObservableKind.CONTACT_F` from
+            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
             the solver instead.
 
         Args:

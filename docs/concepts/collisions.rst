@@ -1651,7 +1651,7 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
 
    * - Observable
      - Description
-   * - ``SolverObservableKind.CONTACT_F`` / ``SolverBase.Observables.contact_f``
+   * - ``SolverBase.ObservableKind.CONTACT_F`` / ``SolverBase.Observables.contact_f``
      - Contact spatial forces (used by :class:`~sensors.SensorContact`).
        Bind the observable allocation to the contacts buffer and pass it to the
        solver step.

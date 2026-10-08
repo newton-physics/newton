@@ -68,7 +68,7 @@ def test_parent_force_static_pendulum(test, device, solver_fn):
                 parent_xform=xform,
             )
             solver = solver_fn(model)
-            observables = solver.observables({newton.solvers.SolverObservableKind.BODY_PARENT_F})
+            observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
             state_0, state_1 = model.state(), model.state()
 
             newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
@@ -89,7 +89,7 @@ def test_parent_force_solver_observables(test, device, solver_fn):
         child_offset=wp.vec3(0, 0, 1),
     )
     solver = solver_fn(model)
-    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
 
     test.assertIsNone(state_1.body_parent_f)
@@ -113,7 +113,7 @@ def test_parent_force_solver_observables_xpbd(test, device):
         child_offset=wp.vec3(0, 0, 1),
     )
     solver = newton.solvers.SolverXPBD(model, iterations=8)
-    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
@@ -139,7 +139,7 @@ def test_parent_force_centrifugal(test, device, solver_fn):
         child_offset=wp.vec3(-r, 0, 0),
     )
     solver = solver_fn(model)
-    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
 
     omega = 5.0
@@ -194,7 +194,7 @@ def test_apply_body_f(test, device, solver_fn):
     builder.add_articulation([joint0, joint1])
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-    observables = solver.observables({newton.solvers.SolverObservableKind.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
 
     masses = model.body_mass.numpy()
     total_weight = (masses[0] + masses[1]) * 9.81
