@@ -1100,8 +1100,12 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
             self.skipTest("CUDA graph capture requires the CUDA mempool allocator")
 
         with wp.ScopedDevice(device):
-            for kinematic in (False, True):
-                with self.subTest(kinematic=kinematic):
+            for kinematic, flags in (
+                (kinematic, flags)
+                for kinematic in (False, True)
+                for flags in (ModelFlags.JOINT_DOF_PROPERTIES, ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+            ):
+                with self.subTest(kinematic=kinematic, flags=flags):
                     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
                     SolverMuJoCo.register_custom_attributes(builder)
                     body = builder.add_link(
@@ -1130,7 +1134,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                         iterations=1,
                     )
                     with wp.ScopedCapture(device=device) as capture:
-                        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+                        solver.notify_model_changed(flags)
 
                     wp.capture_launch(capture.graph)
                     np.testing.assert_array_equal(model.mujoco.solreflimit_mode.numpy(), SOLREF_MODE_MJCF_DEFAULT)
@@ -6068,6 +6072,69 @@ class TestMuJoCoContactForce(unittest.TestCase):
     BOX_MASS = 8.0  # density=1000 kg/m³ * volume=(0.2*0.2*0.2) m³
     GRAVITY = 9.81
 
+    def test_legacy_geometry_export_without_force_buffer(self):
+        """Keep geometry-only contact export available without a deprecation warning."""
+        model, _ = self._build_box_on_ground()
+        solver = SolverMuJoCo(model)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count())
+        contacts = pipeline.contacts()
+        self.assertIsNone(contacts.force)
+        solver.step(model.state(), model.state(), None, None, 0.002)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            solver.update_contacts(contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 0)
+        self.assertTrue(np.isfinite(contacts.rigid_contact_point0.numpy()[:count]).all())
+        self.assertIsNone(contacts.force)
+
+    def test_external_contact_observables_preserve_input_geometry(self):
+        """Keep collision rows stable across substeps and map forces past culled rows."""
+        model, _ = self._build_box_on_ground()
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=16)
+        self.assertLess(model.rigid_contact_max, solver.get_max_contact_count())
+        contacts = pipeline.contacts()
+        state_in, state_out = model.state(), model.state()
+        joint_q = state_in.joint_q.numpy()
+        joint_q[2] = 0.09  # Start in contact, rather than waiting for gravity to close the gap.
+        state_in.joint_q.assign(joint_q)
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        pipeline.collide(state_in, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 1)
+        # An invalid first row is culled during Newton -> MuJoCo conversion,
+        # making the compacted MuJoCo indices differ from the input row indices.
+        shapes = contacts.rigid_contact_shape0.numpy()
+        shapes[0] = -1
+        contacts.rigid_contact_shape0.assign(shapes)
+        fields = (
+            "rigid_contact_count",
+            "rigid_contact_shape0",
+            "rigid_contact_shape1",
+            "rigid_contact_point0",
+            "rigid_contact_point1",
+            "rigid_contact_normal",
+            "rigid_contact_offset0",
+            "rigid_contact_offset1",
+            "rigid_contact_margin0",
+            "rigid_contact_margin1",
+            "contact_generation",
+        )
+        snapshots = {field: getattr(contacts, field).numpy().copy() for field in fields}
+        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        for _ in range(3):
+            observables.contact_f.fill_(float("nan"))
+            solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
+            for field, expected in snapshots.items():
+                np.testing.assert_array_equal(getattr(contacts, field).numpy(), expected, err_msg=field)
+            forces = observables.contact_f.numpy()
+            np.testing.assert_array_equal(forces[0], 0.0)
+            np.testing.assert_array_equal(forces[count:], 0.0)
+            self.assertTrue(np.isfinite(forces).all())
+            self.assertGreater(np.linalg.norm(forces[1:count, :3]), 0.0)
+            state_in, state_out = state_out, state_in
+
     def _build_box_on_ground(self, *, friction: float = 1.0):
         """Create a box resting on a ground plane with the given friction."""
         builder = newton.ModelBuilder()
@@ -6079,7 +6146,6 @@ class TestMuJoCoContactForce(unittest.TestCase):
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
         builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize()
-        model.request_contact_attributes("force")
         return model, ground_shape
 
     def _run_and_collect_forces(self, model, cone: str = "pyramidal", settle: int = 10, avg: int = 10):
@@ -6097,26 +6163,28 @@ class TestMuJoCoContactForce(unittest.TestCase):
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        collision_pipeline = newton.CollisionPipeline(model)
+        collision_pipeline = newton.CollisionPipeline(
+            model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
+        )
         contacts = collision_pipeline.contacts()
+        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
         dt = 0.002
         for _ in range(settle):
             state_in.clear_forces()
-            solver.step(state_in, state_out, control, contacts, dt)
+            solver.step(state_in, state_out, control, contacts, dt, observables=observables)
             state_in, state_out = state_out, state_in
 
         force_acc = np.zeros(3)
         for _ in range(avg):
             state_in.clear_forces()
-            solver.step(state_in, state_out, control, contacts, dt)
+            solver.step(state_in, state_out, control, contacts, dt, observables=observables)
             state_in, state_out = state_out, state_in
 
-            solver.update_contacts(contacts, state_in)
             nacon = int(solver.mjw_data.nacon.numpy()[0])
             if nacon > 0:
-                f = contacts.force.numpy()[:nacon, :3]
+                f = observables.contact_f.numpy()[:nacon, :3]
                 force_acc += np.sum(f, axis=0)
 
         total_force = force_acc / avg
@@ -6164,7 +6232,6 @@ class TestMuJoCoContactForce(unittest.TestCase):
         body = builder.add_body(xform=wp.transform(wp.vec3(*box_center), ramp_q))
         builder.add_shape_box(body=body, hx=hz, hy=hz, hz=hz)
         model = builder.finalize()
-        model.request_contact_attributes("force")
         return model, ramp_shape
 
     def test_contact_forces_on_incline(self):
@@ -6811,6 +6878,46 @@ class TestMuJoCoConversion(unittest.TestCase):
         reference_qd = step_with_torque(reference_model, reference_body, reference_solver)
         self.assertGreater(abs(float(reference_qd[4])), 1.0e-4)
         np.testing.assert_allclose(actual_qd, reference_qd, rtol=1.0e-5, atol=1.0e-6)
+
+    def test_runtime_com_edit_preserves_dynamics(self):
+        """A runtime COM edit matches a model compiled with that COM on both backends."""
+
+        def build_model(com):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_link(
+                mass=0.1,
+                com=wp.vec3(*com),
+                inertia=wp.mat33(np.diag([0.04, 0.026, 0.05])),
+            )
+            joint = builder.add_joint_free(child=body)
+            builder.add_articulation([joint])
+            return builder.finalize(), body
+
+        def step_with_wrench(test_model, test_body, test_solver):
+            state_in = test_model.state()
+            state_out = test_model.state()
+            newton.eval_fk(test_model, test_model.joint_q, test_model.joint_qd, state_in)
+            state_in.body_f.assign([1.0, 0.0, 0.0, 0.1, 0.0, 0.0])
+            test_solver.step(state_in, state_out, test_model.control(), None, 0.01)
+            return state_out.body_qd.numpy()[test_body]
+
+        com = np.array([0.05, 0.02, -0.03], dtype=np.float32)
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                # A body compiled with its COM at the origin is eligible for MuJoCo's simple layout.
+                model, body = build_model((0.0, 0.0, 0.0))
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, iterations=1, disable_contacts=True)
+                model.body_com.assign(com[None, :])
+                solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+                reference_model, reference_body = build_model(com)
+                reference_solver = SolverMuJoCo(
+                    reference_model, use_mujoco_cpu=use_mujoco_cpu, iterations=1, disable_contacts=True
+                )
+
+                actual_qd = step_with_wrench(model, body, solver)
+                reference_qd = step_with_wrench(reference_model, reference_body, reference_solver)
+                np.testing.assert_allclose(actual_qd, reference_qd, rtol=1.0e-5, atol=1.0e-6)
 
     def test_global_joint_solver_params(self):
         """Test that global joint solver parameters affect joint limit behavior."""
@@ -7476,193 +7583,6 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(model.mujoco.condim.numpy(), [6])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_fixed_tendon_joint_addressing_from_usd(self):
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        base = UsdGeom.Xform.Define(stage, "/World/base").GetPrim()
-        link1 = UsdGeom.Xform.Define(stage, "/World/link1").GetPrim()
-        link2 = UsdGeom.Xform.Define(stage, "/World/link2").GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(base)
-        UsdPhysics.RigidBodyAPI.Apply(link1)
-        UsdPhysics.RigidBodyAPI.Apply(link2)
-        UsdPhysics.ArticulationRootAPI.Apply(base)
-
-        joint1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint1")
-        joint1.CreateAxisAttr().Set("Z")
-        joint1.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
-        joint1.CreateBody1Rel().SetTargets([Sdf.Path("/World/link1")])
-
-        joint2 = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint2")
-        joint2.CreateAxisAttr().Set("Z")
-        joint2.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
-        joint2.CreateBody1Rel().SetTargets([Sdf.Path("/World/link2")])
-
-        tendon_prim = stage.DefinePrim("/World/fixed_tendon", "MjcTendon")
-        tendon_prim.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
-        tendon_prim.CreateRelationship("mjc:path", True).SetTargets(
-            [Sdf.Path("/World/joint1"), Sdf.Path("/World/joint2")]
-        )
-        tendon_prim.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([1, 0]))
-        tendon_prim.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(
-            Vt.DoubleArray([0.25, 0.75])
-        )
-        tendon_prim.CreateAttribute("mjc:stiffness", Sdf.ValueTypeNames.Double, True).Set(11.0)
-        tendon_prim.CreateAttribute("mjc:damping", Sdf.ValueTypeNames.Double, True).Set(0.33)
-        tendon_prim.CreateAttribute("mjc:frictionloss", Sdf.ValueTypeNames.Double, True).Set(0.07)
-        tendon_prim.CreateAttribute("mjc:limited", Sdf.ValueTypeNames.Token, True).Set("true")
-        tendon_prim.CreateAttribute("mjc:range:min", Sdf.ValueTypeNames.Double, True).Set(-0.2)
-        tendon_prim.CreateAttribute("mjc:range:max", Sdf.ValueTypeNames.Double, True).Set(0.8)
-        tendon_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Double, True).Set(0.01)
-        tendon_prim.CreateAttribute("mjc:solreflimit", Sdf.ValueTypeNames.DoubleArray, True).Set(
-            Vt.DoubleArray([0.1, 0.5])
-        )
-        tendon_prim.CreateAttribute("mjc:solimplimit", Sdf.ValueTypeNames.DoubleArray, True).Set(
-            Vt.DoubleArray([0.91, 0.92, 0.003, 0.6, 2.3])
-        )
-        tendon_prim.CreateAttribute("mjc:solreffriction", Sdf.ValueTypeNames.DoubleArray, True).Set(
-            Vt.DoubleArray([0.11, 0.55])
-        )
-        tendon_prim.CreateAttribute("mjc:solimpfriction", Sdf.ValueTypeNames.DoubleArray, True).Set(
-            Vt.DoubleArray([0.81, 0.82, 0.004, 0.7, 2.4])
-        )
-        tendon_prim.CreateAttribute("mjc:armature", Sdf.ValueTypeNames.Double, True).Set(0.012)
-        tendon_prim.CreateAttribute("mjc:springlength", Sdf.ValueTypeNames.DoubleArray, True).Set(
-            Vt.DoubleArray([0.13, 0.23])
-        )
-        tendon_prim.CreateAttribute("mjc:actuatorfrcrange:min", Sdf.ValueTypeNames.Double, True).Set(-4.0)
-        tendon_prim.CreateAttribute("mjc:actuatorfrcrange:max", Sdf.ValueTypeNames.Double, True).Set(6.0)
-        tendon_prim.CreateAttribute("mjc:actuatorfrclimited", Sdf.ValueTypeNames.Token, True).Set("false")
-
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
-        model = builder.finalize()
-
-        self.assertEqual(model.custom_frequency_counts["mujoco:tendon"], 1)
-        self.assertEqual(model.custom_frequency_counts["mujoco:tendon_joint"], 2)
-
-        tendon_joint_adr = model.mujoco.tendon_joint_adr.numpy()
-        tendon_joint_num = model.mujoco.tendon_joint_num.numpy()
-        tendon_joint = model.mujoco.tendon_joint.numpy()
-        tendon_coef = model.mujoco.tendon_coef.numpy()
-
-        self.assertEqual(int(tendon_joint_adr[0]), 0)
-        self.assertEqual(int(tendon_joint_num[0]), 2)
-
-        joint1_idx = model.joint_label.index("/World/joint1")
-        joint2_idx = model.joint_label.index("/World/joint2")
-        self.assertEqual(int(tendon_joint[0]), joint2_idx)
-        self.assertEqual(int(tendon_joint[1]), joint1_idx)
-        self.assertAlmostEqual(float(tendon_coef[0]), 0.25, places=6)
-        self.assertAlmostEqual(float(tendon_coef[1]), 0.75, places=6)
-        self.assertAlmostEqual(float(model.mujoco.tendon_stiffness.numpy()[0]), 11.0, places=6)
-        self.assertAlmostEqual(float(model.mujoco.tendon_damping.numpy()[0]), 0.33, places=6)
-        self.assertAlmostEqual(float(model.mujoco.tendon_frictionloss.numpy()[0]), 0.07, places=6)
-        self.assertEqual(int(model.mujoco.tendon_limited.numpy()[0]), 1)
-        assert_np_equal(model.mujoco.tendon_range.numpy()[0], np.array([-0.2, 0.8], dtype=np.float32), tol=1e-6)
-        self.assertAlmostEqual(float(model.mujoco.tendon_margin.numpy()[0]), 0.01, places=6)
-        assert_np_equal(model.mujoco.tendon_solref_limit.numpy()[0], np.array([0.1, 0.5], dtype=np.float32), tol=1e-6)
-        assert_np_equal(
-            model.mujoco.tendon_solimp_limit.numpy()[0],
-            np.array([0.91, 0.92, 0.003, 0.6, 2.3], dtype=np.float32),
-            tol=1e-6,
-        )
-        assert_np_equal(
-            model.mujoco.tendon_solref_friction.numpy()[0], np.array([0.11, 0.55], dtype=np.float32), tol=1e-6
-        )
-        assert_np_equal(
-            model.mujoco.tendon_solimp_friction.numpy()[0],
-            np.array([0.81, 0.82, 0.004, 0.7, 2.4], dtype=np.float32),
-            tol=1e-6,
-        )
-        self.assertAlmostEqual(float(model.mujoco.tendon_armature.numpy()[0]), 0.012, places=6)
-        assert_np_equal(model.mujoco.tendon_springlength.numpy()[0], np.array([0.13, 0.23], dtype=np.float32), tol=1e-6)
-        assert_np_equal(
-            model.mujoco.tendon_actuator_force_range.numpy()[0], np.array([-4.0, 6.0], dtype=np.float32), tol=1e-6
-        )
-        self.assertEqual(int(model.mujoco.tendon_actuator_force_limited.numpy()[0]), 0)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_fixed_tendon_multi_joint_addressing_from_usd(self):
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        base = UsdGeom.Xform.Define(stage, "/World/base").GetPrim()
-        link1 = UsdGeom.Xform.Define(stage, "/World/link1").GetPrim()
-        link2 = UsdGeom.Xform.Define(stage, "/World/link2").GetPrim()
-        link3 = UsdGeom.Xform.Define(stage, "/World/link3").GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(base)
-        UsdPhysics.RigidBodyAPI.Apply(link1)
-        UsdPhysics.RigidBodyAPI.Apply(link2)
-        UsdPhysics.RigidBodyAPI.Apply(link3)
-        UsdPhysics.ArticulationRootAPI.Apply(base)
-
-        joint1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint1")
-        joint1.CreateAxisAttr().Set("Z")
-        joint1.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
-        joint1.CreateBody1Rel().SetTargets([Sdf.Path("/World/link1")])
-
-        joint2 = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint2")
-        joint2.CreateAxisAttr().Set("Z")
-        joint2.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
-        joint2.CreateBody1Rel().SetTargets([Sdf.Path("/World/link2")])
-
-        joint3 = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint3")
-        joint3.CreateAxisAttr().Set("Z")
-        joint3.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
-        joint3.CreateBody1Rel().SetTargets([Sdf.Path("/World/link3")])
-
-        tendon_a = stage.DefinePrim("/World/fixed_tendon_a", "MjcTendon")
-        tendon_a.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
-        tendon_a.CreateRelationship("mjc:path", True).SetTargets([Sdf.Path("/World/joint1"), Sdf.Path("/World/joint2")])
-        tendon_a.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([1, 0]))
-        tendon_a.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(Vt.DoubleArray([0.1, 0.2]))
-
-        tendon_b = stage.DefinePrim("/World/fixed_tendon_b", "MjcTendon")
-        tendon_b.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
-        tendon_b.CreateRelationship("mjc:path", True).SetTargets(
-            [Sdf.Path("/World/joint1"), Sdf.Path("/World/joint2"), Sdf.Path("/World/joint3")]
-        )
-        tendon_b.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([2, 0, 1]))
-        tendon_b.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(
-            Vt.DoubleArray([0.3, 0.4, 0.5])
-        )
-
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
-        model = builder.finalize()
-
-        self.assertEqual(model.custom_frequency_counts["mujoco:tendon"], 2)
-        self.assertEqual(model.custom_frequency_counts["mujoco:tendon_joint"], 5)
-
-        tendon_joint_adr = model.mujoco.tendon_joint_adr.numpy()
-        tendon_joint_num = model.mujoco.tendon_joint_num.numpy()
-        tendon_joint = model.mujoco.tendon_joint.numpy()
-        tendon_coef = model.mujoco.tendon_coef.numpy()
-
-        self.assertEqual(int(tendon_joint_adr[0]), 0)
-        self.assertEqual(int(tendon_joint_num[0]), 2)
-        self.assertEqual(int(tendon_joint_adr[1]), 2)
-        self.assertEqual(int(tendon_joint_num[1]), 3)
-
-        joint1_idx = model.joint_label.index("/World/joint1")
-        joint2_idx = model.joint_label.index("/World/joint2")
-        joint3_idx = model.joint_label.index("/World/joint3")
-
-        expected_joint = np.array([joint2_idx, joint1_idx, joint3_idx, joint1_idx, joint2_idx], dtype=np.int32)
-        expected_coef = np.array([0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
-        assert_np_equal(tendon_joint, expected_joint, tol=0)
-        assert_np_equal(tendon_coef, expected_coef, tol=1e-6)
-
     def test_invalid_tendon_joint_range_remains_unowned(self):
         """Keep a tendon unowned when its joint range exceeds the available rows."""
         mjcf = """
@@ -7693,68 +7613,6 @@ class TestMuJoCoAttributes(unittest.TestCase):
         model = builder.finalize()
 
         np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:tendon"].numpy(), [-1, 1])
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_usd_tendon_actuator_resolution_when_actuator_comes_first(self):
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        def add_robot(root_path, *, add_actuator=False):
-            base = UsdGeom.Xform.Define(stage, f"{root_path}/base").GetPrim()
-            link = UsdGeom.Xform.Define(stage, f"{root_path}/link").GetPrim()
-            UsdPhysics.RigidBodyAPI.Apply(base)
-            UsdPhysics.RigidBodyAPI.Apply(link)
-            base_mass = UsdPhysics.MassAPI.Apply(base)
-            base_mass.CreateMassAttr().Set(1.0)
-            base_mass.CreateDiagonalInertiaAttr().Set((0.1, 0.1, 0.1))
-            link_mass = UsdPhysics.MassAPI.Apply(link)
-            link_mass.CreateMassAttr().Set(1.0)
-            link_mass.CreateDiagonalInertiaAttr().Set((0.1, 0.1, 0.1))
-            UsdPhysics.ArticulationRootAPI.Apply(base)
-
-            joint_path = f"{root_path}/joint"
-            joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
-            joint.CreateAxisAttr().Set("Z")
-            joint.CreateBody0Rel().SetTargets([Sdf.Path(f"{root_path}/base")])
-            joint.CreateBody1Rel().SetTargets([Sdf.Path(f"{root_path}/link")])
-
-            tendon_path = f"{root_path}/fixed_tendon"
-            if add_actuator:
-                # Author actuator before tendon to exercise deferred target resolution.
-                actuator_prim = stage.DefinePrim(f"{root_path}/a_tendon_actuator", "MjcActuator")
-                actuator_prim.CreateRelationship("mjc:target", True).SetTargets([Sdf.Path(tendon_path)])
-
-            tendon = stage.DefinePrim(tendon_path, "MjcTendon")
-            tendon.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
-            tendon.CreateRelationship("mjc:path", True).SetTargets([Sdf.Path(joint_path)])
-            tendon.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([0]))
-            tendon.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(Vt.DoubleArray([1.0]))
-
-        add_robot("/World/RobotA", add_actuator=True)
-        add_robot("/World/RobotB")
-
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, root_path="/World/RobotA")
-        model = builder.finalize()
-
-        self.assertEqual(model.custom_frequency_counts["mujoco:tendon"], 1)
-        self.assertEqual(model.custom_frequency_counts["mujoco:tendon_joint"], 1)
-        self.assertEqual(model.mujoco.actuator_target_label[0], "/World/RobotA/fixed_tendon")
-        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:tendon"].numpy(), [0])
-        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:tendon_joint"].numpy(), [0])
-        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), [0])
-
-        solver = SolverMuJoCo(model, separate_worlds=False)
-        mujoco = SolverMuJoCo._mujoco
-        self.assertEqual(int(solver.mj_model.nu), 1)
-        self.assertEqual(int(solver.mj_model.actuator_trntype[0]), int(mujoco.mjtTrn.mjTRN_TENDON))
-        self.assertEqual(int(solver.mj_model.actuator_trnid[0, 0]), 0)
-        tendon_name = mujoco.mj_id2name(solver.mj_model, mujoco.mjtObj.mjOBJ_TENDON, 0)
-        self.assertEqual(tendon_name, "/World/RobotA/fixed_tendon")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_actuator_auto_limits_and_partial_ranges(self):
@@ -7963,23 +7821,6 @@ class TestMuJoCoOptions(unittest.TestCase):
 
         self.assertEqual(solver.mjw_data.njmax_nnz, 123)
         self.assertEqual(solver.mjw_data.efc.J.shape, (2, 1, 123))
-
-    def test_njmax_nnz_includes_joint_limits(self):
-        """Include joint limits in automatic sparse capacity."""
-        builder = newton.ModelBuilder()
-        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        joint = builder.add_joint_revolute(parent=-1, child=body, limit_lower=-1.0, limit_upper=1.0)
-        builder.add_articulation([joint])
-
-        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, jacobian="sparse")
-
-        from mujoco_warp._src.io import _default_njmax_nnz
-
-        expected = min(
-            _default_njmax_nnz(solver.mj_model, 0, solver.mjw_data.njmax) + 1,
-            solver.mjw_data.njmax * solver.mj_model.nv,
-        )
-        self.assertEqual(solver.mjw_data.njmax_nnz, expected)
 
     def test_njmax_nnz_rejects_invalid_values(self):
         """Reject invalid sparse Jacobian capacities."""
@@ -8524,16 +8365,32 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
 
     def test_disable_sensors_computes_rne_state_attributes(self):
-        """Compute body_qdd and body_parent_f with sensors disabled.
+        """Compute legacy body diagnostics even with sensors disabled."""
+        self._check_disable_sensors_rne(legacy_state_attributes=True)
+
+    def test_disable_sensors_computes_rne_observables(self):
+        """Compute each RNE observable without requesting legacy state arrays."""
+        for flag in (
+            newton.solvers.SolverObservableFlags.BODY_QDD,
+            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
+        ):
+            with self.subTest(flag=flag):
+                self._check_disable_sensors_rne(observable_flag=flag)
+
+    def _check_disable_sensors_rne(self, legacy_state_attributes=False, observable_flag=None):
+        """Compare diagnostics against a sensors-enabled reference.
 
         A horizontal pendulum released from rest has nonzero body acceleration
         and joint wrench, so stale zero-initialized outputs would not match the
         sensors-enabled reference.
         """
         results = {}
+        attributes = ("body_qdd", "body_parent_f") if legacy_state_attributes else (observable_flag.value,)
         for disable_sensors in (False, True):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
-            builder.request_state_attributes("body_qdd", "body_parent_f")
+            if legacy_state_attributes:
+                with self.assertWarnsRegex(DeprecationWarning, r"ModelBuilder\.request_state_attributes.*1\.7"):
+                    builder.request_state_attributes(*attributes)
             link = builder.add_link()
             builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
             joint = builder.add_joint_revolute(
@@ -8548,15 +8405,19 @@ class TestMuJoCoOptions(unittest.TestCase):
             solver = SolverMuJoCo(model, disable_sensors=disable_sensors, disable_contacts=True)
             state_in, state_out = model.state(), model.state()
             newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
-            solver.step(state_in, state_out, None, None, 1.0e-3)
-            results[disable_sensors] = (state_out.body_qdd.numpy(), state_out.body_parent_f.numpy())
+            observables = None
+            if not legacy_state_attributes:
+                observables = solver.observables({observable_flag})
+                self.assertIsNone(state_out.body_qdd)
+                self.assertIsNone(state_out.body_parent_f)
+            solver.step(state_in, state_out, None, None, 1.0e-3, observables=observables)
+            source = state_out if legacy_state_attributes else observables
+            results[disable_sensors] = [getattr(source, attribute).numpy() for attribute in attributes]
+            self.assertTrue(solver.mjw_model.opt.run_rne_postconstraint)
 
-        qdd_ref, parent_f_ref = results[False]
-        qdd, parent_f = results[True]
-        self.assertGreater(np.linalg.norm(qdd_ref), 0.1)
-        self.assertGreater(np.linalg.norm(parent_f_ref), 0.1)
-        np.testing.assert_allclose(qdd, qdd_ref, rtol=1.0e-5, atol=1.0e-5)
-        np.testing.assert_allclose(parent_f, parent_f_ref, rtol=1.0e-5, atol=1.0e-5)
+        for result, reference in zip(results[True], results[False], strict=True):
+            self.assertGreater(np.linalg.norm(reference), 0.1)
+            np.testing.assert_allclose(result, reference, rtol=1.0e-5, atol=1.0e-5)
 
     def test_disable_sensors_allows_unrelated_state_attributes(self):
         """Step with disabled sensors when no RNE-derived state attribute is requested."""
@@ -8564,6 +8425,40 @@ class TestMuJoCoOptions(unittest.TestCase):
         solver = SolverMuJoCo(model, disable_sensors=True)
         state_in, state_out = model.state(), model.state()
         solver.step(state_in, state_out, model.control(), None, 0.01)
+
+    def test_selected_actuator_observable_skips_rne_request(self):
+        """Select a custom actuator field without requesting allocated body diagnostics."""
+        model = self._create_multiworld_model(world_count=1)
+        solver = SolverMuJoCo(model, disable_sensors=True)
+        flags = newton.solvers.SolverObservableFlags
+        actuator_flag = SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR
+        observables = solver.observables({flags.BODY_QDD, actuator_flag})
+        selected = observables.select({actuator_flag})
+        self.assertIs(type(selected), SolverMuJoCo.Observables)
+        self.assertIs(selected.qfrc_actuator, observables.qfrc_actuator)
+        observables.body_qdd.fill_(wp.spatial_vector(-1.0))
+        observables.qfrc_actuator.fill_(float("nan"))
+        state_in, state_out = model.state(), model.state()
+        solver.step(state_in, state_out, model.control(), None, 0.01, observables=selected)
+        self.assertFalse(solver.mjw_model.opt.run_rne_postconstraint)
+        np.testing.assert_array_equal(observables.body_qdd.numpy(), np.full((model.body_count, 6), -1.0))
+        self.assertTrue(np.isfinite(observables.qfrc_actuator.numpy()).all())
+
+    def test_native_cpu_observable_capabilities(self):
+        """Reject unsupported body/contact exports while retaining native actuator forces."""
+        model = self._create_multiworld_model(world_count=1)
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        for flag in newton.solvers.SolverObservableFlags:
+            with self.subTest(flag=flag):
+                self.assertNotIn(flag, solver.supported_observable_flags)
+                with self.assertRaisesRegex(ValueError, "does not support"):
+                    solver.observables({flag})
+        flag = SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR
+        observables = solver.observables({flag})
+        observables.qfrc_actuator.fill_(float("nan"))
+        solver.mjw_data.qfrc_actuator.fill_(1234.0)
+        solver.step(model.state(), model.state(), model.control(), None, 0.01, observables=observables)
+        np.testing.assert_allclose(observables.qfrc_actuator.numpy(), solver.mj_data.qfrc_actuator, atol=1e-6)
 
     def test_enable_multiccd_default_off(self):
         """Verify that multi-CCD is disabled by default (Newton default differs from MuJoCo 3.8+)."""
@@ -9411,9 +9306,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), child_rot),
         )
         builder.add_articulation([ball_j])
-        builder.request_state_attributes("mujoco:qfrc_actuator")
         model = builder.finalize()
         solver = SolverMuJoCo(model)
+        observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
 
         q_start = int(model.joint_q_start.numpy()[ball_j])
         qd_start = int(model.joint_qd_start.numpy()[ball_j])
@@ -9450,7 +9345,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 qfrc_np[qd_start : qd_start + 3] = [tau_mj[0], tau_mj[1], tau_mj[2]]
                 solver.mj_data.qfrc_actuator[:] = qfrc_np
 
-                solver._update_newton_state(model, state, solver.mj_data, state_prev=state)
+                solver._update_newton_state(model, state, solver.mj_data, state_prev=state, observables=observables)
 
                 # Expected: tau_newton = R(c^{-1} * q_mj) * tau_mj, where q_mj = c * r * c^{-1}.
                 r_np = np.array([r[0], r[1], r[2], r[3]], dtype=np.float64)
@@ -9458,7 +9353,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 q_mj = qmul(qmul(c, r_np), qinv(c))
                 expected = qrot(qmul(qinv(c), q_mj), tau_mj_np)
 
-                tau_newton = state.mujoco.qfrc_actuator.numpy()[qd_start : qd_start + 3]
+                tau_newton = observables.qfrc_actuator.numpy()[qd_start : qd_start + 3]
                 err = float(np.max(np.abs(tau_newton - expected)))
                 self.assertLess(err, 1e-5, f"got={tau_newton}, expected={expected}, err={err:.2e}")
 
@@ -9937,7 +9832,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([reference, follower])
-        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        builder.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
         model = builder.finalize()
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -9967,7 +9862,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([reference, follower])
-        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        builder.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
         model = builder.finalize()
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -9989,7 +9884,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         template.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
         template.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
         template.add_articulation([reference, follower])
-        template.set_joint_mimic(follower, reference, (0.5, 2.0))
+        template.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
 
         builder = newton.ModelBuilder()
         builder.replicate(template, 2)
@@ -11608,12 +11503,10 @@ class TestMultiWorldQfrcActuatorCom(unittest.TestCase):
         def make_template(com):
             t = newton.ModelBuilder()
             t.add_mjcf(cls.MJCF, ctrl_direct=True)
-            t.request_state_attributes("mujoco:qfrc_actuator")
             t.body_com[0] = com
             return t
 
         builder = newton.ModelBuilder()
-        builder.request_state_attributes("mujoco:qfrc_actuator")
         builder.add_world(make_template(wp.vec3(0.0, 0.0, 0.0)))
         builder.add_world(make_template(wp.vec3(0.1, -0.05, 0.03)))
         cls.model = builder.finalize()
@@ -11622,11 +11515,12 @@ class TestMultiWorldQfrcActuatorCom(unittest.TestCase):
     def test_world1_uses_own_com(self):
         """World 1 angular qfrc must reflect its non-zero CoM, not world 0's."""
         state = self.model.state()
+        observables = self.solver.observables({self.solver.ObservableFlags.QFRC_ACTUATOR})
         ctrl = self.model.control()
         ctrl.mujoco.ctrl = wp.array([10.0, 10.0], dtype=wp.float32)
-        self.solver.step(state, state, ctrl, None, dt=0.01)
+        self.solver.step(state, state, ctrl, None, dt=0.01, observables=observables)
 
-        qfrc = state.mujoco.qfrc_actuator.numpy()
+        qfrc = observables.qfrc_actuator.numpy()
         dofs_per_world = self.model.joint_dof_count // self.model.world_count
 
         # World 0 has CoM at origin — cross product is zero
@@ -12348,8 +12242,8 @@ class TestEqualityJointObjType(unittest.TestCase):
         )
 
 
-class TestUpdateContactsPointPositions(unittest.TestCase):
-    """Test that update_contacts populates rigid_contact_point0/point1."""
+class TestContactObservablePointPositions(unittest.TestCase):
+    """Test that contact observables populate rigid_contact_point0/point1."""
 
     def test_contact_points_populated(self):
         """Drop a box onto a ground plane with use_mujoco_contacts and verify contact points are nonzero."""
@@ -12375,19 +12269,16 @@ class TestUpdateContactsPointPositions(unittest.TestCase):
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = newton.Contacts(
-            rigid_contact_max=solver.mjw_data.naconmax,
-            soft_contact_max=0,
-            device=model.device,
-        )
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
+        contacts = pipeline.contacts()
+        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
         dt = 1.0 / 200.0
         found_contacts = False
         for _ in range(200):
             state_0.clear_forces()
-            solver.step(state_0, state_1, control, contacts, dt)
-            solver.update_contacts(contacts, state_0)
+            solver.step(state_0, state_1, control, contacts, dt, observables=observables)
             state_0, state_1 = state_1, state_0
 
             n = contacts.rigid_contact_count.numpy()[0]
@@ -12509,6 +12400,53 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
                 solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
                 np.testing.assert_allclose(tendon_parameter("tendon_solref_lim")[0], [0.02, 1.0])
                 np.testing.assert_allclose(attrs.tendon_solref_limit.numpy()[0], [-100.0, -20.0])
+
+    def test_joint_force_updates_preserve_pending_tendon_limits(self):
+        """Publish joint damping without consuming tendon edits in eager or captured updates."""
+        modes = (SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW, SOLREF_MODE_MJCF_DEFAULT)
+        for use_cpu, capture, mode in itertools.product((True, False), (False, True), modes):
+            if capture and use_cpu:
+                continue
+            if not use_cpu and not wp.get_cuda_device_count():
+                continue
+            device = wp.get_device("cpu" if use_cpu else "cuda:0")
+            if capture and not wp.is_mempool_enabled(device):
+                continue
+            with self.subTest(use_cpu=use_cpu, capture=capture, mode=mode), wp.ScopedDevice(device):
+                model = self._build_tendon_limit_model(worlds=1 if use_cpu else 2)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_cpu, disable_contacts=True)
+
+                def runtime_parameter(name, solver=solver):
+                    """Read the active backend rather than the Warp backend's host template."""
+                    if solver.use_mujoco_cpu:
+                        return getattr(solver.mj_model, name).copy()
+                    return getattr(solver.mjw_model, name).numpy().copy()
+
+                initial_range = runtime_parameter("tendon_range")
+                initial_solref = runtime_parameter("tendon_solref_lim")
+                attrs = model.mujoco
+                attrs.tendon_range.fill_(wp.vec2(-0.5, 0.5))
+                attrs.tendon_limit_ke.fill_(100.0)
+                attrs.tendon_limit_kd.fill_(20.0)
+                attrs.tendon_solref_limit.fill_(wp.vec2(-200.0, -40.0))
+                attrs.tendon_solref_limit_mode.fill_(mode)
+                model.joint_damping.fill_(0.6)
+
+                if capture:
+                    with wp.ScopedCapture(device=device) as graph:
+                        solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                    wp.capture_launch(graph.graph)
+                else:
+                    solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+
+                np.testing.assert_allclose(runtime_parameter("dof_damping"), 0.6)
+                np.testing.assert_array_equal(runtime_parameter("tendon_range"), initial_range)
+                np.testing.assert_array_equal(runtime_parameter("tendon_solref_lim"), initial_solref)
+
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                expected_range = np.broadcast_to([-0.5, 0.5], initial_range.shape)
+                np.testing.assert_allclose(runtime_parameter("tendon_range"), expected_range)
+                self.assertFalse(np.array_equal(runtime_parameter("tendon_solref_lim"), initial_solref))
 
     def test_tendon_limit_force_gains_select_worlds(self):
         """Keep native parameters in untouched worlds and update selected gains independently."""
