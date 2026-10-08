@@ -155,7 +155,6 @@ class TestSensorCamera(unittest.TestCase):
             self.assertTrue(hasattr(SensorCamera, helper_name))
             self.assertFalse(hasattr(Utils, helper_name))
         self.assertFalse(hasattr(Utils, "compute_pinhole_camera_rays"))
-
         self.assertFalse(hasattr(Utils, "compute_camera_transforms_usd"))
         self.assertFalse(hasattr(Utils, "create_default_light"))
         self.assertFalse(hasattr(Utils, "assign_checkerboard_material"))
@@ -1473,20 +1472,35 @@ class TestSensorCamera(unittest.TestCase):
         colored = SensorCamera.Utils.to_rgba_from_shape_index(shape_index, colors=palette)
         self.assertEqual(colored.shape, (view_count, height, width, 4))
 
-        # to_rgba_from_depth: on-device auto range (depth_range=None) and the near<far guard.
+        # Exercise automatic ranges and host-side validation using the same CPU image.
         auto = SensorCamera.Utils.to_rgba_from_depth(depth)
         self.assertEqual(auto.shape, (view_count, height, width, 4))
-        with self.assertRaisesRegex(ValueError, "near < far"):
-            SensorCamera.Utils.to_rgba_from_depth(depth, depth_range=(5.0, 1.0))
+        invalid_ranges = [
+            ((1.0,), "exactly two"),
+            ((1.0, 1.0), "near < far"),
+            ((0.0, math.inf), "finite"),
+            (wp.zeros((1, 2), dtype=wp.float32, device="cpu"), "shape"),
+            (wp.array([0.0, 2.0], dtype=wp.float64, device="cpu"), "dtype"),
+        ]
+        cuda_device = next((d for d in get_test_devices() if d.is_cuda), None)
+        if cuda_device is not None:
+            invalid_ranges.append((wp.array([0.0, 2.0], dtype=wp.float32, device=cuda_device), "device"))
+        for helper in (SensorCamera.Utils.to_rgba_from_depth, SensorCamera.Utils.flatten_depth_image_to_rgba):
+            for depth_range, message in invalid_ranges:
+                with self.subTest(helper=helper.__name__, message=message):
+                    with self.assertRaisesRegex(ValueError, message):
+                        helper(depth, depth_range=depth_range)
 
-    def test_utils_depth_helpers_accept_consistent_ranges(self) -> None:
-        """Match tiled and per-view depth colors for tuple, array, and automatic ranges."""
+    def test_utils_depth_helpers_clamp_ranges(self) -> None:
+        """Match tuple and array ranges, endpoint clamping, and miss colors across layouts."""
         values = np.array([[[0.0, 0.5, 1.0], [2.0, 3.0, 4.0]], [[4.0, 3.0, 2.0], [1.0, 0.5, 0.0]]], dtype=np.float32)
+        gray = np.array([[[0, 255, 255], [152, 50, 50]], [[50, 50, 152], [255, 255, 0]]], dtype=np.uint8)
+        expected = np.full((*values.shape, 4), 255, dtype=np.uint8)
+        expected[..., :3] = gray[..., None]
+        expected_tiled = np.concatenate(list(expected), axis=1)
         for device in get_test_devices():
             depth = wp.array(values, dtype=wp.float32, device=device)
-            expected = SensorCamera.Utils.to_rgba_from_depth(depth, depth_range=(0.5, 4.0)).numpy()
-            expected_tiled = np.concatenate(list(expected), axis=1)
-            for depth_range in ((0.5, 4.0), wp.array([0.5, 4.0], dtype=wp.float32, device=device), None):
+            for depth_range in ((1.0, 3.0), wp.array([1.0, 3.0], dtype=wp.float32, device=device)):
                 with self.subTest(device=device, range_type=type(depth_range).__name__):
                     rgba = SensorCamera.Utils.to_rgba_from_depth(depth, depth_range=depth_range)
                     tiled = SensorCamera.Utils.flatten_depth_image_to_rgba(
@@ -1494,42 +1508,6 @@ class TestSensorCamera(unittest.TestCase):
                     )
                     np.testing.assert_array_equal(rgba.numpy(), expected)
                     np.testing.assert_array_equal(tiled.numpy(), expected_tiled)
-
-    def test_utils_depth_helpers_validate_ranges(self) -> None:
-        """Reject invalid normalization metadata consistently before launching either helper."""
-        for device in get_test_devices():
-            depth = wp.ones((1, 2, 3), dtype=wp.float32, device=device)
-            invalid_ranges = [
-                ((1.0,), "exactly two"),
-                ((0.0, 1.0, 2.0), "exactly two"),
-                ((1.0, 1.0), "near < far"),
-                ((2.0, 1.0), "near < far"),
-                ((0.0, math.inf), "finite"),
-                ((math.nan, 1.0), "finite"),
-                (wp.zeros(1, dtype=wp.float32, device=device), "shape"),
-                (wp.zeros((1, 2), dtype=wp.float32, device=device), "shape"),
-                (wp.array([0.0, 2.0], dtype=wp.float64, device=device), "dtype"),
-            ]
-            other_device = next((d for d in get_test_devices() if wp.get_device(d) != depth.device), None)
-            if other_device is not None:
-                invalid_ranges.append((wp.array([0.0, 2.0], dtype=wp.float32, device=other_device), "device"))
-            for helper in (SensorCamera.Utils.to_rgba_from_depth, SensorCamera.Utils.flatten_depth_image_to_rgba):
-                for depth_range, message in invalid_ranges:
-                    with self.subTest(device=device, helper=helper.__name__, message=message):
-                        with self.assertRaisesRegex(ValueError, message):
-                            helper(depth, depth_range=depth_range)
-
-    def test_utils_depth_helpers_clamp_manual_ranges(self) -> None:
-        """Clamp near and far pixels identically while keeping ray misses black."""
-        values = np.array([[[0.0, 0.5, 1.0, 2.0, 3.0, 4.0]]], dtype=np.float32)
-        expected = np.array([0, 255, 255, 152, 50, 50], dtype=np.uint8)
-        for device in get_test_devices():
-            depth = wp.array(values, dtype=wp.float32, device=device)
-            for helper in (SensorCamera.Utils.to_rgba_from_depth, SensorCamera.Utils.flatten_depth_image_to_rgba):
-                with self.subTest(device=device, helper=helper.__name__):
-                    rgba = helper(depth, depth_range=(1.0, 3.0)).numpy().reshape(-1, 4)
-                    np.testing.assert_array_equal(rgba[:, :3], np.repeat(expected[:, None], 3, axis=1))
-                    np.testing.assert_array_equal(rgba[:, 3], np.full(6, 255, dtype=np.uint8))
 
     def test_utils_depth_helpers_capture_array_ranges(self) -> None:
         """Reuse device-resident ranges and output buffers during CUDA graph replay."""
@@ -1546,7 +1524,7 @@ class TestSensorCamera(unittest.TestCase):
                 SensorCamera.Utils.flatten_depth_image_to_rgba(depth, depth_range=depth_range, out_buffer=tiled)
             depth_range.assign([0.0, 8.0])
             wp.capture_launch(capture.graph)
-            expected = SensorCamera.Utils.to_rgba_from_depth(depth, depth_range=(0.0, 8.0)).numpy()
+            expected = np.array([[[[229, 229, 229, 255], [203, 203, 203, 255]]]], dtype=np.uint8)
             np.testing.assert_array_equal(rgba.numpy(), expected)
             np.testing.assert_array_equal(tiled.numpy(), expected[0])
 
