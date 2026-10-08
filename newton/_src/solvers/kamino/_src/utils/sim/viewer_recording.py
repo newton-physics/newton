@@ -45,6 +45,7 @@ from types import MethodType
 import warp as wp
 
 from newton._src.solvers.kamino._src.utils import logger as msg
+from newton.viewer import ViewerBase
 
 __all__ = ["enable_recording"]
 
@@ -105,8 +106,8 @@ def enable_recording(
 
     Args:
         viewer: A Newton viewer instance (typically a ``ViewerGL`` returned by
-            ``newton.examples.init``). Must expose ``get_frame()`` and a
-            ``renderer`` with ``_screen_width`` / ``_screen_height``.
+            ``newton.examples.init``). Must implement ``get_frame()``.
+            Video dimensions are taken from the captured images.
         record_video: If False, this is a no-op.
         default_video_folder: Default output directory used by clips that do not
             pass an explicit ``video_folder`` to ``start_clip``. Not created
@@ -121,8 +122,11 @@ def enable_recording(
     if not record_video:
         return False
 
-    if not hasattr(viewer, "get_frame"):
-        msg.warning(f"enable_recording: viewer {type(viewer).__name__} has no get_frame(); recording disabled.")
+    get_frame = getattr(viewer, "get_frame", None)
+    if get_frame is None or getattr(get_frame, "__func__", None) is ViewerBase.get_frame:
+        msg.warning(
+            f"enable_recording: viewer {type(viewer).__name__} does not support frame capture; recording disabled."
+        )
         return False
 
     if getattr(viewer, "_recording", False):
@@ -219,12 +223,12 @@ def _finish_clip(self):
     recording.save_threads.clear()
 
     out_path = recording.clip_output_path
-    self.generate_video(
+    if self.generate_video(
         output_filename=out_path,
         fps=recording.clip_fps,
         keep_frames=recording.clip_keep_frames,
-    )
-    msg.notif(f"Video saved: {out_path}")
+    ):
+        msg.notif(f"Video saved: {out_path}")
 
     on_done = recording.clip_on_done
     recording.clip_max_frames = None
@@ -381,9 +385,11 @@ def _generate_video(
 
     msg.info(f"Generating video from {len(frame_files)} frames...")
     try:
+        with Image.open(frame_files[0]) as first_frame:
+            size = first_frame.size
         writer = ffmpeg.write_frames(
             output_filename,
-            size=(self.renderer._screen_width, self.renderer._screen_height),
+            size=size,
             fps=fps,
             codec=codec,
             macro_block_size=8,
@@ -392,8 +398,8 @@ def _generate_video(
         writer.send(None)
 
         for frame_path in frame_files:
-            img = Image.open(frame_path)
-            frame_array = np.array(img)
+            with Image.open(frame_path) as img:
+                frame_array = np.array(img)
             writer.send(frame_array)
 
         writer.close()

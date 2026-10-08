@@ -170,7 +170,12 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
         state, state_next = model.state(), model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
         control = model.control()
-        pipeline = newton.CollisionPipeline(model)
+        if native:
+            pipeline = newton.CollisionPipeline(
+                model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
+            )
+        else:
+            pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
 
         def step():
@@ -194,18 +199,13 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
         self.assertTrue(np.isfinite(state.body_q.numpy()).all())
         self.assertFalse(np.any(solver.mjw_data.overflow.numpy()))
         if native:
-            native_contacts = newton.Contacts(
-                rigid_contact_max=solver.get_max_contact_count(),
-                soft_contact_max=0,
-                device=model.device,
-                requested_attributes={"force"},
-            )
-            solver.update_contacts(native_contacts, state)
-            count = int(native_contacts.rigid_contact_count.numpy()[0])
-            self.assertEqual(int(native_contacts.n_contacts.numpy()[0]), count)
-            for field in (native_contacts.rigid_contact_shape0, native_contacts.rigid_contact_shape1):
+            observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+            solver.step(state, state_next, control, contacts, 0.002, observables=observables)
+            state, state_next = state_next, state
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            for field in (contacts.rigid_contact_shape0, contacts.rigid_contact_shape1):
                 self.assertTrue(np.all(np.isin(field.numpy()[:count], mapping[mapping >= 0])))
-            np.testing.assert_allclose(native_contacts.force.numpy()[:count, 2].sum(), -2.0 * 9.81, rtol=0.05)
+            np.testing.assert_allclose(observables.contact_f.numpy()[:count, 2].sum(), -2.0 * 9.81, rtol=0.05)
         ncon = int(solver.mjw_data.nacon.numpy()[0])
         worlds = solver.mjw_data.contact.worldid.numpy()[:ncon]
         geoms = solver.mjw_data.contact.geom.numpy()[:ncon]
