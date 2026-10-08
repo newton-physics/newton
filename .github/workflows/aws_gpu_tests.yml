@@ -144,6 +144,9 @@ jobs:
     env:
       HOME: /actions-runner
       PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
+      OVRTX_REQUIREMENT: ovrtx==0.5.0.377615
+      OVSTAGE_REQUIREMENT: ovstage==0.2.0.377349
+      OVRTX_SHADER_CACHE: /actions-runner/.cache/ovrtx-nv-shadercache
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
@@ -164,6 +167,7 @@ jobs:
         run: |
           nvidia-smi --query-gpu=name,compute_cap --format=csv | tee -a "$GITHUB_STEP_SUMMARY"
           echo "sm=sm$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.')" >> "$GITHUB_OUTPUT"
+          echo "driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)" >> "$GITHUB_OUTPUT"
 
       # Warp kernel binaries are architecture-specific, so each GPU type keeps its own cache.
       # Post-submit (push) runs start cold to catch stale-cache issues without
@@ -188,11 +192,31 @@ jobs:
           COVERAGE_CORE: "sysmon"
         run: uv run --extra dev --extra torch-cu13 -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
+      # The first OVRTX renderer otherwise spends minutes compiling Vulkan
+      # shaders in the driver. Those are specific to the GPU and driver.
+      - name: Restore OVRTX shader cache
+        id: restore-ovrtx-shader-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: ${{ env.OVRTX_SHADER_CACHE }}
+          key: ovrtx-nv-shadercache-${{ steps.gpu-arch.outputs.sm }}-${{ steps.gpu-arch.outputs.driver }}-${{ env.OVRTX_REQUIREMENT }}
+          restore-keys: |
+            ovrtx-nv-shadercache-${{ steps.gpu-arch.outputs.sm }}-${{ steps.gpu-arch.outputs.driver }}-
+
+      # OVRTX keeps the driver shader cache inside its installed package.
+      - name: Link OVRTX shader cache
+        run: |
+          ovrtx_dir=$(uv run --extra dev --with "$OVRTX_REQUIREMENT" --with "$OVSTAGE_REQUIREMENT" \
+            python -c "import os, ovrtx; print(os.path.dirname(ovrtx.__file__))" | tail -n1)
+          mkdir -p "$OVRTX_SHADER_CACHE"
+          rm -rf "$ovrtx_dir/bin/cache/nv_shadercache"
+          ln -s "$OVRTX_SHADER_CACHE" "$ovrtx_dir/bin/cache/nv_shadercache"
+
       - name: Test ViewerRTX with OVRTX 0.5
         run: >
           uv run --extra dev
-          --with ovrtx==0.5.0.377615
-          --with ovstage==0.2.0.377349
+          --with "$OVRTX_REQUIREMENT"
+          --with "$OVSTAGE_REQUIREMENT"
           -m newton.tests
           -k test_viewer_rtx
           --strict-warnings
@@ -201,13 +225,20 @@ jobs:
       - name: Smoke test ViewerRTX rendering with OVRTX 0.5
         run: >
           uv run --extra dev
-          --with ovrtx==0.5.0.377615
-          --with ovstage==0.2.0.377349
+          --with "$OVRTX_REQUIREMENT"
+          --with "$OVSTAGE_REQUIREMENT"
           python -W error::DeprecationWarning
           -m newton.examples basic_viewer
           --viewer rtx
           --headless
           --num-frames 2
+
+      - name: Save OVRTX shader cache
+        if: github.event_name != 'merge_group' && steps.restore-ovrtx-shader-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: ${{ env.OVRTX_SHADER_CACHE }}
+          key: ovrtx-nv-shadercache-${{ steps.gpu-arch.outputs.sm }}-${{ steps.gpu-arch.outputs.driver }}-${{ env.OVRTX_REQUIREMENT }}
 
       # Merge queue caches are scoped to throwaway gh-readonly-queue refs.
       # Cache keys are immutable, so cold runs only save when the key is new.
