@@ -64,7 +64,6 @@ Use the lists to identify assets while composing or cloning a builder:
    prototype.add_rod(
        rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
        label="cable",
-       body_frame_origin="com",
    )
 
    # Replace a template name with the application's asset name.

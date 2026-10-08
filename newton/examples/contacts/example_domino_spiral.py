@@ -122,7 +122,6 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=10,
-                rigid_compliant_alm=True,
             )
         elif self.solver_name == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=2048, nconmax=1024, cone="elliptic")

@@ -472,6 +472,8 @@ def main(argv=None):
         expected_failures = 0
         unexpected_successes = 0
         test_records = []  # NVIDIA Modification
+        cleanup_count = 0
+        cleanup_seconds = 0.0
         for result in results:
             tests_run += result[0]
             errors.extend(result[1])
@@ -480,6 +482,8 @@ def main(argv=None):
             expected_failures += result[4]
             unexpected_successes += result[5]
             test_records += result[6]  # NVIDIA Modification
+            cleanup_count += result[7]
+            cleanup_seconds += result[8]
         is_success = not (errors or failures or unexpected_successes)
 
         # Compute test info
@@ -508,6 +512,10 @@ def main(argv=None):
         # Test report
         print(unittest.TextTestResult.separator2, file=sys.stderr)
         print(f"Ran {tests_run} {'tests' if tests_run > 1 else 'test'} in {test_duration:.3f}s", file=sys.stderr)
+        print(
+            f"Allocation cleanup: {cleanup_count} collections, {cleanup_seconds:.3f}s total worker time",
+            file=sys.stderr,
+        )
         print(file=sys.stderr)
         print(f"{'OK' if is_success else 'FAILED'}{' (' + ', '.join(infos) + ')' if infos else ''}", file=sys.stderr)
 
@@ -570,6 +578,8 @@ def _parallel_timeout_result(timeout_seconds):
         0,
         0,
         [("unittest_parallel", "parallel_timeout", float(timeout_seconds), "ERROR", message, details)],
+        0,
+        0.0,
     )
 
 
@@ -664,7 +674,7 @@ class ParallelTestManager:
         # Fail fast?
         try:
             if self.failfast.is_set():
-                return [0, [], [], 0, 0, 0, []]  # NVIDIA Modification
+                return [0, [], [], 0, 0, 0, [], 0, 0.0]  # NVIDIA Modification
         except self._PROXY_ERRORS as exc:
             print(
                 f"Warning: failfast proxy is_set() failed ({type(exc).__name__}), continuing test execution",
@@ -714,7 +724,6 @@ class ParallelTestManager:
                         file=sys.stderr,
                     )
 
-            # Return (test_count, errors, failures, skipped_count, expected_failure_count, unexpected_success_count)
             return (
                 result.testsRun,
                 [self._format_error(result, error) for error in result.errors],
@@ -723,6 +732,8 @@ class ParallelTestManager:
                 len(result.expectedFailures),
                 len(result.unexpectedSuccesses),
                 result.test_record,  # NVIDIA modification
+                result.cleanup_count,
+                result.cleanup_seconds,
             )
 
     @staticmethod

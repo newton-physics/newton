@@ -20,6 +20,42 @@ except ModuleNotFoundError as exc:
         raise
     generate_api = None
 
+try:
+    from docs._ext import autodoc_filter
+except ModuleNotFoundError as exc:
+    if exc.name not in ("docs", "sphinx"):
+        raise
+    autodoc_filter = None
+
+
+@unittest.skipUnless(autodoc_filter is not None, "requires a source checkout and the docs extra")
+class TestObservableFieldDocs(unittest.TestCase):
+    """Keep source-documented None defaults visible in the generated API."""
+
+    def setUp(self):
+        """Provide Sphinx's public-module class context for attribute lookup."""
+        self.app = SimpleNamespace(
+            env=SimpleNamespace(
+                current_document=SimpleNamespace(autodoc_module="newton.solvers", autodoc_class="SolverObservables")
+            )
+        )
+
+    def test_documented_observable_fields_are_included(self):
+        """Retain dataclass fields with attribute docstrings and None defaults."""
+        for name in ("body_qdd", "body_parent_f", "contact_f"):
+            with self.subTest(name=name):
+                self.assertIsNone(autodoc_filter._should_skip_member(self.app, "class", name, None, False, None))
+
+    def test_undocumented_and_private_defaults_stay_hidden(self):
+        """Do not expose undocumented placeholders or private container metadata."""
+        for name in ("undocumented", "_solver"):
+            with self.subTest(name=name):
+                self.assertTrue(autodoc_filter._should_skip_member(self.app, "class", name, None, False, None))
+
+    def test_existing_skip_decision_is_preserved(self):
+        """Respect a prior autodoc decision to omit a member."""
+        self.assertTrue(autodoc_filter._should_skip_member(self.app, "class", "body_qdd", None, True, None))
+
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
 class TestGenerateApiPublicSymbols(unittest.TestCase):
