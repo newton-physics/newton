@@ -161,7 +161,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             model=self.model,
             iterations=self.iterations,
-            rigid_compliant_alm=False,
             particle_enable_self_contact=False,
             particle_enable_tile_solve=False,
         )
