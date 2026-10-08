@@ -604,9 +604,15 @@ class Example:
         if custom_setup_fn is not None:
             custom_setup_fn(articulation_builder)
 
+        builder = newton.ModelBuilder()
+        builder.rigid_gap = articulation_builder.rigid_gap
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
+        if robot != "cartpole":
+            # Disable all collisions for the cartpole benchmark
+            builder.add_ground_plane()
+
         with _startup_phase(startup_phase_times, "replication"):
-            builder = newton.ModelBuilder()
-            builder.rigid_gap = articulation_builder.rigid_gap
             builder.replicate(articulation_builder, world_count)
         if randomize:
             njoint = len(articulation_builder.joint_q)
@@ -615,11 +621,6 @@ class Example:
                 builder.joint_q[istart + root_dofs : istart + njoint] = rng.uniform(
                     -1.0, 1.0, size=(njoint - root_dofs)
                 ).tolist()
-        builder.default_shape_cfg.ke = 1.0e3
-        builder.default_shape_cfg.kd = 1.0e2
-        if robot != "cartpole":
-            # Disable all collisions for the cartpole benchmark
-            builder.add_ground_plane()
         return builder
 
     @staticmethod
