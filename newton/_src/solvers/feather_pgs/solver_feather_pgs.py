@@ -5763,10 +5763,10 @@ class SolverFeatherPGS(SolverBase):
         Returns:
             ``state_out``.
         """
-        self.validate_observables(observables, contacts)
         if self.contact_compliance:
             # Reject unsupported state before any stage can launch work.
             _contact_compliance.validate_step(self)
+        self.validate_observables(observables, contacts)
         if self.pgs_debug and self.model.device.is_cuda and wp.get_stream(self.model.device).is_capturing:
             raise RuntimeError(
                 "pgs_debug synchronizes with the host every iteration; it does not support CUDA graph capture"
@@ -5843,7 +5843,7 @@ class SolverFeatherPGS(SolverBase):
         if self.sleeping is not None and body_parent_f is not None and body_parent_f is not state_out.body_parent_f:
             # An observable is overwritten in place, so keep the wrenches that frozen bodies republish.
             parent_f_source = self.sleeping.snapshot_parent_wrenches(body_parent_f)
-        self._stage1_joint_tau(state_in, state_aug, control, dt, body_parent_f)
+        self._stage1_joint_tau(state_in, state_aug, state_out, control, dt, body_parent_f)
         self._stage1_crba(state_aug)
 
         # Stage 2: factor the augmented mass matrix of every articulation group.
@@ -7364,7 +7364,13 @@ class SolverFeatherPGS(SolverBase):
         return stage3_qd
 
     def _stage1_joint_tau(
-        self, state_in: State, state_aug: State, control: Control, dt: float, body_parent_f: wp.array | None
+        self,
+        state_in: State,
+        state_aug: State,
+        state_out: State,
+        control: Control,
+        dt: float,
+        body_parent_f: wp.array | None = None,
     ):
         """Accumulate ``joint_tau`` and the implicit-drive mass terms.
 
@@ -7375,8 +7381,10 @@ class SolverFeatherPGS(SolverBase):
         ``maxForce``). The implicit part ``K = dt * kd + dt^2 * ke`` is stored in
         ``aug_row_K`` and added to the mass-matrix diagonal by :meth:`_stage1_crba`. With
         ``drive_mode="physx_pgs"`` drives contribute nothing here; their rows are solved
-        with the constraints.
+        with the constraints. ``body_parent_f`` defaults to ``state_out.body_parent_f``.
         """
+        if body_parent_f is None:
+            body_parent_f = state_out.body_parent_f
         model = self.model
         body_f = state_in.body_f if state_in.body_count else None
         state_aug.body_ft_s.zero_()
