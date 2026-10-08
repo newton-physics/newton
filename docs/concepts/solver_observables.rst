@@ -121,7 +121,8 @@ Standard observables
    * - ``BODY_PARENT_F`` / ``observables.body_parent_f``
      - Incoming parent-joint wrenches on rigid bodies
      - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
-       :class:`~newton.solvers.SolverFeatherstone`, and
+       :class:`~newton.solvers.SolverFeatherstone`,
+       :class:`~newton.solvers.SolverFeatherPGS`, and
        :class:`~newton.solvers.SolverXPBD`
    * - ``CONTACT_F`` / ``observables.contact_f``
      - Contact spatial forces aligned with the bound contacts

@@ -66,6 +66,7 @@ class _SleepState:
         self.last_body_q = wp.clone(model.body_q)
         self.last_body_qd = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
         self.last_gravity = wp.clone(model.gravity)
+        self.last_parent_wrenches = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
         articulation_world = model.articulation_world.numpy()
         gravity_world = articulation_world.copy()
         gravity_world[gravity_world < 0] = model.gravity.size - 1
@@ -403,7 +404,12 @@ class _SleepState:
                     device=device,
                 )
 
-    def finish(self, state_in, state_out, state_aug, dt):
+    def snapshot_parent_wrenches(self, body_parent_f):
+        """Copy the published joint wrenches before a step overwrites them in place."""
+        wp.copy(self.last_parent_wrenches, body_parent_f)
+        return self.last_parent_wrenches
+
+    def finish(self, state_in, state_out, state_aug, dt, parent_f_source=None, parent_f_target=None):
         """Freeze quiet supported islands and publish synchronized state history."""
         model = self.model
         device = model.device
@@ -520,7 +526,7 @@ class _SleepState:
             ],
             device=device,
         )
-        if state_out.body_parent_f is not None and state_in.body_parent_f is not None:
+        if parent_f_target is not None and parent_f_source is not None:
             # A frozen body keeps the joint wrench published before it fell asleep.
             wp.launch(
                 _freeze_parent_wrenches,
@@ -531,8 +537,8 @@ class _SleepState:
                     self.art_awake,
                     self.step_asleep,
                     self.root_veto,
-                    state_in.body_parent_f,
-                    state_out.body_parent_f,
+                    parent_f_source,
+                    parent_f_target,
                 ],
                 device=device,
             )

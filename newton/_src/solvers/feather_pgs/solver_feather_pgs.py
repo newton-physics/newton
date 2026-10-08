@@ -19,6 +19,7 @@ from ...core.types import Vec3, override
 from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk
+from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
 from . import contact_compliance as _contact_compliance
 from .contact_torsion import (
@@ -1218,9 +1219,10 @@ class SolverFeatherPGS(SolverBase):
     collision groups allow such contacts. Use world geometry or a kinematic free body for
     scenery shared by all worlds, or add the body to every world.
 
-    Extended state attributes:
-        :attr:`~newton.State.body_parent_f` is populated when requested via
-        :meth:`~newton.ModelBuilder.request_state_attributes`. As in
+    Solver observables:
+        :attr:`~newton.solvers.SolverObservables.body_parent_f` is populated when
+        :attr:`~newton.solvers.SolverObservableFlags.BODY_PARENT_F` is requested from
+        :meth:`~newton.solvers.SolverBase.observables`. As in
         :class:`~newton.solvers.SolverFeatherstone`, it is the per-body net spatial wrench
         of the inverse-dynamics backward pass at the start of the step, translated to the
         body's center of mass (linear force [N] first, torque [N·m] second, world frame).
@@ -1239,6 +1241,8 @@ class SolverFeatherPGS(SolverBase):
                 solver.step(state_in, state_out, control, contacts, dt)
                 state_in, state_out = state_out, state_in
     """
+
+    SUPPORTED_OBSERVABLE_FLAGS = frozenset({SolverObservableFlags.BODY_PARENT_F})
 
     # Test hook: pin a kernel implementation regardless of the size heuristic
     # (keys: cholesky_kernel, trisolve_kernel, hinv_jt_kernel; split mode also
@@ -4745,14 +4749,13 @@ class SolverFeatherPGS(SolverBase):
             self._H_bufs = (self.H_by_size, {size: wp.zeros_like(h) for size, h in self.H_by_size.items()})
             self._J_bufs = (self.J_by_size, {size: wp.zeros_like(j) for size, j in self.J_by_size.items()})
 
-        max_contacts = int(model.rigid_contact_max)
-        if max_contacts <= 0:
-            # The collision pipeline may manage its own capacity and leave
-            # model.rigid_contact_max unset; use the same estimator.
+        max_contacts = model.rigid_contact_max
+        if max_contacts is None:
+            # No collision pipeline has published a capacity yet; use the pipeline's estimator.
             from ...sim.collide import _estimate_rigid_contact_max  # noqa: PLC0415
 
-            max_contacts = int(_estimate_rigid_contact_max(model))
-        max_contacts = max(max_contacts, 1)
+            max_contacts = _estimate_rigid_contact_max(model)
+        max_contacts = max(int(max_contacts), 1)
         self._max_contacts_alloc = max_contacts
         self.contact_world = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
         self.contact_slot = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
@@ -5740,6 +5743,8 @@ class SolverFeatherPGS(SolverBase):
         control: Control | None,
         contacts: Contacts | None,
         dt: float,
+        *,
+        observables: SolverObservables | None = None,
     ) -> State:
         """Advance the simulation by one time step.
 
@@ -5753,10 +5758,12 @@ class SolverFeatherPGS(SolverBase):
                 The buffer must not hold more contacts than ``model.rigid_contact_max``
                 allowed when the solver was constructed.
             dt: Time step [s].
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
 
         Returns:
             ``state_out``.
         """
+        self.validate_observables(observables, contacts)
         if self.contact_compliance:
             # Reject unsupported state before any stage can launch work.
             _contact_compliance.validate_step(self)
@@ -5775,15 +5782,24 @@ class SolverFeatherPGS(SolverBase):
                 "pgs_warmstart=True matches contacts across steps and requires a Contacts buffer created "
                 'with contact matching; create the CollisionPipeline with contact_matching="latest".'
             )
+        body_parent_f = state_out.body_parent_f
+        if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F):
+            body_parent_f = observables.body_parent_f
         if self._nvtx is None:
-            return self._advance(state_in, state_out, control, contacts, dt)
+            return self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
         try:
-            return self._advance(state_in, state_out, control, contacts, dt)
+            return self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
         finally:
             self._nvtx_stage(None)
 
     def _advance(
-        self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
+        self,
+        state_in: State,
+        state_out: State,
+        control: Control | None,
+        contacts: Contacts | None,
+        dt: float,
+        body_parent_f: wp.array | None,
     ) -> State:
         """Run the stages of :meth:`step` after its input checks."""
         if self._contact_torsion_enabled:
@@ -5823,7 +5839,11 @@ class SolverFeatherPGS(SolverBase):
         # Stage 1: forward kinematics, inverse dynamics with implicit drives, and CRBA.
         self._nvtx_stage("fk_id_crba")
         stage3_qd = self._stage1_fk_id(state_in, state_aug, state_out)
-        self._stage1_joint_tau(state_in, state_aug, state_out, control, dt)
+        parent_f_source = state_in.body_parent_f
+        if self.sleeping is not None and body_parent_f is not None and body_parent_f is not state_out.body_parent_f:
+            # An observable is overwritten in place, so keep the wrenches that frozen bodies republish.
+            parent_f_source = self.sleeping.snapshot_parent_wrenches(body_parent_f)
+        self._stage1_joint_tau(state_in, state_aug, control, dt, body_parent_f)
         self._stage1_crba(state_aug)
 
         # Stage 2: factor the augmented mass matrix of every articulation group.
@@ -5974,7 +5994,13 @@ class SolverFeatherPGS(SolverBase):
             self._integrate(state_in, state_aug, state_out, dt, self.v_out)
         self._stage7_update_kinematics(state_out)
         if self.sleeping is not None:
-            self.sleeping.finish(state_in, state_out, state_aug, dt)
+            self.sleeping.finish(state_in, state_out, state_aug, dt, parent_f_source, body_parent_f)
+        if (
+            body_parent_f is not None
+            and state_out.body_parent_f is not None
+            and state_out.body_parent_f.ptr != body_parent_f.ptr
+        ):
+            state_out.body_parent_f.assign(body_parent_f)
 
         if self._friction_anchors_enabled:
             if has_contacts:
@@ -7337,7 +7363,9 @@ class SolverFeatherPGS(SolverBase):
             )
         return stage3_qd
 
-    def _stage1_joint_tau(self, state_in: State, state_aug: State, state_out: State, control: Control, dt: float):
+    def _stage1_joint_tau(
+        self, state_in: State, state_aug: State, control: Control, dt: float, body_parent_f: wp.array | None
+    ):
         """Accumulate ``joint_tau`` and the implicit-drive mass terms.
 
         After this call ``state_aug.joint_tau`` holds the rigid-body bias (Coriolis, gravity,
@@ -7444,7 +7472,7 @@ class SolverFeatherPGS(SolverBase):
                 block_dim=self._serial_kernel_block_dim,
                 device=model.device,
             )
-        if state_out.body_parent_f is not None:
+        if body_parent_f is not None:
             wp.launch(
                 compute_body_parent_f,
                 dim=model.body_count,
@@ -7458,7 +7486,7 @@ class SolverFeatherPGS(SolverBase):
                     state_in.body_q,
                     model.body_com,
                 ],
-                outputs=[state_out.body_parent_f],
+                outputs=[body_parent_f],
                 device=model.device,
             )
 

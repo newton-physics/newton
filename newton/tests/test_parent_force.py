@@ -312,6 +312,7 @@ for device in devices:
             ("test_parent_force_static_pendulum", test_parent_force_static_pendulum),
             ("test_parent_force_centrifugal", test_parent_force_centrifugal),
             ("test_apply_body_f", test_apply_body_f),
+            ("test_parent_force_solver_observables", test_parent_force_solver_observables),
         ):
             add_function_test(
                 TestParentForce,
@@ -325,6 +326,7 @@ for device in devices:
         ("test_parent_force_static_pendulum", test_parent_force_static_pendulum),
         ("test_parent_force_centrifugal", test_parent_force_centrifugal),
         ("test_apply_body_f", test_apply_body_f),
+        ("test_parent_force_solver_observables", test_parent_force_solver_observables),
     ):
         add_function_test(
             TestParentForce,

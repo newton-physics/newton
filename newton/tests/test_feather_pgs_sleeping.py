@@ -37,13 +37,13 @@ def _scene(device, *, enabled=True, ground=True, stack=False):
     return model, pipeline, solver, [model.state(), model.state()], model.control()
 
 
-def _advance(pipeline, solver, states, control, steps, *, clear=True):
+def _advance(pipeline, solver, states, control, steps, *, clear=True, observables=None):
     contacts = pipeline.contacts()
     for _ in range(steps):
         if clear:
             states[0].clear_forces()
         pipeline.collide(states[0], contacts)
-        solver.step(states[0], states[1], control, contacts, DT)
+        solver.step(states[0], states[1], control, contacts, DT, observables=observables)
         states.reverse()
 
 
@@ -171,21 +171,47 @@ def test_cuda_graph_sleep_and_wake(test, device):
     np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 0])
 
 
-def test_sleeping_body_keeps_its_parent_wrench(test, device):
-    """Publish the last awake joint wrench of a sleeping body instead of a skipped dynamics result."""
+def _parent_wrench_scene(device):
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
     for x in (0.0, 0.5):
         body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.1), wp.quat_identity()))
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
     model = builder.finalize(device=device)
-    model.request_state_attributes("body_parent_f")
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
+    return model, pipeline
+
+
+def test_sleeping_body_keeps_its_parent_wrench(test, device):
+    """Publish the last awake joint wrench of a sleeping body instead of a skipped dynamics result."""
+    model, pipeline = _parent_wrench_scene(device)
     solver = SolverFeatherPGS(
         model, pgs_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
     )
     reference = SolverFeatherPGS(model, pgs_mode="matrix_free", friction_anchor_beta=0.0)
+    flags = {newton.solvers.SolverObservableFlags.BODY_PARENT_F}
+    observables, reference_observables = solver.observables(flags), reference.observables(flags)
     states, reference_states = [model.state(), model.state()], [model.state(), model.state()]
+    control = model.control()
+    _advance(pipeline, solver, states, control, 120, observables=observables)
+    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    asleep = observables.body_parent_f.numpy().copy()
+    _advance(pipeline, solver, states, control, 10, observables=observables)
+    np.testing.assert_array_equal(observables.body_parent_f.numpy(), asleep)
+    # The frozen value is the resting value an always-awake solver publishes.
+    _advance(pipeline, reference, reference_states, control, 130, observables=reference_observables)
+    np.testing.assert_allclose(asleep, reference_observables.body_parent_f.numpy(), rtol=0.0, atol=1.0e-3)
+
+
+def test_sleeping_body_keeps_its_legacy_parent_wrench(test, device):
+    """Freeze the deprecated State.body_parent_f output of a sleeping body as well."""
+    model, pipeline = _parent_wrench_scene(device)
+    with test.assertWarns(DeprecationWarning):
+        model.request_state_attributes("body_parent_f")
+    solver = SolverFeatherPGS(
+        model, pgs_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
+    )
+    states = [model.state(), model.state()]
     test.assertIsNotNone(states[0].body_parent_f)
     control = model.control()
     _advance(pipeline, solver, states, control, 120)
@@ -194,9 +220,6 @@ def test_sleeping_body_keeps_its_parent_wrench(test, device):
     _advance(pipeline, solver, states, control, 10)
     np.testing.assert_array_equal(states[0].body_parent_f.numpy(), asleep)
     np.testing.assert_array_equal(states[1].body_parent_f.numpy(), asleep)
-    # The frozen value is the resting value an always-awake solver publishes.
-    _advance(pipeline, reference, reference_states, control, 130)
-    np.testing.assert_allclose(asleep, reference_states[0].body_parent_f.numpy(), rtol=0.0, atol=1.0e-3)
 
 
 devices = get_cuda_test_devices()
@@ -217,6 +240,7 @@ for _name in (
     "test_stack_wakes_together",
     "test_cuda_graph_sleep_and_wake",
     "test_sleeping_body_keeps_its_parent_wrench",
+    "test_sleeping_body_keeps_its_legacy_parent_wrench",
 ):
     add_function_test(TestFeatherPGSSleeping, _name, globals()[_name], devices=devices)
 

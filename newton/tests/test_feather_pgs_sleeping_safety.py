@@ -192,7 +192,8 @@ def test_aliased_states_are_rejected(test, device):
 def test_extended_state_outputs_are_accepted(test, device):
     """Sleep with requested acceleration and joint-wrench outputs, which FeatherPGS leaves untouched."""
     model = _boxes(1, device)
-    model.request_state_attributes("body_qdd", "body_parent_f")
+    with test.assertWarns(DeprecationWarning):
+        model.request_state_attributes("body_qdd", "body_parent_f")
     pipeline, solver, state_in, state_out, control = _runtime(model)
     test.assertIsNotNone(state_in.body_parent_f)
     contacts = pipeline.contacts()

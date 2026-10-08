@@ -16,12 +16,15 @@ DT = 1.0 / 120.0
 BOX_MASS = 2.0
 
 
-def _box_on_ground(device, gravity=None, mu=None):
+def _box_on_ground(device, gravity=None, mu=None, *, legacy_force_test=None):
+    """Box resting on the ground; ``legacy_force_test`` requests the deprecated ``Contacts.force``."""
     builder = newton.ModelBuilder() if gravity is None else newton.ModelBuilder(gravity=gravity)
     shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
     if mu is not None:
         shape_cfg.mu = mu
-    builder.request_contact_attributes("force")
+    if legacy_force_test is not None:
+        with legacy_force_test.assertWarns(DeprecationWarning):
+            builder.request_contact_attributes("force")
     # Solid-cube inertia for a 0.2 m box of mass BOX_MASS.
     inertia = wp.mat33(np.eye(3) * BOX_MASS * 0.04 / 6.0)
     body = builder.add_body(
@@ -34,7 +37,7 @@ def _box_on_ground(device, gravity=None, mu=None):
 
 def test_resting_box_reports_weight_as_linear_force(test, device, pgs_mode="matrix_free", response="immediate"):
     """Report the resting box's weight through the linear contact force and leave the torque zero."""
-    model = _box_on_ground(device)
+    model = _box_on_ground(device, legacy_force_test=test)
     solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, pgs_iterations=32, articulated_contact_response=response)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
