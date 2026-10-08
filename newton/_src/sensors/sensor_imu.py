@@ -3,16 +3,20 @@
 
 """IMU Sensor - measures accelerations and angular velocities at sensor sites."""
 
+import logging
 import re
 import warnings
 
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning
 from ..geometry.flags import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
 from ..solvers.observables import SolverObservableFlags, SolverObservables
 from ..utils.selection import match_labels
+
+logger = logging.getLogger(__name__)
 
 
 @wp.kernel
@@ -146,7 +150,7 @@ class SensorIMU:
             sites: Glob pattern, list of glob patterns, compiled regular-expression
                 pattern to match against site labels, or list of site indices. Regular
                 expressions use full matching.
-            verbose: If True, print details. If False, suppress details. If None, print details when
+            verbose: If True, log details. If False, suppress details. If None, log details when
                 ``wp.config.log_level`` is configured for debug logging.
             request_state_attributes: If True, request the deprecated extended
                 state attribute ``body_qdd`` from the model. Defaults to True for
@@ -181,7 +185,7 @@ class SensorIMU:
                 "pass request_state_attributes=False, allocate SolverObservables with "
                 "solver.observables(sensor.solver_observable_flags), pass them to solver.step(observables=...), "
                 "and pass them to update(..., observables=...).",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
             self.model._request_state_attributes("body_qdd")
@@ -192,8 +196,7 @@ class SensorIMU:
         self.gyroscope = wp.zeros(self.n_sensors, dtype=wp.vec3, device=model.device)
 
         if self.verbose:
-            print("SensorIMU initialized:")
-            print(f"  Sites: {len(set(sites))}")
+            logger.info("SensorIMU initialized:\n  Sites: %s", len(set(sites)))
             # TODO: body per site
 
     def _validate_sensor_sites(self, sensor_sites: list[int]):

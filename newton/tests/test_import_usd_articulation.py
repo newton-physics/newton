@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import contextlib
-import io
 import math
 import os
 import unittest
@@ -945,11 +943,8 @@ def Xform "World"
         stage.GetRootLayer().ImportFromString(usd_text)
 
         builder = newton.ModelBuilder()
-        stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        with self.assertNoLogs("newton", level="WARNING"):
             builder.add_usd(stage)
-
-        self.assertNotIn("Non-uniform scaling of spheres", stdout.getvalue())
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_sphere_non_uniform_scale_warns(self):
@@ -984,11 +979,10 @@ def Xform "World"
         stage.GetRootLayer().ImportFromString(usd_text)
 
         builder = newton.ModelBuilder()
-        stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder.add_usd(stage)
 
-        output = stdout.getvalue()
+        output = "\n".join(logs.output)
         self.assertIn("Non-uniform scaling of spheres", output)
         self.assertIn("/World/Body/SquashedCollision", output)
 

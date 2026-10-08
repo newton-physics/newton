@@ -13,6 +13,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.texture import compute_texture_hash
 
@@ -2304,6 +2305,7 @@ class TetMesh:
                 warnings.warn(
                     f"Custom attribute '{name}' with frequency {freq} cannot be saved to meshio format "
                     f"(only PARTICLE and TETRAHEDRON are supported). Skipping.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -2723,12 +2725,12 @@ class Gaussian:
         .. deprecated:: 1.6
             Use the :class:`Data` object returned by :meth:`finalize` instead.
         """
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._warp_data
 
     @warp_data.setter
     def warp_data(self, value: "Gaussian.Data | None") -> None:
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._warp_data = value
 
     @property
@@ -2738,12 +2740,12 @@ class Gaussian:
         .. deprecated:: 1.6
             Use :attr:`bvh` instead.
         """
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._warp_bvh
 
     @warp_bvh.setter
     def warp_bvh(self, value: wp.Bvh | None) -> None:
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._warp_bvh = value
 
     def _find_sh_degree(self) -> int:

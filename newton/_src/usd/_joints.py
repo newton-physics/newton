@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -12,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
@@ -29,6 +31,8 @@ if TYPE_CHECKING:
     from ..core.types import Axis
     from ._resolution_policy import _UsdJointProperties
     from .schema_resolver import SchemaResolverManager
+
+logger = logging.getLogger(__name__)
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -60,7 +64,7 @@ def resolve_joint_parent_child(
         if get_transforms:
             parent_tf, child_tf = child_tf, parent_tf
         if verbose:
-            print(f"Joint {joint_desc.primPath} connects {parent_path} to world")
+            logger.info("Joint %s connects %s to world", joint_desc.primPath, parent_path)
     if get_transforms:
         return parent_id, child_id, parent_tf, child_tf
     else:
@@ -194,6 +198,7 @@ def parse_joint(
             warnings.warn(
                 f"Ignoring {usd_attrs} on native D6 joint {joint_path}: "
                 "MuJoCo has no D6 joint or corresponding reference-coordinate semantics.",
+                NewtonWarning,
                 stacklevel=2,
             )
             for attr_key in unsupported_ref_attrs:
@@ -452,12 +457,12 @@ def parse_joint(
             builder.joint_q[builder.joint_q_start[joint_index]] = initial_position
             if verbose:
                 unit = "rad" if key == UsdPhysics.ObjectType.RevoluteJoint else "m"
-                print(f"Set {joint_type_str} joint {joint_index} position to {initial_position} ({unit})")
+                logger.info("Set %s joint %s position to %s (%s)", joint_type_str, joint_index, initial_position, unit)
         if initial_velocity is not None:
             builder.joint_qd[builder.joint_qd_start[joint_index]] = initial_velocity
             if verbose:
                 unit = "rad/s" if key == UsdPhysics.ObjectType.RevoluteJoint else "m/s"
-                print(f"Set {joint_type_str} joint {joint_index} velocity to {initial_velocity} {unit}")
+                logger.info("Set %s joint %s velocity to %s %s", joint_type_str, joint_index, initial_velocity, unit)
     elif key == UsdPhysics.ObjectType.D6Joint:
         # Apply D6 joint initial state
         q_start = builder.joint_q_start[joint_index]
@@ -484,13 +489,21 @@ def parse_joint(
                 coord_val = pos * DegreesToRadian if is_rot else pos
                 builder.joint_q[q_start + dof_idx] = coord_val
                 if verbose:
-                    print(f"Set D6 joint {joint_index} {axis_name} position to {pos} ({'deg' if is_rot else 'm'})")
+                    logger.info(
+                        "Set D6 joint %s %s position to %s (%s)", joint_index, axis_name, pos, "deg" if is_rot else "m"
+                    )
 
             if vel is not None and qd_start + dof_idx < qd_end:
                 vel_val = vel * DegreesToRadian if is_rot else vel
                 builder.joint_qd[qd_start + dof_idx] = vel_val
                 if verbose:
-                    print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} ({'deg/s' if is_rot else 'm/s'})")
+                    logger.info(
+                        "Set D6 joint %s %s velocity to %s (%s)",
+                        joint_index,
+                        axis_name,
+                        vel,
+                        "deg/s" if is_rot else "m/s",
+                    )
 
     return joint_index
 
@@ -590,6 +603,7 @@ def parse_merged_joints(
             warnings.warn(
                 f"Merged joint {jp} has different anchor positions than representative "
                 f"{first_desc.primPath}; using representative positions for the D6 joint.",
+                NewtonWarning,
                 stacklevel=2,
             )
             break
@@ -773,9 +787,12 @@ def parse_merged_joints(
             builder.joint_qd[qd_start + dof_idx] = vel
 
     if verbose:
-        print(
-            f"Merged {len(joint_paths)} joints into D6 joint {joint_index}: "
-            f"{len(linear_axes)} linear + {len(angular_axes)} angular DOFs"
+        logger.info(
+            "Merged %s joints into D6 joint %s: %s linear + %s angular DOFs",
+            len(joint_paths),
+            joint_index,
+            len(linear_axes),
+            len(angular_axes),
         )
 
     return joint_index

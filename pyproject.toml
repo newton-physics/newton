@@ -203,6 +203,7 @@ select = [
     "UP",  # pyupgrade
     "RUF",  # ruff-specific rules
     "TID253",  # banned module-level imports
+    "T201",  # print; library code logs instead
 ]
 ignore = [
     "E501",   # Many lines are over 120 characters already (TODO: Fix)
@@ -226,6 +227,10 @@ extend-immutable-calls = ["newton.solvers.SolverObservables.field"]
 # TID253 (banned module-level imports) only applies to newton/_src and newton/tests
 "docs/**/*" = ["TID253"]
 "asv/**/*" = ["TID253"]
+# T201 (print) only applies to library code in newton/_src
+"!newton/_src/**/*" = ["T201"]
+"newton/_src/**/tests/**/*" = ["T201"]
+"newton/_src/solvers/kamino/examples/**/*" = ["T201"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 banned-module-level-imports = [

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Iterable, Mapping
 from collections.abc import Set as AbstractSet
@@ -26,6 +27,8 @@ try:
     HAS_CBOR2 = True
 except ImportError:
     HAS_CBOR2 = False
+
+logger = logging.getLogger(__name__)
 
 
 T = TypeVar("T")
@@ -953,11 +956,11 @@ def _resolve_warp_dtype(
         suffix = _NUMPY_DTYPE_TO_SUFFIX.get(np_arr.dtype.type, "f")
         inferred = f"vec{vec_len}{suffix}"
         if hasattr(wp, inferred):
-            print(f"[Recorder] Info: Inferred dtype '{inferred}' from data shape for generic 'vec_t'")
+            logger.info("[Recorder] Inferred dtype '%s' from data shape for generic 'vec_t'", inferred)
             return getattr(wp, inferred)
         # For non-standard vector lengths (e.g., vec5), create dynamically
         scalar_type = _NUMPY_TO_WARP_SCALAR.get(np_arr.dtype.type, wp.float32)
-        print(f"[Recorder] Info: Creating dynamic vector type vec{vec_len} with {scalar_type.__name__}")
+        logger.info("[Recorder] Creating dynamic vector type vec%s with %s", vec_len, scalar_type.__name__)
         return wp.types.vector(vec_len, scalar_type)
 
     if dtype_str == "mat_t" and np_arr is not None and np_arr.ndim >= 2:
@@ -966,11 +969,11 @@ def _resolve_warp_dtype(
         suffix = _NUMPY_DTYPE_TO_SUFFIX.get(np_arr.dtype.type, "f")
         inferred = f"mat{rows}{cols}{suffix}"
         if hasattr(wp, inferred):
-            print(f"[Recorder] Info: Inferred dtype '{inferred}' from data shape for generic 'mat_t'")
+            logger.info("[Recorder] Inferred dtype '%s' from data shape for generic 'mat_t'", inferred)
             return getattr(wp, inferred)
         # For non-standard matrix shapes, create dynamically
         scalar_type = _NUMPY_TO_WARP_SCALAR.get(np_arr.dtype.type, wp.float32)
-        print(f"[Recorder] Info: Creating dynamic matrix type mat{rows}x{cols} with {scalar_type.__name__}")
+        logger.info("[Recorder] Creating dynamic matrix type mat%sx%s with %s", rows, cols, scalar_type.__name__)
         return wp.types.matrix((rows, cols), scalar_type)
 
     # If dtype ends with 'f' or 'd', try without suffix (e.g., vec3f -> vec3)
@@ -1022,7 +1025,7 @@ def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: 
                     cache.try_register_pointer_and_value_and_index(key, result, int(cache_index))
                 return result
             except Exception as e:
-                print(f"[Recorder] Warning: Failed to deserialize warp.array at '{path}': {e}")
+                logger.warning("[Recorder] Failed to deserialize warp.array at '%s': %s", path, e)
                 return None
 
         elif x_type == "warp.HashGrid":
@@ -1077,7 +1080,7 @@ def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: 
                     cache.try_register_pointer_and_value_and_index(mesh_key, mesh, int(cache_index))
                 return mesh
             except Exception as e:
-                print(f"[Recorder] Warning: Failed to deserialize Mesh at '{path}': {e}")
+                logger.warning("[Recorder] Failed to deserialize Mesh at '%s': %s", path, e)
                 return None
 
         elif x_type == "callable":
@@ -1216,10 +1219,10 @@ class ViewerFile(ViewerBase):
             effective_path = file_path if file_path is not None else str(self.output_path)
             self._save_to_file(effective_path)
             if verbose:
-                print(f"Recording saved to {effective_path} ({self._frame_count} frames)")
+                logger.info("Recording saved to %s (%s frames)", effective_path, self._frame_count)
         except Exception as e:
             if verbose:
-                print(f"Error saving recording: {e}")
+                logger.error("Failed to save recording: %s", e)
 
     def record(self, state: State):
         """Record a snapshot of the provided simulation state.
@@ -1241,7 +1244,7 @@ class ViewerFile(ViewerBase):
             frame_id: Frame index to load from history.
         """
         if not (0 <= frame_id < len(self.history)):
-            print(f"Warning: frame_id {frame_id} is out of bounds. Playback skipped.")
+            logger.warning("frame_id %s is out of bounds. Playback skipped.", frame_id)
             return
 
         state_data = self.history[frame_id]
@@ -1264,7 +1267,7 @@ class ViewerFile(ViewerBase):
             model: Destination model object to populate.
         """
         if not self.deserialized_model:
-            print("Warning: No model data to playback.")
+            logger.warning("No model data to playback.")
             return
 
         def post_load_init_callback(target_obj, path):
@@ -1481,7 +1484,7 @@ class ViewerFile(ViewerBase):
         if self._frame_count > 0:
             self._save_recording()
         self._running = False
-        print(f"ViewerFile closed. Total frames recorded: {self._frame_count}")
+        logger.info("ViewerFile closed. Total frames recorded: %s", self._frame_count)
 
     def load_recording(self, file_path: str | None = None, verbose: bool = False):
         """Load a previously recorded file for playback.
@@ -1498,7 +1501,7 @@ class ViewerFile(ViewerBase):
         self._load_from_file(effective_path)
         self._frame_count = len(self.history)
         if verbose:
-            print(f"Loaded recording with {self._frame_count} frames from {effective_path}")
+            logger.info("Loaded recording with %s frames from %s", self._frame_count, effective_path)
 
     def get_frame_count(self) -> int:
         """Return the number of frames in the loaded or recorded session.

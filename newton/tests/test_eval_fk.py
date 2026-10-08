@@ -41,7 +41,7 @@ def _expect_parallel_joint_warning(test):
         yield
 
     test.assertEqual(len(caught), 1)
-    test.assertEqual(caught[0].category, UserWarning)
+    test.assertEqual(caught[0].category, newton.exceptions.NewtonWarning)
     test.assertRegex(str(caught[0].message), _PARALLEL_JOINT_WARNING)
 
 

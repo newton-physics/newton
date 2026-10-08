@@ -1444,7 +1444,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         joint = builder.add_joint_revolute(parent=parent, child=child, axis=(0.0, 0.0, 1.0))
         model = builder.finalize(device="cpu")
 
-        with self.assertLogs("newton._src.solvers.coupled.solver_coupled", level="INFO") as logs:
+        with self.assertLogs("newton._src.solvers.coupled.solver_coupled", level="DEBUG") as logs:
             coupled = SolverCoupled(
                 model=model,
                 entries=[

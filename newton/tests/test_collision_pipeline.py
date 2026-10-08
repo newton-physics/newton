@@ -424,7 +424,7 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertIs(returned_contacts, contacts)
         self.assertIs(model._collision_pipeline, pipeline)
         self.assertEqual(len(caught), 2)
-        self.assertTrue(all(item.category is DeprecationWarning for item in caught))
+        self.assertTrue(all(item.category is newton.exceptions.NewtonDeprecationWarning for item in caught))
         self.assertTrue(all(item.filename == __file__ for item in caught))
         self.assertIn("pipeline.contacts()", str(caught[0].message))
         self.assertIn("pipeline.collide(state, contacts)", str(caught[1].message))

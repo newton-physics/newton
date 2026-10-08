@@ -32,6 +32,7 @@ import warp as wp
 import newton
 
 from ..core.types import Axis, override
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 
 try:
@@ -1030,6 +1031,7 @@ void main() {
             warnings.warn(
                 f"ViewerRTX: {len(unbound)} of {model.body_count} bodies have no prim at their label in the "
                 f"borrowed stage and are not rendered, e.g. {unbound[:3]}",
+                NewtonWarning,
                 stacklevel=3,
             )
         if not paths:
@@ -1079,6 +1081,7 @@ void main() {
             warnings.warn(
                 "ViewerRTX: body poses in the model and the borrowed stage differ by more than one rigid "
                 "transform; rendering bodies at their model poses",
+                NewtonWarning,
                 stacklevel=4,
             )
             return None
@@ -2895,7 +2898,7 @@ void main() {
         warnings.warn(
             "ViewerRTX.save_screenshot() is deprecated in Newton 1.7; "
             "use get_frame().numpy() and an image library such as Pillow to save the image instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         from PIL import Image

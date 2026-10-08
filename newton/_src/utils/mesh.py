@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from ..geometry.types import Mesh
 
 
@@ -447,6 +448,7 @@ class MeshAdjacency:
             warnings.warn(
                 "MeshAdjacency.to(): vertex adjacency not initialized; v_adj_* are None -- call "
                 "init_vertex_adjacency(particle_count) first if your kernels need them.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return data
@@ -521,7 +523,7 @@ class MeshAdjacency:
                 edge_indices[edge_id, 1] = entry_opposite[entry_id]
                 edge_tri_indices[edge_id, 1] = tri_start + entry_tri[entry_id]
             else:
-                warnings.warn("Detected non-manifold edge", stacklevel=2)
+                warnings.warn("Detected non-manifold edge", NewtonWarning, stacklevel=2)
 
             fill_counts[edge_id] += 1
 
@@ -2238,22 +2240,22 @@ def validate_triangle_mesh(
     vertices = np.asarray(vertices, dtype=float)
     raw = np.asarray(indices, dtype=np.intp)
     if raw.size > 0 and raw.ndim == 1 and raw.size % 3 != 0:
-        warnings.warn("Triangle index array length is not a multiple of 3.", stacklevel=stacklevel)
+        warnings.warn("Triangle index array length is not a multiple of 3.", NewtonWarning, stacklevel=stacklevel)
         return
     try:
         indices = raw.reshape(-1, 3)
     except ValueError:
-        warnings.warn("Triangle index array must be flat or have shape (N, 3).", stacklevel=stacklevel)
+        warnings.warn("Triangle index array must be flat or have shape (N, 3).", NewtonWarning, stacklevel=stacklevel)
         return
     n_verts = len(vertices)
     n_faces = len(indices)
 
     if n_faces == 0:
-        warnings.warn("Cloth mesh has no triangles.", stacklevel=stacklevel)
+        warnings.warn("Cloth mesh has no triangles.", NewtonWarning, stacklevel=stacklevel)
         return
 
     if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
-        warnings.warn(f"Triangle indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
+        warnings.warn(f"Triangle indices out of range for {n_verts} vertices.", NewtonWarning, stacklevel=stacklevel)
         return
 
     v0 = vertices[indices[:, 0]]
@@ -2314,7 +2316,7 @@ def validate_triangle_mesh(
         + "\n".join(f"  - {issue}" for issue in issues)
         + "\nConsider remeshing the input geometry."
     )
-    warnings.warn(msg, stacklevel=stacklevel)
+    warnings.warn(msg, NewtonWarning, stacklevel=stacklevel)
 
 
 def validate_tet_mesh(
@@ -2356,22 +2358,22 @@ def validate_tet_mesh(
     vertices = np.asarray(vertices, dtype=float)
     raw = np.asarray(indices, dtype=np.intp)
     if raw.size > 0 and raw.ndim == 1 and raw.size % 4 != 0:
-        warnings.warn("Tet index array length is not a multiple of 4.", stacklevel=stacklevel)
+        warnings.warn("Tet index array length is not a multiple of 4.", NewtonWarning, stacklevel=stacklevel)
         return
     try:
         indices = raw.reshape(-1, 4)
     except ValueError:
-        warnings.warn("Tet index array must be flat or have shape (N, 4).", stacklevel=stacklevel)
+        warnings.warn("Tet index array must be flat or have shape (N, 4).", NewtonWarning, stacklevel=stacklevel)
         return
     n_tets = len(indices)
 
     if n_tets == 0:
-        warnings.warn("Soft mesh has no tetrahedra.", stacklevel=stacklevel)
+        warnings.warn("Soft mesh has no tetrahedra.", NewtonWarning, stacklevel=stacklevel)
         return
 
     n_verts = len(vertices)
     if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
-        warnings.warn(f"Tet indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
+        warnings.warn(f"Tet indices out of range for {n_verts} vertices.", NewtonWarning, stacklevel=stacklevel)
         return
 
     v0 = vertices[indices[:, 0]]
@@ -2431,4 +2433,4 @@ def validate_tet_mesh(
     if label is not None:
         prefix += f" [{label}]"
     msg = f"{prefix} ({len(vertices)} vertices, {n_tets} tetrahedra):\n" + "\n".join(f"  - {issue}" for issue in issues)
-    warnings.warn(msg, stacklevel=stacklevel)
+    warnings.warn(msg, NewtonWarning, stacklevel=stacklevel)

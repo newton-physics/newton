@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     import viser
 
 from ..core.types import Axis, override
+from ..exceptions import NewtonWarning
 from .camera import Camera
 from .image_logger import (
     _atlas_layout,
@@ -389,6 +390,7 @@ class ViewerViser(ViewerBase):
                 warnings.warn(
                     "Viser textured mesh batches do not support varying per-instance opacity; "
                     "the mesh material opacity is used. Use separate batches for different opacities.",
+                    NewtonWarning,
                     stacklevel=3,
                 )
         return mesh.export(file_type="glb")
@@ -511,12 +513,12 @@ class ViewerViser(ViewerBase):
         if share:
             self._share_url = self._server.request_share_url()
             if verbose:
-                print(f"Viser share URL: {self._share_url}")
+                _logger.info("Viser share URL: %s", self._share_url)
         else:
             self._share_url = None
 
         if verbose:
-            print(f"Viser server running at: {self.url}")
+            _logger.info("Viser server running at: %s", self.url)
 
         # Recording state
         self._frame_dt = 0.0
@@ -528,7 +530,7 @@ class ViewerViser(ViewerBase):
         self._setup_gui()
 
         if self._serializer is not None and verbose:
-            print(f"Recording to: {record_to_viser}")
+            _logger.info("Recording to: %s", record_to_viser)
 
     @override
     def clear_model(self):
@@ -1858,11 +1860,14 @@ class ViewerViser(ViewerBase):
         texture_image = prepare_viewer_texture(texture)
 
         if texture_image is not None and uvs_np is None:
-            warnings.warn(f"Mesh {name} has a texture but no UVs; texture will be ignored.", stacklevel=2)
+            warnings.warn(
+                f"Mesh {name} has a texture but no UVs; texture will be ignored.", NewtonWarning, stacklevel=2
+            )
             texture_image = None
         if texture_image is not None and uvs_np is not None and len(uvs_np) != len(points_np):
             warnings.warn(
                 f"Mesh {name} has {len(uvs_np)} UVs for {len(points_np)} vertices; texture will be ignored.",
+                NewtonWarning,
                 stacklevel=2,
             )
             texture_image = None
@@ -1877,6 +1882,7 @@ class ViewerViser(ViewerBase):
             if trimesh_mesh is None:
                 warnings.warn(
                     "Viser textured meshes require trimesh; falling back to untextured rendering.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -2623,7 +2629,7 @@ class ViewerViser(ViewerBase):
         self._serializer = None
 
         if self.verbose:
-            print(f"Recording saved to: {self._record_to_viser}")
+            _logger.info("Recording saved to: %s", self._record_to_viser)
 
     @override
     def log_lines(

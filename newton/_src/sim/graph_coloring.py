@@ -8,6 +8,8 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
+
 
 class ColoringAlgorithm(Enum):
     MCS = 0
@@ -303,6 +305,7 @@ def color_graph(
                 f"Color balancing terminated early: max/min ratio {max_min_ratio:.3f} "
                 f"exceeds target {target_max_min_color_ratio:.3f}. "
                 "The graph may not be further optimizable.",
+                NewtonWarning,
                 stacklevel=2,
             )
 

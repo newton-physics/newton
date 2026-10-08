@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
+from ..exceptions import NewtonDeprecationWarning
 from ..geometry.flags import ShapeFlags
 from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
@@ -586,7 +587,7 @@ class Model:
             warnings.warn(
                 "Model.AttributeNamespace.add_deprecated_alias() is deprecated; "
                 "define an explicit property on a custom namespace instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
             if name in self.__dict__ or name in self._deprecated_aliases:
@@ -597,7 +598,7 @@ class Model:
             aliases = self.__dict__.get("_deprecated_aliases", {})
             if name in aliases:
                 getter, message = aliases[name]
-                warnings.warn(message, DeprecationWarning, stacklevel=2)
+                warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
                 return getter()
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
@@ -606,7 +607,7 @@ class Model:
                 aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
                 if name in aliases:
                     getter, message = aliases[name]
-                    warnings.warn(message, DeprecationWarning, stacklevel=2)
+                    warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
                     target = getter()
                     if isinstance(target, wp.array):
                         target.assign(value)
@@ -1522,12 +1523,12 @@ class Model:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF :attr:`joint_limit_lower` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._deprecated_joint_twist_lower
 
     @joint_twist_lower.setter
     def joint_twist_lower(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._deprecated_joint_twist_lower = value
 
     @property
@@ -1537,12 +1538,12 @@ class Model:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF :attr:`joint_limit_upper` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._deprecated_joint_twist_upper
 
     @joint_twist_upper.setter
     def joint_twist_upper(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._deprecated_joint_twist_upper = value
 
     @property
@@ -2025,7 +2026,7 @@ class Model:
         """
         warnings.warn(
             "Model.contacts() is deprecated; create a CollisionPipeline and call pipeline.contacts() instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         if collision_pipeline is not None:
@@ -2071,7 +2072,7 @@ class Model:
         warnings.warn(
             "Model.collide() is deprecated; create a CollisionPipeline and call "
             "pipeline.collide(state, contacts) instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         if collision_pipeline is not None:
@@ -2111,7 +2112,7 @@ class Model:
         warnings.warn(
             "Model.request_state_attributes() is deprecated in Newton 1.7; "
             "request SolverObservables from the solver instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         self._request_state_attributes(*attributes)
@@ -2135,7 +2136,7 @@ class Model:
         warnings.warn(
             "Model.request_contact_attributes() is deprecated in Newton 1.7; "
             "request SolverObservables from the solver instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         self._request_contact_attributes(*attributes)
