@@ -408,8 +408,6 @@ class SolverVBD(SolverBase, CouplingInterface):
             model: The `Model` object used to initialize the integrator. Must be identical to the `Model` object passed
                 to the `step` function.
 
-            Common parameters:
-
             iterations: Number of VBD iterations per step.
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts).
@@ -419,8 +417,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                 budget between detections is 0.5 x relaxation x the detection query radius.
             integrate_with_external_rigid_solver: Indicator for coupled rigid body-cloth simulation. When set to `True`,
                 the solver assumes rigid bodies are integrated by an external solver (one-way coupling).
-
-            Particle parameters:
 
             particle_enable_self_contact: Whether to enable self-contact detection for particles.
                 Requires an active soft self-contact collision schedule: ``CollisionFrequencyType.NONE``
@@ -470,8 +466,6 @@ class SolverVBD(SolverBase, CouplingInterface):
             particle_external_edge_contact_filtering_map: Optional dictionary used to exclude additional edge-edge pairs during contact
                 generation. Keys must be edge primitive ids (integers), and each value must be a `list` or `set`
                 containing the edges to be filtered out. Only used when `particle_enable_self_contact` is `True`.
-
-            Rigid body parameters:
 
             rigid_compliant_alm: Unified compliant-ALM mode for body-body contacts,
                 structural joints, drives, and limits. This is the default path.
@@ -651,8 +645,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                 are accumulated per contact record with atomics in
                 ``NOT_GUARANTEED`` mode and gathered per particle without
                 atomics in every other mode.
-
-            Collision pipeline ownership:
 
             collision_pipeline: Optional :class:`~newton.CollisionPipeline`
                 owned by this solver. When given, the solver allocates its own
