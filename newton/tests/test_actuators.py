@@ -329,25 +329,42 @@ def _write_dof_values(
     wp.copy(array, wp.array(arr_np, dtype=float, device=model.device))
 
 
-def _build_pendulum(device: wp.Device, worlds: int = 1) -> newton.Model:
-    """Single revolute joint with an offset COM and no gravity — one scalar DOF.
+@wp.kernel
+def _bias_force_kernel(
+    gravity_force: wp.array[float],
+    coriolis_force: wp.array[float],
+    bias_force: wp.array[float],
+):
+    """Bias force ``g + C qd`` from the two outputs of :func:`newton.eval_inverse_dynamics_passive`."""
+    i = wp.tid()
+    bias_force[i] = gravity_force[i] + coriolis_force[i]
+
+
+_IN_PLANE_GRAVITY = (0.0, -9.81, 0.0)
+_NO_GRAVITY = (0.0, 0.0, 0.0)
+
+
+def _build_pendulum(device: wp.Device, worlds: int = 1, gravity: bool = False) -> newton.Model:
+    """Single revolute joint with an offset COM — one scalar DOF.
 
     Args:
         device: Device to finalize the model on.
         worlds: Number of identical worlds to replicate the pendulum into.
+        gravity: Pull along -Y, in the plane the hinge turns in. Off by default.
     """
-    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    g = _IN_PLANE_GRAVITY if gravity else _NO_GRAVITY
+    template = newton.ModelBuilder(gravity=g)
     body = template.add_link(com=wp.vec3(0.5, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
     joint = template.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
     template.add_articulation([joint])
     if worlds == 1:
         return template.finalize(device=device)
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder = newton.ModelBuilder(gravity=g)
     builder.replicate(template, worlds, spacing=(0.0, 0.0, 0.0))
     return builder.finalize(device=device)
 
 
-def _two_link_builder(armature: float = 0.0, dummy_body: bool = False) -> newton.ModelBuilder:
+def _two_link_builder(armature: float = 0.0, dummy_body: bool = False, gravity: bool = False) -> newton.ModelBuilder:
     """Builder for a two-link revolute chain — one articulation, two coupled DOFs.
 
     Args:
@@ -355,8 +372,9 @@ def _two_link_builder(armature: float = 0.0, dummy_body: bool = False) -> newton
         dummy_body: Add a hinged body before the chain, outside the articulation.
             MuJoCo orders articulated bodies first, so ``mjc_dof_to_newton_dof``
             becomes a permutation rather than the identity.
+        gravity: Pull along -Y, in the plane the hinges turn in. Off by default.
     """
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder = newton.ModelBuilder(gravity=_IN_PLANE_GRAVITY if gravity else _NO_GRAVITY)
     if dummy_body:
         dummy = builder.add_link(inertia=_POINT_MASS_INERTIA, mass=1.0)
         builder.add_joint_revolute(parent=-1, child=dummy, axis=newton.Axis.Z)
@@ -374,18 +392,21 @@ def _two_link_builder(armature: float = 0.0, dummy_body: bool = False) -> newton
     return builder
 
 
-def _build_two_link(device: wp.Device, dummy_body: bool = False, worlds: int = 1) -> newton.Model:
+def _build_two_link(
+    device: wp.Device, dummy_body: bool = False, worlds: int = 1, gravity: bool = False
+) -> newton.Model:
     """Two-link revolute chain — one articulation, two inertially coupled DOFs.
 
     Args:
         device: Device to finalize the model on.
         dummy_body: See :func:`_two_link_builder`.
         worlds: Number of identical worlds to replicate the chain into.
+        gravity: See :func:`_two_link_builder`.
     """
-    template = _two_link_builder(dummy_body=dummy_body)
+    template = _two_link_builder(dummy_body=dummy_body, gravity=gravity)
     if worlds == 1:
         return template.finalize(device=device)
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder = newton.ModelBuilder(gravity=_IN_PLANE_GRAVITY if gravity else _NO_GRAVITY)
     builder.replicate(template, worlds, spacing=(0.0, 0.0, 0.0))
     return builder.finalize(device=device)
 
@@ -2978,6 +2999,7 @@ class TestActuatorStep(unittest.TestCase):
         expect_integral_saturated: bool = False,
         worlds: int = 1,
         actuated: Sequence[int] | None = None,
+        bias_force: bool = False,
     ) -> None:
         """Run the actuator pipeline for one drive / clamp / effort-mode combination.
 
@@ -3022,8 +3044,16 @@ class TestActuatorStep(unittest.TestCase):
                 reference is computed once and compared against every world.
             actuated: Per-world DOF indices the actuator drives; ``None`` drives
                 all of them. Undriven DOFs must end up with exactly zero effort.
+            bias_force: Turn on gravity in the hinge plane and pass gravity plus
+                Coriolis from :func:`newton.eval_inverse_dynamics_passive` as
+                the bias force each step. Implicit mode without a clamp only.
         """
-        model = _build_pendulum(device, worlds=worlds) if dofs == 1 else _build_two_link(device, worlds=worlds)
+        if bias_force and (not implicit or clamp is not None):
+            raise ValueError("the bias-force reference covers implicit mode without a clamp")
+        if dofs == 1:
+            model = _build_pendulum(device, worlds=worlds, gravity=bias_force)
+        else:
+            model = _build_two_link(device, worlds=worlds, gravity=bias_force)
         n = dofs
         total = n * worlds
         self.assertEqual(model.joint_dof_count, total)
@@ -3075,8 +3105,9 @@ class TestActuatorStep(unittest.TestCase):
             integral: np.ndarray,
             kp_now: np.ndarray,
             kd_now: np.ndarray,
+            bias: np.ndarray,
         ) -> np.ndarray:
-            """The effort the actuator should produce from state (q, qd).
+            """The effort the actuator should produce from state (q, qd) and bias force.
 
             Returns one value per model DOF; undriven DOFs are zero, since the
             actuator never writes them.
@@ -3091,11 +3122,14 @@ class TestActuatorStep(unittest.TestCase):
 
             # Only the driven DOFs are solved, coupled through their submatrix of
             # inv(H). Inverting first leaves the undriven DOFs free to move.
-            response_matrix = _response_at(model, _tiled(q), _tiled(qd))[np.ix_(act, act)]
+            full_response = _response_at(model, _tiled(q), _tiled(qd))
+            response_matrix = full_response[np.ix_(act, act)]
             if clamp is None:
                 gain = dt * kp_now[act] + kd_now[act]
                 jacobian = np.eye(driven) + dt * np.diag(gain) @ response_matrix
                 rhs = kp_now[act] * (target[act] - q[act] - dt * qd[act]) - kd_now[act] * qd[act] + feedforward[act]
+                # The bias force moves the predicted velocity by -dt (A b) on every driven row.
+                rhs += dt * gain * (full_response[act, :] @ bias)
                 out[act] = np.linalg.solve(jacobian, rhs)
                 return out
 
@@ -3120,6 +3154,9 @@ class TestActuatorStep(unittest.TestCase):
         control.joint_target_q.assign(_tiled(target))
         solver = newton.solvers.SolverFeatherstone(model)
         act_a, act_b = actuator.state(), actuator.state()
+        gravity_force = wp.zeros(total, dtype=float, device=device)
+        coriolis_force = wp.zeros(total, dtype=float, device=device)
+        bias = wp.zeros(total, dtype=float, device=device)
 
         integral = np.zeros(n, dtype=np.float64)
         kp_now, kd_now = kp, kd
@@ -3127,33 +3164,44 @@ class TestActuatorStep(unittest.TestCase):
         use_graph = device.is_cuda and wp.is_mempool_enabled(device)
         graphs = {}
 
-        if use_graph:
-            # Module loading and lazy allocation have to happen before a capture.
+        def step_actuator():
+            """Zero the efforts, refresh the response, build the bias force, and step the actuator."""
             control.joint_f.zero_()
             response.refresh(state_in)
-            actuator.step(state_in, control, act_a, act_b, dt=dt)
+            if bias_force:
+                newton.eval_inverse_dynamics_passive(
+                    model, state_in, gravity_force=gravity_force, coriolis_force=coriolis_force
+                )
+                wp.launch(
+                    _bias_force_kernel,
+                    dim=total,
+                    inputs=[gravity_force, coriolis_force],
+                    outputs=[bias],
+                    device=device,
+                )
+            actuator.step(state_in, control, act_a, act_b, dt=dt, bias_force=bias if bias_force else None)
+
+        if use_graph:
+            # Module loading and lazy allocation have to happen before a capture.
+            step_actuator()
             if stateful:
                 act_a.drive_state.integral.zero_()
                 act_b.drive_state.integral.zero_()
 
         def actuate():
-            """Zero the efforts, refresh the response, and step the actuator.
+            """Step the actuator, from a captured graph when possible.
 
             The state and actuator buffers alternate with period two, so keying
             the graphs on them builds at most two and replays them thereafter.
             Parameter writes still land because a graph reads the live arrays.
             """
             if not use_graph:
-                control.joint_f.zero_()
-                response.refresh(state_in)
-                actuator.step(state_in, control, act_a, act_b, dt=dt)
+                step_actuator()
                 return
             key = (id(state_in), id(act_a))
             if key not in graphs:
                 with wp.ScopedCapture(device) as capture:
-                    control.joint_f.zero_()
-                    response.refresh(state_in)
-                    actuator.step(state_in, control, act_a, act_b, dt=dt)
+                    step_actuator()
                 graphs[key] = capture.graph
             wp.capture_launch(graphs[key])
 
@@ -3173,7 +3221,7 @@ class TestActuatorStep(unittest.TestCase):
             effort = control.joint_f.numpy().astype(np.float64)
 
             if check_forces:
-                expected = reference(q, qd, integral, kp_now, kd_now)
+                expected = reference(q, qd, integral, kp_now, kd_now, bias.numpy().astype(np.float64)[:n])
                 self.assertTrue(np.all(np.isfinite(effort)), msg=f"{step_label}: effort must stay finite")
                 np.testing.assert_allclose(
                     effort[:n],
@@ -3348,6 +3396,14 @@ class TestActuatorStep(unittest.TestCase):
         self.assertFalse(
             np.allclose(together, apart, rtol=1e-3), "the coupled solve must differ from two scalar solves"
         )
+
+    def test_pipeline_pd_bias_force_implicit(self):
+        """Verify the implicit solve includes gravity and Coriolis passed as the bias force."""
+        for dofs, gains in ((1, {}), (2, {"kp": [4000.0, 3000.0], "kd": [40.0, 30.0]})):
+            with self.subTest(dofs=dofs):
+                self.run_test_actuator_pipeline(
+                    drive="pd", dofs=dofs, q0=0.3, qd0=1.5, target=0.6, steps=3, bias_force=True, **gains
+                )
 
     def test_pipeline_pd_partially_actuated_implicit(self):
         """Drive only the tip joint of the two-link chain."""

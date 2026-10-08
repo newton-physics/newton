@@ -371,9 +371,6 @@ than the control law nominally asks for. The trade-off is between stability at
 large timesteps with the implicit mode, and fidelity to the requested gains at
 small timesteps with the explicit mode.
 
-The predicted state accounts only for the actuator's own impulse. Gravity, any
-other applied force, other actuators driving the same articulation, and joint
-drive applied without the actuator are all absent from it.
 
 The implicit effort mode necessarily requires the joint-space inverse mass
 matrix. This is supplied by a :class:`~newton.actuators.JointSpaceResponse`, which
@@ -391,6 +388,55 @@ is refreshed once per step at the current pose:
    sim_control.joint_f.zero_()
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
    solver.step(sim_state, next_sim_state, sim_control, contacts, dt=0.01)
+
+By default the predicted state accounts only for the actuator's own impulse.
+Gravity, Coriolis forces and every other force the step applies are absent
+from it, so the solved effort cannot counter them, and raising the gains does
+not help. Pass them as a *bias force* to include them. The bias force uses the
+sign convention of the manipulator equation ``tau = M qdd + C qd + g``: it is
+``C qd + g``, indexed like ``joint_qd``. The predicted end-of-step velocity
+then becomes ``qd + A (p - dt bias_force)`` instead of ``qd + A p``, where
+``A`` is the inverse mass matrix (see below) and ``p`` the actuator's impulse.
+
+:func:`~newton.eval_inverse_dynamics_passive` returns the two parts,
+``gravity_force`` ``g(q)`` and ``coriolis_force`` ``C(q, qd) qd``, so the bias
+force is their sum. The function reads ``body_q``, which must match
+``joint_q``; call :func:`~newton.eval_fk` first if it may not.
+
+.. code-block:: python
+
+   @wp.kernel
+   def bias_force_kernel(
+       gravity_force: wp.array[float],
+       coriolis_force: wp.array[float],
+       bias_force: wp.array[float],
+   ):
+       i = wp.tid()
+       bias_force[i] = gravity_force[i] + coriolis_force[i]
+
+
+   n = model.joint_dof_count
+   gravity_force = wp.zeros(n, dtype=float)
+   coriolis_force = wp.zeros(n, dtype=float)
+   bias_force = wp.zeros(n, dtype=float)
+
+   # Simulation loop
+   response.refresh(sim_state)
+   newton.eval_inverse_dynamics_passive(
+       model, sim_state, gravity_force=gravity_force, coriolis_force=coriolis_force
+   )
+   wp.launch(bias_force_kernel, dim=n, inputs=[gravity_force, coriolis_force], outputs=[bias_force])
+   sim_control.joint_f.zero_()
+   actuator.step(sim_state, sim_control, state_a, state_b, dt=dt, bias_force=bias_force)
+   solver.step(sim_state, next_sim_state, sim_control, contacts, dt=dt)
+
+These are the forces at the start of the step. A solver that holds them
+constant over the step, such as :class:`~newton.solvers.SolverMuJoCo` with its
+default ``implicitfast`` integrator, applies the same values, so the
+prediction matches its step. This bias force does not include contacts, joint
+limits, joint damping, or other actuators. Contact and limit forces depend on
+the actuator's own effort and cannot be computed before it. The explicit
+effort mode ignores the bias force.
 
 In this mode :meth:`Actuator.step <newton.actuators.Actuator.step>` evaluates
 the joint force for each actuated DOF. A force on one DOF changes the velocity
