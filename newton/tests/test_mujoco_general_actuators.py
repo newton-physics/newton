@@ -549,6 +549,7 @@ class TestMuJoCoActuators(unittest.TestCase):
                     # Isolate import parity from MuJoCo-Warp's approximate implicit DC-motor derivatives.
                     integrator="euler",
                 )
+                observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
                 state_0 = model.state()
                 state_1 = model.state()
                 state_0.joint_q.assign([0.2])
@@ -562,7 +563,7 @@ class TestMuJoCoActuators(unittest.TestCase):
                 reference_data.qvel[0] = 0.5
 
                 for _ in range(10):
-                    solver.step(state_0, state_1, control, None, dt=0.001)
+                    solver.step(state_0, state_1, control, None, dt=0.001, observables=observables)
                     state_0, state_1 = state_1, state_0
                     mujoco.mj_step(solver.mj_model, reference_data)
 
@@ -574,6 +575,9 @@ class TestMuJoCoActuators(unittest.TestCase):
                         )
                         np.testing.assert_allclose(actual, getattr(reference_data, name), rtol=1.0e-4, atol=1.0e-7)
                     np.testing.assert_allclose(state_0.joint_qd.numpy(), reference_data.qvel, rtol=1.0e-4, atol=1.0e-7)
+                    np.testing.assert_allclose(
+                        observables.qfrc_actuator.numpy(), reference_data.qfrc_actuator, rtol=1.0e-4, atol=1.0e-7
+                    )
 
                 solver.reset(state_0)
                 reset_act = solver.mj_data.act if use_mujoco_cpu else solver.mjw_data.act.numpy()[0]
@@ -656,6 +660,10 @@ class TestMuJoCoActuators(unittest.TestCase):
                 model.mujoco.actuator_cranklength.assign([0.3])
 
                 solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+                # Joint-target updates must not overwrite a direct DC motor's compiled gains.
+                model.joint_target_ke.fill_(17.0)
+                model.joint_target_kd.fill_(5.0)
+                solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
 
                 attribute_names = (
                     "actuator_ctrlrange",
@@ -1809,7 +1817,6 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         """Stepping with a site actuator produces qfrc_actuator matching native MuJoCo."""
         builder = ModelBuilder()
         builder.add_mjcf(MJCF_SITE_ACTUATOR, ctrl_direct=True)
-        builder.request_state_attributes("mujoco:qfrc_actuator")
         model = builder.finalize()
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -1818,6 +1825,7 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
 
         state_0 = model.state()
         state_1 = model.state()
+        observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
         control = model.control()
 
         # Identify the Newton-side actuator ordering so we can set matching ctrl
@@ -1832,8 +1840,8 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         ctrl[newton_joint_idx] = 0.7  # joint-motor input
         control.mujoco.ctrl = wp.array(ctrl, dtype=wp.float32, device=model.device)
 
-        solver.step(state_0, state_1, control, None, dt=0.001)
-        qfrc_newton = state_1.mujoco.qfrc_actuator.numpy()
+        solver.step(state_0, state_1, control, None, dt=0.001, observables=observables)
+        qfrc_newton = observables.qfrc_actuator.numpy()
 
         # Native MuJoCo reference: mj_forward with the same ctrl mapped through
         # the MuJoCo-side actuator ordering (which may permute Newton's).

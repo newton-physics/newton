@@ -31,6 +31,7 @@ from .kernels import (
     repack_shape_opacities,
     transform_points,
 )
+from .transform import transform_add_translation, transform_from_array, transform_multiply
 from .utils import OPAQUE_OPACITY_THRESHOLD
 
 MAX_TRIANGLE_OPACITY_GROUPS = 32
@@ -128,6 +129,7 @@ class ViewerBase(ABC):
         self.device = wp.get_device()
         self.picking_enabled = True
         self._camera_speed = 4.0
+        self._rendering_paused = False
 
         # Layer registry. The default layer is always present and has an
         # empty name prefix to keep backward compatibility for code that
@@ -481,6 +483,37 @@ class ViewerBase(ABC):
         """
         return not self.is_paused()
 
+    def is_rendering_paused(self) -> bool:
+        """Report whether updates to the displayed image are paused.
+
+        This is independent of simulation pause (:meth:`is_paused`). Backends
+        without rendering-pause support always return ``False``.
+
+        Returns:
+            bool: True when updates to the displayed image are paused.
+        """
+        return self._rendering_paused
+
+    def set_rendering_paused(self, paused: bool) -> None:
+        """Freeze or resume the displayed image without changing simulation pause.
+
+        Supported by :class:`~newton.viewer.ViewerGL` and
+        :class:`~newton.viewer.ViewerRTX`, including headless mode.
+        Continue calling :meth:`begin_frame`, logging state,
+        and :meth:`end_frame` while paused to process events and UI. Resume
+        displays the latest state, without replaying intermediate updates.
+
+        Paused capture returns the frozen image; before an image exists it
+        raises ``RuntimeError``. Frame budgets still count viewer-loop frames.
+        Clearing the model invalidates the image but preserves rendering pause.
+
+        Backends without rendering-pause support ignore this method.
+
+        Args:
+            paused: Whether to pause rendering.
+        """
+        return None
+
     def is_key_down(self, key: str | int) -> bool:
         """Default key query API. Concrete viewers can override.
 
@@ -601,8 +634,8 @@ class ViewerBase(ABC):
         layer.show_particles = False
         layer.show_contacts = False
         layer.show_contact_normals = True
-        layer.show_contact_disks = True  # Note: requires the ``"force"`` extended contact attribute.
-        layer.show_contact_forces = True  # Note: requires the ``"force"`` extended contact attribute.
+        layer.show_contact_disks = True  # Contact modes use CONTACT_F solver observable when available.
+        layer.show_contact_forces = True  # Force arrows require CONTACT_F solver observable.
         layer.show_springs = False
         layer.show_triangles = True
         layer.show_gaussians = False
@@ -1054,6 +1087,33 @@ class ViewerBase(ABC):
         """
         pass
 
+    def get_frame(
+        self, target_image: wp.array3d[wp.uint8] | None = None, *, render_ui: bool = False
+    ) -> wp.array3d[wp.uint8]:
+        """Retrieve the last rendered frame as RGB image data.
+
+        Call after :meth:`end_frame`. Supported by :class:`ViewerGL` and
+        :class:`ViewerRTX` in both headless and windowed modes. Call
+        ``.numpy()`` on the result to obtain a NumPy array.
+
+        Args:
+            target_image: Optional pre-allocated Warp array on the viewer
+                device with shape ``(height, width, 3)`` and dtype ``wp.uint8``.
+                If ``None``, a new array is created.
+            render_ui: Whether to include UI overlays. Support depends on
+                the viewer backend.
+
+        Returns:
+            RGB image data on the viewer device with shape
+            ``(height, width, 3)``, dtype ``wp.uint8``, and a top-left origin.
+            If supplied, returns ``target_image``.
+
+        Raises:
+            NotImplementedError: The viewer backend does not support frame
+                capture or the requested UI capture option.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support frame capture")
+
     def log_state(self, state: newton.State):
         """Update the viewer with the given state of the simulation.
 
@@ -1180,8 +1240,8 @@ class ViewerBase(ABC):
                 if body_q_np is None:
                     body_q_np = state.body_q.numpy()
 
-                body_xform = wp.transform_expand(body_q_np[parent])
-                world_xform = wp.transform_multiply(body_xform, shape_xform)
+                body_xform = transform_from_array(body_q_np[parent])
+                world_xform = transform_multiply(body_xform, shape_xform)
             else:
                 world_xform = shape_xform
 
@@ -1189,11 +1249,8 @@ class ViewerBase(ABC):
                 if offsets_np is None:
                     offsets_np = self.world_offsets.numpy()
                 offset = offsets_np[world_idx]
-                world_xform = wp.transformf(
-                    wp.vec3(world_xform.p[0] + offset[0], world_xform.p[1] + offset[1], world_xform.p[2] + offset[2]),
-                    world_xform.q,
-                )
-            world_xform = wp.transform_multiply(self.layer.xform, world_xform)
+                world_xform = transform_add_translation(world_xform, offset)
+            world_xform = transform_multiply(self.layer.xform, world_xform)
             self.log_gaussian(gname, gaussian, xform=world_xform, hidden=False)
 
     def _log_non_shape_state(self, state: newton.State):
@@ -1231,7 +1288,13 @@ class ViewerBase(ABC):
         self._log_joints(state)
         self._log_com(state)
 
-    def log_contacts(self, contacts: newton.Contacts, state: newton.State):
+    def log_contacts(
+        self,
+        contacts: newton.Contacts,
+        state: newton.State,
+        *,
+        observables: newton.solvers.SolverObservables | None = None,
+    ):
         """Render contact visualizations.
 
         The visualization is split into three layers, each of which can be
@@ -1240,12 +1303,12 @@ class ViewerBase(ABC):
         * ``"/contacts/normals"`` — arrows along ``rigid_contact_normal``
           (gated on :attr:`show_contact_normals`).
         * ``"/contacts/modes"`` — thin oriented disks at each contact, color
-          coded by inferred contact mode (open / stick / slip) when
-          ``contacts.force`` is allocated, else by a uniform default color
+          coded by inferred contact mode (open / stick / slip) when contact
+          force output is available, else by a uniform default color
           (gated on :attr:`show_contact_disks`).
         * ``"/contacts/forces"`` — arrows along the linear part of
-          ``contacts.force`` (gated on :attr:`show_contact_forces`; hidden if
-          ``contacts.force is None``).
+          the contact-force output (gated on :attr:`show_contact_forces`;
+          hidden if no output is available).
 
         Sub-toggles are themselves gated by the master :attr:`show_contacts`
         flag; setting it to ``False`` hides everything.  When sub-toggles are
@@ -1254,9 +1317,18 @@ class ViewerBase(ABC):
 
         Args:
             contacts: The contacts to render.
-            state: The current state of the simulation.  Required to compute
+            state: The state in whose body frames the contact points are expressed.
+                For contacts detected before a solver step, pass its input state.
+                Required to compute
                 world-space contact positions and (for mode coloring) body
                 velocities at the contact points.
+            observables: Optional solver observables containing ``contact_f``. If
+                omitted, the deprecated ``contacts.force`` array is used.
+                Binds compatible contact storage on first use; newly allocated forces
+                are zero until the solver updates them.
+
+                .. experimental::
+                    The solver observable API may change without prior notice.
         """
 
         if not self.show_contacts or self._layer_force_hidden():
@@ -1267,6 +1339,13 @@ class ViewerBase(ABC):
                 )
             self.log_arrows(self._qualify("/contacts/forces"), None, None, None)
             return
+
+        contact_f = observables.contact_f if observables is not None else contacts.force
+        if observables is not None:
+            if observables.model is not self.model:
+                raise ValueError("Solver observables must belong to the viewer's model.")
+            if contact_f is not None:
+                observables.bind_contacts(contacts)
 
         # Get contact count, clamped to buffer size (counter may exceed max on overflow)
         max_contacts = contacts.rigid_contact_max
@@ -1366,7 +1445,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_point1,
                     contacts.rigid_contact_offset0,
                     contacts.rigid_contact_normal,
-                    contacts.force,  # may be None — kernel falls back to default color
+                    contact_f,  # may be None — kernel falls back to default color
                     contact_scale * 0.2,
                     contact_scale * 0.004,  # cylinder half-height
                     float(self.contact_mode_eps_force),
@@ -1394,7 +1473,7 @@ class ViewerBase(ABC):
             )
 
         # ---- Layer C: contact force arrows --------------------------------
-        if self.show_contact_forces and contacts.force is not None:
+        if self.show_contact_forces and contact_f is not None:
             if self._contact_force_starts is None or len(self._contact_force_starts) < max_contacts:
                 self._contact_force_starts = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
                 self._contact_force_ends = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
@@ -1416,7 +1495,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_offset0,
-                    contacts.force,
+                    contact_f,
                     contact_scale * float(self.contact_force_scale),
                 ],
                 outputs=[self._contact_force_starts, self._contact_force_ends],
@@ -1785,14 +1864,16 @@ class ViewerBase(ABC):
 
         Args:
             name: The name of the gizmo.
-            transform: The transform of the gizmo.
+            transform: Gizmo transform with translation [m] and a unitless
+                rotation quaternion.
             translate: Axes on which the translation handles are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all translation handles.
             rotate: Axes on which the rotation rings are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
-            snap_to: Optional world transform to snap to when this gizmo is
+            snap_to: Optional world transform with translation [m] and a
+                unitless rotation quaternion to apply when this gizmo is
                 released by the user.
         """
         return
@@ -2044,7 +2125,8 @@ class ViewerBase(ABC):
 
         Args:
             name: Stable identifier. Subsequent calls with the same *name*
-                update in place. In :class:`ViewerGL`, each name gets one
+                update in place. In :class:`~newton.viewer.ViewerGL` and
+                :class:`~newton.viewer.ViewerRTX`, each name gets one
                 dockable window.
             image: Image array. Accepted shapes:
 
@@ -2056,12 +2138,14 @@ class ViewerBase(ABC):
                 Accepted dtypes: ``uint8`` (values in ``[0, 255]``) or
                 ``float32`` (values in ``[0, 1]``). Values outside the range
                 are clipped.
-            fullscreen: In :class:`~newton.viewer.ViewerGL`, display the image
-                as the main viewer surface for the current frame instead of
+            fullscreen: In :class:`~newton.viewer.ViewerGL` and
+                :class:`~newton.viewer.ViewerRTX`, display the image as the
+                main viewer surface for the current frame instead of
                 rendering the 3D scene. Other backends ignore this option.
 
-        The base implementation is a no-op. Backends that render images
-        (currently only :class:`~newton.viewer.ViewerGL`) override this method.
+        The base implementation is a no-op. Backends that render images,
+        including :class:`~newton.viewer.ViewerGL`, :class:`~newton.viewer.ViewerRTX`,
+        and :class:`~newton.viewer.ViewerViser`, override this method.
         """
         return
 
@@ -2458,7 +2542,7 @@ class ViewerBase(ABC):
             if geo_type == newton.GeoType.GAUSSIAN:
                 if isinstance(geo_src, newton.Gaussian):
                     parent = shape_body[s]
-                    xform = wp.transform_expand(shape_transform[s])
+                    xform = transform_from_array(shape_transform[s])
                     gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
                     self._gaussian_instances.append(
                         (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
@@ -2538,7 +2622,7 @@ class ViewerBase(ABC):
             else:
                 batch = self._shape_instances[shape_hash]
 
-            xform = wp.transform_expand(shape_transform[s])
+            xform = transform_from_array(shape_transform[s])
             scale = np.array([1.0, 1.0, 1.0])
 
             if shape_display_color is not None:
@@ -2708,7 +2792,7 @@ class ViewerBase(ABC):
             else:
                 batch = self._sdf_isomesh_instances[geo_hash]
 
-            xform = wp.transform_expand(shape_transform[s])
+            xform = transform_from_array(shape_transform[s])
             # Apply shape scale if not baked into SDF, otherwise use (1,1,1)
             if scale_baked:
                 scale = np.array([1.0, 1.0, 1.0])
@@ -2882,7 +2966,7 @@ class ViewerBase(ABC):
     ):
         """Compute offset meshes and extract wireframe edge data for every collision shape.
 
-        Results are written into *target* (keyed by shape index).
+        Wireframe edge data are written into *target* (keyed by shape index).
         """
         if self.model is None:
             return

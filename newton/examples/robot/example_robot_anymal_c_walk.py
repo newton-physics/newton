@@ -163,7 +163,7 @@ class Example:
 
         self.follow_cam = True
 
-        if isinstance(self.viewer, newton.viewer.ViewerGL):
+        if hasattr(self.viewer, "register_ui_callback"):
 
             def toggle_follow_cam(imgui):
                 changed, follow_cam = imgui.checkbox("Follow Camera", self.follow_cam)
@@ -191,8 +191,8 @@ class Example:
 
         policy_path = str(asset_path / "rl_policies" / "anymal_walking_policy_physx.onnx")
         self.policy = OnnxRuntime(policy_path, device=self.device)
-        self._policy_input_name = self.policy.input_names[0]
-        self._policy_output_name = self.policy.output_names[0]
+        self._policy_input_name = self.policy.inputs[0].name
+        self._policy_output_name = self.policy.outputs[0].name
         validate_policy_io_shapes(
             policy_path,
             self._policy_input_name,

@@ -22,6 +22,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _eval_soft_ef_contact,
     _reset_world_selected,
     dat_separation_epsilon,
+    evaluate_body_particle_attachment_particle_force_hessian,
     evaluate_body_particle_contact,
     find_edge_edge_separator,
     find_vertex_triangle_separator,
@@ -1846,6 +1847,48 @@ def accumulate_spring_force_and_hessian(
 
 
 @wp.kernel
+def accumulate_body_particle_attachment_force_and_hessian(
+    dt: float,
+    current_color: int,
+    particle_q_prev: wp.array[wp.vec3],
+    particle_q: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    attachment_body: wp.array[int],
+    attachment_particle: wp.array[int],
+    attachment_body_point: wp.array[wp.vec3],
+    attachment_stiffness: wp.array[float],
+    attachment_damping: wp.array[float],
+    attachment_enabled: wp.array[bool],
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
+):
+    """Accumulate body-particle attachment forces and Hessians on particles."""
+    attachment = wp.tid()
+    if not attachment_enabled[attachment]:
+        return
+
+    particle = attachment_particle[attachment]
+    if particle_colors[particle] != current_color:
+        return
+
+    body = attachment_body[attachment]
+    force, hessian = evaluate_body_particle_attachment_particle_force_hessian(
+        particle_q[particle],
+        particle_q_prev[particle],
+        body_q[body],
+        body_q_prev[body],
+        attachment_body_point[attachment],
+        attachment_stiffness[attachment],
+        attachment_damping[attachment],
+        dt,
+    )
+    wp.atomic_add(particle_forces, particle, force)
+    wp.atomic_add(particle_hessians, particle, hessian)
+
+
+@wp.kernel
 def accumulate_contact_force_and_hessian_no_self_contact(
     # inputs
     dt: float,
@@ -2322,6 +2365,134 @@ def gather_particle_body_contact_force_and_hessian(
     # Plain write, no atomics: later spring/self-contact kernels accumulate on top.
     particle_forces[particle_index] = force
     particle_hessians[particle_index] = hessian
+
+
+@wp.kernel
+def scatter_particle_body_contact_force_and_hessian(
+    # inputs
+    dt: float,
+    current_color: int,
+    pos_anchor: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
+    # body-particle contact
+    friction_epsilon: float,
+    rigid_body_particle_contact_use_log_barrier: bool,
+    particle_radius: wp.array[float],
+    body_particle_contact_indices: wp.array[wp.vec3i],
+    body_particle_contact_count: wp.array[int],
+    body_particle_contact_max: int,
+    worker_count: int,
+    # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
+    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_kd: wp.array[float],
+    body_particle_contact_material_mu: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
+    contact_barycentric: wp.array[wp.vec3],
+    # outputs
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
+):
+    """Accumulate body-contact forces per contact record over the active prefix.
+
+    Launched once per color per iteration with ``dim = worker_count``, a host-static grid no larger
+    than the capacity. Each worker strides over the active records ``tid, tid + worker_count, ...``
+    read from the device-side count, so the work follows the active count rather than the capacity
+    and the launch stays CUDA-graph safe. A record is evaluated only when one of its corners has the
+    active color, so the evaluations per iteration equal the per-particle gather's (one per corner
+    incidence) but run one record per thread. Contributions are added with atomics, so the summation
+    order follows scheduling; deterministic modes use
+    :func:`gather_particle_body_contact_force_and_hessian` instead.
+    """
+    count = min(body_particle_contact_max, body_particle_contact_count[0])
+    contact_index = wp.tid()
+    while contact_index < count:
+        corners = body_particle_contact_indices[contact_index]
+        contact_ke = body_particle_contact_penalty_k[contact_index]
+        contact_kd = body_particle_contact_material_kd[contact_index]
+        contact_mu = body_particle_contact_material_mu[contact_index]
+
+        if corners[1] < 0:
+            # Particle record (p, -1, -1).
+            particle_index = corners[0]
+            if particle_colors[particle_index] == current_color:
+                contact_force, contact_hessian = _eval_body_particle_contact(
+                    particle_index,
+                    pos[particle_index],
+                    pos_anchor[particle_index],
+                    contact_index,
+                    contact_ke,
+                    contact_kd,
+                    contact_mu,
+                    friction_epsilon,
+                    particle_radius,
+                    shape_body,
+                    body_q,
+                    body_q_prev,
+                    body_qd,
+                    body_com,
+                    contact_shape,
+                    contact_body_pos,
+                    contact_body_vel,
+                    contact_normal,
+                    shape_margin,
+                    dt,
+                    rigid_body_particle_contact_use_log_barrier,
+                )
+                wp.atomic_add(particle_forces, particle_index, contact_force)
+                wp.atomic_add(particle_hessians, particle_index, contact_hessian)
+        else:
+            # Edge/face record: evaluate once, only if a corner belongs to the active color.
+            active = False
+            for i in range(3):
+                corner_index = corners[i]
+                if corner_index >= 0:
+                    if particle_colors[corner_index] == current_color:
+                        active = True
+            if active:
+                bary = contact_barycentric[contact_index]
+                contact_force, contact_hessian, _cp_world = _eval_soft_ef_contact(
+                    contact_index,
+                    corners,
+                    bary,
+                    pos,
+                    pos_anchor,
+                    particle_radius,
+                    contact_ke,
+                    contact_kd,
+                    contact_mu,
+                    friction_epsilon,
+                    shape_body,
+                    body_q,
+                    body_q_prev,
+                    body_qd,
+                    body_com,
+                    contact_shape,
+                    contact_body_pos,
+                    contact_body_vel,
+                    contact_normal,
+                    shape_margin,
+                    dt,
+                    rigid_body_particle_contact_use_log_barrier,
+                )
+                for i in range(3):
+                    corner_index = corners[i]
+                    if corner_index >= 0:
+                        if particle_colors[corner_index] == current_color:
+                            weight = bary[i]
+                            wp.atomic_add(particle_forces, corner_index, weight * contact_force)
+                            wp.atomic_add(particle_hessians, corner_index, (weight * weight) * contact_hessian)
+
+        contact_index += worker_count
 
 
 @functools.cache
