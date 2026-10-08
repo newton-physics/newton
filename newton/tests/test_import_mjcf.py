@@ -10843,8 +10843,18 @@ class TestImportMjcfSensors(unittest.TestCase):
         sites = model.mujoco.sensor_site.numpy()
         self.assertEqual(sites[0], sites[1])
         self.assertEqual(model.shape_body.numpy()[sites[2]], -1)
-        np.testing.assert_allclose(model.mujoco.sensor_noise.numpy(), [0.01, 0, 0])
-        np.testing.assert_allclose(model.mujoco.sensor_cutoff.numpy(), [20, 0, 0])
+        expected_noise, expected_cutoff = [0.01, 0, 0], [20, 0, 0]
+        if importlib.util.find_spec("mujoco"):
+            import mujoco
+
+            native = mujoco.MjModel.from_xml_string(self.XML)
+            expected_noise, expected_cutoff = native.sensor_noise, native.sensor_cutoff
+            for row, site in enumerate(sites):
+                np.testing.assert_allclose(
+                    model.shape_transform.numpy()[site, :3], native.site_pos[native.sensor_objid[row]]
+                )
+        np.testing.assert_allclose(model.mujoco.sensor_noise.numpy(), expected_noise)
+        np.testing.assert_allclose(model.mujoco.sensor_cutoff.numpy(), expected_cutoff)
         self.assertEqual(model.mujoco.sensor_user, ["1 2", "", ""])
         np.testing.assert_allclose(model.mujoco.sensor_world.numpy(), [-1, -1, -1])
         np.testing.assert_allclose(model.shape_transform.numpy()[sites[0], 3:], [0, 0, 0.70710678, 0.70710678])
@@ -10959,21 +10969,6 @@ class TestImportMjcfSensors(unittest.TestCase):
         builder.add_mjcf(xml, parse_sensors=True)
         model = builder.finalize(device="cpu")
         self.assertEqual(model.mujoco.sensor_site.numpy().tolist(), [1, 0])
-
-    @unittest.skipUnless(importlib.util.find_spec("mujoco"), "MuJoCo is not installed")
-    def test_native_metadata(self):
-        """Match authored sensor fields and site positions to native MuJoCo."""
-        import mujoco
-
-        native = mujoco.MjModel.from_xml_string(self.XML)
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(self.XML, parse_sensors=True)
-        model = builder.finalize(device="cpu")
-        np.testing.assert_allclose(model.mujoco.sensor_noise.numpy(), native.sensor_noise)
-        np.testing.assert_allclose(model.mujoco.sensor_cutoff.numpy(), native.sensor_cutoff)
-        for row, site in enumerate(model.mujoco.sensor_site.numpy()):
-            native_site = native.sensor_objid[row]
-            np.testing.assert_allclose(model.shape_transform.numpy()[site, :3], native.site_pos[native_site])
 
 
 if __name__ == "__main__":
