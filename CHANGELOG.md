@@ -49,6 +49,7 @@
 
 ### Changed
 
+- Require the published `warp-nn` 0.4 release series (previously 0.3.1) for the `onnx` extra. Upgrade existing installations with `pip install --upgrade "newton[onnx]"`. ONNX LSTM inference is slower with Warp-NN 0.4.0; re-benchmark latency-sensitive policies before adopting this release candidate.
 - Import MJCF `damper` actuator shortcuts. ([#3749](https://github.com/newton-physics/newton/issues/3749))
 - Resolve USD visual meshes to triangle geometry and per-vertex normals, which may duplicate vertices for sharp shading even on untextured meshes. Use `newton.usd.get_mesh(..., load_normals=False)` for geometry-only loading without normal-driven vertex splitting, or select `face_varying_normal_conversion="vertex_averaging"` or `"angle_weighted"` when smoothing authored face normals is desired. USD/RTX viewers now render final polygonal meshes with explicit normals rather than reconstructing source subdivision surfaces. ([#4052](https://github.com/newton-physics/newton/issues/4052))
 - Accelerate `SolverKamino` sparse DVI Schur-complement solves with compact constraint-space updates, tiled symmetric matrix products, and reduced response-workspace traffic, while retaining the joint-friction law and configured iteration budget. No configuration changes are required.
