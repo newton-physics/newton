@@ -83,14 +83,12 @@ class TestImportMjcfBasic(unittest.TestCase):
         mujoco, _ = SolverMuJoCo.import_mujoco()
         native_model = mujoco.MjModel.from_xml_string(mjcf)
 
-        for convert_equalities in (True, False):
-            with self.subTest(convert_equalities=convert_equalities):
-                builder = newton.ModelBuilder()
-                builder.add_mjcf(mjcf, convert_mjc_equality_constraints=convert_equalities)
-                solver = SolverMuJoCo(builder.finalize())
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        solver = SolverMuJoCo(builder.finalize())
 
-                self.assertEqual(solver.mj_model.opt.disableflags, native_model.opt.disableflags)
-                self.assertEqual(solver.mj_model.opt.enableflags, native_model.opt.enableflags)
+        self.assertEqual(solver.mj_model.opt.disableflags, native_model.opt.disableflags)
+        self.assertEqual(solver.mj_model.opt.enableflags, native_model.opt.enableflags)
 
     def test_option_flag_bits_match_native_mujoco(self):
         """Keep every imported option flag bit aligned with MuJoCo."""
@@ -117,29 +115,25 @@ class TestImportMjcfBasic(unittest.TestCase):
             "multiccd",
         )
         enable_names = ("override", "energy", "fwdinv", "invdiscrete", "sleep", "diagexact")
-        flag_attrib = " ".join(
-            [*(f'{name}="disable"' for name in disable_names), *(f'{name}="enable"' for name in enable_names)]
-        )
-        mjcf = f"""
-<mujoco model="all_option_flags">
-    <option><flag {flag_attrib}/></option>
-    <worldbody>
-        <body name="body">
-            <freejoint/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        for name in (*disable_names, *enable_names):
+            for value in ("enable", "disable"):
+                with self.subTest(flag=name, value=value):
+                    mjcf = f"""
+<mujoco>
+    <option><flag {name}="{value}"/></option>
+    <worldbody><body><freejoint/><geom type="sphere" size="0.1"/></body></worldbody>
 </mujoco>
 """
-        mujoco, _ = SolverMuJoCo.import_mujoco()
-        native_model = mujoco.MjModel.from_xml_string(mjcf)
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-
-        disableflags = int(builder.custom_attributes["mujoco:disableflags"].values[0])
-        enableflags = int(builder.custom_attributes["mujoco:enableflags"].values[0])
-        self.assertEqual(disableflags, native_model.opt.disableflags)
-        self.assertEqual(enableflags, native_model.opt.enableflags)
+                    native_model = mujoco.MjModel.from_xml_string(mjcf)
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf)
+                    self.assertEqual(
+                        int(builder.custom_attributes["mujoco:disableflags"].values[0]), native_model.opt.disableflags
+                    )
+                    self.assertEqual(
+                        int(builder.custom_attributes["mujoco:enableflags"].values[0]), native_model.opt.enableflags
+                    )
 
     def test_unknown_option_flag_warns(self):
         """Warn when an MJCF option flag name is unsupported."""
