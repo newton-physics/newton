@@ -154,7 +154,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.26"
+          version: "0.12.23"
 
       - name: Set up Python
         run: uv python install
@@ -166,9 +166,12 @@ jobs:
           echo "sm=sm$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.')" >> "$GITHUB_OUTPUT"
 
       # Warp kernel binaries are architecture-specific, so each GPU type keeps its own cache.
+      # Post-submit (push) runs start cold to catch stale-cache issues without
+      # slowing the merge queue.
       - name: Restore Warp kernel cache
-        if: github.event_name != 'merge_group'
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        id: restore-warp-cache
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: /actions-runner/.cache/warp
           key: warp-kernels-gpu-${{ steps.gpu-arch.outputs.sm }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
@@ -205,6 +208,15 @@ jobs:
           --viewer rtx
           --headless
           --num-frames 2
+
+      # Merge queue caches are scoped to throwaway gh-readonly-queue refs.
+      # Cache keys are immutable, so cold runs only save when the key is new.
+      - name: Save Warp kernel cache
+        if: github.event_name != 'merge_group' && steps.restore-warp-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: /actions-runner/.cache/warp
+          key: warp-kernels-gpu-${{ steps.gpu-arch.outputs.sm }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
 
       - name: Check disk space (post-test)
         if: always()

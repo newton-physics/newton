@@ -1203,8 +1203,9 @@ class ModelBuilder:
               ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
 
         Special handling:
-            - ``"world"``: Values are replaced with the builder-managed
-              :attr:`ModelBuilder.current_world` context (not offset)
+            - ``"world"``: Missing custom-frequency row values are initialized from
+              :attr:`ModelBuilder.current_world`. During builder merging, values are
+              replaced with the destination builder's active world context (not offset).
 
         Custom frequencies (values are offset by that frequency's count):
             - Any custom frequency string, e.g., ``"mujoco:pair"``
@@ -1720,6 +1721,22 @@ class ModelBuilder:
         self._requested_state_attributes: set[str] = set()
         """Optional state attributes requested via :meth:`request_state_attributes`."""
 
+        # body-particle attachments
+        self.attachment_body_particle_body: list[int] = []
+        """Rigid body indices accumulated for :attr:`Model.attachment_body_particle_body`."""
+        self.attachment_body_particle_particle: list[int] = []
+        """Particle indices accumulated for :attr:`Model.attachment_body_particle_particle`."""
+        self.attachment_body_particle_body_point: list[Vec3] = []
+        """Body-local attachment points [m] accumulated for :attr:`Model.attachment_body_particle_body_point`."""
+        self.attachment_body_particle_stiffness: list[float] = []
+        """Attachment stiffness values [N/m] accumulated for :attr:`Model.attachment_body_particle_stiffness`."""
+        self.attachment_body_particle_damping: list[float] = []
+        """Attachment damping values [N·s/m] accumulated for :attr:`Model.attachment_body_particle_damping`."""
+        self.attachment_body_particle_enabled: list[bool] = []
+        """Attachment enabled states accumulated for :attr:`Model.attachment_body_particle_enabled`."""
+        self.attachment_body_particle_world: list[int] = []
+        """World indices accumulated for :attr:`Model.attachment_body_particle_world`."""
+
         # springs
         self.spring_indices: list[int] = []
         """Spring particle index pairs accumulated for :attr:`Model.spring_indices`."""
@@ -2074,6 +2091,8 @@ class ModelBuilder:
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
         """Registered custom attributes to materialize during :meth:`finalize <ModelBuilder.finalize>`."""
+        self._custom_world_reference_attribute_keys: dict[str, list[str]] = {}
+        """Custom-frequency world-reference attribute keys grouped by frequency."""
         self._custom_attribute_model_finalizers: dict[
             str, Callable[[ModelBuilder, Model, ModelBuilder.CustomAttribute], None]
         ] = {}
@@ -2235,6 +2254,7 @@ class ModelBuilder:
         Raises:
             ValueError: If the attribute key already exists with incompatible specification,
                 if the attribute uses a custom string frequency that hasn't been registered,
+                if the attribute uses a contact frequency (reserved for solver observables),
                 or if ``usd_attribute_name`` is ``"*"`` without a ``usd_value_transformer``.
 
         Example:
@@ -2260,12 +2280,21 @@ class ModelBuilder:
                 # with the default value 20.0
                 assert np.allclose(model.my_namespace.my_attribute.numpy(), [30.0, 20.0])
         """
+        if attribute.frequency in (
+            Model.AttributeFrequency.CONTACT,
+            Model.AttributeFrequency.CONTACT_RIGID,
+            Model.AttributeFrequency.CONTACT_SOFT,
+        ):
+            raise ValueError(
+                "Contact frequencies are only supported by SolverObservables, not builder custom attributes."
+            )
         key = attribute.key
 
         existing = self.custom_attributes.get(key)
         if existing:
             if not self._custom_attribute_specs_match(existing, attribute):
                 raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
+            self._index_custom_world_reference_attribute(existing)
             return
 
         # Validate that custom frequencies are registered before use
@@ -2286,6 +2315,18 @@ class ModelBuilder:
 
         self.custom_attributes[key] = attribute
         self._custom_schema_epoch += 1
+        self._index_custom_world_reference_attribute(attribute)
+
+    def _index_custom_world_reference_attribute(self, attribute: CustomAttribute) -> None:
+        """Index a custom-frequency world reference for row insertion."""
+        if not attribute.is_custom_frequency or attribute.references != "world":
+            return
+
+        freq_key = attribute.frequency
+        assert isinstance(freq_key, str), f"Custom frequency '{freq_key}' is not a string"
+        keys = self._custom_world_reference_attribute_keys.setdefault(freq_key, [])
+        if attribute.key not in keys:
+            keys.append(attribute.key)
 
     def _add_custom_attribute_model_finalizer(
         self,
@@ -2331,6 +2372,7 @@ class ModelBuilder:
         freq_obj = frequency
 
         freq_key = freq_obj.key
+        self._custom_world_reference_attribute_keys.setdefault(freq_key, [])
         if freq_key in self.custom_frequencies:
             existing = self.custom_frequencies[freq_key]
             if not self._custom_frequency_specs_match(existing, freq_obj):
@@ -2509,13 +2551,19 @@ class ModelBuilder:
         This is useful for custom entity types that aren't built into the model,
         such as user-defined groupings or solver-specific data.
 
+        For each custom frequency touched by a call, attributes declared with
+        ``references="world"`` are initialized from :attr:`current_world` when
+        omitted or set to ``None``. Explicit world values, including ``-1``, are
+        preserved.
+
         Args:
             **kwargs: Mapping of attribute keys to values. Keys should be the full
                 attribute key (e.g., ``"mujoco:pair_geom1"`` or just ``"my_attr"`` if no namespace).
 
         Returns:
             A mapping from attribute keys to the index where each value was added.
-            If all attributes had the same count before the call, all indices will be equal.
+            This includes inferred world-reference attributes. If all attributes had
+            the same count before the call, all indices will be equal.
 
         Raises:
             AttributeError: If an attribute key is not defined.
@@ -2528,15 +2576,15 @@ class ModelBuilder:
                     **{
                         "mujoco:pair_geom1": 0,
                         "mujoco:pair_geom2": 1,
-                        "mujoco:pair_world": builder.current_world,
                     }
                 )
                 # Returns: {'mujoco:pair_geom1': 0, 'mujoco:pair_geom2': 0, 'mujoco:pair_world': 0}
         """
-        indices: dict[str, int] = {}
-        frequency_indices: dict[str, int] = {}  # Track indices assigned per frequency in this call
+        values = dict(kwargs)
+        touched_frequencies: set[str] = set()
 
-        for key, value in kwargs.items():
+        # Validate the supplied row before mutating any attribute storage.
+        for key in kwargs:
             attr = self.custom_attributes.get(key)
             if attr is None:
                 raise AttributeError(
@@ -2547,6 +2595,19 @@ class ModelBuilder:
                     f"Custom attribute '{key}' has frequency={attr.frequency}, "
                     f"but add_custom_values() only works with custom frequency attributes."
                 )
+            assert isinstance(attr.frequency, str), f"Custom frequency '{attr.frequency}' is not a string"
+            touched_frequencies.add(attr.frequency)
+
+        for freq_key in touched_frequencies:
+            for attr_key in self._custom_world_reference_attribute_keys.get(freq_key, ()):
+                if values.get(attr_key) is None:
+                    values[attr_key] = self.current_world
+
+        indices: dict[str, int] = {}
+        frequency_indices: dict[str, int] = {}  # Track indices assigned per frequency in this call
+
+        for key, value in values.items():
+            attr = self.custom_attributes[key]
 
             # Ensure attr.values is initialized
             if attr.values is None:
@@ -2577,6 +2638,9 @@ class ModelBuilder:
 
     def add_custom_values_batch(self, entries: Sequence[dict[str, Any]]) -> list[dict[str, int]]:
         """Append multiple custom-frequency rows in a single call.
+
+        Each row uses :meth:`add_custom_values`, including automatic initialization
+        of omitted world-reference attributes.
 
         Args:
             entries: Sequence of rows where each row maps custom attribute keys to values.
@@ -3122,6 +3186,11 @@ class ModelBuilder:
         The number of springs in the model.
         """
         return len(self.spring_rest_length)
+
+    @property
+    def attachment_body_particle_count(self) -> int:
+        """The number of body-particle attachments in the model."""
+        return len(self.attachment_body_particle_body)
 
     @property
     def muscle_count(self):
@@ -4918,8 +4987,10 @@ class ModelBuilder:
                 if full_key not in self.custom_attributes:
                     freq_key = attr.frequency
                     mapped_values = [] if isinstance(freq_key, str) else {}
-                    self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                    merged = replace(attr, values=mapped_values)
+                    self.custom_attributes[full_key] = merged
                     self._custom_schema_epoch += 1
+                    self._index_custom_world_reference_attribute(merged)
                 continue
 
             freq_key = attr.frequency
@@ -5016,8 +5087,10 @@ class ModelBuilder:
                     }
                 else:
                     mapped_values = {index_offset + idx: value for idx, value in attr.values.items()}
-                self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                merged = replace(attr, values=mapped_values)
+                self.custom_attributes[full_key] = merged
                 self._custom_schema_epoch += 1
+                self._index_custom_world_reference_attribute(merged)
                 continue
 
             if not self._custom_attribute_defaults_match(merged.default, attr.default):
@@ -5079,6 +5152,7 @@ class ModelBuilder:
             if freq_key not in self.custom_frequencies:
                 self.custom_frequencies[freq_key] = freq_obj
                 self._custom_schema_epoch += 1
+            self._custom_world_reference_attribute_keys.setdefault(freq_key, [])
 
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
@@ -6418,6 +6492,7 @@ class ModelBuilder:
         self,
         joint: int,
         reference_joint: int | None,
+        *,
         coeffs: Vec2 = (0.0, 1.0),
     ) -> None:
         """Configure a joint to mimic another joint with matching dimensions.
@@ -6515,7 +6590,7 @@ class ModelBuilder:
     ) -> int:
         """Adds a mimic constraint to the model.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Use :meth:`set_joint_mimic` for joints with matching dimensions.
             Mimic metadata is now stored per joint rather than as a separate
             constraint.
@@ -6538,7 +6613,7 @@ class ModelBuilder:
             Constraint index
         """
         warnings.warn(
-            "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.6; "
+            "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.7; "
             "use set_joint_mimic() for joints with matching dimensions instead.",
             NewtonDeprecationWarning,
             stacklevel=self._external_warning_stacklevel(),
@@ -6837,6 +6912,12 @@ class ModelBuilder:
                 bodies_in_constraints.add(body1)
             if body2 >= 0:
                 bodies_in_constraints.add(body2)
+
+        # A body-particle attachment needs a surviving body to anchor to and to receive the
+        # reaction force, so its body must not be merged into the world.
+        for body in self.attachment_body_particle_body:
+            if body >= 0:
+                bodies_in_constraints.add(body)
 
         retained_joints = []
         retained_bodies = []
@@ -7501,6 +7582,20 @@ class ModelBuilder:
                 elif target_kind == 2 and old_target >= len(self.constraint_mimic_joint0):
                     target_attr.values[eq_idx] = -1
                     target_kind_attr.values[eq_idx] = 0
+
+        # Remap body-particle attachments onto the reindexed bodies. When the anchored body was
+        # merged into its parent, the local anchor must be re-expressed in the surviving parent's
+        # frame so the attachment keeps its world-space position.
+        for i in range(len(self.attachment_body_particle_body)):
+            old_body = self.attachment_body_particle_body[i]
+            if old_body in body_merged_parent:
+                merge_xform = body_merged_transform[old_body]
+                self.attachment_body_particle_body_point[i] = wp.transform_point(
+                    merge_xform, self.attachment_body_particle_body_point[i]
+                )
+                self.attachment_body_particle_body[i] = body_remap[body_merged_parent[old_body]]
+            else:
+                self.attachment_body_particle_body[i] = body_remap[old_body]
 
         # Generic entity-reference remap for any custom attribute that points at bodies or joints
         # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
@@ -10109,6 +10204,85 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.PARTICLE,
             )
 
+    def add_attachment_body_particle(
+        self,
+        body: int,
+        particle: int,
+        *,
+        body_point: Vec3 | None = None,
+        stiffness: float = 1.0e4,
+        damping: float = 0.0,
+        enabled: bool = True,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds an attachment between a rigid body and a particle.
+
+        The compliant attachment pulls the particle toward a body-local anchor and
+        transfers equal-and-opposite forces between both endpoints in
+        :class:`~newton.solvers.SolverVBD`. The constraint is translational;
+        a single particle does not define an orientation. When the endpoints are
+        owned by different solvers of a coupled simulation, the attachment is
+        coupled by
+        :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
+        See :ref:`Body-particle attachments`.
+
+        Args:
+            body: Index of the rigid body.
+            particle: Index of the attached particle.
+            body_point: Attachment point in the body's local frame [m]. If
+                ``None``, the body origin is used.
+            stiffness: Attachment stiffness [N/m].
+            damping: Attachment damping [N·s/m].
+            enabled: Whether the attachment is active.
+            custom_attributes: Dictionary of custom attribute names to values.
+
+        Returns:
+            Index of the attachment.
+
+        Raises:
+            IndexError: If ``body`` or ``particle`` is out of range.
+            ValueError: If the endpoints belong to different worlds, a
+                coefficient is negative, or a coefficient or ``body_point``
+                is not finite.
+        """
+        if body < 0 or body >= self.body_count:
+            raise IndexError(f"Body index {body} is out of range for {self.body_count} bodies")
+        if particle < 0 or particle >= self.particle_count:
+            raise IndexError(f"Particle index {particle} is out of range for {self.particle_count} particles")
+        if not math.isfinite(stiffness) or stiffness < 0.0:
+            raise ValueError("Attachment stiffness must be finite and nonnegative")
+        if not math.isfinite(damping) or damping < 0.0:
+            raise ValueError("Attachment damping must be finite and nonnegative")
+        resolved_body_point = wp.vec3() if body_point is None else axis_to_vec3(body_point)
+        if not all(math.isfinite(c) for c in resolved_body_point):
+            raise ValueError(f"Attachment body_point must be finite, got {tuple(resolved_body_point)}")
+
+        body_world = self.body_world[body]
+        particle_world = self.particle_world[particle]
+        if body_world >= 0 and particle_world >= 0 and body_world != particle_world:
+            raise ValueError(
+                f"Attachment endpoints belong to different worlds: body {body_world}, particle {particle_world}"
+            )
+        # An endpoint outside any world context (-1) adopts the world of the other endpoint.
+        world = body_world if body_world >= 0 else particle_world
+
+        attachment = self.attachment_body_particle_count
+        self.attachment_body_particle_body.append(int(body))
+        self.attachment_body_particle_particle.append(int(particle))
+        self.attachment_body_particle_body_point.append(resolved_body_point)
+        self.attachment_body_particle_stiffness.append(float(stiffness))
+        self.attachment_body_particle_damping.append(float(damping))
+        self.attachment_body_particle_enabled.append(bool(enabled))
+        self.attachment_body_particle_world.append(world)
+
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=attachment,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+            )
+        return attachment
+
     def add_spring(
         self,
         i: int,
@@ -11887,8 +12061,12 @@ class ModelBuilder:
             return self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, label=label)
 
     def request_contact_attributes(self, *attributes: str) -> None:
-        """
-        Request that specific contact attributes be allocated when creating a Contacts object from the finalized Model.
+        """Request optional contact attributes on the finalized model.
+
+        .. deprecated:: 1.7
+
+            Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from
+            the solver instead.
 
         Args:
             *attributes: Variable number of attribute names (strings).
@@ -11896,14 +12074,24 @@ class ModelBuilder:
         # Local import to avoid adding more module-level dependencies in this large file.
         from .contacts import Contacts  # noqa: PLC0415
 
+        warnings.warn(
+            "ModelBuilder.request_contact_attributes() is deprecated in Newton 1.7; "
+            "request SolverObservables from the solver instead.",
+            NewtonDeprecationWarning,
+            stacklevel=2,
+        )
         Contacts.validate_extended_attributes(attributes)
         self._requested_contact_attributes.update(attributes)
 
     def request_state_attributes(self, *attributes: str) -> None:
-        """
-        Request that specific state attributes be allocated when creating a State object from the finalized Model.
+        """Request optional solver-produced attributes on the finalized model.
 
-        See :ref:`extended_state_attributes` for details and usage.
+        .. deprecated:: 1.7
+
+            Request :class:`newton.solvers.SolverObservables` from the solver
+            instead.
+
+        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
 
         Args:
             *attributes: Variable number of attribute names (strings).
@@ -11911,6 +12099,12 @@ class ModelBuilder:
         # Local import to avoid adding more module-level dependencies in this large file.
         from .state import State  # noqa: PLC0415
 
+        warnings.warn(
+            "ModelBuilder.request_state_attributes() is deprecated in Newton 1.7; "
+            "request SolverObservables from the solver instead.",
+            NewtonDeprecationWarning,
+            stacklevel=2,
+        )
         State.validate_extended_attributes(attributes)
         self._requested_state_attributes.update(attributes)
 
@@ -13066,8 +13260,10 @@ class ModelBuilder:
             m = Model(device)
             m._sdf_texture_paired_samples = sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
-            m.request_contact_attributes(*self._requested_contact_attributes)
-            m.request_state_attributes(*self._requested_state_attributes)
+            # Preserve deprecated extended-attribute requests without emitting a
+            # second warning after the builder request already warned the caller.
+            m._requested_contact_attributes.update(self._requested_contact_attributes)
+            m._requested_state_attributes.update(self._requested_state_attributes)
             m.requires_grad = requires_grad
 
             m.world_count = self.world_count
@@ -13983,6 +14179,31 @@ class ModelBuilder:
             m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
+            # body-particle attachments
+
+            m.attachment_body_particle_body = _to_wp_array(
+                self.attachment_body_particle_body, wp.int32, requires_grad=False
+            )
+            m.attachment_body_particle_particle = _to_wp_array(
+                self.attachment_body_particle_particle, wp.int32, requires_grad=False
+            )
+            m.attachment_body_particle_body_point = _to_wp_array(
+                self.attachment_body_particle_body_point, wp.vec3, requires_grad=requires_grad
+            )
+            m.attachment_body_particle_stiffness = _to_wp_array(
+                self.attachment_body_particle_stiffness, wp.float32, requires_grad=requires_grad
+            )
+            m.attachment_body_particle_damping = _to_wp_array(
+                self.attachment_body_particle_damping, wp.float32, requires_grad=requires_grad
+            )
+            m.attachment_body_particle_enabled = _to_wp_array(
+                self.attachment_body_particle_enabled, wp.bool, requires_grad=False
+            )
+            m.attachment_body_particle_world = _to_wp_array(
+                self.attachment_body_particle_world, wp.int32, requires_grad=False
+            )
+
+            # ---------------------
             # triangles
 
             m.tri_indices = _to_wp_array(self.tri_indices, wp.int32, requires_grad=False)
@@ -14282,6 +14503,7 @@ class ModelBuilder:
             m.tet_count = len(self.tet_poses)
             m.edge_count = len(self.edge_rest_angle)
             m.spring_count = len(self.spring_rest_length)
+            m.attachment_body_particle_count = self.attachment_body_particle_count
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
             m.mujoco.equality_constraint_count = self._equality_constraint_count
