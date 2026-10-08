@@ -424,7 +424,7 @@ class SensorContact:
                 against shape labels, or list of shape indices. Regular expressions use full matching.
             measure_total: If True (default), :attr:`total_force` and :attr:`total_force_friction` are allocated.
                 If False, both are None.
-            verbose: If True, print details. If False, suppress details. If None, print details when
+            verbose: If True, log details. If False, suppress details. If None, log details when
                 ``wp.config.log_level`` is configured for debug logging.
             request_contact_attributes: If True, request the deprecated ``contacts.force`` extended attribute
                 for compatibility. Defaults to True during the deprecation period.

@@ -5556,7 +5556,9 @@ def Xform "Articulation" (
         self.assertIsNotNone(mesh.texture)
         self.assertIsNone(mesh.uvs)
         np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
-        self.assertIn("texture sampling is disabled", "\n".join(log_ctx.output))
+        self.assertEqual(
+            {r.levelno for r in log_ctx.records if "texture sampling is disabled" in r.getMessage()}, {logging.DEBUG}
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_uvless_textured_visual_mesh_subset_disables_uv_sampling(self):
@@ -5571,7 +5573,9 @@ def Xform "Articulation" (
         self.assertIsNotNone(mesh.texture)
         self.assertIsNone(mesh.uvs)
         np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
-        self.assertIn("texture sampling is disabled", "\n".join(log_ctx.output))
+        self.assertEqual(
+            {r.levelno for r in log_ctx.records if "texture sampling is disabled" in r.getMessage()}, {logging.DEBUG}
+        )
 
     def _build_custom_shader_mesh_stage(self, *, with_diffuse: bool):
         """Build a stage whose mesh binds a non-UsdPreviewSurface shader with map inputs.
@@ -6068,9 +6072,8 @@ def Xform "Articulation" (
         ]
         self.assertEqual(uv_warnings, [], f"unexpected UV warnings: {[str(w.message) for w in uv_warnings]}")
 
-        joined = "\n".join(log_ctx.output)
-        self.assertIn("UV primvar length", joined)
-        self.assertIn("texture sampling is disabled", joined)
+        for text in ("UV primvar length", "texture sampling is disabled"):
+            self.assertEqual({r.levelno for r in log_ctx.records if text in r.getMessage()}, {_logging.DEBUG})
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_used_by_mass_properties(self):

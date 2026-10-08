@@ -140,7 +140,7 @@ class SensorFrameTransform:
             reference_sites: Glob pattern, list of glob patterns, compiled regular-expression
                 pattern to match against site labels, or list of site indices. Must expand
                 to one site or the same number as ``shapes``.
-            verbose: If True, print details. If False, suppress details. If None, print details when
+            verbose: If True, log details. If False, suppress details. If None, log details when
                 ``wp.config.log_level`` is configured for debug logging.
 
         Raises:

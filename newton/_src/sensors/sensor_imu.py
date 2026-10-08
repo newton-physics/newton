@@ -150,7 +150,7 @@ class SensorIMU:
             sites: Glob pattern, list of glob patterns, compiled regular-expression
                 pattern to match against site labels, or list of site indices. Regular
                 expressions use full matching.
-            verbose: If True, print details. If False, suppress details. If None, print details when
+            verbose: If True, log details. If False, suppress details. If None, log details when
                 ``wp.config.log_level`` is configured for debug logging.
             request_state_attributes: If True, request the deprecated extended
                 state attribute ``body_qdd`` from the model. Defaults to True for
