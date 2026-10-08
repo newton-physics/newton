@@ -89,8 +89,9 @@ DVI offers two subsolvers for bounded joint rows, limits, and contacts:
 
 * **PGS** (default) uses projected Gauss-Seidel updates with less work per
   iteration, making it a simple choice for modest contact problems.
-* **APGD** uses accelerated projected-gradient steps, which can help with
-  coupled constraints at the cost of extra operator products and backtracking.
+* **APGD** offers a faster convergence rate for each frozen-correction
+  quadratic problem, at the cost of objective-gradient evaluations and an
+  inner backtracking loop.
   CUDA execution requires conditional-graph support.
 
 Both support dense and sparse operators and bilateral Schur elimination.
