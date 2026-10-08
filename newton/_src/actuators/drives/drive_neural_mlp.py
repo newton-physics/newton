@@ -299,7 +299,6 @@ class DriveNeuralMLP(DriveBase):
         runtime, _ = load_checkpoint(
             self.model_path,
             device=device,
-            batch_size=num_actuators,
             input_batch_axes=0,
             requires_grad=True,
         )

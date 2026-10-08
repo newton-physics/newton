@@ -1,1 +1,1 @@
-Update the optional ONNX dependency to the published `warp-nn` 0.4.0 release, replacing the Git commit pin.
+Require the published `warp-nn` 0.4 release series (previously 0.3.1) for the `onnx` extra. Upgrade existing installations with `pip install --upgrade "newton[onnx]"`.

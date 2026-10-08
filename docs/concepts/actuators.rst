@@ -323,6 +323,14 @@ Warp-NN runs with its own Warp kernels. :class:`DriveNeuralMLP` and
 :class:`DriveNeuralLSTM` additionally support Torch checkpoints through the
 Torch backend; :class:`DriveNeuralGRU` uses ONNX only.
 
+For :class:`DriveNeuralMLP` and :class:`DriveNeuralLSTM`, prefer ONNX exports
+with dynamic batch axes: axis 0 of the MLP input and axis 1 of the LSTM
+input, hidden state, and cell state. Existing fixed-batch exports remain
+supported by adapting these input declarations without changing the source
+checkpoint. This does not rewrite batch sizes embedded in graph operations
+such as ``Reshape``; re-export those models with dynamic batch axes when
+running a different number of actuators.
+
 Torch checkpoints are pt2 archives (``.pt2``) saved with ``torch.export.save``.
 Checkpoint metadata (scales and network configuration) is stored as a JSON
 extra file:

@@ -159,6 +159,7 @@ def load_policy_and_setup_arrays(example: Any, policy_path: str, num_dofs: int, 
     )
     example._obs_wp = wp.zeros((1, obs_dim), dtype=wp.float32, device=example.device)
     example._prev_act_wp = wp.zeros((1, num_dofs), dtype=wp.float32, device=example.device)
+    example.policy.prepare({example.policy_input_name: example._obs_wp})
 
     example._physx_to_mjc_wp = wp.array(
         np.asarray(example.physx_to_mjc_indices, dtype=np.int32), dtype=wp.int32, device=example.device

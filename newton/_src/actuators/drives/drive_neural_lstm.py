@@ -255,7 +255,6 @@ class DriveNeuralLSTM(DriveBase):
         runtime, _ = load_checkpoint(
             self.model_path,
             device=device,
-            batch_size=num_actuators,
             input_batch_axes={
                 self._input_name: 1,
                 self._hidden_in_name: 1,
@@ -266,11 +265,23 @@ class DriveNeuralLSTM(DriveBase):
         self._network = runtime
         self.network = runtime
 
-        inputs = {
-            spec.name: wp.zeros(spec.shape, dtype=spec.dtype, device=device, requires_grad=True)
-            for spec in runtime.inputs
-        }
-        outputs = runtime(inputs)
+        self._net_input = wp.zeros((1, num_actuators, 2), dtype=wp.float32, device=device)
+        self._net_input.requires_grad = True
+        self._grad_seed = wp.full((num_actuators, 1), 1.0, dtype=wp.float32, device=device)
+        self._next_hidden = wp.zeros(
+            (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
+        )
+        self._next_cell = wp.zeros(
+            (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
+        )
+
+        outputs = runtime(
+            {
+                self._input_name: self._net_input,
+                self._hidden_in_name: self._next_hidden,
+                self._cell_in_name: self._next_cell,
+            }
+        )
         out_shape = outputs[self._output_name].shape
         if out_shape != (num_actuators, 1):
             raise ValueError(
@@ -286,16 +297,6 @@ class DriveNeuralLSTM(DriveBase):
                     f"DriveNeuralLSTM: ONNX output '{name}' has shape {tuple(state_shape)}, "
                     f"expected {expected_state_shape} (num_layers, num_actuators, hidden_size)"
                 )
-
-        self._net_input = wp.zeros((1, num_actuators, 2), dtype=wp.float32, device=device)
-        self._net_input.requires_grad = True
-        self._grad_seed = wp.full((num_actuators, 1), 1.0, dtype=wp.float32, device=device)
-        self._next_hidden = wp.zeros(
-            (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
-        )
-        self._next_cell = wp.zeros(
-            (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
-        )
 
         # Implicit path: per-step linearization packed as [tau0, a, b, q0, qd0] and the
         # per-slot scratch it is assembled from (see prepare_implicit).
