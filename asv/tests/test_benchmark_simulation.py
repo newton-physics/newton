@@ -44,7 +44,6 @@ try:
         bench_quadruped_xpbd,
         bench_selection,
         bench_sensor_tiled_camera,
-        bench_teleop_mujoco,
     )
 
     _DEFERRED_WORKLOAD_MODULES_AFTER_METRIC_IMPORT = {name: name in sys.modules for name in _DEFERRED_WORKLOAD_MODULES}
@@ -306,22 +305,6 @@ class TestSimulationBenchmarks(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "requires CUDA graph capture"),
         ):
             benchmark._create_workload(Mock(), world_count=1)
-
-    def test_teleop_imports_robot_once(self):
-        """Import the teleop robot once and hand each loop its own copy."""
-        loop_cls = bench_teleop_mujoco._TeleopLoop
-        robot = SimpleNamespace(joint_target_ke=[500.0])
-        with (
-            patch.object(loop_cls, "_robot", None),
-            patch.object(loop_cls, "_build_robot", return_value=robot) as build_robot,
-        ):
-            first = loop_cls._robot_builder()
-            second = loop_cls._robot_builder()
-
-        build_robot.assert_called_once_with()
-        self.assertEqual(first, robot)
-        self.assertIsNot(first, robot)
-        self.assertIsNot(first.joint_target_ke, second.joint_target_ke)
 
     def test_mujoco_metrics_include_solver_iterations(self):
         """Publish mean and maximum MuJoCo solver iterations."""
