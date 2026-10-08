@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import os
+import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -103,7 +104,7 @@ class SensorCamera:
         width, height = 640, 480
         camera_rays = SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=1.0, device=model.device)
         camera_transforms = wp.array([wp.transform_identity()], dtype=wp.transformf, device=model.device)
-        color = camera.create_color_image_output(camera_transforms.shape[0], width, height)
+        color = camera.create_image_output_color(camera_transforms.shape[0], width, height)
 
         camera.update(state, camera_transforms, camera_rays, color_image=color)
     """
@@ -171,7 +172,7 @@ class SensorCamera:
         """
         return wp.zeros((int(view_count), int(height), int(width)), dtype=dtype, device=self.device)
 
-    def create_color_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+    def create_image_output_color(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
         """Create an RGBA color output array (packed ``uint32``).
 
         Args:
@@ -184,7 +185,7 @@ class SensorCamera:
         """
         return self.create_image_output(view_count, width, height, wp.uint32)
 
-    def create_depth_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
+    def create_image_output_depth(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
         """Create a ray-distance depth output array [m].
 
         Args:
@@ -197,7 +198,7 @@ class SensorCamera:
         """
         return self.create_image_output(view_count, width, height, wp.float32)
 
-    def create_forward_depth_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
+    def create_image_output_forward_depth(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
         """Create a forward (planar) depth output array [m].
 
         Args:
@@ -208,9 +209,9 @@ class SensorCamera:
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``float32``.
         """
-        return self.create_depth_image_output(view_count, width, height)
+        return self.create_image_output_depth(view_count, width, height)
 
-    def create_shape_index_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+    def create_image_output_shape_index(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
         """Create a shape-index output array.
 
         Args:
@@ -223,7 +224,7 @@ class SensorCamera:
         """
         return self.create_image_output(view_count, width, height, wp.uint32)
 
-    def create_normal_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
+    def create_image_output_normal(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
         """Create a world-space surface-normal output array (``vec3f``).
 
         Args:
@@ -236,7 +237,7 @@ class SensorCamera:
         """
         return self.create_image_output(view_count, width, height, wp.vec3f)
 
-    def create_albedo_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+    def create_image_output_albedo(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
         """Create an RGBA albedo output array (packed ``uint32``).
 
         Args:
@@ -249,7 +250,7 @@ class SensorCamera:
         """
         return self.create_image_output(view_count, width, height, wp.uint32)
 
-    def create_hdr_color_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
+    def create_image_output_hdr_color(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
         """Create a linear HDR color output array (``vec3f``).
 
         Args:
@@ -261,6 +262,118 @@ class SensorCamera:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
         """
         return self.create_image_output(view_count, width, height, wp.vec3f)
+
+    def create_color_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+        """Deprecated alias for :meth:`create_image_output_color`.
+
+        .. deprecated:: 1.7
+            Use :meth:`create_image_output_color` instead.
+
+        :meta private:
+        """
+        warnings.warn(
+            "SensorCamera.create_color_image_output() is deprecated in Newton 1.7; "
+            "use create_image_output_color() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.create_image_output_color(view_count, width, height)
+
+    def create_depth_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
+        """Deprecated alias for :meth:`create_image_output_depth`.
+
+        .. deprecated:: 1.7
+            Use :meth:`create_image_output_depth` instead.
+
+        :meta private:
+        """
+        warnings.warn(
+            "SensorCamera.create_depth_image_output() is deprecated in Newton 1.7; "
+            "use create_image_output_depth() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.create_image_output_depth(view_count, width, height)
+
+    def create_forward_depth_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
+        """Deprecated alias for :meth:`create_image_output_forward_depth`.
+
+        .. deprecated:: 1.7
+            Use :meth:`create_image_output_forward_depth` instead.
+
+        :meta private:
+        """
+        warnings.warn(
+            "SensorCamera.create_forward_depth_image_output() is deprecated in Newton 1.7; "
+            "use create_image_output_forward_depth() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.create_image_output_forward_depth(view_count, width, height)
+
+    def create_shape_index_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+        """Deprecated alias for :meth:`create_image_output_shape_index`.
+
+        .. deprecated:: 1.7
+            Use :meth:`create_image_output_shape_index` instead.
+
+        :meta private:
+        """
+        warnings.warn(
+            "SensorCamera.create_shape_index_image_output() is deprecated in Newton 1.7; "
+            "use create_image_output_shape_index() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.create_image_output_shape_index(view_count, width, height)
+
+    def create_normal_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
+        """Deprecated alias for :meth:`create_image_output_normal`.
+
+        .. deprecated:: 1.7
+            Use :meth:`create_image_output_normal` instead.
+
+        :meta private:
+        """
+        warnings.warn(
+            "SensorCamera.create_normal_image_output() is deprecated in Newton 1.7; "
+            "use create_image_output_normal() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.create_image_output_normal(view_count, width, height)
+
+    def create_albedo_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+        """Deprecated alias for :meth:`create_image_output_albedo`.
+
+        .. deprecated:: 1.7
+            Use :meth:`create_image_output_albedo` instead.
+
+        :meta private:
+        """
+        warnings.warn(
+            "SensorCamera.create_albedo_image_output() is deprecated in Newton 1.7; "
+            "use create_image_output_albedo() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.create_image_output_albedo(view_count, width, height)
+
+    def create_hdr_color_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
+        """Deprecated alias for :meth:`create_image_output_hdr_color`.
+
+        .. deprecated:: 1.7
+            Use :meth:`create_image_output_hdr_color` instead.
+
+        :meta private:
+        """
+        warnings.warn(
+            "SensorCamera.create_hdr_color_image_output() is deprecated in Newton 1.7; "
+            "use create_image_output_hdr_color() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.create_image_output_hdr_color(view_count, width, height)
 
     @staticmethod
     def compute_camera_rays_pinhole(
@@ -358,7 +471,7 @@ class SensorCamera:
         return out_rays
 
     @staticmethod
-    def compute_camera_rays_usd_pinhole(
+    def compute_camera_rays_pinhole_usd(
         width: int,
         height: int,
         camera: Any,
@@ -406,6 +519,34 @@ class SensorCamera:
             out_rays=out_rays,
         )
         return out_rays
+
+    @staticmethod
+    def compute_camera_rays_usd_pinhole(
+        width: int,
+        height: int,
+        camera: Any,
+        *,
+        time: Any | None = None,
+        sample_count: int = 1,
+        out_rays: wp.array4d[wp.vec3f] | None = None,
+        device: Devicelike = None,
+    ) -> wp.array4d[wp.vec3f]:
+        """Deprecated alias for :meth:`compute_camera_rays_pinhole_usd`.
+
+        .. deprecated:: 1.7
+            Use :meth:`compute_camera_rays_pinhole_usd` instead.
+
+        :meta private:
+        """
+        warnings.warn(
+            "SensorCamera.compute_camera_rays_usd_pinhole() is deprecated in Newton 1.7; "
+            "use compute_camera_rays_pinhole_usd() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return SensorCamera.compute_camera_rays_pinhole_usd(
+            width, height, camera, time=time, sample_count=sample_count, out_rays=out_rays, device=device
+        )
 
     @staticmethod
     def compute_camera_rays_pinhole_opencv(

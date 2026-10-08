@@ -268,11 +268,11 @@ class Example:
         self.sensor_camera_transforms = wp.empty(view_count, dtype=wp.transformf, device=self.model.device)
         self.robot_sensor_camera_transforms = wp.empty(view_count, dtype=wp.transformf, device=self.model.device)
 
-        self.sensor_camera_color_image = self.sensor_camera.create_color_image_output(view_count, W, H)
-        self.sensor_camera_albedo_image = self.sensor_camera.create_albedo_image_output(view_count, W, H)
-        self.sensor_camera_depth_image = self.sensor_camera.create_depth_image_output(view_count, W, H)
-        self.sensor_camera_normal_image = self.sensor_camera.create_normal_image_output(view_count, W, H)
-        self.sensor_camera_shape_index_image = self.sensor_camera.create_shape_index_image_output(view_count, W, H)
+        self.sensor_camera_color_image = self.sensor_camera.create_image_output_color(view_count, W, H)
+        self.sensor_camera_albedo_image = self.sensor_camera.create_image_output_albedo(view_count, W, H)
+        self.sensor_camera_depth_image = self.sensor_camera.create_image_output_depth(view_count, W, H)
+        self.sensor_camera_normal_image = self.sensor_camera.create_image_output_normal(view_count, W, H)
+        self.sensor_camera_shape_index_image = self.sensor_camera.create_image_output_shape_index(view_count, W, H)
 
         # Palette for the "semantic" debug view: looked up by shape index.
         # Indices written into shape_index_image come from builder shape order,

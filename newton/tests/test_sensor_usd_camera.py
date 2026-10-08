@@ -432,7 +432,7 @@ class TestSensorCameraRays(unittest.TestCase):
 
     @unittest.skipIf(Usd is None, "Requires USD Python bindings")
     def test_sensor_camera_usd_pinhole_rays_match_aperture_form(self):
-        """Verify SensorCamera.compute_camera_rays_usd_pinhole reads USD intrinsics and matches the aperture form."""
+        """Verify SensorCamera.compute_camera_rays_pinhole_usd reads USD intrinsics and matches the aperture form."""
         width, height = 5, 3
         _stage, camera = _make_camera()
         camera.GetProjectionAttr().Set(UsdGeom.Tokens.perspective)
@@ -452,8 +452,8 @@ class TestSensorCameraRays(unittest.TestCase):
             device="cpu",
         ).numpy()
 
-        got_prim = SensorCamera.compute_camera_rays_usd_pinhole(width, height, camera.GetPrim(), device="cpu")
-        got_camera = SensorCamera.compute_camera_rays_usd_pinhole(width, height, camera, device="cpu")
+        got_prim = SensorCamera.compute_camera_rays_pinhole_usd(width, height, camera.GetPrim(), device="cpu")
+        got_camera = SensorCamera.compute_camera_rays_pinhole_usd(width, height, camera, device="cpu")
         expected_multisample = SensorCamera.compute_camera_rays_pinhole(
             width,
             height,
@@ -465,7 +465,7 @@ class TestSensorCameraRays(unittest.TestCase):
             sample_count=4,
             device="cpu",
         )
-        got_multisample = SensorCamera.compute_camera_rays_usd_pinhole(
+        got_multisample = SensorCamera.compute_camera_rays_pinhole_usd(
             width, height, camera, sample_count=4, device="cpu"
         )
 
@@ -475,11 +475,27 @@ class TestSensorCameraRays(unittest.TestCase):
         np.testing.assert_allclose(got_camera.numpy(), expected, atol=1e-6)
         np.testing.assert_allclose(got_multisample.numpy(), expected_multisample.numpy(), atol=1e-6)
 
+        # RC1 calls still work, including optional USD time and preallocated output.
+        out_rays = wp.empty_like(got_multisample)
+        with self.assertWarnsRegex(DeprecationWarning, "compute_camera_rays_pinhole_usd") as warning:
+            alias_result = SensorCamera.compute_camera_rays_usd_pinhole(
+                width,
+                height,
+                camera,
+                time=Usd.TimeCode.Default(),
+                sample_count=4,
+                out_rays=out_rays,
+                device="cpu",
+            )
+        self.assertEqual(warning.filename, __file__)
+        self.assertIs(alias_result, out_rays)
+        np.testing.assert_allclose(alias_result.numpy(), expected_multisample.numpy(), atol=1e-6)
+
     @unittest.skipIf(Usd is None, "Requires USD Python bindings")
     def test_sensor_camera_usd_pinhole_rejects_invalid_prim(self):
-        """Verify SensorCamera.compute_camera_rays_usd_pinhole rejects a non-camera prim."""
+        """Verify SensorCamera.compute_camera_rays_pinhole_usd rejects a non-camera prim."""
         with self.assertRaisesRegex(TypeError, "Expected a valid UsdGeom.Camera prim"):
-            SensorCamera.compute_camera_rays_usd_pinhole(1, 1, Usd.Prim(), device="cpu")
+            SensorCamera.compute_camera_rays_pinhole_usd(1, 1, Usd.Prim(), device="cpu")
 
     def test_sensor_camera_opencv_pinhole_matches_tiled_and_round_trips(self):
         """Verify SensorCamera.compute_camera_rays_pinhole_opencv matches the tiled helper and inverts the model."""
