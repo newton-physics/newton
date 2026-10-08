@@ -123,17 +123,22 @@ class TestRenderingPauseRTX(unittest.TestCase):
         viewer = self.viewer
         viewer._phase = viewer._PHASE_RENDER
         viewer._rtx = mock.Mock()
+        viewer._render_width = 4
+        viewer._render_height = 3
+        pending = mock.Mock()
+        viewer._render_result = pending
         viewer.set_rendering_paused(True)
         with self.assertRaisesRegex(RuntimeError, "frame"):
-            viewer._capture_screenshot_pixels()
+            viewer.get_frame()
         pixels = np.full((3, 4, 4), 37, dtype=np.uint8)
         viewer._displayed_pixels = wp.array(pixels, dtype=wp.vec4ub, device="cpu")
         for i in range(4):
             self.assertTrue(viewer.is_running())
             viewer.begin_frame(float(i))
             viewer.end_frame()
-            np.testing.assert_array_equal(viewer._capture_screenshot_pixels(), pixels)
+            np.testing.assert_array_equal(viewer.get_frame().numpy(), pixels[:, :, :3])
         self.assertFalse(viewer.is_running())
+        pending.wait.assert_not_called()
         viewer._rtx.step.assert_not_called()
         viewer._rtx.step_async.assert_not_called()
 
@@ -154,18 +159,6 @@ class TestRenderingPauseRTX(unittest.TestCase):
         viewer.close()
         renderer.destroy.assert_called_once_with()
         pending.wait.assert_called_once_with()
-
-    def test_get_frame_preserves_pause_with_pending_render(self):
-        """Return frozen RGB pixels without waiting for an outstanding render."""
-        viewer = self.viewer
-        viewer._render_height, viewer._render_width = 3, 4
-        pixels = np.full((3, 4, 4), 37, dtype=np.uint8)
-        viewer._displayed_pixels = wp.array(pixels, dtype=wp.vec4ub, device="cpu")
-        viewer._render_result = mock.Mock()
-        viewer.set_rendering_paused(True)
-
-        np.testing.assert_array_equal(viewer.get_frame().numpy(), pixels[:, :, :3])
-        viewer._render_result.wait.assert_not_called()
 
 
 if __name__ == "__main__":

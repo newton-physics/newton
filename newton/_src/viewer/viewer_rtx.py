@@ -325,9 +325,9 @@ class ViewerRTX(ViewerUSD):
         self._render_result = None
         self._discard_render_result = False
         self._render_products = None
-        self._last_frame_is_fullscreen = False
         self._displayed_frame = FrameCache()
         self._displayed_pixels = None
+        self._last_frame_is_fullscreen = False
         self._uses_fractional_opacity = False
         self._transform_binding = None
         self._all_instance_paths = []
@@ -2693,23 +2693,26 @@ void main() {
         if self._should_close:
             return
 
+        # UI changes made while presenting take effect on the next frame.
+        async_rendering = self._async
         step_kwargs = None
         if not self.is_rendering_paused():
-            self._last_frame_is_fullscreen = fullscreen_name is not None and self._window is not None
-            if self._last_frame_is_fullscreen:
+            if fullscreen_name is not None and self._window is not None:
                 texture = self._image_logger.get_texture(fullscreen_name, fullscreen=True)
                 if texture is not None:
                     self._displayed_frame.store(*texture)
                 else:
                     self._displayed_frame.clear()
+                self._last_frame_is_fullscreen = True
             elif self._rtx is not None:
+                self._last_frame_is_fullscreen = False
                 step_kwargs = {
                     "render_products": {self._render_product_path},
                     "delta_time": 1.0 / self.fps,
                 }
                 if self._use_ovstage:
                     step_kwargs["ordinal"] = self._ovstage_ordinal
-                if not self._async:
+                if not async_rendering:
                     with wp.ScopedTimer("ViewerRTX::rtx_step", active=PROFILE_ENABLED, use_nvtx=True):
                         self._accept_render(self._rtx.step(**step_kwargs))
 
@@ -2717,7 +2720,7 @@ void main() {
             frame = self._displayed_frame
             self._present(frame.texture or None, frame.width, frame.height)
 
-        if self._async and step_kwargs is not None:
+        if async_rendering and step_kwargs is not None:
             with wp.ScopedTimer("ViewerRTX::rtx_step_async", active=PROFILE_ENABLED, use_nvtx=True):
                 self._render_result = self._rtx.step_async(**step_kwargs)
 
@@ -2795,9 +2798,9 @@ void main() {
         memory. Call after :meth:`end_frame`. With asynchronous rendering,
         capture waits for the render submitted by that call so the image
         contains the latest logged state. While rendering is paused, capture
-        returns the frozen image without waiting for an outstanding render.
-        Capturing fullscreen images displayed
-        with ``log_image(..., fullscreen=True)`` is not supported; capture
+        returns the frozen displayed image without waiting for a pending render.
+        Capturing fullscreen images displayed with
+        ``log_image(..., fullscreen=True)`` is not supported; capture
         resumes after the next scene render.
 
         Args:
@@ -3013,8 +3016,8 @@ void main() {
             self._render_result = None
         self._discard_render_result = False
         self._render_products = None
-        self._last_frame_is_fullscreen = False
         self._displayed_pixels = None
+        self._last_frame_is_fullscreen = False
 
         # Release runtime-scene resources before destroying the renderer.
         self._release_runtime_scene()
@@ -3216,9 +3219,9 @@ void main() {
             self._render_result.wait().fetch()
             self._render_result = None
         self._render_products = None
-        self._last_frame_is_fullscreen = False
         self._displayed_pixels = None
         self._displayed_frame.clear()
+        self._last_frame_is_fullscreen = False
 
         # release runtime-scene resources and renderer
         self._release_runtime_scene()
