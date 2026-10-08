@@ -4,6 +4,7 @@
 """Test complete tendon routes and builder composition."""
 
 import unittest
+from contextlib import nullcontext
 from unittest.mock import patch
 
 import numpy as np
@@ -16,9 +17,10 @@ class TestTendonBuilder(unittest.TestCase):
     def test_collapse_preserves_tendons_and_particle_attachments(self):
         """Retain world-fixed bodies needed by either tendon guides or particle attachments."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        tendon_anchor = builder.add_link(mass=1.0)
-        particle_anchor = builder.add_link(xform=wp.transform(p=(1.0, 0.0, 0.0)), mass=1.0)
-        endpoint = builder.add_body(xform=wp.transform(p=(2.0, 0.0, 0.0)), mass=1.0)
+        inertia = wp.mat33(np.eye(3))
+        tendon_anchor = builder.add_link(mass=1.0, inertia=inertia)
+        particle_anchor = builder.add_link(xform=wp.transform(p=(1.0, 0.0, 0.0)), mass=1.0, inertia=inertia)
+        endpoint = builder.add_body(xform=wp.transform(p=(2.0, 0.0, 0.0)), mass=1.0, inertia=inertia)
         for body in (tendon_anchor, particle_anchor):
             joint = builder.add_joint_fixed(-1, body, parent_xform=builder.body_q[body])
             builder.add_articulation([joint])
@@ -107,7 +109,13 @@ class TestTendonBuilder(unittest.TestCase):
             ):
                 with self.subTest(device=device, solver=solver_type.__name__, options=options):
                     model = builder.finalize(device=device)
-                    solver = solver_type(model, iterations=2, **options)
+                    expected_warning = (
+                        self.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False is deprecated")
+                        if options.get("rigid_compliant_alm") is False
+                        else nullcontext()
+                    )
+                    with expected_warning:
+                        solver = solver_type(model, iterations=2, **options)
                     state_0, state_1 = model.state(), model.state()
                     control = model.control()
                     initial_rest = solver.tendon_seg_rest_length.numpy().copy()
@@ -208,7 +216,13 @@ class TestTendonBuilder(unittest.TestCase):
                 np.testing.assert_array_equal(model.body_world.numpy(), [0, 0, 1, 1, 2, 2])
                 for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
                     options = {"rigid_compliant_alm": False} if solver_type is newton.solvers.SolverVBD else {}
-                    solver = solver_type(model, iterations=1, **options)
+                    expected_warning = (
+                        self.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False is deprecated")
+                        if options.get("rigid_compliant_alm") is False
+                        else nullcontext()
+                    )
+                    with expected_warning:
+                        solver = solver_type(model, iterations=1, **options)
                     state_0, state_1 = model.state(), model.state()
                     solver.step(state_0, state_1, model.control(), None, 1.0 / 60.0)
                     np.testing.assert_allclose(solver.tendon_seg_rest_length.numpy(), [1.0, 1.0, 1.0])

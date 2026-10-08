@@ -4,6 +4,7 @@
 """Regression tests for routed tendons in the VBD rigid solver."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -68,8 +69,13 @@ def _hinge_z_angle(body_q, body_idx):
     return float(2.0 * np.arctan2(float(q[5]), float(q[6])))
 
 
-def _make_tendon_vbd_solver(model):
-    return newton.solvers.SolverVBD(model, **TENDON_VBD_SOLVER_KWARGS)
+def _make_tendon_vbd_solver(model, **overrides):
+    # Retain legacy-mode coverage without suppressing unrelated warnings.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="^rigid_compliant_alm=False is deprecated", category=DeprecationWarning
+        )
+        return newton.solvers.SolverVBD(model, **(TENDON_VBD_SOLVER_KWARGS | overrides))
 
 
 def test_vbd_no_tendon_specialization(test, device):
@@ -429,7 +435,7 @@ def test_vbd_rolling_chain_tension_matches_accepted_pose(test, device):
         model, slider = build_fixed_rolling_chain()
         solver_kwargs = dict(TENDON_VBD_SOLVER_KWARGS)
         solver_kwargs.update(tendon_max_sweeps=256, tendon_settle_tol=1.0e-5)
-        solver = newton.solvers.SolverVBD(model, **solver_kwargs)
+        solver = _make_tendon_vbd_solver(model, **solver_kwargs)
         state_0 = model.state()
         state_1 = model.state()
 
@@ -728,12 +734,13 @@ def test_vbd_tendon_diagnostics_match_final_pose(test, device):
         builder.add_tendon(route)
         builder.color()
         model = builder.finalize()
-        solver = newton.solvers.SolverVBD(
-            model,
-            iterations=1,
-            rigid_compliant_alm=False,
-            rigid_avbd_beta=1.0e6,
-        )
+        with test.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False is deprecated"):
+            solver = newton.solvers.SolverVBD(
+                model,
+                iterations=1,
+                rigid_compliant_alm=False,
+                rigid_avbd_beta=1.0e6,
+            )
         state_0 = model.state()
         state_1 = model.state()
 
@@ -903,7 +910,7 @@ def test_vbd_frictionless_off_center_roller_retains_body_torque(test, device):
 
         solver_kwargs = dict(TENDON_VBD_SOLVER_KWARGS)
         solver_kwargs["iterations"] = 1
-        solver = newton.solvers.SolverVBD(model, **solver_kwargs)
+        solver = _make_tendon_vbd_solver(model, **solver_kwargs)
         state_0 = model.state()
         state_1 = model.state()
         solver.step(state_0, state_1, model.control(), None, 1.0 / 120.0)
@@ -965,7 +972,7 @@ def test_vbd_same_body_rolling_span_applies_net_torque(test, device):
 
         solver_kwargs = dict(TENDON_VBD_SOLVER_KWARGS)
         solver_kwargs.update(iterations=1, tendon_max_sweeps=1)
-        solver = newton.solvers.SolverVBD(model, **solver_kwargs)
+        solver = _make_tendon_vbd_solver(model, **solver_kwargs)
         span_lengths = np.linalg.norm(
             solver.tendon_seg_attachment_r.numpy() - solver.tendon_seg_attachment_l.numpy(), axis=1
         )
