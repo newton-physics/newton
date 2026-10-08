@@ -48,7 +48,12 @@ def set_viewer_camera(
     if show_joints is not None:
         viewer.show_joints = show_joints
 
-    viewer.set_camera(pos=pos, pitch=0.0, yaw=0.0)
+    # These cable examples use Z-up. Aim backends without a Camera through
+    # the existing pitch/yaw interface as well.
+    direction = np.asarray(target) - np.asarray(pos)
+    pitch = float(np.degrees(np.arctan2(direction[2], np.linalg.norm(direction[:2]))))
+    yaw = float(np.degrees(np.arctan2(direction[1], direction[0])))
+    viewer.set_camera(pos=pos, pitch=pitch, yaw=yaw)
     if hasattr(viewer, "camera"):
         viewer.camera.look_at(target)
         viewer.camera.fov = fov

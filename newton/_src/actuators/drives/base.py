@@ -100,6 +100,7 @@ class DriveBase:
         state: DriveBase.State | None,
         dt: float,
         device: wp.Device | None = None,
+        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Compute actuator output effort and write to ``forces[i]``.
@@ -169,6 +170,7 @@ class DriveBase:
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
+        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Refresh the parameter pack before an implicit solve step.
