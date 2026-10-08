@@ -14,7 +14,7 @@ predicted end-of-step state:
 
 Here ``h`` is the timestep, ``g`` is the drive force law with clamping,
 and ``A`` is the coupled inverse-mass response supplied by
-:class:`ResponseOracle`. Options: :class:`ImplicitOptions`.
+:class:`JointSpaceResponse`. Options: :class:`ImplicitOptions`.
 
 ``qd(p)`` advances the step-start velocity by this actuator's own impulse alone.
 Gravity, any other applied force, other actuators on the same articulation, and
@@ -32,9 +32,9 @@ import warp as wp
 
 from ..sim import JointType
 from .drives.base import DriveBase
-from .response_oracle import ResponseOracle
+from .joint_space_response import JointSpaceResponse
 
-__all__ = ["ImplicitOptions", "ResponseOracle"]
+__all__ = ["ImplicitOptions", "JointSpaceResponse"]
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +352,7 @@ class _EffortModeImplicit:
     """Implicit effort mode and in-kernel solver.
 
     Groups actuator DOFs by articulation and solves each group using the
-    response provided by :class:`ResponseOracle`. The generated kernel
+    response provided by :class:`JointSpaceResponse`. The generated kernel
     combines the drive force law, drive parameters, and clamps.
 
     Before each solve, :meth:`compute_force` calls the drive's
@@ -364,7 +364,7 @@ class _EffortModeImplicit:
         self,
         drive,
         clamping,
-        response: ResponseOracle,
+        response: JointSpaceResponse,
         options: ImplicitOptions | None,
         num_actuators: int,
         device: wp.Device,
@@ -381,10 +381,10 @@ class _EffortModeImplicit:
             raise ValueError(f"fd_epsilon must be positive, got {self._options.fd_epsilon}")
         self._num_actuators = num_actuators
         self._device = device
-        if not isinstance(response, ResponseOracle):
+        if not isinstance(response, JointSpaceResponse):
             raise ValueError(
-                "Implicit actuation requires response to be a ResponseOracle; "
-                "build one with newton.actuators.ResponseOracle(model)."
+                "Implicit actuation requires response to be a JointSpaceResponse; "
+                "build one with newton.actuators.JointSpaceResponse(model)."
             )
         self._response = response
         self._drive = drive
@@ -567,12 +567,18 @@ class _EffortModeImplicit:
         applied_forces: wp.array[float],
         drive_state: Any,
         dt: float | None,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> wp.array[float]:
         """Solve implicit effort and return the applied-effort buffer.
 
         The drive law at the final predicted state is written to
         *computed_forces*. Clamps are enforced inside the solve against that
         state, and the solved effort is written to *applied_forces*.
+
+        *custom_inputs* holds the arrays the drive named in
+        :attr:`~newton.actuators.DriveBase.custom_inputs`, and is forwarded to
+        :meth:`~newton.actuators.DriveBase.prepare_implicit` so the
+        linearization sees the same extra arrays the explicit path does.
         """
         if dt is None:
             raise ValueError("Implicit actuation requires dt")
@@ -586,6 +592,12 @@ class _EffortModeImplicit:
                 outputs=[self._slot_response],
                 device=self._device,
             )
+            prepare_kwargs: dict[str, Any] = {
+                "inv_mass": self._slot_response,
+                "device": self._device,
+            }
+            if self._drive.custom_inputs:
+                prepare_kwargs["custom_inputs"] = custom_inputs
             self._drive.prepare_implicit(
                 positions,
                 velocities,
@@ -597,8 +609,7 @@ class _EffortModeImplicit:
                 target_vel_indices,
                 drive_state,
                 float(dt),
-                self._slot_response,
-                self._device,
+                **prepare_kwargs,
             )
         inverse_blocks = self._response.inverse_blocks
 

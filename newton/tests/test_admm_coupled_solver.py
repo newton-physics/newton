@@ -9,6 +9,7 @@ cloth-plus-rigid-body scene.
 
 from __future__ import annotations
 
+import inspect
 import math
 import unittest
 
@@ -275,8 +276,7 @@ def _build_body_particle_attachment_scene(enabled: bool = True) -> newton.Model:
         inertia=wp.mat33(np.eye(3)),
     )
     particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
-    SolverCoupledADMM.add_body_particle_attachment(
-        builder,
+    builder.add_attachment_body_particle(
         body,
         particle,
         stiffness=500.0,
@@ -293,7 +293,7 @@ def _build_two_world_body_particle_attachment_scene() -> newton.Model:
     world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = world.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
     particle = world.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
-    SolverCoupledADMM.add_body_particle_attachment(world, body, particle, stiffness=500.0)
+    world.add_attachment_body_particle(body, particle, stiffness=500.0)
     world.color()
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -733,6 +733,7 @@ class TestAdmmSmoke(unittest.TestCase):
     """End-to-end: construct, run, verify state advances without NaNs."""
 
     def test_rejects_invalid_numerical_config(self):
+        """Reject invalid ADMM coefficients and collision capacities before allocation."""
         model = _build_two_particle_scene()
         entries = [
             SolverCoupled.Entry(name="a", solver=SolverSemiImplicit, particles=[0]),
@@ -748,10 +749,35 @@ class TestAdmmSmoke(unittest.TestCase):
             ({"joint_stiffness": -1.0}, "joint_stiffness"),
             ({"joint_proximal_mass_scale": 0.0}, "joint_proximal_mass_scale"),
             ({"contact_matching_normal_dot_threshold": 1.1}, "normal_dot_threshold"),
+            ({"contact_max_triangle_pairs": 0}, "contact_max_triangle_pairs"),
+            ({"contact_max_triangle_pairs": 1.5}, "contact_max_triangle_pairs"),
+            ({"contact_max_triangle_pairs": True}, "contact_max_triangle_pairs"),
+            ({"contact_reduction_hashtable_size_factor": 0.0}, "contact_reduction_hashtable_size_factor"),
+            ({"contact_reduction_hashtable_size_factor": float("nan")}, "contact_reduction_hashtable_size_factor"),
+            ({"contact_reduction_hashtable_size_factor": float("inf")}, "contact_reduction_hashtable_size_factor"),
         )
         for kwargs, message in invalid_configs:
             with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):
                 SolverCoupledADMM(model=model, entries=entries, coupling=SolverCoupledADMM.Config(**kwargs))
+
+    def test_contact_capacity_matching_limit(self):
+        """Allow larger triangle-pair capacities only when contact matching is disabled."""
+        model = _build_two_particle_scene()
+        entries = [
+            SolverCoupled.Entry(name="a", solver=SolverSemiImplicit, particles=[0]),
+            SolverCoupled.Entry(name="b", solver=SolverSemiImplicit, particles=[1]),
+        ]
+        for matching in ("disabled", "latest", "sticky"):
+            for capacity in (None, 2**20 - 1, 2**20, 2**20 + 1):
+                with self.subTest(matching=matching, capacity=capacity):
+                    config = SolverCoupledADMM.Config(
+                        rigid_contact_matching=matching, contact_max_triangle_pairs=capacity
+                    )
+                    if matching != "disabled" and capacity is not None and capacity >= 2**20:
+                        with self.assertRaisesRegex(ValueError, r"contact_max_triangle_pairs.*2\*\*20"):
+                            SolverCoupledADMM(model, entries, config)
+                    else:
+                        SolverCoupledADMM(model, entries, config)
 
     def test_construct_and_step_no_attachments(self):
         model, rs, re, _ = _build_cloth_rigid_scene()
@@ -1018,9 +1044,10 @@ class TestAdmmModelJointInterface(unittest.TestCase):
 
 
 class TestAdmmBodyParticleAttachment(unittest.TestCase):
-    """Custom model attributes are converted to rigid-particle ADMM attachments."""
+    """Model attachment rows are converted to rigid-particle ADMM attachments."""
 
-    def test_custom_attribute_attachment_closes_gap(self):
+    def test_model_attachment_closes_gap(self):
+        """Couple a cross-entry model attachment and pull the endpoints together."""
         model = _build_body_particle_attachment_scene()
         solver = _make_semi_body_particle_solver(model)
         initial_gap = np.linalg.norm(model.state().body_q.numpy()[0, :3] - model.state().particle_q.numpy()[0])
@@ -1029,6 +1056,89 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         final_gap = np.linalg.norm(body_q[0, :3] - particle_q[0])
 
         self.assertLess(final_gap, 0.5 * initial_gap)
+
+    def test_deprecated_helper_preserves_legacy_attachment_row(self):
+        """Keep the deprecated ADMM helper compatible with its custom-row layout."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+
+        with self.assertWarnsRegex(DeprecationWarning, "add_attachment_body_particle"):
+            attachment = SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=500.0)
+
+        self.assertEqual(attachment, 0)
+        self.assertEqual(builder.attachment_body_particle_count, 0)
+
+        builder.color()
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.attachment_body_particle_count, 0)
+        self.assertEqual(
+            model.custom_frequency_counts[SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_FREQUENCY],
+            1,
+        )
+        self.assertIn(
+            SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_FREQUENCY,
+            model.custom_frequency_counts,
+        )
+
+    def test_single_unsupported_entry_attachment_is_reported(self):
+        """Warn when a same-entry solver cannot apply a model attachment."""
+        model = _build_body_particle_attachment_scene()
+        with self.assertLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING") as logs:
+            solver = SolverCoupledADMM(
+                model,
+                [
+                    SolverCoupled.Entry(
+                        "both",
+                        lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                        bodies=range(model.body_count),
+                        particles=range(model.particle_count),
+                    ),
+                ],
+                SolverCoupledADMM.Config(iterations=1),
+            )
+
+        self.assertEqual(solver._admm_rp_groups, [])
+        self.assertTrue(any("only SolverVBD" in message for message in logs.output))
+
+    def test_single_vbd_entry_attachment_is_left_to_vbd(self):
+        """Leave a same-entry model attachment to SolverVBD without warning."""
+        model = _build_body_particle_attachment_scene()
+        with self.assertNoLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING"):
+            solver = SolverCoupledADMM(
+                model,
+                [
+                    SolverCoupled.Entry(
+                        "both",
+                        lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
+                        bodies=range(model.body_count),
+                        particles=range(model.particle_count),
+                    ),
+                ],
+                SolverCoupledADMM.Config(iterations=1),
+            )
+
+        self.assertEqual(solver._admm_rp_groups, [])
+        self.assertEqual(solver.view("both").attachment_body_particle_count, 1)
+
+    def test_unowned_attachment_endpoint_is_reported(self):
+        """Warn about attachment rows that no entry can apply."""
+        model = _build_body_particle_attachment_scene()
+        with self.assertLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING") as logs:
+            solver = SolverCoupledADMM(
+                model,
+                [
+                    SolverCoupled.Entry(
+                        "body",
+                        lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                        bodies=range(model.body_count),
+                    ),
+                ],
+                SolverCoupledADMM.Config(iterations=1),
+            )
+
+        self.assertEqual(solver._admm_rp_groups, [])
+        self.assertTrue(any("not owned by any entry" in message for message in logs.output))
 
     def test_masked_reset_preserves_unselected_attachment_history(self):
         """Clear selected attachment duals and preserve every other row."""
@@ -1130,6 +1240,59 @@ class TestAdmmExternalForces(unittest.TestCase):
 
 class TestAdmmCollisionDetection(unittest.TestCase):
     """Collision-detected ADMM contact constraints."""
+
+    def test_rigid_contact_collision_capacity(self):
+        """Apply independent capacity overrides while retaining mesh contacts and matching."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        mesh_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        mesh = newton.Mesh(
+            vertices=np.array([[0.0, -0.1, -0.1], [0.0, 0.1, -0.1], [0.0, 0.0, 0.1]], dtype=np.float32),
+            indices=np.array([0, 1, 2], dtype=np.int32),
+            compute_inertia=False,
+        )
+        builder.add_shape_mesh(body=mesh_body, mesh=mesh)
+        sphere_body = builder.add_body(xform=wp.transform(wp.vec3(0.08, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_sphere(body=sphere_body, radius=0.1)
+        model = builder.finalize(device="cpu")
+        entries = [
+            SolverCoupled.Entry(name="mesh", solver=SolverXPBD, bodies=[mesh_body]),
+            SolverCoupled.Entry(name="sphere", solver=SolverXPBD, bodies=[sphere_body]),
+        ]
+        defaults = inspect.signature(newton.CollisionPipeline).parameters
+        for capacity, factor, matching in (
+            (None, None, "disabled"),
+            (8192, None, "latest"),
+            (None, 0.5, "sticky"),
+            (8192, 256.0, "latest"),
+        ):
+            with self.subTest(capacity=capacity, factor=factor, matching=matching):
+                solver = SolverCoupledADMM(
+                    model,
+                    entries,
+                    SolverCoupledADMM.Config(
+                        iterations=1,
+                        contact_pairs=[SolverCoupledADMM.ContactPair(source="mesh", destination="sphere")],
+                        rigid_contact_matching=matching,
+                        contact_max_triangle_pairs=capacity,
+                        contact_reduction_hashtable_size_factor=factor,
+                    ),
+                )
+                pipeline = solver._admm_collision_pipeline
+                expected_capacity = capacity if capacity is not None else defaults["max_triangle_pairs"].default
+                expected_factor = (
+                    factor if factor is not None else defaults["contact_reduction_hashtable_size_factor"].default
+                )
+                self.assertEqual(pipeline.narrow_phase.max_triangle_pairs, expected_capacity)
+                requested_slots = max(1024, int(expected_capacity * expected_factor))
+                self.assertEqual(
+                    pipeline.narrow_phase.global_contact_reducer.hashtable.capacity,
+                    1 << (requested_slots - 1).bit_length(),
+                )
+                self.assertEqual(pipeline.contact_matching, matching)
+                state_in, state_out = model.state(), model.state()
+                solver.step(state_in, state_out, model.control(), None, 1.0 / 60.0)
+                self.assertGreater(solver.collision_contact_count_max, 0)
+                self.assertTrue(np.all(np.isfinite(state_out.body_q.numpy())))
 
     def test_masked_reset_preserves_unselected_contact_history(self):
         """Clear only dynamic contact duals touching the reset world."""

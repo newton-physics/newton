@@ -685,14 +685,19 @@ The :attr:`~ModelBuilder.shape_collision_filter_pairs` list stores explicit shap
 This is Newton's internal representation for pairwise filtering (including pairs imported from
 UsdPhysics ``physics:filteredPairs`` relationships).
 
+The built-in broad phases reject pairs of shapes attached to the same non-static
+body and static-static pairs. These inherent exclusions are therefore not stored
+in the explicit filter-pair list.
+
 .. testcode:: filter-pairs
 
     builder = newton.ModelBuilder()
     
     # Add shapes
-    body = builder.add_body()
-    shape_a = builder.add_shape_sphere(body, radius=0.5)
-    shape_b = builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
+    body_a = builder.add_body()
+    body_b = builder.add_body()
+    shape_a = builder.add_shape_sphere(body_a, radius=0.5)
+    shape_b = builder.add_shape_box(body_b, hx=0.5, hy=0.5, hz=0.5)
 
     # Exclude this specific pair from collision detection
     builder.add_shape_collision_filter_pair(shape_a, shape_b)
@@ -703,19 +708,14 @@ Filter pairs are automatically populated in several cases:
   ``collision_filter_parent=True``). For USD joints with two explicit bodies,
   ``physics:collisionEnabled`` controls this filter with inverse polarity; joints to world do not
   create a body-pair filter. Also applies to max-coordinate jointed bodies.
-- **Same-body shapes**: Shapes attached to the same rigid body
 - **Disabled self-collision**: All shape pairs within an articulation when ``enable_self_collisions=False``
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
 - **USD collision disabled**: Shapes with ``physics:collisionEnabled=false`` (filtered against all other shapes)
 
-The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a set of
-``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``).
-
-.. deprecated:: 1.4
-   Mutating this finalized-model set is deprecated; update
-   :attr:`~ModelBuilder.shape_collision_filter_pairs` before calling ``finalize()`` and rebuild the
-   model instead, because the precomputed :attr:`~Model.shape_contact_pairs` array is not rebuilt by
-   post-finalize filter edits.
+The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a read-only
+set of ``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``). Update
+:attr:`~ModelBuilder.shape_collision_filter_pairs` before calling ``finalize()`` and rebuild the
+model to change collision filters.
 
 **USD Import Example**
 
@@ -1022,6 +1022,13 @@ and the inputs that produced it. Pass an explicit ``rigid_contact_max`` to selec
 memory budget and silence the warning. Optional collision features and solvers may
 allocate additional per-contact memory.
 
+Pipeline construction publishes the resolved rigid and soft capacities as
+``model.rigid_contact_max`` and ``model.soft_contact_max``. Before collision
+setup these are ``None``; zero is a valid empty capacity. Contact-indexed
+:ref:`solver_observables` use these capacities for eager allocation and freeze them
+once allocated. Construct the pipeline before calling ``solver.observables()`` for
+contact diagnostics; the live contact counts are not needed during allocation.
+
 .. _Mesh Collisions:
 
 Mesh Collision Handling
@@ -1089,6 +1096,7 @@ Two approaches available:
         shape_margin=0.001,                   # Shrink SDF surface inward [m] (0.0)
         scale=(1.0, 1.0, 1.0),                # Bake non-unit scale into the SDF (None)
         edge_lower_angle_threshold_rad=math.radians(0.1),  # Drop near-coplanar edges below this angle (0.1 deg)
+        edge_concave_filter=True,             # Drop concave edges with two fully concave endpoints
         edge_box_absorption=False,            # Drop edges fully covered by another edge's oriented box
     )
 
@@ -1108,9 +1116,14 @@ which materially reduces edge-vs-shape work for typical CAD or scanned meshes. T
 threshold (``edge_lower_angle_threshold_rad=math.radians(0.1)``) drops only edges that are
 geometrically coplanar to within 0.1 degrees, so it is safe for most meshes; raise it to
 prune more aggressively, set it to ``0`` to keep every manifold edge, or pass a negative
-value (e.g. ``-1.0``) to opt out of the simplification pass entirely. Set
-``edge_box_absorption=True`` to additionally drop manifold edges that are fully covered by
-another nearby edge's oriented box — useful for densely tessellated curved surfaces.
+value (e.g. ``-1.0``) to opt out of the simplification pass entirely. By default,
+``edge_concave_filter=True`` also drops a concave manifold edge when both endpoints are
+fully concave: every neighbor in each endpoint's closed manifold one-ring lies on or
+outward from its angle-weighted tangent plane, with at least one neighbor strictly outward.
+The filter is skipped for ``sign_method="normal"`` because pseudo-normal SDFs do not
+define an unambiguous solid interior.
+Set ``edge_box_absorption=True`` to additionally drop manifold edges that are fully covered
+by another nearby edge's oriented box — useful for densely tessellated curved surfaces.
 ``edge_box_half_normal``/``edge_box_half_normal_rel`` and
 ``edge_box_half_lateral``/``edge_box_half_lateral_rel`` tune the box extents (absolute
 metres or fractions of the mesh AABB diagonal); see :meth:`~Mesh.build_sdf` for full
@@ -1387,24 +1400,22 @@ linear and angular velocity at the contact points. Common motion and receding mo
 therefore do not enlarge the gap. Broad phase uses a conservative motion bound; narrow
 phase applies the normal-directed test above.
 
-Enable the feature with :class:`CollisionPipeline.SpeculativeContactConfig`:
+Enable the feature with the keyword-only ``speculative_contact_gap_max`` constructor argument:
 
 .. code-block:: python
 
     pipeline = newton.CollisionPipeline(
         model,
-        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-            max_speculative_extension=0.1,
-        ),
+        speculative_contact_gap_max=0.1,
     )
 
     pipeline.collide(state, contacts, dt=1.0 / 60.0)
 
 The per-call ``dt`` is the time [s] until the next planned
 :meth:`CollisionPipeline.collide` call, including skipped solver substeps, and is
-required when speculative contacts are enabled. ``dt=0.0`` uses only the fixed
-gaps. ``max_speculative_extension`` caps the velocity-based distance [m]; ``0.0``
-also disables velocity adaptation.
+required when speculative contacts are enabled. ``dt=0.0`` uses only the authored
+gaps. ``speculative_contact_gap_max`` caps the velocity-derived detection gap [m];
+it must be non-negative and finite. ``0.0`` does not enlarge authored gaps.
 
 Speculation changes when a contact is retained, not its geometry: contact points remain
 at their current separation rather than a predicted impact pose. Mesh and SDF contact
@@ -1490,6 +1501,16 @@ do not control collision detection performed inside a solver. For example,
 :class:`~solvers.SolverVBD` handles particle self-contact internally according
 to the self-contact slot of ``collision_frequency`` /
 ``collision_frequency_type``.
+
+With ``rigid_soft_enable_dat=True``, :class:`~solvers.SolverVBD`
+additionally truncates rigid pose and particle updates against the division
+planes of the rigid-soft contacts its owned :class:`~CollisionPipeline`
+reports, using the rigid entries of ``collision_frequency`` and
+``collision_frequency_type`` as the detection cadence that anchors those
+planes. That slot may not be ``NONE``
+while the option is enabled, and when particle self-contact truncation is
+also active the rigid and self-contact slots must share an equivalent
+schedule.
 
 Start by calling ``collide`` every substep when debugging contact behavior.
 This keeps contacts current as bodies move. Once the behavior is acceptable,
@@ -1622,24 +1643,34 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - ``soft_contact_normal``
      - Contact normal.
 
-**Extended contact attributes** (see :ref:`extended_contact_attributes`):
+**Contact-force solver observable** (see :ref:`solver_observables`):
 
 .. list-table::
    :header-rows: 1
    :widths: 22 78
 
-   * - Attribute
+   * - Observable
      - Description
-   * - :attr:`~Contacts.force`
+   * - ``SolverObservableFlags.CONTACT_F`` / ``SolverObservables.contact_f``
      - Contact spatial forces (used by :class:`~sensors.SensorContact`).
-       Populated by :meth:`~solvers.SolverBase.update_contacts`.
+       Bind the observable allocation to the contacts buffer and pass it to the
+       solver step.
 
 .. note::
 
    :class:`~solvers.SolverXPBD` with ``rigid_contact_con_weighting`` enabled
    (the default) does not conserve momentum at contacts.  The per-contact
-   forces written by :meth:`~solvers.SolverXPBD.update_contacts` are
+   forces written to ``SolverObservables.contact_f`` are
    approximate -- see that method's documentation for details.
+
+.. note::
+
+   :class:`~solvers.SolverVBD` populates the rigid-contact rows of
+   :attr:`~solvers.SolverObservables.contact_f` when it integrates the rigid bodies, and the
+   soft-contact rows (row ``rigid_contact_max + i`` for soft contact ``i``) for
+   rigid-soft particle, edge, and face records. With an external rigid solver, VBD's
+   rigid rows are zero; consume that solver's forces from its own observables.
+   See :ref:`vbd_contact_forces` for the sign and torque convention.
 
 Example usage:
 
@@ -2195,7 +2226,9 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
 - ``"sticky"`` — match like ``"latest"``, then overwrite
   each matched contact's body-frame contact points (``point0``/``point1``),
   offsets (``offset0``/``offset1``), and world-frame ``normal`` with the
-  saved previous-frame values.  The remaining contact fields
+  saved previous-frame values when the contact is penetrating and the saved
+  witnesses remain within the position threshold of the fresh witnesses.
+  The remaining contact fields
   (``shape0``/``shape1``, ``margin0``/``margin1``) are either key-derived
   or per-shape constants and so are already identical for a matched
   contact — no extra state is kept for them.  Unmatched contacts pass
@@ -2250,8 +2283,9 @@ as motion on both sides of the contact, not just one.
 
 - ``contact_matching_pos_threshold`` — maximum world-space distance [m]
   between the previous and current contact midpoints for a match.  Contacts
-  that moved more than this between frames are considered broken.  Defaults
-  to ``0.0005`` m.
+  that moved more than this between frames are considered broken.  In sticky
+  mode, this also bounds each saved witness's distance from its fresh contact
+  point under the current body transforms.  Defaults to ``0.0005`` m.
 - ``contact_matching_normal_dot_threshold`` — minimum dot product between old
   and new contact normals.  Below this the contact is reported as broken even
   if the key and position match.
@@ -2261,13 +2295,27 @@ as motion on both sides of the contact, not just one.
 Replay of the matched previous-frame geometry happens after the deterministic
 sort, so ``match_index`` already addresses the final sorted layout.  Unmatched
 rows are left untouched, so new and threshold-broken contacts keep their fresh
-narrow-phase geometry.  Because
-matching requires both a position delta below the threshold and a normal dot
-product above the threshold, the saved values are guaranteed to be a close
-approximation of the current geometry and are safe to reuse.  The extra
+narrow-phase geometry.  Matched contacts also keep fresh geometry if the
+fresh contact is separated, or if either saved witness, transformed by the
+current body pose, lies farther than ``contact_matching_pos_threshold`` from
+its corresponding fresh witness.  This prevents a rotating surface from
+replaying a stale material point even when its geometric contact midpoint
+stays put.  These contacts retain their match indices and reports, and the
+fresh geometry becomes the saved history for the next frame.  The extra
 per-contact buffers (four ``vec3`` columns for the body-frame points and
 offsets) are only allocated when the mode is ``"sticky"``; ``"latest"`` and
 ``"disabled"`` pay zero additional memory and launch no additional kernels.
+
+**Memory**
+
+Both enabled modes keep the previous frame's sorted keys, uniqueness claims,
+contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
+``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
+``contact_report=True`` adds 4.  ``"disabled"`` allocates no matching history.
+
+The deterministic pipeline's sorter omits the unused simple-layout scratch,
+saving 48 bytes per ``rigid_contact_max`` slot. This more than offsets the
+additional matcher-owned midpoint and normal history.
 
 .. _Contact Reports:
 

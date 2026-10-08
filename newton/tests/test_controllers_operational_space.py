@@ -22,16 +22,19 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.controllers.impl._common import (
+    _make_invert_spd_block_kernel,
+    _null_space_projector_kernel,
+    _pose_error_kernel,
+    _shift_jacobian_to_tool_kernel,
+    _SPDInverse,
+    _task_matrix_times_jacobian_kernel,
+)
 from newton._src.controllers.impl.operational_space._common import (
     _apply_generalized_task_specification_matrix_kernel,
     _apply_mass_matrix_inv_on_right_kernel,
-    _invert_spd_block_kernel,
     _jacobian_times_jacobian_transpose_kernel,
-    _null_space_projector_kernel,
     _operational_space_mass_matrix_inverse_kernel,
-    _pose_error_kernel,
-    _shift_jacobian_to_tool_kernel,
-    _task_matrix_times_jacobian_kernel,
     _tool_pose_and_twist_kernel,
 )
 from newton._src.controllers.impl.operational_space.model_based import ControllerOperationalSpace
@@ -199,15 +202,14 @@ def test_invert_spd_block_matches_numpy_inverse(test, device):
         spd_matrix_np[block_idx, :n, :n] = random_matrix @ random_matrix.T + n * np.eye(n, dtype=np.float32)
         expected_inv_np[block_idx, :n, :n] = np.linalg.inv(spd_matrix_np[block_idx, :n, :n])
 
-    # Preallocate scratch and outputs, then launch the kernel under test.
+    # Preallocate outputs, then launch the kernel under test.
     spd_matrix = wp.array(spd_matrix_np, dtype=float, device=device)
     block_dim = wp.array(block_sizes, dtype=wp.int32, device=device)
-    cholesky_factor = wp.zeros((2, max_dim, max_dim), dtype=float, device=device)
     spd_matrix_inv = wp.zeros((2, max_dim, max_dim), dtype=float, device=device)
     wp.launch(
-        _invert_spd_block_kernel,
-        dim=2,
-        inputs=[spd_matrix, block_dim, cholesky_factor],
+        _make_invert_spd_block_kernel(max_dim),
+        dim=(2, max_dim),
+        inputs=[spd_matrix, block_dim],
         outputs=[spd_matrix_inv],
         device=device,
     )
@@ -217,6 +219,51 @@ def test_invert_spd_block_matches_numpy_inverse(test, device):
         np.testing.assert_allclose(
             spd_matrix_inv.numpy()[block_idx, :n, :n], expected_inv_np[block_idx, :n, :n], atol=1e-4
         )
+
+
+def test_spd_inverse_heterogeneous_strided_blocks_and_replay(test, device):
+    """Match NumPy for mixed block sizes and preserve padding across repeated inversions.
+
+    Exercise small and large matrices, strided submatrix views used by partial
+    inertia decoupling, empty blocks, and CUDA capture of the first launch.
+    """
+    rng = np.random.default_rng(4302)
+    for max_dim in (3, 6, 7, 10, 11, 30):
+        with test.subTest(max_dim=max_dim):
+            block_sizes = [0, 1, min(7, max_dim), max_dim]
+            shape = (len(block_sizes), max_dim + 2, max_dim + 2)
+            matrix_np = np.full(shape, np.nan, dtype=np.float32)
+            expected = np.full(shape, -123.0, dtype=np.float32)
+            for block_idx, n in enumerate(block_sizes):
+                if n == 0:
+                    continue
+                a = rng.standard_normal((n, n)).astype(np.float32)
+                block = a @ a.T + n * np.eye(n, dtype=np.float32)
+                matrix_np[block_idx, 1 : n + 1, 1 : n + 1] = block
+                expected[block_idx, 1 : n + 1, 1 : n + 1] = np.linalg.inv(block)
+            matrix = wp.array(matrix_np, device=device)
+            inverse = wp.full(shape, -123.0, dtype=float, device=device)
+            block_dim = wp.array(block_sizes, dtype=wp.int32, device=device)
+            operation = _SPDInverse(len(block_sizes), max_dim, wp.get_device(device))
+            matrix_view = matrix[:, 1:-1, 1:-1]
+            inverse_view = inverse[:, 1:-1, 1:-1]
+            if wp.get_device(device).is_cuda:
+                with wp.ScopedCapture(device=device) as capture:
+                    operation.launch(matrix_view, block_dim, inverse_view)
+                wp.capture_launch(capture.graph)
+            else:
+                operation.launch(matrix_view, block_dim, inverse_view)
+            np.testing.assert_allclose(inverse.numpy(), expected, atol=1e-6, rtol=1e-5)
+
+            # Reuse the same storage with changed inputs, including on graph replay.
+            matrix.assign(matrix_np * 2.0)
+            for block_idx, n in enumerate(block_sizes):
+                expected[block_idx, 1 : n + 1, 1 : n + 1] *= 0.5
+            if wp.get_device(device).is_cuda:
+                wp.capture_launch(capture.graph)
+            else:
+                operation.launch(matrix_view, block_dim, inverse_view)
+            np.testing.assert_allclose(inverse.numpy(), expected, atol=1e-6, rtol=1e-5)
 
 
 def test_jacobian_tool_shift_matches_twist(test, device):
@@ -513,12 +560,11 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
         device=device,
     )
 
-    mass_matrix_cholesky = wp.zeros((1, max_dofs, max_dofs), dtype=float, device=device)
     mass_matrix_inv = wp.zeros((1, max_dofs, max_dofs), dtype=float, device=device)
     wp.launch(
-        _invert_spd_block_kernel,
-        dim=1,
-        inputs=[mass_matrix, dof_count, mass_matrix_cholesky],
+        _make_invert_spd_block_kernel(max_dofs),
+        dim=(1, max_dofs),
+        inputs=[mass_matrix, dof_count],
         outputs=[mass_matrix_inv],
         device=device,
     )
@@ -532,12 +578,11 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
         outputs=[operational_space_mass_matrix_inv],
         device=device,
     )
-    operational_space_mass_matrix_cholesky = wp.zeros((1, 6, 6), dtype=float, device=device)
     operational_space_mass_matrix = wp.zeros((1, 6, 6), dtype=float, device=device)
     wp.launch(
-        _invert_spd_block_kernel,
-        dim=1,
-        inputs=[operational_space_mass_matrix_inv, task_dim, operational_space_mass_matrix_cholesky],
+        _make_invert_spd_block_kernel(6),
+        dim=(1, 6),
+        inputs=[operational_space_mass_matrix_inv, task_dim],
         outputs=[operational_space_mass_matrix],
         device=device,
     )
@@ -551,12 +596,11 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
         outputs=[jacobian_times_jacobian_transpose],
         device=device,
     )
-    jacobian_times_jacobian_transpose_cholesky = wp.zeros((1, 6, 6), dtype=float, device=device)
     jacobian_times_jacobian_transpose_inv = wp.zeros((1, 6, 6), dtype=float, device=device)
     wp.launch(
-        _invert_spd_block_kernel,
-        dim=1,
-        inputs=[jacobian_times_jacobian_transpose, task_dim, jacobian_times_jacobian_transpose_cholesky],
+        _make_invert_spd_block_kernel(6),
+        dim=(1, 6),
+        inputs=[jacobian_times_jacobian_transpose, task_dim],
         outputs=[jacobian_times_jacobian_transpose_inv],
         device=device,
     )
@@ -666,6 +710,12 @@ class TestOperationalSpaceKernels(unittest.TestCase):
     pass
 
 
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_spd_inverse_heterogeneous_strided_blocks_and_replay",
+    test_spd_inverse_heterogeneous_strided_blocks_and_replay,
+    devices=devices,
+)
 add_function_test(
     TestOperationalSpaceKernels,
     "test_invert_spd_block_matches_numpy_inverse",
@@ -1222,6 +1272,85 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         masked_wrench_force = np.array([0.0, 0.0, wrench_command_z, 0.0, 0.0, 0.0])
         expected = jacobian[0].T @ masked_wrench_force
         np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
+
+    def test_motion_wrench_projection_regulates_tilted_contact_force(self):
+        """Regulate compliant tilted contact under a persistent tangential constraint.
+
+        Use an ideal Cartesian plant with coupled positive-definite inertia.
+        A tangential fixture holds an unreachable motion target 0.1 m away;
+        a spring-damper surface measures normal contact force. Integrate the
+        normal equation of motion while the fixture enforces zero tangential
+        acceleration. This isolates the reported stationary coupling without
+        depending on a particular robot, contact solver, or friction model.
+        """
+        device = wp.get_device()
+        frame = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.6)
+        rotation = np.array(wp.quat_to_matrix(frame)).reshape(3, 3)
+        tangent, normal = rotation[:, 0], rotation[:, 2]
+        rotation6 = np.eye(6)
+        rotation6[:3, :3] = rotation
+        inertia_contact = np.diag([2.0, 2.0, 2.0, 1.0, 1.0, 1.0])
+        inertia_contact[0, 2] = inertia_contact[2, 0] = 0.89
+        inertia_world = rotation6 @ inertia_contact @ rotation6.T
+        target_force, force_gain = 10.0, 0.1
+        contact_stiffness, contact_damping = 10000.0, 200.0
+        dt = 0.001
+
+        for projection in (None, False, True):
+            with self.subTest(projection=projection):
+                options = {} if projection is None else {"use_motion_wrench_projection": projection}
+                ctrl = ControllerOperationalSpaceModelFree(
+                    controlled_dofs_per_robot=wp.array([6], dtype=wp.int32, device=device),
+                    motion_stiffness=100.0,
+                    motion_damping=10.0,
+                    use_inertia_decoupling=True,
+                    use_gravity_compensation=False,
+                    use_wrench_feedforward=True,
+                    use_wrench_feedback=True,
+                    wrench_stiffness=force_gain,
+                    motion_selection_axes=wp.spatial_vector(1, 1, 0, 1, 1, 1),
+                    wrench_selection_axes=wp.spatial_vector(0, 0, 1, 0, 0, 0),
+                    linear_selection_frame_operational=None,
+                    device=device,
+                    **options,
+                )
+                ins, outs = ctrl.input(), ctrl.output()
+                ins.linear_selection_frame_operational = wp.array([frame], dtype=wp.quat, device=device)
+                ins.jacobian_tool_world = wp.array(np.eye(6)[None], dtype=wp.float32, device=device)
+                ins.mass_matrix = wp.array(inertia_world[None], dtype=wp.float32, device=device)
+                ins.tool_pose_world = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+                ins.tool_twist_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+                ins.desired_tool_pose_operational = wp.array(
+                    [wp.transform(wp.vec3(*(0.1 * tangent)), wp.quat_identity())],
+                    dtype=wp.transform,
+                    device=device,
+                )
+                ins.desired_twist_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+                ins.desired_wrench_world = wp.array(
+                    [wp.spatial_vector(*(target_force * normal), 0, 0, 0)],
+                    dtype=wp.spatial_vector,
+                    device=device,
+                )
+                ins.measured_wrench_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+                penetration, velocity = target_force / contact_stiffness, 0.0
+                for _ in range(600):
+                    measured_force = max(0.0, contact_stiffness * penetration + contact_damping * velocity)
+                    ins.tool_pose_world.assign(np.array([[*(penetration * normal), 0, 0, 0, 1]]))
+                    ins.tool_twist_world.assign(np.array([[*(velocity * normal), 0, 0, 0]]))
+                    ins.measured_wrench_world.assign(np.array([[*(measured_force * normal), 0, 0, 0]]))
+                    ctrl.step(inputs=ins, outputs=outs, dt=dt)
+                    command = outs.joint_f.numpy()[:3]
+                    acceleration = (normal @ command - measured_force) / inertia_contact[2, 2]
+                    velocity += dt * acceleration
+                    penetration += dt * velocity
+
+                if projection:
+                    self.assertAlmostEqual(measured_force, target_force, delta=0.002)
+                else:
+                    self.assertNotAlmostEqual(measured_force, target_force, delta=0.002)
+                self.assertAlmostEqual(velocity, 0.0, delta=1.0e-5)
+                # Projection must preserve the tangential motion command.
+                self.assertAlmostEqual(float(tangent @ command), 20.0, delta=0.002)
 
     def test_wrench_feedforward_only_and_motion_selection_matches_formula(self):
         """Hybrid motion/wrench control: tau = J^T @ (S_motion @ F_motion) + J^T @ (S_wrench @ desired_wrench).
@@ -1919,6 +2048,53 @@ class TestControllerOperationalSpace(unittest.TestCase):
                 motion_damping=1.0,
                 operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_gravity_compensation=False,
+            )
+
+    def test_world_attached_site_is_ignored_and_cannot_be_selected_as_tool(self):
+        """A site attached to no body (ModelBuilder.add_site(-1, ...)) must never be mistaken for a tool site.
+
+        Regression test: such a site's body index (-1) must not alias, via
+        plain NumPy fancy indexing, onto whatever articulation the model's
+        last body happens to belong to.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        link0 = builder.add_link()
+        j0 = builder.add_joint_revolute(
+            parent=-1,
+            child=link0,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j0], label="arm")
+        builder.add_site(link0, label="tip", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+        builder.add_site(-1, label="world_ref", xform=wp.transform_identity())
+        model = builder.finalize(device=device)
+
+        # An unrelated world-attached site must not disturb normal resolution.
+        ControllerOperationalSpace(
+            model,
+            tool_sites="tip",
+            motion_stiffness=1.0,
+            motion_damping=1.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
+            use_gravity_compensation=False,
+            use_inertia_decoupling=False,
+        )
+
+        # Explicitly requesting the world-attached site must raise, not
+        # silently alias onto another articulation or reach a Jacobian
+        # index computation with a bogus body/joint index.
+        with self.assertRaises(ValueError):
+            ControllerOperationalSpace(
+                model,
+                tool_sites="world_ref",
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
+                use_gravity_compensation=False,
+                use_inertia_decoupling=False,
             )
 
     def test_tool_pattern_matching_multiple_sites_on_one_robot_raises(self):

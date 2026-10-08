@@ -20,6 +20,7 @@
 # per-robot DOF layout and the indexed-view scatter into the sim.
 #
 # Command: python -m newton.examples controller_joint_impedance_heterogeneous
+#          python -m newton.examples controller_joint_impedance_heterogeneous --solver kamino
 ###########################################################################
 
 import math
@@ -121,9 +122,13 @@ def _add_revolute_chain(builder, n_links, link_len, y_offset, label):
 class Example:
     @staticmethod
     def create_parser():
-        return newton.examples.create_parser()
+        parser = newton.examples.create_parser()
+        parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
+        return parser
 
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
+        self.solver_type = args.solver
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 4
@@ -134,6 +139,8 @@ class Example:
 
         # ---- Physics scene ---------------------------------------------------
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
         _add_revolute_chain(builder, DOFS_A, LINK_LEN_A, y_offset=-0.5, label="robot_a")
         _add_revolute_chain(builder, DOFS_B, LINK_LEN_B, y_offset=+0.5, label="robot_b")
         builder.add_ground_plane()
@@ -149,7 +156,16 @@ class Example:
         self.control = self.model.control()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.rotation_correction = "continuous"
+            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.dvi.bilateral_solve_interval = 8
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        else:
+            self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)
 
         # ---- Impedance controller --------------------------------------------
         # articulations/joints default to every joint of both articulations.

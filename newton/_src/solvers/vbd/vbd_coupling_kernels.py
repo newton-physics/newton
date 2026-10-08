@@ -142,6 +142,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
     friction_epsilon: float,
+    rigid_body_particle_contact_use_log_barrier: bool,
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
@@ -225,6 +226,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
             body_particle_contact_normal,
             shape_margin,
             dt,
+            rigid_body_particle_contact_use_log_barrier,
         )
 
         force_on_body = -force_on_particle
@@ -309,6 +311,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
     active_particle_flag: int,
     proxy_particle_flag: int,
     friction_epsilon: float,
+    rigid_body_particle_contact_use_log_barrier: bool,
     particle_radius: wp.array[float],
     body_particle_contact_count: wp.array[int],
     body_particle_contact_particle: wp.array[int],
@@ -371,6 +374,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
         body_particle_contact_normal,
         shape_margin,
         dt,
+        rigid_body_particle_contact_use_log_barrier,
     )
     _vbd_add_proxy_particle_force(particle_idx, body_contact_force, particle_local_to_proxy_global, out_particle_f)
 

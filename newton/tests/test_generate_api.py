@@ -1,8 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest import mock
@@ -17,6 +19,42 @@ except ModuleNotFoundError as exc:
     if exc.name != "docs":
         raise
     generate_api = None
+
+try:
+    from docs._ext import autodoc_filter
+except ModuleNotFoundError as exc:
+    if exc.name not in ("docs", "sphinx"):
+        raise
+    autodoc_filter = None
+
+
+@unittest.skipUnless(autodoc_filter is not None, "requires a source checkout and the docs extra")
+class TestObservableFieldDocs(unittest.TestCase):
+    """Keep source-documented None defaults visible in the generated API."""
+
+    def setUp(self):
+        """Provide Sphinx's public-module class context for attribute lookup."""
+        self.app = SimpleNamespace(
+            env=SimpleNamespace(
+                current_document=SimpleNamespace(autodoc_module="newton.solvers", autodoc_class="SolverObservables")
+            )
+        )
+
+    def test_documented_observable_fields_are_included(self):
+        """Retain dataclass fields with attribute docstrings and None defaults."""
+        for name in ("body_qdd", "body_parent_f", "contact_f"):
+            with self.subTest(name=name):
+                self.assertIsNone(autodoc_filter._should_skip_member(self.app, "class", name, None, False, None))
+
+    def test_undocumented_and_private_defaults_stay_hidden(self):
+        """Do not expose undocumented placeholders or private container metadata."""
+        for name in ("undocumented", "_solver"):
+            with self.subTest(name=name):
+                self.assertTrue(autodoc_filter._should_skip_member(self.app, "class", name, None, False, None))
+
+    def test_existing_skip_decision_is_preserved(self):
+        """Respect a prior autodoc decision to omit a member."""
+        self.assertTrue(autodoc_filter._should_skip_member(self.app, "class", "body_qdd", None, True, None))
 
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
@@ -88,18 +126,53 @@ class TestGenerateApiCopyright(unittest.TestCase):
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
 class TestGenerateApiDeprecatedSymbols(unittest.TestCase):
+    @staticmethod
+    def _make_module_with_deprecated_symbols(mod_name: str) -> ModuleType:
+        """Build a stand-in public module using the same deprecation shim as Newton.
+
+        The module is synthetic so this test does not depend on any real
+        deprecation, which would make it fail once that deprecation is removed.
+        """
+        module = ModuleType(mod_name)
+        module.__all__ = ["PUBLIC_VALUE"]
+        module.PUBLIC_VALUE = 3
+
+        deprecated_values = {"OLD_VALUE_A": -1, "OLD_VALUE_B": -2}
+        module.__deprecated_symbols__ = dict.fromkeys(deprecated_values, "Do not rely on this value.")
+
+        def __getattr__(name: str):
+            try:
+                value = deprecated_values[name]
+            except KeyError:
+                raise AttributeError(f"module {mod_name!r} has no attribute {name!r}") from None
+            warnings.warn(f"{mod_name}.{name} is deprecated.", DeprecationWarning, stacklevel=2)
+            return value
+
+        module.__getattr__ = __getattr__
+        return module
+
     def test_deprecated_symbols_render_without_values(self):
+        mod_name = "newton_fake_deprecated_api"
+        fake_module = self._make_module_with_deprecated_symbols(mod_name)
+
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
             with (
+                mock.patch.dict(sys.modules, {mod_name: fake_module}),
                 mock.patch.object(generate_api, "OUTPUT_DIR", output_dir),
                 mock.patch.object(generate_api, "REPO_ROOT", output_dir.parent),
+                warnings.catch_warnings(),
             ):
-                generate_api.write_module_page("newton.geometry", api_toctree_modules=set())
+                # Generating docs must not access deprecated symbols.
+                warnings.simplefilter("error", DeprecationWarning)
+                generate_api.write_module_page(mod_name, api_toctree_modules=set())
 
-            page = (output_dir / "newton_geometry.rst").read_text(encoding="utf-8")
-            self.assertIn("MATCH_BROKEN", page)
-            self.assertIn("MATCH_NOT_FOUND", page)
+            page = (output_dir / f"{mod_name}.rst").read_text(encoding="utf-8")
+            self.assertIn("``PUBLIC_VALUE``", page)
+            self.assertIn("``3``", page)
+            self.assertIn(".. rubric:: Deprecated", page)
+            self.assertIn("``OLD_VALUE_A``", page)
+            self.assertIn("``OLD_VALUE_B``", page)
             self.assertIn("Do not rely on this value", page)
             self.assertNotIn("``-1``", page)
             self.assertNotIn("``-2``", page)

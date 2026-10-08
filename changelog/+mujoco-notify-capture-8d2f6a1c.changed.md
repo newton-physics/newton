@@ -1,0 +1,1 @@
+Defer authored `mujoco.solreflimit` validation during CUDA graph capture and replay on the MuJoCo Warp backend. Use an eager `JOINT_DOF_FORCE_PROPERTIES` or `JOINT_DOF_PROPERTIES` notification to validate reassigned values outside capture.
