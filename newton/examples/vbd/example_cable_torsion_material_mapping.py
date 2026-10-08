@@ -272,7 +272,7 @@ class Example:
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             _bodies, joints = builder.add_rod(rod=rod, body_frame_origin="com")
             dof_start = builder.joint_qd_start[joints[0]]
-            twist = builder.joint_target_ke[dof_start + 3]
+            twist = builder.joint_target_ke[dof_start + 5]
 
             labels.append(label)
             groups.append(group)

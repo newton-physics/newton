@@ -13,6 +13,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.solvers.experimental.coupled import ModelView
 
 
 class _PassiveOutput(IntFlag):
@@ -1919,11 +1920,9 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         FREE), so its outputs are defined. Correctness is not asserted here, but
         a NaN regression on the outputs would go uncaught otherwise.
 
-        ROD is intentionally excluded: it is not implemented by
-        ``jcalc_motion`` / ``jcalc_motion_subspace`` and is not reconstructed by
-        ``eval_fk``, so the pipeline reads unreconstructed state for it and the
-        outputs are undefined (observed as intermittently non-finite). Asserting
-        finiteness there would test undefined behavior rather than a contract.
+        ROD is intentionally excluded because the inverse-dynamics entrypoints
+        reject models containing rod joints; their constitutive material response
+        is not part of this inverse-dynamics formulation.
 
         Multi-angular-DOF D6 joints are fully supported and are covered by
         analytical assertions in :meth:`test_inverse_dynamics_force_baseline`
@@ -1967,39 +1966,76 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         self.assertTrue(np.all(np.isfinite(inverse_dynamics.coriolis_force.numpy())))
 
     def test_inverse_dynamics_rejects_rod_joint(self):
-        """Verify both inverse-dynamics entrypoints reject rod joints eagerly."""
+        """Reject active Rod joints while accepting a view that disables all of them."""
         identity_xform = wp.transform_identity()
         builder = newton.ModelBuilder()
-        link = builder.add_link(
+        parent_link = builder.add_link(
             xform=identity_xform,
             mass=1.0,
             inertia=self.I_UNIT,
             com=wp.vec3(0.0),
         )
-        joint = builder.add_joint_rod(
+        child_link = builder.add_link(
+            xform=identity_xform,
+            mass=1.0,
+            inertia=self.I_UNIT,
+            com=wp.vec3(0.0),
+        )
+        parent_joint = builder.add_joint_rod(
             parent=-1,
-            child=link,
+            child=parent_link,
             parent_xform=identity_xform,
             child_xform=identity_xform,
         )
-        builder.add_articulation([joint])
+        child_joint = builder.add_joint_rod(
+            parent=parent_link,
+            child=child_link,
+            parent_xform=identity_xform,
+            child_xform=identity_xform,
+        )
+        builder.add_articulation([parent_joint, child_joint])
         model = builder.finalize(device=self.device)
         state = model.state()
         arrays = _InverseDynamicsArrays(model)
+        joint_qdd = wp.zeros_like(state.joint_qd)
 
-        with self.assertRaisesRegex(ValueError, "JointType.ROD"):
-            newton.eval_inverse_dynamics_passive(model, state, mass_matrix=arrays.mass_matrix)
+        def assert_rejects_rod(test_model):
+            with self.assertRaisesRegex(ValueError, "JointType.ROD"):
+                _eval_inverse_dynamics_passive(
+                    test_model,
+                    state,
+                    _PassiveOutput.MASS_MATRIX,
+                    arrays,
+                )
 
-        with self.assertRaisesRegex(ValueError, "JointType.ROD"):
-            newton.eval_inverse_dynamics_force(
-                model,
-                state,
-                mass_matrix=arrays.mass_matrix,
-                joint_qdd=wp.zeros_like(state.joint_qd),
-                coriolis_force=arrays.coriolis_force,
-                gravity_force=arrays.gravity_force,
-                joint_f=arrays.joint_f,
-            )
+            with self.assertRaisesRegex(ValueError, "JointType.ROD"):
+                _eval_inverse_dynamics_force(
+                    test_model,
+                    state,
+                    arrays,
+                    joint_qdd,
+                )
+
+        assert_rejects_rod(model)
+
+        partial_view = ModelView(model, "partial_rod")
+        partial_view.disable_joints(wp.array([parent_joint], dtype=int, device=self.device))
+        assert_rejects_rod(partial_view)
+
+        disabled_view = ModelView(model, "disabled_rods")
+        disabled_view.disable_joints(wp.array([parent_joint, child_joint], dtype=int, device=self.device))
+        _eval_inverse_dynamics_passive(
+            disabled_view,
+            state,
+            _PassiveOutput.MASS_MATRIX,
+            arrays,
+        )
+        _eval_inverse_dynamics_force(
+            disabled_view,
+            state,
+            arrays,
+            joint_qdd,
+        )
 
     def test_eval_inverse_dynamics_force_hand_crafted_inputs(self):
         """White-box test of ``eval_inverse_dynamics_force`` with hand-chosen inputs.

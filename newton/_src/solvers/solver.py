@@ -757,8 +757,8 @@ class SolverBase:
         tendon parameters unchanged.
         Valid flags are:
 
-        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms, axes, or coordinates
-          have changed.
+        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms, axes, coordinates, or
+          ``Model.joint_target_q`` have changed.
         * ``ModelFlags.JOINT_DOF_PROPERTIES``: Full joint DOF update, including
           force, armature, and reference-pose properties (legacy behavior).
         * ``ModelFlags.JOINT_DOF_FORCE_PROPERTIES``: Joint friction, damping,

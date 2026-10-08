@@ -18,7 +18,7 @@ class ModelFlags(IntEnum):
     """
 
     JOINT_PROPERTIES = 1 << 0
-    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis."""
+    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis, joint_target_q."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
     """Indicates all joint DOF updates, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
@@ -51,7 +51,7 @@ class ModelFlags(IntEnum):
     """Indicates joint_armature updates. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     JOINT_REFERENCE_POSE_PROPERTIES = 1 << 11
-    """Indicates joint reference-pose and spring-reference updates. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
+    """Indicates joint reference-pose and spring-reference updates, including Rod rest rotations in joint_target_q. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     ALL = (
         JOINT_PROPERTIES
@@ -226,7 +226,8 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
     """
 
     ROD = CABLE
-    """Rod joint: four VBD material slots for stretch, shear, bend, and twist."""
+    """Rod joint: 7-coordinate relative pose and 6-DoF relative
+    twist with stretch, shear, bend, and twist response."""
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """
@@ -244,7 +245,7 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
         Notes:
             - For PRISMATIC and REVOLUTE joints, both values are 1 (single axis).
             - For BALL joints, dof_count is 3 (angular velocity), coord_count is 4 (quaternion).
-            - For FREE and DISTANCE joints, dof_count is 6 (3 translation + 3 rotation), coord_count is 7 (3 position + 4 quaternion).
+            - For FREE, DISTANCE, and ROD joints, dof_count is 6 (3 translation + 3 rotation), coord_count is 7 (3 position + 4 quaternion).
             - For FIXED joints, both values are 0.
         """
         dof_count = num_axes
@@ -252,7 +253,7 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
         if self == JointType.BALL:
             dof_count = 3
             coord_count = 4
-        elif self == JointType.FREE or self == JointType.DISTANCE:
+        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.ROD:
             dof_count = 6
             coord_count = 7
         elif self == JointType.FIXED:
@@ -272,13 +273,13 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
 
         Notes:
             - For PRISMATIC and REVOLUTE joints, this equals 5 (single DoF axis).
-            - For FREE and DISTANCE joints, `cts_count = 0` since it yields no constraints.
+            - For FREE, DISTANCE, and ROD joints, `cts_count = 0` since they yield no constraints.
             - For FIXED joints, `cts_count = 6` since it fully constrains the associated bodies.
         """
         cts_count = 6 - num_axes
         if self == JointType.BALL:
             cts_count = 3
-        elif self == JointType.FREE or self == JointType.DISTANCE:
+        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.ROD:
             cts_count = 0
         elif self == JointType.FIXED:
             cts_count = 6
