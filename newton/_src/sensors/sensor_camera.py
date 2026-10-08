@@ -822,7 +822,7 @@ class SensorCamera:
             xform=xform,
         )
 
-    def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None) -> None:
+    def create_default_light(self, *, enable_shadows: bool = True, direction: wp.vec3f | None = None) -> None:
         """Create a default directional light for the rendered scene.
 
         Args:

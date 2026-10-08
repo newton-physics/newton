@@ -934,7 +934,6 @@ def _deformable_prepare_cable_topology(
             cfg=cfg,
             label=cid,
             wrap_in_articulation=True,
-            body_frame_origin="com",
         )
         point_sources = [[] for _ in node_positions]
         for key in comp_paths:
@@ -1310,7 +1309,6 @@ def _deformable_import_cable(
                         cfg=cable_cfg,
                         label=label,
                         wrap_in_articulation=True,
-                        body_frame_origin="com",
                     )
             else:
                 articulation_root_joints: list[int] = []

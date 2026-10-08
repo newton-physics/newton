@@ -331,7 +331,6 @@ class Example:
             bend_stiffness=bend_stiffness,
             bend_damping=1.0e0,
             label="cable",
-            body_frame_origin="com",
         )
 
         # Collision-filter cable segments that overlap the plug at rest.
@@ -399,7 +398,6 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=12,
-            rigid_compliant_alm=True,
             rigid_body_contact_buffer_size=256,
         )
 

@@ -96,7 +96,6 @@ class Example:
                 twist_stiffness=twist_stiffness,
                 twist_damping=twist_damping,
                 label=f"cantilever_k{int(bend_stiffness)}",
-                body_frame_origin="com",
             )
             # Zero mass + zero inertia in Newton's VBD makes the root kinematic.
             root_body = rod_bodies[0]
@@ -110,7 +109,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

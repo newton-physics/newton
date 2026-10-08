@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "newton"
-version = "1.7.0.dev0"
+version = "1.8.0.dev0"
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
@@ -42,8 +42,7 @@ sim = [
 
 # Optional ONNX policy inference for neural actuators and RL policy examples.
 onnx = [
-    # Pin operator support from NVIDIA/warp-nn#8 until it is released.
-    "warp-nn[onnx] @ git+https://github.com/NVIDIA/warp-nn.git@d9334ff1b00cb429e8336bb373bdfa1a948f8d49",
+    "warp-nn[onnx]~=0.4.0",
 ]
 
 # Asset import and mesh processing dependencies
@@ -216,6 +215,10 @@ ignore = [
     "TC003",
     "F821",
 ]
+
+[tool.ruff.lint.flake8-bugbear]
+# This helper returns dataclass field metadata, not a shared mutable default.
+extend-immutable-calls = ["newton.solvers.SolverObservables.field"]
 
 [tool.ruff.lint.per-file-ignores]
 "asv/benchmarks/**/*" = ["RUF012", "E402"]

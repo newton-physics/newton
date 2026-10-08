@@ -24,6 +24,7 @@ from ...core.types import override
 from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
 from ..coupled.interface import CouplingInterface
+from ..observables import SolverObservables
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
@@ -1908,6 +1909,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         control: newton.Control,
         contacts: newton.Contacts,
         dt: float,
+        *,
+        observables: SolverObservables | None = None,
     ) -> None:
         """Advance the simulation by one time step.
 
@@ -1922,7 +1925,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             control: Control input (unused; material parameters come from the model).
             contacts: Contact information (unused; collisions are handled internally).
             dt: Time step duration [s].
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
+                This solver declares no supported observables, so only an empty
+                container is accepted.
         """
+        self.validate_observables(observables, contacts)
         model = self.model
 
         with wp.ScopedDevice(model.device):

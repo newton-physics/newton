@@ -34,7 +34,7 @@ def _build_mimic_model(device, vectorized, *, kinematic_reference=False, small_m
     builder.add_articulation([reference, follower])
     offset = 0.1
     multiplier = -1.5
-    builder.set_joint_mimic(follower, reference, (offset, multiplier))
+    builder.set_joint_mimic(follower, reference, coeffs=(offset, multiplier))
     builder.color()
     model = builder.finalize(device=device)
     model.joint_q.assign(np.asarray(initial_q, dtype=np.float32))

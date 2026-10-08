@@ -2258,7 +2258,7 @@ def convert_geometries(
     )
 
     # Compute total number of required contacts per world
-    if model.rigid_contact_max > 0:
+    if model.rigid_contact_max is not None:
         model_min_contacts = int(model.rigid_contact_max)
         min_contacts_per_world = model.rigid_contact_max // model.world_count
         world_min_contacts = [min_contacts_per_world] * model.world_count
