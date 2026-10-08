@@ -2036,9 +2036,9 @@ def update_qdd_from_velocity(
         joint_qdd[tid] = (v_new[tid] - joint_qd[tid]) * inv_dt
 
 
-@wp.kernel
-def compute_contact_linear_force_from_impulses(
-    contact_count: wp.array[wp.int32],
+@wp.func
+def contact_linear_force_from_impulses(
+    c: int,
     contact_normal: wp.array[wp.vec3],
     contact_world: wp.array[wp.int32],
     contact_slot: wp.array[wp.int32],
@@ -2051,19 +2051,12 @@ def compute_contact_linear_force_from_impulses(
     mf_constraint_count: wp.array[wp.int32],
     propagation_constraint_count: wp.array[wp.int32],
     inv_dt: float,
-    # outputs
-    rigid_contact_force: wp.array[wp.vec3],
 ):
-    """Convert the solved normal and friction impulses of each contact into a world-frame force.
+    """Return the world-frame force on shape 0's body from contact ``c``'s solved impulses.
 
-    The force acts on shape 0's body; contacts whose rows were dropped report zero.
-    Contacts without friction rows (filtered by a gap threshold, or not a friction
-    anchor of their patch) report their normal force only.
+    Contacts whose rows were dropped report zero. Contacts without friction rows (filtered
+    by a gap threshold, or not a friction anchor of their patch) report their normal force only.
     """
-    c = wp.tid()
-    if c >= contact_count[0]:
-        return
-
     force = wp.vec3(0.0)
     slot = contact_slot[c]
     path = contact_path[c]
@@ -2100,8 +2093,86 @@ def compute_contact_linear_force_from_impulses(
         force = lam_n * normal
         force += lam_t0 * tangent0 + lam_t1 * tangent1
         force *= inv_dt
+    return force
 
-    rigid_contact_force[c] = force
+
+@wp.kernel
+def compute_contact_linear_force_from_impulses(
+    contact_count: wp.array[wp.int32],
+    contact_normal: wp.array[wp.vec3],
+    contact_world: wp.array[wp.int32],
+    contact_slot: wp.array[wp.int32],
+    contact_path: wp.array[wp.int32],
+    contact_slots_needed: wp.array[wp.int32],
+    world_impulses: wp.array2d[wp.float32],
+    mf_impulses: wp.array2d[wp.float32],
+    propagation_impulses: wp.array2d[wp.float32],
+    world_constraint_count: wp.array[wp.int32],
+    mf_constraint_count: wp.array[wp.int32],
+    propagation_constraint_count: wp.array[wp.int32],
+    inv_dt: float,
+    # outputs
+    rigid_contact_force: wp.array[wp.vec3],
+):
+    """Convert the solved normal and friction impulses of each contact into a world-frame force."""
+    c = wp.tid()
+    if c >= contact_count[0]:
+        return
+    rigid_contact_force[c] = contact_linear_force_from_impulses(
+        c,
+        contact_normal,
+        contact_world,
+        contact_slot,
+        contact_path,
+        contact_slots_needed,
+        world_impulses,
+        mf_impulses,
+        propagation_impulses,
+        world_constraint_count,
+        mf_constraint_count,
+        propagation_constraint_count,
+        inv_dt,
+    )
+
+
+@wp.kernel
+def compute_contact_spatial_force_from_impulses(
+    contact_count: wp.array[wp.int32],
+    contact_normal: wp.array[wp.vec3],
+    contact_world: wp.array[wp.int32],
+    contact_slot: wp.array[wp.int32],
+    contact_path: wp.array[wp.int32],
+    contact_slots_needed: wp.array[wp.int32],
+    world_impulses: wp.array2d[wp.float32],
+    mf_impulses: wp.array2d[wp.float32],
+    propagation_impulses: wp.array2d[wp.float32],
+    world_constraint_count: wp.array[wp.int32],
+    mf_constraint_count: wp.array[wp.int32],
+    propagation_constraint_count: wp.array[wp.int32],
+    inv_dt: float,
+    # outputs
+    contact_f: wp.array[wp.spatial_vector],
+):
+    """Write every row of a ``CONTACT_F`` observable: the linear force of live rigid contacts, zero elsewhere."""
+    c = wp.tid()
+    force = wp.vec3(0.0)
+    if c < contact_count[0]:
+        force = contact_linear_force_from_impulses(
+            c,
+            contact_normal,
+            contact_world,
+            contact_slot,
+            contact_path,
+            contact_slots_needed,
+            world_impulses,
+            mf_impulses,
+            propagation_impulses,
+            world_constraint_count,
+            mf_constraint_count,
+            propagation_constraint_count,
+            inv_dt,
+        )
+    contact_f[c] = wp.spatial_vector(force, wp.vec3(0.0))
 
 
 @wp.kernel

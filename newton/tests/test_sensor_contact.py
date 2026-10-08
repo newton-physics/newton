@@ -13,7 +13,7 @@ import newton
 from newton._src.solvers.kamino._src.geometry import ContactAggregation
 from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.sensors import SensorContact
-from newton.solvers import SolverKamino, SolverMuJoCo
+from newton.solvers import SolverFeatherPGS, SolverKamino, SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
 from newton.tests.utils import basics
 
@@ -998,6 +998,49 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         total_weight = (mass_a + mass_b + mass_c) * g
         self.assertAlmostEqual(base_force[0, 2], -total_weight, delta=total_weight * 0.01)
+
+
+class TestSensorContactFeatherPGS(unittest.TestCase):
+    """End-to-end contact-sensor test using the FeatherPGS contact-force observable."""
+
+    def test_stacking_scenario(self):
+        """Report each stacked box's weight through ``SensorContact.total_force``."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.density = 1000.0
+        builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.25, label="base")
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.5), wp.quat_identity()), label="a")
+        builder.add_shape_box(body_a, hx=0.15, hy=0.15, hz=0.25)
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()), label="b")
+        builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.05)
+        model = builder.finalize()
+        mass_a, mass_b = 45.0, 4.0  # kg (from density * volume)
+
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
+        solver = SolverFeatherPGS(model, pgs_mode="matrix_free" if model.device.is_cuda else "split", pgs_iterations=32)
+        sensor = SensorContact(
+            model, request_contact_attributes=False, sensing_bodies=["a", "b"], counterpart_shapes="*"
+        )
+        observables = solver.observables(sensor.solver_observable_flags)
+        contacts = pipeline.contacts()
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        sim_dt = 1.0 / 240.0
+        for _ in range(240):
+            pipeline.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
+            state_in, state_out = state_out, state_in
+        forces_acc = np.zeros((2, 3))
+        avg_steps = 10
+        for _ in range(avg_steps):
+            pipeline.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
+            state_in, state_out = state_out, state_in
+            sensor.update(state_in, contacts, observables=observables)
+            forces_acc += sensor.total_force.numpy()
+        total = forces_acc / avg_steps
+
+        g = 9.81
+        self.assertAlmostEqual(total[0, 2], mass_a * g, delta=mass_a * g * 0.01)
+        self.assertAlmostEqual(total[1, 2], mass_b * g, delta=mass_b * g * 0.01)
 
 
 class TestSensorContactKamino(unittest.TestCase):

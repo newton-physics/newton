@@ -89,6 +89,7 @@ from .kernels import (
     compute_compact_diagonal_inverse_mass,
     compute_composite_inertia,
     compute_contact_linear_force_from_impulses,
+    compute_contact_spatial_force_from_impulses,
     compute_delta_and_accumulate,
     compute_dense_contact_bounds,
     compute_mf_body_Hinv,
@@ -1228,6 +1229,15 @@ class SolverFeatherPGS(SolverBase):
         body's center of mass (linear force [N] first, torque [N·m] second, world frame).
         It does not include constraint or contact impulses of the step.
 
+        :attr:`~newton.solvers.SolverObservables.contact_f` is populated when
+        :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` is requested. Each live rigid
+        contact row holds the force [N] on shape 0's body, in world frame, from the solved
+        normal and friction impulses of the step divided by ``dt``; the torque part is zero
+        (torsional friction is not reported). Contacts whose rows were dropped for capacity,
+        and contacts of sleeping islands whose rows are skipped (``sleep_skip_constraints``),
+        report zero, as do rows beyond the contact count and the soft-contact rows. These
+        are the forces :meth:`update_contacts` reports.
+
     Example:
 
         .. code-block:: python
@@ -1242,7 +1252,7 @@ class SolverFeatherPGS(SolverBase):
                 state_in, state_out = state_out, state_in
     """
 
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset({SolverObservableFlags.BODY_PARENT_F})
+    SUPPORTED_OBSERVABLE_FLAGS = frozenset({SolverObservableFlags.BODY_PARENT_F, SolverObservableFlags.CONTACT_F})
 
     # Test hook: pin a kernel implementation regardless of the size heuristic
     # (keys: cholesky_kernel, trisolve_kernel, hinv_jt_kernel; split mode also
@@ -5786,11 +5796,23 @@ class SolverFeatherPGS(SolverBase):
         if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F):
             body_parent_f = observables.body_parent_f
         if self._nvtx is None:
-            return self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
-        try:
-            return self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
-        finally:
-            self._nvtx_stage(None)
+            self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
+        else:
+            try:
+                self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
+            finally:
+                self._nvtx_stage(None)
+        if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
+            # Rows are built only for articulated models; without joints every contact reports zero.
+            inv_dt = 1.0 / dt if self.model.joint_count else 0.0
+            wp.launch(
+                compute_contact_spatial_force_from_impulses,
+                dim=observables.contact_f.shape[0],
+                inputs=self._contact_force_inputs(contacts, inv_dt),
+                outputs=[observables.contact_f],
+                device=self.model.device,
+            )
+        return state_out
 
     def _advance(
         self,
@@ -7208,7 +7230,9 @@ class SolverFeatherPGS(SolverBase):
         linear part of :attr:`~newton.Contacts.force` from the normal and friction impulses
         of each contact divided by the time step. The torque part of
         :attr:`~newton.Contacts.force` is left zero; this solver does not report a contact
-        wrench. Contacts whose rows were dropped for capacity report zero force.
+        wrench. Contacts whose rows were dropped for capacity report zero force. The
+        :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` observable reports the same
+        forces from :meth:`step`.
 
         Args:
             contacts: The contacts passed to the last :meth:`step`.
@@ -7223,21 +7247,7 @@ class SolverFeatherPGS(SolverBase):
         wp.launch(
             compute_contact_linear_force_from_impulses,
             dim=contacts.rigid_contact_max,
-            inputs=[
-                contacts.rigid_contact_count,
-                contacts.rigid_contact_normal,
-                self.contact_world,
-                self.contact_slot,
-                self.contact_path,
-                self.contact_slots_needed,
-                self.impulses,
-                self.mf_impulses,
-                self.propagation_impulses,
-                self.constraint_count,
-                self.mf_constraint_count,
-                self.propagation_constraint_count,
-                inv_dt,
-            ],
+            inputs=self._contact_force_inputs(contacts, inv_dt),
             outputs=[contacts.rigid_contact_force],
             device=self.model.device,
         )
@@ -7249,6 +7259,24 @@ class SolverFeatherPGS(SolverBase):
                 outputs=[contacts.force],
                 device=self.model.device,
             )
+
+    def _contact_force_inputs(self, contacts: Contacts, inv_dt: float) -> list:
+        """Return the inputs shared by the contact-force kernels."""
+        return [
+            contacts.rigid_contact_count,
+            contacts.rigid_contact_normal,
+            self.contact_world,
+            self.contact_slot,
+            self.contact_path,
+            self.contact_slots_needed,
+            self.impulses,
+            self.mf_impulses,
+            self.propagation_impulses,
+            self.constraint_count,
+            self.mf_constraint_count,
+            self.propagation_constraint_count,
+            inv_dt,
+        ]
 
     def _prepare_augmented_state(self, state_in: State) -> "SolverFeatherPGS":
         """Allocate the solver-owned per-step dynamics buffers on first use."""
