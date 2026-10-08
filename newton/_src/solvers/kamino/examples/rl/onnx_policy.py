@@ -15,7 +15,7 @@ class WarpOnnxPolicy:
 
     def __init__(self, path: str | Path, device: wp.DeviceLike, batch_size: int, *, action_width: int) -> None:
         self.device = wp.get_device(device)
-        self.runtime = load_onnx_runtime(str(path), device=self.device, batch_size=batch_size, input_batch_axes=0)
+        self.runtime = load_onnx_runtime(str(path), device=self.device, input_batch_axes=0)
         inputs, outputs = self.runtime.inputs, self.runtime.outputs
         if len(inputs) != 1 or len(outputs) != 1:
             raise ValueError(
@@ -24,7 +24,11 @@ class WarpOnnxPolicy:
             )
         self.input_name = inputs[0].name
         self.output_name = outputs[0].name
-        observation = wp.zeros(inputs[0].shape, dtype=inputs[0].dtype, device=self.device)
+        observation = wp.zeros(
+            tuple(batch_size if dimension is None else dimension for dimension in inputs[0].shape),
+            dtype=inputs[0].dtype,
+            device=self.device,
+        )
         output_shape = self.runtime({self.input_name: observation})[self.output_name].shape
         expected_output_shape = (batch_size, action_width)
         if output_shape != expected_output_shape:

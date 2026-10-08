@@ -185,6 +185,7 @@ class Example:
         self._command = wp.vec3(0.0, 0.0, 0.0)
         self._obs_wp = wp.zeros((1, 48), dtype=wp.float32, device=self.device)
         self._prev_act_wp = wp.zeros((1, 12), dtype=wp.float32, device=self.device)
+        self.policy.prepare({self._policy_input_name: self._obs_wp})
 
         self._auto_forward = True
 

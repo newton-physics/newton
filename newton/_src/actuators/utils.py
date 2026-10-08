@@ -55,7 +55,6 @@ def load_metadata(path: str) -> dict[str, Any]:
 def load_checkpoint(
     path: str,
     device: str | wp.Device | None = None,
-    batch_size: int = 1,
     input_batch_axes: int | dict[str, int] | None = None,
     requires_grad: bool = False,
 ):
@@ -69,12 +68,12 @@ def load_checkpoint(
         path: File path to the checkpoint.
         device: Warp device string (e.g. ``"cuda:0"``).  ``None`` uses the
             current default device.
-        batch_size: Batch dimension used to specialize graph inputs.
-        input_batch_axes: Optional batch-axis overrides for ONNX graph inputs.
+        input_batch_axes: ONNX graph-input dimensions to make dynamic for
+            the actuator batch.
         requires_grad: Whether the runtime allocates gradient storage for its
             own tensors. Required to differentiate the network, since the
             runtime owns intermediate buffers that cannot be given gradients
-            after allocation. Ignored for Torch checkpoints.
+            after construction. Ignored for Torch checkpoints.
 
     Returns:
         ``(model, metadata)`` where *model* is a Warp-NN runtime for ONNX
@@ -87,7 +86,6 @@ def load_checkpoint(
     runtime = load_onnx_runtime(
         path,
         device=device,
-        batch_size=batch_size,
         input_batch_axes=input_batch_axes,
         requires_grad=requires_grad,
     )
