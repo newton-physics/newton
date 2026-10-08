@@ -10443,32 +10443,40 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ctrl_type = ctrl_type_attr.numpy()
             dcmotor_type = int(SolverMuJoCo.CtrlType.DCMOTOR)
             if np.any(ctrl_type == dcmotor_type):
-                rows_by_world = [np.flatnonzero(actuator_world == world) for world in range(world_count)]
-                template_rows = rows_by_world[0]
-                template_dcmotor = ctrl_type[template_rows] == dcmotor_type
-                for world, rows in enumerate(rows_by_world[1:], start=1):
-                    if len(rows) != len(template_rows) or not np.array_equal(
-                        ctrl_type[rows] == dcmotor_type,
-                        template_dcmotor,
-                    ):
-                        raise ValueError(
-                            "SolverMuJoCo with separate_worlds=True requires matching high-level "
-                            f"DC-motor actuator layouts; world {world} differs from world 0."
-                        )
+                # Group once, preserving actuator order within each world, rather
+                # than scanning all rows separately for every replicated world.
+                rows = np.flatnonzero((actuator_world >= 0) & (actuator_world < world_count))
+                row_counts = np.bincount(actuator_world[rows], minlength=world_count)
+                mismatches = row_counts != row_counts[0]
+                if np.any(mismatches):
+                    world = int(np.argmax(mismatches))
+                    raise ValueError(
+                        "SolverMuJoCo with separate_worlds=True requires matching high-level "
+                        f"DC-motor actuator layouts; world {world} differs from world 0."
+                    )
+                rows = rows[np.argsort(actuator_world[rows], kind="stable")].reshape(world_count, row_counts[0])
+                dcmotor_rows = ctrl_type[rows] == dcmotor_type
+                mismatches = np.any(dcmotor_rows != dcmotor_rows[0], axis=1)
+                if np.any(mismatches):
+                    world = int(np.argmax(mismatches))
+                    raise ValueError(
+                        "SolverMuJoCo with separate_worlds=True requires matching high-level "
+                        f"DC-motor actuator layouts; world {world} differs from world 0."
+                    )
+                rows = rows[:, dcmotor_rows[0]]
 
                 for name in SolverMuJoCo._DCMOTOR_PARAMETER_NAMES:
                     attribute = getattr(mujoco_attrs, name, None)
                     if attribute is None:
                         raise ValueError(f"High-level DC-motor actuator rows are missing mujoco:{name}.")
-                    values = attribute.numpy()
-                    expected = values[template_rows][template_dcmotor]
-                    for world, rows in enumerate(rows_by_world[1:], start=1):
-                        actual = values[rows][template_dcmotor]
-                        if not np.array_equal(actual, expected):
-                            raise ValueError(
-                                "SolverMuJoCo with separate_worlds=True requires identical high-level "
-                                f"DC-motor parameters; mujoco:{name} differs in world {world}."
-                            )
+                    values = attribute.numpy()[rows]
+                    mismatches = np.any((values[1:] != values[:1]).reshape(world_count - 1, -1), axis=1)
+                    if np.any(mismatches):
+                        world = int(np.argmax(mismatches)) + 1
+                        raise ValueError(
+                            "SolverMuJoCo with separate_worlds=True requires identical high-level "
+                            f"DC-motor parameters; mujoco:{name} differs in world {world}."
+                        )
 
         # --- Check entity count homogeneity ---
         # Count entities per world (excluding global shapes)

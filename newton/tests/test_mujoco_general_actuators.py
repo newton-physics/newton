@@ -616,8 +616,8 @@ class TestMuJoCoActuators(unittest.TestCase):
         np.testing.assert_array_equal(activation_after_reset[0], np.zeros(solver.mj_model.na))
         np.testing.assert_array_equal(activation_after_reset[1], activation_before_reset[1])
 
-    def test_mjcf_dcmotor_multiworld_rejects_parameter_mismatch(self):
-        """Reject high-level parameters that cannot vary across replicated MuJoCo worlds."""
+    def test_mjcf_dcmotor_multiworld_rejects_mismatch(self):
+        """Reject high-level parameters and layouts that differ across replicated worlds."""
         first_world = ModelBuilder()
         first_world.add_mjcf(MJCF_DCMOTOR_ACTUATOR)
         second_world = ModelBuilder()
@@ -629,6 +629,18 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "identical high-level DC-motor parameters"):
             SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+
+        model.mujoco.actuator_dcmotor_resistance.assign([2.0, 2.0])
+        dc_type = SolverMuJoCo.CtrlType.DCMOTOR
+        for worlds, types in (
+            ([0, 0], [dc_type, dc_type]),
+            ([0, 1], [dc_type, SolverMuJoCo.CtrlType.GENERAL]),
+        ):
+            with self.subTest(worlds=worlds, types=types):
+                model.mujoco.actuator_world.assign(worlds)
+                model.mujoco.ctrl_type.assign(types)
+                with self.assertRaisesRegex(ValueError, "matching high-level DC-motor actuator layouts"):
+                    SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
 
     def test_mjcf_dcmotor_runtime_updates_noncompiled_properties(self):
         """Update independent DC-motor properties without replacing compiled parameters."""
