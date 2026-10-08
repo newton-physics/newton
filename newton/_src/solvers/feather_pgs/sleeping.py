@@ -66,6 +66,8 @@ class _SleepState:
         self.last_body_q = wp.clone(model.body_q)
         self.last_body_qd = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
         self.last_gravity = wp.clone(model.gravity)
+        # Joint wrenches computed every step, and the published history sleeping bodies keep.
+        self.parent_wrenches = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
         self.last_parent_wrenches = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
         articulation_world = model.articulation_world.numpy()
         gravity_world = articulation_world.copy()
@@ -404,12 +406,7 @@ class _SleepState:
                     device=device,
                 )
 
-    def snapshot_parent_wrenches(self, body_parent_f):
-        """Copy the published joint wrenches before a step overwrites them in place."""
-        wp.copy(self.last_parent_wrenches, body_parent_f)
-        return self.last_parent_wrenches
-
-    def finish(self, state_in, state_out, state_aug, dt, parent_f_source=None, parent_f_target=None):
+    def finish(self, state_in, state_out, state_aug, dt):
         """Freeze quiet supported islands and publish synchronized state history."""
         model = self.model
         device = model.device
@@ -526,7 +523,7 @@ class _SleepState:
             ],
             device=device,
         )
-        if parent_f_target is not None and parent_f_source is not None:
+        if model.body_count:
             # A frozen body keeps the joint wrench published before it fell asleep.
             wp.launch(
                 _freeze_parent_wrenches,
@@ -537,11 +534,12 @@ class _SleepState:
                     self.art_awake,
                     self.step_asleep,
                     self.root_veto,
-                    parent_f_source,
-                    parent_f_target,
+                    self.last_parent_wrenches,
+                    self.parent_wrenches,
                 ],
                 device=device,
             )
+            wp.copy(self.last_parent_wrenches, self.parent_wrenches)
         wp.copy(self.last_q, state_out.joint_q)
         wp.copy(self.last_qd, state_out.joint_qd)
         wp.copy(self.last_body_q, state_out.body_q)

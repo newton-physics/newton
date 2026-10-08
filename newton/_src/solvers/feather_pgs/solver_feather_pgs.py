@@ -1227,7 +1227,9 @@ class SolverFeatherPGS(SolverBase):
         :class:`~newton.solvers.SolverFeatherstone`, it is the per-body net spatial wrench
         of the inverse-dynamics backward pass at the start of the step, translated to the
         body's center of mass (linear force [N] first, torque [N·m] second, world frame).
-        It does not include constraint or contact impulses of the step.
+        It does not include constraint or contact impulses of the step. With sleeping enabled the
+        solver computes the wrench every step into its own history, so a sleeping body reports
+        its last awake wrench in whichever output the caller passes.
 
         :attr:`~newton.solvers.SolverObservables.contact_f` is populated when
         :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` is requested. Each live rigid
@@ -5861,11 +5863,9 @@ class SolverFeatherPGS(SolverBase):
         # Stage 1: forward kinematics, inverse dynamics with implicit drives, and CRBA.
         self._nvtx_stage("fk_id_crba")
         stage3_qd = self._stage1_fk_id(state_in, state_aug, state_out)
-        parent_f_source = state_in.body_parent_f
-        if self.sleeping is not None and body_parent_f is not None and body_parent_f is not state_out.body_parent_f:
-            # An observable is overwritten in place, so keep the wrenches that frozen bodies republish.
-            parent_f_source = self.sleeping.snapshot_parent_wrenches(body_parent_f)
-        self._stage1_joint_tau(state_in, state_aug, state_out, control, dt, body_parent_f)
+        # With sleeping, wrenches go to solver-owned history first, so frozen bodies never read a caller buffer.
+        computed_parent_f = self.sleeping.parent_wrenches if self.sleeping is not None else body_parent_f
+        self._stage1_joint_tau(state_in, state_aug, state_out, control, dt, computed_parent_f)
         self._stage1_crba(state_aug)
 
         # Stage 2: factor the augmented mass matrix of every articulation group.
@@ -6016,13 +6016,14 @@ class SolverFeatherPGS(SolverBase):
             self._integrate(state_in, state_aug, state_out, dt, self.v_out)
         self._stage7_update_kinematics(state_out)
         if self.sleeping is not None:
-            self.sleeping.finish(state_in, state_out, state_aug, dt, parent_f_source, body_parent_f)
-        if (
-            body_parent_f is not None
-            and state_out.body_parent_f is not None
-            and state_out.body_parent_f.ptr != body_parent_f.ptr
-        ):
-            state_out.body_parent_f.assign(body_parent_f)
+            self.sleeping.finish(state_in, state_out, state_aug, dt)
+        if computed_parent_f is not None:
+            published = {}
+            for target in (body_parent_f, state_out.body_parent_f):
+                if target is not None and target.ptr != computed_parent_f.ptr:
+                    published[target.ptr] = target
+            for target in published.values():
+                target.assign(computed_parent_f)
 
         if self._friction_anchors_enabled:
             if has_contacts:

@@ -222,6 +222,94 @@ def test_sleeping_body_keeps_its_legacy_parent_wrench(test, device):
     np.testing.assert_array_equal(states[1].body_parent_f.numpy(), asleep)
 
 
+def _sleeping_wrench_solvers(model):
+    solver = SolverFeatherPGS(
+        model, pgs_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
+    )
+    reference = SolverFeatherPGS(model, pgs_mode="matrix_free", friction_anchor_beta=0.0)
+    return solver, reference
+
+
+def _resting_wrench(model, pipeline, reference, control):
+    flags = {newton.solvers.SolverObservableFlags.BODY_PARENT_F}
+    observables = reference.observables(flags)
+    _advance(pipeline, reference, [model.state(), model.state()], control, 130, observables=observables)
+    return observables.body_parent_f.numpy()
+
+
+def test_sleeping_parent_wrench_is_independent_of_the_output(test, device):
+    """Report the frozen wrench in a newly allocated or cleared output, in eager and captured steps."""
+    model, pipeline = _parent_wrench_scene(device)
+    solver, reference = _sleeping_wrench_solvers(model)
+    flags = {newton.solvers.SolverObservableFlags.BODY_PARENT_F}
+    first = solver.observables(flags)
+    states, control = [model.state(), model.state()], model.control()
+    _advance(pipeline, solver, states, control, 120, observables=first)
+    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    asleep = first.body_parent_f.numpy().copy()
+    np.testing.assert_allclose(asleep, _resting_wrench(model, pipeline, reference, control), rtol=0.0, atol=1.0e-3)
+    test.assertGreater(np.abs(asleep[:, 2]).min(), 1.0)
+
+    second = solver.observables(flags)
+    _advance(pipeline, solver, states, control, 1, observables=second)
+    np.testing.assert_array_equal(second.body_parent_f.numpy(), asleep)
+    first.body_parent_f.fill_(wp.spatial_vector(-1.0))
+    _advance(pipeline, solver, states, control, 1, observables=first)
+    np.testing.assert_array_equal(first.body_parent_f.numpy(), asleep)
+
+    contacts = pipeline.contacts()
+
+    def step(observables):
+        states[0].clear_forces()
+        pipeline.collide(states[0], contacts)
+        solver.step(states[0], states[1], control, contacts, DT, observables=observables)
+        pipeline.collide(states[1], contacts)
+        solver.step(states[1], states[0], control, contacts, DT, observables=observables)
+
+    step(second)
+    third = solver.observables(flags)
+    with wp.ScopedCapture(device) as capture:
+        step(third)
+    for _ in range(3):
+        wp.capture_launch(capture.graph)
+    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(third.body_parent_f.numpy(), asleep)
+
+
+def test_parent_wrench_first_requested_after_sleep(test, device):
+    """Report the resting wrench when the first output is requested after the bodies fell asleep."""
+    model, pipeline = _parent_wrench_scene(device)
+    solver, reference = _sleeping_wrench_solvers(model)
+    states, control = [model.state(), model.state()], model.control()
+    _advance(pipeline, solver, states, control, 120)
+    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    _advance(pipeline, solver, states, control, 1, observables=observables)
+    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    resting = _resting_wrench(model, pipeline, reference, control)
+    np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
+    # A reset wakes the bodies, which then publish freshly computed wrenches.
+    solver.reset(states[0])
+    _advance(pipeline, solver, states, control, 1, observables=observables)
+    np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
+
+
+def test_sleeping_parent_wrench_from_legacy_to_observable(test, device):
+    """Report the same frozen wrench in an observable after sleeping with only the legacy output."""
+    model, pipeline = _parent_wrench_scene(device)
+    with test.assertWarns(DeprecationWarning):
+        model.request_state_attributes("body_parent_f")
+    solver, _reference = _sleeping_wrench_solvers(model)
+    states, control = [model.state(), model.state()], model.control()
+    _advance(pipeline, solver, states, control, 120)
+    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    legacy = states[0].body_parent_f.numpy().copy()
+    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    _advance(pipeline, solver, states, control, 1, observables=observables)
+    np.testing.assert_array_equal(observables.body_parent_f.numpy(), legacy)
+    np.testing.assert_array_equal(states[0].body_parent_f.numpy(), legacy)
+
+
 devices = get_cuda_test_devices()
 
 
@@ -241,6 +329,9 @@ for _name in (
     "test_cuda_graph_sleep_and_wake",
     "test_sleeping_body_keeps_its_parent_wrench",
     "test_sleeping_body_keeps_its_legacy_parent_wrench",
+    "test_sleeping_parent_wrench_is_independent_of_the_output",
+    "test_parent_wrench_first_requested_after_sleep",
+    "test_sleeping_parent_wrench_from_legacy_to_observable",
 ):
     add_function_test(TestFeatherPGSSleeping, _name, globals()[_name], devices=devices)
 
