@@ -19,6 +19,7 @@ CUDA device.
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import re
 import subprocess
@@ -313,6 +314,110 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
         add_regex(regex, stream=stream)
 
 
+def add_example_batch(cls: type, name: str, variants: list[dict[str, Any]]):
+    """Share a subprocess across an example's variants on each device."""
+    _registered_examples.add(name)
+    devices = {str(device): device for variant in variants for device in variant["devices"]}
+
+    def run(test, device):
+        is_cuda = wp.get_device(device).is_cuda
+        cases = []
+        for variant in variants:
+            if str(device) not in map(str, variant["devices"]):
+                continue
+            label = variant.get("test_suffix", "default")
+            with test.subTest(variant=label):
+                options = _merge_options(
+                    variant.get("test_options", {}),
+                    variant.get("test_options_cuda" if is_cuda else "test_options_cpu", {}),
+                )
+                onnx_required = options.pop("onnx_required", False)
+                torch_required = options.pop("torch_required", False)
+                if (onnx_required or torch_required) and not _HAS_ONNX_RUNTIME:
+                    test.skipTest("onnx or warp-nn not installed")
+                if options.pop("usd_required", False) and not USD_AVAILABLE:
+                    test.skipTest("Requires usd-core")
+
+                timeout = options.pop("test_timeout", 600)
+                allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
+                options.pop("viewer", None)
+                options.pop("stage_path", None)
+                argv = ["--device", str(device), "--test", "--quiet", "--viewer", "null"]
+                for entry in newton.tests.unittest_utils.warp_config_overrides:
+                    argv.extend(["--warp-config", entry])
+                argv.extend(_build_command_line_options(options))
+                allowed = list(_EXAMPLE_ALLOW_OUTPUT_REGEXES) if issubclass(cls, NewtonTestCase) else []
+                if issubclass(cls, NewtonTestCase) and not is_cuda:
+                    allowed.append((_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"))
+                allowed.extend(variant.get("allow_output_regexes", ()))
+                cases.append(
+                    {
+                        "label": label,
+                        "argv": argv,
+                        "timeout": timeout,
+                        "allow_deprecation_warnings": allow_deprecation_warnings,
+                        "check_output": issubclass(cls, NewtonTestCase),
+                        "allowed": allowed,
+                        "expected": variant.get("expect_output_regexes", []),
+                    }
+                )
+        if not cases:
+            return
+
+        env = os.environ.copy()
+        env.pop("PYTHONWARNINGS", None)
+        if wp.config.kernel_cache_dir is not None:
+            env["WARP_CACHE_PATH"] = os.path.dirname(wp.config.kernel_cache_dir)
+        warning_args = (
+            newton.tests.unittest_utils.get_strict_warning_args() if newton.tests.unittest_utils.strict_warnings else []
+        )
+        command = [sys.executable, *warning_args]
+        if newton.tests.unittest_utils.coverage_enabled:
+            with tempfile.NamedTemporaryFile(
+                dir=newton.tests.unittest_utils.coverage_temp_dir, delete=False
+            ) as coverage:
+                pass
+            command.extend(["-m", "coverage", "run", f"--data-file={coverage.name}"])
+            if newton.tests.unittest_utils.coverage_branch:
+                command.append("--branch")
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = os.path.join(directory, "variants.json")
+            with open(manifest, "w", encoding="utf-8") as stream:
+                json.dump(
+                    {
+                        "module": f"newton.examples.{name}",
+                        "cases": cases,
+                        "strict_warnings": newton.tests.unittest_utils.strict_warnings,
+                        "allowed_deprecation_warnings": newton.tests.unittest_utils.allowed_deprecation_warnings,
+                    },
+                    stream,
+                )
+            command.extend(["-m", "newton.tests.example_batch", manifest])
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=sum(case["timeout"] for case in cases),
+                check=False,
+            )
+        if isinstance(test, NewtonTestCase):
+            test.assertSubprocessSuccess(result, command=command)
+        else:
+            test.assertEqual(result.returncode, 0, f"{name} batch failed:\n{result.stdout}\n{result.stderr}")
+            if result.stderr:
+                print(result.stderr)
+
+    if not devices:
+        add_function_test(cls, f"test_{name}_batch", run, devices=[], check_output=False)
+    for device in devices.values():
+        selected = [variant for variant in variants if str(device) in map(str, variant["devices"])]
+        if len(selected) == 1:
+            add_example_test(cls, name, use_viewer=True, **{**selected[0], "devices": [device]})
+        else:
+            add_function_test(cls, f"test_{name}_batch", run, devices=[device], check_output=False)
+
+
 def _register_example_allow_output_regexes(
     test: NewtonTestCase,
     *,
@@ -491,80 +596,81 @@ add_basic_example_test(
     test_options={"num-frames": 120, "world-count": 8},
 )
 
-add_basic_example_test(
+add_example_batch(
+    TestBasicExamples,
     name="basic.example_basic_urdf",
-    devices=test_devices,
-    test_options={"num-frames": 200},
-    test_options_cpu={"world_count": 16},
-    test_options_cuda={"world_count": 64},
-    use_viewer=True,
-    test_suffix="xpbd",
-)
-add_basic_example_test(
-    name="basic.example_basic_urdf",
-    devices=test_devices,
-    test_options={"num-frames": 200, "solver": "vbd"},
-    test_options_cpu={"world_count": 16},
-    test_options_cuda={"world_count": 64},
-    use_viewer=True,
-    test_suffix="vbd",
+    variants=[
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 200},
+            "test_options_cpu": {"world_count": 16},
+            "test_options_cuda": {"world_count": 64},
+            "test_suffix": "xpbd",
+        },
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 200, "solver": "vbd"},
+            "test_options_cpu": {"world_count": 16},
+            "test_options_cuda": {"world_count": 64},
+            "test_suffix": "vbd",
+        },
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"num-frames": 200, "solver": "kamino", "world-count": 4},
+            "test_suffix": "kamino",
+        },
+    ],
 )
 
 add_basic_example_test(name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
 
-add_basic_example_test(
+add_example_batch(
+    TestBasicExamples,
     name="basic.example_basic_joints",
-    devices=test_devices,
-    use_viewer=True,
-    test_suffix="xpbd",
-)
-add_basic_example_test(
-    name="basic.example_basic_joints",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"solver": "vbd"},
-    test_suffix="vbd",
-)
-add_basic_example_test(
-    name="basic.example_basic_urdf",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 200, "solver": "kamino", "world-count": 4},
-    use_viewer=True,
-    test_suffix="kamino",
-)
-add_basic_example_test(
-    name="basic.example_basic_joints",
-    devices=cuda_test_devices,
-    use_viewer=True,
-    test_options={"solver": "kamino"},
-    test_suffix="kamino",
-    allow_output_regexes=[(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
+    variants=[
+        {"devices": test_devices, "test_suffix": "xpbd"},
+        {"devices": test_devices, "test_options": {"solver": "vbd"}, "test_suffix": "vbd"},
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"solver": "kamino"},
+            "test_suffix": "kamino",
+            "allow_output_regexes": [(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
+        },
+    ],
 )
 
-for mimic_solver in ("featherstone", "semi_implicit", "xpbd", "mujoco", "vbd"):
-    add_basic_example_test(
-        name="basic.example_basic_mimic_joint",
-        devices=test_devices,
-        use_viewer=True,
-        test_options={"num-frames": 120, "solver": mimic_solver},
-        test_suffix=mimic_solver,
-    )
-
-add_basic_example_test(
-    name="basic.example_basic_shapes",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 150, "solver": "xpbd"},
-    test_suffix="xpbd",
-    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+add_example_batch(
+    TestBasicExamples,
+    name="basic.example_basic_mimic_joint",
+    variants=[
+        {"devices": test_devices, "test_options": {"num-frames": 120, "solver": solver}, "test_suffix": solver}
+        for solver in ("featherstone", "semi_implicit", "xpbd", "mujoco", "vbd")
+    ],
 )
-add_basic_example_test(
+
+add_example_batch(
+    TestBasicExamples,
     name="basic.example_basic_shapes",
-    devices=cuda_test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 150, "solver": "kamino"},
-    test_suffix="kamino",
-    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+    variants=[
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 150, "solver": "xpbd"},
+            "test_suffix": "xpbd",
+            "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+        },
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"num-frames": 150, "solver": "kamino"},
+            "test_suffix": "kamino",
+            "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+        },
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 150, "solver": "vbd"},
+            "test_suffix": "vbd",
+            "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+        },
+    ],
 )
 
 add_basic_example_test(
@@ -573,14 +679,6 @@ add_basic_example_test(
     use_viewer=True,
     test_options={"num-frames": 120, "solver": "kamino"},
     test_suffix="kamino",
-)
-add_basic_example_test(
-    name="basic.example_basic_shapes",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 150, "solver": "vbd"},
-    test_suffix="vbd",
-    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 
 add_basic_example_test(
@@ -598,65 +696,49 @@ add_basic_example_test(
     test_suffix="kamino",
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
-add_basic_example_test(
+add_example_batch(
+    TestBasicExamples,
     name="basic.example_basic_conveyor_forces",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 100, "solver": "xpbd"},
-    test_suffix="xpbd",
-    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+    variants=[
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 100, "solver": "xpbd"},
+            "test_suffix": "xpbd",
+            "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+        },
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"num-frames": 100, "solver": "vbd"},
+            "test_suffix": "vbd",
+            "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+        },
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"num-frames": 100, "solver": "mujoco"},
+            "test_suffix": "mujoco",
+            "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+        },
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"num-frames": 100, "solver": "kamino"},
+            "test_suffix": "kamino",
+            "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+        },
+    ],
 )
-add_basic_example_test(
-    name="basic.example_basic_conveyor_forces",
-    devices=cuda_test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 100, "solver": "vbd"},
-    test_suffix="vbd",
-    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
-)
-add_basic_example_test(
-    name="basic.example_basic_conveyor_forces",
-    devices=cuda_test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 100, "solver": "mujoco"},
-    test_suffix="mujoco",
-    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
-)
-add_basic_example_test(
-    name="basic.example_basic_conveyor_forces",
-    devices=cuda_test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 100, "solver": "kamino"},
-    test_suffix="kamino",
-    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
-)
-add_basic_example_test(
+add_example_batch(
+    TestBasicExamples,
     name="basic.example_basic_dzhanibekov",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 230, "solver": "vbd"},
-    test_suffix="vbd",
-)
-add_basic_example_test(
-    name="basic.example_basic_dzhanibekov",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 230, "solver": "xpbd"},
-    test_suffix="xpbd",
-)
-add_basic_example_test(
-    name="basic.example_basic_dzhanibekov",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 230, "solver": "mujoco"},
-    test_suffix="mujoco",
-)
-add_basic_example_test(
-    name="basic.example_basic_dzhanibekov",
-    devices=cuda_test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 230, "solver": "kamino"},
-    test_suffix="kamino",
+    variants=[
+        {"devices": test_devices, "test_options": {"num-frames": 230, "solver": "vbd"}, "test_suffix": "vbd"},
+        {"devices": test_devices, "test_options": {"num-frames": 230, "solver": "xpbd"}, "test_suffix": "xpbd"},
+        {"devices": test_devices, "test_options": {"num-frames": 230, "solver": "mujoco"}, "test_suffix": "mujoco"},
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"num-frames": 230, "solver": "kamino"},
+            "test_suffix": "kamino",
+        },
+    ],
 )
 
 add_basic_example_test(
@@ -686,28 +768,22 @@ add_example_test(
     use_viewer=True,
     test_options={"num-frames": 20},
 )
-add_example_test(
+add_example_batch(
     TestCableExamples,
     name="cable.example_cable_bundle_hysteresis",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_bundle_hysteresis",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 150, "eps-max": 2.0, "tau": 0.1},
-    test_suffix="dahl_retention",
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_bundle_hysteresis",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 150, "no-dahl": True},
-    test_suffix="no_dahl_recovery",
+    variants=[
+        {"devices": test_devices, "test_options": {"num-frames": 20}},
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 150, "eps-max": 2.0, "tau": 0.1},
+            "test_suffix": "dahl_retention",
+        },
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 150, "no-dahl": True},
+            "test_suffix": "no_dahl_recovery",
+        },
+    ],
 )
 add_example_test(
     TestCableExamples,
@@ -743,23 +819,23 @@ add_example_test(
     test_options={"num-frames": 400},
     use_viewer=True,
 )
-add_example_test(
+add_example_batch(
     TestClothExamples,
     name="cloth.example_cloth_hanging",
-    devices=test_devices,
-    test_options={},
-    test_options_cpu={"width": 32, "height": 16, "num-frames": 10},
-    use_viewer=True,
-    test_suffix="vbd",
-)
-add_example_test(
-    TestClothExamples,
-    name="cloth.example_cloth_hanging",
-    devices=test_devices,
-    test_options={"solver": "style3d"},
-    test_options_cpu={"width": 32, "height": 16, "num-frames": 10},
-    use_viewer=True,
-    test_suffix="style3d",
+    variants=[
+        {
+            "devices": test_devices,
+            "test_options": {},
+            "test_options_cpu": {"width": 32, "height": 16, "num-frames": 10},
+            "test_suffix": "vbd",
+        },
+        {
+            "devices": test_devices,
+            "test_options": {"solver": "style3d"},
+            "test_options_cpu": {"width": 32, "height": 16, "num-frames": 10},
+            "test_suffix": "style3d",
+        },
+    ],
 )
 add_example_test(
     TestClothExamples,
@@ -1001,64 +1077,49 @@ class TestRobotPolicyExamples(unittest.TestCase):
     pass
 
 
-add_example_test(
+add_example_batch(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_29dof"},
-    test_options_cpu={"num-frames": 10},
-    use_viewer=True,
-    test_suffix="G1_29dof",
-)
-add_example_test(
-    TestRobotPolicyExamples,
-    name="robot.example_robot_policy",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_23dof"},
-    use_viewer=True,
-    test_suffix="G1_23dof",
-)
-add_example_test(
-    TestRobotPolicyExamples,
-    name="robot.example_robot_policy",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_23dof", "physx": True},
-    use_viewer=True,
-    test_suffix="G1_23dof_Physx",
-)
-add_example_test(
-    TestRobotPolicyExamples,
-    name="robot.example_robot_policy",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 500, "onnx_required": True, "robot": "anymal"},
-    use_viewer=True,
-    test_suffix="Anymal",
-)
-add_example_test(
-    TestRobotPolicyExamples,
-    name="robot.example_robot_policy",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 500, "onnx_required": True, "robot": "anymal", "physx": True},
-    use_viewer=True,
-    test_suffix="Anymal_Physx",
-)
-add_example_test(
-    TestRobotPolicyExamples,
-    name="robot.example_robot_policy",
-    devices=cuda_test_devices,
-    test_options={"onnx_required": True},
-    test_options_cuda={"num-frames": 500, "robot": "go2"},
-    use_viewer=True,
-    test_suffix="Go2",
-)
-add_example_test(
-    TestRobotPolicyExamples,
-    name="robot.example_robot_policy",
-    devices=cuda_test_devices,
-    test_options={"onnx_required": True},
-    test_options_cuda={"num-frames": 500, "robot": "go2", "physx": True},
-    use_viewer=True,
-    test_suffix="Go2_Physx",
+    variants=[
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"num-frames": 500, "onnx_required": True, "robot": "g1_29dof"},
+            "test_options_cpu": {"num-frames": 10},
+            "test_suffix": "G1_29dof",
+        },
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"num-frames": 500, "onnx_required": True, "robot": "g1_23dof"},
+            "test_suffix": "G1_23dof",
+        },
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"num-frames": 500, "onnx_required": True, "robot": "g1_23dof", "physx": True},
+            "test_suffix": "G1_23dof_Physx",
+        },
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"num-frames": 500, "onnx_required": True, "robot": "anymal"},
+            "test_suffix": "Anymal",
+        },
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"num-frames": 500, "onnx_required": True, "robot": "anymal", "physx": True},
+            "test_suffix": "Anymal_Physx",
+        },
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"onnx_required": True},
+            "test_options_cuda": {"num-frames": 500, "robot": "go2"},
+            "test_suffix": "Go2",
+        },
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"onnx_required": True},
+            "test_options_cuda": {"num-frames": 500, "robot": "go2", "physx": True},
+            "test_suffix": "Go2_Physx",
+        },
+    ],
 )
 
 
@@ -1563,40 +1624,34 @@ add_example_test(
     use_viewer=True,
     test_suffix="coupled",
 )
-add_example_test(
+add_example_batch(
     TestMultiphysicsExamples,
     name="multiphysics.example_rigid_soft_contact",
-    devices=test_devices,
-    test_options={"num-frames": 180, "solver": "xpbd"},
-    test_options_cpu={"num-frames": 2},
-    use_viewer=True,
-    test_suffix="xpbd",
-)
-add_example_test(
-    TestMultiphysicsExamples,
-    name="multiphysics.example_rigid_soft_contact",
-    devices=test_devices,
-    test_options={"num-frames": 180, "solver": "semi_implicit"},
-    test_options_cpu={"num-frames": 2},
-    use_viewer=True,
-    test_suffix="semi_implicit",
-)
-add_example_test(
-    TestMultiphysicsExamples,
-    name="multiphysics.example_rigid_soft_contact",
-    devices=test_devices,
-    test_options={"num-frames": 180, "solver": "vbd"},
-    test_options_cpu={"num-frames": 2},
-    use_viewer=True,
-    test_suffix="vbd",
-)
-add_example_test(
-    TestMultiphysicsExamples,
-    name="multiphysics.example_rigid_soft_contact",
-    devices=test_devices,
-    test_options={"num-frames": 2, "solver": "coupled", "rigid-solver": "mjc", "vbd-iterations": 1},
-    use_viewer=True,
-    test_suffix="coupled_mjc",
+    variants=[
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 180, "solver": "xpbd"},
+            "test_options_cpu": {"num-frames": 2},
+            "test_suffix": "xpbd",
+        },
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 180, "solver": "semi_implicit"},
+            "test_options_cpu": {"num-frames": 2},
+            "test_suffix": "semi_implicit",
+        },
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 180, "solver": "vbd"},
+            "test_options_cpu": {"num-frames": 2},
+            "test_suffix": "vbd",
+        },
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 2, "solver": "coupled", "rigid-solver": "mjc", "vbd-iterations": 1},
+            "test_suffix": "coupled_mjc",
+        },
+    ],
 )
 add_example_test(
     TestMultiphysicsExamples,
