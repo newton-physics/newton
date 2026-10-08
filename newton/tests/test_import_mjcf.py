@@ -67,32 +67,34 @@ class TestImportMjcfMocap(unittest.TestCase):
         xml = """
         <mujoco model="mocap">
             <worldbody>
-                <body name="target" mocap="true" pos="1 2 3" quat="0.70710678 0 0 0.70710678">
+                <frame pos="1 0 0"><body name="target" mocap="true" pos="0 2 3" quat="0.70710678 0 0 0.70710678">
                     <geom type="sphere" size="0.1"/>
-                </body>
-                <body name="fixed"><geom type="sphere" size="0.1"/></body>
+                    <body name="child"><joint type="hinge"/><geom type="sphere" size="0.1"/></body>
+                </body></frame>
+                <body name="fixed" mocap="false"><geom type="sphere" size="0.1"/></body>
                 <body name="moving"><freejoint/><geom type="sphere" size="0.1"/></body>
             </worldbody>
         </mujoco>
         """
-        builder = newton.ModelBuilder()
-        xform = wp.transform(wp.vec3(0.5, -0.5, 1.0), wp.quat_identity())
-        builder.add_mjcf(xml, scale=2.0, xform=xform)
-        target = builder.body_label.index("mocap/worldbody/target")
-        np.testing.assert_allclose(builder.body_q[target].p, [2.5, 3.5, 7.0], atol=1e-6)
-        np.testing.assert_allclose(builder.body_q[target].q, [0, 0, 2**-0.5, 2**-0.5], atol=1e-6)
-        self.assertEqual(builder.body_flags[target], int(newton.BodyFlags.KINEMATIC))
-        self.assertEqual(builder.body_flags[1:], [int(newton.BodyFlags.DYNAMIC)] * 2)
-        self.assertEqual(builder.joint_type[0], newton.JointType.FIXED)
-        self.assertEqual(builder.joint_parent[0], -1)
-
-    def test_mocap_up_axis_conversion(self):
-        """Apply the same up-axis conversion to mocap and ordinary bodies."""
-        xml = '<mujoco><worldbody><body name="target" mocap="true" pos="1 2 3"/><body name="fixed" pos="1 2 3"/></worldbody></mujoco>'
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.add_mjcf(xml, up_axis=newton.Axis.Y)
-        np.testing.assert_allclose(builder.body_q[0], builder.body_q[1])
-        np.testing.assert_allclose(builder.body_q[0].p, [1, -3, 2], atol=1e-6)
+        cases = (
+            (newton.Axis.Z, [2.5, 3.5, 7.0], [0, 0, 2**-0.5, 2**-0.5]),
+            (newton.Axis.Y, [2.5, -6.5, 5.0], [0.5, -0.5, 0.5, 0.5]),
+        )
+        for up_axis, expected_pos, expected_quat in cases:
+            with self.subTest(up_axis=up_axis):
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                xform = wp.transform(wp.vec3(0.5, -0.5, 1.0), wp.quat_identity())
+                builder.add_mjcf(xml, scale=2.0, xform=xform, up_axis=up_axis)
+                target = builder.body_label.index("mocap/worldbody/target")
+                np.testing.assert_allclose(builder.body_q[target].p, expected_pos, atol=1e-6)
+                np.testing.assert_allclose(builder.body_q[target].q, expected_quat, atol=1e-6)
+                self.assertEqual(builder.body_flags[target], int(newton.BodyFlags.KINEMATIC))
+                for label in ("fixed", "moving", "target/child"):
+                    body = builder.body_label.index(f"mocap/worldbody/{label}")
+                    self.assertEqual(builder.body_flags[body], int(newton.BodyFlags.DYNAMIC))
+                root_joint = builder.joint_child.index(target)
+                self.assertEqual(builder.joint_type[root_joint], newton.JointType.FIXED)
+                self.assertEqual(builder.joint_parent[root_joint], -1)
 
     def test_mocap_survives_fixed_joint_collapse(self):
         """Keep movable mocap roots while collapsing ordinary fixed bodies."""
@@ -126,7 +128,11 @@ class TestImportMjcfMocap(unittest.TestCase):
         xml = (
             '<mujoco><worldbody><body name="target" mocap="true"><site name="target_site"/></body></worldbody></mujoco>'
         )
-        for options in ({"collapse_fixed_joints": True}, {"collapse_massless_fixed_root": True}):
+        for options in (
+            {"collapse_fixed_joints": True},
+            {"collapse_massless_fixed_root": True},
+            {"collapse_fixed_joints": True, "floating": False},
+        ):
             with self.subTest(options=options), warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 builder = newton.ModelBuilder()
@@ -153,30 +159,6 @@ class TestImportMjcfMocap(unittest.TestCase):
                     builder.add_articulation([builder.add_joint_fixed(parent=-1, child=parent)])
                 with self.assertRaisesRegex(ValueError, "[Mm]ocap.*target"):
                     builder.add_mjcf(f"<mujoco><worldbody>{body_xml}</worldbody></mujoco>", **options)
-
-    def test_mocap_false_and_fixed_override(self):
-        """Respect false mocap flags and allow an explicitly fixed root."""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(
-            '<mujoco><worldbody><body name="target" mocap="true"/><body name="fixed" mocap="false"/></worldbody></mujoco>',
-            floating=False,
-        )
-        self.assertEqual(builder.body_flags, [int(newton.BodyFlags.KINEMATIC), int(newton.BodyFlags.DYNAMIC)])
-
-    def test_mocap_frames_and_dynamic_children(self):
-        """Preserve frame offsets and ordinary dynamic descendants of mocap roots."""
-        xml = """
-        <mujoco><worldbody><frame pos="1 0 0">
-            <body name="target" mocap="true" pos="0 2 0">
-                <geom type="sphere" size="0.1"/>
-                <body name="child"><joint type="hinge"/><geom type="sphere" size="0.1"/></body>
-            </body>
-        </frame></worldbody></mujoco>
-        """
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(xml)
-        self.assertEqual(builder.body_flags, [int(newton.BodyFlags.KINEMATIC), int(newton.BodyFlags.DYNAMIC)])
-        np.testing.assert_allclose(builder.body_q[0].p, [1, 2, 0])
 
 
 class TestImportMjcfBasic(unittest.TestCase):
