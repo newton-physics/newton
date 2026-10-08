@@ -3324,7 +3324,11 @@ def parse_mjcf(
                 # Uses only the first DOF (qd_start) since inheritrange is only
                 # meaningful for single-DOF joints (hinge, slide).
                 inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
-                if actuator_type == "intvelocity" and inheritrange > 0 and "actrange" in merged_attrib:
+                if (
+                    actuator_type == "intvelocity"
+                    and inheritrange > 0
+                    and any(parse_vec(merged_attrib, "actrange", [0.0, 0.0]))
+                ):
                     raise ValueError("MJCF intvelocity actuator cannot define both actrange and inheritrange.")
                 if inheritrange > 0 and joint_name and qd_start >= 0:
                     # inheritrange copies absolute MuJoCo qpos, but Newton stores joint limits as qpos - ref.
