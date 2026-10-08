@@ -150,6 +150,49 @@ class TestBenchmarkMetrics(unittest.TestCase):
         self.assertAlmostEqual(metrics.real_time_factor, 16 * 0.01 / 0.03)
         self.assertAlmostEqual(metrics.gpu_memory_mib, 8.0)
 
+    def test_collect_simulation_metrics_resets_reused_workload(self):
+        """Build one workload and reset it before each later sample."""
+        events = []
+
+        class FakeDevice:
+            free_memory_values = iter((16 * 1024**2, 8 * 1024**2))
+
+            @property
+            def free_memory(self):
+                return next(self.free_memory_values)
+
+        class FakeWorkload:
+            sim_dt = 0.01
+            sim_substeps = 1
+            benchmark_time = 0.0
+
+            def step(self):
+                events.append("step")
+                self.benchmark_time += 0.01
+
+        def create_workload():
+            events.append("create")
+            return FakeWorkload()
+
+        with (
+            patch("benchmark_metrics.wp.get_device", return_value=FakeDevice()),
+            patch("benchmark_metrics.wp.synchronize_device"),
+        ):
+            collect_simulation_metrics(
+                create_workload=create_workload,
+                world_count=1,
+                num_frames=1,
+                samples=3,
+                validate=lambda workload: events.append("validate"),
+                timer=iter((0.0, 0.01) * 3).__next__,
+                reset_workload=lambda workload: events.append("reset"),
+            )
+
+        self.assertEqual(
+            events,
+            ["create", "step", "validate", "reset", "step", "validate", "reset", "step", "validate"],
+        )
+
     def test_collect_simulation_metrics_rejects_increased_free_memory(self):
         """Reject an invalid increase in measured free GPU memory."""
 

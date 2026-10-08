@@ -515,6 +515,17 @@ class Example:
         self.benchmark_time += end_time - start_time
         self.sim_time += self.frame_dt
 
+    def reset(self):
+        """Restore the initial simulation state in place, keeping the captured graph valid."""
+        # The graph alternates both state buffers, so reset each one.
+        for state in (self.state_0, self.state_1):
+            self.solver.reset(state)
+            newton.eval_fk(self.model, state.joint_q, state.joint_qd, state)
+        _target_q(self.control).assign(_target_q(self.model))
+        if self.actuation == "random":
+            self._target_frame.zero_()
+        self.sim_time = 0.0
+
     def test_final(self):
         validate_simulation_state(
             self.state_0,
