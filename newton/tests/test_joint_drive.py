@@ -3,11 +3,13 @@
 
 import unittest
 
+import numpy as np
 import warp as wp
 
 import newton
 from newton import ModelFlags
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 class TestJointDrive(unittest.TestCase):
@@ -348,6 +350,44 @@ class TestJointDrive(unittest.TestCase):
 
     def test_joint_drive_revolute_upZ_motionZ(self):
         self.run_test_joint_drive_no_limits(False, 2, 2)
+
+
+def test_semi_implicit_d6_2dof_drive_at_target(test: TestJointDrive, device):
+    """A D6 joint with two angular drives must stay at rest when q equals the targets, for any axis pair."""
+    for axes in ((newton.Axis.X, newton.Axis.Y), (newton.Axis.Y, newton.Axis.Z), (newton.Axis.Z, newton.Axis.X)):
+        with test.subTest(axes=axes):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+            joint = builder.add_joint_d6(
+                -1,
+                body,
+                angular_axes=[
+                    newton.ModelBuilder.JointDofConfig(axis=axes[0], target_pos=0.2, target_ke=2.0),
+                    newton.ModelBuilder.JointDofConfig(axis=axes[1], target_pos=0.4, target_ke=2.0),
+                ],
+            )
+            builder.add_articulation([joint])
+            builder.joint_q[:] = [0.2, 0.4]
+            model = builder.finalize(device=device)
+
+            solver = newton.solvers.SolverSemiImplicit(
+                model, angular_damping=0.0, joint_attach_ke=0.0, joint_attach_kd=0.0
+            )
+            state, result = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+            state.clear_forces()
+            solver.step(state, result, model.control(), None, 0.001)
+            newton.eval_ik(model, result, result.joint_q, result.joint_qd)
+
+            np.testing.assert_allclose(result.joint_qd.numpy(), np.zeros(2), atol=1.0e-8, rtol=0.0)
+
+
+add_function_test(
+    TestJointDrive,
+    "test_semi_implicit_d6_2dof_drive_at_target",
+    test_semi_implicit_d6_2dof_drive_at_target,
+    devices=get_test_devices(),
+)
 
 
 if __name__ == "__main__":
