@@ -207,7 +207,8 @@ jobs:
       - name: Link OVRTX shader cache
         run: |
           ovrtx_dir=$(uv run --extra dev --with "$OVRTX_REQUIREMENT" --with "$OVSTAGE_REQUIREMENT" \
-            python -c "import os, ovrtx; print(os.path.dirname(ovrtx.__file__))" | tail -n1)
+            python -c "import os, ovrtx; print(os.path.dirname(ovrtx.__file__))")
+          test -d "$ovrtx_dir/bin/cache"
           mkdir -p "$OVRTX_SHADER_CACHE"
           rm -rf "$ovrtx_dir/bin/cache/nv_shadercache"
           ln -s "$OVRTX_SHADER_CACHE" "$ovrtx_dir/bin/cache/nv_shadercache"
