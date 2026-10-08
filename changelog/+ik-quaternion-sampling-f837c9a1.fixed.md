@@ -1,0 +1,1 @@
+Reject unsupported quaternion-joint sampling in `newton.ik.IKSolver` before launching kernels, preventing incorrect joint limits and out-of-bounds reads. Use `IKSampler.NONE` or single-seed `IKSampler.GAUSS` for models containing ball, free, or distance joints.

@@ -60,22 +60,24 @@ def _build_two_link_planar(device) -> newton.Model:
 
 
 # ----------------------------------------------------------------------------
-# helpers - FREE-REV
+# helpers - quaternion joint followed by REV
 # ----------------------------------------------------------------------------
 
 
-def _build_free_plus_revolute(device) -> newton.Model:
-    """
-    Returns a model whose root link is attached with a FREE joint
-    followed by one REV link.
-    """
+def _build_quaternion_plus_revolute(device, joint_type=newton.JointType.FREE) -> newton.Model:
+    """Return a quaternion root joint followed by a revolute joint."""
     builder = newton.ModelBuilder()
 
     link1 = builder.add_link(
         xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
         mass=1.0,
     )
-    joint1 = builder.add_joint_free(
+    add_root_joint = {
+        newton.JointType.BALL: builder.add_joint_ball,
+        newton.JointType.FREE: builder.add_joint_free,
+        newton.JointType.DISTANCE: builder.add_joint_distance,
+    }[joint_type]
+    joint1 = add_root_joint(
         parent=-1,
         child=link1,
         parent_xform=wp.transform_identity(),
@@ -291,7 +293,7 @@ def test_convergence_mixed(test, device):
 def _convergence_test_free(test, device, mode: ik.IKJacobianType):
     with wp.ScopedDevice(device):
         n_problems = 3
-        model = _build_free_plus_revolute(device)
+        model = _build_quaternion_plus_revolute(device)
 
         requires_grad = mode in [ik.IKJacobianType.AUTODIFF, ik.IKJacobianType.MIXED]
         joint_q_2d = wp.zeros((n_problems, model.joint_coord_count), dtype=wp.float32, requires_grad=requires_grad)
@@ -448,7 +450,7 @@ def test_joint_dof_mask_free_joint(test, device):
     """A fully-masked FREE joint must keep its pose fixed (up to quaternion
     renormalization roundoff) while the remaining revolute DOF still updates."""
     with wp.ScopedDevice(device):
-        model = _build_free_plus_revolute(device)
+        model = _build_quaternion_plus_revolute(device)
         seed = np.zeros((1, model.joint_coord_count), dtype=np.float32)
         seed[0, 0:3] = [0.1, -0.2, 0.3]
         rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
@@ -477,8 +479,8 @@ def test_joint_dof_mask_free_joint(test, device):
         test.assertGreater(abs(float(result[7])), 1.0e-3)
 
 
-def test_joint_dof_mask_validation(test, device):
-    """IKSolver must reject incompatible joint DOF masks and modes."""
+def test_solver_validation(test, device):
+    """Reject incompatible IK masks and sampling modes before solving."""
     with wp.ScopedDevice(device):
         model = _build_two_link_planar(device)
         target = wp.array([[1.0, 1.0, 0.0]], dtype=wp.vec3, device=device)
@@ -527,7 +529,7 @@ def test_joint_dof_mask_validation(test, device):
                     joint_dof_mask=wp.ones(model.joint_dof_count, dtype=wp.bool, device="cpu"),
                 )
 
-        free_model = _build_free_plus_revolute(device)
+        free_model = _build_quaternion_plus_revolute(device)
         free_target = wp.array([[1.0, 0.5, 0.0]], dtype=wp.vec3, device=device)
         free_objective = ik.IKObjectivePosition(
             link_index=1,
@@ -543,6 +545,45 @@ def test_joint_dof_mask_validation(test, device):
                 [free_objective],
                 joint_dof_mask=wp.array(partial, dtype=wp.bool, device=device),
             )
+
+        models = [model, _build_single_d6(device), free_model]
+        models.extend(
+            _build_quaternion_plus_revolute(device, joint_type)
+            for joint_type in (newton.JointType.BALL, newton.JointType.DISTANCE)
+        )
+        for sampling_model in models:
+            seed = wp.array(sampling_model.joint_q.numpy()[None, :], dtype=wp.float32, device=device)
+            for optimizer in ik.IKOptimizer:
+                for sampler in ik.IKSampler:
+                    for n_seeds in (1, 2):
+                        with test.subTest(
+                            joint_types=sampling_model.joint_type.numpy().tolist(),
+                            optimizer=optimizer,
+                            sampler=sampler,
+                            n_seeds=n_seeds,
+                        ):
+                            kwargs = {"optimizer": optimizer, "sampler": sampler.value, "n_seeds": n_seeds}
+                            sampling_objective = ik.IKObjectivePosition(
+                                link_index=sampling_model.body_count - 1,
+                                link_offset=wp.vec3(0.5, 0.0, 0.0),
+                                target_positions=target,
+                            )
+                            if sampler is ik.IKSampler.NONE and n_seeds != 1:
+                                with test.assertRaisesRegex(ValueError, "n_seeds == 1"):
+                                    ik.IKSolver(sampling_model, 1, [sampling_objective], **kwargs)
+                            elif sampling_model.joint_coord_count != sampling_model.joint_dof_count and (
+                                sampler in (ik.IKSampler.UNIFORM, ik.IKSampler.ROBERTS)
+                                or (sampler is ik.IKSampler.GAUSS and n_seeds > 1)
+                            ):
+                                with test.assertRaisesRegex(ValueError, "quaternion joints.*sampler='none'"):
+                                    ik.IKSolver(sampling_model, 1, [sampling_objective], **kwargs)
+                            else:
+                                solver = ik.IKSolver(sampling_model, 1, [sampling_objective], **kwargs)
+                                result = wp.empty_like(seed)
+                                solver.step(seed, result, iterations=0)
+                                test.assertTrue(np.isfinite(solver.joint_q.numpy()).all())
+                                if n_seeds == 1 and sampler in (ik.IKSampler.NONE, ik.IKSampler.GAUSS):
+                                    assert_np_equal(result.numpy(), seed.numpy(), tol=0.0)
 
 
 def test_convergence_analytic_descendant_free_distance(test, device, joint_type):
@@ -821,7 +862,7 @@ for mode in ik.IKJacobianType:
         mode=mode,
     )
 add_function_test(TestIKModes, "test_joint_dof_mask_free_joint", test_joint_dof_mask_free_joint, devices)
-add_function_test(TestIKModes, "test_joint_dof_mask_validation", test_joint_dof_mask_validation, devices)
+add_function_test(TestIKModes, "test_solver_validation", test_solver_validation, devices)
 
 # Jacobian equality
 add_function_test(TestIKModes, "test_position_jacobian_compare", test_position_jacobian_compare, devices)
