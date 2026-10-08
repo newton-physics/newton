@@ -1,0 +1,1 @@
+Add optional lag-free intrinsic joint damping to the generative runner (`Runner(intrinsic_damping_nms_rad=...)`, `identify fit --intrinsic-damping`), applied on the CPU and GPU paths outside the torque response lag; it defaults to zero, so existing models are unchanged

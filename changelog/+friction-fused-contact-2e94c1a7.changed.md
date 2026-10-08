@@ -1,0 +1,1 @@
+Run parameter-adapter friction inside fused CUDA contact stages while preserving the shared laws, histories, and diagnostics. Retain CPU, large-bed, generic, additive-force, and custom-adapter fallbacks; set `FoundationFused.fused_apply=False` before graph capture to retain the previous schedule. Add a matched-law benchmark; a substantial end-to-end speedup is not established.

@@ -1,0 +1,1 @@
+Re-solve generative-runner hip and knee target angles so fixed-length forward kinematics reaches the measured ankle center, and report shoe penetration at the prediction origin as a compatibility failure instead of aborting dataset loading.

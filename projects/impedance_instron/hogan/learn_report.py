@@ -49,6 +49,8 @@ def _aggregate_table(summary: dict, learned: str) -> str:
         "Fx RMSE [N]",
         "|Peak Fz error| [N]",
         "Hip z RMSE [mm]",
+        "Touchdown error [ms]",
+        "Toe-off error [ms]",
         "Pelvis [mrad]",
         "Hip [mrad]",
         "Knee [mrad]",
@@ -69,6 +71,8 @@ def _aggregate_table(summary: dict, learned: str) -> str:
                     _fmt(grf[0], 0),
                     _fmt(agg.get("peak_fz_error_n", np.nan), 0),
                     _fmt(rmse.get("hip_z", np.nan), 1, 1e3),
+                    _fmt(agg.get("touchdown_error_s", np.nan), 1, 1e3),
+                    _fmt(agg.get("toeoff_error_s", np.nan), 1, 1e3),
                     *(_fmt(rmse.get(name_, np.nan), 0, 1e3) for name_ in ROTATIONAL),
                 ]
             )
@@ -262,6 +266,12 @@ def write_report(run: Path) -> Path:
         regularization=search.get("regularization", 0.01),
         roughness=search.get("roughness", 0.0),
         phase=summary["phase"],
+        phase_text=_PHASE_TEXT.get(summary["phase"], _PHASE_TEXT["time"]),
+        peak_text=(
+            f" + (peak Fz error / {summary['loss_scales']['peak_fz_n']:g} N)&sup2;"
+            if "peak_fz_n" in summary["loss_scales"]
+            else ""
+        ),
         scales=summary["loss_scales"],
         run=html.escape(str(run)),
         dataset=html.escape(summary["dataset"]),
@@ -273,6 +283,12 @@ def write_report(run: Path) -> Path:
     path.write_text(document, encoding="utf-8")
     return path
 
+
+_PHASE_TEXT = {
+    "time": "Gait phase &phi; follows the reference clock: 0&ndash;1 from the window start to measured touchdown, 1&ndash;2 over measured contact (shaded), 2&ndash;3 from toe-off to the window end.",
+    "touchdown": "Gait phase &phi; follows the reference clock shifted to the simulated touchdown: 0&ndash;1 to touchdown, 1&ndash;2 over the reference contact duration (shaded), 2&ndash;3 to the window end.",
+    "mechanical": "Gait phase &phi; is driven by the simulated state: 0&ndash;1 on the clock until simulated touchdown (held at 1 until contact), 1&ndash;2 by hip-over-ankle progression normalized between its measured touchdown and toe-off values, 2&ndash;3 on the clock from simulated toe-off. &phi; never decreases, and the reference and feedforward are looked up at &phi; too, so contact timing emerges from the mechanics.",
+}
 
 _PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -293,13 +309,13 @@ _PAGE = """<!doctype html>
 {example}
 </section>
 <section id="schedule"><h2>2. Learned schedule</h2>
-<p>Gait phase &phi;: 0&ndash;1 from the window start to measured touchdown, 1&ndash;2 over measured contact (shaded), 2&ndash;3 from toe-off to the window end. Gains follow a monotone cubic (PCHIP) curve through {knot_count} knots at &phi; = {knots}: smooth, with no overshoot between knots. Hip x and z gains stay at zero, so the body is carried by the shoe alone.</p>
+<p>{phase_text} Gains follow a monotone cubic (PCHIP) curve through {knot_count} knots at &phi; = {knots}: smooth, with no overshoot between knots. Hip x and z gains stay at zero, so the body is carried by the shoe alone.</p>
 <div class="grid">{gain_plots}</div>
 </section>
 <section id="method"><h2>3. Method</h2>
-<div class="equation">&tau; = &tau;<sub>ff</sub>(t) + K(&phi;) (q<sub>ref</sub>(t) &minus; q) + D(&phi;) (q̇<sub>ref</sub>(t) &minus; q̇)</div>
+<div class="equation">&tau; = &tau;<sub>ff</sub>(&phi;) + K(&phi;) (q<sub>ref</sub>(&phi;) &minus; q) + D(&phi;) (q̇<sub>ref</sub>(&phi;) &minus; q̇)</div>
 <p>Each stance keeps its own reference, inverse-dynamics feedforward, and static height registration (step 1). The pelvis, hip, knee, and ankle K and D are searched as log offsets about the step-1 baseline (K = 500, 500, 300, 300; D critically damped on the mean initial inertia). Reference phase: <b>{phase}</b>.</p>
-<p>Per-stance loss: mean over the four angles of (RMSE / {scales[joint_rad]:g} rad)&sup2; + mean over hip x, z of (RMSE / {scales[hip_m]:g} m)&sup2; + mean over Fx, Fz of (RMSE / {scales[force_n]:g} N)&sup2;, plus {scales[failure_penalty]:g} (scaled up by the unfinished fraction) for a failed rollout. The search minimizes the mean over training stances plus {regularization:g} &times; the mean squared log offset and {roughness:g} &times; the mean squared second difference of log offsets across knots, which keeps K(&phi;) and D(&phi;) free of narrow spikes.</p>
+<p>Per-stance loss: mean over the four angles of (RMSE / {scales[joint_rad]:g} rad)&sup2; + mean over hip x, z of (RMSE / {scales[hip_m]:g} m)&sup2; + mean over Fx, Fz of (RMSE / {scales[force_n]:g} N)&sup2;{peak_text}, plus {scales[failure_penalty]:g} (scaled up by the unfinished fraction) for a failed rollout. The search minimizes the mean over training stances plus {regularization:g} &times; the mean squared log offset and {roughness:g} &times; the mean squared second difference of log offsets across knots, which keeps K(&phi;) and D(&phi;) free of narrow spikes.</p>
 <p>Search: cross-entropy method, {population} candidates per generation (the current mean plus {population} &minus; 1 samples), {elite} elites, {generations} generations. Every candidate runs all training stances in one batched CUDA rollout: one world per (stance, candidate) with the batched column-bed shoe and the chain dynamics in double precision. The batched rollout reproduces the CPU rollout to five significant digits on FR3_2.</p>
 {convergence}
 </section>

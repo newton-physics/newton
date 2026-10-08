@@ -1,0 +1,1 @@
+Add an experimental reference-free variable-impedance runner with joint-only bounded actuation, continuous internal phase and load state, shared offline identification across speed and footwear conditions, compatibility gates, and standalone initial-condition generation; retain the previous Hogan tracking workflow as a diagnostic baseline.

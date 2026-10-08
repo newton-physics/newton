@@ -12,7 +12,8 @@ are kept on the device, so batch size is bounded by the shoe state.
 
 Gains are scheduled on a normalized gait phase shared by all stances:
 ``[0, 1)`` from the start of the window to the reference touchdown, ``[1, 2)``
-over reference contact, and ``[2, 3]`` to the end of the window. Between
+over reference contact, and ``[2, 3]`` to the end of the window. In
+``"mechanical"`` phase the simulated state drives it instead; see :mod:`.phase`. Between
 knots the gains follow a monotone cubic (PCHIP) interpolant: C1-smooth, no
 overshoot, so nonnegative knot values give nonnegative gains.
 """
@@ -31,6 +32,7 @@ from projects.digital_shoe.runtime import FoundationConfig
 from ..cartesian.gpu.foundation import FoundationFused
 from ..cartesian.shoe import Shoe
 from .mechanics import Chain
+from .phase import TOEOFF_MIN_PHASE, MechanicalPhase, reference_timing
 from .plan import Plan
 from .rollout import Config
 
@@ -40,6 +42,10 @@ Vec6 = wp.types.vector(6, wp.float64)
 Mat6 = wp.types.matrix((6, 6), wp.float64)
 _PI = wp.constant(wp.float64(math.pi))
 _HALF_PI = wp.constant(wp.float64(0.5 * math.pi))
+_TOEOFF_MIN_PHASE = wp.constant(wp.float64(TOEOFF_MIN_PHASE))
+PHASE_TOUCHDOWN = wp.constant(1)
+PHASE_MECHANICAL = wp.constant(2)
+_PHASE_CODES = {"time": 0, "touchdown": 1, "mechanical": 2}
 
 FAILURE_REASONS = {
     2: "Nonfinite actuator load or contact wrench",
@@ -72,7 +78,7 @@ class Settings:
     hip_floor: wp.float64
     max_speed: wp.float64
     pitch: wp.float64
-    touchdown_phase: int
+    phase_mode: int
     stance_count: int
 
 
@@ -242,6 +248,34 @@ def _sample(values: wp.array2d[Vec6], s: int, n: int, position: wp.float64):
 
 
 @wp.func
+def _lookup_position(lookup: wp.array2d[wp.float64], s: int, phi: wp.float64):
+    g = lookup.shape[0]
+    x = wp.clamp(phi, wp.float64(0.0), wp.float64(3.0)) * wp.float64(g - 1) / wp.float64(3.0)
+    i = wp.min(int(x), g - 2)
+    w = x - wp.float64(i)
+    return (wp.float64(1.0) - w) * lookup[i, s] + w * lookup[i + 1, s]
+
+
+@wp.func
+def _mechanical_candidate(
+    t: wp.float64,
+    offset: wp.float64,
+    touchdown: wp.float64,
+    toeoff: wp.float64,
+    timing: wp.vec3d,
+    stance_offset: wp.vec2d,
+):
+    """Mirror :func:`.phase.phase_candidate`."""
+    tiny = wp.float64(1.0e-9)
+    if touchdown < wp.float64(0.0):
+        return wp.min(t / wp.max(timing[0], tiny), wp.float64(1.0))
+    if toeoff < wp.float64(0.0):
+        progress = (offset - stance_offset[0]) / (stance_offset[1] - stance_offset[0])
+        return wp.float64(1.0) + wp.min(wp.max(progress, wp.float64(0.0)), wp.float64(1.0))
+    return wp.min(wp.float64(2.0) + (t - toeoff) / wp.max(timing[2] - timing[1], tiny), wp.float64(3.0))
+
+
+@wp.func
 def _gait_phase(phase: wp.float64, timing: wp.vec3d):
     """Map the plan clock [s] to the normalized gait phase described in the module docstring."""
     touchdown = timing[0]
@@ -296,6 +330,8 @@ def _reset(
     state: wp.array[Vec6],
     velocity: wp.array[Vec6],
     touchdown: wp.array[wp.float64],
+    toeoff: wp.array[wp.float64],
+    phase_state: wp.array[wp.float64],
     status: wp.array[int],
     recorded: wp.array[int],
     contact_steps: wp.array[int],
@@ -310,6 +346,8 @@ def _reset(
     state[w] = q0[s]
     velocity[w] = v0[s]
     touchdown[w] = wp.float64(-1.0)
+    toeoff[w] = wp.float64(-1.0)
+    phase_state[w] = wp.float64(0.0)
     status[w] = 0
     recorded[w] = 0
     contact_steps[w] = 0
@@ -376,6 +414,8 @@ def _advance(
     ref_v: wp.array2d[Vec6],
     ref_ff: wp.array2d[Vec6],
     ref_grf: wp.array2d[wp.vec2d],
+    stance_offset: wp.array[wp.vec2d],
+    phase_lookup: wp.array2d[wp.float64],
     knots: wp.array[wp.float64],
     stiffness: wp.array2d[Vec6],
     damping: wp.array2d[Vec6],
@@ -386,6 +426,8 @@ def _advance(
     state: wp.array[Vec6],
     velocity: wp.array[Vec6],
     touchdown: wp.array[wp.float64],
+    toeoff: wp.array[wp.float64],
+    phase_state: wp.array[wp.float64],
     status: wp.array[int],
     recorded: wp.array[int],
     contact_steps: wp.array[int],
@@ -412,13 +454,19 @@ def _advance(
     dt = dts[s]
     t = wp.float64(k) * dt
     phase = t
-    if cfg.touchdown_phase != 0 and touchdown[w] >= wp.float64(0.0):
+    if cfg.phase_mode == PHASE_TOUCHDOWN and touchdown[w] >= wp.float64(0.0):
         phase = t - touchdown[w] + timing[s][0]
     position = phase / dt
+    phi = _gait_phase(phase, timing[s])
+    if cfg.phase_mode == PHASE_MECHANICAL:
+        ankle_now, _jx_now, _jz_now, _foot_now = _ankle(q, p)
+        candidate = _mechanical_candidate(t, q[0] - ankle_now[0], touchdown[w], toeoff[w], timing[s], stance_offset[s])
+        phi = wp.max(phase_state[w], candidate)
+        phase_state[w] = phi
+        position = _lookup_position(phase_lookup, s, phi)
     q_ref = _sample(ref_q, s, n, position)
     v_ref = _sample(ref_v, s, n, position)
     feedforward = _sample(ref_ff, s, n, position)
-    phi = _gait_phase(phase, timing[s])
     gain_k = _gains(knots, stiffness, stiffness_slope, c, phi)
     gain_d = _gains(knots, damping, damping_slope, c, phi)
     load = feedforward + wp.cw_mul(gain_k, q_ref - q) + wp.cw_mul(gain_d, v_ref - v)
@@ -463,6 +511,14 @@ def _advance(
         return
     if touchdown[w] < wp.float64(0.0) and fz > cfg.threshold:
         touchdown[w] = t
+    elif (
+        cfg.phase_mode == PHASE_MECHANICAL
+        and touchdown[w] >= wp.float64(0.0)
+        and toeoff[w] < wp.float64(0.0)
+        and phi >= _TOEOFF_MIN_PHASE
+        and fz <= cfg.threshold
+    ):
+        toeoff[w] = t
 
     mass, bias = _dynamics(q, v, p, cfg.gravity)
     _ankle_position, jx, jz, _foot_angle = _ankle(q, p)
@@ -496,12 +552,6 @@ def _chain_params(chain: Chain) -> ChainParams:
     p.com_x = wp.vec4d(*chain.com_local_m[:, 0])
     p.com_z = wp.vec4d(*chain.com_local_m[:, 1])
     return p
-
-
-def reference_timing(plan: Plan, threshold_n: float) -> np.ndarray:
-    """Return reference touchdown, toe-off, and duration on the plan clock [s], shape (3,)."""
-    contact = np.flatnonzero(plan.grf_n[:, 1] > threshold_n)
-    return np.array([plan.touchdown_s, float(plan.time_s[contact[-1]]), plan.duration_s])
 
 
 def gait_phase(phase_s, timing) -> np.ndarray:
@@ -579,7 +629,10 @@ class PhaseSchedule:
 
     def gains(self, phase_s: float) -> tuple[np.ndarray, np.ndarray]:
         """Return stiffness and damping at a plan-clock phase [s], each shape (6,)."""
-        phi = gait_phase(phase_s, self.timing)
+        return self.phase_gains(gait_phase(phase_s, self.timing))
+
+    def phase_gains(self, phi: float) -> tuple[np.ndarray, np.ndarray]:
+        """Return stiffness and damping at a normalized gait phase, each shape (6,)."""
         return (
             pchip(self.knots_phase, self.stiffness, self.stiffness_slope, phi),
             pchip(self.knots_phase, self.damping, self.damping_slope, phi),
@@ -661,6 +714,16 @@ class Batch:
         self.q0 = wp.array(np.array([plan.q[0] for plan in plans]), dtype=Vec6, device=d)
         self.v0 = wp.array(np.array([plan.v[0] for plan in plans]), dtype=Vec6, device=d)
         self.steps_d = wp.array(self.steps, dtype=int, device=d)
+        stance_offset = np.zeros((self.stance_count, 2))
+        lookup = np.zeros((2, self.stance_count))
+        if cfg.phase == "mechanical":
+            phases = [
+                MechanicalPhase(plan, chain, cfg.contact_threshold_n) for plan, chain in zip(plans, chains, strict=True)
+            ]
+            stance_offset = np.array([phase.stance_offset_m for phase in phases])
+            lookup = np.column_stack([phase.lookup for phase in phases])
+        self.stance_offset = wp.array(stance_offset, dtype=wp.vec2d, device=d)
+        self.phase_lookup = wp.array(lookup, dtype=wp.float64, device=d)
         self.dts = wp.array(np.array([plan.dt_s for plan in plans]), dtype=wp.float64, device=d)
         self.timing_d = wp.array(self.timing, dtype=wp.vec3d, device=d)
         self.params = wp.array([_chain_params(chain) for chain in chains], dtype=ChainParams, device=d)
@@ -678,7 +741,7 @@ class Batch:
         settings.hip_floor = cfg.minimum_hip_height_m
         settings.max_speed = cfg.maximum_speed
         settings.pitch = float(static_pitch_rad)
-        settings.touchdown_phase = int(cfg.phase == "touchdown")
+        settings.phase_mode = _PHASE_CODES[cfg.phase]
         settings.stance_count = self.stance_count
         self.settings = settings
 
@@ -718,6 +781,8 @@ class Batch:
         self.state = wp.zeros(w, dtype=Vec6, device=d)
         self.velocity = wp.zeros_like(self.state)
         self.touchdown = wp.zeros(w, dtype=wp.float64, device=d)
+        self.toeoff = wp.zeros(w, dtype=wp.float64, device=d)
+        self.phase_state = wp.zeros(w, dtype=wp.float64, device=d)
         self.status = wp.zeros(w, dtype=int, device=d)
         self.recorded = wp.zeros(w, dtype=int, device=d)
         self.contact_steps = wp.zeros(w, dtype=int, device=d)
@@ -745,6 +810,8 @@ class Batch:
                 self.state,
                 self.velocity,
                 self.touchdown,
+                self.toeoff,
+                self.phase_state,
                 self.status,
                 self.recorded,
                 self.contact_steps,
@@ -801,6 +868,8 @@ class Batch:
                 self.ref_v,
                 self.ref_ff,
                 self.ref_grf,
+                self.stance_offset,
+                self.phase_lookup,
                 self.knots,
                 self.stiffness,
                 self.damping,
@@ -811,6 +880,8 @@ class Batch:
                 self.state,
                 self.velocity,
                 self.touchdown,
+                self.toeoff,
+                self.phase_state,
                 self.status,
                 self.recorded,
                 self.contact_steps,
@@ -836,7 +907,8 @@ class Batch:
             ``status`` (1 completed, otherwise a bitmask of :data:`FAILURE_REASONS`),
             ``recorded`` steps, ``tracking_rmse`` [m or rad] (6), ``grf_rmse_n`` (2),
             ``peak_grf_n`` (2), ``contact_duration_s``, ``maximum_compression_fraction``,
-            and ``terminal_state``/``terminal_velocity`` (6).
+            simulated ``touchdown_s`` and ``toeoff_s`` (``-1`` if not reached; toe-off is
+            only tracked in ``"mechanical"`` phase), and ``terminal_state``/``terminal_velocity`` (6).
         """
         shape = (self.candidates, len(self.knots_phase), 6)
         stiffness = np.asarray(stiffness, dtype=np.float64)
@@ -876,6 +948,8 @@ class Batch:
             "peak_grf_n": self.peak.numpy(),
             "contact_duration_s": self.contact_steps.numpy() * self.dt,
             "maximum_compression_fraction": self.max_fraction.numpy(),
+            "touchdown_s": self.touchdown.numpy(),
+            "toeoff_s": self.toeoff.numpy(),
             "terminal_state": self.state.numpy(),
             "terminal_velocity": self.velocity.numpy(),
         }

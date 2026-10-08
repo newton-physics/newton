@@ -1,5 +1,21 @@
 # Twelve-point controllers and shared runner identification
 
+## Generative runner direction
+
+For the new **reference-free variable-impedance runner**, use
+[`hogan/GENERATIVE_RUNNER.md`](hogan/GENERATIVE_RUNNER.md). It identifies shared
+joint actuation from offline observations and generates motion from initial
+state, task, body, and shoe only. It has no measured-force feedforward or pelvis
+actuator. Multi-speed/multi-shoe inputs are supported; current contact-geometry
+incompatibilities remain explicitly gated. Candidate rollouts and objective
+reductions now run on CUDA by default, with a CPU reference backend. This is an
+experimental single-leg model, not yet validated physiology or sustained running.
+See [`hogan/CONTACT_INPUT_STATUS.md`](hogan/CONTACT_INPUT_STATUS.md) for the
+unresolved calibration/forefoot blocker; the endpoint-frame fix does not resolve it.
+
+The controller pipelines described below and `hogan.learn` remain diagnostic
+tracking/legacy baselines. Their existing commands are preserved.
+
 The original controller pipeline uses one leg, one shoe, one stance,
 with **12 cubic control points per equilibrium channel**. The original
 controller has four equilibrium channels (48 coefficients); the promoted FR3_2

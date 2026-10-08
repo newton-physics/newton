@@ -2,8 +2,8 @@
   "schema": "visual3d_stance_selection_1",
   "trial": "FR3_1",
   "side": "left",
-  "subject_mass_kg": 70.0,
-  "belt_speed_m_s": 3.7,
+  "subject_mass_kg": 66.0,
+  "belt_speed_m_s": 3.65,
   "shoe_artifact": "../../../DigitalInstron/digital_shoe_showcase/digital_shoe.json",
   "shoe_id": "puma_fast_r_nitro_elite_3_left",
   "contact_detection": {

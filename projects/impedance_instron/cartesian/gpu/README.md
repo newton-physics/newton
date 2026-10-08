@@ -317,14 +317,19 @@ baseline into a 512-thread block. Each Jacobi sweep still reads the previous
 sweep, including the previous driven-column values. The shared balance,
 float32 FMA policy, and odd/even scratch-buffer results are unchanged.
 
-The block also runs the shared pressure, friction, and ordered wrench reductions.
+Without a parameter adapter, the block also runs the shared pressure, legacy
+friction, and ordered wrench reductions. With `FrictionParameterAdapter`, the
+same laws run in three fused stages: surround (512 threads/world), normal contact
+plus friction (256 threads/world), and ordered diagnostics/wrench reductions
+(32 threads/world). An all-driven bed omits the surround launch. This avoids
+making every stage share the large register footprint of a monolithic kernel.
 Exact zero-compression constitutive values are cached on device and refreshed
 on reset or material changes. Compression diagnostics retain float64 divisions,
 nonfinite checks, and integer cap counts. CPU execution and unsupported layouts
 retain the shared fallback.
 
 The float64 leg kernel advances the state and stages the next carrier. The
-resident baseline loop therefore uses two kernels per timestep, plus reset,
+legacy resident baseline loop therefore uses two kernels per timestep, plus reset,
 initial staging, chunk-loop control, and objective work. The leg and shoe retain
 their separate FMA policies. This scheduling follows the block-local approach
 used by Newton's Kamino kernels; it does not replace either physical solver.
@@ -379,7 +384,17 @@ The default contact law is area-scaled elastic Coulomb friction (`G_eq A / L`
 stiffness per column, no tangential damping). Maxwell and material-derived
 `column_maxwell` remain explicit options. Legacy fused friction remains an
 explicit compatibility mode. The default uses the shared foundation launch
-path, including retained normal-surround optimization.
+functions inside the fused stages, including retained normal-surround optimization.
+All eight parameter-adapter methods are supported; world-coupled/custom adapters,
+CPU, generic contact, additive body-force calls, and beds above 1,024 columns
+retain the previous fallback. Set `foundation.fused_apply = False` before capture
+to compare the old schedule with the same friction law. Changing adapters or
+execution mode requires recapture; updating existing parameter buffers does not.
+
+See [friction fusion measurements](FRICTION_FUSION.md) for the reproducible
+matched-law benchmark and its limitations. Fewer launches do not establish faster
+full rollouts, and the historical A6000 results above are not measurements of
+the new parameter-friction path.
 
 ## Physics backpropagation experiment
 

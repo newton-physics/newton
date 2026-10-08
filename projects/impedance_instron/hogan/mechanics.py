@@ -162,6 +162,11 @@ class Chain:
         coms = self._joints[:4] + self._com_radii
         return self.masses_kg @ coms / self.total_mass_kg
 
+    def com_jacobian(self, q) -> np.ndarray:
+        """Return the whole-chain center-of-mass Jacobian, shape (2, 6)."""
+        self._geometry(q)
+        return np.tensordot(self.masses_kg, self._com_jacobians, axes=1) / self.total_mass_kg
+
     def dynamics(self, q, v, gravity: float = 9.81) -> tuple[np.ndarray, np.ndarray]:
         """Return the mass matrix, shape (6, 6), and bias in ``M @ acceleration + bias = load``.
 

@@ -1,0 +1,1 @@
+Add `projects.impedance_instron.hogan.fit_report`, an HTML report for generative-runner fits with seed-versus-fitted metrics, stick-figure snapshots of the best and median held-out stances, learned impedance traces, and optimizer convergence

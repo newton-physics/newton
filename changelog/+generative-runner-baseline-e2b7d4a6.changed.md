@@ -1,0 +1,1 @@
+Make Levenberg-Marquardt the default `identify fit` optimizer and adopt the F01 66 kg, 3.65 m/s fit with COM-matched flight starts as the generative-runner baseline (`hogan/baselines/generative_runner_f01_20261008.json`)

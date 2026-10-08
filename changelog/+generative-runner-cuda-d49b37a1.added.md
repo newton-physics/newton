@@ -1,0 +1,1 @@
+Add causal CUDA runner rollouts and GPU identification objective reductions with exact per-trial timestep grouping, bounded-memory trial streaming, CPU parity tests, and CUDA-default generation and fitting commands; retain `--device cpu` as the reference backend and require explicit overrides for contact-incompatible diagnostic fits.

@@ -43,6 +43,7 @@ DEFAULT_KNOTS = (0.0, 0.5, 1.0, 1.125, 1.25, 1.375, 1.5, 1.625, 1.75, 1.875, 2.0
 JOINT_SCALE_RAD = 0.05
 HIP_SCALE_M = 0.02
 FORCE_SCALE_N = 100.0
+PEAK_SCALE_N = 100.0
 FAILURE_PENALTY = 20.0
 
 
@@ -140,13 +141,14 @@ class Schedule:
         return k, d
 
 
-def stance_loss(result: dict, steps: np.ndarray) -> np.ndarray:
+def stance_loss(result: dict, steps: np.ndarray, reference_peak_fz: np.ndarray) -> np.ndarray:
     """Return the per-world loss, shape [candidates, stances]."""
     tracking = result["tracking_rmse"]
     joints = np.mean(np.square(tracking[..., 2:] / JOINT_SCALE_RAD), axis=-1)
     hip = np.mean(np.square(tracking[..., :2] / HIP_SCALE_M), axis=-1)
     force = np.mean(np.square(result["grf_rmse_n"] / FORCE_SCALE_N), axis=-1)
-    loss = joints + hip + force
+    peak = np.square((result["peak_grf_n"][..., 1] - reference_peak_fz[None, :]) / PEAK_SCALE_N)
+    loss = joints + hip + force + peak
     failed = result["status"] != 1
     unfinished = 1.0 - result["recorded"] / steps[None, :]
     return np.where(failed, loss + FAILURE_PENALTY * (1.0 + unfinished), loss)
@@ -170,6 +172,8 @@ def _summaries(result: dict, members: list[dict], candidate: int, loss: np.ndarr
                 "peak_grf_n": result["peak_grf_n"][candidate, s].tolist(),
                 "contact_duration_s": float(result["contact_duration_s"][candidate, s]),
                 "maximum_compression_fraction": float(result["maximum_compression_fraction"][candidate, s]),
+                "touchdown_s": float(result["touchdown_s"][candidate, s]),
+                "toeoff_s": float(result["toeoff_s"][candidate, s]),
             }
         )
     return rows
@@ -179,7 +183,13 @@ def _aggregate(rows: list[dict]) -> dict:
     completed = [row for row in rows if row["status"] == "completed"]
     if not completed:
         return {"completed": 0, "stances": len(rows)}
+    timing = {}
+    for event in ("touchdown", "toeoff"):
+        errors = [row[f"{event}_s"] - row[f"reference_{event}_s"] for row in completed if row[f"{event}_s"] >= 0.0]
+        if errors:
+            timing[f"{event}_error_s"] = float(np.mean(errors))
     return {
+        **timing,
         "completed": len(completed),
         "stances": len(rows),
         "mean_loss": float(np.mean([row["loss"] for row in rows])),
@@ -219,6 +229,13 @@ def _parser() -> argparse.ArgumentParser:
         "--roughness", type=float, default=0.1, help="Weight on the mean squared second difference of log offsets"
     )
     parser.add_argument("--stances", type=int, help="Use only the first N training stances")
+    parser.add_argument(
+        "--minibatches",
+        type=int,
+        default=1,
+        help="Split training stances into this many interleaved groups and score one group per generation",
+    )
+    parser.add_argument("--init", type=Path, help="Previous learn output whose final mean starts the search")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda:0")
     return parser
@@ -261,23 +278,35 @@ def main(argv: list[str] | None = None) -> None:
             friction_model=args.friction_model,
         )
 
-    train = batch(split["train"], args.population)
-    steps = train.steps.astype(float)
+    groups = [split["train"][g :: args.minibatches] for g in range(args.minibatches)]
+    trains = [batch(group, args.population) for group in groups]
+    group_steps = [train.steps.astype(float) for train in trains]
+    group_peaks = [np.array([members[i]["reference_peak_fz_n"] for i in group]) for group in groups]
     print(
-        f"{train.world_count} worlds ({len(split['train'])} stances x {args.population}), setup {train.setup_wall_s:.1f} s"
+        f"{sum(train.world_count for train in trains)} worlds ({len(split['train'])} stances x {args.population}"
+        f" in {args.minibatches} minibatches), setup {sum(train.setup_wall_s for train in trains):.1f} s"
     )
 
     rng = np.random.default_rng(args.seed)
     mean = np.zeros(schedule.size)
+    if args.init is not None:
+        with np.load(args.init / "schedule.npz", allow_pickle=False) as archive:
+            labels = [str(label) for label in archive["labels"]]
+            mean = archive["theta"][labels.index("final_mean")].copy()
+        if mean.shape != (schedule.size,):
+            raise ValueError("--init schedule must use the same knots")
     sigma = np.full(schedule.size, args.sigma)
     elite_count = max(2, round(args.elite_fraction * args.population))
+    # With minibatches, best is ranked on its own group; the final evaluation re-scores it on all stances.
     best = {"score": np.inf, "theta": mean.copy(), "generation": -1}
     history = []
     for generation in range(args.generations):
+        part = generation % args.minibatches
+        train = trains[part]
         noise = rng.standard_normal((args.population - 1, schedule.size))
         theta = np.vstack((mean, np.clip(mean + sigma * noise, -args.bound, args.bound)))
         result = train.evaluate(*schedule.tables(theta))
-        loss = stance_loss(result, steps)
+        loss = stance_loss(result, group_steps[part], group_peaks[part])
         score = loss.mean(axis=1) + args.regularization * np.mean(np.square(theta), axis=1)
         if len(args.knots) > 2:
             curvature = np.diff(theta.reshape(-1, *schedule.shape), n=2, axis=1)
@@ -292,6 +321,7 @@ def main(argv: list[str] | None = None) -> None:
         history.append(
             {
                 "generation": generation,
+                "minibatch": part,
                 "mean_score": float(score[0]),
                 "best_score": float(score[order[0]]),
                 "median_score": float(np.median(score)),
@@ -323,6 +353,7 @@ def main(argv: list[str] | None = None) -> None:
             "joint_rad": JOINT_SCALE_RAD,
             "hip_m": HIP_SCALE_M,
             "force_n": FORCE_SCALE_N,
+            "peak_fz_n": PEAK_SCALE_N,
             "failure_penalty": FAILURE_PENALTY,
         },
         "search": {
@@ -330,6 +361,8 @@ def main(argv: list[str] | None = None) -> None:
             "population": args.population,
             "generations": args.generations,
             "elite_count": elite_count,
+            "minibatches": args.minibatches,
+            "init": None if args.init is None else str(args.init),
             "regularization": args.regularization,
             "roughness": args.roughness,
             "seed": args.seed,
@@ -352,7 +385,11 @@ def main(argv: list[str] | None = None) -> None:
             continue
         evaluation = batch(indices, len(final))
         result = evaluation.evaluate(k, d)
-        loss = stance_loss(result, evaluation.steps.astype(float))
+        loss = stance_loss(
+            result,
+            evaluation.steps.astype(float),
+            np.array([members[i]["reference_peak_fz_n"] for i in indices]),
+        )
         subset = [members[i] for i in indices]
         report["splits"][name] = {}
         for c, label in enumerate(labels):
@@ -360,6 +397,8 @@ def main(argv: list[str] | None = None) -> None:
             for row, i in zip(rows, indices, strict=True):
                 timing = reference_timing(plans[i], config.contact_threshold_n)
                 row["reference_peak_fz_n"] = members[i]["reference_peak_fz_n"]
+                row["reference_touchdown_s"] = float(timing[0])
+                row["reference_toeoff_s"] = float(timing[1])
                 row["reference_contact_duration_s"] = float(timing[1] - timing[0])
             report["splits"][name][label] = {"aggregate": _aggregate(rows), "stances": rows}
         for label in labels:

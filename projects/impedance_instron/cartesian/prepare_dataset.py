@@ -80,7 +80,40 @@ def _marker_centroid_on_analog_clock(times: np.ndarray, marker_times: np.ndarray
     return result
 
 
-def _trial_candidates(trial_root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _flight_velocity(
+    trial, hip_xz: np.ndarray, origin_index: int, subject_mass_kg: float, belt_speed_m_s: float
+) -> list[float] | None:
+    """Estimate belt-frame hip velocity [m/s] at a flight frame from the preceding stride only.
+
+    The treadmill plate records both feet, so integrating its force over the last
+    full stride gives the velocity change of the body; the hip's mean velocity over
+    that stride fixes the integration constant. Early hip-marker frames are not
+    ballistic in flight and give a biased finite-difference velocity.
+    """
+    origin_s = float(trial.marker_time_s[origin_index])
+    loaded = trial.force_n[:, 2] > 50.0
+    touchdowns = trial.analog_time_s[np.flatnonzero(~loaded[:-1] & loaded[1:]) + 1]
+    touchdowns = touchdowns[touchdowns < origin_s]
+    if len(touchdowns) < 3:
+        return None
+    start_s = origin_s - float(touchdowns[-1] - touchdowns[-3])
+    mask = (trial.analog_time_s >= start_s) & (trial.analog_time_s <= origin_s)
+    time = trial.analog_time_s[mask] - start_s
+    acceleration = trial.force_n[mask][:, [0, 2]] / subject_mass_kg - np.array([0.0, 9.81])
+    if not np.isfinite(acceleration).all():
+        return None
+    steps = 0.5 * (acceleration[1:] + acceleration[:-1]) * np.diff(time)[:, None]
+    change = np.vstack([np.zeros(2), np.cumsum(steps, axis=0)])
+    duration = float(time[-1])
+    mean_change = (0.5 * (change[1:] + change[:-1]) * np.diff(time)[:, None]).sum(axis=0) / duration
+    start = np.array([np.interp(start_s, trial.marker_time_s, hip_xz[:, axis]) for axis in range(2)])
+    displacement = hip_xz[origin_index] - start + np.array([belt_speed_m_s * duration, 0.0])
+    return [float(value) for value in displacement / duration - mean_change + change[-1]]
+
+
+def _trial_candidates(
+    trial_root: Path, subject_mass_kg: float, belt_speed_m_s: float
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     trial = load_visual3d_export(trial_root)
     source_force_side = str(trial.manifest.get("force_side"))
     side = SELECTED_SIDE
@@ -165,6 +198,10 @@ def _trial_candidates(trial_root: Path) -> tuple[dict[str, Any], list[dict[str, 
         ]
         if len(events_inside) != 1 or events_inside[0] is not group or other_inside:
             continue
+        # Identification initializes at the end of a three-frame prefix.
+        flight_velocity = _flight_velocity(
+            trial, centers[:, hip_id][:, [0, 2]], start + 2, subject_mass_kg, belt_speed_m_s
+        )
         cycles.append(
             {
                 "start_s": start_s,
@@ -176,6 +213,8 @@ def _trial_candidates(trial_root: Path) -> tuple[dict[str, Any], list[dict[str, 
                 "contact_start_s": contact_start_s,
                 "contact_end_s": contact_end_s,
                 "contact_samples": len(group),
+                "flight_velocity_m_s": flight_velocity,
+                "flight_velocity_frame": 2,
             }
         )
     consumed_paths = [Path(path) for path in trial.source_files]
@@ -233,9 +272,18 @@ def build_dataset(
         virtual_foot_reference: Foot-angle source passed to :func:`.prepare_visual3d.prepare`.
     """
     rng = np.random.default_rng(seed)
+    selection_paths: dict[str, Path] = {}
+    for trial_name in TRIALS:
+        selection_path = data_root / trial_name / "stance_selection.json"
+        if not selection_path.is_file():
+            selection_path = data_root / TRIALS[0] / "stance_selection.json"
+        selection_paths[trial_name] = selection_path
     available: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
     for trial_name in TRIALS:
-        available[trial_name] = _trial_candidates(data_root / trial_name)
+        selection = json.loads(selection_paths[trial_name].read_text(encoding="utf-8"))
+        available[trial_name] = _trial_candidates(
+            data_root / trial_name, float(selection["subject_mass_kg"]), float(selection["belt_speed_m_s"])
+        )
     counts = {name: len(candidate[1]) for name, candidate in available.items()}
     if any(count < 57 for count in counts.values()):
         raise ValueError(f"Insufficient eligible cycles for separated 50/5 splits; exact counts: {counts}")
@@ -265,9 +313,7 @@ def build_dataset(
             shoe_static_pitch_rad = float(summary["angle_convention"]["shoe_static_pitch_rad"])
         trial_info["source_hashes"][str(profile)] = _sha256(profile)
         trial_info["source_hashes"][str(shoe)] = _sha256(shoe)
-        selection_path = trial_root / "stance_selection.json"
-        if not selection_path.is_file():
-            selection_path = data_root / TRIALS[0] / "stance_selection.json"
+        selection_path = selection_paths[trial_name]
         trial_info["source_hashes"][str(selection_path)] = _sha256(selection_path)
         selection = json.loads(selection_path.read_text(encoding="utf-8"))
         for split_name in ("train", "eval"):

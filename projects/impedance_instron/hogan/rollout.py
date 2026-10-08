@@ -11,9 +11,10 @@ import numpy as np
 
 from .control import Impedance
 from .mechanics import COORDINATE_NAMES, Chain
+from .phase import TOEOFF_MIN_PHASE, MechanicalPhase, lookup_position, phase_candidate
 from .plan import CONTACT_THRESHOLD_N, Plan
 
-PHASE_MODES = ("touchdown", "time")
+PHASE_MODES = ("touchdown", "time", "mechanical")
 CONTROL_LAW = "tau = tau_ff(phi) + K(phi) (q_ref(phi) - q) + D(phi) (v_ref(phi) - v)"
 
 
@@ -23,8 +24,10 @@ class Config:
 
     ``phase="touchdown"`` shifts the plan clock at simulated touchdown so it
     matches the reference touchdown; this lets a different shoe change contact
-    timing. ``"time"`` uses the clock directly. Without ``residual_feedforward``
-    the pelvis channels receive impedance feedback only.
+    timing. ``"time"`` uses the clock directly. ``"mechanical"`` drives the
+    phase from simulated contact and hip-over-ankle progression (see
+    :mod:`.phase`) and needs an impedance with ``phase_gains``. Without
+    ``residual_feedforward`` the pelvis channels receive impedance feedback only.
     """
 
     phase: str = "touchdown"
@@ -110,16 +113,28 @@ def simulate(plan: Plan, chain: Chain, impedance: Impedance, shoe, *, config: Co
     trace = {name: np.empty((steps, *shape)) for name, shape in shapes.items()}
     state, velocity = plan.q[0].copy(), plan.v[0].copy()
     foot_angular = chain.angular_jacobian(3)
+    mechanical = MechanicalPhase(plan, chain, cfg.contact_threshold_n) if cfg.phase == "mechanical" else None
+    if mechanical is not None and not hasattr(impedance, "phase_gains"):
+        raise ValueError("Mechanical phase needs an impedance scheduled on the normalized gait phase")
+    phi = 0.0
     touchdown = None
+    toeoff = None
     failure = None
     recorded = 0
     for k in range(steps):
         time = float(plan.time_s[k])
-        phase = time if cfg.phase == "time" or touchdown is None else time - touchdown + plan.touchdown_s
+        if mechanical is None:
+            phase = time if cfg.phase == "time" or touchdown is None else time - touchdown + plan.touchdown_s
+            stiffness, damping = impedance.gains(phase)
+        else:
+            offset = state[0] - chain.point(state, 3, np.zeros(2))[0][0]
+            candidate = phase_candidate(time, offset, touchdown, toeoff, mechanical.timing, mechanical.stance_offset_m)
+            phi = max(phi, candidate)
+            phase = lookup_position(mechanical.lookup, phi) * dt
+            stiffness, damping = impedance.phase_gains(phi)
         reference, reference_velocity, feedforward = plan.sample(phase)
         if not cfg.residual_feedforward:
             feedforward[:3] = 0.0
-        stiffness, damping = impedance.gains(phase)
         load = feedforward + stiffness * (reference - state) + damping * (reference_velocity - velocity)
         ankle, jacobian, _ = chain.point(state, 3, np.zeros(2))
         wrench, _ = shoe.apply(ankle, jacobian @ velocity, chain.angle(state, 3), float(foot_angular @ velocity), dt)
@@ -156,6 +171,14 @@ def simulate(plan: Plan, chain: Chain, impedance: Impedance, shoe, *, config: Co
             break
         if touchdown is None and wrench[1] > cfg.contact_threshold_n:
             touchdown = time
+        elif (
+            mechanical is not None
+            and touchdown is not None
+            and toeoff is None
+            and phi >= TOEOFF_MIN_PHASE
+            and wrench[1] <= cfg.contact_threshold_n
+        ):
+            toeoff = time
         mass, bias = chain.dynamics(state, velocity, cfg.gravity_m_s2)
         generalized = load + jacobian.T @ wrench[:2] + foot_angular * wrench[2]
         try:

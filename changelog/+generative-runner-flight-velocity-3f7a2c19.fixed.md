@@ -1,0 +1,1 @@
+Fix biased generative-runner start velocity by matching the model's whole-body COM to a flight velocity integrated from the preceding stride's treadmill plate force, instead of differentiating non-ballistic hip-marker frames

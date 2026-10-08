@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Prepare a Cartesian reference bundle from complete Visual3D exports."""
+"""Prepare a Cartesian reference bundle from complete Visual3D exports.
+
+Endpoint registration preserves the measured static ankle-to-MTH displacement
+in the state's foot frame. This diagnostic endpoint correction does not resolve
+the column-ground contradiction or change ankle targets, GRF, contact geometry,
+or dynamics.
+"""
 
 from __future__ import annotations
 
@@ -143,6 +149,24 @@ def _aliases(labels: tuple[str, ...], side: str) -> tuple[list[int], int, tuple[
         labels.index(toe),
         (mth_ids[0], mth_ids[1]),
     )
+
+
+def _endpoint_in_state_frame(displacement_m: np.ndarray, *, reference_pitch_rad: float) -> np.ndarray:
+    """Express a measured static endpoint displacement in an explicit state frame.
+
+    Args:
+        displacement_m: Static MTH midpoint minus anatomical ankle in world
+            x/z coordinates [m], shape (2,). Preserve the measured displacement.
+        reference_pitch_rad: Absolute foot-state angle at the static reference
+            [rad], positive from +x toward +z (toe-up). Use the fixed shoe pitch
+            for ground-referenced modes and measured marker pitch for shank mode.
+
+    Returns:
+        Ankle-relative endpoint in the foot-state frame [m], shape (2,).
+    """
+    cosine, sine = np.cos(reference_pitch_rad), np.sin(reference_pitch_rad)
+    rotation = np.array([[cosine, -sine], [sine, cosine]])
+    return rotation.T @ displacement_m
 
 
 def reconstruct_ground_pitch_from_cardan(
@@ -316,8 +340,14 @@ def prepare(
     pitch = float(
         np.arctan2((static_mth.mean(0) - static_heel.mean(0))[2], (static_mth.mean(0) - static_heel.mean(0))[0])
     )
-    rotation = np.array([[np.cos(pitch), -np.sin(pitch)], [np.sin(pitch), np.cos(pitch)]])
-    endpoint_local = rotation.T @ (static_mth.mean(0)[[0, 2]] - static_ankle.mean(0)[[0, 2]])
+    # Ground modes use absolute foot-state pitch = ground target + fixed shoe pitch.
+    # Keep the measured marker pitch separately; it is not that state's static frame.
+    endpoint_reference_pitch = pitch
+    if virtual_foot_reference != "shank" and shoe_static_pitch_rad is not None:
+        endpoint_reference_pitch = shoe_static_pitch_rad
+    endpoint_local = _endpoint_in_state_frame(
+        static_mth.mean(0)[[0, 2]] - static_ankle.mean(0)[[0, 2]], reference_pitch_rad=endpoint_reference_pitch
+    )
     lengths = np.array(
         [
             np.linalg.norm(

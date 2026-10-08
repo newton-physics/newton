@@ -43,8 +43,9 @@ SUPPORTED_METHODS = {
 }
 
 
-@wp.kernel
-def _postnormal_friction_step(
+@wp.func
+def _friction_column_step(
+    i: int,
     column_count: int,
     plane: int,
     ground_height: float,
@@ -73,7 +74,6 @@ def _postnormal_friction_step(
     dt: float,
 ):
     """Evaluate candidate tangential friction and track physical diagnostics."""
-    i = wp.tid()
     w = i // column_count
     c = i % column_count
     body = carrier[w]
@@ -228,14 +228,75 @@ def _postnormal_friction_step(
 
 
 @wp.kernel
-def _reduce_column_diagnostics(
+def _postnormal_friction_step(
+    column_count: int,
+    plane: int,
+    ground_height: float,
+    carrier: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    anchor_local: wp.array[wp.vec3],
+    ground_force: wp.array[wp.vec3],
+    column_force: wp.array[wp.vec3],
+    settings: wp.array2d[float],
+    base_kt: wp.array[float],
+    base_kv: wp.array[float],
+    area: wp.array[float],
+    rest_len: wp.array[float],
+    world_params: wp.array[FoundationParams],
+    tangent_anchor: wp.array[wp.vec2],
+    tangent_stuck: wp.array[int],
+    tangent_dwell: wp.array[float],
+    deflection: wp.array[wp.vec2],
+    sliding_distance: wp.array[float],
+    maxwell_force: wp.array[wp.vec2],
+    stored_energy: wp.array[float],
+    column_diagnostics: wp.array[wp.vec4],
+    step_diagnostics: wp.array[wp.vec4],
+    dt: float,
+):
+    """Run the shared friction update once per independent column."""
+    _friction_column_step(
+        wp.tid(),
+        column_count,
+        plane,
+        ground_height,
+        carrier,
+        body_q,
+        body_qd,
+        body_com,
+        anchor_local,
+        ground_force,
+        column_force,
+        settings,
+        base_kt,
+        base_kv,
+        area,
+        rest_len,
+        world_params,
+        tangent_anchor,
+        tangent_stuck,
+        tangent_dwell,
+        deflection,
+        sliding_distance,
+        maxwell_force,
+        stored_energy,
+        column_diagnostics,
+        step_diagnostics,
+        dt,
+    )
+
+
+@wp.func
+def _friction_partial_diagnostics(
+    i: int,
     count: int,
     groups: int,
     step_diagnostics: wp.array[wp.vec4],
     partial_diagnostics: wp.array[wp.vec4],
 ):
     """Reduce column diagnostics across stride groups."""
-    i = wp.tid()
     w = i // groups
     group = i % groups
     d = wp.vec4(0.0)
@@ -251,14 +312,14 @@ def _reduce_column_diagnostics(
     partial_diagnostics[i] = d
 
 
-@wp.kernel
-def _finish_world_diagnostics(
+@wp.func
+def _friction_world_diagnostics(
+    w: int,
     groups: int,
     partial_diagnostics: wp.array[wp.vec4],
     totals: wp.array[wp.vec4],
 ):
     """Accumulate reduced group diagnostics into per-world running totals."""
-    w = wp.tid()
     d = totals[w]
     for group in range(groups):
         i = w * groups + group
@@ -270,6 +331,27 @@ def _finish_world_diagnostics(
             d[3] + val[3],
         )
     totals[w] = d
+
+
+@wp.kernel
+def _reduce_column_diagnostics(
+    count: int,
+    groups: int,
+    step_diagnostics: wp.array[wp.vec4],
+    partial_diagnostics: wp.array[wp.vec4],
+):
+    """Run the shared diagnostic reduction once per stride group."""
+    _friction_partial_diagnostics(wp.tid(), count, groups, step_diagnostics, partial_diagnostics)
+
+
+@wp.kernel
+def _finish_world_diagnostics(
+    groups: int,
+    partial_diagnostics: wp.array[wp.vec4],
+    totals: wp.array[wp.vec4],
+):
+    """Run the shared diagnostic accumulation once per world."""
+    _friction_world_diagnostics(wp.tid(), groups, partial_diagnostics, totals)
 
 
 class FrictionParameterAdapter:
