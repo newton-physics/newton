@@ -207,7 +207,10 @@ class IKSolver:
         objectives: Ordered IK objectives shared by all problems.
         optimizer: Optimizer backend to use.
         jacobian_mode: Jacobian backend to use inside the optimizer.
-        sampler: Initial-seed sampling strategy.
+        sampler: Initial-seed sampling strategy. Models with quaternion joints
+            (BALL, FREE, or DISTANCE) require :attr:`~newton.ik.IKSampler.NONE`
+            or :attr:`~newton.ik.IKSampler.GAUSS` with ``n_seeds=1``, which
+            preserves the input seed without perturbation.
         n_seeds: Number of candidate seeds generated per base problem.
         noise_std: Standard deviation used by
             :attr:`~newton.ik.IKSampler.GAUSS` [m or rad].
@@ -275,6 +278,17 @@ class IKSolver:
             if sampler is not IKSampler.NONE:
                 raise ValueError("joint_dof_mask requires sampler='none'")
             # remaining mask validation happens in IKOptimizerLM
+
+        # Only NONE and single-seed GAUSS avoid indexing DOF limits by coordinate.
+        if (
+            model.joint_coord_count != model.joint_dof_count
+            and sampler is not IKSampler.NONE
+            and not (sampler is IKSampler.GAUSS and n_seeds == 1)
+        ):
+            raise ValueError(
+                f"sampler='{sampler.value}' does not support quaternion joints "
+                "(BALL, FREE, or DISTANCE); use sampler='none'"
+            )
 
         self.model = model
         self.device = model.device
