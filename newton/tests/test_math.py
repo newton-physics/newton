@@ -55,6 +55,32 @@ class TestMathVectorPredicates(unittest.TestCase):
                 )
                 np.testing.assert_array_equal(result.numpy(), expected)
 
+    def test_vec_allclose_handles_infinities(self):
+        """Match NumPy for infinite operands without accepting other invalid elements."""
+        values = (0.0, np.inf, -np.inf, np.nan)
+        pairs = [(left, right) for left in values for right in values]
+        a = np.array(
+            [[left, 0.0, 2.0] for left, _ in pairs] + [[np.inf, 0.0, 3.0], [np.inf, 0.0, np.nan]],
+            dtype=np.float32,
+        )
+        b = np.array(
+            [[right, 0.0, 2.0] for _, right in pairs] + [[np.inf, 0.0, 2.0], [np.inf, 0.0, 2.0]],
+            dtype=np.float32,
+        )
+        expected = [np.allclose(left, right, rtol=0.1, atol=0.25) for left, right in zip(a, b, strict=True)]
+
+        for device in get_test_devices(mode="basic"):
+            with self.subTest(device=device):
+                result = wp.empty(len(a), dtype=bool, device=device)
+                wp.launch(
+                    _allclose_kernel,
+                    dim=len(a),
+                    inputs=[wp.array(a, dtype=wp.vec3, device=device), wp.array(b, dtype=wp.vec3, device=device)],
+                    outputs=[result],
+                    device=device,
+                )
+                np.testing.assert_array_equal(result.numpy(), expected)
+
     def test_vec_inside_limits_rejects_nan(self):
         """Reject NaN values and bounds while accepting inclusive endpoints."""
         a = np.array(

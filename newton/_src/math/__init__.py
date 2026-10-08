@@ -194,9 +194,10 @@ def vec_abs(a: wp.vec3):
 def vec_allclose(a: Any, b: Any, rtol: float = 1e-5, atol: float = 1e-8) -> bool:
     """Check whether two Warp vectors are element-wise equal within a tolerance.
 
-    Uses the same criterion as NumPy's ``allclose``:
-    ``abs(a[i] - b[i]) <= atol + rtol * abs(b[i])`` for every element.
-    NaN values do not satisfy this criterion.
+    Uses NumPy's ``allclose`` tolerance criterion for finite elements:
+    ``abs(a[i] - b[i]) <= atol + rtol * abs(b[i])``.
+    NaN values are never close. Infinite values are close only when they
+    have the same sign.
 
     Args:
         a: First vector.
@@ -205,10 +206,13 @@ def vec_allclose(a: Any, b: Any, rtol: float = 1e-5, atol: float = 1e-8) -> bool
         atol: Absolute tolerance.
 
     Returns:
-        bool: ``True`` if all elements satisfy the tolerance, ``False`` otherwise.
+        bool: ``True`` if all elements are close, ``False`` otherwise.
     """
     for i in range(wp.static(len(a))):
-        if not (wp.abs(a[i] - b[i]) <= atol + rtol * wp.abs(b[i])):
+        if wp.isinf(a[i]) or wp.isinf(b[i]):
+            if a[i] != b[i]:
+                return False
+        elif not (wp.abs(a[i] - b[i]) <= atol + rtol * wp.abs(b[i])):
             return False
     return True
 
