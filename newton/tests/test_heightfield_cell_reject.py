@@ -345,11 +345,19 @@ def test_explicit_mesh_stage_capacity(test, device):
         test.assertTrue(np.any(np.all(shapes == sorted(pair), axis=1)), pair)
 
 
-def _explicit_box_pair_distances(device, *, b_collides, b_scale, reverse, reduce_contacts, generic=False):
+def _explicit_box_pair_distances(
+    device, *, b_collides, b_scale, reverse, reduce_contacts, b_particle_collides=True, generic=False
+):
     """Return mesh SDF specialization flags and contact distances for one listed box pair."""
     builder = newton.ModelBuilder()
     cfg = builder.ShapeConfig(margin=0.01, gap=0.01)
-    b_cfg = builder.ShapeConfig(margin=0.01, gap=0.01, density=0.0, has_shape_collision=b_collides)
+    b_cfg = builder.ShapeConfig(
+        margin=0.01,
+        gap=0.01,
+        density=0.0,
+        has_shape_collision=b_collides,
+        has_particle_collision=b_particle_collides,
+    )
     mesh_a = newton.Mesh.create_box(0.5, compute_inertia=False)
     mesh_a.build_sdf(device=device, max_resolution=16)
     mesh_b = newton.Mesh.create_box(0.2, 0.2, 0.1, compute_inertia=False)
@@ -390,18 +398,33 @@ def _explicit_box_pair_distances(device, *, b_collides, b_scale, reverse, reduce
 
 
 def test_explicit_disabled_mesh_sdf_specialization(test, device):
-    """Match the generic mesh kernel when a listed collision-disabled mesh has no texture SDF."""
-    for b_scale in ((1.0, 1.0, 1.0), (2.0, 2.0, 2.0)):
+    """Match generic mesh contacts for listed meshes with shape collisions disabled."""
+    # Fully disabled meshes have no texture; particle-only meshes retain their prebuilt SDF.
+    for b_scale, b_particle_collides, texture_only in (
+        ((1.0, 1.0, 1.0), False, False),
+        ((2.0, 2.0, 2.0), False, False),
+        ((2.0, 2.0, 2.0), True, True),
+    ):
         for reverse in (False, True):
             for reduce_contacts in (True, False):
-                with test.subTest(b_scale=b_scale, reverse=reverse, reduce_contacts=reduce_contacts):
-                    kwargs = {"b_scale": b_scale, "reverse": reverse, "reduce_contacts": reduce_contacts}
+                with test.subTest(
+                    b_scale=b_scale,
+                    b_particle_collides=b_particle_collides,
+                    reverse=reverse,
+                    reduce_contacts=reduce_contacts,
+                ):
+                    kwargs = {
+                        "b_scale": b_scale,
+                        "b_particle_collides": b_particle_collides,
+                        "reverse": reverse,
+                        "reduce_contacts": reduce_contacts,
+                    }
                     flags, distances = _explicit_box_pair_distances(device, b_collides=False, **kwargs)
                     _, expected = _explicit_box_pair_distances(device, b_collides=False, generic=True, **kwargs)
                     test.assertGreater(len(expected), 0)
                     np.testing.assert_allclose(expected, -0.04 - 0.1 * (b_scale[2] - 1.0), atol=1.0e-4)
                     np.testing.assert_allclose(distances, expected, atol=1.0e-5)
-                    test.assertEqual(flags, (False, False))
+                    test.assertEqual(flags, (texture_only, False))
     flags, _ = _explicit_box_pair_distances(
         device, b_collides=True, b_scale=(2.0, 2.0, 2.0), reverse=False, reduce_contacts=True
     )
