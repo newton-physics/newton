@@ -234,7 +234,7 @@ def quat_between_axes(*axes: AxisType) -> wp.quat:
         else:
             dq = wp.quat_between_vectors(src.to_vec3(), dst.to_vec3())
             __axis_rotations[(src.value, dst.value)] = dq
-        q *= dq
+        q = dq * q
     return q
 
 
