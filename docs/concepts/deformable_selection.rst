@@ -108,6 +108,13 @@ Dropping a state does not release those arrays while the view still holds them.
 Reuse a fixed set of state buffers, such as two alternating states. Reading newly
 created states on every step can grow the cache and its memory use.
 
+Getters support ``wp.Tape``. Enable gradients before the first getter call, for
+example with ``model.state(requires_grad=True)``. Keep the source's
+``requires_grad`` setting and ``grad`` storage unchanged while using the view.
+Regular results share the source's gradient storage; irregular results accumulate
+gradients back to the source through the gather. Zeroing gradients is supported
+and reuses the cached result.
+
 Use setters to change state; do not rely on editing a getter result. Setters
 reject input that shares storage with the target array. Copy such input with
 ``wp.clone()`` first. This prevents a write from overwriting values it still

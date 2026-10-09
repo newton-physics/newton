@@ -4,6 +4,7 @@
 """Tests for batched deformable state access and masked writes."""
 
 import unittest
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -21,8 +22,75 @@ from newton.tests._selection_deformable_test_utils import (
 from newton.tests.unittest_utils import get_test_devices
 
 
+@wp.kernel
+def _sum_first_component(values: wp.array2d[Any], loss: wp.array[float]):
+    row, element = wp.tid()
+    wp.atomic_add(loss, 0, values[row, element][0])
+
+
 class TestDeformableStateReads(unittest.TestCase):
     """Read regular and irregular state layouts, including captured gathers."""
+
+    def test_getter_gradients(self):
+        """Preserve source gradients when enabled before the first getter call."""
+        for device in get_test_devices():
+            for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
+                model = make_model(device=device)
+                for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
+                    with self.subTest(device=device, pattern=pattern, getter=getter.__name__):
+                        state = model.state(requires_grad=True)
+                        source = getattr(state, attribute)
+                        getter(state)
+                        loss = wp.zeros(1, device=device, requires_grad=True)
+                        with wp.Tape() as tape:
+                            values = getter(state)
+                            wp.launch(_sum_first_component, dim=values.shape, inputs=[values, loss], device=device)
+                        tape.backward(loss)
+
+                        expected = np.zeros_like(source.numpy())
+                        expected[:, 0] = 1.0
+                        if make_model is _irregular_model:
+                            # The fixture leaves unrelated particles/bodies between the selected objects.
+                            gaps = [4, 9, 10] if attribute.startswith("particle") else [3, 7, 8]
+                            expected[gaps, 0] = 0.0
+                        np.testing.assert_array_equal(source.grad.numpy(), expected)
+                        source.grad.zero_()
+                        self.assertIs(getter(state), values)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
+    def test_getter_gradients_cuda_graph(self):
+        """Replay getter gradients with warmed buffers and a fixed configuration."""
+
+        def evaluate(getter, state, loss):
+            with wp.Tape() as tape:
+                result = getter(state)
+                wp.launch(_sum_first_component, dim=result.shape, inputs=[result, loss], device=loss.device)
+            tape.backward(loss)
+            return result, tape
+
+        device = wp.get_device("cuda:0")
+        for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
+            model = make_model(device=device)
+            for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
+                with self.subTest(pattern=pattern, getter=getter.__name__):
+                    state = model.state(requires_grad=True)
+                    source = getattr(state, attribute)
+                    loss = wp.zeros(1, device=device, requires_grad=True)
+                    values, tape = evaluate(getter, state, loss)  # Warm the getter and backward kernels.
+                    expected = np.zeros_like(source.numpy())
+                    expected[:, 0] = 1.0
+                    if make_model is _irregular_model:
+                        gaps = [4, 9, 10] if attribute.startswith("particle") else [3, 7, 8]
+                        expected[gaps, 0] = 0.0
+                    with wp.ScopedMempool(device, enable=False):
+                        with wp.ScopedCapture(device) as capture:
+                            tape.zero()
+                            loss.zero_()
+                            captured, _ = evaluate(getter, state, loss)
+                    self.assertIs(captured, values)
+                    for _ in range(2):
+                        wp.capture_launch(capture.graph)
+                        np.testing.assert_array_equal(source.grad.numpy(), expected)
 
     def test_irregular_getters_reject_short_state_arrays(self):
         """Check capacity before gathering irregular ranges, including after a cached read."""
