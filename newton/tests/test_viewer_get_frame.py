@@ -228,7 +228,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             self.assertGreater(np.ptp(frame.numpy()), 0)
 
             target = wp.empty(shape=(48, 64, 3), dtype=wp.uint8, device=cpu_device)
-            self.assertIs(viewer.get_frame(target_image=target), target)
+            self.assertIs(viewer.get_frame(output=target), target)
 
             viewer._invalidate_pbo()
             self.assertEqual(viewer.get_frame().shape, (48, 64, 3))
@@ -465,6 +465,18 @@ class TestViewerGLGetFrame(unittest.TestCase):
             ),
         ):
             frame = viewer.get_frame()
+            output = wp.empty_like(frame)
+            self.assertIs(viewer.get_frame(output=output), output)
+            np.testing.assert_array_equal(output.numpy(), frame.numpy())
+
+            with self.assertWarnsRegex(DeprecationWarning, "target_image.*output"):
+                self.assertIs(viewer.get_frame(target_image=output), output)
+            with self.assertWarnsRegex(DeprecationWarning, "Passing 'output' positionally"):
+                self.assertIs(viewer.get_frame(output), output)
+            with self.assertWarnsRegex(DeprecationWarning, "Passing 'output', 'render_ui' positionally"):
+                self.assertIs(viewer.get_frame(output, False), output)
+            with self.assertRaisesRegex(TypeError, "output.*target_image"):
+                viewer.get_frame(output=output, target_image=output)
 
         np.testing.assert_array_equal(
             frame.numpy(),
@@ -477,7 +489,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             ),
         )
         self.assertEqual(frame.device, wp.get_device("cpu"))
-        self.assertEqual(fake_gl.readback_count, 1)
+        self.assertEqual(fake_gl.readback_count, 5)
 
     def test_texture_affine_transform_matches_authored_coordinates(self):
         """Apply a UsdTransform2d affine mapping exactly once before GL sampling."""
