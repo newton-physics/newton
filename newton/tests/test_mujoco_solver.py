@@ -13178,12 +13178,25 @@ class TestActuatorTypes(unittest.TestCase):
                 assert_np_equal(mj_model.actuator_biastype, native.actuator_biastype)
 
     def test_unsupported_type_warns(self):
-        """Warn on an unsupported gaintype, naming the attribute, the value and the MJCF actuator."""
-        for gaintype in ("dcmotor", "so3", "pid", "bogus"):
-            with self.subTest(gaintype=gaintype):
+        """Warn on unsupported types, naming the attribute, value, and MJCF actuator."""
+        for attribute, value in (("gaintype", "pid"), ("gaintype", "bogus"), ("gaintype", "so3"), ("biastype", "so3")):
+            with self.subTest(attribute=attribute, value=value):
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(RuntimeWarning, rf"gaintype '{gaintype}' on actuator 'a'"):
-                    builder.add_mjcf(self._mjcf(gaintype=gaintype))
+                with self.assertWarnsRegex(RuntimeWarning, rf"{attribute} '{value}' on actuator 'a'"):
+                    builder.add_mjcf(self._mjcf(**{attribute: value}))
+
+    def test_supported_dcmotor_types_parse(self):
+        """Parse supported DC-motor type names without warnings."""
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_mjcf(self._mjcf(dyntype="dcmotor", gaintype="dcmotor", biastype="dcmotor"))
+        runtime_warnings = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
+        self.assertEqual(runtime_warnings, [])
+
+        self.assertEqual(builder.custom_attributes["mujoco:actuator_dyntype"].values[0], _ActuatorDynamicsType.DCMOTOR)
+        self.assertEqual(builder.custom_attributes["mujoco:actuator_gaintype"].values[0], _ActuatorGainType.DCMOTOR)
+        self.assertEqual(builder.custom_attributes["mujoco:actuator_biastype"].values[0], _ActuatorBiasType.DCMOTOR)
 
 
 if __name__ == "__main__":
