@@ -4111,9 +4111,14 @@ def test_unit_scale_sdf_rescale_raises(test, device):
                 pipeline.collide(state, contacts)
             wp.synchronize()
             test.assertEqual(int(pipeline._unit_scale_sdf_rescaled.numpy()[0]), 1)
-            # The first eager call after a replay copies the flag; the raise comes from it or the next.
-            with test.assertRaisesRegex(RuntimeError, "dynamic_shape_scale=True"):
-                for _ in range(2):
+            # The host reads a copy queued by an earlier eager call, so the raise may need one more call.
+            try:
+                pipeline.collide(state, contacts)
+            except RuntimeError as error:
+                test.assertIn("dynamic_shape_scale=True", str(error))
+            else:
+                wp.synchronize()
+                with test.assertRaisesRegex(RuntimeError, "dynamic_shape_scale=True"):
                     pipeline.collide(state, contacts)
             with test.assertRaisesRegex(RuntimeError, "dynamic_shape_scale=True"):
                 pipeline.collide(state, contacts)
