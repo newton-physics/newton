@@ -934,33 +934,10 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
                 for got, exp in zip(signature, reference, strict=True):
                     self.assertLess(np.max(np.abs(got - exp)), self.epsilon)
 
-
-class TestBlockSparseATAInverseDiagonal(unittest.TestCase):
-    def setUp(self):
-        # Configs
-        if not test_context.setup_done:
-            setup_tests(clear_cache=False)
-        self.default_device = wp.get_device(test_context.device)
-        self.verbose = test_context.verbose  # Set to True for verbose output
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
-
-    def test_00_inverse_diagonal_of_diagonal_matrix(self):
+    def test_04_inverse_diagonal_of_diagonal_matrix(self):
         """
-        Tests the inverse diagonal of A^T * A + offset * I used by the `jacobi_diagonal` preconditioner.
-
-        Regression test for newton-physics/newton#4246: the elementwise-inverse kernel factory only
-        used its `dtype` argument inside a type annotation, so the kernel could not be created at all.
+        Test the inverse diagonal of A^T * A + offset * I
+        (used by the `jacobi_diagonal` preconditioner in FK).
         """
         # Diagonal matrix A = diag(2, 3) stored as two 1-vector blocks.
         bsm = BlockSparseMatrices(
