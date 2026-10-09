@@ -296,6 +296,7 @@ class Example:
         # Create collision pipeline with SDF hydroelastic config
         # Enable output_contact_surface so the kernel code is compiled (allows runtime toggle)
         sdf_hydroelastic_config = HydroelasticSDF.Config(
+            use_pressure_gradient=args.use_pressure_gradient,
             output_contact_surface=hasattr(viewer, "renderer"),  # Compile in if viewer supports it
         )
         self.collision_pipeline = newton.CollisionPipeline(
@@ -559,6 +560,12 @@ class Example:
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(num_frames=720)
         parser.set_defaults(world_count=1)
+        parser.add_argument(
+            "--use-pressure-gradient",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Compare experimental patch-tangent springs with the default geometric springs.",
+        )
         parser.add_argument(
             "--deterministic",
             action=argparse.BooleanOptionalAction,

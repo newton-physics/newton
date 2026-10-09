@@ -55,6 +55,7 @@ from .contact_reduction_hydroelastic import (
     EPS_SMALL,
     HydroelasticContactReduction,
     HydroelasticReductionConfig,
+    _face_tangent,
     _linearize_contact,
     export_hydroelastic_contact_to_buffer,
 )
@@ -456,6 +457,17 @@ class HydroelasticSDF:
         reduce_contacts: bool = True
         """Whether to reduce contacts to a smaller representative set per shape pair.
         When False, all generated contacts are passed through without reduction."""
+        use_pressure_gradient: bool = False
+        """Opt into experimental pressure-gradient tangent springs for the built-in
+        linear pressure law. The default retains geometric witness separation.
+
+        The effective witness separation preserves current normal force but
+        changes subsequent contact response. With reduction, match the source
+        patch's translation tangent along its aggregate force direction. This
+        does not preserve its full stiffness tensor or rotational response.
+        Custom pressure callbacks and speculative contacts retain geometric
+        separation. This runtime collision option is not a shape/USD property.
+        """
         pre_prune_contacts: bool = True
         """Whether to perform local-first face compaction during generation.
         This mode avoids global hashtable traffic in the hot generation loop and
@@ -539,13 +551,10 @@ class HydroelasticSDF:
         undefined values for ``signed_depth >= 0`` will corrupt the prune
         intervals and the marching-cubes interpolation that locates the
         iso-pressure surface.
-        When ``None`` the default :func:`linear_pressure` is used. Penetrating
-        contacts then use the projected pressure gradients to choose their
-        tangent stiffness and effective spring separation, preserving the
-        exported spring's current normal force. Nonpositive or numerically unusable gradients
-        retain the geometric-depth spring. Custom callbacks always retain the
-        pressure-over-geometric-depth spring, even for a linear callback.
-        Speculative-contact activation stiffness is unchanged.
+        When ``None`` the default :func:`linear_pressure` is used. Set
+        :attr:`use_pressure_gradient` to opt into its projected-gradient spring.
+        Custom callbacks retain the pressure-over-geometric-depth spring, even
+        for a linear callback. Speculative activation stiffness is unchanged.
         """
         pressure_data: Any = None
         """Optional ``wp.struct`` instance carrying state for :attr:`pressure_func`.
@@ -777,7 +786,7 @@ class HydroelasticSDF:
                 pressure_func=self.pressure_func,
                 mc_edge_clamp_min=self.config.mc_edge_clamp_min,
                 paired_samples=self.paired_samples,
-                linear_pressure_gradient=self.config.pressure_func is None,
+                linear_pressure_gradient=self.config.use_pressure_gradient and self.config.pressure_func is None,
             )
 
             if self.config.reduce_contacts:
@@ -789,6 +798,7 @@ class HydroelasticSDF:
                     moment_matching=self.config.moment_matching,
                     margin_contact_area=self.config.margin_contact_area,
                     hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
+                    use_pressure_gradient=self.config.use_pressure_gradient and self.config.pressure_func is None,
                 )
                 self.contact_reduction = HydroelasticContactReduction(
                     capacity=self.max_num_face_contacts,
@@ -814,6 +824,7 @@ class HydroelasticSDF:
                 self.decode_contacts_kernel = get_decode_contacts_kernel(
                     self.config.margin_contact_area,
                     writer_func,
+                    use_pressure_gradient=self.config.use_pressure_gradient and self.config.pressure_func is None,
                 )
 
         self._host_warning_poll_interval = 120
@@ -1861,6 +1872,8 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
 def get_decode_contacts_kernel(
     margin_contact_area: float,
     writer_func: Any = None,
+    *,
+    use_pressure_gradient: bool = False,
 ):
     """Create a kernel that decodes hydroelastic contacts without reduction.
 
@@ -1872,6 +1885,7 @@ def get_decode_contacts_kernel(
         margin_contact_area: Deprecated compatibility area [m^2] for speculative
             contact activation stiffness.
         writer_func: Warp function for writing decoded contacts.
+        use_pressure_gradient: Opt into the pressure-gradient spring representation.
 
     Returns:
         A warp kernel that can be launched to decode all contacts.
@@ -1959,9 +1973,11 @@ def get_decode_contacts_kernel(
                 k_b = shape_material_kh[shape_b]
                 c_stiffness = wp.static(margin_contact_area) * get_effective_stiffness(k_a, k_b)
 
-            c_stiffness, spring_distance = _linearize_contact(
-                c_stiffness, depth, face_pressure, contact_pressure_gradient[contact_id]
-            )
+            spring_distance = depth
+            if wp.static(use_pressure_gradient):
+                c_stiffness, spring_distance = _linearize_contact(
+                    c_stiffness, depth, face_pressure, contact_pressure_gradient[contact_id]
+                )
 
             # Create ContactData for the writer function
             contact_data = ContactData()
@@ -2225,6 +2241,9 @@ def get_generate_contacts_kernel(
                         wp.atomic_add(reducer_data.agg_force, entry_idx, force_weight * normal)
                         wp.atomic_add(reducer_data.weighted_pos_sum, entry_idx, force_weight * face_center)
                         wp.atomic_add(reducer_data.weight_sum, entry_idx, force_weight)
+                        if wp.static(linear_pressure_gradient):
+                            tangent = _face_tangent(force_area, face_pressure, pair_separation, face_gradient)
+                            wp.atomic_add(reducer_data.agg_tangent, entry_idx, tangent * wp.outer(normal, normal))
                         # Pressure-law-agnostic geometric depth-volume used for the
                         # direction-reliability gate during reduction/export.
                         wp.atomic_add(

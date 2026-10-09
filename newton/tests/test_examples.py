@@ -704,6 +704,14 @@ add_example_test(
     test_options={"usd_required": True, "num-frames": 720},
     use_viewer=True,
 )
+add_example_test(
+    TestRobotExamples,
+    name="robot.example_robot_panda_hydro",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 720, "use-pressure-gradient": True},
+    use_viewer=True,
+    test_suffix="pressure_gradient",
+)
 
 
 class TestRobotPolicyExamples(unittest.TestCase):
@@ -1099,6 +1107,18 @@ add_contact_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
     use_viewer=True,
+    expect_output_regexes=[
+        (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
+        (_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE, "stdout"),
+    ],
+    allow_output_regexes=[(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
+)
+add_contact_example_test(
+    name="contacts.example_nut_bolt_hydro",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120, "world-count": 1, "use-pressure-gradient": True},
+    use_viewer=True,
+    test_suffix="pressure_gradient",
     expect_output_regexes=[
         (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
         (_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE, "stdout"),

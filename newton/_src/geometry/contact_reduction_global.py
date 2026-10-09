@@ -722,6 +722,11 @@ class GlobalContactReducerData:
     # Zero retains the secant spring for custom pressure laws and degenerate gradients.
     contact_pressure_gradient: wp.array[wp.float32]
 
+    # Optional unreduced translational tangent [N/m] per normal bin.
+    agg_tangent: wp.array[wp.mat33]
+    # Sum of winning depths projected twice onto the aggregate force direction [m].
+    total_tangent_depth_reduced: wp.array[wp.float32]
+
     # Cached normal-bin hashtable entry index per contact
     contact_nbin_entry: wp.array[wp.int32]
 
@@ -779,6 +784,8 @@ def _clear_active_kernel(
     weight_sum: wp.array[wp.float32],
     total_depth_reduced: wp.array[wp.float32],
     total_normal_reduced: wp.array[wp.vec3],
+    agg_tangent: wp.array[wp.mat33],
+    total_tangent_depth_reduced: wp.array[wp.float32],
     agg_moment_unreduced: wp.array[wp.float32],
     agg_moment_reduced: wp.array[wp.float32],
     agg_moment2_reduced: wp.array[wp.float32],
@@ -836,6 +843,9 @@ def _clear_active_kernel(
                     weight_sum[entry_idx] = 0.0
                     total_depth_reduced[entry_idx] = 0.0
                     total_normal_reduced[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
+                    if agg_tangent.shape[0] > 0:
+                        agg_tangent[entry_idx] = wp.mat33(0.0)
+                        total_tangent_depth_reduced[entry_idx] = 0.0
                     if agg_moment_unreduced.shape[0] > 0:
                         agg_moment_unreduced[entry_idx] = 0.0
                         agg_moment_reduced[entry_idx] = 0.0
@@ -857,6 +867,9 @@ def _clear_active_kernel(
                 weight_sum[entry_idx] = 0.0
                 total_depth_reduced[entry_idx] = 0.0
                 total_normal_reduced[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
+                if agg_tangent.shape[0] > 0:
+                    agg_tangent[entry_idx] = wp.mat33(0.0)
+                    total_tangent_depth_reduced[entry_idx] = 0.0
                 if agg_moment_unreduced.shape[0] > 0:
                     agg_moment_unreduced[entry_idx] = 0.0
                     agg_moment_reduced[entry_idx] = 0.0
@@ -953,6 +966,8 @@ class GlobalContactReducer:
         hashtable_size_factor: float = 0.25,
         enable_contact_reclamation: bool = False,
         enable_reduction: bool = True,
+        *,
+        store_hydroelastic_tangent: bool = False,
     ):
         """Initialize the global contact reducer.
 
@@ -971,6 +986,8 @@ class GlobalContactReducer:
                 by predictive contact reduction.
             enable_reduction: Allocate hashtable values and aggregate arrays.
                 Disable when the contact buffer is decoded without reduction.
+            store_hydroelastic_tangent: Allocate patch-tangent accumulators for
+                the opt-in pressure-gradient spring representation.
         """
         hashtable_size_factor = float(hashtable_size_factor)
         if not hashtable_size_factor > 0.0:
@@ -1077,6 +1094,10 @@ class GlobalContactReducer:
             self.agg_moment_reduced = wp.zeros(0, dtype=wp.float32, device=device)
             self.agg_moment2_reduced = wp.zeros(0, dtype=wp.float32, device=device)
 
+        tangent_capacity = self.hashtable.capacity if store_hydroelastic_tangent and enable_reduction else 0
+        self.agg_tangent = wp.zeros(tangent_capacity, dtype=wp.mat33, device=device)
+        self.total_tangent_depth_reduced = wp.zeros(tangent_capacity, dtype=wp.float32, device=device)
+
     def clear(self):
         """Clear all contacts and reset the reducer (full clear)."""
         self.contact_count.zero_()
@@ -1122,6 +1143,8 @@ class GlobalContactReducer:
                 self.weight_sum,
                 self.total_depth_reduced,
                 self.total_normal_reduced,
+                self.agg_tangent,
+                self.total_tangent_depth_reduced,
                 self.agg_moment_unreduced,
                 self.agg_moment_reduced,
                 self.agg_moment2_reduced,
@@ -1164,6 +1187,8 @@ class GlobalContactReducer:
         data.contact_area = self.contact_area
         data.contact_pressure = self.contact_pressure
         data.contact_pressure_gradient = self.contact_pressure_gradient
+        data.agg_tangent = self.agg_tangent
+        data.total_tangent_depth_reduced = self.total_tangent_depth_reduced
         data.contact_nbin_entry = self.contact_nbin_entry
         data.agg_force = self.agg_force
         data.agg_depth_volume = self.agg_depth_volume

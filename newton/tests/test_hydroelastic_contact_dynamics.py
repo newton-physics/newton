@@ -5,6 +5,7 @@
 
 Affine pressure fields replace texture traversal, allowing the same actual
 marching-cubes, contact export, and SemiImplicit solver path on CPU and CUDA.
+The CUDA fixture also checks MuJoCo Warp's contact and material refresh paths.
 The mirrored pads cancel their pressure-gradient moments. Their fixed areas
 and persistent topology isolate the effect of reusing contacts across steps.
 """
@@ -26,7 +27,7 @@ from newton._src.geometry.sdf_mc import get_mc_tables
 from newton._src.geometry.sdf_texture import TextureSDFData
 from newton._src.sim.collide import ContactWriterData, write_contact
 from newton.solvers import SolverSemiImplicit
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices, get_test_devices
 
 _CORNERS = wp.constant(
     wp.types.matrix(shape=(8, 3), dtype=wp.float32)(
@@ -166,18 +167,46 @@ def _writer_data(model, state, contacts):
     return writer
 
 
-def run_pad_motion(device, *, use_series, tangent_fraction, modulus_ratio=1.0, refresh_steps=16, steps=400, dt=0.0005):
+def run_pad_motion(
+    device,
+    *,
+    use_series,
+    tangent_fraction,
+    modulus_ratio=1.0,
+    refresh_steps=16,
+    steps=400,
+    dt=0.0005,
+    solver_kind="semi_implicit",
+):
     """Advance the actual solver while refreshing the pressure patch periodically."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    shape_attributes = {}
+    if solver_kind == "mujoco":
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        shape_attributes = {"mujoco:condim": 1}
     body = builder.add_body(mass=1.0, inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0), lock_inertia=True)
     cfg = newton.ModelBuilder.ShapeConfig(density=0.0, ke=123.0, kd=0.0, kf=0.0, mu=0.0, ka=0.0, margin=0.0, gap=0.0)
-    builder.add_shape_box(body=-1, hx=0.03, hy=0.01, hz=0.02, cfg=cfg)
-    builder.add_shape_box(body=body, hx=0.03, hy=0.01, hz=0.02, cfg=cfg)
+    builder.add_shape_box(body=-1, hx=0.03, hy=0.01, hz=0.02, cfg=cfg, custom_attributes=shape_attributes)
+    builder.add_shape_box(body=body, hx=0.03, hy=0.01, hz=0.02, cfg=cfg, custom_attributes=shape_attributes)
     model = builder.finalize(device=device)
     state_in, state_out = model.state(), model.state()
     state_in.body_qd.assign(np.array([[0.0, 0.0, 0.01, 0.0, 0.0, 0.0]], dtype=np.float32))
+    state_in.joint_qd.assign(np.array([0.0, 0.0, 0.01, 0.0, 0.0, 0.0], dtype=np.float32))
     control = model.control()
-    solver = SolverSemiImplicit(model, angular_damping=0.0, enable_tri_contact=False)
+    if solver_kind == "mujoco":
+        solver = newton.solvers.SolverMuJoCo(
+            model,
+            use_mujoco_contacts=False,
+            disable_sensors=True,
+            solver="newton",
+            integrator="implicitfast",
+            nconmax=16,
+            njmax=128,
+            iterations=50,
+            ls_iterations=20,
+        )
+    else:
+        solver = SolverSemiImplicit(model, angular_damping=0.0, enable_tri_contact=False)
     contacts = newton.Contacts(16, 0, device=device, per_contact_shape_properties=True)
     writer = _writer_data(model, state_in, contacts)
     reducer = GlobalContactReducer(16, device=device, store_hydroelastic_data=True, enable_reduction=False)
@@ -185,13 +214,14 @@ def run_pad_motion(device, *, use_series, tangent_fraction, modulus_ratio=1.0, r
     moduli = np.array([4.0e7, 4.0e7 * modulus_ratio])
     kh = wp.array(moduli, dtype=float, device=device)
     tables = get_mc_tables(device)
-    decode = get_decode_contacts_kernel(0.01, write_contact)
+    decode = get_decode_contacts_kernel(0.01, write_contact, use_pressure_gradient=use_series)
     pressure_at_rest = 4.0e5
     total_area = 1.0e-4
     motion = wp.zeros(steps, dtype=wp.vec2, device=device)
     transverse = wp.zeros(steps, dtype=wp.spatial_vector, device=device)
     counts = []
     first_springs = None
+    mujoco_snapshots = []
     for step in range(steps):
         if step % refresh_steps == 0:
             writer.body_q = state_in.body_q
@@ -239,7 +269,31 @@ def run_pad_motion(device, *, use_series, tangent_fraction, modulus_ratio=1.0, r
                 first_springs = contacts.rigid_contact_stiffness.numpy()[: counts[-1]]
         state_in.clear_forces()
         wp.launch(_apply_preload, dim=1, inputs=[state_in.body_f, pressure_at_rest * total_area], device=device)
+        capture_mujoco = solver_kind == "mujoco" and step in (0, 1, refresh_steps, refresh_steps + 1)
+        if capture_mujoco:
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            points_a = contacts.rigid_contact_point0.numpy()[:count]
+            points_b = contacts.rigid_contact_point1.numpy()[:count]
+            pose_values = state_in.body_q.numpy()[0]
+            pose = wp.transform(pose_values[:3], pose_values[3:])
+            points_b_world = np.asarray([wp.transform_point(pose, wp.vec3(p)) for p in points_b])
+            normals = contacts.rigid_contact_normal.numpy()[:count]
+            expected_distances = np.einsum("ij,ij->i", points_b_world - points_a, normals)
         solver.step(state_in, state_out, control, contacts, dt)
+        if capture_mujoco:
+            mujoco_count = int(solver.mjw_data.nacon.numpy()[0])
+            mujoco_snapshots.append(
+                {
+                    "generation": int(contacts.contact_generation.numpy()[0]),
+                    "count": mujoco_count,
+                    "mapping": solver._contact_tid_to_cid.numpy()[:count].copy(),
+                    "distance": solver.mjw_data.contact.dist.numpy().reshape(-1)[:mujoco_count].copy(),
+                    "expected_distance": expected_distances,
+                    "stiffness": contacts.rigid_contact_stiffness.numpy()[:count].copy(),
+                    "solref": solver.mjw_data.contact.solref.numpy().reshape(-1, 2)[:mujoco_count].copy(),
+                    "solimp": solver.mjw_data.contact.solimp.numpy().reshape(-1, 5)[:mujoco_count].copy(),
+                }
+            )
         wp.launch(
             _record_motion, dim=1, inputs=[state_out.body_q, state_out.body_qd, step, motion, transverse], device=device
         )
@@ -274,6 +328,7 @@ def run_pad_motion(device, *, use_series, tangent_fraction, modulus_ratio=1.0, r
         "stiffness": stiffness,
         "counts": np.asarray(counts),
         "first_springs": first_springs,
+        "mujoco_snapshots": mujoco_snapshots,
     }
 
 
@@ -308,6 +363,51 @@ def test_contact_refresh_controls(test, device):
             np.testing.assert_allclose(tangent["motion"][:, 0], tangent["continuous"][:, 0], rtol=0.0, atol=4.0e-6)
 
 
+def test_mujoco_contact_refresh(test, device):
+    """Consume oblique effective springs and reuse their material data in MuJoCo Warp."""
+    for ratio in (1.0, 4.0):
+        motions = []
+        for use_series in (False, True):
+            with test.subTest(modulus_ratio=ratio, use_series=use_series):
+                result = run_pad_motion(
+                    device,
+                    use_series=use_series,
+                    tangent_fraction=np.sqrt(3.0) / 2.0,
+                    modulus_ratio=ratio,
+                    refresh_steps=16,
+                    steps=48,
+                    solver_kind="mujoco",
+                )
+                test.assertTrue(np.all(np.isfinite(result["motion"])))
+                test.assertLess(np.max(np.abs(result["motion"][:, 0])), 0.01)
+                np.testing.assert_array_equal(result["counts"], 4)
+                if use_series:
+                    np.testing.assert_allclose(np.sum(result["first_springs"]), result["stiffness"], rtol=2.0e-6)
+                snapshots = result["mujoco_snapshots"]
+                test.assertEqual(len(snapshots), 4)
+                for snapshot in snapshots:
+                    test.assertEqual(snapshot["count"], 4)
+                    mapping = snapshot["mapping"]
+                    test.assertTrue(np.all(mapping >= 0))
+                    test.assertTrue(np.all(mapping < snapshot["count"]))
+                    test.assertEqual(len(np.unique(mapping)), 4)
+                    np.testing.assert_allclose(
+                        snapshot["distance"][mapping], snapshot["expected_distance"], rtol=0.0, atol=2.0e-7
+                    )
+                    expected_time = np.sqrt(1.0 / (snapshot["stiffness"] * (1.0 - snapshot["solimp"][mapping, 1])))
+                    np.testing.assert_allclose(snapshot["solref"][mapping, 0], expected_time, rtol=1.0e-5)
+                    np.testing.assert_allclose(snapshot["solref"][mapping, 1], 1.0, rtol=1.0e-5)
+                for before, after in ((snapshots[0], snapshots[1]), (snapshots[2], snapshots[3])):
+                    test.assertEqual(before["generation"], after["generation"])
+                    np.testing.assert_array_equal(before["mapping"], after["mapping"])
+                    np.testing.assert_array_equal(before["solref"], after["solref"])
+                    test.assertGreater(np.max(np.abs(after["distance"] - before["distance"])), 1.0e-8)
+                test.assertNotEqual(snapshots[0]["generation"], snapshots[2]["generation"])
+                motions.append(result["motion"])
+        if len(motions) == 2:
+            test.assertGreater(np.max(np.abs(motions[0] - motions[1])), 1.0e-7)
+
+
 class TestHydroelasticContactDynamics(unittest.TestCase):
     pass
 
@@ -318,6 +418,12 @@ add_function_test(
 )
 add_function_test(
     TestHydroelasticContactDynamics, "test_contact_refresh_controls", test_contact_refresh_controls, devices=devices
+)
+add_function_test(
+    TestHydroelasticContactDynamics,
+    "test_mujoco_contact_refresh",
+    test_mujoco_contact_refresh,
+    devices=get_selected_cuda_test_devices(),
 )
 
 

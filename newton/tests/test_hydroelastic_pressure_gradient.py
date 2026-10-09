@@ -10,13 +10,16 @@ import warp as wp
 
 import newton
 from newton._src.geometry.contact_data import ContactData
-from newton._src.geometry.contact_reduction_global import GlobalContactReducerData, decode_oct
+from newton._src.geometry.contact_reduction import get_slot
+from newton._src.geometry.contact_reduction_global import GlobalContactReducerData, decode_oct, make_contact_key
 from newton._src.geometry.contact_reduction_hydroelastic import (
     HydroelasticContactReduction,
     HydroelasticReductionConfig,
+    _face_tangent,
     _linearize_contact,
     export_hydroelastic_contact_to_buffer,
 )
+from newton._src.geometry.hashtable import hashtable_find_or_insert
 from newton._src.geometry.sdf_hydroelastic import (
     _mc_pressure_gradient,
     _mc_trilinear_gradient,
@@ -180,6 +183,37 @@ def _seed_faces(
         reducer.contact_pressure_gradient[contact_id] = data[3]
 
 
+@wp.kernel
+def _seed_patch(
+    reducer: GlobalContactReducerData,
+    positions: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    face_data: wp.array[wp.vec4],
+):
+    """Seed varied normals through the same aggregate contract as contact generation."""
+    index = wp.tid()
+    data = face_data[index]
+    normal = normals[index]
+    contact_id = export_hydroelastic_contact_to_buffer(
+        0, 1, positions[index], normal, data[0], data[1], data[2], index, reducer
+    )
+    if contact_id >= 0:
+        reducer.contact_pressure_gradient[contact_id] = data[3]
+    if reducer.deterministic == 0 and data[0] < 0.0:
+        entry = hashtable_find_or_insert(
+            make_contact_key(0, 1, get_slot(normal)), reducer.ht_keys, reducer.ht_active_slots
+        )
+        if entry >= 0:
+            force = data[1] * data[2]
+            wp.atomic_add(reducer.agg_force, entry, force * normal)
+            wp.atomic_add(reducer.weight_sum, entry, force)
+            wp.atomic_add(reducer.weighted_pos_sum, entry, force * positions[index])
+            wp.atomic_add(reducer.agg_depth_volume, entry, (data[1] * (-data[0])) * normal)
+            if reducer.agg_tangent.shape[0] > 0:
+                tangent = _face_tangent(data[1], data[2], data[0], data[3])
+                wp.atomic_add(reducer.agg_tangent, entry, tangent * wp.outer(normal, normal))
+
+
 def _make_capture(device, capacity=64):
     output = _CapturedContacts()
     output.contact_count = wp.zeros(1, dtype=int, device=device)
@@ -191,6 +225,174 @@ def _make_capture(device, capacity=64):
 def _read_contacts(output):
     count = int(output.contact_count.numpy()[0])
     return output.contacts.numpy()[: min(count, output.contact_max)]
+
+
+def _run_patch(reduction, device, positions, normals, face_data):
+    """Run production reduction and export after clearing all previous patch data."""
+    reduction.clear()
+    wp.launch(
+        _seed_patch,
+        dim=len(face_data),
+        inputs=[
+            reduction.get_data_struct(),
+            wp.array(positions, dtype=wp.vec3, device=device),
+            wp.array(normals, dtype=wp.vec3, device=device),
+            wp.array(face_data, dtype=wp.vec4, device=device),
+        ],
+        device=device,
+    )
+    transforms = wp.array([wp.transform_identity()] * 2, dtype=wp.transform, device=device)
+    kh = wp.full(2, 1.0e6, dtype=float, device=device)
+    reduction.reduce(
+        kh,
+        transforms,
+        wp.full(2, wp.vec3(-1.0), dtype=wp.vec3, device=device),
+        wp.full(2, wp.vec3(1.0), dtype=wp.vec3, device=device),
+        wp.full(2, wp.vec3i(8), dtype=wp.vec3i, device=device),
+        grid_size=8,
+    )
+    output = _make_capture(device)
+    reduction.export(kh, wp.full(2, 0.01, dtype=float, device=device), transforms, output, grid_size=8)
+    return _read_contacts(output)
+
+
+def test_default_geometric_springs(test, device):
+    """Keep geometric witness separation by default even when a gradient is supplied."""
+    test.assertFalse(HydroelasticSDF.Config().use_pressure_gradient)
+    test.assertFalse(HydroelasticReductionConfig().use_pressure_gradient)
+    reducer = HydroelasticContactReduction(
+        16, device=device, writer_func=_capture_contact, enable_reduction=False
+    ).reducer
+    data = np.array([[-0.02, 0.2, 10000.0, 250000.0]], dtype=np.float32)
+    wp.launch(
+        _seed_faces,
+        dim=1,
+        inputs=[
+            reducer.get_data_struct(),
+            wp.zeros(1, dtype=wp.vec3, device=device),
+            wp.array(data, dtype=wp.vec4, device=device),
+        ],
+        device=device,
+    )
+    for use_gradient in (False, True):
+        output = _make_capture(device)
+        wp.launch(
+            get_decode_contacts_kernel(0.01, _capture_contact, use_pressure_gradient=use_gradient),
+            dim=1,
+            inputs=[
+                1,
+                reducer.contact_count,
+                wp.full(2, 1.0e6, dtype=float, device=device),
+                wp.array([wp.transform_identity()] * 2, dtype=wp.transform, device=device),
+                wp.zeros(2, dtype=float, device=device),
+                reducer.position_depth,
+                reducer.normal,
+                reducer.shape_pairs,
+                reducer.contact_fingerprints,
+                reducer.contact_area,
+                reducer.contact_pressure,
+                reducer.contact_pressure_gradient,
+                reducer.capacity,
+                output,
+            ],
+            device=device,
+        )
+        contacts = _read_contacts(output)
+        expected = (50000.0, -0.04) if use_gradient else (100000.0, -0.02)
+        np.testing.assert_allclose(contacts["contact_stiffness"], expected[0], rtol=2.0e-6)
+        np.testing.assert_allclose(contacts["contact_distance"], expected[1], rtol=2.0e-6)
+
+
+def test_reduced_directional_tangent(test, device):
+    """Match directional tangent after normal rotation and force/friction redistribution."""
+    positions = np.array([[-0.3, -0.2, 0.0], [-0.3, 0.2, 0.0], [0.3, -0.2, 0.0], [0.3, 0.2, 0.0]])
+    # Keep all faces in one normal bin; the matching contract is per bin.
+    angles = np.array([0.02, 0.05, 0.10, 0.18])
+    normals = np.column_stack((np.sin(angles), np.zeros(4), np.cos(angles)))
+    pressures = np.array([5000.0, 10000.0, 15000.0, 20000.0])
+    areas = np.array([0.1, 0.2, 0.3, 0.4])
+    for gradients in (np.array([800000.0, 200000.0, 200000.0, 200000.0]), np.array([800000.0, 0.0, np.nan, 200000.0])):
+        face_data = np.column_stack((-pressures / 500000.0, areas, pressures, gradients))
+        force = np.sum((areas * pressures)[:, None] * normals, axis=0)
+        direction = force / np.linalg.norm(force)
+        source_k = areas * np.where(np.isfinite(gradients) & (gradients > 0.0), gradients, 500000.0)
+        expected_tangent = np.sum(source_k * (normals @ direction) ** 2)
+        for deterministic in (False, True):
+            for normal_matching, anchor, moment in (
+                (False, False, False),
+                (True, False, False),
+                (True, True, False),
+                (True, True, True),
+            ):
+                with test.subTest(
+                    deterministic=deterministic,
+                    normal_matching=normal_matching,
+                    anchor=anchor,
+                    moment=moment,
+                    gradients=gradients,
+                ):
+                    results = []
+                    for use_gradient in (False, True):
+                        config = HydroelasticReductionConfig(
+                            normal_matching=normal_matching,
+                            anchor_contact=anchor,
+                            moment_matching=moment,
+                            use_pressure_gradient=use_gradient,
+                        )
+                        reduction = HydroelasticContactReduction(
+                            32, device=device, writer_func=_capture_contact, config=config, deterministic=deterministic
+                        )
+                        contacts = _run_patch(reduction, device, positions, normals, face_data)
+                        bins = reduction.reducer.contact_nbin_entry.numpy()[1:5]
+                        test.assertEqual(len(np.unique(bins)), 1)
+                        test.assertGreater(len(contacts), 0)
+                        test.assertLessEqual(len(contacts), 64)
+                        test.assertEqual(int(reduction.reducer.ht_insert_failures.numpy()[0]), 0)
+                        force_i = -contacts["contact_stiffness"] * contacts["contact_distance"]
+                        resultant = np.sum(force_i[:, None] * contacts["contact_normal_a_to_b"], axis=0)
+                        friction_budget = np.sum(force_i * contacts["contact_friction_scale"])
+                        if use_gradient:
+                            tangent = np.sum(
+                                contacts["contact_stiffness"] * (contacts["contact_normal_a_to_b"] @ direction) ** 2
+                            )
+                            np.testing.assert_allclose(tangent, expected_tangent, rtol=2.0e-5)
+                            np.testing.assert_allclose(resultant, results[0][0], rtol=2.0e-5, atol=1.0e-3)
+                            np.testing.assert_allclose(friction_budget, results[0][1], rtol=2.0e-5)
+                            if normal_matching:
+                                # The existing normal rotation is approximate; its
+                                # vector error is measured relative to the full force.
+                                test.assertLess(np.linalg.norm(resultant - force), 1.0e-5 * np.linalg.norm(force))
+                        results.append((resultant, friction_budget))
+
+
+def test_reduced_speculative_transition(test, device):
+    """Keep geometric activation and clear tangents across penetration/speculation transitions."""
+    positions = np.array([[-0.3, 0.0, 0.0], [0.3, 0.0, 0.0]])
+    normals = np.tile([0.0, 0.0, 1.0], (2, 1))
+    for deterministic in (False, True):
+        reduction = HydroelasticContactReduction(
+            16,
+            device=device,
+            writer_func=_capture_contact,
+            config=HydroelasticReductionConfig(use_pressure_gradient=True, anchor_contact=True),
+            deterministic=deterministic,
+        )
+        for depth in (-0.02, 0.0, 0.005, -0.02):
+            pressure = max(-depth * 500000.0, 0.0)
+            face_data = np.tile([depth, 0.2, pressure, 250000.0], (2, 1))
+            contacts = _run_patch(reduction, device, positions, normals, face_data)
+            test.assertGreater(len(contacts), 0)
+            test.assertTrue(np.all(np.isfinite(contacts["contact_stiffness"])))
+            if depth >= 0.0:
+                np.testing.assert_allclose(contacts["contact_distance"], depth, atol=1.0e-8)
+                np.testing.assert_allclose(contacts["contact_stiffness"], 5000.0, rtol=2.0e-6)
+                np.testing.assert_array_equal(contacts["contact_friction_scale"], 1.0)
+                np.testing.assert_array_equal(reduction.reducer.agg_tangent.numpy(), 0.0)
+            else:
+                np.testing.assert_allclose(np.sum(contacts["contact_stiffness"]), 100000.0, rtol=5.0e-6)
+                np.testing.assert_allclose(
+                    np.sum(-contacts["contact_stiffness"] * contacts["contact_distance"]), 4000.0, rtol=5.0e-6
+                )
 
 
 def _pressure_after_displacement(displacement, pressure, modulus_a, modulus_b, gradient_a, gradient_b, normal):
@@ -457,7 +659,7 @@ def test_unreduced_contact_linearization(test, device):
         device=device,
     )
     wp.launch(
-        get_decode_contacts_kernel(0.01, _capture_contact),
+        get_decode_contacts_kernel(0.01, _capture_contact, use_pressure_gradient=True),
         dim=3,
         inputs=[
             3,
@@ -492,15 +694,17 @@ def test_unreduced_contact_linearization(test, device):
 
 
 def test_reduced_contact_linearization(test, device, anchor_contact=False, moment_matching=False):
-    """Preserve reduced force while applying each representative's pressure derivative."""
-    config = HydroelasticReductionConfig(anchor_contact=anchor_contact, moment_matching=moment_matching)
+    """Preserve patch force and heterogeneous tangent through reduction and anchors."""
+    config = HydroelasticReductionConfig(
+        anchor_contact=anchor_contact, moment_matching=moment_matching, use_pressure_gradient=True
+    )
     reduction = HydroelasticContactReduction(
         32, device=device, writer_func=_capture_contact, config=config, deterministic=True
     )
     positions = np.array([[-0.3, -0.2, 0.0], [-0.3, 0.2, 0.0], [0.3, -0.2, 0.0], [0.3, 0.2, 0.0]], dtype=np.float32)
     pressures = np.array([5000.0, 10000.0, 15000.0, 20000.0], dtype=np.float32)
     areas = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
-    gradients = np.full(4, 250000.0, dtype=np.float32)
+    gradients = np.array([800000.0, 200000.0, 200000.0, 200000.0], dtype=np.float32)
     face_data = np.column_stack((-pressures / 500000.0, areas, pressures, gradients))
     transforms = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
     kh = wp.array([1.0e6, 1.0e6], dtype=float, device=device)
@@ -530,10 +734,12 @@ def test_reduced_contact_linearization(test, device, anchor_contact=False, momen
         contacts = contacts[np.argsort(contacts["sort_sub_key"])]
         force = -contacts["contact_stiffness"] * contacts["contact_distance"]
         np.testing.assert_allclose(np.sum(force), np.dot(areas, pressures), rtol=5.0e-6)
+        np.testing.assert_allclose(np.sum(contacts["contact_stiffness"]), np.dot(areas, gradients), rtol=5.0e-6)
         test.assertTrue(np.all(np.isfinite(contacts["contact_stiffness"])))
         test.assertTrue(np.all(contacts["contact_stiffness"] > 0.0))
-        for distance in contacts["contact_distance"]:
-            test.assertLess(np.min(np.abs(distance + pressures / gradients)), 1.0e-6)
+        np.testing.assert_allclose(
+            contacts["contact_distance"], -np.dot(areas, pressures) / np.dot(areas, gradients), rtol=5.0e-6
+        )
         snapshots.append(contacts)
     np.testing.assert_array_equal(snapshots[0], snapshots[1])
 
@@ -580,6 +786,7 @@ def test_rotated_box_generated_pressure_gradients(test, device):
                     broad_phase="explicit",
                     rigid_contact_max=10000,
                     sdf_hydroelastic_config=HydroelasticSDF.Config(
+                        use_pressure_gradient=True,
                         reduce_contacts=reduce_contacts,
                         pre_prune_contacts=reduce_contacts,
                         buffer_fraction=1.0,
@@ -643,6 +850,21 @@ class TestHydroelasticPressureGradient(unittest.TestCase):
 
 
 devices = get_test_devices()
+add_function_test(
+    TestHydroelasticPressureGradient, "test_default_geometric_springs", test_default_geometric_springs, devices=devices
+)
+add_function_test(
+    TestHydroelasticPressureGradient,
+    "test_reduced_directional_tangent",
+    test_reduced_directional_tangent,
+    devices=devices,
+)
+add_function_test(
+    TestHydroelasticPressureGradient,
+    "test_reduced_speculative_transition",
+    test_reduced_speculative_transition,
+    devices=devices,
+)
 add_function_test(TestHydroelasticPressureGradient, "test_trilinear_gradient", test_trilinear_gradient, devices=devices)
 add_function_test(
     TestHydroelasticPressureGradient,
