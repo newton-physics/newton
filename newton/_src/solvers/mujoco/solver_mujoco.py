@@ -585,7 +585,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Per-world capacity-overflow bitmask of :class:`SolverMuJoCo.OverflowBits` for the latest step, shape ``(world_count,)``."""
 
     class OverflowBits(IntFlag):
-        """Bits of the per-world :attr:`Observables.overflow` bitmask.
+        """Bits of the per-world ``Observables.overflow`` bitmask.
 
         Bits 0-15 carry MuJoCo Warp's own ``mujoco_warp.OverflowType`` flags
         (``NEFC``, ``NJMAX_NNZ``, ``BROADPHASE``, ...). The members below are the
@@ -4175,7 +4175,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 reported by default (``False``).  Runtime overflow (contacts
                 actually dropped during a step) is always reported GPU-side
                 via a ``wp.printf`` message; to detect it in Python without a
-                GPU sync, request :attr:`ObservableFlags.OVERFLOW` via
+                GPU sync, request ``ObservableFlags.OVERFLOW`` via
                 :meth:`observables` and check the bitmask after each step.
         """
         super().__init__(model)
@@ -4604,8 +4604,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         **Overflow detection** — capacity overflows (contacts dropped, constraint
         buffer exceeded, broadphase clipped) are reported through
-        :attr:`Observables.overflow`, a per-world ``int32`` bitmask.  Allocate it
-        with :meth:`observables` using :attr:`ObservableFlags.OVERFLOW` and pass
+        ``Observables.overflow``, a per-world ``int32`` bitmask.  Allocate it
+        with :meth:`observables` using ``ObservableFlags.OVERFLOW`` and pass
         the container to this method, then read the bitmask after each step (or
         after :func:`warp.capture_launch` when using CUDA graphs).  The request
         is only supported with MuJoCo Warp (``use_mujoco_cpu=False``)::
@@ -4618,7 +4618,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ...
 
         Bits 0-15 carry MuJoCo Warp's own
-        :class:`mujoco_warp.OverflowType` flags (``NEFC``, ``NJMAX_NNZ``,
+        ``mujoco_warp.OverflowType`` flags (``NEFC``, ``NJMAX_NNZ``,
         ``BROADPHASE``, ``NVMAX``, …).  The bits Newton adds are
         :attr:`OverflowBits.CONTACT_PIPELINE`, set when the Newton collision
         pipeline dropped contacts beyond ``rigid_contact_max``, and
@@ -4635,7 +4635,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ``use_mujoco_contacts=False``.  Ignored (and may be ``None``)
                 when ``use_mujoco_contacts=True`` (MuJoCo Warp runs its own
                 collision detection); the Newton bits of
-                :attr:`Observables.overflow` are suppressed in that mode since
+                ``Observables.overflow`` are suppressed in that mode since
                 the contacts object is not used by the solver.
             dt: Timestep in seconds.
             observables: Optional solver observable arrays allocated by
