@@ -103,14 +103,16 @@ rows. Irregular layouts fill a reusable buffer. A later state change or another
 read can change the returned values. Use ``wp.clone()`` when a result must stay
 unchanged, as in the reset buffers above.
 
-A view caches getter results and keeps their source arrays alive for its lifetime.
-Dropping a state does not release those arrays while the view still holds them.
-Reuse a fixed set of state buffers, such as two alternating states. Reading newly
-created states on every step can grow the cache and its memory use.
+A view keeps its Model alive but holds State objects weakly, like
+:class:`~newton.selection.ArticulationView`. Dropping a state releases its cache
+entries. Getter results still held by your code remain valid and retain the
+storage they need. Alternating states have separate cached results.
 
-Getters support ``wp.Tape``. Enable gradients before the first getter call, for
-example with ``model.state(requires_grad=True)``. Keep the source's
-``requires_grad`` setting and ``grad`` storage unchanged while using the view.
+Getters support ``wp.Tape``. For example, create a state with
+``model.state(requires_grad=True)``. Replacing a source array or its gradient
+buffer, or enabling or disabling gradients, refreshes the affected cache entry
+on the next getter call. Previously returned results still refer to their old
+storage; call the getter again to use the replacement.
 Regular results share the source's gradient storage; irregular results accumulate
 gradients back to the source through the gather. Zeroing gradients is supported
 and reuses the cached result.
@@ -208,6 +210,11 @@ inputs, including when those inputs require gradients. Host values and masks
 raise ``RuntimeError`` during capture. Getters that reuse staging buffers can
 also be captured after their first call. Mask and value contents can change
 between inference replays without rebuilding the graph.
+
+Do not replace arrays used by a tape before backward completes. A captured graph
+continues to use the data and gradient arrays from capture. Keep the source
+states and getter results alive while replaying it. After replacing arrays,
+warm up the getters and capture a new graph to use the new storage.
 
 ``set_mask_from_indices()`` also supports capture with preallocated device
 indices and a mask. Host indices raise ``RuntimeError`` during capture.

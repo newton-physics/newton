@@ -2374,7 +2374,8 @@ class _DeformableViewBase:
         self._starts: dict[str, wp.array[wp.int32]] = {}
         self._counts: dict[str, int | None] = {}
         self._required_lengths: dict[str, int] = {}
-        self._attribute_arrays: dict[tuple[str, int], tuple[wp.array[Any], Any]] = {}
+        # Key by the container, not the array: cached array views retain their backing arrays.
+        self._attribute_arrays = weakref.WeakKeyDictionary()
         range_attributes = {
             "curve": {"body": "body", "joint": "joint"},
             "surface": {"particle": "particle", "triangle": "tri", "edge": "edge"},
@@ -2520,18 +2521,30 @@ class _DeformableViewBase:
         if array.shape[0] < required:
             raise ValueError(f"Expected state array with at least {required} {kind} elements, got {array.shape[0]}")
 
-    def _get_attribute_array(self, kind: str, src: wp.array[Any]):
-        cache_key = (kind, id(src))
-        cached = self._attribute_arrays.get(cache_key)
-        if cached is not None and cached[0] is src:
-            return cached[1]
+    def _get_attribute_array(self, kind: str, name: str, source: Model | State):
+        """Cache per source container and follow its current data and gradient arrays."""
+        src = getattr(source, name)
+        src_grad = src.grad if src.requires_grad else None
+        key = (kind, name)
+        try:
+            entries = self._attribute_arrays.get(source)
+            if entries is None:
+                entries = self._attribute_arrays[source] = {}
+        except TypeError:
+            # Match ArticulationView for containers that cannot be weakly referenced.
+            return self._create_attribute_array(kind, src)
+        entry = entries.get(key)
+        if entry is not None and entry[1] is src and entry[2] is src_grad:
+            return entry[0]
+        result = self._create_attribute_array(kind, src)
+        entries[key] = (result, src, src_grad)
+        return result
 
+    def _create_attribute_array(self, kind: str, src: wp.array[Any]):
         count = self._element_count(kind)
         shape = (self.count, count)
         if count == 0:
-            result = wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad)
-            self._attribute_arrays[cache_key] = (src, result)
-            return result
+            return wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad)
 
         starts = [start for start, _end in self._ranges[kind]]
 
@@ -2553,7 +2566,6 @@ class _DeformableViewBase:
             grad = None if src.grad is None else make_view(src.grad, starts[0], self.count, row_stride)
             result = make_view(src, starts[0], self.count, row_stride)
             result.grad = grad
-            self._attribute_arrays[cache_key] = (src, result)
             return result
 
         # A sliding-window view turns arbitrary equal-sized ranges into row indices
@@ -2563,19 +2575,20 @@ class _DeformableViewBase:
         windows.grad = grad
         result = windows[self._starts[kind], :]
         result._staging_array = wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad)
-        self._attribute_arrays[cache_key] = (src, result)
         return result
 
     def _gather(
         self,
         kind: str,
-        src: wp.array[Any],
+        name: str,
+        source: Model | State,
         kernel: Any,
         dtype: Any,
     ) -> wp.array2d[Any]:
         count = self._element_count(kind)
+        src = getattr(source, name)
         self._validate_state_array(kind, src, dtype)
-        attribute = self._get_attribute_array(kind, src)
+        attribute = self._get_attribute_array(kind, name, source)
         if not isinstance(attribute, wp.indexedarray):
             return attribute
         out = attribute._staging_array
@@ -2749,7 +2762,7 @@ class _DeformableParticleView(_DeformableViewBase):
             ValueError: If particle counts differ or the source array's rank,
                 dtype, device, or length is incompatible with the selection.
         """
-        return self._gather("particle", source.particle_q, _gather_object_vec3_kernel, wp.vec3)
+        return self._gather("particle", "particle_q", source, _gather_object_vec3_kernel, wp.vec3)
 
     def set_particle_positions(
         self,
@@ -2799,7 +2812,7 @@ class _DeformableParticleView(_DeformableViewBase):
             ValueError: If particle counts differ or the source array's rank,
                 dtype, device, or length is incompatible with the selection.
         """
-        return self._gather("particle", source.particle_qd, _gather_object_vec3_kernel, wp.vec3)
+        return self._gather("particle", "particle_qd", source, _gather_object_vec3_kernel, wp.vec3)
 
     def set_particle_velocities(
         self,
@@ -2861,7 +2874,7 @@ class _DeformableRodView(_DeformableViewBase):
             ValueError: If body counts differ or the source array's rank,
                 dtype, device, or length is incompatible with the selection.
         """
-        return self._gather("body", source.body_q, _gather_object_transform_kernel, wp.transform)
+        return self._gather("body", "body_q", source, _gather_object_transform_kernel, wp.transform)
 
     def set_body_transforms(
         self,
@@ -2914,7 +2927,7 @@ class _DeformableRodView(_DeformableViewBase):
             ValueError: If body counts differ or the source array's rank,
                 dtype, device, or length is incompatible with the selection.
         """
-        return self._gather("body", source.body_qd, _gather_object_spatial_kernel, wp.spatial_vector)
+        return self._gather("body", "body_qd", source, _gather_object_spatial_kernel, wp.spatial_vector)
 
     def set_body_velocities(
         self,

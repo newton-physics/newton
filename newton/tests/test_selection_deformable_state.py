@@ -3,7 +3,9 @@
 
 """Tests for batched deformable state access and masked writes."""
 
+import gc
 import unittest
+import weakref
 from typing import Any
 
 import numpy as np
@@ -31,31 +33,92 @@ def _sum_first_component(values: wp.array2d[Any], loss: wp.array[float]):
 class TestDeformableStateReads(unittest.TestCase):
     """Read regular and irregular state layouts, including captured gathers."""
 
-    def test_getter_gradients(self):
-        """Preserve source gradients when enabled before the first getter call."""
+    def test_getters_release_discarded_states(self):
+        """Release discarded state arrays and getter buffers while keeping the view usable."""
         for device in get_test_devices():
             for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
                 model = make_model(device=device)
                 for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
                     with self.subTest(device=device, pattern=pattern, getter=getter.__name__):
-                        state = model.state(requires_grad=True)
-                        source = getattr(state, attribute)
-                        getter(state)
-                        loss = wp.zeros(1, device=device, requires_grad=True)
-                        with wp.Tape() as tape:
-                            values = getter(state)
-                            wp.launch(_sum_first_component, dim=values.shape, inputs=[values, loss], device=device)
-                        tape.backward(loss)
+                        refs = []
+                        for _ in range(3):
+                            state = model.state(requires_grad=True)
+                            result = getter(state)
+                            expected = result.numpy().copy()
+                            refs.extend(weakref.ref(obj) for obj in (state, getattr(state, attribute), result))
+                            state_ref = weakref.ref(state)
+                            del state
+                            gc.collect()
+                            self.assertIsNone(state_ref())
+                            np.testing.assert_array_equal(result.numpy(), expected)
+                            del result
+                        gc.collect()
+                        self.assertTrue(all(ref() is None for ref in refs))
+                        live_state = model.state()
+                        self.assertTrue(np.isfinite(getter(live_state).numpy()).all())
 
-                        expected = np.zeros_like(source.numpy())
-                        expected[:, 0] = 1.0
-                        if make_model is _irregular_model:
-                            # The fixture leaves unrelated particles/bodies between the selected objects.
-                            gaps = [4, 9, 10] if attribute.startswith("particle") else [3, 7, 8]
-                            expected[gaps, 0] = 0.0
-                        np.testing.assert_array_equal(source.grad.numpy(), expected)
-                        source.grad.zero_()
-                        self.assertIs(getter(state), values)
+    def test_getters_follow_replaced_arrays(self):
+        """Keep alternating states separate and release replaced arrays after callers drop their views."""
+        for device in get_test_devices():
+            for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
+                model = make_model(device=device)
+                for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
+                    with self.subTest(device=device, pattern=pattern, getter=getter.__name__):
+                        states = [model.state(requires_grad=True) for _ in range(2)]
+                        for value, state in enumerate(states, 1):
+                            array = getattr(state, attribute)
+                            array.assign(np.full_like(array.numpy(), value))
+                        buffers = [getter(state) for state in states]
+                        for value, (state, buffer) in enumerate(zip(states, buffers, strict=True), 1):
+                            self.assertIs(getter(state), buffer)
+                            np.testing.assert_array_equal(buffer.numpy(), np.full_like(buffer.numpy(), value))
+
+                        old_array = weakref.ref(getattr(states[0], attribute))
+                        setattr(states[0], attribute, wp.zeros_like(getattr(states[0], attribute)))
+                        result = getter(states[0])
+                        np.testing.assert_array_equal(result.numpy(), np.zeros_like(result.numpy()))
+                        self.assertIs(getter(states[1]), buffers[1])
+                        np.testing.assert_array_equal(buffers[0].numpy(), np.ones_like(buffers[0].numpy()))
+                        del buffers[0]
+                        gc.collect()
+                        self.assertIsNone(old_array())
+
+    def test_getter_gradients(self):
+        """Follow initial, newly enabled, and replaced source gradient buffers."""
+        for device in get_test_devices():
+            for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
+                model = make_model(device=device)
+                for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
+                    for setup in ("initial", "enabled", "replaced"):
+                        with self.subTest(device=device, pattern=pattern, getter=getter.__name__, setup=setup):
+                            state = model.state(requires_grad=setup != "enabled")
+                            source = getattr(state, attribute)
+                            getter(state)
+                            if setup == "enabled":
+                                source.requires_grad = True
+                            elif setup == "replaced":
+                                old_grad = weakref.ref(source.grad)
+                                source.grad = wp.zeros_like(source, requires_grad=False)
+                            loss = wp.zeros(1, device=device, requires_grad=True)
+                            with wp.Tape() as tape:
+                                values = getter(state)
+                                wp.launch(_sum_first_component, dim=values.shape, inputs=[values, loss], device=device)
+                            tape.backward(loss)
+
+                            expected = np.zeros_like(source.numpy())
+                            expected[:, 0] = 1.0
+                            if make_model is _irregular_model:
+                                # The fixture leaves unrelated particles/bodies between the selected objects.
+                                gaps = [4, 9, 10] if attribute.startswith("particle") else [3, 7, 8]
+                                expected[gaps, 0] = 0.0
+                            np.testing.assert_array_equal(source.grad.numpy(), expected)
+                            source.grad.zero_()
+                            self.assertIs(getter(state), values)
+                            if setup == "replaced":
+                                gc.collect()
+                                self.assertIsNone(old_grad())
+                            source.requires_grad = False
+                            self.assertFalse(getter(state).requires_grad)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
     def test_getter_gradients_cuda_graph(self):
@@ -74,6 +137,8 @@ class TestDeformableStateReads(unittest.TestCase):
             for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
                 with self.subTest(pattern=pattern, getter=getter.__name__):
                     state = model.state(requires_grad=True)
+                    getter(state)
+                    setattr(state, attribute, wp.clone(getattr(state, attribute), requires_grad=True))
                     source = getattr(state, attribute)
                     loss = wp.zeros(1, device=device, requires_grad=True)
                     values, tape = evaluate(getter, state, loss)  # Warm the getter and backward kernels.
