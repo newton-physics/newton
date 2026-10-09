@@ -178,12 +178,17 @@ def compute_enabled_shapes(
     shape_type: wp.array[wp.int32],
     shape_flags: wp.array[wp.int32],
     shape_flags_mask: wp.int32,
+    shape_opacity: wp.array[wp.float32],
     out_shape_enabled: wp.array[wp.uint32],
     out_shape_enabled_count: wp.array[wp.int32],
 ):
     tid = wp.tid()
 
     if not bool(shape_flags[tid] & shape_flags_mask):
+        return
+
+    # Fully transparent shapes (e.g. MJCF helper geoms with rgba alpha 0) must not occlude other shapes.
+    if shape_opacity.shape[0] > 0 and shape_opacity[tid] <= 0.0:
         return
 
     if not is_supported_shape_type(shape_type[tid]):
