@@ -2340,7 +2340,8 @@ class NarrowPhase:
             mesh_sdf_texture_only: Whether every participating mesh SDF has a texture representation,
                 allowing BVH fallback branches to be removed from mesh/SDF kernels.
             mesh_sdf_identity_scale_only: Whether every participating texture SDF is queried with
-                identity scale, allowing scale conversion branches to be removed.
+                identity scale, allowing scale conversion branches to be removed. Shapes whose SDF
+                has no baked scale must then keep unit ``shape_scale``.
             sdf_texture_paired_samples: Whether texture SDFs store adjacent x samples together.
                 This is model-wide so mesh-SDF kernels require only two bounded static variants.
             deterministic: Make contact generation and ordering independent of
