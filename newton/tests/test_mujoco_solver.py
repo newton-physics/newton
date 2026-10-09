@@ -5746,7 +5746,7 @@ class TestMuJoCoValidation(unittest.TestCase):
 
         with self.assertRaises(ValueError) as ctx:
             SolverMuJoCo(model, separate_worlds=True)
-        self.assertIn("world 0 has 1 shapes", str(ctx.exception).lower())
+        self.assertIn("only mesh geoms support differing counts", str(ctx.exception).lower())
 
     def test_mismatched_joint_types_fails(self):
         """Test that different joint types at same position across worlds raises ValueError."""
