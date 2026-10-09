@@ -1174,6 +1174,32 @@ with convex hulls, bounding boxes, or convex decompositions:
 Supported methods: ``"convex_hull"`` (default), ``"bounding_box"``, ``"bounding_sphere"``,
 ``"coacd"`` (convex decomposition), ``"vhacd"``.
 
+For repeated scene setup, pass ``cache_dir`` to reuse CoACD or V-HACD
+decompositions across builders and processes:
+
+.. code-block:: python
+
+    builder = newton.ModelBuilder()
+    builder.add_usd("robot.usda", skip_mesh_approximation=True)
+    builder.approximate_meshes(
+        method="coacd",
+        cache_dir=".cache/convex",
+        keep_visual_shapes=True,
+    )
+
+Like :meth:`Mesh.build_sdf`, disk caching is opt-in and the directory is created
+if needed. Entries include the source geometry, effective decomposition options
+(including the hull-vertex limit), backend versions, and cache format version in
+their keys. Shape scales, transforms, and materials are applied independently,
+so cached parts can be reused by differently configured shapes. Missing, corrupt,
+or incompatible entries are recomputed; cache I/O errors are logged without
+preventing approximation. Backend dependencies must still be installed. Failed
+decompositions and fallback hulls are not cached. Delete the directory to reclaim
+disk space. Other approximation methods ignore ``cache_dir``.
+
+The cache directory is a local preprocessing option passed directly to
+:meth:`~ModelBuilder.approximate_meshes`; it is not authored in USD.
+
 .. note::
    ``approximate_meshes()`` modifies the builder's shape geometry in-place. By default
    (``keep_visual_shapes=False``), the original mesh is replaced for both collision and
