@@ -37,16 +37,34 @@ from newton.examples.vbd._viewer import node_xyz, set_viewer_camera
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "Elastic and Dahl cables follow the prescribed slow loading and unloading cycles.",
-        "Bend comparisons show force/deflection hysteresis and residual set for Dahl relative "
-        "to the elastic reference.",
-        "Twist comparisons show torque/twist hysteresis without substantial unintended bending.",
+        "The displayed elastic and Dahl cables follow the prescribed slow loading and unloading cycles.",
         "Inspect the final settling interval separately from the driven cycles.",
     ),
     "runs": (
-        {"args": (), "success_criteria": ("Both bend and twist comparison pairs are displayed.",)},
-        {"args": ("--cable-dahl-mode", "bend"), "success_criteria": ("Only the bend comparison pair is displayed.",)},
-        {"args": ("--cable-dahl-mode", "twist"), "success_criteria": ("Only the twist comparison pair is displayed.",)},
+        {
+            "args": (),
+            "success_criteria": (
+                "Both bend and twist comparison pairs are displayed.",
+                "Bend comparisons show force/deflection hysteresis and residual set for Dahl relative "
+                "to the elastic reference.",
+                "Twist comparisons show torque/twist hysteresis without substantial unintended bending.",
+            ),
+        },
+        {
+            "args": ("--cable-dahl-mode", "bend"),
+            "success_criteria": (
+                "Only the bend comparison pair is displayed.",
+                "Bend comparisons show force/deflection hysteresis and residual set for Dahl relative "
+                "to the elastic reference.",
+            ),
+        },
+        {
+            "args": ("--cable-dahl-mode", "twist"),
+            "success_criteria": (
+                "Only the twist comparison pair is displayed.",
+                "Twist comparisons show torque/twist hysteresis without substantial unintended bending.",
+            ),
+        },
     ),
 }
 

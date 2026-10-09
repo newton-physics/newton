@@ -114,3 +114,13 @@ xdotool mousemove --window "$NEWTON_WINDOW" 1100 450 key Escape
 Wait for process completion and record its exit status/log tail. If it fails to
 close, terminate only the process launched for this case; do not kill unrelated
 desktop sessions or examples.
+
+The helper attempts mouse-button and modifier release independently; a failed
+release still reports an error. Its failure paths can be checked without a
+display, capture dependencies, or real input:
+
+```bash
+uv run --frozen python "$NEWTON_SKILL/tests/test_desktop.py"
+```
+
+This uses mocked input commands and is not a picking or visual QA test.

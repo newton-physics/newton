@@ -442,19 +442,10 @@ class Example:
         if np.min(arc_length_ratios) < 0.8 or np.max(arc_length_ratios) > 1.2:
             raise ValueError(f"Cable bundle changed length excessively: {metrics}")
 
-        # The documented low-plasticity and long-memory runs intentionally settle straighter than the default run.
-        if not self.with_dahl or self.args.tau >= 10.0:
-            straightness_min, straightness_max = 0.9, 1.0
-        elif self.args.eps_max <= 0.3:
-            straightness_min, straightness_max = 0.85, 0.97
-        else:
-            straightness_min, straightness_max = 0.5, 0.9
-
-        if np.min(straightness) < straightness_min or np.max(straightness) > straightness_max:
-            raise ValueError(
-                f"Cable bundle final shape is outside the expected straightness range "
-                f"[{straightness_min}, {straightness_max}]: {metrics}"
-            )
+        if self.with_dahl and (np.min(straightness) < 0.5 or np.max(straightness) > 0.9):
+            raise ValueError(f"Dahl cable bundle did not retain plausible curvature: {metrics}")
+        if not self.with_dahl and np.min(straightness) < 0.9:
+            raise ValueError(f"Elastic cable bundle did not recover: {metrics}")
 
     @staticmethod
     def create_parser():

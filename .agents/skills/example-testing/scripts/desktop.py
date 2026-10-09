@@ -36,14 +36,16 @@ else:
     x1, y1, x2, y2 = a.coords
     xdo("windowactivate", "--sync", a.window)
     xdo("mousemove", "--window", a.window, x1, y1)
-    if a.modifier:
-        xdo("keydown", a.modifier)
     try:
+        if a.modifier:
+            xdo("keydown", a.modifier)
         xdo("mousedown", a.button)
         for i in range(1, 21):
             xdo("mousemove", "--window", a.window, round(x1 + (x2 - x1) * i / 20), round(y1 + (y2 - y1) * i / 20))
             time.sleep(0.025)
     finally:
-        xdo("mouseup", a.button)
-        if a.modifier:
-            xdo("keyup", a.modifier)
+        try:
+            xdo("mouseup", a.button)
+        finally:
+            if a.modifier:
+                xdo("keyup", a.modifier)

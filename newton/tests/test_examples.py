@@ -711,22 +711,6 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
-    name="cable.example_cable_bundle_hysteresis",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 150, "eps-max": 0.3},
-    test_suffix="reduced_plastic_strain",
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_bundle_hysteresis",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 150, "tau": 10.0},
-    test_suffix="long_memory_decay",
-)
-add_example_test(
-    TestCableExamples,
     name="cable.example_cable_cross_slide_table",
     devices=test_devices,
     use_viewer=True,

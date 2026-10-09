@@ -23,6 +23,9 @@ AST; it does not import or run the selected example. For schema version 1:
 - Combine common and run-specific criteria. Do not apply one variant's special
   expectations to another. Additional supported CLI options are not necessarily
   mandatory QA variants.
+- Keep checks for a filtered scene or plot in the runs that display it. A common
+  criterion must be observable in every listed run; hidden comparisons cannot
+  be silently counted as passed.
 - Use the artifact environment's Python to execute commands. When invoking a
   subprocess, pass the example name and `args` as an argument list; the rendered
   command is for human readability.
