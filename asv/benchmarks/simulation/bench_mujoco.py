@@ -91,6 +91,11 @@ class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
 
         from benchmark_mujoco import Example  # noqa: PLC0415
 
+        import newton  # noqa: PLC0415
+
+        # Older Newton revisions without SolverMuJoCo.reset() rebuild per sample.
+        reset_workload = Example.reset if "reset" in vars(newton.solvers.SolverMuJoCo) else None
+
         metrics = {}
         for world_count in self.params[0]:
             builder = Example.create_model_builder(
@@ -110,6 +115,7 @@ class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
                 world_count=world_count,
                 num_frames=self.num_frames,
                 samples=self.samples,
+                reset_workload=reset_workload,
                 validate=partial(
                     self._validate_metrics_workload,
                     world_count=world_count,

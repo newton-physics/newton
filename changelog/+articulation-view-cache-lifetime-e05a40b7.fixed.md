@@ -1,1 +1,1 @@
-Hold the states, controls, and actuators read by a live `ArticulationView` weakly, so they are released when the caller drops them.
+Hold the states, controls, solver observables, and actuators read by a live `ArticulationView` weakly, so they are released when the caller drops them.

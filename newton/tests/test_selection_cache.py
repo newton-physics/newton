@@ -221,6 +221,51 @@ class TestSelectionCacheLifetime(unittest.TestCase):
         assert_np_equal(values.numpy(), np.full(values.shape, 2.0))
         self.assertIs(view._get_attribute_array("joint_q", model, _slice=slice(0, 3)), values)
 
+    def observable_reads_follow_replaced_arrays(self, device):
+        """Read and write the current solver observable arrays, including replaced and unrequested ones."""
+        model, view = self.make_view("dense", device=device)
+        flag = newton.solvers.SolverObservableFlags.BODY_PARENT_F
+        observables = newton.solvers.SolverFeatherstone(model).observables({flag})
+        observables.body_parent_f.fill_(wp.spatial_vector(2.0, 2.0, 2.0, 2.0, 2.0, 2.0))
+        forces = view.get_attribute("body_parent_f", observables)
+        assert_np_equal(forces.numpy(), np.full((*forces.shape, 6), 2.0))
+        self.assertIs(view.get_attribute("body_parent_f", observables), forces)
+
+        old_forces = observables.body_parent_f
+        observables.body_parent_f = wp.full_like(old_forces, wp.spatial_vector(4.0, 4.0, 4.0, 4.0, 4.0, 4.0))
+        forces = view.get_attribute("body_parent_f", observables)
+        assert_np_equal(forces.numpy(), np.full((*forces.shape, 6), 4.0))
+        target = wp.spatial_vector(5.0, 5.0, 5.0, 5.0, 5.0, 5.0)
+        view.set_attribute("body_parent_f", observables, wp.full(forces.shape, target, device=device))
+        assert_np_equal(observables.body_parent_f.numpy(), np.full((model.body_count, 6), 5.0))
+        assert_np_equal(old_forces.numpy(), np.full((model.body_count, 6), 2.0))
+
+        observables.body_parent_f = None
+        with self.assertRaisesRegex(ValueError, "not requested"):
+            view.get_attribute("body_parent_f", observables)
+
+    def observable_cache_entries_release_with_observables(self, device):
+        """Cache observable views per container and drop them with the container."""
+        model, view = self.make_view("dense", device=device)
+        flag = newton.solvers.SolverObservableFlags.BODY_PARENT_F
+        observables = newton.solvers.SolverFeatherstone(model).observables({flag})
+        selection = observables.select({flag})
+        forces = view.get_attribute("body_parent_f", observables)
+        selected_forces = view.get_attribute("body_parent_f", selection)
+        self.assertIsNot(selected_forces, forces)
+        self.assertIs(view.get_attribute("body_parent_f", observables), forces)
+        self.assertIs(view.get_attribute("body_parent_f", selection), selected_forces)
+        self.assertEqual(len(view._attribute_array_cache), 2)
+
+        refs = {"observables": weakref.ref(observables), "selection": weakref.ref(selection)}
+        del observables, selection, forces, selected_forces
+        gc.collect()
+
+        for name, ref in refs.items():
+            with self.subTest(source=name):
+                self.assertIsNone(ref(), f"{name} retained by a live view")
+        self.assertEqual(len(view._attribute_array_cache), 0)
+
     @staticmethod
     def make_view(layout, requires_grad=False, device="cpu"):
         """Build regular or indexed selections on the requested device."""
@@ -302,6 +347,18 @@ add_function_test(
     TestSelectionCacheLifetime,
     "test_native_slices_reuse_cached_arrays",
     TestSelectionCacheLifetime.native_slices_reuse_cached_arrays,
+    devices=devices,
+)
+add_function_test(
+    TestSelectionCacheLifetime,
+    "test_observable_reads_follow_replaced_arrays",
+    TestSelectionCacheLifetime.observable_reads_follow_replaced_arrays,
+    devices=devices,
+)
+add_function_test(
+    TestSelectionCacheLifetime,
+    "test_observable_cache_entries_release_with_observables",
+    TestSelectionCacheLifetime.observable_cache_entries_release_with_observables,
     devices=devices,
 )
 

@@ -47,6 +47,32 @@ def _workflow_default_regions(path: Path) -> tuple[str, ...]:
 
 
 class TestRunnerRegionContract(unittest.TestCase):
+    def test_minimum_dependency_runner_uses_selected_ami(self):
+        """Pass the workflow's pinned AMI name to the shared discovery step."""
+        image_name = "Deep Learning Base AMI with Single CUDA (Ubuntu 22.04) 20250930"
+        environment = {
+            "AWS_REGION_CANDIDATES": "us-east-1",
+            "AWS_INSTANCE_TYPE": "g6e.2xlarge",
+            "AWS_RUNNER_RESOURCE_TAG": "newton-github-runner",
+            "AWS_AMI_NAME": image_name,
+        }
+        for selected, expected in ((image_name, image_name), ("", discovery.DEFAULT_AMI_NAME)):
+            with self.subTest(selected=selected):
+                environment["AWS_AMI_NAME"] = selected
+                with (
+                    patch.dict("os.environ", environment, clear=True),
+                    patch.object(
+                        discovery, "discover_candidates", return_value=[{"imageId": "ami-example"}]
+                    ) as discover,
+                    patch.object(discovery, "set_output"),
+                    redirect_stdout(StringIO()),
+                ):
+                    self.assertEqual(discovery.main(), 0)
+
+                discover.assert_called_once_with(
+                    ["us-east-1"], "g6e.2xlarge", "newton-github-runner", image_name=expected
+                )
+
     def test_preserves_supported_region_subsets_in_caller_order(self):
         """Preserve caller ordering when every candidate is supported."""
         self.assertEqual(

@@ -251,6 +251,52 @@ class TestSimulationBenchmarks(unittest.TestCase):
         self.assertEqual(example.benchmark_time, 0.25)
         self.assertEqual(example.sim_time, 0.01)
 
+    def test_mujoco_contact_observables_only_update_on_last_substep(self):
+        """Pass final-substep contact observables to the sensor without legacy exports."""
+        for substeps in (1, 2, 3):
+            with self.subTest(substeps=substeps):
+                example = MuJoCoExample.__new__(MuJoCoExample)
+                example.sim_substeps = substeps
+                example.sim_dt = 0.01
+                example.state_0, example.state_1 = Mock(), Mock()
+                example.control = Mock()
+                example.contacts = Mock()
+                example.solver = Mock()
+                example.sensor_contact = Mock()
+                example.solver_observables = Mock()
+
+                example.simulate()
+
+                self.assertEqual(example.solver.step.call_count, substeps)
+                for step_call in example.solver.step.call_args_list[:-1]:
+                    self.assertEqual(step_call.kwargs, {})
+                self.assertEqual(example.solver.step.call_args.kwargs, {"observables": example.solver_observables})
+                example.sensor_contact.update.assert_called_once_with(
+                    example.state_0, example.contacts, observables=example.solver_observables
+                )
+                example.solver.update_contacts.assert_not_called()
+
+    def test_mujoco_benchmark_supports_sensorless_steps(self):
+        """Keep sensorless workloads free of observable requests and contact exports."""
+        for substeps in (1, 2, 3):
+            with self.subTest(substeps=substeps):
+                example = MuJoCoExample.__new__(MuJoCoExample)
+                example.sim_substeps = substeps
+                example.sim_dt = 0.01
+                example.state_0, example.state_1 = Mock(), Mock()
+                example.control = Mock()
+                example.contacts = None
+                example.solver = Mock()
+                example.sensor_contact = None
+                example.solver_observables = None
+
+                example.simulate()
+
+                self.assertEqual(example.solver.step.call_count, example.sim_substeps)
+                for step_call in example.solver.step.call_args_list:
+                    self.assertEqual(step_call.kwargs, {})
+                example.solver.update_contacts.assert_not_called()
+
     def test_mujoco_kpi_requires_cuda_graph(self):
         """Reject KPI workloads that fail CUDA graph capture."""
         benchmark = bench_mujoco.FastCartpole()
@@ -338,6 +384,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         inventory = {benchmark["name"]: benchmark for benchmark in self._discover_benchmarks(pr_gate=False)}
 
         blocking_benchmarks = (
+            "simulation.bench_reset.FastPartialResetStepHumanoidMuJoCo.time_reset_and_first_step",
             "simulation.bench_mujoco.FastG1.track_simulate",
             "simulation.bench_mujoco.FastG1.track_p95_step_time",
             "simulation.bench_anymal.FastMetricsExampleAnymalPretrained.track_mean_world_step_time",
@@ -353,6 +400,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_inverse_dynamics.FastInverseDynamics.time_eval_inverse_dynamics_force",
         )
         dashboard_benchmarks = (
+            "simulation.bench_reset.FullResetHumanoidMuJoCo.time_reset",
             "simulation.bench_mujoco.FastG1.track_solver_niter_mean",
             "simulation.bench_mujoco.FastG1.track_solver_niter_max",
             "simulation.bench_mujoco.FastG1.track_simulation_steps_per_second",
@@ -366,6 +414,14 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera.time_render_color_only",
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_color_only",
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_depth_only",
+            # SensorCamera benchmarks stay out of the PR gate: the class is new in
+            # this PR, so it cannot be imported on the base commit for comparison.
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_color_depth",
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_color_only",
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_depth_only",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_depth",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_only",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_depth_only",
         )
 
         for benchmark in blocking_benchmarks + dashboard_benchmarks:

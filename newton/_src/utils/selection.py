@@ -24,6 +24,7 @@ from ..sim import (
     eval_jacobian,
     eval_mass_matrix,
 )
+from ..solvers.observables import SolverObservables
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -1260,9 +1261,13 @@ class ArticulationView:
     # ========================================================================================
     # Generic attribute API
 
-    @staticmethod
-    def _resolve_attribute(name: str, source: Model | State | Control) -> tuple[wp.array, str]:
+    def _resolve_attribute(
+        self, name: str, source: Model | State | Control | SolverObservables
+    ) -> tuple[wp.array, str]:
         """Return the array currently stored on ``source`` under ``name`` and its frequency name."""
+        is_observable = isinstance(source, SolverObservables)
+        if is_observable and source.model is not self.model:
+            raise ValueError("Solver observables and ArticulationView must use the same model.")
         # handle namespaced attributes like "mujoco.tendon_stiffness"
         # Note: the user-facing API uses dots (e.g., "mujoco.tendon_stiffness")
         # but internally attributes are stored with colons (e.g., "mujoco:tendon_stiffness")
@@ -1276,11 +1281,17 @@ class ArticulationView:
         else:
             attrib = getattr(source, name)
             frequency_name = name
+        if is_observable and attrib is None:
+            raise ValueError(f"Observable '{name}' was not requested from the solver.")
         assert isinstance(attrib, wp.array)
         return attrib, frequency_name
 
     def _get_attribute_array(
-        self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
+        self,
+        name: str,
+        source: Model | State | Control | SolverObservables,
+        _slice: Slice | int | None = None,
+        layout=None,
     ):
         """Return the cached reshaped array of ``source.<name>``, rebuilding it if the source array was replaced.
 
@@ -1307,12 +1318,23 @@ class ArticulationView:
         return attrib
 
     def _create_attribute_array(
-        self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
+        self,
+        name: str,
+        source: Model | State | Control | SolverObservables,
+        _slice: Slice | int | None = None,
+        layout=None,
     ):
         attrib, frequency_name = self._resolve_attribute(name, source)
 
         # get frequency info
-        frequency = self.model.get_attribute_frequency(frequency_name)
+        frequency_source = source if isinstance(source, SolverObservables) else self.model
+        frequency = frequency_source.get_attribute_frequency(frequency_name)
+        if frequency in (AttributeFrequency.CONTACT, AttributeFrequency.CONTACT_RIGID, AttributeFrequency.CONTACT_SOFT):
+            raise AttributeError(
+                f"Attribute '{name}' has dynamic contact frequency '{frequency.name}'; "
+                "ArticulationView requires stable articulation ownership. "
+                "Filter using Contacts endpoints or reduce to a BODY-frequency observable first."
+            )
 
         if layout is None and frequency in self._unavailable_reasons:
             raise AttributeError(f"Attribute '{name}' is unavailable: {self._unavailable_reasons[frequency]}")
@@ -1421,7 +1443,7 @@ class ArticulationView:
         return attrib
 
     def _get_attribute_values(
-        self, name: str, source: Model | State | Control, _slice: slice | None = None, layout=None
+        self, name: str, source: Model | State | Control | SolverObservables, _slice: slice | None = None, layout=None
     ):
         attrib = self._get_attribute_array(name, source, _slice=_slice, layout=layout)
         if hasattr(attrib, "_staging_array"):
@@ -1432,6 +1454,7 @@ class ArticulationView:
                     dim=attrib._staging_array.shape,
                     inputs=[attrib._gather_src, attrib._gather_indices],
                     outputs=[attrib._staging_array],
+                    device=self.device,
                 )
                 src_grad = attrib._gather_src.grad
                 dst_grad = attrib._staging_array.grad
@@ -1444,7 +1467,13 @@ class ArticulationView:
         return attrib
 
     def _set_attribute_values(
-        self, name: str, target: Model | State | Control, values, mask=None, _slice: slice | None = None, layout=None
+        self,
+        name: str,
+        target: Model | State | Control | SolverObservables,
+        values,
+        mask=None,
+        _slice: slice | None = None,
+        layout=None,
     ):
         attrib = self._get_attribute_array(name, target, _slice=_slice, layout=layout)
 
@@ -1504,9 +1533,9 @@ class ArticulationView:
             else:
                 raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
 
-    def get_attribute(self, name: str, source: Model | State | Control):
+    def get_attribute(self, name: str, source: Model | State | Control | SolverObservables):
         """
-        Get an attribute from the source (Model, State, or Control).
+        Get an attribute from a model, state, control, or solver observable container.
 
         Args:
             name: The name of the attribute to get.
@@ -1514,13 +1543,19 @@ class ArticulationView:
 
         Returns:
             array: The attribute values (dtype matches the attribute).
+
+        .. experimental::
+
+            ``SolverObservables`` sources use their declared row frequencies
+            and must belong to this view's model. Dynamic contact frequencies
+            are not supported; they need endpoint-based filtering or reduction.
         """
         return self._get_attribute_values(name, source)
 
     def set_attribute(
         self,
         name: str,
-        target: Model | State | Control,
+        target: Model | State | Control | SolverObservables,
         values: wp.array[Any],
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:
@@ -2024,7 +2059,7 @@ class ArticulationView:
         Build mapping from view DOF positions to actuator parameter indices.
 
         Note:
-            Assumes SISO actuators (one DOF per actuator).
+            Assumes one DOF per actuator.
 
         Returns array of shape (world_count * dofs_per_world,) where each element is:
         - actuator parameter index if that DOF is actuated
