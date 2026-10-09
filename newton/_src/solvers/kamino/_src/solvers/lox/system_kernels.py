@@ -744,7 +744,7 @@ def _finish_body_weight(bid: wp.int32, schur: mat66f, weight: wp.array[mat66f], 
         inverse_weight[bid] = mat66f(0.0)
         return
     weight[bid] = symmetric
-    inverse_weight[bid] = 0.5 * (inverse + wp.transpose(inverse))
+    inverse_weight[bid] = inverse
 
 
 @wp.kernel
@@ -830,7 +830,14 @@ def _compute_patch_schur_weights(
                         forward_rows[slot, axis] = forward[axis]
                         body_rows[slot, axis] = body_jacobian[axis]
                     joint_matrix[slot, slot] = 1.0 / coefficient
-        joint_matrix += forward_rows @ wp.transpose(forward_rows)
+        # The factorization reads the lower triangle of K only
+        for row in range(6):
+            for col in range(6):
+                if col <= row:
+                    value = joint_matrix[row, col]
+                    for axis in range(6):
+                        value += forward_rows[row, axis] * forward_rows[col, axis]
+                    joint_matrix[row, col] = value
         joint_lower, joint_valid = _cholesky_mat66(joint_matrix)
         if not joint_valid:
             continue
@@ -842,7 +849,16 @@ def _compute_patch_schur_weights(
                 for inner in range(axis):
                     value -= joint_lower[axis, inner] * solved[inner, col]
                 solved[axis, col] = value / joint_lower[axis, axis]
-        schur += wp.transpose(solved) @ solved
+        # Z^T Z is symmetric, so each pair of columns is evaluated once
+        for row in range(6):
+            for col in range(6):
+                if col <= row:
+                    value = wp.float32(0.0)
+                    for axis in range(6):
+                        value += solved[axis, row] * solved[axis, col]
+                    schur[row, col] += value
+                    if col < row:
+                        schur[col, row] += value
     _finish_body_weight(bid, schur, weight, inverse_weight)
 
 
@@ -920,43 +936,34 @@ def _compute_patch_schur_weights_subtraction(
 
 @wp.func
 def _invert_spd_mat66(matrix: mat66f) -> tuple[mat66f, wp.bool]:
-    """Invert a symmetric positive-definite ``6 x 6`` matrix by Cholesky factorization."""
-    lower = mat66f(0.0)
-    valid = wp.bool(True)
+    """Invert a symmetric positive-definite ``6 x 6`` matrix as ``L^-T L^-1`` from its Cholesky factor ``L``.
+
+    The inverse is exactly symmetric, since each pair of its entries is evaluated once.
+    """
+    lower, valid = _cholesky_mat66(matrix)
+    inverse = mat66f(0.0)
+    if not valid:
+        return inverse, False
+    # Inverse factor L^-1, lower triangular, by forward substitution of each column
+    inverse_lower = mat66f(0.0)
+    for col in range(6):
+        for row in range(6):
+            if row >= col:
+                value = wp.where(row == col, wp.float32(1.0), wp.float32(0.0))
+                for inner in range(6):
+                    if inner >= col and inner < row:
+                        value -= lower[row, inner] * inverse_lower[inner, col]
+                inverse_lower[row, col] = value / lower[row, row]
     for row in range(6):
         for col in range(6):
             if col <= row:
-                value = 0.5 * (matrix[row, col] + matrix[col, row])
+                value = wp.float32(0.0)
                 for inner in range(6):
-                    if inner < col:
-                        value -= lower[row, inner] * lower[col, inner]
-                if row == col:
-                    if not wp.isfinite(value) or value <= 0.0:
-                        valid = False
-                    elif valid:
-                        lower[row, col] = wp.sqrt(value)
-                elif valid:
-                    lower[row, col] = value / lower[col, col]
-    inverse = mat66f(0.0)
-    if not valid:
-        return inverse, valid
-    for axis in range(6):
-        # Forward substitution L y = e_axis, then backward substitution L^T x = y
-        y = vec6f(0.0)
-        for row in range(6):
-            value = wp.where(row == axis, 1.0, 0.0)
-            for inner in range(6):
-                if inner < row:
-                    value -= lower[row, inner] * y[inner]
-            y[row] = value / lower[row, row]
-        for reverse in range(6):
-            row = 5 - reverse
-            value = y[row]
-            for inner in range(6):
-                if inner > row:
-                    value -= lower[inner, row] * inverse[inner, axis]
-            inverse[row, axis] = value / lower[row, row]
-    return inverse, valid
+                    if inner >= row:
+                        value += inverse_lower[inner, row] * inverse_lower[inner, col]
+                inverse[row, col] = value
+                inverse[col, row] = value
+    return inverse, True
 
 
 @wp.kernel
