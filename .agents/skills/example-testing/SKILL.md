@@ -32,6 +32,10 @@ them pass or infer acceptance from a clean exit.
 
 ## Execute and inspect
 
+- Apply the shared checks in [shared-qa.md](references/shared-qa.md), including
+  relevant viewer controls. These checks are defined once here rather than
+  repeated in every example's educational source. Record unsupported controls
+  and environment limits instead of assuming every backend behaves identically.
 - Read [interaction.md](references/interaction.md) for capture, pan, pick,
   stepping, and cleanup commands. Use the bundled `scripts/desktop.py` helper
   for screenshots and smooth drags on X11. Launch one example per process,
@@ -43,6 +47,23 @@ them pass or infer acceptance from a clean exit.
   [jitter.md](references/jitter.md). Observe consecutive late-run frames with
   physics advancing and a fixed camera; a paused final image is not evidence
   of stability. Distinguish wall time, simulation time, and render cadence.
+- After the prescribed checks, spend a short exploratory interval on each
+  interactive example (roughly 30–60 seconds of interaction, adjusted to its
+  complexity). Vary a few plausible actions: pull different movable objects,
+  release during motion, pause and inspect contacts up close, step and resume,
+  change camera angles, toggle relevant overlays, or adjust an example control
+  within its supported range. Choose actions that make sense for the scene,
+  rather than blindly clicking random screen coordinates. For noninteractive
+  examples, explore a relevant supported input/variant instead and record why
+  desktop interaction does not apply.
+- Keep exploration separate from the baseline and settling observations. Record
+  the initial state, targets, action order, parameters, timing/step counts when
+  known, and screenshots around anomalies. If actions are randomly generated,
+  retain the seed and generated action list; a seed alone cannot reproduce GUI
+  timing. Release all held inputs and reset/relaunch before rechecking a
+  suspected problem against the baseline. Do not excuse explosions or crashes
+  just because exploration found them, or label expected extreme-input motion
+  as a defect without investigating.
 - Reproduce suspected defects from reset or a fresh process. Separate physics
   defects, rendering/capture artifacts, missing assets/dependencies, and unmet
   hardware requirements. Do not silently substitute CPU for requested CUDA.
@@ -57,6 +78,10 @@ otherwise. Record artifact version, wheel origin/hash or source commit, resolved
 dependencies, Python/Warp versions, device/driver, renderer, display, and command
 lines. Include a row for each requested example/variant with criteria source,
 expected/observed behavior, status, and relative log/image/sequence paths.
+Work example-by-example and update a persistent progress document after each
+case/variant with completed checks, exploratory actions, evidence, unresolved
+questions, and the next case. Keep criteria migration, static validation, and
+executed visual QA as separate statuses so none is mistaken for the others.
 
 Use **pass** only for criteria actually evaluated and satisfied; **fail** for an
 observed criterion violation; **blocked** for an environment/input obstacle;
