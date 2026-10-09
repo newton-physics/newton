@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
-from warp.types import is_array, type_size_in_bytes
+from warp.types import is_array, type_size, type_size_in_bytes
 
 from ..sim import (
     Control,
@@ -2623,9 +2623,15 @@ class _DeformableViewBase:
         count = self._element_count(kind)
         if self.device.is_capturing and not isinstance(values, wp.array):
             raise RuntimeError("Create values as a Warp array on the view's device before CUDA capture")
-        mask = self._resolve_mask(mask)
+        if values is None:
+            raise ValueError("Expected values, got None")
         expected_shape = (self.count, count)
         if not isinstance(values, wp.array):
+            expected_host_shape = (*expected_shape, type_size(dtype))
+            try:
+                values = np.asarray(values, dtype=np.float32).reshape(expected_host_shape)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"Expected numeric values that can be reshaped to {expected_host_shape}") from error
             values = wp.array(values, dtype=dtype, shape=expected_shape, device=self.device)
         if values.shape != expected_shape:
             raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
@@ -2633,6 +2639,7 @@ class _DeformableViewBase:
             raise ValueError(f"Expected values dtype {dtype.__name__}, got {values.dtype.__name__}")
         if values.device != self.device:
             raise ValueError(f"Expected values on device {self.device}, got {values.device}")
+        mask = self._resolve_mask(mask)
         if self.count and count and values.size and dst.size:
             # Strided getters may alias the target even when their pointers differ.
             # Reject overlap without a device readback or a hidden copy.
@@ -2700,6 +2707,7 @@ class _DeformableParticleView(_DeformableViewBase):
             values: Particle positions [m], shape
                 ``(count, particles_per_deformable_object)``. Must not share storage
                 with the target array; clone live getter results before writing.
+                Host inputs are reshaped with a final axis of length 3. None is invalid.
             mask: Boolean array of shape ``(count,)`` on the view's device, or
                 a host Boolean sequence outside capture. True updates that
                 selected deformable object. None updates the whole selection.
@@ -2748,6 +2756,7 @@ class _DeformableParticleView(_DeformableViewBase):
             values: Particle velocities [m/s], shape
                 ``(count, particles_per_deformable_object)``. Must not share storage
                 with the target array; clone live getter results before writing.
+                Host inputs are reshaped with a final axis of length 3. None is invalid.
             mask: Boolean array of shape ``(count,)`` on the view's device, or
                 a host Boolean sequence outside capture. True updates that
                 selected deformable object. None updates the whole selection.
@@ -2808,6 +2817,7 @@ class _DeformableRigidBodyView(_DeformableViewBase):
             values: Segment transforms with world-space translation [m] and a unitless quaternion, shape
                 ``(count, bodies_per_deformable_object)``. Must not share storage
                 with the target array; clone live getter results before writing.
+                Host inputs are reshaped with a final axis of length 7. None is invalid.
             mask: Boolean array of shape ``(count,)`` on the view's device, or
                 a host Boolean sequence outside capture. True updates that
                 selected deformable object. None updates the whole selection.
@@ -2859,6 +2869,7 @@ class _DeformableRigidBodyView(_DeformableViewBase):
             values: Segment velocities in (v_com_world, omega_world) order [m/s, rad/s], shape
                 ``(count, bodies_per_deformable_object)``. Must not share storage
                 with the target array; clone live getter results before writing.
+                Host inputs are reshaped with a final axis of length 6. None is invalid.
             mask: Boolean array of shape ``(count,)`` on the view's device, or
                 a host Boolean sequence outside capture. True updates that
                 selected deformable object. None updates the whole selection.

@@ -76,6 +76,15 @@ For example, three cloths with four particles each produce a Warp array with
 shape ``(3, 4)`` and ``wp.vec3`` elements. Its NumPy representation has shape
 ``(3, 4, 3)`` because each position has three coordinates.
 
+Outside CUDA capture, setters also accept numeric host sequences and NumPy
+arrays. Like :class:`~newton.selection.ArticulationView`, they reshape host inputs
+in row-major order when the total number of components matches. The resulting
+NumPy shape has a final axis of length 3 for particle positions and velocities,
+7 for body transforms, and 6 for body velocities. Missing values (``None``),
+non-numeric inputs, and incorrect component counts raise ``ValueError`` without
+changing the target, even with an all-false mask. Warp arrays must already have
+the required shape and dtype.
+
 Save independent reset buffers during setup, then use them to reset the state:
 
 .. code-block:: python
