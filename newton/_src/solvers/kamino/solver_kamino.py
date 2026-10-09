@@ -839,7 +839,11 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._collision_detector_kamino = None
         if self._config.use_collision_detector:
             collision_config = self._config.collision_detector
-            if self._config.dynamics_solver == "dvi" and collision_config.max_contacts_per_world is None:
+            if (
+                self._config.dynamics_solver in ("dvi", "lox")
+                and collision_config is not None
+                and collision_config.max_contacts_per_world is None
+            ):
                 collision_config = replace(
                     collision_config,
                     max_contacts_per_world=_estimate_dvi_contacts_per_world(self._model_kamino, self.model),
