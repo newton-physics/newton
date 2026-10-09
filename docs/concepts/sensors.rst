@@ -121,10 +121,11 @@ attributes, and usage examples.
 Camera Rays from USD and Calibration Data
 -----------------------------------------
 
-Camera image allocation helpers share the ``create_image_output_`` prefix:
-``color``, ``depth``, ``forward_depth``, ``shape_index``, ``normal``, ``albedo``,
-and ``hdr_color``. For example, use
-:meth:`~newton.sensors.SensorCamera.create_image_output_color` for a packed RGBA
+Camera image allocation helpers share the ``allocate_image_`` prefix:
+``color``, ``color_hdr``, ``depth``, ``depth_forward``, ``normal``, ``albedo``,
+and ``shape_index``. These helpers return zero-initialized arrays on the model's
+device. For example, use
+:meth:`~newton.sensors.SensorCamera.allocate_image_color` for a packed RGBA
 buffer.
 
 :class:`~newton.sensors.SensorCamera` renders one view per world-space camera transform passed to
@@ -154,7 +155,7 @@ read the attributes you use in your pipeline and pass the numeric values into th
    camera_transforms = camera.compute_camera_transforms_usd(usd_camera)
    view_count = camera_transforms.shape[0]
 
-   color = camera.create_image_output_color(view_count, 640, 480)
+   color = camera.allocate_image_color(view_count, 640, 480)
 
    # update() syncs deformable-mesh points from state by default; refit the
    # shape/particle BVHs first on any frame whose geometry moved.

@@ -1057,7 +1057,7 @@ the range are clipped).
     # once and reuse it every frame; the RGBA conversion is a zero-copy view.
     camera = SensorCamera(model)
     view_count, width, height = 1, 16, 16
-    color_image = camera.create_image_output_color(view_count, width, height)
+    color_image = camera.allocate_image_color(view_count, width, height)
     # ... in a real pipeline, camera.update(...) fills color_image each frame.
     rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
     viewer.log_image("camera", rgba)
@@ -1085,7 +1085,7 @@ frame capture where the image should replace the 3D scene:
     # once and reuse it every frame; the RGBA conversion is a zero-copy view.
     camera = SensorCamera(model)
     view_count, width, height = 1, 16, 16
-    color_image = camera.create_image_output_color(view_count, width, height)
+    color_image = camera.allocate_image_color(view_count, width, height)
     # ... in a real pipeline, camera.update(...) fills color_image each frame.
     rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
     viewer.log_image("camera", rgba, fullscreen=True)
