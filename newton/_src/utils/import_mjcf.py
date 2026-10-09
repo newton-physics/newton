@@ -3495,15 +3495,14 @@ def parse_mjcf(
         inertia = 0.5 * (inertia + inertia.T)
         principal_inertia, principal_axes = np.linalg.eigh(inertia)
 
+        mass = max(mass, bound_mass)
+        principal_inertia = np.maximum(principal_inertia, bound_inertia)
         if mass < 0.0 or np.any(principal_inertia < 0.0):
             raise ValueError("MJCF body mass and inertia must be nonnegative.")
 
-        mass = max(mass, bound_mass)
-        principal_inertia = np.maximum(principal_inertia, bound_inertia)
-
-        # Inertia is stored as float32 before this check. Allow its rounding error
-        # at the triangle boundary (for example, 0.1 + 0.2 == 0.3 in MJCF).
-        triangle_tolerance = np.finfo(np.float32).eps * principal_inertia[2]
+        # Allow accumulated float32 storage and rotation error at the triangle
+        # boundary without replacing a valid anisotropic inertia with its mean.
+        triangle_tolerance = 8.0 * np.finfo(np.float32).eps * principal_inertia[2]
         if principal_inertia[0] + principal_inertia[1] < principal_inertia[2] - triangle_tolerance:
             if not balance_inertia:
                 raise ValueError("MJCF body inertia must satisfy A + B >= C; use 'balanceinertia' to fix.")

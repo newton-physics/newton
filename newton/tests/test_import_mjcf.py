@@ -89,21 +89,27 @@ class TestImportMjcfBasic(unittest.TestCase):
             newton.ModelBuilder().add_mjcf(unbalanced_mjcf, ignore_inertial_definitions=False)
 
     def test_compiler_accepts_boundary_valid_inertia(self):
-        """Float32 storage must not reject a valid triangle boundary."""
-        mjcf = """
+        """Preserve boundary-valid principal inertia after float32 rotation."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        for euler in ("0 0 0", "0 90 0", "30 45 60"):
+            for balance in ("false", "true"):
+                with self.subTest(euler=euler, balance=balance):
+                    mjcf = f"""
 <mujoco>
+    <compiler balanceinertia="{balance}"/>
     <worldbody><body name="body"><joint/>
-        <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.3"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.3" euler="{euler}"/>
     </body></worldbody>
 </mujoco>
 """
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
-        np.testing.assert_allclose(
-            np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
-            [0.1, 0.2, 0.3],
-            rtol=1e-6,
-        )
+                    native_model = mujoco.MjModel.from_xml_string(mjcf)
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+                    np.testing.assert_allclose(
+                        np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
+                        native_model.body_inertia[1],
+                        rtol=1e-6,
+                    )
 
     def test_compiler_inertia_guards_preserve_existing_bodies(self):
         """Guard only imported bodies and update their inverse properties."""
@@ -149,26 +155,32 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertAlmostEqual(builder.body_inv_mass[imported_body], 1.0 / native_model.body_mass[1], places=6)
         np.testing.assert_allclose(imported_inv_inertia, np.linalg.inv(imported_inertia), rtol=1.0e-6, atol=1.0e-8)
 
-    def test_compiler_inertia_guards_reject_negative_values(self):
-        """Reject negative body mass and principal inertia before clamping."""
-        invalid_inertials = {
-            "mass": 'mass="-1" diaginertia="0.01 0.02 0.03"',
-            "inertia": 'mass="1" diaginertia="-0.01 0.02 0.03"',
-        }
-        for property_name, inertial_attrib in invalid_inertials.items():
-            with self.subTest(property=property_name):
+    def test_compiler_inertia_guards_apply_bounds_before_validation(self):
+        """Match native compiler bounds on negative authored mass and inertia."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        cases = (
+            ('boundmass="0.5"', 'mass="-1" diaginertia="1 1 1"'),
+            ('boundinertia="0.02"', 'mass="1" diaginertia="-0.01 0.02 0.03"'),
+        )
+        for compiler, inertial in cases:
+            with self.subTest(compiler=compiler):
                 mjcf = f"""
 <mujoco>
-    <worldbody>
-        <body name="body">
-            <joint/>
-            <inertial pos="0 0 0" {inertial_attrib}/>
-        </body>
-    </worldbody>
+    <compiler {compiler}/>
+    <worldbody><body><joint/>
+        <inertial pos="0 0 0" {inertial}/>
+    </body></worldbody>
 </mujoco>
 """
-                with self.assertRaisesRegex(ValueError, "mass and inertia must be nonnegative"):
-                    newton.ModelBuilder().add_mjcf(mjcf, ignore_inertial_definitions=False)
+                native_model = mujoco.MjModel.from_xml_string(mjcf)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+                self.assertAlmostEqual(builder.body_mass[0], native_model.body_mass[1])
+                np.testing.assert_allclose(
+                    np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
+                    native_model.body_inertia[1],
+                    rtol=1e-6,
+                )
 
     def test_geom_rgba_preserves_opacity(self):
         """Preserve authored MJCF geometry opacity."""
