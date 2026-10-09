@@ -121,13 +121,14 @@ Standard observables
    * - ``BODY_PARENT_F`` / ``observables.body_parent_f``
      - Incoming parent-joint wrenches on rigid bodies
      - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
-       :class:`~newton.solvers.SolverFeatherstone`, and
+       :class:`~newton.solvers.SolverFeatherstone`,
+       :class:`~newton.solvers.SolverFeatherPGS`, and
        :class:`~newton.solvers.SolverXPBD`
    * - ``CONTACT_F`` / ``observables.contact_f``
      - Contact spatial forces aligned with the bound contacts
      - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
-       :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`, and
-       :class:`~newton.solvers.SolverKamino`
+       :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`,
+       :class:`~newton.solvers.SolverKamino`, and :class:`~newton.solvers.SolverFeatherPGS`
 
 :class:`~newton.solvers.SolverKamino` computes acceleration as the discrete
 step-average ``(body_qd_out - body_qd_in) / dt``. Across an impact, this includes
@@ -137,6 +138,12 @@ post-constraint RNE stage independently of sensors.
 The native MuJoCo CPU backend (``use_mujoco_cpu=True``) supports only
 ``SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR``; body and contact observable
 requests are rejected. MuJoCo Warp supports body observables on both CPU and GPU.
+
+:class:`~newton.solvers.SolverFeatherPGS` reports only the linear part of each rigid
+contact force; the torque part is zero. Contacts without solved rows, such as rows
+dropped for capacity or skipped for sleeping islands, report zero. A sleeping body's
+contacts therefore read as unloaded even though they still support it; use
+``sleep_skip_constraints=False`` or disable sleeping when consumers rely on these forces.
 
 Kamino exports contact points in the step's input body frames and world-frame
 wrenches about the input centers of mass.

@@ -742,9 +742,43 @@ def test_kinematic_runtime_toggle(
     test.assertLess(displacement, 1e-3, "Re-kinematic body should not move further")
 
 
+def test_kinematic_prescribed_response_lifetime(
+    test: TestKinematicLinksCanonical,
+    device,
+    solver_fn,
+):
+    """Drop a newly kinematic free body from the response and reject a kinematic body turning dynamic."""
+    model, kinematic_body, probe_body, _kinematic_joint = _build_free_root_scene(device)
+    solver = solver_fn(model)
+    body_to_articulation = solver.body_to_articulation.numpy()
+    kinematic_articulation = int(body_to_articulation[kinematic_body])
+    probe_articulation = int(body_to_articulation[probe_body])
+    test.assertEqual(int(solver.articulation_response_dof_count.numpy()[kinematic_articulation]), 0)
+
+    flags = model.body_flags.numpy()
+    flags[probe_body] = int(BodyFlags.KINEMATIC)
+    model.body_flags.assign(flags)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+    test.assertEqual(int(solver.articulation_response_dof_count.numpy()[probe_articulation]), 6)
+
+    flags = model.body_flags.numpy()
+    flags[kinematic_body] = int(BodyFlags.DYNAMIC)
+    model.body_flags.assign(flags)
+    with test.assertRaisesRegex(RuntimeError, "reconstruct the solver"):
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
+    "feather_pgs_matrix_free": lambda model: newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free"),
+    "feather_pgs_split": lambda model: newton.solvers.SolverFeatherPGS(model, pgs_mode="split"),
+    "feather_pgs_propagation": lambda model: newton.solvers.SolverFeatherPGS(
+        model, articulated_contact_response="propagation"
+    ),
+    "feather_pgs_propagation_fused": lambda model: newton.solvers.SolverFeatherPGS(
+        model, articulated_contact_response="propagation-fused"
+    ),
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=5, angular_damping=0.0),
@@ -755,7 +789,12 @@ for device in devices:
     for solver_name, solver_fn in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
-        if device.is_cpu and solver_name == "mujoco_warp":
+        if device.is_cpu and solver_name in (
+            "mujoco_warp",
+            "feather_pgs_matrix_free",
+            "feather_pgs_propagation",
+            "feather_pgs_propagation_fused",
+        ):
             continue
 
         add_function_test(
@@ -765,6 +804,14 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
+        if solver_name.startswith("feather_pgs"):
+            add_function_test(
+                TestKinematicLinksCanonical,
+                f"test_kinematic_prescribed_response_lifetime_{solver_name}",
+                test_kinematic_prescribed_response_lifetime,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
         add_function_test(
             TestKinematicLinksCanonical,
             f"test_kinematic_revolute_root_pendulum_prescribed_motion_{solver_name}",

@@ -1,0 +1,1 @@
+Deprecate the `mf_warmstart` and `mf_warmstart_decay` options of `newton.solvers.SolverFeatherPGS`, accepted for code written against the collaboration branch; use `pgs_warmstart` and `pgs_warmstart_decay` instead.
