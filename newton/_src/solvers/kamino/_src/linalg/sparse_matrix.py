@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
 import warp as wp
-from warp.types import type_size_in_bytes
 
 from ..core.types import FloatType, IntType
 from .core import DenseSquareMultiLinearInfo
@@ -274,79 +273,33 @@ class BlockSparseMatrices(Generic[BlockScalarType, IndexType, BlockType]):
 
     @property
     def max_rows(self) -> wp.array[IndexType]:
-        assert self.max_dims is not None and self.max_dims.ptr is not None
-        index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
-            dtype=self.index_dtype,
-            shape=(self.num_matrices,),
-            ptr=self.max_dims.ptr,
-            strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-        )
+        assert self.max_dims is not None
+        return self.max_dims[:, 0]
 
     @property
     def max_cols(self) -> wp.array[IndexType]:
-        assert self.max_dims is not None and self.max_dims.ptr is not None
-        index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
-            dtype=self.index_dtype,
-            shape=(self.num_matrices,),
-            ptr=self.max_dims.ptr + index_dtype_size_bytes,
-            strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-        )
+        assert self.max_dims is not None
+        return self.max_dims[:, 1]
 
     @property
     def num_rows(self) -> wp.array[IndexType]:
-        assert self.dims is not None and self.dims.ptr is not None
-        index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
-            dtype=self.index_dtype,
-            shape=(self.num_matrices,),
-            ptr=self.dims.ptr,
-            strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-            device=self.device,
-        )
+        assert self.dims is not None
+        return self.dims[:, 0]
 
     @property
     def num_cols(self) -> wp.array[IndexType]:
-        assert self.dims is not None and self.dims.ptr is not None
-        index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
-            dtype=self.index_dtype,
-            shape=(self.num_matrices,),
-            ptr=self.dims.ptr + index_dtype_size_bytes,
-            strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-            device=self.device,
-        )
+        assert self.dims is not None
+        return self.dims[:, 1]
 
     @property
     def nzb_row(self) -> wp.array[IndexType]:
-        assert self.nzb_coords is not None and self.nzb_coords.ptr is not None
-        index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
-            dtype=self.index_dtype,
-            shape=(self.sum_of_num_nzb,),
-            ptr=self.nzb_coords.ptr,
-            strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-            device=self.device,
-        )
+        assert self.nzb_coords is not None
+        return self.nzb_coords[:, 0]
 
     @property
     def nzb_col(self) -> wp.array[IndexType]:
-        assert self.nzb_coords is not None and self.nzb_coords.ptr is not None
-        index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
-            dtype=self.index_dtype,
-            shape=(self.sum_of_num_nzb,),
-            ptr=self.nzb_coords.ptr + index_dtype_size_bytes,
-            strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-            device=self.device,
-        )
+        assert self.nzb_coords is not None
+        return self.nzb_coords[:, 1]
 
     ###
     # Operations

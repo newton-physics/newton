@@ -53,6 +53,7 @@ from ..geometry import (
 from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
+from ..geometry.support_function import _CONVEX_HULL_VALID
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
@@ -212,16 +213,18 @@ _CONVEX_SUPPORT_MIN_VERTICES = 256
 _CONVEX_SUPPORT_LUT_RESOLUTION = 32
 
 
-def _build_convex_support_acceleration(source: Mesh) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-    """Build a directional seed table and welded vertex adjacency for a convex collision mesh."""
+def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[int]] | None:
+    """Validate hull adjacency, using strict geometry checks for depth certification."""
     vertices = np.asarray(source.vertices, dtype=np.float32).reshape(-1, 3)
     vertex_count = len(vertices)
-    if vertex_count < _CONVEX_SUPPORT_MIN_VERTICES:
+    if vertex_count < 4:
         return None
 
     triangles = np.asarray(source.indices, dtype=np.int32).reshape(-1, 3)
     geometry_scale = max(float(np.max(np.ptp(vertices, axis=0))), 1.0e-6)
     vertices64 = vertices.astype(np.float64)
+    if certify and np.linalg.matrix_rank(vertices64 - vertices64.mean(axis=0), tol=geometry_scale * 1.0e-10) < 3:
+        return None
     triangle_points = vertices64[triangles]
     face_normals = np.cross(
         triangle_points[:, 1] - triangle_points[:, 0], triangle_points[:, 2] - triangle_points[:, 0]
@@ -238,7 +241,9 @@ def _build_convex_support_acceleration(source: Mesh) -> tuple[np.ndarray, np.nda
     # use their edges when every non-degenerate triangle lies on a supporting
     # plane of the point set; otherwise a local edge maximum need not be the
     # global support point and the exhaustive path must remain active.
-    plane_tolerance = geometry_scale * 2.0e-6
+    # Certification must also survive per-instance scale. Allow only float64
+    # construction error, not the looser tolerance of a support-map edge walk.
+    plane_tolerance = geometry_scale * (1.0e-12 if certify else 2.0e-6)
     for start in range(0, len(face_normals), 64):
         stop = min(start + 64, len(face_normals))
         projections = face_normals[start:stop] @ vertices64.T
@@ -252,11 +257,12 @@ def _build_convex_support_acceleration(source: Mesh) -> tuple[np.ndarray, np.nda
     # hull. Walking its edges can stop at a local maximum because an omitted
     # face also omits the edge needed to reach the global support vertex.
     # Validate a closed two-manifold after welding numerically split seams.
-    coordinate_scale = max(float(np.max(np.abs(vertices))), 1.0)
+    coordinate_scale = geometry_scale if certify else max(float(np.max(np.abs(vertices))), 1.0)
     weld_groups: dict[tuple[float, float, float], list[int]] = {}
     welded_vertex = np.empty(vertex_count, dtype=np.int32)
     for vertex, position in enumerate(vertices):
-        key = tuple(np.round(position / coordinate_scale, decimals=6))
+        normalized = (position - vertices64[0]) / coordinate_scale if certify else position / coordinate_scale
+        key = tuple(np.round(normalized, decimals=12 if certify else 6))
         group = weld_groups.setdefault(key, [])
         if group:
             welded_vertex[vertex] = group[0]
@@ -265,23 +271,29 @@ def _build_convex_support_acceleration(source: Mesh) -> tuple[np.ndarray, np.nda
         group.append(vertex)
 
     edge_incidence: Counter[tuple[int, int]] = Counter()
+    faces = set()
     for triangle in triangles[nondegenerate]:
         welded = tuple(int(welded_vertex[int(vertex)]) for vertex in triangle)
         if len(set(welded)) < 3:
             continue
+        face = tuple(sorted(welded))
+        if certify and face in faces:
+            return None
+        faces.add(face)
         for first, second in ((welded[0], welded[1]), (welded[1], welded[2]), (welded[2], welded[0])):
             edge_incidence[min(first, second), max(first, second)] += 1
     if not edge_incidence or any(count != 2 for count in edge_incidence.values()):
-        warnings.warn(
-            "Convex support acceleration requires complete closed hull topology; "
-            "falling back to exhaustive support mapping.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+        if not certify and vertex_count >= _CONVEX_SUPPORT_MIN_VERTICES:
+            warnings.warn(
+                "Convex support acceleration requires complete closed hull topology; "
+                "falling back to exhaustive support mapping.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         return None
 
     adjacent = [set() for _ in range(vertex_count)]
-    for triangle in triangles:
+    for triangle in triangles[nondegenerate]:
         a, b, c = (int(value) for value in triangle)
         if a != b:
             adjacent[a].add(b)
@@ -305,17 +317,33 @@ def _build_convex_support_acceleration(source: Mesh) -> tuple[np.ndarray, np.nda
             adjacent[vertex].update(merged)
             adjacent[vertex].discard(vertex)
 
-    if any(not neighbors for neighbors in adjacent):
+    surface = {vertex for vertex, neighbors in enumerate(adjacent) if neighbors}
+    if not surface:
         return None
-    visited = {0}
-    stack = [0]
+    first = min(surface)
+    visited = {first}
+    stack = [first]
     while stack:
         vertex = stack.pop()
         for neighbor in adjacent[vertex]:
             if neighbor not in visited:
                 visited.add(neighbor)
                 stack.append(neighbor)
-    if len(visited) != vertex_count:
+    if visited != surface:
+        return None
+    return adjacent
+
+
+def _build_convex_support_acceleration(
+    source: Mesh, *, adjacency: list[set[int]] | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Build a directional seed table and welded vertex adjacency for a convex collision mesh."""
+    vertices = np.asarray(source.vertices, dtype=np.float32).reshape(-1, 3)
+    vertex_count = len(vertices)
+    if vertex_count < _CONVEX_SUPPORT_MIN_VERTICES:
+        return None
+    adjacent = _convex_hull_adjacency(source, certify=False) if adjacency is None else adjacency
+    if adjacent is None or any(not neighbors for neighbors in adjacent):
         return None
 
     resolution = _CONVEX_SUPPORT_LUT_RESOLUTION
@@ -13434,15 +13462,17 @@ class ModelBuilder:
                 ):
                     source_key = hash(source)
                     if source_key not in support_cache:
-                        acceleration = _build_convex_support_acceleration(source)
-                        cached = None
+                        adjacent = _convex_hull_adjacency(source)
+                        hull_flag = _CONVEX_HULL_VALID if adjacent is not None else 0
+                        cached = (-1, -1, -1, hull_flag)
+                        acceleration = _build_convex_support_acceleration(source, adjacency=adjacent)
                         if acceleration is not None:
                             lut, offsets, neighbors = acceleration
                             cached = (
-                                (lut_offset, vertex_offset, neighbor_offset, _CONVEX_SUPPORT_LUT_RESOLUTION),
-                                lut,
-                                offsets,
-                                neighbors,
+                                lut_offset,
+                                vertex_offset,
+                                neighbor_offset,
+                                _CONVEX_SUPPORT_LUT_RESOLUTION | hull_flag,
                             )
                             support_lut_chunks.append(lut)
                             support_offset_chunks.append(offsets)
@@ -13451,9 +13481,7 @@ class ModelBuilder:
                             vertex_offset += len(offsets)
                             neighbor_offset += len(neighbors)
                         support_cache[source_key] = cached
-                    cached = support_cache[source_key]
-                    if cached is not None:
-                        metadata = cached[0]
+                    metadata = support_cache[source_key]
                 shape_support_data.append(metadata)
 
             m._shape_support_data = wp.array(shape_support_data, dtype=wp.vec4i, device=device)

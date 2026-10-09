@@ -3,7 +3,9 @@
 
 """Unit tests for the base classes in linalg/sparse.py"""
 
+import gc
 import unittest
+import weakref
 
 import numpy as np
 import warp as wp
@@ -500,6 +502,71 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
         product_check(transpose=False, mask_matrices=True)
         product_check(transpose=True, mask_matrices=False)
         product_check(transpose=True, mask_matrices=True)
+
+    def test_05_metadata_views_preserve_backing_device_and_lifetime(self):
+        """Verify that metadata views keep the backing allocation's device and lifetime."""
+        devices = ["cpu"]
+        if wp.is_cuda_available():
+            devices.append("cuda:0")
+
+        for device in devices:
+            with self.subTest(device=device):
+                conflicting = (
+                    "cpu" if wp.get_device(device).is_cuda else ("cuda:0" if wp.is_cuda_available() else "cpu")
+                )
+                bsm = BlockSparseMatrices(
+                    nzb_dtype=BlockDType(shape=(1,), dtype=wp.float32),
+                    device=device,
+                )
+                bsm.finalize(max_dims=[(2, 3), (4, 5)], capacities=[1, 2])
+                dims_np = np.array([[7, 8], [9, 10]], dtype=np.int32)
+                coords_np = np.arange(bsm.sum_of_num_nzb * 2, dtype=np.int32).reshape(-1, 2) + 11
+                bsm.dims.assign(dims_np)
+                bsm.nzb_coords.assign(coords_np)
+
+                with wp.ScopedDevice(conflicting):
+                    views = {
+                        "max_rows": bsm.max_rows,
+                        "max_cols": bsm.max_cols,
+                        "num_rows": bsm.num_rows,
+                        "num_cols": bsm.num_cols,
+                        "nzb_row": bsm.nzb_row,
+                        "nzb_col": bsm.nzb_col,
+                    }
+
+                backing = {
+                    "max_rows": bsm.max_dims,
+                    "max_cols": bsm.max_dims,
+                    "num_rows": bsm.dims,
+                    "num_cols": bsm.dims,
+                    "nzb_row": bsm.nzb_coords,
+                    "nzb_col": bsm.nzb_coords,
+                }
+                expected = {
+                    "max_rows": np.array([2, 4], dtype=np.int32),
+                    "max_cols": np.array([3, 5], dtype=np.int32),
+                    "num_rows": dims_np[:, 0],
+                    "num_cols": dims_np[:, 1],
+                    "nzb_row": coords_np[:, 0],
+                    "nzb_col": coords_np[:, 1],
+                }
+                backing_device = wp.get_device(device)
+                owner_refs = {name: weakref.ref(array) for name, array in backing.items()}
+
+                for name, view in views.items():
+                    self.assertEqual(view.device, backing_device, name)
+                    # A CUDA pointer must not be reachable through the CPU ctypes path.
+                    if backing_device.is_cuda or not view.is_contiguous:
+                        with self.assertRaises(RuntimeError):
+                            view.cptr()
+                    np.testing.assert_array_equal(view.numpy(), expected[name])
+
+                del bsm
+                del backing
+                gc.collect()
+                for name, view in views.items():
+                    self.assertIsNotNone(owner_refs[name](), name)
+                    np.testing.assert_array_equal(view.numpy(), expected[name])
 
     ###
     # Matrix-Vector Product Tests

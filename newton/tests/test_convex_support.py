@@ -13,10 +13,16 @@ import newton
 from newton._src.geometry.support_function import (
     AcceleratedSupportMapDataProvider,
     GenericShapeData,
+    SupportMapDataProvider,
+    _has_verified_hull,
     pack_mesh_ptr,
     support_map_accelerated,
 )
-from newton._src.sim.builder import _build_convex_support_acceleration, _deduplicate_convex_collision_mesh
+from newton._src.sim.builder import (
+    _build_convex_support_acceleration,
+    _convex_hull_adjacency,
+    _deduplicate_convex_collision_mesh,
+)
 
 
 @wp.kernel
@@ -45,7 +51,79 @@ def _accelerated_support_kernel(
     result[tid] = support_map_accelerated(shape, directions[tid], provider)
 
 
+@wp.kernel
+def _hull_validity_kernel(metadata: wp.array[wp.vec4i], result: wp.array[int]):
+    shape = GenericShapeData()
+    shape.shape_type = newton.GeoType.CONVEX_MESH
+    shape.shape_index = wp.tid()
+    provider = SupportMapDataProvider()
+    provider.shape_support_data = metadata
+    result[wp.tid()] = int(_has_verified_hull(shape, provider))
+
+
 class TestConvexSupportAcceleration(unittest.TestCase):
+    def test_nonpositive_resolution_disables_acceleration(self):
+        """Keep legacy disabled metadata safe with empty acceleration buffers."""
+        mesh = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False, compute_inertia=False)
+        device = wp.get_device()
+        mesh_id = mesh.finalize(device=device)
+        directions = wp.array([(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+        result = wp.empty(1, dtype=wp.vec3, device=device)
+        empty = wp.empty(0, dtype=int, device=device)
+        for packed in (-1, 0, 1 << 16):
+            metadata = wp.array([(-1, -1, -1, packed)], dtype=wp.vec4i, device=device)
+            wp.launch(
+                _accelerated_support_kernel,
+                dim=1,
+                inputs=[mesh_id, directions, metadata, empty, empty, empty],
+                outputs=[result],
+                device=device,
+            )
+            self.assertEqual(float(result.numpy()[0, 0]), 1.0)
+        metadata = wp.array([(-1, -1, -1, value) for value in (-1, 0, 32, 1 << 16, (1 << 16) | 32)], dtype=wp.vec4i)
+        validity = wp.empty(5, dtype=int)
+        wp.launch(_hull_validity_kernel, dim=5, inputs=[metadata], outputs=[validity])
+        np.testing.assert_array_equal(validity.numpy(), [0, 0, 0, 1, 1])
+
+    def test_hull_validation_checks_all_support_vertices(self):
+        """Reject omitted extreme vertices while accepting unused interior support points."""
+        mesh = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False, compute_inertia=False)
+        for scale in (1.0e-3, 1.0, 1.0e3):
+            for x, valid in ((0.0, True), (1.000003, False)):
+                with self.subTest(scale=scale, x=x):
+                    source = newton.Mesh(
+                        compute_inertia=False,
+                        vertices=np.vstack((mesh.vertices, [x, 0.0, 0.0])).astype(np.float32) * scale,
+                        indices=mesh.indices,
+                    )
+                    self.assertEqual(_convex_hull_adjacency(source) is not None, valid)
+
+    def test_hull_validation_does_not_weld_away_a_missing_small_face(self):
+        """Keep a narrow opening visible when validating a nearly closed source mesh."""
+        from scipy.spatial import ConvexHull
+
+        mesh = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False, compute_inertia=False)
+        vertices = np.asarray(mesh.vertices)
+        vertices = vertices[~np.all(vertices == 1.0, axis=1)]
+        bevel = np.ones((3, 3)) - np.eye(3) * 3.0e-7
+        points = np.vstack((vertices, bevel)).astype(np.float32)
+        faces = ConvexHull(points).simplices
+        faces = faces[~np.all(faces >= len(vertices), axis=1)]
+        self.assertIsNone(_convex_hull_adjacency(newton.Mesh(compute_inertia=False, vertices=points, indices=faces)))
+
+    def test_hull_validation_rejects_incomplete_and_degenerate_surfaces(self):
+        """Reject partial, duplicated, and flat source surfaces without changing their support points."""
+        mesh = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False, compute_inertia=False)
+        triangles = np.asarray(mesh.indices).reshape(-1, 3)
+        for indices in (triangles[:-1], np.vstack((triangles, triangles[0]))):
+            with self.subTest(triangles=len(indices)):
+                self.assertIsNone(
+                    _convex_hull_adjacency(newton.Mesh(compute_inertia=False, vertices=mesh.vertices, indices=indices))
+                )
+        flat = np.asarray(mesh.vertices).copy()
+        flat[:, 2] = 0.0
+        self.assertIsNone(_convex_hull_adjacency(newton.Mesh(compute_inertia=False, vertices=flat, indices=triangles)))
+
     def test_accelerated_support_matches_exhaustive_support_value(self):
         """Match exhaustive support values for accelerated convex meshes."""
         mesh = _deduplicate_convex_collision_mesh(

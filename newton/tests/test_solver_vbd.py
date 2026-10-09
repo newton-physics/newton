@@ -1414,6 +1414,20 @@ def _rigid_contact_structural_support_conditions_tangent_rho(test, device):
         np.testing.assert_allclose(tangent_rho.numpy(), [150.0], rtol=1.0e-6)
 
 
+def _history_provenance_matched(device):
+    """Provenance inputs of a refresh whose match indices refer to the snapshotted set.
+
+    Returns ``(match_generation, contact_generation, buffer_id, history_frame)``:
+    buffer 1 was snapshotted at generation 4 and collided once since.
+    """
+    return (
+        wp.array([4], dtype=wp.int32, device=device),
+        wp.array([5], dtype=wp.int32, device=device),
+        1,
+        wp.array([1, 4], dtype=wp.int32, device=device),
+    )
+
+
 def _rigid_contact_history_restore_from_match_index(test, device):
     """Verify legacy hard contact preserves its full-vector warm start."""
     with wp.ScopedDevice(device):
@@ -1427,6 +1441,7 @@ def _rigid_contact_history_restore_from_match_index(test, device):
         shape_mu = wp.array([0.25, 1.0], dtype=float, device=device)
         match_index = wp.array([2, -1, 0, -2], dtype=wp.int32, device=device)
 
+        matched_gen = _history_provenance_matched(device)
         history = RigidContactHistory()
         history.lambda_ = wp.array([[0.5, 0.0, 1.0], [4.0, 5.0, 6.0], [0.0, 0.0, 7.0]], dtype=wp.vec3, device=device)
         history.penalty_k = wp.array([20.0, 30.0, 40.0], dtype=float, device=device)
@@ -1453,7 +1468,9 @@ def _rigid_contact_history_restore_from_match_index(test, device):
                 0,
                 0,
                 match_index,
+                *matched_gen[:3],
                 history,
+                matched_gen[3],
                 None,
                 None,
                 None,
@@ -1495,6 +1512,7 @@ def _rigid_contact_history_compliant_alm_tangent_warmstart(test, device):
             normal = wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3, device=device)
             match_index = wp.array([0], dtype=wp.int32, device=device)
 
+            matched_gen = _history_provenance_matched(device)
             history = RigidContactHistory()
             history.lambda_ = wp.array(hist_lambda, dtype=wp.vec3, device=device)
             history.penalty_k = wp.array([20.0], dtype=float, device=device)
@@ -1521,7 +1539,9 @@ def _rigid_contact_history_compliant_alm_tangent_warmstart(test, device):
                     1,
                     latest,
                     match_index,
+                    *matched_gen[:3],
                     history,
+                    matched_gen[3],
                     None,
                     None,
                     None,
@@ -1550,6 +1570,7 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
         shape1 = wp.array([1], dtype=int, device=device)
         normal = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
 
+        matched_gen = _history_provenance_matched(device)
         history = RigidContactHistory()
         history.lambda_ = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3, device=device)
         history.penalty_k = wp.array([40.0], dtype=float, device=device)
@@ -1576,7 +1597,9 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
                 0,
                 0,
                 wp.array([0], dtype=wp.int32, device=device),
+                *matched_gen[:3],
                 history,
+                matched_gen[3],
                 None,
                 None,
                 None,
@@ -1815,6 +1838,7 @@ def _rigid_contact_reset_ownership(test, device):
         # Equal current/saved normals make a warm restore reproduce the saved dual exactly.
         normal = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3, device=device)
 
+        matched_gen = _history_provenance_matched(device)
         history = RigidContactHistory()
         history.lambda_ = wp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=wp.vec3, device=device)
         history.penalty_k = wp.array([40.0, 50.0, 60.0], dtype=float, device=device)
@@ -1843,7 +1867,9 @@ def _rigid_contact_reset_ownership(test, device):
                 1,
                 1,
                 match_index,
+                *matched_gen[:3],
                 history,
+                matched_gen[3],
                 reset_pending,
                 reset_mask,
                 shape_world,
@@ -4465,15 +4491,17 @@ def _rigid_contact_history_snapshot_copies_active_rows(test, device):
         prev_lambda = wp.zeros(3, dtype=wp.vec3, device=device)
         prev_penalty = wp.zeros(3, dtype=float, device=device)
         prev_normal = wp.zeros(3, dtype=wp.vec3, device=device)
+        history_frame = wp.zeros(2, dtype=wp.int32, device=device)
 
         wp.launch(
             snapshot_body_body_contact_history,
             dim=3,
-            inputs=[contact_count, normal, lam, penalty],
+            inputs=[contact_count, normal, lam, penalty, wp.array([7], dtype=wp.int32, device=device), 3],
             outputs=[
                 prev_lambda,
                 prev_penalty,
                 prev_normal,
+                history_frame,
             ],
             device=device,
         )
@@ -4483,6 +4511,8 @@ def _rigid_contact_history_snapshot_copies_active_rows(test, device):
         np.testing.assert_allclose(prev_normal.numpy()[:2], normal.numpy()[:2])
         np.testing.assert_allclose(prev_lambda.numpy()[2], [0.0, 0.0, 0.0])
         test.assertEqual(prev_penalty.numpy()[2], 0.0)
+        # The snapshotted contact set: buffer id and its contact generation.
+        np.testing.assert_array_equal(history_frame.numpy(), [3, 7])
 
 
 def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True, rigid_compliant_alm=False):
@@ -5435,6 +5465,264 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
         specialized_displacements.numpy().view(np.uint32),
         legacy_displacements.numpy().view(np.uint32),
     )
+
+
+def _rigid_contact_history_restore_checks_provenance(test, device):
+    """History rows are restored only from the contact set the history was snapshotted from."""
+    del test
+    # Contacts 0 and 1 swapped rows since the snapshot; history row r holds lambda_n = 10 * (r + 1).
+    hist_lambda = [[0.0, 0.0, 10.0], [0.0, 0.0, 20.0]]
+    swapped = [[0.0, 0.0, 20.0], [0.0, 0.0, 10.0]]
+    cold = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+    cases = (
+        # (match_generation, contact_generation, buffer_id, history_frame, expected lambda)
+        ("indices refer to the snapshot", 4, 5, 1, [1, 4], swapped),
+        ("same contact set", -1, 4, 1, [1, 4], hist_lambda),
+        ("indices refer to another pass", 5, 6, 1, [1, 4], cold),
+        ("indices refer to another buffer", -1, 5, 1, [1, 4], cold),
+        ("history of another buffer", 4, 5, 2, [1, 4], cold),
+        ("empty history", 4, 5, 1, [0, 4], cold),
+    )
+    with wp.ScopedDevice(device):
+        for name, match_generation, contact_generation, buffer_id, frame, expected in cases:
+            history = RigidContactHistory()
+            history.lambda_ = wp.array(hist_lambda, dtype=wp.vec3, device=device)
+            history.penalty_k = wp.array([20.0, 30.0], dtype=float, device=device)
+            history.normal = wp.array([[0.0, 0.0, 1.0]] * 2, dtype=wp.vec3, device=device)
+            penalty_k = wp.zeros(2, dtype=float, device=device)
+            lam = wp.zeros(2, dtype=wp.vec3, device=device)
+            material = [wp.zeros(2, dtype=float, device=device) for _ in range(3)]
+            wp.launch(
+                init_body_body_contacts_alm,
+                dim=2,
+                inputs=[
+                    wp.array([2], dtype=int, device=device),
+                    wp.array([0, 0], dtype=int, device=device),
+                    wp.array([1, 1], dtype=int, device=device),
+                    wp.array([[0.0, 0.0, 1.0]] * 2, dtype=wp.vec3, device=device),
+                    wp.array([100.0, 100.0], dtype=float, device=device),
+                    wp.array([1.0, 1.0], dtype=float, device=device),
+                    wp.array([0.5, 0.5], dtype=float, device=device),
+                    0,
+                    1,
+                    1,
+                    wp.array([1, 0], dtype=wp.int32, device=device),
+                    wp.array([match_generation], dtype=wp.int32, device=device),
+                    wp.array([contact_generation], dtype=wp.int32, device=device),
+                    buffer_id,
+                    history,
+                    wp.array(frame, dtype=wp.int32, device=device),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    10.0,
+                ],
+                outputs=[penalty_k, lam, *material],
+                device=device,
+            )
+            np.testing.assert_allclose(lam.numpy(), expected, err_msg=name)
+
+
+def _history_spheres_scene(device):
+    """Sphere B rests on the ground and sphere A is high; return model, shapes."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    shapes = []
+    for x, z in ((-0.5, 1.0), (0.5, 0.099)):
+        body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, z), wp.quat_identity()))
+        shapes.append(builder.add_shape_sphere(body, radius=0.1))
+    builder.add_ground_plane()
+    builder.color()
+    return builder.finalize(device=device), shapes
+
+
+def _lower_sphere_a(state):
+    """Put sphere A on the ground; its contact then sorts before B's."""
+    q = state.body_q.numpy()
+    q[0][2] = 0.099
+    state.body_q.assign(q)
+
+
+def _seeded_normal_multipliers(solver, contacts, shapes):
+    """Return ``|lambda . n|`` of the contact of sphere A and of sphere B (None if absent)."""
+    n = int(contacts.rigid_contact_count.numpy()[0])
+    shape0 = contacts.rigid_contact_shape0.numpy()[:n]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:n]
+    normal = contacts.rigid_contact_normal.numpy()[:n]
+    lam = solver.body_body_contact_lambda.numpy()[:n]
+    out = []
+    for shape in shapes:
+        rows = np.flatnonzero((shape0 == shape) | (shape1 == shape))
+        out.append(float(abs(np.dot(lam[rows[0]], normal[rows[0]]))) if rows.size else None)
+    return out
+
+
+_HISTORY_DT = 1.0 / 240.0
+
+
+def _external_history_run(device, case, update_last=True):
+    """Solve B alone, lower A, run ``case``'s collision passes, and seed one step.
+
+    The seeded step uses ``iterations=0`` so the multipliers read back are the
+    restored warm start. Returns ``(B's solved lambda_n, [A seeded, B seeded])``.
+    """
+    model, shapes = _history_spheres_scene(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_contact_history=True, rigid_compliant_alm=True)
+    s0, s1, control = model.state(), model.state(), model.control()
+
+    pipeline.collide(s0, contacts)
+    solver.step(s0, s1, control, contacts, _HISTORY_DT)
+    solved_b = _seeded_normal_multipliers(solver, contacts, shapes)[1]
+
+    _lower_sphere_a(s1)
+    if case == "interleaved":
+        pipeline.collide(s1, pipeline.contacts())  # another buffer, never solved
+    elif case == "two_passes":
+        pipeline.collide(s1, contacts)  # a pass that is never solved
+    pipeline.collide(s1, contacts)
+    if case == "same_contacts":
+        solver.step(s1, s0, control, contacts, _HISTORY_DT)  # solves A and B on this contact set
+        s0, s1 = s1, s0
+        if not update_last:
+            solver.set_rigid_history_update(False)
+    solver.iterations = 0
+    solver.step(s1, s0, control, contacts, _HISTORY_DT)
+    return solved_b, _seeded_normal_multipliers(solver, contacts, shapes)
+
+
+def _rigid_contact_history_carries_matched_contacts(test, device):
+    """Positive control: a single pass carries B's multiplier and starts the new contact A cold."""
+    solved_b, (seeded_a, seeded_b) = _external_history_run(device, "single_pass")
+    test.assertGreater(solved_b, 1.0)
+    test.assertEqual(seeded_a, 0.0)
+    np.testing.assert_allclose(seeded_b, solved_b, rtol=5.0e-3)
+
+
+def _rigid_contact_history_interleaved_buffers_start_cold(test, device):
+    """Match indices that refer to another buffer's contacts do not seed this buffer's contacts."""
+    _, (seeded_a, seeded_b) = _external_history_run(device, "interleaved")
+    test.assertEqual(seeded_a, 0.0)
+    test.assertEqual(seeded_b, 0.0)
+
+
+def _rigid_contact_history_two_passes_start_cold(test, device):
+    """Match indices that refer to an unsolved pass do not seed contacts."""
+    _, (seeded_a, seeded_b) = _external_history_run(device, "two_passes")
+    test.assertEqual(seeded_a, 0.0)
+    test.assertEqual(seeded_b, 0.0)
+
+
+def _rigid_contact_history_same_contacts_restore_own_state(test, device):
+    """A second step on the same contacts restores each contact from its own solved state."""
+    _, seeded = _external_history_run(device, "same_contacts")
+    _, reused = _external_history_run(device, "same_contacts", update_last=False)
+    test.assertGreater(reused[0], 1.0)
+    test.assertGreater(reused[1], 1.0)
+    # Refreshing restores what reusing the in-place contact state keeps.
+    np.testing.assert_allclose(seeded, reused, rtol=1.0e-5)
+
+
+def _owned_history_run(device, mode, *, none_step=False, update_last=True):
+    """Same scene with a solver-owned pipeline; returns ``[A seeded, B seeded]`` and B's solved value."""
+    Slot = newton.solvers.SolverBase.CollisionSlot
+    Frequency = newton.solvers.SolverBase.CollisionFrequencyType
+    model, shapes = _history_spheres_scene(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+        rigid_contact_history=True,
+        rigid_compliant_alm=True,
+        collision_pipeline=pipeline,
+        collision_frequency_type={Slot.RIGID: mode},
+    )
+    s0, s1, control = model.state(), model.state(), model.control()
+    solver.step(s0, s1, control, None, _HISTORY_DT)
+    solved_b = _seeded_normal_multipliers(solver, solver.contacts, shapes)[1]
+    _lower_sphere_a(s1)
+    if none_step:
+        solver.step(s1, s0, control, None, _HISTORY_DT)  # detects and solves A and B
+        s0, s1 = s1, s0
+        # Detecting every N steps: the slot is toggled to NONE between detections.
+        solver.set_collision_frequency(collision_frequency_type={Slot.RIGID: Frequency.NONE})
+        if not update_last:
+            solver.set_rigid_history_update(False)
+    solver.iterations = 0
+    solver.step(s1, s0, control, None, _HISTORY_DT)
+    return solved_b, _seeded_normal_multipliers(solver, solver.contacts, shapes)
+
+
+def _rigid_contact_history_owned_pre_post_init(test, device):
+    """``PRE_POST_INIT`` carries the pre-initialization restore through its second pass."""
+    Frequency = newton.solvers.SolverBase.CollisionFrequencyType
+    _, control = _owned_history_run(device, Frequency.PRE_INIT)
+    solved_b, (seeded_a, seeded_b) = _owned_history_run(device, Frequency.PRE_POST_INIT)
+    test.assertEqual(control[0], 0.0)
+    test.assertGreater(control[1], 1.0)
+    test.assertEqual(seeded_a, 0.0)
+    np.testing.assert_allclose(seeded_b, solved_b, rtol=5.0e-3)
+    np.testing.assert_allclose(seeded_b, control[1], rtol=1.0e-5)
+
+
+def _rigid_contact_history_owned_detect_every_n_steps(test, device):
+    """A step with the rigid slot toggled to ``NONE`` restores each contact from its own state."""
+    Frequency = newton.solvers.SolverBase.CollisionFrequencyType
+    _, seeded = _owned_history_run(device, Frequency.PRE_INIT, none_step=True)
+    _, reused = _owned_history_run(device, Frequency.PRE_INIT, none_step=True, update_last=False)
+    test.assertGreater(reused[0], 1.0)
+    test.assertGreater(reused[1], 1.0)
+    np.testing.assert_allclose(seeded, reused, rtol=1.0e-5)
+
+
+def _rigid_contact_history_provenance_graph_replay(test, device):
+    """Captured collide and step graphs replay the snapshotted contact set from the device."""
+    model, shapes = _history_spheres_scene(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+    contacts = pipeline.contacts()
+    other = pipeline.contacts()
+    solver = newton.solvers.SolverVBD(model, iterations=0, rigid_contact_history=True, rigid_compliant_alm=True)
+    s0, s1, control = model.state(), model.state(), model.control()
+
+    def solve_b_alone():
+        # Restart from the initial poses; the graphs read and write these same arrays.
+        for state in (s0, s1):
+            state.body_q.assign(model.body_q)
+            state.body_qd.assign(model.body_qd)
+        solver.iterations = 10
+        pipeline.collide(s0, contacts)
+        solver.step(s0, s1, control, contacts, _HISTORY_DT)
+        solver.iterations = 0
+        _lower_sphere_a(s1)
+
+    # Warm every kernel up, then capture with iterations=0 so replays seed and stop.
+    solve_b_alone()
+    pipeline.collide(s1, other)
+    pipeline.collide(s1, contacts)
+    solver.step(s1, s0, control, contacts, _HISTORY_DT)
+    with wp.ScopedCapture(device=device) as capture:
+        pipeline.collide(s1, other)
+    collide_other = capture.graph
+    with wp.ScopedCapture(device=device) as capture:
+        pipeline.collide(s1, contacts)
+        solver.step(s1, s0, control, contacts, _HISTORY_DT)
+    collide_and_step = capture.graph
+
+    # Positive control: the indices refer to the solved set, so B carries.
+    solve_b_alone()
+    solved_b = _seeded_normal_multipliers(solver, contacts, shapes)[1]
+    wp.capture_launch(collide_and_step)
+    seeded_a, seeded_b = _seeded_normal_multipliers(solver, contacts, shapes)
+    test.assertEqual(seeded_a, 0.0)
+    np.testing.assert_allclose(seeded_b, solved_b, rtol=5.0e-3)
+
+    # A replayed pass into another buffer in between: both contacts start cold.
+    solve_b_alone()
+    wp.capture_launch(collide_other)
+    wp.capture_launch(collide_and_step)
+    test.assertEqual(_seeded_normal_multipliers(solver, contacts, shapes), [0.0, 0.0])
 
 
 def _build_rigid_hinge_winding_model(device, **dof_kwargs):
@@ -7848,6 +8136,60 @@ add_function_test(
     TestVBDRigidDAT,
     "test_rigid_dat_graph_capture_replays_match_eager",
     test_rigid_dat_graph_capture_replays_match_eager,
+    devices=cuda_devices,
+)
+
+
+class TestVBDRigidContactHistoryProvenance(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestVBDRigidContactHistoryProvenance,
+    "test_restore_checks_provenance",
+    _rigid_contact_history_restore_checks_provenance,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidContactHistoryProvenance,
+    "test_carries_matched_contacts",
+    _rigid_contact_history_carries_matched_contacts,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidContactHistoryProvenance,
+    "test_interleaved_buffers_start_cold",
+    _rigid_contact_history_interleaved_buffers_start_cold,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidContactHistoryProvenance,
+    "test_two_passes_start_cold",
+    _rigid_contact_history_two_passes_start_cold,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidContactHistoryProvenance,
+    "test_same_contacts_restore_own_state",
+    _rigid_contact_history_same_contacts_restore_own_state,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidContactHistoryProvenance,
+    "test_owned_pre_post_init",
+    _rigid_contact_history_owned_pre_post_init,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidContactHistoryProvenance,
+    "test_owned_detect_every_n_steps",
+    _rigid_contact_history_owned_detect_every_n_steps,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidContactHistoryProvenance,
+    "test_provenance_graph_replay",
+    _rigid_contact_history_provenance_graph_replay,
     devices=cuda_devices,
 )
 
