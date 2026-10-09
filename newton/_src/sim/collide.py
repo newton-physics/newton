@@ -1706,9 +1706,8 @@ class CollisionPipeline:
                         max_mesh_mesh_pairs = 0
                         max_mesh_plane_pairs = 0
                     else:
-                        explicit_pairs = explicit_pairs_host
-                        shape_a = explicit_pairs[:, 0]
-                        shape_b = explicit_pairs[:, 1]
+                        shape_a = explicit_pairs_host[:, 0]
+                        shape_b = explicit_pairs_host[:, 1]
                         box_mask = route_mask & (shape_types == int(GeoType.BOX))
                         mesh_mesh_routes = (
                             (mesh_mask[shape_a] & mesh_mask[shape_b])
