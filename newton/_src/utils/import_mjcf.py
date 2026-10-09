@@ -8,6 +8,7 @@ import re
 import warnings
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 
 import numpy as np
@@ -221,6 +222,81 @@ def _load_and_expand_mjcf(
     return root, base_dir
 
 
+def _resolve_dcmotor_parameters(root: ET.Element) -> dict[ET.Element, dict[str, str]]:
+    """Resolve DC-motor shortcuts and inherited defaults with native MuJoCo."""
+    motors = root.findall("actuator/dcmotor")
+    if not motors:
+        return {}
+    try:
+        import mujoco
+    except ImportError as exc:
+        raise ImportError(
+            "Importing MJCF <dcmotor> actuators requires MuJoCo. Install it with `uv pip install 'newton[sim]'`."
+        ) from exc
+
+    # Parsing an actuator-only spec resolves shortcuts without compiling a model
+    # or loading geometry/assets. Keep the default hierarchy and shortcut order:
+    # DC-motor defaults inherit compiled values, not the original XML vectors.
+    native_root = ET.Element("mujoco")
+    actuator_tags = {
+        "general",
+        "motor",
+        "position",
+        "velocity",
+        "intvelocity",
+        "damper",
+        "cylinder",
+        "muscle",
+        "adhesion",
+        "dcmotor",
+        "orientation",
+        "pid",
+    }
+    for default in root.findall("default"):
+        copied = deepcopy(default)
+        for node in copied.iter("default"):
+            for child in list(node):
+                if child.tag != "default" and child.tag not in actuator_tags:
+                    node.remove(child)
+        native_root.append(copied)
+    actuator_section = ET.SubElement(native_root, "actuator")
+    for motor in motors:
+        actuator_section.append(deepcopy(motor))
+    for element in native_root.iter():
+        if "input" in element.attrib:
+            value = element.attrib["input"].strip().lower()
+            element.set("input", {"position": "pos", "velocity": "vel"}.get(value, value))
+
+    spec = mujoco.MjSpec.from_string(ET.tostring(native_root, encoding="unicode"))
+    resolved = {}
+    for motor, actuator in zip(motors, spec.actuators, strict=True):
+        values = {}
+        for name in (
+            "gainprm",
+            "biasprm",
+            "dynprm",
+            "gear",
+            "ctrlrange",
+            "forcerange",
+            "actrange",
+            "lengthrange",
+            "damping",
+        ):
+            values[name] = " ".join(str(value) for value in getattr(actuator, name))
+        for name in ("dyntype", "gaintype", "biastype", "actdim"):
+            values[name] = str(int(getattr(actuator, name)))
+        for name in ("ctrllimited", "forcelimited", "actlimited"):
+            values[name] = {0: "false", 1: "true", 2: "auto"}[int(getattr(actuator, name))]
+        for name in ("cranklength", "armature"):
+            values[name] = str(getattr(actuator, name))
+        values["actearly"] = str(bool(actuator.actearly)).lower()
+        # Zero is MuJoCo's automatic signature, which defaults to voltage for DC motors.
+        signature = SolverMuJoCo._parse_dcmotor_input(int(actuator.ctrlspec) or 8)
+        values["input"] = {1: "pos", 2: "vel", 8: "voltage"}[signature]
+        resolved[motor] = values
+    return resolved
+
+
 AttributeFrequency = Model.AttributeFrequency
 
 
@@ -400,6 +476,7 @@ def parse_mjcf(
     source = os.fspath(source) if hasattr(source, "__fspath__") else source
 
     root, base_dir = _load_and_expand_mjcf(source, path_resolver)
+    dcmotor_parameters = _resolve_dcmotor_parameters(root)
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
     contact_sections = root.findall("contact")
@@ -428,10 +505,6 @@ def parse_mjcf(
     # Register the MuJoCo custom attributes needed to preserve imported model
     # properties. The operation is idempotent.
     SolverMuJoCo.register_custom_attributes(builder)
-    # Avoid replicating and allocating high-level DC-motor arrays for the
-    # overwhelmingly common case where the MJCF contains no DC motors.
-    if root.find(".//dcmotor") is not None:
-        SolverMuJoCo._register_dcmotor_custom_attributes(builder)
     # Bit 1 in one MJCF file may describe different shapes than bit 1 in
     # another. Give every add_mjcf() call a domain so those equal numbers are
     # not mistaken for one shared collision rule. The domain is only a source
@@ -560,7 +633,7 @@ def parse_mjcf(
             if key in attrib:
                 if isinstance(attrib[key], dict):
                     attrib[key] = merge_attrib(attrib[key], value, tag=key)
-                elif (tag == "dcmotor" and key in {"controller", "cogging", "lugre"}) or (
+                elif (
                     tag in {"general", "motor", "position", "velocity", "intvelocity", "damper", "dcmotor"}
                     and key == "damping"
                 ):
@@ -3242,6 +3315,8 @@ def parse_mjcf(
             # Merge class defaults for this actuator element
             # This handles MJCF class inheritance (e.g., <general class="size3" .../>)
             merged_attrib = resolve_element_attrib(actuator_elem, actuator_type)
+            if actuator_type == "dcmotor":
+                merged_attrib.update(dcmotor_parameters[actuator_elem])
 
             joint_name = merged_attrib.get("joint")
             joint_in_parent_name = merged_attrib.get("jointinparent")
@@ -3485,20 +3560,13 @@ def parse_mjcf(
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
-            elif actuator_type == "dcmotor":
-                # SolverMuJoCo applies MuJoCo's native DC-motor shortcut from
-                # the high-level parameters preserved by custom attributes.
-                gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
-
             elif actuator_type == "damper":
                 kv = parse_float(merged_attrib, "kv", 1.0)
                 gainprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
-            elif actuator_type == "general":
+            elif actuator_type in {"general", "dcmotor"}:
                 gainprm_str = merged_attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
                 biasprm_str = merged_attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
                 gainprm_vals = [float(x) for x in gainprm_str.split()[:10]]

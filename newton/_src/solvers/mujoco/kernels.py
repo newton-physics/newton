@@ -2169,8 +2169,8 @@ def update_actuator_properties_kernel(
     if source != CTRL_SOURCE_CTRL_DIRECT:
         return
 
-    # High-level MJCF DC-motor rows keep placeholder general-actuator arrays;
-    # preserve the parameters and force range compiled by set_to_dcmotor().
+    # High-level MJCF DC-motor parameters and force ranges are resolved together
+    # by the native parser; preserve them as construction-time properties.
     if newton_actuator_ctrl_type[world_newton_idx] != CTRL_TYPE_DCMOTOR:
         actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
         actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]

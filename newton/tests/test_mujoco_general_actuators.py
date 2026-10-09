@@ -6,9 +6,11 @@
 import contextlib
 import io
 import os
+import sys
 import tempfile
 import unittest
 import warnings
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -379,15 +381,22 @@ class TestMuJoCoActuators(unittest.TestCase):
     def test_mjcf_dcmotor_defaults_match_native_mujoco(self):
         """Preserve native defaults, including partial overrides of inherited vectors."""
         mujoco = SolverMuJoCo.import_mujoco()[0]
-        inherited_mjcf = MJCF_DCMOTOR_SIMPLE.replace(
-            "<worldbody>",
-            '<default><dcmotor motorconst="0.05" resistance="2" input="pos" '
-            'controller="5 1 0.2 10 2 3" cogging="0.1 6 0.2" lugre="0.3 0.4 0.5 12 0.02" '
-            'damping="0.7 0.2 0.1" armature="0.02"/>'
-            '<default class="drive"><dcmotor controller="6" cogging="0.2" lugre="0.6" '
-            'damping="0.8"/></default></default><worldbody>',
-        ).replace(
-            'name="dc"', 'name="dc" class="drive" controller="7 0.5" cogging="0.3 8" lugre="0.7 0.8" damping="0.9 0.3"'
+        inherited_mjcf = (
+            MJCF_DCMOTOR_SIMPLE.replace(' motorconst="0.05" resistance="2"', "")
+            .replace(
+                "<worldbody>",
+                '<default><dcmotor motorconst="0.05" resistance="2" input="pos" '
+                'controller="5 1 0.2 10 2 3" cogging="0.1 6 0.2" lugre="0.3 0.4 0.5 12 0.02" '
+                'nominal="24 0.2 100" saturation="2 4 7" inductance="0.01 20" thermal="0.004 10 30 0.001 0.4 90" '
+                'damping="0.7 0.2 0.1" armature="0.02"/>'
+                '<default class="drive"><dcmotor controller="6" cogging="0.2" lugre="0.6" '
+                'nominal="12" saturation="3" thermal="0.005" resistance="3" '
+                'damping="0.8"/></default></default><worldbody>',
+            )
+            .replace(
+                'name="dc"',
+                'name="dc" class="drive" controller="7 0.5" cogging="0.3 8" lugre="0.7 0.8" damping="0.9 0.3"',
+            )
         )
         for mjcf in (MJCF_DCMOTOR_SIMPLE, inherited_mjcf):
             with self.subTest(inherited=mjcf == inherited_mjcf):
@@ -406,8 +415,26 @@ class TestMuJoCoActuators(unittest.TestCase):
                     "actuator_damping",
                     "actuator_dampingpoly",
                     "actuator_armature",
+                    "actuator_forcerange",
                 ):
                     np.testing.assert_allclose(getattr(solver.mj_model, attribute), getattr(native_model, attribute))
+
+    def test_mjcf_dcmotor_optional_dependency(self):
+        """Require native MuJoCo only for high-level DC-motor import, not ordinary MJCF."""
+        with patch.dict(sys.modules, {"mujoco": None, "mujoco_warp": None}):
+            ModelBuilder().add_mjcf(MJCF_ACTUATORS)
+            ModelBuilder().add_mjcf(
+                MJCF_DCMOTOR_SIMPLE.replace('dcmotor name="dc"', 'general gaintype="dcmotor" name="dc"')
+            )
+            with self.assertRaisesRegex(ImportError, r"<dcmotor>.*newton\[sim\]"):
+                ModelBuilder().add_mjcf(MJCF_DCMOTOR_SIMPLE)
+        with patch.dict(sys.modules, {"mujoco_warp": None}):
+            ModelBuilder().add_mjcf(
+                MJCF_DCMOTOR_SIMPLE.replace(
+                    "<worldbody>",
+                    '<default><default class="unused"><geom mesh="unavailable"/></default></default><worldbody>',
+                )
+            )
 
     def test_mjcf_dcmotor_roundtrip(self):
         """Retain control signatures when saved DC motors become general actuators."""
@@ -632,7 +659,6 @@ class TestMuJoCoActuators(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "identical high-level DC-motor parameters"):
             SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
 
-        model.mujoco.actuator_dcmotor_resistance.assign([2.0, 2.0])
         dc_type = SolverMuJoCo.CtrlType.DCMOTOR
         for worlds, types in (
             ([0, 0], [dc_type, dc_type]),
@@ -707,7 +733,6 @@ class TestMuJoCoActuators(unittest.TestCase):
         """Test parsing with ctrl_direct=False."""
         builder = ModelBuilder()
         builder.add_mjcf(MJCF_ACTUATORS, ctrl_direct=False)
-        self.assertFalse(any(name.startswith("mujoco:actuator_dcmotor_") for name in builder.custom_attributes))
 
         self.assertEqual(len(builder.joint_target_mode), 11)
         for i in range(6):
@@ -732,7 +757,6 @@ class TestMuJoCoActuators(unittest.TestCase):
         model = builder.finalize()
 
         self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 8)
-        self.assertFalse(any(name.startswith("actuator_dcmotor_") for name in vars(model.mujoco)))
 
         joint_target_mode = model.joint_target_mode.numpy()
         joint_target_ke = model.joint_target_ke.numpy()

@@ -407,10 +407,14 @@ only reachable through the ``mujoco`` :ref:`custom-attribute namespace <mujoco-c
 Additional actuators declared this way are appended after the joint-target
 actuators — see ``SolverMuJoCo._init_actuators``.
 
-MJCF ``<dcmotor>`` actuators follow this MuJoCo-specific path. The importer
-preserves their high-level electrical, controller, thermal, cogging, and LuGre
-parameters, and :class:`~newton.solvers.SolverMuJoCo` reconstructs them through
-MuJoCo's native DC-motor compiler for both the CPU and MuJoCo-Warp backends.
+MJCF ``<dcmotor>`` actuators follow this MuJoCo-specific path. The importer uses
+MuJoCo's native parser to resolve electrical, controller, thermal, cogging, and
+LuGre parameters, including inherited defaults, into the existing actuator
+parameter arrays for both the CPU and MuJoCo-Warp backends. Importing these
+shortcuts requires the optional ``mujoco`` package and raises ``ImportError``
+with installation guidance when it is unavailable. Install ``newton[sim]`` to
+include MuJoCo. Ordinary MJCF and compiled ``<general>`` actuator import do not
+require MuJoCo; parsing DC-motor shortcuts does not require MuJoCo-Warp.
 Commands use the MJCF actuator order in ``control.mujoco.ctrl``. The supported
 ``input`` signatures each consume one control value: ``voltage``, ``pos``, or
 ``vel``; ``position`` and ``velocity`` are Newton-only aliases, not valid
@@ -421,9 +425,9 @@ supported by Newton's one-control-per-actuator mapping. Compiled MJCF
 arrays and a supported ``input`` or ``mjc:ctrlSpec`` value, respectively.
 
 The MJCF importer sets :attr:`~newton.solvers.SolverMuJoCo.CtrlType.DCMOTOR`
-and registers ``mujoco:actuator_dcmotor_*`` parameters only when the source
-contains ``<dcmotor>``. These are importer-managed construction parameters;
-do not set ``CtrlType.DCMOTOR`` manually. Runtime edits to ``actuator_gainprm``,
+for ``<dcmotor>`` rows to mark their resolved parameters as construction-time
+properties; do not set ``CtrlType.DCMOTOR`` manually.
+Runtime edits to ``actuator_gainprm``,
 ``actuator_biasprm``, ``actuator_dynprm``, and ``actuator_forcerange`` are ignored
 for these rows to preserve the native compiler's output. Compiled MJCF and USD
 DC motors instead use ``CtrlType.GENERAL`` with ``actuator_gaintype`` set to DC motor.
@@ -915,8 +919,7 @@ The authoritative list of unconditionally registered attributes — names, defau
 dtypes, MJCF / USD source names, and the category each belongs to —
 is the body of
 :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes`
-itself. The MJCF importer additionally registers the ``actuator_dcmotor_*``
-construction parameters only for sources containing ``<dcmotor>``.
+itself.
 See :doc:`/concepts/custom_attributes` for how Newton's
 custom-attribute system works in general.
 
