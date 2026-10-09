@@ -551,8 +551,9 @@ For example, a custom drive needs to implement
 parameters, filling in defaults where needed.
 
 All operands of :meth:`~DriveBase.compute` and
-:meth:`~DriveBase.prepare_implicit` are keyword-only. Custom overrides must
-retain the base parameter names because the actuator passes them by keyword.
+:meth:`~DriveBase.prepare_implicit` are keyword-only. The actuator passes them
+by keyword, so custom overrides can retain the base parameter names or accept
+and forward ``**kwargs`` without listing every operand.
 When calling these methods directly, pass arrays, index mappings, state, and
 the timestep by name, for example ``positions=q`` and ``dt=0.01``.
 

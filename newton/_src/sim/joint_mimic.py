@@ -61,12 +61,12 @@ def eval_mimic(model: Model, state_in: State, state_out: State | None = None) ->
     and the followers are updated in ``state_out``.
 
     Solvers with mimic support enforce the relationship during ``step()``;
-    this helper is not a required post-step call. Featherstone and MuJoCo
-    update joint coordinates during their steps. SemiImplicit, XPBD, and VBD
-    advance body coordinates instead and do not refresh joint coordinates in
-    ``state_out``. Use :func:`~newton.eval_ik` to derive current joint values
-    from their output body state; calling this function on stale joint arrays
-    would use stale reference values. Call this helper before
+    this helper is not a required post-step call. Whether ``step()`` refreshes
+    joint coordinates in ``state_out`` is solver-defined. If a solver advances
+    body coordinates without refreshing joint coordinates, use
+    :func:`~newton.eval_ik` to derive current joint values from the output body
+    state; calling this function on stale joint arrays would use stale
+    reference values. Call this helper before
     :func:`~newton.eval_fk` when initializing body poses from joint values
     that need mimic projection.
 

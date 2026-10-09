@@ -206,11 +206,10 @@ directly through its joint equality constraints.
 
 A separate :func:`newton.eval_mimic` call is not needed for a solver to enforce
 its supported mimic relationships during a step.
-Featherstone updates follower joint coordinates during ``step()``; MuJoCo
-exports joint coordinates from its constrained solve. SemiImplicit, XPBD, and
-VBD advance body poses and velocities without refreshing ``state_out.joint_q``
-or ``state_out.joint_qd``. Those arrays can be stale for all joints, not only
-followers. To read joint coordinates from their updated body state, use
+Whether ``step()`` refreshes ``state_out.joint_q`` and ``state_out.joint_qd``
+is solver-defined. Solvers that advance body poses and velocities without
+refreshing these arrays can leave joint coordinates stale for all joints,
+including followers. To read joint coordinates from the updated body state, use
 :func:`newton.eval_ik`:
 
 .. code-block:: python

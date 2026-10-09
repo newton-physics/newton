@@ -1333,40 +1333,12 @@ class TestDriveNeuralGRU(unittest.TestCase):
     def test_implicit_drive_without_custom_inputs_keyword_remains_compatible(self):
         """Call keyword-only preparation without forwarding undeclared custom inputs."""
 
-        class _LegacyDrive(DrivePD):
-            prepared = False
+        class _RecordingDrive(DrivePD):
+            prepared_kwargs = None
 
-            def prepare_implicit(
-                self,
-                *,
-                positions,
-                velocities,
-                target_pos,
-                target_vel,
-                pos_indices,
-                vel_indices,
-                target_pos_indices,
-                target_vel_indices,
-                drive_state,
-                dt,
-                inv_mass=None,
-                device=None,
-            ):
-                type(self).prepared = True
-                return super().prepare_implicit(
-                    positions=positions,
-                    velocities=velocities,
-                    target_pos=target_pos,
-                    target_vel=target_vel,
-                    pos_indices=pos_indices,
-                    vel_indices=vel_indices,
-                    target_pos_indices=target_pos_indices,
-                    target_vel_indices=target_vel_indices,
-                    drive_state=drive_state,
-                    dt=dt,
-                    inv_mass=inv_mass,
-                    device=device,
-                )
+            def prepare_implicit(self, **kwargs):
+                type(self).prepared_kwargs = kwargs
+                return super().prepare_implicit(**kwargs)
 
         device = self.device
         model = _build_pendulum(device)
@@ -1374,7 +1346,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         response = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array([0], dtype=wp.uint32, device=device),
-            drive=_LegacyDrive(
+            drive=_RecordingDrive(
                 kp=wp.array([100.0], dtype=wp.float32, device=device),
                 kd=wp.array([10.0], dtype=wp.float32, device=device),
             ),
@@ -1384,7 +1356,8 @@ class TestDriveNeuralGRU(unittest.TestCase):
         response.refresh(state)
         actuator.step(state, control, dt=0.01)
 
-        self.assertTrue(_LegacyDrive.prepared)
+        self.assertIsNotNone(_RecordingDrive.prepared_kwargs)
+        self.assertNotIn("custom_inputs", _RecordingDrive.prepared_kwargs)
 
     def test_custom_input_name_comes_from_metadata(self):
         """Take the caller-supplied column's name from custom_inputs metadata."""

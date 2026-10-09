@@ -26,8 +26,8 @@ class DriveBase:
 
     Subclasses must override ``compute`` and ``resolve_arguments``.
     All operands of ``compute`` and ``prepare_implicit`` are keyword-only.
-    Overrides must retain the base parameter names because :class:`Actuator`
-    passes the operands by keyword.
+    :class:`Actuator` passes the operands by keyword. Overrides can retain
+    the base parameter names or accept and forward ``**kwargs``.
 
     **Validation contract:**  :meth:`resolve_arguments` validates scalar
     parameter values (e.g. ``kp >= 0``) before they are batched into Warp

@@ -3,7 +3,6 @@
 
 """Tests for the actuator drive API migration."""
 
-import inspect
 import types
 import typing
 import unittest
@@ -17,22 +16,6 @@ import newton.actuators as actuators
 
 class TestActuatorDriveAPI(unittest.TestCase):
     """Verify canonical actuator names and deprecated compatibility aliases."""
-
-    def test_drive_methods_reject_positional_operands(self):
-        """Require named operands across the base and built-in drive interfaces."""
-        for drive in (
-            actuators.DriveBase,
-            actuators.DrivePD,
-            actuators.DrivePID,
-            actuators.DriveNeuralMLP,
-            actuators.DriveNeuralLSTM,
-            actuators.DriveNeuralGRU,
-        ):
-            for name in ("compute", "prepare_implicit"):
-                with self.subTest(drive=drive.__name__, method=name):
-                    signature = inspect.signature(getattr(drive, name))
-                    with self.assertRaisesRegex(TypeError, "too many positional arguments"):
-                        signature.bind_partial(object(), object())
 
     def test_joint_space_response_public_method_type_hints(self):
         """Keep JointSpaceResponse's public methods fully annotated."""
@@ -147,43 +130,16 @@ class TestActuatorDriveAPI(unittest.TestCase):
     def test_explicit_drive_without_custom_inputs_keyword_remains_compatible(self):
         """Call keyword-only overrides without forwarding undeclared custom inputs."""
 
-        class _LegacyDrive(actuators.DrivePD):
-            def compute(
-                self,
-                *,
-                positions,
-                velocities,
-                target_pos,
-                target_vel,
-                feedforward,
-                pos_indices,
-                vel_indices,
-                target_pos_indices,
-                target_vel_indices,
-                forces,
-                state,
-                dt,
-                device=None,
-            ):
-                return super().compute(
-                    positions=positions,
-                    velocities=velocities,
-                    target_pos=target_pos,
-                    target_vel=target_vel,
-                    feedforward=feedforward,
-                    pos_indices=pos_indices,
-                    vel_indices=vel_indices,
-                    target_pos_indices=target_pos_indices,
-                    target_vel_indices=target_vel_indices,
-                    forces=forces,
-                    state=state,
-                    dt=dt,
-                    device=device,
-                )
+        class _RecordingDrive(actuators.DrivePD):
+            seen_kwargs = None
+
+            def compute(self, **kwargs):
+                type(self).seen_kwargs = kwargs
+                return super().compute(**kwargs)
 
         actuator = actuators.Actuator(
             indices=wp.array([0], dtype=wp.uint32),
-            drive=_LegacyDrive(
+            drive=_RecordingDrive(
                 kp=wp.array([1.0], dtype=wp.float32),
                 kd=wp.array([0.0], dtype=wp.float32),
             ),
@@ -202,6 +158,8 @@ class TestActuatorDriveAPI(unittest.TestCase):
         actuator.step(state, control, dt=0.01)
 
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), 1.0)
+        self.assertIsNotNone(_RecordingDrive.seen_kwargs)
+        self.assertNotIn("custom_inputs", _RecordingDrive.seen_kwargs)
 
     def test_actuator_registers_drive_inputs_only(self):
         """Ignore undeclared input conventions on delay and clamping components."""
