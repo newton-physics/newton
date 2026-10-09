@@ -162,31 +162,33 @@ def _make_masked_zero_kernel_2d(dtype: Any):
     return masked_zero_kernel_2d
 
 
-def _block_shape_2d(block_type: BlockDType) -> tuple[int, int]:
-    """Logical rows and columns of one sparse block, with scalars treated as 1x1."""
-    block_shape = block_type.shape
-    if isinstance(block_shape, int):
-        return (block_shape, block_shape)
-    if len(block_shape) == 0:
-        return (1, 1)
-    if len(block_shape) == 1:
-        return (1, block_shape[0])
-    return (int(block_shape[0]), int(block_shape[1]))
-
-
-def _block_access_kind(block_type: BlockDType) -> tuple[bool, bool]:
-    """Return ``(is_scalar, is_vector)``. Matrices, including 1x1, are neither."""
+@functools.cache
+def _make_read_block_coeff(block_type: BlockDType):
+    """Creates a @wp.func for NZB coefficient access, handling scalar/vector/matrix block types."""
     shape = block_type.shape
-    is_scalar = isinstance(shape, tuple) and len(shape) == 0
-    is_vector = isinstance(shape, tuple) and len(shape) == 1
-    return is_scalar, is_vector
+
+    @wp.func
+    def read_block_coeff(
+        i: wp.int32,
+        j: wp.int32,
+        block: Any,  # block_type.warp_type
+    ) -> Any:  # block_type.dtype
+        if wp.static(len(shape) == 0):  # Scalar case
+            return block
+        elif wp.static(len(shape) == 1):  # Vector case
+            return block[j]  # Follow row-major conventions (column vectors need explicit (n, 1) shape)
+        elif wp.static(len(shape) == 2):  # Matrix case
+            return block[i, j]
+        else:
+            assert False, "Unexpected block shape"  # noqa: B011
+
+    return read_block_coeff
 
 
 @functools.cache
 def _make_block_sparse_matvec_kernel(block_type: BlockDType):
     # Determine (static) block size for kernel.
-    block_shape = _block_shape_2d(block_type)
-    is_scalar, is_vector = _block_access_kind(block_type)
+    block_shape = block_type.shape_2d
 
     @wp.kernel
     def block_sparse_matvec_kernel(
@@ -227,12 +229,7 @@ def _make_block_sparse_matvec_kernel(block_type: BlockDType):
             acc = block_type.dtype(0.0)
 
             for j in range(n_block_cols):
-                if wp.static(is_scalar):
-                    coeff = block
-                elif wp.static(is_vector):
-                    coeff = block[j]
-                else:
-                    coeff = block[0, j]
+                coeff = wp.static(_make_read_block_coeff(block_type))(0, j, block)
                 acc += coeff * x[x_idx_base + j]
 
             wp.atomic_add(y, row_start[mat_id] + block_coord[0], acc)
@@ -255,8 +252,7 @@ def _make_block_sparse_matvec_kernel(block_type: BlockDType):
 @functools.cache
 def _make_block_sparse_matvec_kernel_2d(block_type: BlockDType):
     # Determine (static) block size for kernel.
-    block_shape = _block_shape_2d(block_type)
-    is_scalar, is_vector = _block_access_kind(block_type)
+    block_shape = block_type.shape_2d
 
     @wp.kernel
     def block_sparse_matvec_kernel(
@@ -294,12 +290,7 @@ def _make_block_sparse_matvec_kernel_2d(block_type: BlockDType):
             acc = block_type.dtype(0.0)
 
             for j in range(n_block_cols):
-                if wp.static(is_scalar):
-                    coeff = block
-                elif wp.static(is_vector):
-                    coeff = block[j]
-                else:
-                    coeff = block[0, j]
+                coeff = wp.static(_make_read_block_coeff(block_type))(0, j, block)
                 acc += coeff * x[mat_id, x_idx_base + j]
 
             wp.atomic_add(y, mat_id, block_coord[0], acc)
@@ -322,8 +313,7 @@ def _make_block_sparse_matvec_kernel_2d(block_type: BlockDType):
 @functools.cache
 def _make_block_sparse_transpose_matvec_kernel(block_type: BlockDType):
     # Determine (static) block size for kernel.
-    block_shape = _block_shape_2d(block_type)
-    is_scalar, is_vector = _block_access_kind(block_type)
+    block_shape = block_type.shape_2d
 
     @wp.kernel
     def block_sparse_transpose_matvec_kernel(
@@ -364,12 +354,7 @@ def _make_block_sparse_transpose_matvec_kernel(block_type: BlockDType):
             y_val = y[row_start[mat_id] + block_coord[0]]
 
             for i in range(n_block_cols):
-                if wp.static(is_scalar):
-                    coeff = block
-                elif wp.static(is_vector):
-                    coeff = block[i]
-                else:
-                    coeff = block[0, i]
+                coeff = wp.static(_make_read_block_coeff(block_type))(0, i, block)
                 wp.atomic_add(x, x_idx_base + i, coeff * y_val)
 
         else:
@@ -390,8 +375,7 @@ def _make_block_sparse_transpose_matvec_kernel(block_type: BlockDType):
 @functools.cache
 def _make_block_sparse_transpose_matvec_kernel_2d(block_type: BlockDType):
     # Determine (static) block size for kernel.
-    block_shape = _block_shape_2d(block_type)
-    is_scalar, is_vector = _block_access_kind(block_type)
+    block_shape = block_type.shape_2d
 
     @wp.kernel
     def block_sparse_transpose_matvec_kernel(
@@ -429,12 +413,7 @@ def _make_block_sparse_transpose_matvec_kernel_2d(block_type: BlockDType):
             y_val = y[mat_id, block_coord[0]]
 
             for i in range(n_block_cols):
-                if wp.static(is_scalar):
-                    coeff = block
-                elif wp.static(is_vector):
-                    coeff = block[i]
-                else:
-                    coeff = block[0, i]
+                coeff = wp.static(_make_read_block_coeff(block_type))(0, i, block)
                 wp.atomic_add(x, mat_id, x_idx_base + i, coeff * y_val)
 
         else:
@@ -527,8 +506,7 @@ def _make_scale_vector_kernel_2d(space_dim: int):
 @functools.cache
 def _make_block_sparse_gemv_kernel(block_type: BlockDType):
     # Determine (static) block size for kernel.
-    block_shape = _block_shape_2d(block_type)
-    is_scalar, is_vector = _block_access_kind(block_type)
+    block_shape = block_type.shape_2d
 
     @wp.kernel
     def block_sparse_gemv_kernel(
@@ -571,12 +549,7 @@ def _make_block_sparse_gemv_kernel(block_type: BlockDType):
             acc = block_type.dtype(0.0)
 
             for j in range(n_block_cols):
-                if wp.static(is_scalar):
-                    coeff = block
-                elif wp.static(is_vector):
-                    coeff = block[j]
-                else:
-                    coeff = block[0, j]
+                coeff = wp.static(_make_read_block_coeff(block_type))(0, j, block)
                 acc += alpha * coeff * x[x_idx_base + j]
 
             wp.atomic_add(y, row_start[mat_id] + block_coord[0], acc)
@@ -599,8 +572,7 @@ def _make_block_sparse_gemv_kernel(block_type: BlockDType):
 @functools.cache
 def _make_block_sparse_gemv_kernel_2d(block_type: BlockDType):
     # Determine (static) block size for kernel.
-    block_shape = _block_shape_2d(block_type)
-    is_scalar, is_vector = _block_access_kind(block_type)
+    block_shape = block_type.shape_2d
 
     @wp.kernel
     def block_sparse_gemv_kernel(
@@ -640,12 +612,7 @@ def _make_block_sparse_gemv_kernel_2d(block_type: BlockDType):
             acc = block_type.dtype(0.0)
 
             for j in range(n_block_cols):
-                if wp.static(is_scalar):
-                    coeff = block
-                elif wp.static(is_vector):
-                    coeff = block[j]
-                else:
-                    coeff = block[0, j]
+                coeff = wp.static(_make_read_block_coeff(block_type))(0, j, block)
                 acc += alpha * coeff * x[mat_id, x_idx_base + j]
 
             wp.atomic_add(y, mat_id, block_coord[0], acc)
@@ -668,8 +635,7 @@ def _make_block_sparse_gemv_kernel_2d(block_type: BlockDType):
 @functools.cache
 def _make_block_sparse_transpose_gemv_kernel(block_type: BlockDType):
     # Determine (static) block size for kernel.
-    block_shape = _block_shape_2d(block_type)
-    is_scalar, is_vector = _block_access_kind(block_type)
+    block_shape = block_type.shape_2d
 
     @wp.kernel
     def block_sparse_transpose_gemv_kernel(
@@ -712,12 +678,7 @@ def _make_block_sparse_transpose_gemv_kernel(block_type: BlockDType):
             y_val = y[row_start[mat_id] + block_coord[0]]
 
             for i in range(n_block_cols):
-                if wp.static(is_scalar):
-                    coeff = block
-                elif wp.static(is_vector):
-                    coeff = block[i]
-                else:
-                    coeff = block[0, i]
+                coeff = wp.static(_make_read_block_coeff(block_type))(0, i, block)
                 wp.atomic_add(x, x_idx_base + i, alpha * coeff * y_val)
 
         else:
@@ -738,8 +699,7 @@ def _make_block_sparse_transpose_gemv_kernel(block_type: BlockDType):
 @functools.cache
 def _make_block_sparse_transpose_gemv_kernel_2d(block_type: BlockDType):
     # Determine (static) block size for kernel.
-    block_shape = _block_shape_2d(block_type)
-    is_scalar, is_vector = _block_access_kind(block_type)
+    block_shape = block_type.shape_2d
 
     @wp.kernel
     def block_sparse_transpose_gemv_kernel(
@@ -779,12 +739,7 @@ def _make_block_sparse_transpose_gemv_kernel_2d(block_type: BlockDType):
             y_val = y[mat_id, block_coord[0]]
 
             for i in range(n_block_cols):
-                if wp.static(is_scalar):
-                    coeff = block
-                elif wp.static(is_vector):
-                    coeff = block[i]
-                else:
-                    coeff = block[0, i]
+                coeff = wp.static(_make_read_block_coeff(block_type))(0, i, block)
                 wp.atomic_add(x, mat_id, x_idx_base + i, alpha * coeff * y_val)
 
         else:
@@ -867,8 +822,7 @@ def _dense_gemv_kernel(
 @functools.cache
 def _make_block_sparse_ATA_diagonal_kernel_2d(block_type: BlockDType):
     # Determine (static) block size for kernel.
-    block_shape = _block_shape_2d(block_type)
-    is_scalar, is_vector = _block_access_kind(block_type)
+    block_shape = block_type.shape_2d
 
     @wp.kernel
     def block_sparse_ATA_diagonal_kernel(
@@ -905,12 +859,7 @@ def _make_block_sparse_ATA_diagonal_kernel_2d(block_type: BlockDType):
         # Accumulate coefficients contributed by non-zero block
         if wp.static(n_block_rows == 1):
             for j in range(n_block_cols):
-                if wp.static(is_scalar):
-                    val = block
-                elif wp.static(is_vector):
-                    val = block[j]
-                else:
-                    val = block[0, j]
+                val = wp.static(_make_read_block_coeff(block_type))(0, j, block)
                 wp.atomic_add(diag, mat_id, block_col + j, val * val)
         else:
             for j in range(n_block_cols):
