@@ -1569,6 +1569,7 @@ def get_mesh(
     counts = mesh.GetFaceVertexCountsAttr().Get()
     source_points = points
     source_indices = indices
+    source_vertices = None
 
     uvs = None
     uvs_interpolation = None
@@ -1691,9 +1692,12 @@ def get_mesh(
                     if not uvs_facevarying:
                         corner_uvs = corner_uvs[indices]
 
+                original_indices = indices
                 points, indices, normals, uvs = _split_corners_into_vertices(
                     points, indices, Ndir, corner_uvs, vertex_splitting_angle_threshold_deg
                 )
+                source_vertices = np.empty(len(points), dtype=np.int32)
+                source_vertices[indices] = original_indices
                 # Vertex splitting creates a new per-vertex layout (and UVs
                 # if available). Skip the later faceVarying UV split to avoid
                 # dropping/duplicating UVs.
@@ -1760,7 +1764,8 @@ def get_mesh(
             else:
                 if not preserve_facevarying_uvs:
                     points_original = points
-                    points = points_original[indices[corner_flat]]
+                    source_vertices = indices[corner_flat]
+                    points = points_original[source_vertices]
                     if normals is not None:
                         if len(normals) == len(points_original):
                             normals = normals[indices[corner_flat]]
@@ -1787,6 +1792,7 @@ def get_mesh(
         normals = np.repeat(face_normals, 3, axis=0)
         vertex_indices = faces.reshape(-1)
         points = points[vertex_indices]
+        source_vertices = vertex_indices if source_vertices is None else source_vertices[vertex_indices]
         if (
             uvs is not None
             and uv_indices is None
@@ -1823,6 +1829,9 @@ def get_mesh(
         if material_props.get("texture_transform") is None
         else material_props["texture_transform"],
     )
+    if source_vertices is not None:
+        # Bind poses address authored points, not vertices duplicated for rendering.
+        mesh_out._usd_source_point_indices = source_vertices
     if compute_inertia and visual_topology:
         from ..geometry.inertia import compute_inertia_mesh  # noqa: PLC0415
 
@@ -2649,6 +2658,49 @@ def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
                 )
                 break
             p = p.GetParent()
+    return None
+
+
+def _get_deformable_bind_pose(prim: Usd.Prim, *, strict: bool = False) -> np.ndarray | None:
+    """Read a geometry's proposal bind pose from ``PhysicsDeformablePoseAPI``.
+
+    Enumerates the prim's applied multi-apply ``PhysicsDeformablePoseAPI:<instance>``
+    schemas (by token, since the schema is unregistered) and returns the ``points``
+    of the first instance whose ``purposes`` contains ``bindPose``, in authored
+    order. Returns ``None`` when no bind pose is authored (the caller falls back to
+    the geometry's default ``points``, per the proposal). A bind pose whose length
+    does not match the geometry's ``points`` warns and is ignored unless ``strict``
+    is true, in which case malformed data raises with a stable reason name.
+    """
+    geometry_points = prim.GetAttribute("points").Get() if prim.GetAttribute("points") else None
+    # Raw apiSchemas metadata: the proposal schema is unregistered, so
+    # GetAppliedSchemas() would drop its multi-apply instances.
+    for schema in _get_raw_api_schemas(prim):
+        if not schema.startswith("PhysicsDeformablePoseAPI:"):
+            continue
+        instance = schema.split(":", 1)[1]
+        purposes = prim.GetAttribute(f"physics:deformablePose:{instance}:purposes").Get()
+        if not purposes or "bindPose" not in [str(p) for p in purposes]:
+            continue
+        points = prim.GetAttribute(f"physics:deformablePose:{instance}:points").Get()
+        if points is None:
+            continue
+        if geometry_points is not None and len(points) != len(geometry_points):
+            message = (
+                f"{prim.GetPath()}: PhysicsDeformablePoseAPI:{instance} bind pose has "
+                f"{len(points)} points but the geometry has {len(geometry_points)}"
+            )
+            if strict:
+                raise ValueError(f"invalid_bind_pose_count: {message}")
+            warnings.warn(
+                f"{message}; ignoring it.",
+                stacklevel=2,
+            )
+            continue
+        points = np.asarray(points, dtype=np.float64)
+        if strict and not np.all(np.isfinite(points)):
+            raise ValueError(f"non_finite_bind_point: {prim.GetPath()} bind pose contains non-finite points")
+        return points
     return None
 
 
