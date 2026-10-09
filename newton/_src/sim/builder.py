@@ -1702,21 +1702,21 @@ class ModelBuilder:
         self._requested_state_attributes: set[str] = set()
         """Optional state attributes requested via :meth:`request_state_attributes`."""
 
-        # body-particle attachments
-        self.attachment_body_particle_body: list[int] = []
-        """Rigid body indices accumulated for :attr:`Model.attachment_body_particle_body`."""
-        self.attachment_body_particle_particle: list[int] = []
-        """Particle indices accumulated for :attr:`Model.attachment_body_particle_particle`."""
-        self.attachment_body_particle_body_point: list[Vec3] = []
-        """Body-local attachment points [m] accumulated for :attr:`Model.attachment_body_particle_body_point`."""
-        self.attachment_body_particle_stiffness: list[float] = []
-        """Attachment stiffness values [N/m] accumulated for :attr:`Model.attachment_body_particle_stiffness`."""
-        self.attachment_body_particle_damping: list[float] = []
-        """Attachment damping values [N·s/m] accumulated for :attr:`Model.attachment_body_particle_damping`."""
-        self.attachment_body_particle_enabled: list[bool] = []
-        """Attachment enabled states accumulated for :attr:`Model.attachment_body_particle_enabled`."""
-        self.attachment_body_particle_world: list[int] = []
-        """World indices accumulated for :attr:`Model.attachment_body_particle_world`."""
+        # particle-body attachments
+        self.attachment_particle_body_body: list[int] = []
+        """Rigid body indices accumulated for :attr:`Model.attachment_particle_body_body`."""
+        self.attachment_particle_body_particle: list[int] = []
+        """Particle indices accumulated for :attr:`Model.attachment_particle_body_particle`."""
+        self.attachment_particle_body_body_point: list[Vec3] = []
+        """Body-local attachment points [m] accumulated for :attr:`Model.attachment_particle_body_body_point`."""
+        self.attachment_particle_body_stiffness: list[float] = []
+        """Attachment stiffness values [N/m] accumulated for :attr:`Model.attachment_particle_body_stiffness`."""
+        self.attachment_particle_body_damping: list[float] = []
+        """Attachment damping values [N·s/m] accumulated for :attr:`Model.attachment_particle_body_damping`."""
+        self.attachment_particle_body_enabled: list[bool] = []
+        """Attachment enabled states accumulated for :attr:`Model.attachment_particle_body_enabled`."""
+        self.attachment_particle_body_world: list[int] = []
+        """World indices accumulated for :attr:`Model.attachment_particle_body_world`."""
 
         # springs
         self.spring_indices: list[int] = []
@@ -3168,9 +3168,9 @@ class ModelBuilder:
         return len(self.spring_rest_length)
 
     @property
-    def attachment_body_particle_count(self) -> int:
-        """The number of body-particle attachments in the model."""
-        return len(self.attachment_body_particle_body)
+    def attachment_particle_body_count(self) -> int:
+        """The number of particle-body attachments in the model."""
+        return len(self.attachment_particle_body_body)
 
     @property
     def muscle_count(self):
@@ -6893,9 +6893,9 @@ class ModelBuilder:
             if body2 >= 0:
                 bodies_in_constraints.add(body2)
 
-        # A body-particle attachment needs a surviving body to anchor to and to receive the
+        # A particle-body attachment needs a surviving body to anchor to and to receive the
         # reaction force, so its body must not be merged into the world.
-        for body in self.attachment_body_particle_body:
+        for body in self.attachment_particle_body_body:
             if body >= 0:
                 bodies_in_constraints.add(body)
 
@@ -7548,19 +7548,19 @@ class ModelBuilder:
                     target_attr.values[eq_idx] = -1
                     target_kind_attr.values[eq_idx] = 0
 
-        # Remap body-particle attachments onto the reindexed bodies. When the anchored body was
+        # Remap particle-body attachments onto the reindexed bodies. When the anchored body was
         # merged into its parent, the local anchor must be re-expressed in the surviving parent's
         # frame so the attachment keeps its world-space position.
-        for i in range(len(self.attachment_body_particle_body)):
-            old_body = self.attachment_body_particle_body[i]
+        for i in range(len(self.attachment_particle_body_body)):
+            old_body = self.attachment_particle_body_body[i]
             if old_body in body_merged_parent:
                 merge_xform = body_merged_transform[old_body]
-                self.attachment_body_particle_body_point[i] = wp.transform_point(
-                    merge_xform, self.attachment_body_particle_body_point[i]
+                self.attachment_particle_body_body_point[i] = wp.transform_point(
+                    merge_xform, self.attachment_particle_body_body_point[i]
                 )
-                self.attachment_body_particle_body[i] = body_remap[body_merged_parent[old_body]]
+                self.attachment_particle_body_body[i] = body_remap[body_merged_parent[old_body]]
             else:
-                self.attachment_body_particle_body[i] = body_remap[old_body]
+                self.attachment_particle_body_body[i] = body_remap[old_body]
 
         # Generic entity-reference remap for any custom attribute that points at bodies or joints
         # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
@@ -10163,10 +10163,10 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.PARTICLE,
             )
 
-    def add_attachment_body_particle(
+    def add_attachment_particle_body(
         self,
-        body: int,
         particle: int,
+        body: int,
         *,
         body_point: Vec3 | None = None,
         stiffness: float = 1.0e4,
@@ -10183,11 +10183,11 @@ class ModelBuilder:
         owned by different solvers of a coupled simulation, the attachment is
         coupled by
         :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
-        See :ref:`Body-particle attachments`.
+        See :ref:`Particle-body attachments`.
 
         Args:
-            body: Index of the rigid body.
             particle: Index of the attached particle.
+            body: Index of the rigid body.
             body_point: Attachment point in the body's local frame [m]. If
                 ``None``, the body origin is used.
             stiffness: Attachment stiffness [N/m].
@@ -10199,7 +10199,7 @@ class ModelBuilder:
             Index of the attachment.
 
         Raises:
-            IndexError: If ``body`` or ``particle`` is out of range.
+            IndexError: If ``particle`` or ``body`` is out of range.
             ValueError: If the endpoints belong to different worlds, a
                 coefficient is negative, or a coefficient or ``body_point``
                 is not finite.
@@ -10225,20 +10225,20 @@ class ModelBuilder:
         # An endpoint outside any world context (-1) adopts the world of the other endpoint.
         world = body_world if body_world >= 0 else particle_world
 
-        attachment = self.attachment_body_particle_count
-        self.attachment_body_particle_body.append(int(body))
-        self.attachment_body_particle_particle.append(int(particle))
-        self.attachment_body_particle_body_point.append(resolved_body_point)
-        self.attachment_body_particle_stiffness.append(float(stiffness))
-        self.attachment_body_particle_damping.append(float(damping))
-        self.attachment_body_particle_enabled.append(bool(enabled))
-        self.attachment_body_particle_world.append(world)
+        attachment = self.attachment_particle_body_count
+        self.attachment_particle_body_body.append(int(body))
+        self.attachment_particle_body_particle.append(int(particle))
+        self.attachment_particle_body_body_point.append(resolved_body_point)
+        self.attachment_particle_body_stiffness.append(float(stiffness))
+        self.attachment_particle_body_damping.append(float(damping))
+        self.attachment_particle_body_enabled.append(bool(enabled))
+        self.attachment_particle_body_world.append(world)
 
         if custom_attributes:
             self._process_custom_attributes(
                 entity_index=attachment,
                 custom_attrs=custom_attributes,
-                expected_frequency=Model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+                expected_frequency=Model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             )
         return attachment
 
@@ -14132,28 +14132,28 @@ class ModelBuilder:
             m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
-            # body-particle attachments
+            # particle-body attachments
 
-            m.attachment_body_particle_body = _to_wp_array(
-                self.attachment_body_particle_body, wp.int32, requires_grad=False
+            m.attachment_particle_body_body = _to_wp_array(
+                self.attachment_particle_body_body, wp.int32, requires_grad=False
             )
-            m.attachment_body_particle_particle = _to_wp_array(
-                self.attachment_body_particle_particle, wp.int32, requires_grad=False
+            m.attachment_particle_body_particle = _to_wp_array(
+                self.attachment_particle_body_particle, wp.int32, requires_grad=False
             )
-            m.attachment_body_particle_body_point = _to_wp_array(
-                self.attachment_body_particle_body_point, wp.vec3, requires_grad=requires_grad
+            m.attachment_particle_body_body_point = _to_wp_array(
+                self.attachment_particle_body_body_point, wp.vec3, requires_grad=requires_grad
             )
-            m.attachment_body_particle_stiffness = _to_wp_array(
-                self.attachment_body_particle_stiffness, wp.float32, requires_grad=requires_grad
+            m.attachment_particle_body_stiffness = _to_wp_array(
+                self.attachment_particle_body_stiffness, wp.float32, requires_grad=requires_grad
             )
-            m.attachment_body_particle_damping = _to_wp_array(
-                self.attachment_body_particle_damping, wp.float32, requires_grad=requires_grad
+            m.attachment_particle_body_damping = _to_wp_array(
+                self.attachment_particle_body_damping, wp.float32, requires_grad=requires_grad
             )
-            m.attachment_body_particle_enabled = _to_wp_array(
-                self.attachment_body_particle_enabled, wp.bool, requires_grad=False
+            m.attachment_particle_body_enabled = _to_wp_array(
+                self.attachment_particle_body_enabled, wp.bool, requires_grad=False
             )
-            m.attachment_body_particle_world = _to_wp_array(
-                self.attachment_body_particle_world, wp.int32, requires_grad=False
+            m.attachment_particle_body_world = _to_wp_array(
+                self.attachment_particle_body_world, wp.int32, requires_grad=False
             )
 
             # ---------------------
@@ -14455,7 +14455,7 @@ class ModelBuilder:
             m.tet_count = len(self.tet_poses)
             m.edge_count = len(self.edge_rest_angle)
             m.spring_count = len(self.spring_rest_length)
-            m.attachment_body_particle_count = self.attachment_body_particle_count
+            m.attachment_particle_body_count = self.attachment_particle_body_count
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
             m.mujoco.equality_constraint_count = self._equality_constraint_count

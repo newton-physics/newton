@@ -1564,7 +1564,7 @@ def evaluate_rod_bend_twist_force_hessian_z(
 def _point_force_to_body_torque_and_hessian(r: wp.vec3, force: wp.vec3, H_linear: wp.mat33):
     """Convert a linear force/Hessian applied at body-relative offset ``r`` into body torque and angular Hessian blocks.
 
-    Shared by joint linear constraints, body-particle attachments, and body-particle contacts:
+    Shared by joint linear constraints, particle-body attachments, and body-particle contacts:
     any force applied at a point offset by ``r`` from the body's center of mass produces a torque
     ``r x force`` and rotates the linear Hessian block into angular-linear/angular-angular blocks
     via the skew matrix of ``r``.
@@ -5811,7 +5811,7 @@ def accumulate_body_particle_attachments_per_body(
     body_hessian_al: wp.array[wp.mat33],
     body_hessian_aa: wp.array[wp.mat33],
 ):
-    """Accumulate body-particle attachment forces and Hessians on each rigid body."""
+    """Accumulate particle-body attachment forces and Hessians on each rigid body."""
     body_idx_in_group = wp.tid()
     body_id = color_group[body_idx_in_group]
     if body_inv_mass[body_id] <= 0.0:

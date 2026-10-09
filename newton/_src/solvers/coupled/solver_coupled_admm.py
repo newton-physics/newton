@@ -447,7 +447,7 @@ class SolverCoupledADMM(SolverCoupled):
         attachment constraints.
 
         These custom rows are a legacy authoring path kept for importers that
-        already write them. Prefer :meth:`newton.ModelBuilder.add_attachment_body_particle`,
+        already write them. Prefer :meth:`newton.ModelBuilder.add_attachment_particle_body`,
         whose rows are read from the same place and additionally work inside a
         single solver.
 
@@ -537,7 +537,7 @@ class SolverCoupledADMM(SolverCoupled):
         """Add a model-level rigid-body-to-particle attachment.
 
         .. deprecated:: 1.7
-            Use :meth:`newton.ModelBuilder.add_attachment_body_particle` instead. Attachments
+            Use :meth:`newton.ModelBuilder.add_attachment_particle_body` instead. Attachments
             authored there are applied inside :class:`~newton.solvers.SolverVBD` when one entry
             owns both endpoints, and coupled by ADMM when the endpoints span two entries.
 
@@ -555,7 +555,7 @@ class SolverCoupledADMM(SolverCoupled):
         """
         warnings.warn(
             "SolverCoupledADMM.add_body_particle_attachment() is deprecated; use "
-            "ModelBuilder.add_attachment_body_particle() instead.",
+            "ModelBuilder.add_attachment_particle_body() instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -2803,17 +2803,17 @@ class SolverCoupledADMM(SolverCoupled):
         """Collect enabled attachment rows from the model and the legacy coupling namespace."""
         model = self.model
         sources = []
-        if int(model.attachment_body_particle_count) > 0:
+        if int(model.attachment_particle_body_count) > 0:
             sources.append(
                 (
                     "row",
-                    int(model.attachment_body_particle_count),
-                    model.attachment_body_particle_body,
-                    model.attachment_body_particle_particle,
-                    model.attachment_body_particle_body_point,
-                    model.attachment_body_particle_stiffness,
-                    model.attachment_body_particle_damping,
-                    model.attachment_body_particle_enabled,
+                    int(model.attachment_particle_body_count),
+                    model.attachment_particle_body_body,
+                    model.attachment_particle_body_particle,
+                    model.attachment_particle_body_body_point,
+                    model.attachment_particle_body_stiffness,
+                    model.attachment_particle_body_damping,
+                    model.attachment_particle_body_enabled,
                 )
             )
 
@@ -2830,7 +2830,7 @@ class SolverCoupledADMM(SolverCoupled):
             )
             if coupling_ns is None or any(not hasattr(coupling_ns, attr) for attr in required_attrs):
                 raise ValueError(
-                    "ADMM body-particle attachments require SolverCoupledADMM.register_custom_attributes(builder) "
+                    "ADMM particle-body attachments require SolverCoupledADMM.register_custom_attributes(builder) "
                     "before finalizing the model"
                 )
             sources.append(
@@ -2862,15 +2862,15 @@ class SolverCoupledADMM(SolverCoupled):
                 body = int(body_np[row])
                 particle = int(particle_np[row])
                 if body < 0 or body >= model.body_count:
-                    raise IndexError(f"ADMM body-particle attachment {name} has body index {body} out of range")
+                    raise IndexError(f"ADMM particle-body attachment {name} has body index {body} out of range")
                 if particle < 0 or particle >= model.particle_count:
-                    raise IndexError(f"ADMM body-particle attachment {name} has particle index {particle} out of range")
+                    raise IndexError(f"ADMM particle-body attachment {name} has particle index {particle} out of range")
                 stiffness = float(stiffness_np[row])
                 if stiffness < 0.0:
-                    raise ValueError(f"ADMM body-particle attachment {name} has negative stiffness")
+                    raise ValueError(f"ADMM particle-body attachment {name} has negative stiffness")
                 damping = float(damping_np[row])
                 if damping < 0.0:
-                    raise ValueError(f"ADMM body-particle attachment {name} has negative damping")
+                    raise ValueError(f"ADMM particle-body attachment {name} has negative damping")
                 point = (float(point_np[row][0]), float(point_np[row][1]), float(point_np[row][2]))
                 key = (body, particle, point, stiffness, damping)
                 if is_model_source:
@@ -2882,7 +2882,7 @@ class SolverCoupledADMM(SolverCoupled):
 
         if duplicates:
             logger.warning(
-                f"SolverCoupledADMM ignored body-particle attachment {', '.join(duplicates)} because an identical "
+                f"SolverCoupledADMM ignored particle-body attachment {', '.join(duplicates)} because an identical "
                 "attachment is already defined on the model; remove the deprecated "
                 "SolverCoupledADMM.add_body_particle_attachment() call.",
             )
@@ -2914,7 +2914,7 @@ class SolverCoupledADMM(SolverCoupled):
 
         if unowned:
             logger.warning(
-                f"SolverCoupledADMM cannot couple body-particle attachment {', '.join(unowned)} because an endpoint "
+                f"SolverCoupledADMM cannot couple particle-body attachment {', '.join(unowned)} because an endpoint "
                 "is not owned by any entry; these attachments apply no force.",
             )
         if unsupported_same_entry:
@@ -2923,7 +2923,7 @@ class SolverCoupledADMM(SolverCoupled):
                 for name, entry_name, solver_name in unsupported_same_entry
             )
             logger.warning(
-                f"SolverCoupledADMM found same-entry body-particle attachment {details}, but only SolverVBD "
+                f"SolverCoupledADMM found same-entry particle-body attachment {details}, but only SolverVBD "
                 "applies same-entry attachments; these attachments apply no force.",
             )
 

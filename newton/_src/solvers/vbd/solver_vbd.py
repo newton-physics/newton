@@ -231,14 +231,14 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
-    Body-particle attachment limitations:
+    Particle-body attachment limitations:
         - Attachments are translational and constrain one particle to a body-local point.
         - The constraint is compliant: ``stiffness`` and ``damping`` enter a quadratic
           penalty, so a loaded attachment keeps a small offset. There is no rigid mode.
         - Both endpoints must be integrated by this solver. Attachments are not supported
           with ``integrate_with_external_rigid_solver=True``.
 
-        See :ref:`Body-particle attachments` for authoring and cross-solver behavior.
+        See :ref:`Particle-body attachments` for authoring and cross-solver behavior.
 
     Buffer sizing:
         Body-body contact state is pre-allocated from ``model.rigid_contact_max`` when a
@@ -775,9 +775,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             if _sc_gap < 0.0:
                 raise ValueError(f"particle_self_contact_gap must be >= 0, got {_sc_gap}")
 
-        if model.attachment_body_particle_count > 0 and integrate_with_external_rigid_solver:
+        if model.attachment_particle_body_count > 0 and integrate_with_external_rigid_solver:
             raise ValueError(
-                "Body-particle attachments require SolverVBD to integrate both endpoints; "
+                "Particle-body attachments require SolverVBD to integrate both endpoints; "
                 "integrate_with_external_rigid_solver=True is not supported."
             )
 
@@ -871,8 +871,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_deterministic_max_records = 0
         coupling_deterministic_max_records = 0
         if effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
-            if model.attachment_body_particle_count > 0:
-                attachment_particles = model.attachment_body_particle_particle.numpy()
+            if model.attachment_particle_body_count > 0:
+                attachment_particles = model.attachment_particle_body_particle.numpy()
                 attachment_records = int(np.bincount(attachment_particles, minlength=model.particle_count).max())
                 particle_deterministic_max_records = max(
                     particle_deterministic_max_records,
@@ -2355,15 +2355,15 @@ class SolverVBD(SolverBase, CouplingInterface):
         return adjacency
 
     def _compute_body_particle_attachment_adjacency(self, model: Model) -> tuple[wp.array, wp.array]:
-        """Build CSR adjacency from rigid bodies to body-particle attachments."""
-        if model.attachment_body_particle_count == 0:
+        """Build CSR adjacency from rigid bodies to particle-body attachments."""
+        if model.attachment_particle_body_count == 0:
             return (
                 wp.zeros(model.body_count + 1, dtype=wp.int32, device=self.device),
                 wp.empty(0, dtype=wp.int32, device=self.device),
             )
 
         indices, offsets = build_vertex_adjacency_with_warp(
-            model.attachment_body_particle_body.to("cpu"),
+            model.attachment_particle_body_body.to("cpu"),
             model.body_count,
             count_kernel=_count_body_particle_attachments_per_body,
             fill_kernel=_fill_body_particle_attachments_per_body,
@@ -3746,10 +3746,10 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         # Iterate over color groups
         for color in range(len(self.model.particle_color_groups)):
-            if model.attachment_body_particle_count > 0:
+            if model.attachment_particle_body_count > 0:
                 wp.launch(
                     kernel=accumulate_body_particle_attachment_force_and_hessian,
-                    dim=model.attachment_body_particle_count,
+                    dim=model.attachment_particle_body_count,
                     inputs=[
                         dt,
                         color,
@@ -3758,12 +3758,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                         model.particle_colors,
                         body_q_for_particles,
                         body_q_prev_for_particles,
-                        model.attachment_body_particle_body,
-                        model.attachment_body_particle_particle,
-                        model.attachment_body_particle_body_point,
-                        model.attachment_body_particle_stiffness,
-                        model.attachment_body_particle_damping,
-                        model.attachment_body_particle_enabled,
+                        model.attachment_particle_body_body,
+                        model.attachment_particle_body_particle,
+                        model.attachment_particle_body_body_point,
+                        model.attachment_particle_body_stiffness,
+                        model.attachment_particle_body_damping,
+                        model.attachment_particle_body_enabled,
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
@@ -4015,7 +4015,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         for color in range(len(body_color_groups)):
             color_group = body_color_groups[color]
 
-            if model.attachment_body_particle_count > 0:
+            if model.attachment_particle_body_count > 0:
                 wp.launch(
                     kernel=accumulate_body_particle_attachments_per_body,
                     dim=color_group.size,
@@ -4028,11 +4028,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.body_q_prev,
                         model.body_com,
                         self.body_inv_mass_effective,
-                        model.attachment_body_particle_particle,
-                        model.attachment_body_particle_body_point,
-                        model.attachment_body_particle_stiffness,
-                        model.attachment_body_particle_damping,
-                        model.attachment_body_particle_enabled,
+                        model.attachment_particle_body_particle,
+                        model.attachment_particle_body_body_point,
+                        model.attachment_particle_body_stiffness,
+                        model.attachment_particle_body_damping,
+                        model.attachment_particle_body_enabled,
                         self.body_particle_attachment_offsets,
                         self.body_particle_attachment_indices,
                     ],

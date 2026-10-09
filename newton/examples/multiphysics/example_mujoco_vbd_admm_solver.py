@@ -147,9 +147,9 @@ class Example:
         )
         self.ball_joint = builder.joint_count - 1
         builder.add_shape_sphere(self.ball_body, radius=ball_radius)
-        builder.add_attachment_body_particle(
-            self.ball_body,
+        builder.add_attachment_particle_body(
             self.center_particle,
+            self.ball_body,
             body_point=wp.vec3(0.0, 0.0, ball_radius),
             stiffness=1.0e3,
         )

@@ -4836,18 +4836,18 @@ def _body_particle_attachment_is_native_vbd(test, device):
         vel=wp.vec3(1.0, 0.0, 0.0),
         mass=1.0,
     )
-    attachment = builder.add_attachment_body_particle(
-        body,
+    attachment = builder.add_attachment_particle_body(
         particle,
+        body,
         stiffness=2.0e4,
         damping=100.0,
     )
     builder.color()
     model = builder.finalize(device=device)
 
-    test.assertEqual(model.attachment_body_particle_count, 1)
-    test.assertEqual(int(model.attachment_body_particle_body.numpy()[attachment]), body)
-    test.assertEqual(int(model.attachment_body_particle_particle.numpy()[attachment]), particle)
+    test.assertEqual(model.attachment_particle_body_count, 1)
+    test.assertEqual(int(model.attachment_particle_body_body.numpy()[attachment]), body)
+    test.assertEqual(int(model.attachment_particle_body_particle.numpy()[attachment]), particle)
 
     state_in = model.state()
     state_out = model.state()
@@ -4874,13 +4874,13 @@ def _body_particle_attachment_validates_inputs(test, device):
     particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
 
     with test.assertRaises(IndexError):
-        builder.add_attachment_body_particle(body + 1, particle)
+        builder.add_attachment_particle_body(particle, body + 1)
     with test.assertRaises(IndexError):
-        builder.add_attachment_body_particle(body, particle + 1)
+        builder.add_attachment_particle_body(particle + 1, body)
     with test.assertRaises(ValueError):
-        builder.add_attachment_body_particle(body, particle, stiffness=-1.0)
+        builder.add_attachment_particle_body(particle, body, stiffness=-1.0)
     with test.assertRaises(ValueError):
-        builder.add_attachment_body_particle(body, particle, damping=-1.0)
+        builder.add_attachment_particle_body(particle, body, damping=-1.0)
 
     body_world = newton.ModelBuilder()
     body_world.add_body()
@@ -4890,7 +4890,7 @@ def _body_particle_attachment_validates_inputs(test, device):
     composed.add_world(body_world)
     composed.add_world(particle_world)
     with test.assertRaisesRegex(ValueError, "different worlds"):
-        composed.add_attachment_body_particle(0, 0)
+        composed.add_attachment_particle_body(0, 0)
 
 
 def _body_particle_attachment_rejects_external_rigid_solver(test, device):
@@ -4898,7 +4898,7 @@ def _body_particle_attachment_rejects_external_rigid_solver(test, device):
     builder = newton.ModelBuilder()
     body = builder.add_body()
     particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
-    builder.add_attachment_body_particle(body, particle)
+    builder.add_attachment_particle_body(particle, body)
     builder.color()
     model = builder.finalize(device=device)
 
@@ -4911,7 +4911,7 @@ def _body_particle_attachment_composes_with_worlds(test, device):
     template = newton.ModelBuilder()
     body = template.add_body()
     particle = template.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
-    template.add_attachment_body_particle(body, particle)
+    template.add_attachment_particle_body(particle, body)
 
     builder = newton.ModelBuilder()
     builder.add_world(template)
@@ -4919,10 +4919,10 @@ def _body_particle_attachment_composes_with_worlds(test, device):
     builder.color()
     model = builder.finalize(device=device)
 
-    test.assertEqual(model.attachment_body_particle_count, 2)
-    np.testing.assert_array_equal(model.attachment_body_particle_body.numpy(), [0, 1])
-    np.testing.assert_array_equal(model.attachment_body_particle_particle.numpy(), [0, 1])
-    np.testing.assert_array_equal(model.attachment_body_particle_world.numpy(), [0, 1])
+    test.assertEqual(model.attachment_particle_body_count, 2)
+    np.testing.assert_array_equal(model.attachment_particle_body_body.numpy(), [0, 1])
+    np.testing.assert_array_equal(model.attachment_particle_body_particle.numpy(), [0, 1])
+    np.testing.assert_array_equal(model.attachment_particle_body_world.numpy(), [0, 1])
 
 
 def _body_particle_attachment_force_balance(test, device):
@@ -4959,9 +4959,9 @@ def _body_particle_attachment_accumulates_body_csr(test, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
     particles = [builder.add_particle(pos=wp.vec3(x, 0.0, 0.0), vel=wp.vec3(), mass=1.0) for x in (1.0, 2.0, 100.0)]
-    builder.add_attachment_body_particle(body, particles[0], stiffness=10.0)
-    builder.add_attachment_body_particle(body, particles[1], stiffness=20.0)
-    builder.add_attachment_body_particle(body, particles[2], stiffness=1000.0, enabled=False)
+    builder.add_attachment_particle_body(particles[0], body, stiffness=10.0)
+    builder.add_attachment_particle_body(particles[1], body, stiffness=20.0)
+    builder.add_attachment_particle_body(particles[2], body, stiffness=1000.0, enabled=False)
     builder.color()
     model = builder.finalize(device=device)
     with test.assertWarns(DeprecationWarning):
@@ -4987,11 +4987,11 @@ def _body_particle_attachment_accumulates_body_csr(test, device):
             model.body_q,
             model.body_com,
             model.body_inv_mass,
-            model.attachment_body_particle_particle,
-            model.attachment_body_particle_body_point,
-            model.attachment_body_particle_stiffness,
-            model.attachment_body_particle_damping,
-            model.attachment_body_particle_enabled,
+            model.attachment_particle_body_particle,
+            model.attachment_particle_body_body_point,
+            model.attachment_particle_body_stiffness,
+            model.attachment_particle_body_damping,
+            model.attachment_particle_body_enabled,
             solver.body_particle_attachment_offsets,
             solver.body_particle_attachment_indices,
         ],
@@ -5047,9 +5047,9 @@ def _body_particle_attachment_deformable_under_load(test, device, deformable_kin
             k_damp=1.0e-2,
         )
 
-    builder.add_attachment_body_particle(
-        body,
+    builder.add_attachment_particle_body(
         particle,
+        body,
         stiffness=1.0e5,
         damping=100.0,
     )
@@ -5106,7 +5106,7 @@ def _body_particle_attachment_to_cable_capsule(test, device):
     capsule = int(bodies[-1])
     # Comparable to one capsule's mass so both endpoints move measurably.
     particle = builder.add_particle(pos=wp.vec3(0.4, 0.0, 0.1), vel=wp.vec3(), mass=0.005)
-    builder.add_attachment_body_particle(capsule, particle, stiffness=2.0e2, damping=1.0)
+    builder.add_attachment_particle_body(particle, capsule, stiffness=2.0e2, damping=1.0)
     builder.color(balance_colors=False)
     model = builder.finalize(device=device)
 
