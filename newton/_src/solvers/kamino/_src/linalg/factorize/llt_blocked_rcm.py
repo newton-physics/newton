@@ -31,8 +31,11 @@ Layout conventions (same as llt_blocked):
                                             indexed by ``vio[i]`` with length ``dim[i]``
 """
 
+from __future__ import annotations
+
 from ctypes import sizeof
 from functools import cache
+from typing import Any
 
 import warp as wp
 
@@ -91,10 +94,15 @@ def make_get_array_offset_ptr_func(dtype):
     """Creates a function to get the offset pointer of a warp array."""
 
     @wp.func_native(get_array_ptr_cpp)
-    def get_dtype_array_ptr(arr: wp.array[dtype]) -> wp.uint64: ...
+    def get_dtype_array_ptr(
+        arr: wp.array[Any],  # wp.array[dtype]
+    ) -> wp.uint64: ...
 
     @wp.func
-    def get_dtype_array_offset_ptr(arr: wp.array[dtype], start_index: int) -> wp.uint64:
+    def get_dtype_array_offset_ptr(
+        arr: wp.array[Any],  # wp.array[dtype]
+        start_index: int,
+    ) -> wp.uint64:
         return get_dtype_array_ptr(arr) + wp.uint64(start_index) * wp.uint64(wp.static(sizeof(dtype._type_)))
 
     return get_dtype_array_offset_ptr
