@@ -1,0 +1,6 @@
+﻿newton.math.velocity\_at\_point
+===============================
+
+.. currentmodule:: newton.math
+
+.. autowarpfunc:: velocity_at_point

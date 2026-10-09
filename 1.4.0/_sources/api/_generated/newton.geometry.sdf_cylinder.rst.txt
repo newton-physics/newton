@@ -1,0 +1,6 @@
+﻿newton.geometry.sdf\_cylinder
+=============================
+
+.. currentmodule:: newton.geometry
+
+.. autowarpfunc:: sdf_cylinder

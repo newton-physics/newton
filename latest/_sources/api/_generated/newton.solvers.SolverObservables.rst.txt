@@ -1,0 +1,8 @@
+﻿newton.solvers.SolverObservables
+================================
+
+.. autoclass:: newton.solvers.SolverObservables
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

@@ -1,0 +1,8 @@
+﻿newton.controllers.ControllerJointImpedance
+===========================================
+
+.. autoclass:: newton.controllers.ControllerJointImpedance
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

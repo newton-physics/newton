@@ -1,0 +1,6 @@
+﻿newton.usd.get\_custom\_attribute\_declarations
+===============================================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: get_custom_attribute_declarations

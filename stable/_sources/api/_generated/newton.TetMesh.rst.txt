@@ -1,0 +1,8 @@
+﻿newton.TetMesh
+==============
+
+.. autoclass:: newton.TetMesh
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

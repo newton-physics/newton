@@ -1,0 +1,8 @@
+﻿newton.geometry.NarrowPhase
+===========================
+
+.. autoclass:: newton.geometry.NarrowPhase
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

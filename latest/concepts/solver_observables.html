@@ -1,0 +1,1636 @@
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Solver Observables &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=6036a7ed" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=64cc4de3f052d77215f0"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0" />
+
+    <script src="../_static/documentation_options.js?v=300cecfb"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/solver_observables';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.22.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/mermaid-nbsphinx.js?v=613f558e"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Collisions" href="collisions.html" />
+    <link rel="prev" title="Custom Attributes" href="custom_attributes.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.8.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="deformable_objects.html">
+    Deformable Objects
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#" aria-current="page">
+    Solver Observables
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="deformable_objects.html">
+    Deformable Objects
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#" aria-current="page">
+    Solver Observables
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/compatibility.html">Compatibility and Support</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Viewers and Debugging</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/source_code_guidelines.html">Source Code Guidelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/review_guidelines.html">Review Guidelines</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="deformable_objects.html">Deformable Objects</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1 current active"><a aria-current="page" class="current reference internal" href="#">Solver Observables</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="simulation_tuning.html">Simulation Tuning</a></li>
+<li class="toctree-l1"><a class="reference internal" href="coupling.html">Coupled Solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="actuators.html">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Solvers</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../solvers/index.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/kamino.html">Kamino</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/vbd.html">VBD</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_actuators.html">newton.actuators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_controllers.html">newton.controllers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lab/isaac-lab.html">Isaac Lab</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Solver Observables</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="solver-observables">
+<span id="id1"></span><h1>Solver Observables<a class="headerlink" href="#solver-observables" title="Link to this heading">#</a></h1>
+<div class="experimental admonition">
+<p class="admonition-title">Experimental</p>
+<p>The solver observable API may change while additional solvers and observable
+categories are migrated to it.</p>
+</div>
+<p>Quantities produced by a solver but not required to advance simulation belong
+in <a class="reference internal" href="../api/_generated/newton.solvers.SolverObservables.html#newton.solvers.SolverObservables" title="newton.solvers.SolverObservables"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.SolverObservables</span></code></a>, separately from
+<a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">State</span></code></a> and <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a>. Request only the arrays
+an application needs by composing <a class="reference internal" href="../api/_generated/newton.solvers.SolverObservableFlags.html#newton.solvers.SolverObservableFlags" title="newton.solvers.SolverObservableFlags"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.SolverObservableFlags</span></code></a>
+members in a set:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.solvers</span><span class="w"> </span><span class="kn">import</span> <span class="n">SolverObservableFlags</span><span class="p">,</span> <span class="n">SolverMuJoCo</span>
+
+<span class="n">solver</span> <span class="o">=</span> <span class="n">SolverMuJoCo</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">observables</span> <span class="o">=</span> <span class="n">solver</span><span class="o">.</span><span class="n">observables</span><span class="p">(</span>
+    <span class="p">{</span>
+        <span class="n">SolverObservableFlags</span><span class="o">.</span><span class="n">BODY_QDD</span><span class="p">,</span>
+        <span class="n">SolverObservableFlags</span><span class="o">.</span><span class="n">BODY_PARENT_F</span><span class="p">,</span>
+    <span class="p">}</span>
+<span class="p">)</span>
+
+<span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="p">,</span> <span class="n">observables</span><span class="o">=</span><span class="n">observables</span><span class="p">)</span>
+<span class="n">acceleration</span> <span class="o">=</span> <span class="n">observables</span><span class="o">.</span><span class="n">body_qdd</span>
+<span class="n">parent_wrench</span> <span class="o">=</span> <span class="n">observables</span><span class="o">.</span><span class="n">body_parent_f</span>
+</pre></div>
+</div>
+<p>Allocate an observable container once and reuse it across steps. The container is
+owned by the solver instance that allocated it. For contact-indexed observables,
+construct a <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> first. It publishes the resolved
+rigid and soft contact capacities on the model; the solver allocates from those
+capacities without needing a <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> instance:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">pipeline</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverXPBD</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">observables</span> <span class="o">=</span> <span class="n">solver</span><span class="o">.</span><span class="n">observables</span><span class="p">({</span><span class="n">SolverObservableFlags</span><span class="o">.</span><span class="n">CONTACT_F</span><span class="p">})</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+
+<span class="n">pipeline</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
+<span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="p">,</span> <span class="n">observables</span><span class="o">=</span><span class="n">observables</span><span class="p">)</span>
+<span class="n">contact_force</span> <span class="o">=</span> <span class="n">observables</span><span class="o">.</span><span class="n">contact_f</span>
+</pre></div>
+</div>
+<p>All requested arrays are allocated when <code class="docutils literal notranslate"><span class="pre">observables()</span></code> returns. An unrequested
+field is <code class="docutils literal notranslate"><span class="pre">None</span></code>; a requested field with zero capacity is an empty array.
+<code class="docutils literal notranslate"><span class="pre">Model.rigid_contact_max</span></code> and <code class="docutils literal notranslate"><span class="pre">Model.soft_contact_max</span></code> use <code class="docutils literal notranslate"><span class="pre">None</span></code> for
+uninitialized capacities and nonnegative integers for resolved capacities.
+Requesting contact observables before pipeline construction raises an error.
+Body-only observables do not require a pipeline.</p>
+<p>The live contact counts do not determine allocation sizes. <code class="docutils literal notranslate"><span class="pre">contact_f</span></code> has
+<code class="docutils literal notranslate"><span class="pre">model.rigid_contact_max</span> <span class="pre">+</span> <span class="pre">model.soft_contact_max</span></code> entries, with rigid slots
+followed by soft slots. Kernels use the contact counts to process valid entries.
+Allocation freezes the model’s contact capacities: later changes, including a
+replacement pipeline with different capacities, are rejected. Configure or
+rebuild pipelines before requesting contact-indexed observables.</p>
+<p>The first solver step or consumer read binds the observable container to its
+contact storage after validating device and both capacities. Newly allocated
+forces are zero and can be read by a sensor or viewer before the first step.
+Custom consumers can use <a class="reference internal" href="../api/_generated/newton.solvers.SolverObservables.html#newton.solvers.SolverObservables.bind_contacts" title="newton.solvers.SolverObservables.bind_contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">SolverObservables.bind_contacts()</span></code></a> for the same validation.
+Subsequent steps and consumers must use that same storage. Allocate observables and
+contacts before graph capture; neither ordinary nor conditional graph execution
+needs deferred observable allocation. Other solver scratch buffers may still need
+their usual warmup.</p>
+<section id="native-collision-backends">
+<h2>Native collision backends<a class="headerlink" href="#native-collision-backends" title="Link to this heading">#</a></h2>
+<p>With MuJoCo’s internal collision detection, construct the solver first and size
+the pipeline for the backend’s export capacity:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverMuJoCo</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">CollisionPipeline</span><span class="p">(</span>
+    <span class="n">model</span><span class="p">,</span> <span class="n">rigid_contact_max</span><span class="o">=</span><span class="n">solver</span><span class="o">.</span><span class="n">get_max_contact_count</span><span class="p">(),</span> <span class="n">soft_contact_max</span><span class="o">=</span><span class="mi">0</span>
+<span class="p">)</span>
+<span class="n">observables</span> <span class="o">=</span> <span class="n">solver</span><span class="o">.</span><span class="n">observables</span><span class="p">({</span><span class="n">SolverObservableFlags</span><span class="o">.</span><span class="n">CONTACT_F</span><span class="p">})</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="p">,</span> <span class="n">observables</span><span class="o">=</span><span class="n">observables</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>There is no <code class="docutils literal notranslate"><span class="pre">pipeline.collide()</span></code> call in this mode: the solver fills contact
+geometry and forces. Native Kamino similarly seeds the model’s rigid capacity
+when constructed before the pipeline. Both backends reject insufficient
+pipeline capacity during contact-observable allocation instead of resizing arrays
+inside a step.</p>
+<p>A solver advertises available entries through
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.supported_observable_flags" title="newton.solvers.SolverBase.supported_observable_flags"><code class="xref py py-attr docutils literal notranslate"><span class="pre">supported_observable_flags</span></code></a> and rejects an
+unsupported request during allocation. Passing an observable container to a
+different solver, or using contact observables with different contact storage, is
+also rejected.</p>
+<section id="standard-observables">
+<h3>Standard observables<a class="headerlink" href="#standard-observables" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 29.0%" />
+<col style="width: 40.0%" />
+<col style="width: 31.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Flag and field</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Solvers</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">BODY_QDD</span></code> / <code class="docutils literal notranslate"><span class="pre">observables.body_qdd</span></code></p></td>
+<td><p>Rigid-body center-of-mass spatial accelerations in the world frame</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> with MuJoCo Warp and
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino" title="newton.solvers.SolverKamino"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverKamino</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BODY_PARENT_F</span></code> / <code class="docutils literal notranslate"><span class="pre">observables.body_parent_f</span></code></p></td>
+<td><p>Incoming parent-joint wrenches on rigid bodies</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> with MuJoCo Warp,
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>, and
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CONTACT_F</span></code> / <code class="docutils literal notranslate"><span class="pre">observables.contact_f</span></code></p></td>
+<td><p>Contact spatial forces aligned with the bound contacts</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> with MuJoCo Warp,
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a>, <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a>, and
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino" title="newton.solvers.SolverKamino"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverKamino</span></code></a></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><a class="reference internal" href="../api/_generated/newton.solvers.SolverKamino.html#newton.solvers.SolverKamino" title="newton.solvers.SolverKamino"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverKamino</span></code></a> computes acceleration as the discrete
+step-average <code class="docutils literal notranslate"><span class="pre">(body_qd_out</span> <span class="pre">-</span> <span class="pre">body_qd_in)</span> <span class="pre">/</span> <span class="pre">dt</span></code>. Across an impact, this includes
+the velocity impulse divided by <code class="docutils literal notranslate"><span class="pre">dt</span></code>. MuJoCo Warp computes <code class="docutils literal notranslate"><span class="pre">BODY_QDD</span></code> and
+<code class="docutils literal notranslate"><span class="pre">BODY_PARENT_F</span></code> even with <code class="docutils literal notranslate"><span class="pre">disable_sensors=True</span></code> by enabling the
+post-constraint RNE stage independently of sensors.
+The native MuJoCo CPU backend (<code class="docutils literal notranslate"><span class="pre">use_mujoco_cpu=True</span></code>) supports only
+<code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR</span></code>; body and contact observable
+requests are rejected. MuJoCo Warp supports body observables on both CPU and GPU.</p>
+<p>Kamino exports contact points in the step’s input body frames and world-frame
+wrenches about the input centers of mass.
+Use the input state when consuming those contacts, including for native contact
+detection. In-place callers must preserve the input poses separately if a
+consumer needs to transform the contact points back to world coordinates.</p>
+<p><a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.SolverCoupled" title="newton.solvers.experimental.coupled.SolverCoupled"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverCoupled</span></code></a> exposes a body
+observable when every entry that owns bodies supports that flag. It allocates an
+entry-local container for each sub-solver and gathers owned rows into parent
+model order. Contact observables are not exposed by the coupled wrapper because
+filtered entry contacts require an explicit contact-index remapping contract.</p>
+</section>
+<section id="solver-specific-observables">
+<h3>Solver-specific observables<a class="headerlink" href="#solver-specific-observables" title="Link to this heading">#</a></h3>
+<p>Solvers can derive their container from
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverObservables.html#newton.solvers.SolverObservables" title="newton.solvers.SolverObservables"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverObservables</span></code></a> and define a separate observable enum. For
+example, MuJoCo adds <code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR</span></code> and returns a
+<code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.Observables</span></code> instance with <code class="docutils literal notranslate"><span class="pre">qfrc_actuator</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverMuJoCo</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">observables</span> <span class="o">=</span> <span class="n">solver</span><span class="o">.</span><span class="n">observables</span><span class="p">(</span>
+    <span class="p">{</span>
+        <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverObservableFlags</span><span class="o">.</span><span class="n">BODY_QDD</span><span class="p">,</span>
+        <span class="n">solver</span><span class="o">.</span><span class="n">ObservableFlags</span><span class="o">.</span><span class="n">QFRC_ACTUATOR</span><span class="p">,</span>
+    <span class="p">}</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>Sets may contain members from both enums without coordinating bit values.
+Observable enums must derive directly from <a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.Enum" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">enum.Enum</span></code></a>, not
+<a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.IntEnum" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">enum.IntEnum</span></code></a> or a string-mixin enum. Integer and string enum members
+can compare equal across enum classes and silently collide in a set.</p>
+<p>Declare each array on a <code class="docutils literal notranslate"><span class="pre">&#64;dataclass(eq=False)</span></code> container using
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverObservables.html#newton.solvers.SolverObservables.field" title="newton.solvers.SolverObservables.field"><code class="xref py py-meth docutils literal notranslate"><span class="pre">SolverObservables.field()</span></code></a>.
+The declaration associates the field with a flag, Warp dtype, and row frequency.
+Flag values are opaque identifiers: they do not need to match Python field names.
+Frequency means indexing domain, not how often an observable is updated.</p>
+<p>Derived containers inherit the standard fields and any custom fields from their
+base classes. There is no separate frequency map or handwritten initializer.
+The generic allocator handles standard and custom arrays alike. Inherited
+declarations do not imply that a solver can compute those quantities:
+<code class="docutils literal notranslate"><span class="pre">SUPPORTED_OBSERVABLE_FLAGS</span></code> remains the capability declaration, and
+<code class="docutils literal notranslate"><span class="pre">solver.supported_observable_flags</span></code> reports the effective instance capabilities.
+Contact dependencies follow the declared frequency:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">enum</span><span class="w"> </span><span class="kn">import</span> <span class="n">Enum</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">CustomObservableFlags</span><span class="p">(</span><span class="n">Enum</span><span class="p">):</span>
+    <span class="n">CONTACT_PRESSURE</span> <span class="o">=</span> <span class="mi">0</span>
+
+<span class="nd">@dataclass</span><span class="p">(</span><span class="n">eq</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">CustomObservables</span><span class="p">(</span><span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverObservables</span><span class="p">):</span>
+    <span class="n">contact_pressure</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverObservables</span><span class="o">.</span><span class="n">field</span><span class="p">(</span>
+        <span class="n">flag</span><span class="o">=</span><span class="n">CustomObservableFlags</span><span class="o">.</span><span class="n">CONTACT_PRESSURE</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="n">newton</span><span class="o">.</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">CONTACT_RIGID</span><span class="p">,</span>
+    <span class="p">)</span>
+<span class="w">    </span><span class="sd">"""Rigid contact pressure [Pa], shape (rigid_contact_max,)."""</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">CustomSolver</span><span class="p">(</span><span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverBase</span><span class="p">):</span>
+    <span class="n">OBSERVABLES_TYPE</span> <span class="o">=</span> <span class="n">CustomObservables</span>
+    <span class="n">SUPPORTED_OBSERVABLE_FLAGS</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">({</span><span class="n">CustomObservableFlags</span><span class="o">.</span><span class="n">CONTACT_PRESSURE</span><span class="p">})</span>
+</pre></div>
+</div>
+<p>The dataclass helper defaults every declared array to <code class="docutils literal notranslate"><span class="pre">None</span></code> and excludes it
+from constructor arguments. Only <code class="docutils literal notranslate"><span class="pre">solver.observables(flags)</span></code> allocates the
+requested arrays, in declaration order, on the model’s device with the requested
+gradient setting. <code class="docutils literal notranslate"><span class="pre">eq=False</span></code> preserves object identity and hashing for
+articulation-view caches. A derived container may redeclare a field with a new
+dtype or frequency; its siblings and base class are not modified. Two fields
+cannot declare the same flag. Missing declarations, duplicate flags, and missing
+dataclass decorators are rejected before array allocation.</p>
+<p>The base solver requires pipeline initialization, freezes capacities, and binds
+contact storage for any requested contact frequency, including custom fields
+requested without <code class="docutils literal notranslate"><span class="pre">CONTACT_F</span></code>. Body- and joint-indexed fields do not require
+a collision pipeline.</p>
+<p>Use <a class="reference internal" href="../api/_generated/newton.solvers.SolverObservables.html#newton.solvers.SolverObservables.is_requested" title="newton.solvers.SolverObservables.is_requested"><code class="xref py py-meth docutils literal notranslate"><span class="pre">is_requested()</span></code></a> in stepping code.
+For example, after validating the container and advancing
+the simulation, compute a custom diagnostic only when it is requested:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="bp">self</span><span class="o">.</span><span class="n">validate_observables</span><span class="p">(</span><span class="n">observables</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
+<span class="k">if</span> <span class="n">observables</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">observables</span><span class="o">.</span><span class="n">is_requested</span><span class="p">(</span><span class="n">CustomObservableFlags</span><span class="o">.</span><span class="n">CONTACT_PRESSURE</span><span class="p">):</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">compute_contact_pressure</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_max</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_count</span><span class="p">],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">observables</span><span class="o">.</span><span class="n">contact_pressure</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">compute_contact_pressure</span></code> is a solver-specific kernel, not provided by this
+snippet. <code class="docutils literal notranslate"><span class="pre">observables.is_requested(flag)</span></code> tests the request, not freshness.
+The request remains true for zero-length arrays and while they are being allocated.</p>
+</section>
+</section>
+<section id="customizing-the-factory">
+<h2>Customizing the factory<a class="headerlink" href="#customizing-the-factory" title="Link to this heading">#</a></h2>
+<p>Most custom fields require no method override: their dtype and row frequency
+fully describe allocation. The public solver lifecycle has two methods:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.observables" title="newton.solvers.SolverBase.observables"><code class="xref py py-meth docutils literal notranslate"><span class="pre">SolverBase.observables()</span></code></a> creates
+the container and its requested arrays. For additional initialization,
+override <code class="docutils literal notranslate"><span class="pre">observables(flags,</span> <span class="pre">*,</span> <span class="pre">requires_grad=None)</span></code> and delegate declared
+array allocation to <code class="docutils literal notranslate"><span class="pre">super().observables(...)</span></code>. Perform backend preflight
+checks before delegating, preserve the gradient option, and finish any
+auxiliary allocation before returning the container.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.validate_observables" title="newton.solvers.SolverBase.validate_observables"><code class="xref py py-meth docutils literal notranslate"><span class="pre">SolverBase.validate_observables()</span></code></a>
+checks ownership and contact storage at the start of <code class="docutils literal notranslate"><span class="pre">step()</span></code>, before
+launching work or modifying outputs.</p></li>
+</ul>
+<p>There are no separate public allocation or preparation hooks. Built-in solvers
+share internal construction bookkeeping so failed backend setup does not freeze
+contact capacities. Kamino’s factory also allocates saved input poses, and the
+coupled solver’s factory creates entry-local containers. These are implementation
+details, not additional extension points.</p>
+<p>All factory allocations finish before graph capture. Neither <code class="docutils literal notranslate"><span class="pre">step()</span></code> nor
+<code class="docutils literal notranslate"><span class="pre">select()</span></code> calls the factory. The field declarations describe runtime
+diagnostics and do not introduce USD-authorable model attributes.</p>
+<section id="contact-row-domains">
+<h3>Contact row domains<a class="headerlink" href="#contact-row-domains" title="Link to this heading">#</a></h3>
+<p>Three experimental frequencies describe the existing contact storage layouts:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">CONTACT_RIGID</span></code>: <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code> rigid-rigid slots.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CONTACT_SOFT</span></code>: <code class="docutils literal notranslate"><span class="pre">soft_contact_max</span></code> soft-rigid slots. This does not include
+the separate soft self-contact storage.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CONTACT</span></code>: the packed sum of both capacities, used by <code class="docutils literal notranslate"><span class="pre">contact_f</span></code> for
+compatibility. The soft segment begins at <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code>, not at the
+live rigid contact count.</p></li>
+</ul>
+<p>These frequencies currently describe solver observables, not builder custom
+attributes. Capacity determines allocation; live counts determine which slots
+can be read. Packed storage does not guarantee that a solver produces forces for
+both segments. <a class="reference internal" href="../api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact" title="newton.sensors.SensorContact"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorContact</span></code></a> currently consumes only
+rigid-rigid forces, using <code class="docutils literal notranslate"><span class="pre">rigid_contact_count</span></code> and rigid shape endpoints.
+Soft-force production and soft-contact sensor aggregation are separate future
+features.</p>
+</section>
+<section id="selection">
+<h3>Selection<a class="headerlink" href="#selection" title="Link to this heading">#</a></h3>
+<p><a class="reference internal" href="../api/_generated/newton.selection.ArticulationView.html#newton.selection.ArticulationView" title="newton.selection.ArticulationView"><code class="xref py py-class docutils literal notranslate"><span class="pre">ArticulationView</span></code></a> reads frequencies from a
+<code class="docutils literal notranslate"><span class="pre">SolverObservables</span></code> source rather than requiring field registration on the
+model. Standard and custom fields using supported static layouts, such as
+<code class="docutils literal notranslate"><span class="pre">BODY</span></code> and <code class="docutils literal notranslate"><span class="pre">JOINT_DOF</span></code>, can therefore be selected directly:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">view</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">selection</span><span class="o">.</span><span class="n">ArticulationView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"robot_*"</span><span class="p">)</span>
+<span class="n">accelerations</span> <span class="o">=</span> <span class="n">view</span><span class="o">.</span><span class="n">get_attribute</span><span class="p">(</span><span class="s2">"body_qdd"</span><span class="p">,</span> <span class="n">observables</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The container must belong to the same model and the field must be allocated.
+Custom string frequencies still need the model’s articulation-ownership
+metadata. Raw contact rows do not have stable, unique articulation ownership:
+their order changes during collision detection and their endpoints can belong
+to different articulations. The view rejects contact frequencies. Filter using
+contact endpoints or reduce forces to a <code class="docutils literal notranslate"><span class="pre">BODY</span></code>-frequency field before using
+an articulation view; automatic contact filtering and reduction are not provided.</p>
+</section>
+<section id="sensors">
+<h3>Sensors<a class="headerlink" href="#sensors" title="Link to this heading">#</a></h3>
+<p>Solver-dependent sensors expose a composable <code class="docutils literal notranslate"><span class="pre">solver_observable_flags</span></code> set. A
+caller can union the requirements of multiple consumers, allocate one
+container, and pass it through the step:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">imu</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">sensors</span><span class="o">.</span><span class="n">SensorIMU</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sites</span><span class="o">=</span><span class="s2">"imu_*"</span><span class="p">,</span> <span class="n">request_state_attributes</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="n">contact_sensor</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">sensors</span><span class="o">.</span><span class="n">SensorContact</span><span class="p">(</span>
+    <span class="n">model</span><span class="p">,</span> <span class="n">sensing_shapes</span><span class="o">=</span><span class="s2">"foot_*"</span><span class="p">,</span> <span class="n">request_contact_attributes</span><span class="o">=</span><span class="kc">False</span>
+<span class="p">)</span>
+
+<span class="n">flags</span> <span class="o">=</span> <span class="n">imu</span><span class="o">.</span><span class="n">solver_observable_flags</span> <span class="o">|</span> <span class="n">contact_sensor</span><span class="o">.</span><span class="n">solver_observable_flags</span>
+<span class="c1"># Construct a pipeline with a compatible capacity before requesting contacts.</span>
+<span class="n">observables</span> <span class="o">=</span> <span class="n">solver</span><span class="o">.</span><span class="n">observables</span><span class="p">(</span><span class="n">flags</span><span class="p">)</span>
+
+<span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="p">,</span> <span class="n">observables</span><span class="o">=</span><span class="n">observables</span><span class="p">)</span>
+<span class="n">imu</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state_out</span><span class="p">,</span> <span class="n">observables</span><span class="o">=</span><span class="n">observables</span><span class="p">)</span>
+<span class="n">contact_sensor</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">observables</span><span class="o">=</span><span class="n">observables</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The viewer follows the same pattern:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span><span class="o">.</span><span class="n">log_contacts</span><span class="p">(</span><span class="n">contacts</span><span class="p">,</span> <span class="n">state_in</span><span class="p">,</span> <span class="n">observables</span><span class="o">=</span><span class="n">observables</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="substep-scheduling">
+<h3>Substep scheduling<a class="headerlink" href="#substep-scheduling" title="Link to this heading">#</a></h3>
+<p>Allocate the union of needed observables once, then use
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverObservables.html#newton.solvers.SolverObservables.select" title="newton.solvers.SolverObservables.select"><code class="xref py py-meth docutils literal notranslate"><span class="pre">select()</span></code></a> to create reusable subsets.
+Each subset has the same concrete container type and shares the selected array
+objects, including gradients, with the original container. Omitted fields are
+<code class="docutils literal notranslate"><span class="pre">None</span></code> in the subset, while the original container and its arrays are unchanged.
+The subset’s read-only <code class="docutils literal notranslate"><span class="pre">flags</span></code> and <code class="docutils literal notranslate"><span class="pre">is_requested(flag)</span></code> describe only its
+selected fields. No observable arrays are allocated or copied by <code class="docutils literal notranslate"><span class="pre">select()</span></code>.</p>
+<p>For example, an IMU may need acceleration every substep, while a contact sensor
+only needs the final substep’s forces. After configuring the solver, collision
+pipeline, and sensors as above:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">flags</span> <span class="o">=</span> <span class="n">imu</span><span class="o">.</span><span class="n">solver_observable_flags</span> <span class="o">|</span> <span class="n">contact_sensor</span><span class="o">.</span><span class="n">solver_observable_flags</span>
+<span class="n">observables</span> <span class="o">=</span> <span class="n">solver</span><span class="o">.</span><span class="n">observables</span><span class="p">(</span><span class="n">flags</span><span class="p">)</span>
+<span class="n">every_substep</span> <span class="o">=</span> <span class="n">observables</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="n">imu</span><span class="o">.</span><span class="n">solver_observable_flags</span><span class="p">)</span>
+<span class="n">substep_dt</span> <span class="o">=</span> <span class="n">frame_dt</span> <span class="o">/</span> <span class="n">num_substeps</span>
+
+<span class="k">for</span> <span class="n">substep</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_substeps</span><span class="p">):</span>
+    <span class="n">is_last</span> <span class="o">=</span> <span class="n">substep</span> <span class="o">==</span> <span class="n">num_substeps</span> <span class="o">-</span> <span class="mi">1</span>
+    <span class="n">requested</span> <span class="o">=</span> <span class="n">observables</span> <span class="k">if</span> <span class="n">is_last</span> <span class="k">else</span> <span class="n">every_substep</span>
+    <span class="c1"># Run the usual collision update here if using external collision detection.</span>
+    <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">substep_dt</span><span class="p">,</span> <span class="n">observables</span><span class="o">=</span><span class="n">requested</span><span class="p">)</span>
+    <span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span> <span class="o">=</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">state_in</span>
+    <span class="n">imu</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">observables</span><span class="o">=</span><span class="n">every_substep</span><span class="p">)</span>
+
+<span class="n">contact_sensor</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">observables</span><span class="o">=</span><span class="n">observables</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>If all fields are needed only at the end, pass <code class="docutils literal notranslate"><span class="pre">observables=None</span></code> on earlier
+substeps. <code class="docutils literal notranslate"><span class="pre">observables.select(set())</span></code> also requests no diagnostics.
+Selecting a field absent from the source raises <a class="reference external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ValueError</span></code></a>; selecting
+an existing subset can only narrow it. Select from the original container to
+create a different combination. Do not temporarily replace fields with <code class="docutils literal notranslate"><span class="pre">None</span></code>.</p>
+<p>The same selection mechanism handles standard and custom flags. Simple derived
+containers inherit it unchanged. Containers with nested observable containers
+should override <code class="docutils literal notranslate"><span class="pre">select()</span></code>, call <code class="docutils literal notranslate"><span class="pre">super()</span></code>, and select their children in the
+returned object. <a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.SolverCoupled" title="newton.solvers.experimental.coupled.SolverCoupled"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverCoupled</span></code></a>
+does this for its entry-local containers. Other custom metadata is shallow-copied.
+Contact-indexed subsets share one contact binding with their source and siblings,
+even if they are created before the first step. A body-only subset needs no
+contact binding even when the original container includes contact fields.</p>
+<p>Create selections before graph capture and reuse them. A fixed Python substep
+schedule is captured with the graph; changing a Python selection afterward does
+not change an existing graph. Device-driven choices require graph control flow
+with the desired selections captured in its branches.</p>
+<p>Skipped arrays retain their previous values. <code class="docutils literal notranslate"><span class="pre">is_requested()</span></code> does not mean
+those values were updated, and mixed-rate containers do not represent a single
+time snapshot. Consume sensors only after their required fields have been
+produced, before reusing the corresponding state or contact geometry. Last-substep
+forces are not frame-averaged forces; averaging or integration requires sampling
+the relevant substeps. Contact rows may change between collision updates.</p>
+<p>Selection controls observable writes and optional diagnostic work, not calculations
+needed by the dynamics or other requested fields. Legacy extended attributes
+can still request their own work. MuJoCo currently keeps its post-constraint RNE
+stage enabled after its first request, so omitting those observables does not
+necessarily avoid that internal computation on subsequent steps.</p>
+</section>
+<section id="contact-forces-from-solvervbd">
+<span id="vbd-contact-forces"></span><h3>Contact forces from SolverVBD<a class="headerlink" href="#contact-forces-from-solvervbd" title="Link to this heading">#</a></h3>
+<p><a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> exports one wrench per contact record it solves – body-body
+contacts, and rigid-soft particle, edge, and face records against rigid shapes – through
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverObservables.html#newton.solvers.SolverObservables.contact_f" title="newton.solvers.SolverObservables.contact_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">contact_f</span></code></a>:</p>
+<ol class="arabic simple">
+<li><p>Create the <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> to establish contact capacities, then request
+<code class="docutils literal notranslate"><span class="pre">SolverObservableFlags.CONTACT_F</span></code> with <code class="docutils literal notranslate"><span class="pre">solver.observables()</span></code>. This allocates the entire
+force array before stepping or graph capture; no contact attributes need to be requested.</p></li>
+<li><p>Each frame, run collision detection and pass the container to <code class="docutils literal notranslate"><span class="pre">solver.step(...,</span>
+<span class="pre">observables=observables)</span></code>. The step evaluates the wrenches directly into the array only
+when <code class="docutils literal notranslate"><span class="pre">CONTACT_F</span></code> is selected, without changing the simulation result. Omit <code class="docutils literal notranslate"><span class="pre">observables</span></code>
+or pass a selection without <code class="docutils literal notranslate"><span class="pre">CONTACT_F</span></code> to skip reporting on earlier substeps.</p></li>
+<li><p>Rows <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">rigid_contact_max)</span></code> hold the body-body contacts (<code class="docutils literal notranslate"><span class="pre">i</span> <span class="pre">&lt;</span> <span class="pre">rigid_contact_count</span></code>) when
+VBD integrates the rigid bodies: the force on body 0 by body 1 with its torque about body 0’s
+center of mass, the convention shared by every solver writing <code class="docutils literal notranslate"><span class="pre">contact_f</span></code>. With
+<code class="docutils literal notranslate"><span class="pre">integrate_with_external_rigid_solver=True</span></code>, VBD’s rigid rows are zero: request and consume
+the external solver’s forces through its own observable container. Rows
+<code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span> <span class="pre">+</span> <span class="pre">i</span></code> for <code class="docutils literal notranslate"><span class="pre">i</span> <span class="pre">&lt;</span> <span class="pre">soft_contact_count</span></code> hold the rigid-soft records. Rows
+past either active count are zero.</p></li>
+</ol>
+<p>Each soft row is expressed in world frame. Its first three entries are the force [N] exerted on
+the contacted shape’s body (<code class="docutils literal notranslate"><span class="pre">model.shape_body[contacts.soft_contact_shape[i]]</span></code>, <code class="docutils literal notranslate"><span class="pre">-1</span></code> for a
+static shape) by the soft feature; its last three entries are the torque [N·m] of that force about
+the body’s center of mass, or about the world origin for a static shape. The force acts at the
+shape-side contact point (<code class="docutils literal notranslate"><span class="pre">soft_contact_body_pos</span></code> mapped to world space). Negate the force to get
+the force on the soft contact point, and distribute it to the record’s particles with
+<code class="docutils literal notranslate"><span class="pre">soft_contact_barycentric</span></code>. All values are the solver’s own contact law evaluated once at the
+final configuration of the step – the forces the last iteration balanced – not time-step
+averages; records without penetration are zero.</p>
+<p>For soft contacts this is the penalty law at the final per-contact stiffness, damping while
+the contact point approaches the surface, and regularized Coulomb friction on the step’s slip,
+bounded by the elastic normal load. Body-body contacts use the compliant ALM or legacy AVBD
+contact law with its multipliers. Both evaluations retain the step-start pose history used
+by the iterations.</p>
+<p>Soft self-contact forces are not exported. <a class="reference internal" href="../api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact" title="newton.sensors.SensorContact"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorContact</span></code></a> reads the
+rigid-contact rows, so it reports VBD’s body-body contacts, but it does not read the soft rows.
+Construct it with <code class="docutils literal notranslate"><span class="pre">request_contact_attributes=False</span></code> and pass the container as
+<code class="docutils literal notranslate"><span class="pre">sensor.update(state_out,</span> <span class="pre">contacts,</span> <span class="pre">observables=observables)</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.solvers</span><span class="w"> </span><span class="kn">import</span> <span class="n">SolverObservableFlags</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_particle</span><span class="p">(</span><span class="n">pos</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.045</span><span class="p">),</span> <span class="n">vel</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">),</span> <span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.05</span><span class="p">)</span>
+<span class="n">ball</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">xform</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.099</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">quat_identity</span><span class="p">()))</span>
+<span class="n">ball_shape</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">ball</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">color</span><span class="p">()</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverVBD</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">observables</span> <span class="o">=</span> <span class="n">solver</span><span class="o">.</span><span class="n">observables</span><span class="p">({</span><span class="n">SolverObservableFlags</span><span class="o">.</span><span class="n">CONTACT_F</span><span class="p">})</span>
+<span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">(),</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+
+<span class="n">pipeline</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
+<span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">1.0</span> <span class="o">/</span> <span class="mf">60.0</span><span class="p">,</span> <span class="n">observables</span><span class="o">=</span><span class="n">observables</span><span class="p">)</span>
+
+<span class="c1"># Body-body rows: force on body 0 by body 1; flip the sign of rows where the ball is shape 1.</span>
+<span class="n">n_rigid</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_count</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">])</span>
+<span class="n">rigid</span> <span class="o">=</span> <span class="n">observables</span><span class="o">.</span><span class="n">contact_f</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n_rigid</span><span class="p">]</span>
+<span class="n">shape0</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_shape0</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n_rigid</span><span class="p">]</span>
+<span class="n">sign</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">shape0</span> <span class="o">==</span> <span class="n">ball_shape</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="o">-</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">force_on_ball</span> <span class="o">=</span> <span class="p">(</span><span class="n">sign</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">rigid</span><span class="p">[:,</span> <span class="p">:</span><span class="mi">3</span><span class="p">])</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>  <span class="c1"># [N], world frame</span>
+
+<span class="c1"># Soft rows follow the rigid rows.</span>
+<span class="n">n_soft</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">contacts</span><span class="o">.</span><span class="n">soft_contact_count</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">])</span>
+<span class="n">start</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_max</span>
+<span class="n">wrenches</span> <span class="o">=</span> <span class="n">observables</span><span class="o">.</span><span class="n">contact_f</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="n">start</span> <span class="p">:</span> <span class="n">start</span> <span class="o">+</span> <span class="n">n_soft</span><span class="p">]</span>
+<span class="n">force_on_shape</span> <span class="o">=</span> <span class="n">wrenches</span><span class="p">[:,</span> <span class="p">:</span><span class="mi">3</span><span class="p">]</span>  <span class="c1"># [N], on the ground (static shape), world frame</span>
+<span class="n">torque</span> <span class="o">=</span> <span class="n">wrenches</span><span class="p">[:,</span> <span class="mi">3</span><span class="p">:]</span>  <span class="c1"># [N·m], about the world origin for the static ground</span>
+
+<span class="c1"># Reaction on the soft side: negate and distribute by barycentric weights.</span>
+<span class="n">corners</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">soft_contact_indices</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n_soft</span><span class="p">]</span>
+<span class="n">weights</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">soft_contact_barycentric</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n_soft</span><span class="p">]</span>
+<span class="n">particle_force</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">model</span><span class="o">.</span><span class="n">particle_count</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+<span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_soft</span><span class="p">):</span>
+    <span class="k">for</span> <span class="n">corner</span><span class="p">,</span> <span class="n">weight</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">corners</span><span class="p">[</span><span class="n">row</span><span class="p">],</span> <span class="n">weights</span><span class="p">[</span><span class="n">row</span><span class="p">]):</span>
+        <span class="k">if</span> <span class="n">corner</span> <span class="o">&gt;=</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">particle_force</span><span class="p">[</span><span class="n">corner</span><span class="p">]</span> <span class="o">-=</span> <span class="n">weight</span> <span class="o">*</span> <span class="n">force_on_shape</span><span class="p">[</span><span class="n">row</span><span class="p">]</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="n">n_rigid</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">,</span> <span class="n">force_on_ball</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mf">0.0</span><span class="p">,</span> <span class="n">n_soft</span><span class="p">,</span> <span class="n">force_on_shape</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">]</span> <span class="o">&lt;</span> <span class="mf">0.0</span><span class="p">,</span> <span class="n">particle_force</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mf">0.0</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>True True 1 True True
+</pre></div>
+</div>
+</section>
+<section id="deprecated-extended-attributes">
+<h3>Deprecated extended attributes<a class="headerlink" href="#deprecated-extended-attributes" title="Link to this heading">#</a></h3>
+<div class="deprecated">
+<p><span class="versionmodified deprecated">Deprecated since version 1.7: </span>Request solver-produced arrays from the solver instead of extending
+<code class="docutils literal notranslate"><span class="pre">State</span></code> or <code class="docutils literal notranslate"><span class="pre">Contacts</span></code>.</p>
+</div>
+<p>The following compatibility paths remain available for a deprecation period:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 37.0%" />
+<col style="width: 63.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Deprecated destination</p></th>
+<th class="head"><p>Replacement</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">State.body_qdd</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SolverObservableFlags.BODY_QDD</span></code> and <code class="docutils literal notranslate"><span class="pre">observables.body_qdd</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">State.body_parent_f</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SolverObservableFlags.BODY_PARENT_F</span></code> and <code class="docutils literal notranslate"><span class="pre">observables.body_parent_f</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">State.mujoco.qfrc_actuator</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR</span></code> and
+<code class="docutils literal notranslate"><span class="pre">observables.qfrc_actuator</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Contacts.force</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SolverObservableFlags.CONTACT_F</span></code> and <code class="docutils literal notranslate"><span class="pre">observables.contact_f</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Model.request_state_attributes()</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ModelBuilder.request_state_attributes()</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">solver.observables({...})</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Model.request_contact_attributes()</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ModelBuilder.request_contact_attributes()</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">solver.observables({...})</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">solver.update_contacts()</span></code></p></td>
+<td><p>Pass contact observables to <code class="docutils literal notranslate"><span class="pre">solver.step(...,</span> <span class="pre">observables=observables)</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The request methods and legacy force export via <code class="docutils literal notranslate"><span class="pre">update_contacts()</span></code> emit
+<a class="reference external" href="https://docs.python.org/3/builtins/exceptions.html#DeprecationWarning" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">DeprecationWarning</span></code></a>. MuJoCo and Kamino keep geometry-only <code class="docutils literal notranslate"><span class="pre">update_contacts()</span></code>
+supported without a warning when <code class="docutils literal notranslate"><span class="pre">contacts.force</span></code> is <code class="docutils literal notranslate"><span class="pre">None</span></code>.
+<code class="docutils literal notranslate"><span class="pre">SensorIMU</span></code> and <code class="docutils literal notranslate"><span class="pre">SensorContact</span></code> retain their legacy
+<code class="docutils literal notranslate"><span class="pre">request_state_attributes=True</span></code> and <code class="docutils literal notranslate"><span class="pre">request_contact_attributes=True</span></code> defaults
+during the deprecation period; explicitly pass <code class="docutils literal notranslate"><span class="pre">False</span></code> when using solver observables.
+Setting either option to <code class="docutils literal notranslate"><span class="pre">True</span></code> is deprecated in Newton 1.7 and emits one
+sensor-specific warning at the caller’s location. Passing <code class="docutils literal notranslate"><span class="pre">False</span></code> does not
+emit a warning or request legacy fields.</p>
+<p><code class="docutils literal notranslate"><span class="pre">Contacts.EXTENDED_ATTRIBUTES</span></code> and direct <code class="docutils literal notranslate"><span class="pre">requested_attributes={&quot;force&quot;}</span></code>
+remain compatibility APIs. New integrations should not allocate
+<code class="docutils literal notranslate"><span class="pre">Contacts.force</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">State.EXTENDED_ATTRIBUTES</span></code> remains a compatibility registry for the three
+deprecated state destinations listed above.</p>
+<p>This deprecation does not affect custom attributes registered with
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_custom_attribute" title="newton.ModelBuilder.add_custom_attribute"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.add_custom_attribute</span></code></a>.
+Existing custom model, state, and control data remain supported; the migration
+only covers built-in solver-produced diagnostics. The new <code class="docutils literal notranslate"><span class="pre">CONTACT*</span></code> frequencies
+are reserved for solver observables: <code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_custom_attribute()</span></code> rejects
+them because builder finalization does not allocate dynamic contact rows.</p>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-collision-backends">Native collision backends</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#standard-observables">Standard observables</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-specific-observables">Solver-specific observables</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#customizing-the-factory">Customizing the factory</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-row-domains">Contact row domains</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#selection">Selection</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sensors">Sensors</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#substep-scheduling">Substep scheduling</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-forces-from-solvervbd">Contact forces from SolverVBD</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecated-extended-attributes">Deprecated extended attributes</a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.22.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
