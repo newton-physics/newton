@@ -997,6 +997,10 @@ python -m newton.examples basic_urdf --device cuda:0
 python -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 ```
 
+## Research using Newton
+
+See [PUBLICATIONS.md](https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md) for research using Newton, inclusion criteria, and instructions for adding your publication. Reusable BibTeX citations are available in [publications.bib](https://github.com/newton-physics/newton/blob/main/docs/publications.bib).
+
 ## Contributing and Development
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for ways to contribute and the pull-request process. The [governance contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) cover legal requirements, project roles, and approval authority. Use the [development guide](https://newton-physics.github.io/newton/latest/guide/development.html) for environment setup and development workflows. Code and public API changes must follow the [source code guidelines](CODING_GUIDELINES.rst); reviewers may use the suggested [review guidelines](REVIEW_GUIDELINES.rst).
