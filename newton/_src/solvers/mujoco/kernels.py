@@ -3532,7 +3532,7 @@ def reset_joint_state_kernel(
         joint_qd[di] = default_joint_qd[di]
 
 
-# Newton-defined overflow bits written into state.mujoco.overflow.
+# Newton-defined overflow bits written into the MuJoCo solver's overflow observable.
 # Bits 0-15 are reserved for mujoco-warp's OverflowType bitmask (NEFC, NJMAX_NNZ,
 # BROADPHASE, NARROWPHASE, CCD, HFIELD, CONTACT_MATCH, NVMAX, EPA_HORIZON).
 OVERFLOW_CONTACT_PIPELINE = wp.constant(wp.int32(1 << 16))
@@ -3554,7 +3554,7 @@ def collect_overflow_kernel(
     newton_contacts: int,
     # MuJoCo Warp per-world overflow bitmask (NEFC, NJMAX_NNZ, etc.)
     mjw_overflow: wp.array[wp.int32],  # [nworld]
-    # Output — written into state.mujoco.overflow
+    # Output — written into the overflow observable
     overflow_out: wp.array[wp.int32],  # [nworld]
 ):
     """Collect overflow signals from the collision pipeline and solver into a per-world bitmask.

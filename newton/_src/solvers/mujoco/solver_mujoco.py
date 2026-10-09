@@ -12,7 +12,7 @@ import warnings
 from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
-from enum import Enum, IntEnum
+from enum import Enum, IntEnum, IntFlag
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -479,6 +479,9 @@ class _MuJoCoObservableFlags(Enum):
     QFRC_ACTUATOR = "qfrc_actuator"
     """Actuator forces in Newton generalized-coordinate order."""
 
+    OVERFLOW = "overflow"
+    """Per-world capacity-overflow bitmask for the most recent step; see :class:`SolverMuJoCo.OverflowBits`."""
+
 
 class SolverMuJoCo(SolverBase, CouplingInterface):
     """
@@ -574,6 +577,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         """Actuator forces [N or N·m], shape ``(joint_dof_count,)``."""
 
+        overflow: wp.array[wp.int32] | None = SolverObservables.field(  # noqa: RUF009
+            flag=_MuJoCoObservableFlags.OVERFLOW,
+            dtype=wp.int32,
+            frequency=AttributeFrequency.WORLD,
+        )
+        """Per-world capacity-overflow bitmask of :class:`SolverMuJoCo.OverflowBits` for the latest step, shape ``(world_count,)``."""
+
+    class OverflowBits(IntFlag):
+        """Bits of the per-world :attr:`Observables.overflow` bitmask.
+
+        Bits 0-15 carry MuJoCo Warp's own ``mujoco_warp.OverflowType`` flags
+        (``NEFC``, ``NJMAX_NNZ``, ``BROADPHASE``, ...). The members below are the
+        bits Newton adds on top.
+        """
+
+        CONTACT_PIPELINE = int(kernels.OVERFLOW_CONTACT_PIPELINE)
+        """The Newton collision pipeline generated more contacts than ``rigid_contact_max``."""
+
+        SOLVER_NCONMAX = int(kernels.OVERFLOW_SOLVER_NCONMAX)
+        """Newton contacts exceeded MuJoCo Warp's ``nconmax`` capacity."""
+
     OBSERVABLES_TYPE = Observables
     SUPPORTED_OBSERVABLE_FLAGS = frozenset(
         {
@@ -581,6 +605,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             SolverObservableFlags.BODY_PARENT_F,
             SolverObservableFlags.CONTACT_F,
             ObservableFlags.QFRC_ACTUATOR,
+            ObservableFlags.OVERFLOW,
         }
     )
 
@@ -591,11 +616,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if self.use_mujoco_cpu:
             # Body exports currently read MuJoCo Warp's RNE buffers, which the
             # native CPU step does not update. Do not expose stale diagnostics.
+            # Overflow flags come from MuJoCo Warp's per-world buffers, which the
+            # native CPU step does not populate.
             return flags.difference(
                 {
                     SolverObservableFlags.BODY_QDD,
                     SolverObservableFlags.BODY_PARENT_F,
                     SolverObservableFlags.CONTACT_F,
+                    self.ObservableFlags.OVERFLOW,
                 }
             )
         return flags
@@ -4147,9 +4175,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 reported by default (``False``).  Runtime overflow (contacts
                 actually dropped during a step) is always reported GPU-side
                 via a ``wp.printf`` message; to detect it in Python without a
-                GPU sync, request ``state.mujoco.overflow`` via
-                ``builder.request_state_attributes("mujoco:overflow")`` and
-                check the bitmask after each step.
+                GPU sync, request :attr:`ObservableFlags.OVERFLOW` via
+                :meth:`observables` and check the bitmask after each step.
         """
         super().__init__(model)
 
@@ -4577,26 +4604,28 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         **Overflow detection** — capacity overflows (contacts dropped, constraint
         buffer exceeded, broadphase clipped) are reported through
-        ``state_out.mujoco.overflow``, a per-world ``int32`` bitmask.  Opt in by
-        calling ``builder.request_state_attributes("mujoco:overflow")`` before
-        finalizing the model, then read the bitmask after each step (or after
-        :func:`warp.capture_launch` when using CUDA graphs)::
+        :attr:`Observables.overflow`, a per-world ``int32`` bitmask.  Allocate it
+        with :meth:`observables` using :attr:`ObservableFlags.OVERFLOW` and pass
+        the container to this method, then read the bitmask after each step (or
+        after :func:`warp.capture_launch` when using CUDA graphs).  The request
+        is only supported with MuJoCo Warp (``use_mujoco_cpu=False``)::
 
-            overflow = state_out.mujoco.overflow.numpy()
-            if overflow[0] & newton.solvers.OVERFLOW_SOLVER_NCONMAX:
+            observables = solver.observables({solver.ObservableFlags.OVERFLOW})
+            solver.step(state_in, state_out, control, contacts, dt, observables=observables)
+            overflow = observables.overflow.numpy()
+            if overflow[0] & newton.solvers.SolverMuJoCo.OverflowBits.SOLVER_NCONMAX:
                 # runtime contacts exceeded nconmax — increase nconmax
                 ...
 
         Bits 0-15 carry MuJoCo Warp's own
         :class:`mujoco_warp.OverflowType` flags (``NEFC``, ``NJMAX_NNZ``,
-        ``BROADPHASE``, ``NVMAX``, …).  Bit 16
-        (:data:`~newton.solvers.mujoco.kernels.OVERFLOW_CONTACT_PIPELINE`) is
-        set when the Newton collision pipeline dropped contacts beyond
-        ``rigid_contact_max``.  Bit 17
-        (:data:`~newton.solvers.mujoco.kernels.OVERFLOW_SOLVER_NCONMAX`) is set
-        when runtime contacts exceeded ``nconmax``.  The bitmask is reset to
-        zero at the start of every step so it always reflects the current step
-        only.
+        ``BROADPHASE``, ``NVMAX``, …).  The bits Newton adds are
+        :attr:`OverflowBits.CONTACT_PIPELINE`, set when the Newton collision
+        pipeline dropped contacts beyond ``rigid_contact_max``, and
+        :attr:`OverflowBits.SOLVER_NCONMAX`, set when runtime contacts exceeded
+        ``nconmax``.  The bitmask is reset to zero at the start of every step so
+        it always reflects the current step only.  Steps that are not passed the
+        container leave it unchanged.
 
         Args:
             state_in: Input state for this step.
@@ -4605,9 +4634,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             contacts: Newton collision pipeline contacts.  Required when
                 ``use_mujoco_contacts=False``.  Ignored (and may be ``None``)
                 when ``use_mujoco_contacts=True`` (MuJoCo Warp runs its own
-                collision detection); bits 16-17 of ``state_out.mujoco.overflow``
-                are suppressed in that mode since the contacts object is not
-                used by the solver.
+                collision detection); the Newton bits of
+                :attr:`Observables.overflow` are suppressed in that mode since
+                the contacts object is not used by the solver.
             dt: Timestep in seconds.
             observables: Optional solver observable arrays allocated by
                 :meth:`observables`.
@@ -4635,16 +4664,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             "(MuJoCo Warp does not run its own collision detection)."
                         )
                     self._convert_contacts_to_mjwarp(self.model, state_in, contacts)
-                # Always clear d.overflow before the step so state.mujoco.overflow
+                # Always clear d.overflow before the step so observables.overflow
                 # reflects only the current step (d.overflow uses |= accumulation).
                 self.mjw_data.overflow.zero_()
                 self._mujoco_warp_step()
                 self._update_newton_state(
                     self.model, state_out, self.mjw_data, state_prev=state_in, observables=observables
                 )
-                # Write per-step overflow state into State if the attribute was requested.
-                overflow_out = getattr(getattr(state_out, "mujoco", None), "overflow", None)
-                if overflow_out is not None:
+                if observables is not None and observables.is_requested(self.ObservableFlags.OVERFLOW):
                     # 1 only when Newton fed real contacts in; contacts is None
                     # whenever use_mujoco_contacts=True (see contacts arg doc above).
                     newton_contacts = int(not self.mjw_model.opt.run_collision_detection and contacts is not None)
@@ -4664,7 +4691,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             newton_contacts,
                             self.mjw_data.overflow,
                         ],
-                        outputs=[overflow_out],
+                        outputs=[observables.overflow],
                         device=self.model.device,
                     )
                 if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
