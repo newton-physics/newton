@@ -11,13 +11,17 @@ class ModelFlags(IntEnum):
     These flags are used with :meth:`~newton.solvers.SolverBase.notify_model_changed`
     to specify which properties have changed, allowing the solver to efficiently
     update only the necessary components.
+
+    Categories overlap semantically, but each flag has its own bit. The broad
+    :attr:`JOINT_DOF_PROPERTIES` includes force, inertial, and reference-pose
+    updates. Testing the broad bit alone does not detect a narrower notification.
     """
 
     JOINT_PROPERTIES = 1 << 0
-    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c."""
+    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
-    """Indicates joint DOF property updates: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
+    """Indicates all joint DOF updates, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
 
     BODY_PROPERTIES = 1 << 2
     """Indicates body property updates: body_q, body_qd, body_flags."""
@@ -32,13 +36,22 @@ class ModelFlags(IntEnum):
     """Indicates model property updates: gravity and other global parameters."""
 
     CONSTRAINT_PROPERTIES = 1 << 6
-    """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp) and mimic constraints (constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled)."""
+    """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp), mimic relationships (joint_mimic_coeffs and the deprecated constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled arrays), and particle-body attachments (attachment_particle_body_stiffness, attachment_particle_body_damping, attachment_particle_body_enabled)."""
 
     TENDON_PROPERTIES = 1 << 7
     """Indicates tendon properties: eg tendon_stiffness."""
 
     ACTUATOR_PROPERTIES = 1 << 8
     """Indicates actuator property updates: gains, biases, limits, etc."""
+
+    JOINT_DOF_FORCE_PROPERTIES = 1 << 9
+    """Indicates joint force updates: friction, damping, target gains/modes, effort limits, passive stiffness, and limit coefficients/bounds. Excludes armature and reference poses."""
+
+    JOINT_DOF_INERTIAL_PROPERTIES = 1 << 10
+    """Indicates joint_armature updates. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
+
+    JOINT_REFERENCE_POSE_PROPERTIES = 1 << 11
+    """Indicates joint reference-pose and spring-reference updates. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     ALL = (
         JOINT_PROPERTIES
@@ -50,6 +63,9 @@ class ModelFlags(IntEnum):
         | CONSTRAINT_PROPERTIES
         | TENDON_PROPERTIES
         | ACTUATOR_PROPERTIES
+        | JOINT_DOF_FORCE_PROPERTIES
+        | JOINT_DOF_INERTIAL_PROPERTIES
+        | JOINT_REFERENCE_POSE_PROPERTIES
     )
     """Indicates all property updates."""
 
@@ -269,40 +285,6 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
         return cts_count
 
 
-class _DeprecatedEqTypeMeta(EnumMeta):
-    def __getattribute__(cls, name: str):
-        value = super().__getattribute__(name)
-        if not name.startswith("_"):
-            member_map = super().__getattribute__("_member_map_")
-            if name in member_map:
-                _warn_eq_type_deprecated()
-        return value
-
-    def __call__(cls, *args, **kwargs):
-        _warn_eq_type_deprecated()
-        return super().__call__(*args, **kwargs)
-
-
-def _warn_eq_type_deprecated() -> None:
-    warnings.warn(
-        "newton.EqType is deprecated in Newton 1.4; use newton.solvers.SolverMuJoCo.EqType instead.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
-
-
-class EqType(IntEnum, metaclass=_DeprecatedEqTypeMeta):
-    """Deprecated alias for :class:`~newton.solvers.SolverMuJoCo.EqType`.
-
-    .. deprecated:: 1.4
-        Use :class:`~newton.solvers.SolverMuJoCo.EqType` instead.
-    """
-
-    CONNECT = 0
-    WELD = 1
-    JOINT = 2
-
-
 class JointTargetMode(IntEnum):
     """
     Enumeration of actuator modes for joint degrees of freedom.
@@ -374,7 +356,6 @@ class JointTargetMode(IntEnum):
 
 __all__ = [
     "BodyFlags",
-    "EqType",
     "JointTargetMode",
     "JointType",
     "ModelFlags",

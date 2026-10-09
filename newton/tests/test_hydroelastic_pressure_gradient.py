@@ -3,6 +3,7 @@
 
 """Test hydroelastic pressure gradients without requiring texture construction."""
 
+import inspect
 import unittest
 
 import numpy as np
@@ -846,7 +847,17 @@ def test_rotated_box_generated_pressure_gradients(test, device):
 
 
 class TestHydroelasticPressureGradient(unittest.TestCase):
-    pass
+    def test_config_positional_compatibility(self):
+        """Preserve existing positional options when adding the opt-in mode."""
+        config = HydroelasticSDF.Config(True, False)
+        self.assertTrue(config.reduce_contacts)
+        self.assertFalse(config.pre_prune_contacts)
+        self.assertFalse(config.use_pressure_gradient)
+        opt_in = HydroelasticSDF.Config(True, False, use_pressure_gradient=True)
+        self.assertFalse(opt_in.pre_prune_contacts)
+        self.assertTrue(opt_in.use_pressure_gradient)
+        option = inspect.signature(HydroelasticSDF.Config).parameters["use_pressure_gradient"]
+        self.assertEqual(option.kind, inspect.Parameter.KEYWORD_ONLY)
 
 
 devices = get_test_devices()

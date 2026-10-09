@@ -44,8 +44,14 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
+        self.solver_type = getattr(args, "solver", "mujoco")
+        if self.solver_type == "kamino":
+            self.sim_substeps = 2
+            self.sim_dt = self.frame_dt / self.sim_substeps
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
 
         # add ground plane
         builder.add_ground_plane()
@@ -100,14 +106,31 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.imu = newton.sensors.SensorIMU(self.model, self.imu_sites)
+        self.imu = newton.sensors.SensorIMU(self.model, self.imu_sites, request_state_attributes=False)
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.use_collision_detector = True
+            solver_config.integrator = "moreau"
+            solver_config.dvi.max_alternating_iterations = 8
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        else:
+            self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model,
+            rigid_contact_max=self.solver.get_max_contact_count() if self.solver_type == "mujoco" else None,
+            soft_contact_max=0,
+        )
+        self.contacts = self.collision_pipeline.contacts()
+        observable_flags = self.imu.solver_observable_flags | {newton.solvers.SolverObservableFlags.CONTACT_F}
+        self.solver_observables = self.solver.observables(observable_flags)
+        self.imu_observables = self.solver_observables.select(self.imu.solver_observable_flags)
 
         self.buffer = wp.zeros(self.n_cubes, dtype=wp.vec3)
         self.colors = wp.zeros(self.n_cubes, dtype=wp.vec3)
@@ -128,23 +151,29 @@ class Example:
         self.graph = capture.graph
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                # Sample IMU every substep; export viewer contact forces only on the last.
+                observables=self.solver_observables if substep == self.sim_substeps - 1 else self.imu_observables,
+            )
 
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
             # read IMU acceleration
-            self.imu.update(self.state_0)
+            self.imu.update(self.state_0, observables=self.solver_observables)
             # average and compute color
             wp.launch(acc_to_color, dim=self.n_cubes, inputs=[0.025, self.imu.accelerometer, self.buffer, self.colors])
-
-        self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.graph:
@@ -174,13 +203,15 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
         self.viewer.end_frame()
 
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
+    viewer, args = newton.examples.init(parser)
 
     # Create viewer and run
     newton.examples.run(Example(viewer, args), args)

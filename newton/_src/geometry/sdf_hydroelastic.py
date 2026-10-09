@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import warnings
 from copy import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -457,17 +457,6 @@ class HydroelasticSDF:
         reduce_contacts: bool = True
         """Whether to reduce contacts to a smaller representative set per shape pair.
         When False, all generated contacts are passed through without reduction."""
-        use_pressure_gradient: bool = False
-        """Opt into experimental pressure-gradient tangent springs for the built-in
-        linear pressure law. The default retains geometric witness separation.
-
-        The effective witness separation preserves current normal force but
-        changes subsequent contact response. With reduction, match the source
-        patch's translation tangent along its aggregate force direction. This
-        does not preserve its full stiffness tensor or rotational response.
-        Custom pressure callbacks and speculative contacts retain geometric
-        separation. This runtime collision option is not a shape/USD property.
-        """
         pre_prune_contacts: bool = True
         """Whether to perform local-first face compaction during generation.
         This mode avoids global hashtable traffic in the hot generation loop and
@@ -581,6 +570,17 @@ class HydroelasticSDF:
         the most faithful contact-surface dynamics — recommended for
         threading-style scenarios like ``nut_bolt_hydro`` where the surface
         bias measurably damps the contact response."""
+        use_pressure_gradient: bool = field(default=False, kw_only=True)
+        """Opt into experimental pressure-gradient tangent springs for the built-in
+        linear pressure law. The default retains geometric witness separation.
+
+        The effective witness separation preserves current normal force but
+        changes subsequent contact response. With reduction, match the source
+        patch's translation tangent along its aggregate force direction. This
+        does not preserve its full stiffness tensor or rotational response.
+        Custom pressure callbacks and speculative contacts retain geometric
+        separation. This runtime collision option is not a shape/USD property.
+        """
 
         def __post_init__(self):
             if self.margin_contact_area is _DEPRECATED_MARGIN_CONTACT_AREA_UNSET:

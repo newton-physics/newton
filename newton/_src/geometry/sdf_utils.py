@@ -27,6 +27,18 @@ logger = logging.getLogger(__name__)
 
 SignMethod = Literal["auto", "parity", "winding", "normal"]
 
+
+def _resolve_paired_samples_flag(paired_samples: bool, device: wp.DeviceLike | None) -> bool:
+    """Return whether paired SDF texture sampling is safe on the target device."""
+    device = wp.get_device(device)
+    if paired_samples and device.is_cuda and device.arch < 90:
+        # CUDA toolkits before 13.1 can miscompile kernels that mix scalar and vector texture
+        # fetches on pre-SM90 devices, so fall back to the scalar layout.
+        toolkit_version = wp.get_cuda_toolkit_version()
+        return toolkit_version is not None and toolkit_version >= (13, 1)
+    return bool(paired_samples)
+
+
 if TYPE_CHECKING:
     from .sdf_texture import TextureSDFData
 
@@ -428,6 +440,9 @@ class SDF:
             paired_samples: Store each SDF sample with its positive-X
                 neighbor for faster software interpolation. Disable to halve
                 texture memory at the cost of slower hydroelastic sampling.
+                This optimization is automatically disabled on CUDA devices
+                with architectures older than SM90 when Warp was built with
+                CUDA Toolkit 13.0 or earlier.
 
         Returns:
             A validated :class:`SDF` runtime handle.
@@ -509,10 +524,11 @@ class SDF:
             loaded_sparse_data = _sdf_cache.try_load_sparse_data(cache_dir, cache_hash)
 
         with wp.ScopedDevice(device):
+            use_paired_samples = _resolve_paired_samples_flag(paired_samples, wp.get_device())
             if loaded_sparse_data is not None:
                 sdf_device = str(wp.get_device())
                 sdf_params, coarse_texture, subgrid_texture = create_sparse_sdf_textures(
-                    loaded_sparse_data, sdf_device, paired_samples
+                    loaded_sparse_data, sdf_device, use_paired_samples
                 )
                 sdf_params.scale_baked = bake_scale
                 texture_data = sdf_params
@@ -544,7 +560,7 @@ class SDF:
                     scale_baked=bake_scale,
                     sign_mode=_sign_mode_map[sign_method_resolved],
                     return_sparse_data=want_sparse,
-                    paired_samples=paired_samples,
+                    paired_samples=use_paired_samples,
                 )
                 if want_sparse:
                     texture_data, coarse_texture, subgrid_texture, sparse_data = result

@@ -4,6 +4,7 @@
 import inspect
 import unittest
 import warnings
+from contextlib import nullcontext
 from typing import Any
 
 import numpy as np
@@ -834,7 +835,8 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device, rigid_compliant_
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -981,7 +983,8 @@ def _cable_twist_response_impl(test: unittest.TestCase, device, rigid_compliant_
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     # Disable gravity to isolate twist response
     model.set_gravity((0.0, 0.0, 0.0))
@@ -1192,12 +1195,13 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device, rigid_
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(
-        model,
-        iterations=10,
-        friction_epsilon=0.1,
-        rigid_compliant_alm=rigid_compliant_alm,
-    )
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(
+            model,
+            iterations=10,
+            friction_epsilon=0.1,
+            rigid_compliant_alm=rigid_compliant_alm,
+        )
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
     sim_dt = frame_dt / sim_substeps
@@ -1289,7 +1293,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
 
     # Kinematic anchor body at the rod start point.
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     # Anchor marker sphere.
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
@@ -1448,7 +1452,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
     # Kinematic anchor body with identity rotation (can't match rotation to two different cables).
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -1643,7 +1647,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
     # Kinematic anchor body with identity rotation.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -1854,7 +1858,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     anchor_radius = 0.1
 
     # Kinematic anchor body.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -1981,7 +1985,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2119,7 +2123,7 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
     # Kinematic anchor body with identity rotation (matching ball/fixed/revolute).
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -2264,7 +2268,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     anchor_radius = 0.1
 
     # Kinematic anchor body.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2391,7 +2395,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2534,7 +2538,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2690,7 +2694,7 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2821,7 +2825,7 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2986,7 +2990,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     anchor_radius = 0.1
 
     # Kinematic anchor body.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -3129,7 +3133,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device, rigid_compliant_
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -3222,7 +3226,8 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device, rigid_compliant_
     tp[qd_s + 1] = target_angle
     control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -3580,6 +3585,35 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
     _assert_bodies_above_ground(test, qf, rod_bodies, context="y-junction", margin=0.25 * cable_width)
 
 
+def _rod_articulation_has_free_root_joint_impl(test: unittest.TestCase, _device):
+    """A rod articulation has one free joint to the world."""
+    builder = newton.ModelBuilder()
+    rod = newton.Rod(
+        [
+            wp.vec3(0.0, 0.0, 1.0),
+            wp.vec3(0.1, 0.0, 1.0),
+            wp.vec3(0.2, 0.0, 1.0),
+        ],
+        radius=0.01,
+    )
+    rod_bodies, rod_joints = builder.add_rod(
+        rod=rod,
+        label="rooted_rod",
+        wrap_in_articulation=True,
+        body_frame_origin="com",
+    )
+
+    test.assertEqual(builder.articulation_count, 1)
+    articulation_joints = [joint for joint, articulation in enumerate(builder.joint_articulation) if articulation == 0]
+    root_joints = [joint for joint in articulation_joints if builder.joint_parent[joint] == -1]
+    test.assertEqual(len(root_joints), 1)
+    test.assertEqual(builder.joint_type[root_joints[0]], newton.JointType.FREE)
+    test.assertEqual(builder.joint_child[root_joints[0]], rod_bodies[0])
+    test.assertNotIn(root_joints[0], rod_joints)
+    test.assertTrue(all(builder.joint_articulation[joint] == 0 for joint in rod_joints))
+    test.assertTrue(builder.validate_joint_ordering())
+
+
 def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
     """Verify eval_fk does not reconstruct ROD child poses from unsupported joint coordinates."""
     builder = newton.ModelBuilder()
@@ -3604,7 +3638,8 @@ def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
     state = model.state()
 
     joint_types = model.joint_type.numpy()
-    test.assertTrue(np.all(joint_types == int(newton.JointType.ROD)), msg="expected only ROD joints")
+    test.assertEqual(np.count_nonzero(joint_types == int(newton.JointType.FREE)), 1)
+    test.assertEqual(np.count_nonzero(joint_types == int(newton.JointType.ROD)), len(rod_joints))
 
     child_body = int(rod_bodies[1])
 
@@ -3764,15 +3799,16 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
     test.assertGreater(dot, 0.999, msg=f"Default quaternion does not align +Z with edge direction (dot={dot:.6f})")
 
 
-def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device):
-    """Omitting body_frame_origin should warn while preserving the legacy start-node frame."""
+def _cable_rod_origin_matches_start_impl(test: unittest.TestCase, device):
+    """Preserve explicitly selected start-node body frames without a warning."""
     builder = newton.ModelBuilder()
 
     num_elements = 2
     segment_length = 0.2
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
-    with test.assertWarnsRegex(DeprecationWarning, "body_frame_origin"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
         rod_bodies, rod_joints = _add_prepared_rod(
             builder,
             points,
@@ -3780,6 +3816,7 @@ def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device
             radius=0.01,
             bend_stiffness=1.0,
             label="ut_cable_start_origin",
+            body_frame_origin="start",
         )
 
     builder.color()
@@ -3809,23 +3846,24 @@ def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device
     np.testing.assert_allclose(joint_X_c[rod_joints[0], :3], np.zeros(3), atol=1.0e-6)
 
 
-def _cable_rod_origin_matches_com_impl(test: unittest.TestCase, device):
-    """Verify rods support opt-in COM-centered body frames."""
+def _cable_rod_default_origin_matches_com_impl(test: unittest.TestCase, device):
+    """Build COM-centered body frames without a warning when body_frame_origin is omitted."""
     builder = newton.ModelBuilder()
 
     num_elements = 2
     segment_length = 0.2
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
-    rod_bodies, rod_joints = _add_prepared_rod(
-        builder,
-        points,
-        quaternions=edge_q,
-        radius=0.01,
-        bend_stiffness=1.0,
-        label="ut_cable_com_origin",
-        body_frame_origin="com",
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        rod_bodies, rod_joints = _add_prepared_rod(
+            builder,
+            points,
+            quaternions=edge_q,
+            radius=0.01,
+            bend_stiffness=1.0,
+            label="ut_cable_com_origin",
+        )
 
     builder.color()
     model = builder.finalize(device=device)
@@ -4184,7 +4222,7 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device, rigid_compliant_
 
     # Kinematic anchor sphere at height.
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -4240,7 +4278,8 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device, rigid_compliant_
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     sim_dt = 1.0 / 60.0 / 4
 
@@ -4289,7 +4328,7 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
     builder = newton.ModelBuilder()
 
     anchor_pos = wp.vec3(0.0, 0.0, 1.0)
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=0.05)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -5493,6 +5532,7 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
             "add_rod: twist_stiffness must be finite and >= 0",
         ),
         (graph, {"body_frame_origin": "invalid"}, "add_rod: body_frame_origin"),
+        (graph, {"body_frame_origin": None}, "add_rod: body_frame_origin"),
         (graph, {"radius": 0.2, "body_frame_origin": "com"}, "add_rod: radius must be None"),
     )
     for rod, kwargs, message in invalid_calls:
@@ -5794,8 +5834,9 @@ def _rod_builder_deprecates_raw_geometry_forms(test, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", DeprecationWarning)
-        bodies, joints = builder.add_rod_graph(points, edges, body_frame_origin="com")
+        bodies, joints = builder.add_rod_graph(points, edges)
     test.assertEqual((len(bodies), len(joints)), (2, 1))
+    np.testing.assert_array_equal([builder.body_com[body] for body in bodies], np.zeros((2, 3)))
     test.assertEqual(len(caught), 1)
     test.assertIn("add_rod_graph()", str(caught[0].message))
     test.assertIn("add_rod(rod=...)", str(caught[0].message))
@@ -6313,6 +6354,12 @@ def _notify_without_joint_dof_properties_leaves_rod_material_k_stale(test, devic
     after_refresh = solver.joint_material_k.numpy()[start : start + 4]
     np.testing.assert_allclose(after_refresh[2:], [999.0, 999.0])
 
+    model.joint_target_ke.fill_(1001.0)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+    np.testing.assert_allclose(solver.joint_material_k.numpy()[start + 2 : start + 4], [999.0, 999.0])
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+    np.testing.assert_allclose(solver.joint_material_k.numpy()[start + 2 : start + 4], [1001.0, 1001.0])
+
 
 def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     """Verify REVOLUTE/PRISMATIC/D6 drive/limit slots refresh to ``max(target_ke, limit_ke)``.
@@ -6342,7 +6389,8 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     builder.add_articulation([j_revolute, j_prismatic, j_d6])
     builder.color()
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+    with test.assertWarns(DeprecationWarning):
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
 
     def material_k_at(joint, slot_offset):
         start = int(solver.joint_constraint_start.numpy()[joint])
@@ -6409,7 +6457,8 @@ def _notify_joint_dof_properties_preserves_unchanged_penalty_ramp(test, device):
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
     # beta > 0 enables the legacy AVBD ramp; it is the state this selective reseed protects.
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False, rigid_avbd_beta=5.0)
+    with test.assertWarns(DeprecationWarning):
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False, rigid_avbd_beta=5.0)
 
     sim_substeps = 10
     sim_dt = (1.0 / 60.0) / sim_substeps
@@ -7151,6 +7200,12 @@ add_function_test(
 )
 add_function_test(
     TestCable,
+    "test_rod_articulation_has_free_root_joint",
+    _rod_articulation_has_free_root_joint_impl,
+    devices=None,
+)
+add_function_test(
+    TestCable,
     "test_cable_eval_fk_preserves_body_state",
     _cable_eval_fk_preserves_body_state_impl,
     devices=devices,
@@ -7169,14 +7224,14 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_rod_default_origin_matches_start",
-    _cable_rod_default_origin_matches_start_impl,
+    "test_cable_rod_origin_matches_start",
+    _cable_rod_origin_matches_start_impl,
     devices=devices,
 )
 add_function_test(
     TestCable,
-    "test_cable_rod_origin_matches_com",
-    _cable_rod_origin_matches_com_impl,
+    "test_cable_rod_default_origin_matches_com",
+    _cable_rod_default_origin_matches_com_impl,
     devices=devices,
 )
 add_function_test(

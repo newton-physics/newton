@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import warp as wp
+from asv_runner.benchmarks.time import TimeBenchmark
 
 ASV_DIR = Path(__file__).parents[1]
 ROOT = ASV_DIR.parent
@@ -51,6 +52,7 @@ try:
     import benchmark_kamino
     from benchmark_kamino import DRLegsBenchmarkWorkload
     from benchmark_mujoco import Example as MuJoCoExample
+    from setup import bench_model
 finally:
     for _name, _value in _WARP_CONFIG_BEFORE_BENCHMARK_IMPORTS.items():
         setattr(wp.config, _name, _value)
@@ -72,7 +74,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
                 "update_sys_path(root); "
                 "benchmarks = disc_benchmarks(root); "
                 "data = [{key: getattr(benchmark, key, None) "
-                "for key in ('name', 'params', 'repeat', 'rounds')} "
+                "for key in ('name', 'params', 'repeat', 'rounds', 'setup_cache_key')} "
                 "for benchmark in benchmarks]; "
                 "print('ASV_INVENTORY=' + json.dumps(data))"
             )
@@ -165,7 +167,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Cover selector crossovers, duplicate-heavy hulls, and every convex type."""
         self.assertEqual(
             tuple(bench_contacts.FastConvexCollision.params[0]),
-            (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 191)),
+            (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 64), ("mixed", 153), ("mixed", 191)),
         )
         self.assertEqual(
             {shape for pair in bench_contacts.MIXED_CONVEX_PAIR_TYPES for shape in pair},
@@ -201,6 +203,14 @@ class TestSimulationBenchmarks(unittest.TestCase):
         for benchmark_name in benchmark_names:
             self.assertIn(benchmark_name, inventory)
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
+
+    def test_deformable_collision_benchmark_is_in_pr_gate(self):
+        """Keep the large-scene deformable collision benchmark in the PR gate."""
+        benchmark_name = "simulation.bench_cloth.FastDeformableSelfCollision.time_detect"
+        inventory = {entry["name"] for entry in self._discover_benchmarks(pr_gate=True)}
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        self.assertIn(benchmark_name, inventory)
+        self.assertTrue(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
 
     def test_fast_kitchen_g1_validates_kitchen_body_count(self):
         """Validate the configured kitchen body count at runtime."""
@@ -242,6 +252,52 @@ class TestSimulationBenchmarks(unittest.TestCase):
         capture_launch.assert_not_called()
         self.assertEqual(example.benchmark_time, 0.25)
         self.assertEqual(example.sim_time, 0.01)
+
+    def test_mujoco_contact_observables_only_update_on_last_substep(self):
+        """Pass final-substep contact observables to the sensor without legacy exports."""
+        for substeps in (1, 2, 3):
+            with self.subTest(substeps=substeps):
+                example = MuJoCoExample.__new__(MuJoCoExample)
+                example.sim_substeps = substeps
+                example.sim_dt = 0.01
+                example.state_0, example.state_1 = Mock(), Mock()
+                example.control = Mock()
+                example.contacts = Mock()
+                example.solver = Mock()
+                example.sensor_contact = Mock()
+                example.solver_observables = Mock()
+
+                example.simulate()
+
+                self.assertEqual(example.solver.step.call_count, substeps)
+                for step_call in example.solver.step.call_args_list[:-1]:
+                    self.assertEqual(step_call.kwargs, {})
+                self.assertEqual(example.solver.step.call_args.kwargs, {"observables": example.solver_observables})
+                example.sensor_contact.update.assert_called_once_with(
+                    example.state_0, example.contacts, observables=example.solver_observables
+                )
+                example.solver.update_contacts.assert_not_called()
+
+    def test_mujoco_benchmark_supports_sensorless_steps(self):
+        """Keep sensorless workloads free of observable requests and contact exports."""
+        for substeps in (1, 2, 3):
+            with self.subTest(substeps=substeps):
+                example = MuJoCoExample.__new__(MuJoCoExample)
+                example.sim_substeps = substeps
+                example.sim_dt = 0.01
+                example.state_0, example.state_1 = Mock(), Mock()
+                example.control = Mock()
+                example.contacts = None
+                example.solver = Mock()
+                example.sensor_contact = None
+                example.solver_observables = None
+
+                example.simulate()
+
+                self.assertEqual(example.solver.step.call_count, example.sim_substeps)
+                for step_call in example.solver.step.call_args_list:
+                    self.assertEqual(step_call.kwargs, {})
+                example.solver.update_contacts.assert_not_called()
 
     def test_mujoco_kpi_requires_cuda_graph(self):
         """Reject KPI workloads that fail CUDA graph capture."""
@@ -285,6 +341,54 @@ class TestSimulationBenchmarks(unittest.TestCase):
         self.assertEqual(metrics.solver_niter_mean, 3.0)
         self.assertEqual(metrics.solver_niter_max, 5.0)
 
+    def test_initialize_kpis_discard_a_matching_warmup_sample(self):
+        """Warm each measured configuration and exclude its first sample from the phase averages."""
+        cases = []
+
+        def create_example(**kwargs):
+            self.assertFalse(kwargs["randomize"])
+            case = (kwargs["robot"], kwargs["world_count"])
+            scale = 100.0 if case not in cases else 1.0
+            cases.append(case)
+            kwargs["startup_phase_times"].update(
+                model=4.0 * scale, replication=1.0 * scale, finalize=2.0 * scale, solver=3.0 * scale
+            )
+            return SimpleNamespace(graph=object(), step=Mock())
+
+        model = bench_model.KpiInitializeModel()
+        robots = ("humanoid", "g1", "cartpole", "ant")
+        world_counts = (256, 8192)
+        with (
+            patch.object(bench_model._KpiInitialize, "params", (robots, world_counts)),
+            patch.object(bench_model.wp, "get_cuda_device_count", return_value=1),
+            patch.object(bench_model, "Example", side_effect=create_example),
+            patch("benchmark_metrics.wp.synchronize_device"),
+        ):
+            metrics = model.setup_cache()
+
+        self.assertEqual(
+            cases,
+            [(robot, count) for robot in robots for count in world_counts for _ in range(model.samples + 1)],
+        )
+        self.assertEqual(set(metrics), {(robot, count) for robot in robots for count in world_counts})
+        for robot, count in metrics:
+            with self.subTest(robot=robot, world_count=count):
+                self.assertEqual(model.track_initialize_model(metrics, robot, count), 4.0)
+                self.assertEqual(model.track_mean_replication_time(metrics, robot, count), 1.0)
+                self.assertEqual(model.track_mean_finalize_time(metrics, robot, count), 2.0)
+                self.assertGreater(model.track_mean_startup_time(metrics, robot, count), 0.0)
+                self.assertEqual(bench_model.KpiInitializeSolver().track_initialize_solver(metrics, robot, count), 3.0)
+
+    def test_initialize_kpis_share_one_cache(self):
+        """Collect the model and solver KPIs once, since ASV shares an inherited ``setup_cache``."""
+        inventory = {entry["name"]: entry for entry in self._discover_benchmarks(pr_gate=False)}
+        model_key, solver_key = (
+            inventory[f"setup.bench_model.KpiInitialize{kind}.track_initialize_{kind.lower()}"]["setup_cache_key"]
+            for kind in ("Model", "Solver")
+        )
+        self.assertIsNotNone(model_key)
+        self.assertEqual(model_key, solver_key)
+
     def test_metric_setup_caches_skip_without_cuda(self):
         """Skip metric caches without constructing CPU workloads."""
         with (
@@ -295,6 +399,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             patch.object(bench_quadruped_xpbd, "_create_example") as create_quadruped,
         ):
             self.assertIsNone(bench_mujoco.FastCartpole().setup_cache())
+            self.assertIsNone(bench_model.KpiInitializeModel().setup_cache())
             self.assertIsNone(bench_kamino.KpiDRLegs().setup_cache())
             self.assertIsNone(bench_anymal.FastMetricsExampleAnymalPretrained().setup_cache())
             self.assertIsNone(bench_quadruped_xpbd.FastMetricsExampleQuadrupedXPBD().setup_cache())
@@ -321,6 +426,44 @@ class TestSimulationBenchmarks(unittest.TestCase):
 
         solver_cls.assert_called_once()
 
+    def test_g1_dvi_remains_available_outside_pr_gate(self):
+        """Keep small and large G1 batches outside the PR gate with bounded sampling."""
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        for pr_gate in (False, True):
+            inventory = self._discover_benchmarks(pr_gate=pr_gate)
+            benchmarks = [benchmark for benchmark in inventory if "G1DVI" in benchmark["name"]]
+            self.assertEqual(len(benchmarks), 1)
+            benchmark = benchmarks[0]
+            self.assertFalse(any(pattern.search(benchmark["name"]) for pattern in patterns))
+            self.assertEqual(benchmark["params"], [["4", "512"]])
+            self.assertEqual((benchmark["rounds"], benchmark["repeat"]), (1, 3))
+
+    def test_g1_dvi_builds_once_per_world_count(self):
+        """Avoid rebuilding and warming G1 for each ASV timing sample."""
+        workload = bench_kamino.G1DVI()
+        with (
+            patch("newton.examples.robot.example_robot_g1.Example") as example_cls,
+            patch.object(wp, "get_cuda_device_count", return_value=1),
+            patch.object(wp, "ScopedDevice"),
+            patch.object(wp, "synchronize_device"),
+        ):
+            benchmark = TimeBenchmark("time_simulate", workload.time_simulate, [workload])
+            benchmark.set_param_idx(0)
+            benchmark.do_setup()
+            result = benchmark.do_run()
+            benchmark.do_teardown()
+
+            self.assertEqual(len(result["samples"]), 3)
+            self.assertEqual(example_cls.call_count, 1)
+            self.assertEqual(example_cls.return_value.step.call_count, 100 + 3 * 200)
+            self.assertEqual(example_cls.return_value.test_final.call_count, 3)
+
+            workload.setup(512)
+            self.assertEqual(example_cls.call_count, 2)
+            with patch.object(wp, "get_cuda_device_count", return_value=0):
+                with self.assertRaises(NotImplementedError):
+                    workload.setup(512)
+
     def test_aws_benchmark_comparison_gates_only_runtime_metrics(self):
         """Gate discovered PR runtimes while retaining dashboard-only metrics."""
         workflow_path = ROOT / ".github" / "workflows" / "aws_gpu_benchmarks.yml"
@@ -330,6 +473,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         inventory = {benchmark["name"]: benchmark for benchmark in self._discover_benchmarks(pr_gate=False)}
 
         blocking_benchmarks = (
+            "simulation.bench_reset.FastPartialResetStepHumanoidMuJoCo.time_reset_and_first_step",
             "simulation.bench_mujoco.FastG1.track_simulate",
             "simulation.bench_mujoco.FastG1.track_p95_step_time",
             "simulation.bench_anymal.FastMetricsExampleAnymalPretrained.track_mean_world_step_time",
@@ -345,6 +489,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_inverse_dynamics.FastInverseDynamics.time_eval_inverse_dynamics_force",
         )
         dashboard_benchmarks = (
+            "simulation.bench_reset.FullResetHumanoidMuJoCo.time_reset",
             "simulation.bench_mujoco.FastG1.track_solver_niter_mean",
             "simulation.bench_mujoco.FastG1.track_solver_niter_max",
             "simulation.bench_mujoco.FastG1.track_simulation_steps_per_second",
@@ -353,11 +498,24 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_mujoco.FastG1.track_sim_dt",
             "simulation.bench_mujoco.FastG1.track_sim_substeps",
             "simulation.bench_mujoco.FastNewtonOverheadG1.track_simulate",
+            "setup.bench_model.KpiInitializeModel.track_initialize_model",
+            "setup.bench_model.KpiInitializeModel.track_mean_replication_time",
+            "setup.bench_model.KpiInitializeModel.track_mean_finalize_time",
+            "setup.bench_model.KpiInitializeModel.track_mean_startup_time",
+            "setup.bench_model.KpiInitializeSolver.track_initialize_solver",
             "simulation.bench_teleop_mujoco.TeleopMuJoCo.track_frame_overrun_pct",
             "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.track_mean_loop_ms",
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera.time_render_color_only",
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_color_only",
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_depth_only",
+            # SensorCamera benchmarks stay out of the PR gate: the class is new in
+            # this PR, so it cannot be imported on the base commit for comparison.
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_color_depth",
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_color_only",
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_depth_only",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_depth",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_only",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_depth_only",
         )
 
         for benchmark in blocking_benchmarks + dashboard_benchmarks:

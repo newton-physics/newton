@@ -31,8 +31,14 @@ class TestCustomAttributes(unittest.TestCase):
         """Set up test fixtures."""
         self.device = wp.get_device()
 
-    def _add_test_robot(self, builder: ModelBuilder) -> dict[str, int]:
-        """Build a simple 2-bar linkage robot without custom attributes."""
+    def _add_test_robot(self, builder: ModelBuilder, add_articulation: bool = True) -> dict[str, int]:
+        """Build a simple 2-bar linkage robot without custom attributes.
+
+        Args:
+            builder: Model builder that receives the robot.
+            add_articulation: Whether to register the fixture joints in an articulation. If False, the joints remain
+                unregistered for later composition.
+        """
         base = builder.add_link(xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()), mass=1.0)
         builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
 
@@ -58,8 +64,8 @@ class TestCustomAttributes(unittest.TestCase):
             axis=[0.0, 1.0, 0.0],
         )
 
-        # Add articulation for the joints
-        builder.add_articulation([joint1, joint2])
+        if add_articulation:
+            builder.add_articulation([joint1, joint2])
 
         return {"base": base, "link1": link1, "link2": link2, "joint1": joint1, "joint2": joint2}
 
@@ -339,7 +345,7 @@ class TestCustomAttributes(unittest.TestCase):
             )
         )
 
-        robot_entities = self._add_test_robot(builder)
+        robot_entities = self._add_test_robot(builder, add_articulation=False)
 
         body = builder.add_link(mass=1.0)
         joint3 = builder.add_joint_revolute(
@@ -353,7 +359,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_int_coord": [12],
             },
         )
-        builder.add_articulation([joint3])
+        builder.add_articulation([robot_entities["joint1"], robot_entities["joint2"], joint3])
 
         model = builder.finalize(device=self.device)
 
@@ -395,7 +401,7 @@ class TestCustomAttributes(unittest.TestCase):
             )
         )
 
-        robot_entities = self._add_test_robot(builder)
+        robot_entities = self._add_test_robot(builder, add_articulation=False)
 
         body = builder.add_link(mass=1.0)
         joint3 = builder.add_joint_revolute(
@@ -407,7 +413,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_int_cts": [1, 2, 3, 4, 5],
             },
         )
-        builder.add_articulation([joint3])
+        builder.add_articulation([robot_entities["joint1"], robot_entities["joint2"], joint3])
 
         model = builder.finalize(device=self.device)
 
@@ -442,7 +448,7 @@ class TestCustomAttributes(unittest.TestCase):
             )
         )
 
-        robot_entities = self._add_test_robot(builder)
+        robot_entities = self._add_test_robot(builder, add_articulation=False)
         cfg = ModelBuilder.JointDofConfig
 
         body = builder.add_link(mass=1.0)
@@ -456,7 +462,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_int_coord": [100, 200, 300],
             },
         )
-        builder.add_articulation([joint3])
+        builder.add_articulation([robot_entities["joint1"], robot_entities["joint2"], joint3])
 
         model = builder.finalize(device=self.device)
 
@@ -494,7 +500,7 @@ class TestCustomAttributes(unittest.TestCase):
             )
         )
 
-        robot_entities = self._add_test_robot(builder)
+        robot_entities = self._add_test_robot(builder, add_articulation=False)
         cfg = ModelBuilder.JointDofConfig
 
         body = builder.add_link(mass=1.0)
@@ -508,7 +514,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_int_cts": [1, 2, 3],
             },
         )
-        builder.add_articulation([joint3])
+        builder.add_articulation([robot_entities["joint1"], robot_entities["joint2"], joint3])
 
         model = builder.finalize(device=self.device)
 
@@ -550,7 +556,7 @@ class TestCustomAttributes(unittest.TestCase):
             )
         )
 
-        robot_entities = self._add_test_robot(builder)
+        robot_entities = self._add_test_robot(builder, add_articulation=False)
         cfg = ModelBuilder.JointDofConfig
 
         body = builder.add_link(mass=1.0)
@@ -565,7 +571,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_vec3_cts": [[0.01, 0.02, 0.03], [0.04, 0.05, 0.06], [0.07, 0.08, 0.09]],
             },
         )
-        builder.add_articulation([joint3])
+        builder.add_articulation([robot_entities["joint1"], robot_entities["joint2"], joint3])
 
         model = builder.finalize(device=self.device)
 
@@ -1586,6 +1592,17 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertIn("not registered", str(context.exception))
         self.assertIn("test:unregistered", str(context.exception))
 
+    def test_unsupported_frequency_raises_on_finalize(self):
+        """Verify finalize() raises for a non-string frequency outside Model.AttributeFrequency."""
+        builder = ModelBuilder()
+        builder.add_body(mass=1.0)
+        # 8 was the value of the removed AttributeFrequency.EQUALITY_CONSTRAINT.
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(name="bogus", frequency=8, dtype=wp.float32, namespace="test")
+        )
+        with self.assertRaisesRegex(ValueError, "Unsupported attribute frequency: 8"):
+            builder.finalize(device=self.device)
+
     def test_custom_frequency_add_custom_values_batch(self):
         """Test batched custom frequency row insertion."""
         builder = ModelBuilder()
@@ -1621,6 +1638,87 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         model = builder.finalize(device=self.device)
         np.testing.assert_array_equal(model.test.row_id.numpy(), [10, 11])
         np.testing.assert_array_almost_equal(model.test.row_value.numpy(), [1.5, 2.5], decimal=6)
+
+    def test_custom_frequency_world_reference_inference(self):
+        """Test that custom-frequency rows infer omitted world references."""
+        builder = ModelBuilder()
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="item", namespace="test"))
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_world",
+                frequency="test:item",
+                dtype=wp.int32,
+                default=99,
+                namespace="test",
+                references="world",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+
+        global_indices = builder.add_custom_values(**{"test:item_value": 10})
+        self.assertEqual(global_indices["test:item_world"], 0)
+
+        builder.begin_world()
+        world_zero_indices = builder.add_custom_values(**{"test:item_value": 20})
+        self.assertEqual(world_zero_indices["test:item_world"], 1)
+        builder.add_custom_values(**{"test:item_value": 30, "test:item_world": -1})
+        builder.end_world()
+
+        builder.begin_world()
+        batch_indices = builder.add_custom_values_batch(
+            [
+                {"test:item_value": 40},
+                {"test:item_value": 50, "test:item_world": None},
+                {"test:item_value": 60, "test:item_world": 0},
+            ]
+        )
+        builder.end_world()
+
+        self.assertEqual([indices["test:item_world"] for indices in batch_indices], [3, 4, 5])
+
+        model = builder.finalize(device=self.device)
+        np.testing.assert_array_equal(model.test.item_world.numpy(), [-1, 0, -1, 1, 1, 0])
+        np.testing.assert_array_equal(model.test.item_value.numpy(), [10, 20, 30, 40, 50, 60])
+
+    def test_custom_frequency_inferred_world_remaps_during_merge(self):
+        """Test that inferred world references remap when builders are merged."""
+        template = ModelBuilder()
+        template.add_custom_frequency(ModelBuilder.CustomFrequency(name="item", namespace="test"))
+        template.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_world",
+                frequency="test:item",
+                dtype=wp.int32,
+                default=99,
+                namespace="test",
+                references="world",
+            )
+        )
+        template.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+        template.add_custom_values(**{"test:item_value": 7})
+
+        builder = ModelBuilder()
+        builder.add_world(template)
+        builder.add_world(template)
+        builder.add_custom_values(**{"test:item_value": 8})
+
+        model = builder.finalize(device=self.device)
+        np.testing.assert_array_equal(model.test.item_world.numpy(), [0, 1, -1])
+        np.testing.assert_array_equal(model.test.item_value.numpy(), [7, 7, 8])
 
     def test_custom_frequency_registration_methods(self):
         """Test different ways to register custom frequencies."""

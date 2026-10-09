@@ -12,6 +12,7 @@
 # 180-degree turn, up the incline, across the differential pair, and back.
 #
 # Command: python -m newton.examples basic_conveyor_forces
+#          python -m newton.examples basic_conveyor_forces --solver kamino
 #
 ###########################################################################
 
@@ -360,15 +361,14 @@ class ConveyorForceModel:
     :meth:`add_pivot_belt`, call :meth:`finalize`, then drive it each substep::
 
         conveyor.apply(state_0)  # add the conveyor wrench from the last step
-        conveyor.snapshot_prev(solver)
         collision_pipeline.collide(state_0, contacts)
-        solver.step(state_0, state_1, control, contacts, dt)
-        conveyor.update(solver, contacts, state_1, dt)  # read forces, recompute wrench
+        solver.step(state_0, state_1, control, contacts, dt, observables=observables)
+        conveyor.update(contacts, observables, state_1, dt)  # read forces, recompute wrench
     """
 
     def __init__(self, model: newton.Model, solver_type: str = "xpbd"):
         """Initialize a conveyor driver for a model and solver type."""
-        if solver_type not in {"xpbd", "vbd", "mujoco"}:
+        if solver_type not in {"xpbd", "vbd", "mujoco", "kamino"}:
             raise ValueError(f"Unsupported solver type: {solver_type!r}")
 
         self.model = model
@@ -484,12 +484,13 @@ class ConveyorForceModel:
             threshold,
         )
 
-    def finalize(self, contacts) -> None:
+    def finalize(self, contacts, solver_observables: newton.solvers.SolverObservables | None = None) -> None:
         """Allocate device buffers. Call once after registering all belts.
 
         Args:
             contacts: The :class:`~newton.Contacts` the step loop will populate; used to size the
                 per-contact force buffer.
+            solver_observables: Contact-force output requested from the solver.
         """
         if self._finalized:
             raise RuntimeError("ConveyorForceModel is already finalized.")
@@ -497,8 +498,8 @@ class ConveyorForceModel:
             raise RuntimeError("Register at least one belt before finalize().")
         if contacts.rigid_contact_max <= 0:
             raise ValueError("Contacts must have nonzero rigid-contact capacity.")
-        if self.solver_type != "vbd" and contacts.force is None:
-            raise ValueError("Call model.request_contact_attributes('force') before creating Contacts.")
+        if solver_observables is None or solver_observables.contact_f is None:
+            raise ValueError("Request SolverObservableFlags.CONTACT_F before finalizing the conveyor force model.")
 
         d = self.device
         self.conv_field_type = wp.array(self._field_type, dtype=wp.int32, device=d)
@@ -515,7 +516,6 @@ class ConveyorForceModel:
         self.conveyor_body_f = wp.zeros(self.model.body_count, dtype=wp.spatial_vector, device=d)
         self.belt_contacts = wp.empty(contacts.rigid_contact_max, dtype=BeltContact, device=d)
         self.contact_force_vec = wp.zeros(contacts.rigid_contact_max, dtype=wp.vec3, device=d)
-        self.body_q_prev = wp.zeros(self.model.body_count, dtype=wp.transform, device=d)
         self._finalized = True
 
     def set_speed_scale(self, scale: float) -> None:
@@ -531,34 +531,14 @@ class ConveyorForceModel:
             device=self.device,
         )
 
-    def snapshot_prev(self, solver) -> None:
-        """Store the pre-step body poses used for contact-force reporting.
-
-        Only VBD reports forces from a pose history, so this is a no-op for the other solvers.
-
-        Args:
-            solver: Solver that is about to advance the state.
-        """
-        if self.solver_type == "vbd":
-            wp.copy(self.body_q_prev, solver.body_q_prev)
-
-    def _report_contact_forces(self, solver, contacts, state_post, dt: float) -> None:
-        """Copy solver-specific contact forces into a common linear-force buffer."""
-        if self.solver_type == "vbd":
-            solver.collect_rigid_contact_forces(state_post.body_q, self.body_q_prev, contacts, dt)
-            wp.copy(self.contact_force_vec, contacts.rigid_contact_force)
-        else:
-            solver.update_contacts(contacts)
-            wp.launch(
-                extract_linear,
-                dim=contacts.rigid_contact_max,
-                inputs=[contacts.force, self.contact_force_vec],
-                device=self.device,
-            )
-
-    def update(self, solver, contacts, state_post: newton.State, dt: float) -> None:
+    def update(self, contacts, solver_observables, state_post: newton.State, dt: float) -> None:
         """Read the solver's per-contact forces and recompute the per-body conveyor wrench."""
-        self._report_contact_forces(solver, contacts, state_post, dt)
+        wp.launch(
+            extract_linear,
+            dim=contacts.rigid_contact_max,
+            inputs=[solver_observables.contact_f, self.contact_force_vec],
+            device=self.device,
+        )
         self.conveyor_body_f.zero_()
         self.body_contact_count.zero_()
         wp.launch(
@@ -613,8 +593,9 @@ class ConveyorForceModel:
 # ---------------------------------------------------------------------------
 # Example scene configuration
 # ---------------------------------------------------------------------------
-# A small positive collision margin smooths the belt-to-belt seam transitions.
-COLLISION_MARGIN = 0.015
+# A small positive collision margin smooths the belt-to-belt seam transitions. VBD's
+# rigid-contact handling needs a larger margin than XPBD to keep bodies on the belts.
+SOLVER_MARGIN = {"xpbd": 0.015, "vbd": 0.05, "mujoco": 0.015, "kamino": 0.015}
 XPBD_ITERATIONS = 4
 VBD_ITERATIONS = 4
 # A frictional-to-normal impedance ratio below 1 softens the friction
@@ -757,6 +738,7 @@ class Example:
     """Conveyor circuit whose static belts carry rigid boxes with contact forces."""
 
     def __init__(self, viewer, args=None):
+        newton.use_coord_layout_targets = True
         self.solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
 
         self.fps = 60
@@ -771,6 +753,9 @@ class Example:
         builder.add_ground_plane()
         straight_belts, turn_belts, self.tracked_bodies = self._build_scene(builder)
 
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
+
         transported = set(self.tracked_bodies)
         if self.solver_type == "mujoco":
             # The conveyor supplies tangential contact forces explicitly, so native
@@ -782,8 +767,8 @@ class Example:
                     builder.shape_material_mu[shape] = MUJOCO_MIN_FRICTION
                     builder.shape_material_mu_torsional[shape] = 0.0
                     builder.shape_material_mu_rolling[shape] = 0.0
-        elif self.solver_type == "xpbd":
-            # XPBD averages the two shape coefficients, so both sides of a belt
+        elif self.solver_type in {"xpbd", "kamino"}:
+            # These solvers mix both shape coefficients, so both sides of a belt
             # contact must be frictionless to leave tangential drive to the conveyor.
             for shape, body in enumerate(builder.shape_body):
                 if body in transported:
@@ -799,13 +784,10 @@ class Example:
         shape_type = builder.shape_type
         for i in range(len(builder.shape_margin)):
             if shape_type[i] not in mesh_types:
-                builder.shape_margin[i] = max(builder.shape_margin[i], COLLISION_MARGIN)
+                builder.shape_margin[i] = max(builder.shape_margin[i], SOLVER_MARGIN[self.solver_type])
 
         builder.color()
         self.model = builder.finalize()
-
-        # The conveyor consumes the per-contact normal force reported by the solver.
-        self.model.request_contact_attributes("force")
 
         if self.solver_type == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(
@@ -820,19 +802,30 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=VBD_ITERATIONS,
-                rigid_compliant_alm=True,
                 rigid_joint_linear_ke=1.0e2,
                 rigid_joint_angular_ke=1.0e2,
                 rigid_body_contact_buffer_size=64,
             )
+        elif self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.dvi.max_alternating_iterations = 4
+            solver_config.dvi.bilateral_solve_interval = 4
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=XPBD_ITERATIONS)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.collision_pipeline = newton.CollisionPipeline(self.model, broad_phase="explicit")
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model,
+            broad_phase="explicit",
+            rigid_contact_max=self.solver.get_max_contact_count() if self.solver_type == "mujoco" else None,
+        )
         self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
@@ -853,7 +846,7 @@ class Example:
                 friction=BELT_DRIVE_FRICTION,
                 threshold=CONTACT_PROCESSING_THRESHOLD,
             )
-        self.conveyor.finalize(self.contacts)
+        self.conveyor.finalize(self.contacts, self.solver_observables)
 
         self.tracked_start_pos = self.state_0.body_q.numpy()[self.tracked_bodies, :3].copy()
         self.max_travel = np.zeros(len(self.tracked_bodies))
@@ -977,12 +970,18 @@ class Example:
 
             # Add the wrench the conveyor computed from the previous step's contacts.
             self.conveyor.apply(self.state_0)
-            self.conveyor.snapshot_prev(self.solver)
 
             self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables,
+            )
 
-            self.conveyor.update(self.solver, self.contacts, self.state_1, self.sim_dt)
+            self.conveyor.update(self.contacts, self.solver_observables, self.state_1, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -994,7 +993,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_post_step(self):
@@ -1043,7 +1042,11 @@ def _look_at(eye, target):
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument(
-        "--solver", type=str, choices=["xpbd", "vbd", "mujoco"], default="xpbd", help="Solver backend to use."
+        "--solver",
+        type=str,
+        choices=["xpbd", "vbd", "mujoco", "kamino"],
+        default="xpbd",
+        help="Solver backend to use.",
     )
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

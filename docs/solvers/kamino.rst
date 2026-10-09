@@ -25,6 +25,18 @@ See the :class:`~newton.solvers.SolverKamino` API reference for construction
 and configuration details. Runnable workflows are available in the
 `Kamino examples <https://github.com/newton-physics/newton/tree/main/newton/examples/kamino>`_.
 
+Body acceleration
+-----------------
+
+Kamino populates :attr:`~newton.State.body_qdd` when the extended state
+attribute is requested. Values are center-of-mass spatial accelerations in the
+world frame, with linear acceleration followed by angular acceleration. For a
+step of duration ``dt``, Kamino reports the discrete step average
+``(body_qd_out - body_qd_in) / dt``. Consequently, a contact impact reports its
+velocity impulse divided by ``dt`` rather than a continuous midpoint
+acceleration. Resetting a state clears the requested acceleration in each reset
+world.
+
 Choosing a dynamics solver
 --------------------------
 
@@ -69,6 +81,22 @@ For large bilateral systems, opt into RCM-reordered factorization explicitly:
 The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
 changes. Keep the default ``"LLTB"`` solver for small systems.
+
+DVI unilateral subsolvers
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+DVI offers two subsolvers for bounded joint rows, limits, and contacts:
+
+* **PGS** (default) uses projected Gauss-Seidel updates with less work per
+  iteration, making it a simple choice for modest contact problems.
+* **APGD** offers a faster convergence rate for each frozen-correction
+  quadratic problem, at the cost of objective-gradient evaluations and an
+  inner backtracking loop.
+  CUDA execution requires conditional-graph support.
+
+Both support dense and sparse operators and bilateral Schur elimination.
+See the :class:`~newton.solvers.SolverKamino` configuration reference for
+subsolver selection and iteration controls.
 
 Inspecting terminal status
 --------------------------
