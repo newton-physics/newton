@@ -31,7 +31,7 @@ Does Newton support coupling of solvers for multiphysics or co-simulation?
 Yes. Newton provides an experimental coupled-solver framework for partitioning a
 shared :class:`Model` across multiple solver backends. It supports two-way proxy
 coupling through virtual bodies or particles, and symmetric ADMM coupling for
-joints, body-particle attachments, and frictional contacts. See
+joints, particle-body attachments, and frictional contacts. See
 :doc:`Coupled Solvers <concepts/coupling>` for the architecture, examples,
 solver-specific behavior, and current limitations.
 

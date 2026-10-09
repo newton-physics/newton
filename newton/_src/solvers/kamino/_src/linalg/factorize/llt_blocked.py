@@ -216,9 +216,13 @@ def make_llt_blocked_factorize_kernel(block_size: int):
 
 
 @cache
-def make_llt_blocked_solve_kernel(block_size: int):
-    @wp.kernel
-    def llt_blocked_solve_kernel(
+def make_llt_blocked_solve_func(block_size: int):
+    """Share the blocked substitutions with callers that fuse RHS preparation."""
+
+    @wp.func
+    def llt_blocked_solve_func(
+        tid: wp.int32,
+        tid_block: wp.int32,
         # Inputs:
         dim: wp.array[wp.int32],
         mio: wp.array[wp.int32],
@@ -229,8 +233,7 @@ def make_llt_blocked_solve_kernel(block_size: int):
         y: wp.array[wp.float32],
         x: wp.array[wp.float32],
     ):
-        # Retrieve the thread index and thread-block configuration
-        tid, tid_block = wp.tid()
+        # Retrieve the thread-block configuration
         num_threads_per_block = wp.block_dim()
 
         # Retrieve the matrix block dimensions and size
@@ -306,12 +309,35 @@ def make_llt_blocked_solve_kernel(block_size: int):
             wp.tile_upper_solve_inplace(wp.tile_transpose(L_diag), rhs_tile)
             wp.tile_store(x_i, rhs_tile, offset=(i, 0))
 
-    # Return the kernel function
+    return llt_blocked_solve_func
+
+
+@cache
+def make_llt_blocked_solve_kernel(block_size: int):
+    solve = make_llt_blocked_solve_func(block_size)
+
+    @wp.kernel
+    def llt_blocked_solve_kernel(
+        # Inputs:
+        dim: wp.array[wp.int32],
+        mio: wp.array[wp.int32],
+        vio: wp.array[wp.int32],
+        L: wp.array[wp.float32],
+        b: wp.array[wp.float32],
+        # Outputs:
+        y: wp.array[wp.float32],
+        x: wp.array[wp.float32],
+    ):
+        tid, tid_block = wp.tid()
+        solve(tid, tid_block, dim, mio, vio, L, b, y, x)
+
     return llt_blocked_solve_kernel
 
 
 @cache
 def make_llt_blocked_solve_inplace_kernel(block_size: int):
+    solve = make_llt_blocked_solve_func(block_size)
+
     @wp.kernel
     def llt_blocked_solve_inplace_kernel(
         # Inputs:
@@ -323,79 +349,9 @@ def make_llt_blocked_solve_inplace_kernel(block_size: int):
         y: wp.array[wp.float32],
         x: wp.array[wp.float32],
     ):
-        # Retrieve the thread index and thread-block configuration
         tid, tid_block = wp.tid()
-        num_threads_per_block = wp.block_dim()
+        solve(tid, tid_block, dim, mio, vio, L, x, y, x)
 
-        # Retrieve the matrix block dimensions and size
-        n_i = dim[tid]
-        L_i_start = mio[tid]
-        v_i_start = vio[tid]
-
-        # Retrieve a pointer to the start of the i-th matrix in A
-        L_i_ptr = get_float32_array_offset_ptr(L, L_i_start)
-        y_i_ptr = get_float32_array_offset_ptr(y, v_i_start)
-        x_i_ptr = get_float32_array_offset_ptr(x, v_i_start)
-
-        # Create a temporary warp array pointing to the i-th matrix
-        L_i = wp.array(ptr=L_i_ptr, shape=(n_i, n_i), dtype=wp.float32)
-        y_i = wp.array(ptr=y_i_ptr, shape=(n_i, 1), dtype=wp.float32)
-        x_i = wp.array(ptr=x_i_ptr, shape=(n_i, 1), dtype=wp.float32)
-
-        # Round up n_i to next multiple of block_size
-        n_i_padded = ((n_i + block_size - 1) // block_size) * block_size
-
-        # Forward substitution: solve L y = b
-        for i in range(0, n_i_padded, block_size):
-            rhs_tile = wp.tile_load(x_i, shape=(block_size, 1), offset=(i, 0))
-            # Hoist the diagonal load above the j loop (same as the non-in-place kernel).
-            L_diag = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, i))
-            if i > 0:
-                for j in range(0, i, block_size):
-                    L_block = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, j))
-                    y_block = wp.tile_load(y_i, shape=(block_size, 1), offset=(j, 0))
-                    wp.tile_matmul(L_block, y_block, rhs_tile, alpha=-1.0)
-            wp.tile_lower_solve_inplace(L_diag, rhs_tile)
-            wp.tile_store(y_i, rhs_tile, offset=(i, 0))
-
-        # Backward substitution: solve L^T x = y
-        for i in range(n_i_padded - block_size, -1, -block_size):
-            i_end = i + block_size
-            rhs_tile = wp.tile_load(y_i, shape=(block_size, 1), offset=(i, 0))
-            L_diag = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, i))
-
-            # The following if pads the diagonal block if it is not divisible by block_size
-            if i + block_size > n_i:
-                num_tile_elements = block_size * block_size
-                num_iterations = (num_tile_elements + num_threads_per_block - 1) // num_threads_per_block
-                for ii in range(num_iterations):
-                    linear_index = tid_block + ii * num_threads_per_block
-                    linear_index = linear_index % num_tile_elements
-                    row = linear_index // block_size
-                    col = linear_index % block_size
-                    value = L_diag[row, col]
-                    if i + row >= n_i:
-                        value = wp.where(i + row == i + col, wp.float32(1), wp.float32(0))
-                    L_diag[row, col] = value
-
-            if i_end < n_i_padded:
-                for j in range(i_end, n_i_padded, block_size):
-                    L_tile = wp.tile_load(L_i, shape=(block_size, block_size), offset=(j, i))
-                    x_tile = wp.tile_load(x_i, shape=(block_size, 1), offset=(j, 0))
-                    if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                        wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
-                    elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                        wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
-                            rhs_tile, L_tile, x_tile, -1.0
-                        )
-                    else:
-                        L_T_tile = wp.tile_transpose(L_tile)
-                        wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
-
-            wp.tile_upper_solve_inplace(wp.tile_transpose(L_diag), rhs_tile)
-            wp.tile_store(x_i, rhs_tile, offset=(i, 0))
-
-    # Return the kernel function
     return llt_blocked_solve_inplace_kernel
 
 
