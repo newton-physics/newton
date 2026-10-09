@@ -1786,6 +1786,13 @@ add_example_test(
 )
 add_example_test(
     TestControllersExamples,
+    name="controllers.example_controller_admittance_surface_following",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 800},
+    use_viewer=True,
+)
+add_example_test(
+    TestControllersExamples,
     name="controllers.example_controller_differential_ik",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 100},
