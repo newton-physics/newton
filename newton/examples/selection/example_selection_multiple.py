@@ -1,15 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Selection Multiple Articulations
-#
-# Shows how to control multiple articulation per world in a single ArticulationView.
-#
-# Command: python -m newton.examples selection_multiple
-#          python -m newton.examples selection_multiple --solver kamino
-#
-###########################################################################
+"""Control and reset multiple ant articulations per world with one ArticulationView."""
 
 from __future__ import annotations
 
@@ -18,6 +10,17 @@ import warp as wp
 import newton
 import newton.examples
 from newton.selection import ArticulationView
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "8 identical setups appear consisting of a floating stack of 3 Ants.",
+        "The ants are rotating around the Z axis at different speeds and drop on the ground plane.",
+        "They are then reset to their initial position.",
+        "All setups behave differently and their behavior differs at every reset.",
+    ),
+    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
+}
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False

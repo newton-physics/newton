@@ -1,18 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Selection Articulations
-#
-# Demonstrates batch control of multiple articulated robots using
-# ArticulationView. This example spawns ant and humanoid robots across
-# multiple worlds, applies random forces to their joints, and
-# performs selective resets on subsets of worlds.
-#
-# Command: python -m newton.examples selection_articulations
-#          python -m newton.examples selection_articulations --solver kamino
-#
-###########################################################################
+"""Batch-control ant and humanoid articulations and selectively reset worlds."""
 
 from __future__ import annotations
 
@@ -21,6 +10,16 @@ import warp as wp
 import newton
 import newton.examples
 from newton.selection import ArticulationView
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "8 identical setups appear consisting of a floating MuJoCo humanoid on top of a floating ant.",
+        "Both robots fall down on the ground and are then reset to their initial position.",
+        "All setups behave differently.",
+    ),
+    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
+}
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False

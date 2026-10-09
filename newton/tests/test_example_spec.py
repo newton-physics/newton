@@ -153,6 +153,7 @@ _EXAMPLE_SPEC = {{
         argv = ["newton.examples", "--describe", "basic_pendulum"]
         with (
             mock.patch.object(sys, "argv", argv),
+            mock.patch("newton.examples._spec.load_example_spec", return_value=None),
             contextlib.redirect_stderr(error),
             self.assertRaises(SystemExit) as exit_context,
         ):

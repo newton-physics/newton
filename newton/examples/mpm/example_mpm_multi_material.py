@@ -1,12 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Drop three differently colored MPM materials and compare their deformation."""
+
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "3 different volumes of particles having different colors drop to the ground.",
+        "Particles are not exploding and drop nicely.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

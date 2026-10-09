@@ -1,17 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Diffsim Bear
-#
-# Trains a tetrahedral mesh bear to run. Feeds 8 time-varying input
-# phases as inputs into a single-layer fully connected network with a tanh
-# activation function. Interprets the output of the network as tet
-# activations, which are fed into Newton's soft mesh model. This is
-# simulated forward in time and then evaluated based on the center of mass
-# momentum of the mesh.
-#
-###########################################################################
+"""Train a tetrahedral soft bear to locomote using a neural network that drives element activations."""
 
 import math
 import os
@@ -24,6 +14,17 @@ from pxr import Usd, UsdGeom
 import newton
 import newton.examples
 from newton.tests.unittest_utils import most
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A deformable bear is standing on the ground plane.",
+        "It gradually learns how to run.",
+        "It may take a few minutes until getting a convincing running bear.",
+        "The loss is plotted on the right side of the window.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 PHASE_COUNT = 8
 PHASE_STEP = (2.0 * math.pi) / PHASE_COUNT

@@ -1,15 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Domino Spiral
-#
-# Places dominoes along a spiral and tilts the first one to start a
-# contact-driven chain reaction.
-#
-# Command: python -m newton.examples domino_spiral
-#
-###########################################################################
+"""Start a contact-driven chain reaction by tipping the first domino in a spiral."""
 
 from __future__ import annotations
 
@@ -19,6 +11,16 @@ import warp as wp
 
 import newton
 import newton.examples
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Thirty dominoes stand along a spiral, with the first tilted to initiate contact.",
+        "Toppling propagates along the spiral through contact between neighboring dominoes.",
+        "The fallen dominoes remain on the ground without explosive scattering.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 NUM_DOMINOES = 30
 DOMINO_SPACING = 0.12

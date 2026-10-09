@@ -1,23 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Heightfield
-#
-# Demonstrates heightfield terrain with objects dropped onto it.
-# Supports XPBD, MuJoCo, and Kamino DVI solvers.
-#
-# Command: uv run -m newton.examples basic_heightfield
-# MuJoCo: uv run -m newton.examples basic_heightfield --solver mujoco
-# Kamino DVI: uv run -m newton.examples basic_heightfield --solver kamino
-#
-###########################################################################
+"""Drop spheres onto sinusoidal heightfield terrain using rigid-body contact."""
 
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Five spheres start above a wavy heightfield and drop onto its surface.",
+        "Spheres roll along the terrain; some may roll off its edges while others come to rest on the surface.",
+        "Spheres that remain on the terrain settle without persistent visible contact jitter.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

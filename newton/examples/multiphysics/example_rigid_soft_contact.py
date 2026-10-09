@@ -1,14 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Rigid Soft Contact
-#
-# Shows how to set up a rigid sphere colliding with a soft FEM beam.
-#
-# Command: uv run -m newton.examples rigid_soft_contact
-#
-###########################################################################
+"""Drop a rigid sphere onto an oscillating deformable FEM beam."""
 
 import numpy as np
 import warp as wp
@@ -18,6 +11,17 @@ import newton
 import newton.examples
 from newton.solvers import SolverKamino, SolverMuJoCo, SolverSemiImplicit, SolverVBD, SolverXPBD
 from newton.viewer import ViewerBase
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "An orange ball falls on a deformable cuboid",
+        "The deformable cuboid is vibrating/oscillating before the ball hits it.",
+        "The ball bounces off the cuboid and rolls off screen.",
+        "The cuboid approaches rest over time.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 GRID_DIM_X = 20
 GRID_DIM_Y = 10

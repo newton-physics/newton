@@ -1,16 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example IK Franka (positions + rotations)
-#
-# Inverse kinematics on a Franka FR3 arm targeting the TCP (fr3_hand_tcp).
-# - Single IKObjectivePosition + IKObjectiveRotation
-# - Gizmo controls the TCP target (with viewer.log_gizmo)
-# - On gizmo release, target snaps back to the solved TCP pose
-#
-# Command: python -m newton.examples ik_franka
-###########################################################################
+"""Track position and orientation targets for a Franka FR3 tool center point using IK."""
 
 import warp as wp
 
@@ -18,6 +9,16 @@ import newton
 import newton.examples
 import newton.ik as ik
 import newton.utils
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A fixed-base Franka arm appears with a gizmo at its gripper.",
+        "Left-drag and rotate the gizmo: the arm tracks reachable target poses without disconnected links.",
+        "When released, the target snaps back to the solved tool-center-point pose.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

@@ -1,15 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Viewer
-#
-# Shows how to use the Newton Viewer class to visualize various shapes
-# and line instances without a Newton model.
-#
-# Command: python -m newton.examples basic_viewer
-#
-###########################################################################
+"""Render animated shapes and line instances directly, without a Newton simulation model."""
 
 import math
 
@@ -19,6 +11,19 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Six floating shapes appear from left to right: sphere, box, cone, cylinder, capsule, "
+        "and bunny; they move back and forth.",
+        "The Custom UI text section provides Time and Spacing sliders that change animation time and shape spacing.",
+        "With the GL renderer, Renderer Settings controls visibly affect exposure, diffuse "
+        "brightness, specular highlights, shadow radius and extents, and spotlight "
+        "illumination.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

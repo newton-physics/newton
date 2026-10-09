@@ -1,16 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Softbody Dropping to Cloth
-#
-# This simulation demonstrates a volumetric soft body (tetrahedral grid)
-# dropping onto a cloth sheet. The soft body uses Neo-Hookean elasticity
-# and deforms on impact with the cloth.
-#
-# Command: python -m newton.examples.multiphysics.example_softbody_dropping_to_cloth
-#
-###########################################################################
+"""Drop a Neo-Hookean soft grid onto a suspended cloth sheet and resolve deformation on impact."""
 
 import numpy as np
 import warp as wp
@@ -19,6 +10,15 @@ from newton.solvers.experimental.coupled import ModelView, SolverCoupledProxy
 import newton
 import newton.examples
 from newton.solvers import SolverVBD
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A deformable box is dropped on an extended piece of cloth.",
+        "The deformable box is bouncing several times on the cloth.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

@@ -1,20 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Contact Sensor
-#
-# Shows how to use the SensorContact class to evaluate contact forces,
-# including per-counterpart breakdowns.
-# The flap has a contact sensor registering the total contact force of
-# the objects on top. The plates' sensors register per-counterpart forces
-# for the cube and the ball to detect which object touched which plate. Each
-# plate will light up when touched by the matching object.
-#
-#
-# Command: python -m newton.examples sensor_contact
-#
-###########################################################################
+"""Measure total and per-counterpart contact forces as a ball and cube drop across sensor plates."""
 
 import numpy as np
 import warp as wp
@@ -23,6 +10,20 @@ import newton
 import newton.examples
 from newton.sensors import SensorContact
 from newton.tests.unittest_utils import find_nonfinite_members
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "An orange sphere and blue box start on a flap that rotates downward; the objects fall "
+        "and roll over inclined plates toward the ground.",
+        "The first inclined plate turns blue when touched by the matching box; the second "
+        "turns orange when touched by the matching sphere.",
+        "The scene resets and repeats, clearing previous contact indicators.",
+        "The Flap Contact Force plot updates while the objects contact the flap and returns to "
+        "zero after they leave it.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

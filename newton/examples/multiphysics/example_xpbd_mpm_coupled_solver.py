@@ -1,17 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example XPBD-MPM Coupled Solver
-#
-# XPBD point particles fall into an implicit-MPM granular cube through
-# SolverCoupledProxy's particle proxy path.  The MPM view treats XPBD particles
-# as transfer-active proxy particles: they participate in P2G/G2P momentum
-# exchange, but they do not contribute material stress.
-#
-# Command: python -m newton.examples xpbd_mpm_coupled_solver
-#
-###########################################################################
+"""XPBD particles fall onto an MPM cube and exchange momentum through proxy particles."""
 
 from __future__ import annotations
 
@@ -22,6 +12,18 @@ from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledProx
 import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM, SolverXPBD
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "XPBD point particles appear above an implicit-MPM granular cube.",
+        "The XPBD particles fall into the MPM granular cube.",
+        "The XPBD particles participate in momentum exchange with the MPM material through proxy coupling.",
+        "The XPBD particles and MPM particles should remain bounded and above the ground.",
+        "Particle velocities should remain finite and within a reasonable range.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 @wp.kernel(enable_backward=False)

@@ -1,16 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Panda Hydro
-#
-# Shows how to set up a pick-and-place manipulation simulation using a
-# Franka Panda arm with SDF hydroelastic contacts and inverse kinematics.
-# Supports different scene configurations: pen or cube.
-#
-# Command: python -m newton.examples panda_hydro --scene pen --world-count 1
-#
-###########################################################################
+"""Perform Franka Panda pick-and-place with hydroelastic contact and IK."""
 
 import argparse
 import copy
@@ -27,6 +18,27 @@ import newton.ik as ik
 import newton.usd
 import newton.utils
 from newton.geometry import HydroelasticSDF
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Two worlds show a Franka arm, a support box, a cup, and the selected grasp object.",
+        "The arm lifts and transports the object while the cup remains upright.",
+    ),
+    "runs": (
+        {
+            "args": ("--world-count", "2", "--scene", "cube"),
+            "success_criteria": ("The arm grasps the cube and releases it on top of the cup.",),
+        },
+        {
+            "args": ("--world-count", "2", "--scene", "pen"),
+            "success_criteria": (
+                "The arm grasps the pen, brings it above the cup, loosens its grip to let "
+                "the pen rotate downward, then drops it inside the cup.",
+            ),
+        },
+    ),
+}
 
 
 class SceneType(Enum):

@@ -1,18 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example MuJoCo Sleeping
-#
-# Drops four nearby stacks of ants and visualizes MuJoCo Warp's sleeping
-# islands. The stacks topple toward one another in a shared world, allowing
-# their islands to merge. Awake articulations use Newton's display palette,
-# with a shared color for every tree in the same constraint island. Sleeping
-# islands are gray.
-#
-# Command: python -m newton.examples mujoco_sleeping
-#
-###########################################################################
+"""Visualize sleeping constraint islands as nearby stacks of ant robots topple and interact."""
 
 from __future__ import annotations
 
@@ -24,6 +13,17 @@ import warp as wp
 import newton
 import newton.examples
 from newton.solvers import SolverMuJoCo
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Four nearby ant stacks topple toward one another in a shared world.",
+        "Awake articulations in the same constraint island share a display color; sleeping islands become gray.",
+        "After settling, sleeping bodies remain still; perturbing a body wakes the affected "
+        "island and restores its active coloring.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 STACK_COUNT = 4
 ARTICULATIONS_PER_STACK = 5

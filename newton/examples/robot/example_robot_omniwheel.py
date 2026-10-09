@@ -18,12 +18,7 @@ _EXAMPLE_SPEC = {
         "The warehouse robot does not fall through the ground or become unstable during direction changes.",
         "The ballbot remains upright, supported by its ball, and does not visibly separate from it.",
     ),
-    "runs": (
-        {
-            "args": (),
-            "success_criteria": (),
-        },
-    ),
+    "runs": ({"args": (), "success_criteria": ()},),
 }
 
 

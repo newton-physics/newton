@@ -1,13 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cloth Rollers
-#
-# A rolled cloth mesh that unrolls as the inner seam rotates.
-# Command: uv run -m newton.examples cloth_rollers
-#
-###########################################################################
+"""Transfer a rolled cloth sheet between two driven rollers."""
 
 import math
 
@@ -17,6 +11,16 @@ import warp as wp
 import newton
 import newton.examples
 from newton import ParticleFlags
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "One roller initially carries the cloth while the other is empty.",
+        "Rotation transfers cloth from the full roller to the empty one without visible "
+        "tearing, explosive stretching, or persistent interpenetration.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 @wp.kernel

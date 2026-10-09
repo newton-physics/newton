@@ -1,12 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Viscous fluid flowing through a funnel using MPM.
-
-A funnel-shaped mesh collider is filled with viscous fluid particles that
-flow out through a narrow aperture at the bottom, demonstrating viscoplastic
-material behavior with mesh collisions.
-"""
+"""Drain viscous MPM material through a narrow funnel onto the ground."""
 
 import numpy as np
 import warp as wp
@@ -14,6 +9,16 @@ import warp as wp
 import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A static funnel is floating above the ground and a flow of particles is going out of the funnel.",
+        "The flow of particles is behaving as a viscous flow and creates a pile on the ground.",
+        "The pile of particles is slowly spreading.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 TUBE_OPACITY = 0.5
 

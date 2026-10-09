@@ -1,18 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example VBD Soft Contact
-#
-# Each supported rigid shape type gets its own cloth bag so that
-# particle-rigid (soft) contacts can be inspected in isolation.
-# The bags are laid out in a row; bodies settle under gravity and are
-# then lifted, making it easy to spot which shape type causes
-# instability.
-#
-# Command: python -m newton.examples vbd_soft_rigid_contact
-#
-###########################################################################
+"""Example VBD Soft Contact
+
+Each supported rigid shape type gets its own cloth bag so that
+particle-rigid (soft) contacts can be inspected in isolation.
+The bags are laid out in a row; bodies settle under gravity and are
+then lifted, making it easy to spot which shape type causes
+instability.
+
+Command: python -m newton.examples vbd_soft_rigid_contact
+"""
 
 import os
 
@@ -23,6 +21,17 @@ from pxr import Usd, UsdGeom
 import newton
 import newton.examples
 from newton import ParticleFlags
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Six cloth bags each contain a different rigid shape: mesh, cone, sphere, box, capsule, or cylinder.",
+        "The shapes fall, bounce against the bags, and approach rest without passing through the fabric.",
+        "After 120 simulation frames of settling, the bags lift and carry their contents; "
+        "inspect for renewed contact jitter.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 PARAMS = {
     "shape_names": ["mesh", "cone", "sphere", "box", "capsule", "cylinder"],

@@ -1,15 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Balance Bird
-#
-# Balances a small procedural toy body on a narrow pedestal. The body is
-# built from primitive shapes so the example has no external mesh asset.
-#
-# Command: python -m newton.examples balance_bird
-#
-###########################################################################
+"""Balance a procedural toy bird on a narrow pedestal using rigid contact."""
 
 from __future__ import annotations
 
@@ -17,6 +9,15 @@ import warp as wp
 
 import newton
 import newton.examples
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The bird remains balanced upright on the pedestal in the undisturbed run.",
+        "The body does not drift off its support or fall through the pedestal.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 PEDESTAL_BOTTOM_RADIUS = 0.08
 PEDESTAL_TOP_RADIUS = 0.006

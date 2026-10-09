@@ -1,18 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example cloth H1 (cloth-robot interaction)
-#
-# The H1 robot in a jacket waves hello to us, powered by the Style3D solver
-# for cloth and driven by an IkSolver for robot kinematics.
-#
-# Demonstrates how to leverage interpolated robot kinematics within the
-# collision processing pipeline and feed the results to the cloth solver.
-#
-# Command: python -m newton.examples cloth_h1
-#
-###########################################################################
+"""Animate an H1 robot waving in a jacket using inverse kinematics and Style3D cloth.
+
+Interpolated robot kinematics supply collision geometry to the cloth solver.
+"""
 
 import numpy as np
 import warp as wp
@@ -24,6 +16,16 @@ import newton.ik as ik
 import newton.usd
 import newton.utils
 from newton.solvers import style3d
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "An H1 humanoid wears a jacket while waving its arms, then returns to a resting pose.",
+        "The jacket follows the robot motion and drapes around it without obvious body "
+        "penetration, tearing, or explosive deformation.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

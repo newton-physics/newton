@@ -1,19 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot DR Legs
-#
-# Shows how to simulate DR Legs with multiple worlds using SolverKamino.
-#
-# Command: python -m newton.examples kamino_robot_dr_legs --world-count 16
-#
-###########################################################################
+"""Simulate the articulated DR Legs mechanism with SolverKamino."""
 
 import warp as wp
 
 import newton
 import newton.examples
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A torso-free biped with complex leg linkages appears.",
+        "Right-drag its movable bodies: leg joints remain connected and the mechanism responds "
+        "without explosive motion.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

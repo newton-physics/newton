@@ -1,18 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Soft Body Franka
-#
-# Demonstrates a Franka Panda robot grasping a deformable rubber duck
-# on a table. The robot is positioned via Newton's GPU IK solver;
-# Featherstone is used as a kinematic integrator to produce proper
-# body velocities for VBD friction. The duck is a tetrahedral mesh
-# simulated with VBD.
-#
-# The simulation runs in meter scale.
-#
-###########################################################################
+"""Grasp and release a tetrahedral rubber duck with a Franka arm.
+
+GPU IK positions the arm; Featherstone supplies body velocities for VBD
+friction. The deformable duck simulation uses meter scale.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +19,16 @@ import newton.ik as ik
 import newton.utils
 from newton import ModelBuilder, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A setup appears with a Franka robotic arm and a table with a rubber duck on it.",
+        "The Franka arm starts to move and catch the rubber duck, raise it, and then drop it nicely on the table.",
+        "The rubber duck is behaving as a softbody.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 DUCK_OPACITY = 0.55
 

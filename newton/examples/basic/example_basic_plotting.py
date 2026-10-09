@@ -1,25 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Plotting
-#
-# Shows how to access and plot per-step simulation diagnostics from the
-# MuJoCo solver. This is useful for debugging solver performance, energy
-# conservation, and contact behavior.
-#
-# The example loads a humanoid model that falls under gravity and collides
-# with the ground, collecting per-step metrics:
-#   - Solver iteration count (max across worlds — worst-case effort)
-#   - Kinetic and potential energy (world 0 — replicated worlds are identical)
-#   - Active constraint count (world 0 — replicated worlds are identical)
-#
-# Worlds are deterministic replicates, so per-world values are identical;
-# iteration count is reported as a max to surface worst-case solver cost.
-#
-# Command: python -m newton.examples basic_plotting --world-count 4
-#
-###########################################################################
+"""Plot per-step MuJoCo solver effort, energy, and active constraints for replicated falling humanoids.
+
+Iteration count is the maximum across worlds; energy and constraint counts
+are measured in world 0.
+"""
 
 import warnings
 
@@ -28,6 +14,19 @@ import warp as wp
 
 import newton
 import newton.examples
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Four humanoids fall onto the ground in the default run.",
+        "The example panel updates the step, solver iterations, kinetic energy, potential "
+        "energy, and active constraints.",
+        "Four live scalar plots show solver iterations, kinetic energy, potential energy, and active constraints.",
+        "Picking and moving a humanoid in world 0 changes the energy and constraint plots; "
+        "solver effort reflects the maximum across worlds.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

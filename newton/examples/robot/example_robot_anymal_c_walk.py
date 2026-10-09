@@ -1,15 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot ANYmal C Walk
-#
-# Shows how to simulate ANYmal C using SolverMuJoCo and control it with a
-# PhysX-trained policy exported to ONNX and run with Warp-NN.
-#
-# Command: python -m newton.examples robot_anymal_c_walk
-#
-###########################################################################
+"""Walk ANYmal C over rough terrain with an ONNX policy evaluated by Warp-NN."""
 
 import numpy as np
 import warp as wp
@@ -19,6 +11,12 @@ import newton
 import newton.examples
 import newton.utils
 from newton.examples.robot.onnx_policy_utils import validate_policy_io_shapes
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": ("An Anymal robot is walking on a rough terrain.",),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]

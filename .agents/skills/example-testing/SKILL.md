@@ -19,12 +19,13 @@ them pass or infer acceptance from a clean exit.
    device/display checks, and launch commands. Inventory examples from the
    installed artifact. For a requested full suite, retain every inventory entry
    in the report, including blocked and untested examples and requested variants.
-3. Read [criteria.md](references/criteria.md). Apply maintained example criteria
-   and explicit user overrides, recording their source. This initial skill has
-   **no example-specific acceptance criteria**. Without criteria, execute useful
-   setup/interaction smoke checks within the requested scope, report coverage
-   as incomplete, and request the missing expected behaviors. Never invent a
-   release pass or carry a previous run's observations forward as current results.
+3. Read [criteria.md](references/criteria.md). Extract each example's description,
+   common criteria, and required run variants with `--describe`; expectations live
+   beside the example implementation. Apply explicit user overrides and record
+   both artifact and criteria revisions. Follow the pinned-source fallback for
+   older wheels without metadata. Missing or contradictory criteria leave the
+   affected acceptance checks incomplete; continue independent checks. Never
+   infer a release pass or reuse old observations as current results.
 4. Establish a working capture/input path before a large campaign. The proven
    path is the native GL viewer on Linux X11, screenshots inspected by the agent,
    and real mouse/keyboard events. If using another environment/backend, verify

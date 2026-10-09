@@ -1,19 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Diffsim Soft Body
-#
-# Shows how to use Newton to optimize for the material parameters of a soft body,
-# such that it bounces off the wall and floor in order to hit a target.
-#
-# This example uses the built-in wp.Tape() object to compute gradients of
-# the distance to target (loss) w.r.t the material parameters, followed by
-# a simple gradient-descent optimization step.
-#
-# Command: python -m newton.examples diffsim_soft_body
-#
-###########################################################################
+"""Optimize soft-body material parameters so a bouncing body reaches a target."""
 
 import numpy as np
 import warp as wp
@@ -23,6 +11,17 @@ import newton
 import newton.examples
 from newton.tests.unittest_utils import most
 from newton.utils import bourke_color_map
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A deformable box is bouncing on the ground plane then on a wall and tries to reach a "
+        "floating target (black box).",
+        "All past trajectories are drawn on the screen.",
+        "The deformable box is becoming increasingly good at reaching the target.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 @wp.kernel

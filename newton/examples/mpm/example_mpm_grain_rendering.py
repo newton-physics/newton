@@ -1,12 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Render a collapsing granular column with multiple visual points per simulation particle."""
+
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": ("A column of particles collapses on the ground floor creating a circular pile of particles.",),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

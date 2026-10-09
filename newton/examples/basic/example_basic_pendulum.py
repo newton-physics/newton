@@ -1,21 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Pendulum
-#
-# Shows how to set up a simulation of a simple double pendulum using the
-# newton.ModelBuilder() class.
-#
-# Command: python -m newton.examples basic_pendulum --solver xpbd
-#          python -m newton.examples basic_pendulum --solver kamino
-#
-###########################################################################
+"""Simulate a double pendulum assembled from two rigid links and revolute joints."""
 
 import warp as wp
 
 import newton
 import newton.examples
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The two-link pendulum swings back and forth with both joints connected.",
+        "Motion stays bounded and in the pendulum plane without explosive separation.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

@@ -1,19 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Diffsim Ball
-#
-# Shows how to use Newton to optimize the initial velocity of a particle
-# such that it bounces off the wall and floor in order to hit a target.
-#
-# This example uses the built-in wp.Tape() object to compute gradients of
-# the distance to target (loss) w.r.t the initial velocity, followed by
-# a simple gradient-descent optimization step.
-#
-# Command: python -m newton.examples diffsim_ball
-#
-###########################################################################
+"""Optimize a bouncing particle initial velocity to reach a target using Warp autodifferentiation."""
+
 import numpy as np
 import warp as wp
 
@@ -21,6 +10,17 @@ import newton
 import newton.examples
 from newton.tests.unittest_utils import assert_np_equal
 from newton.utils import bourke_color_map
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A ball bounces off the ground and wall toward a floating target, with previous "
+        "trajectories retained in the view.",
+        "Training improves target accuracy and the loss plot shows the optimization trend.",
+        "When the gradient check runs, numeric and analytic gradients agree within the example check tolerance.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 @wp.kernel

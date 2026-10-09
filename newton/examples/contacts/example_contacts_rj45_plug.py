@@ -1,17 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example SDF RJ45 Plug-Socket Insertion
-#
-# Use the translation gizmo to move the plug toward the socket.
-# Click an axis arrow to slide along one axis, or a plane square
-# for two-axis motion. The latch deflects on entry and locks
-# the plug once fully inserted.
-#
-# Command: uv run -m newton.examples contacts_rj45_plug
-#
-###########################################################################
+"""Insert and release a latched RJ45 plug using SDF contact and a translation gizmo."""
 
 import dataclasses
 
@@ -24,6 +14,18 @@ import newton.examples
 import newton.usd
 from newton.math import quat_between_vectors_robust
 from newton.solvers import SolverVBD
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A cable-attached RJ45 plug and matching socket appear.",
+        "Drag the translation gizmo along the insertion axis: the latch deflects and the plug seats in the socket.",
+        "The seated latch prevents simply withdrawing the plug.",
+        "Depress the latch and withdraw the plug using the gizmo; the plug releases without "
+        "passing through the socket walls.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 CONTACT_KE = 1.0e5
 CONTACT_KD = 0.0

@@ -1,24 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Rigid-VBD Coupled Solver
-#
-# Rigid boxes and an articulated pendulum chain (driven by MuJoCo or Kamino)
-# interact with a cloth sheet and several soft bodies (simulated by
-# VBD).  Contact forces from the deformables are fed back to the
-# rigid bodies, causing them to bounce and settle realistically.
-#
-# This example builds rigid/VBD proxy coupling directly through
-# ``SolverCoupledProxy`` so the generic proxy path exercises the default API.
-#
-# Pass ``--solver vbd`` to run the same scene with a single VBD solver
-# (no coupling) as a reference baseline.
-#
-# Command: python -m newton.examples mujoco_vbd_coupled_solver
-#          python -m newton.examples mujoco_vbd_coupled_solver --solver vbd
-#
-###########################################################################
+"""Rigid boxes and an articulated chain interact with VBD cloth and soft bodies. Proxy coupling feeds contact impulses back to the rigid solver; --solver vbd provides a single-solver reference."""
 
 from __future__ import annotations
 
@@ -31,6 +14,24 @@ from newton.solvers.experimental.coupled import SolverCoupledProxy
 import newton
 import newton.examples
 from newton.solvers import SolverKamino, SolverMuJoCo, SolverVBD
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Rigid boxes and an articulated chain appear above a cloth sheet and several soft bodies.",
+        "The rigid bodies interact with the deformables, bouncing on contact without flying "
+        "apart or excessively penetrating the ground.",
+        "The deformables remain bounded without stretching explosively or sinking through the ground.",
+        "The rigid bodies settle above the ground; inspect the late motion for persistent jitter.",
+    ),
+    "runs": (
+        {
+            "args": (),
+            "success_criteria": ("Deformable contact reactions affect the rigid bodies through proxy coupling.",),
+        },
+        {"args": ("--solver", "vbd"), "success_criteria": ("The same scene runs as a single-solver VBD reference.",)},
+    ),
+}
 
 
 def _add_rigid_solver_arg(parser) -> None:

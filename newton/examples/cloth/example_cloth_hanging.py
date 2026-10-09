@@ -1,21 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Sim Cloth Hanging
-#
-# This simulation demonstrates a simple cloth hanging behavior. A planar cloth
-# mesh is fixed on one side and hangs under gravity, colliding with the ground.
-#
-# Command: python -m newton.examples cloth_hanging (--solver [semi_implicit, style3d, xpbd, vbd])
-#
-###########################################################################
+"""Hang a planar cloth from a fixed edge and let gravity bring it into contact with the ground."""
 
 import warp as wp
 
 import newton
 import newton.examples
 from newton.solvers import style3d
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "For each solver variant, a hanging piece of cloth appears and drops to the ground plane.",
+        "The cloth is much longer than wide.",
+        "The cloth is moving until reaching a stable state.",
+        "It is expected that the behavior is slightly different with every solver.",
+    ),
+    "runs": (
+        {"args": ("--width", "128", "--height", "16", "--solver", "semi_implicit"), "success_criteria": ()},
+        {"args": ("--width", "128", "--height", "16", "--solver", "style3d"), "success_criteria": ()},
+        {"args": ("--width", "128", "--height", "16", "--solver", "xpbd"), "success_criteria": ()},
+        {"args": ("--width", "128", "--height", "16", "--solver", "vbd"), "success_criteria": ()},
+    ),
+}
 
 
 class Example:

@@ -1,16 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Diffsim Drone
-#
-# A drone and its 4 propellers is simulated with the goal of reaching
-# different targets via model-predictive control (MPC) that continuously
-# optimizes the control trajectory.
-#
-# Command: python -m newton.examples diffsim_drone
-#
-###########################################################################
+"""Use differentiable model-predictive control to steer a drone toward successive targets."""
 
 import os
 
@@ -23,6 +14,17 @@ import newton.examples
 from newton.geometry import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_mesh, sdf_plane, sdf_sphere
 from newton.tests.unittest_utils import most
 from newton.utils import bourke_color_map
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A simplified drone appears close to a long pole.",
+        "A target red sphere is present and the drone is moving toward its direction.",
+        "Every time the target is reached, the red sphere changes position and the drone keeps chasing the target.",
+        "The loss is plotted on the right side of the window.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 DEFAULT_DRONE_PATH = newton.examples.get_asset("crazyflie.usd")  # Path to input drone asset
 

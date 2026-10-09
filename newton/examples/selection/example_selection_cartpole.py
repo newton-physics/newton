@@ -1,17 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Selection Cartpole
-#
-# Demonstrates batch control of multiple cartpole worlds using
-# ArticulationView. This example spawns multiple cartpole robots and applies
-# simple random control policy.
-#
-# To limit the number of worlds to render use the max-worlds argument.
-# Command: python -m newton.examples selection_cartpole --world-count 16 --max-worlds 8
-#
-###########################################################################
+"""Apply random actions to batched double-cartpole articulations through ArticulationView."""
 
 from __future__ import annotations
 
@@ -21,6 +11,15 @@ import warp as wp
 import newton
 import newton.examples
 from newton.selection import ArticulationView
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "8 identical setups appear consisting of a double pendulum attached to a rail.",
+        "Random actions are applied to each setup.",
+    ),
+    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
+}
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False

@@ -1,15 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example SDF Mesh Collision
-#
-# Demonstrates nut/bolt mesh collision using SDF (Signed Distance Field).
-#
-# Command: python -m newton.examples nut_bolt_sdf
-#          python -m newton.examples nut_bolt_sdf --solver kamino
-#
-###########################################################################
+"""Demonstrate threaded nut-and-bolt engagement using signed-distance-field contact."""
 
 import tempfile
 from pathlib import Path
@@ -21,7 +13,23 @@ import warp as wp
 import newton
 import newton.examples
 
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Four nut-and-bolt assemblies appear.",
+        "The nuts rotate and descend along the threads toward the ends of the bolts.",
+        "Both solver variants show the same qualitative thread-engagement outcome; exact trajectories need not match.",
+    ),
+    "runs": (
+        {"args": ("--world-count", "4", "--solver", "xpbd"), "success_criteria": ()},
+        {"args": ("--world-count", "4", "--solver", "mujoco"), "success_criteria": ()},
+    ),
+}
+
+
 # Assembly type for the nut and bolt
+
+
 ASSEMBLY_STR = "m20_loose"
 
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"

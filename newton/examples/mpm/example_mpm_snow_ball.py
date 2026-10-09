@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Drop a snow particle ball onto a snow-covered slope and visualize plastic compression."""
+
 import warnings
 
 import numpy as np
@@ -9,6 +11,17 @@ import warp as wp
 import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A curved rigid slope carries a particle layer, with a particle sphere above it.",
+        "The sphere drops onto the slope and triggers a small avalanche toward its bottom.",
+        "Compression from impact shifts particle colors from green toward red; the snow stays "
+        "bounded around the terrain.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 @wp.kernel

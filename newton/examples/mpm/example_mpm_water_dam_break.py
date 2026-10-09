@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Water-like MPM dam break rendered as an extracted surface mesh."""
+"""Collapse a water-like MPM column in a tank and render its extracted surface mesh."""
 
 import argparse
 import warnings
@@ -13,6 +13,17 @@ import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM
 from newton.viewer import ViewerRTX
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The initial water column spreads horizontally through the tank after release.",
+        "A continuous visible water surface follows the flowing material rather than remaining at its initial shape.",
+        "Water remains contained by the tank floor and walls without explosive particle escape.",
+        "With --show-particles, visible particles occupy the same water volume as the extracted surface.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()}, {"args": ("--show-particles",), "success_criteria": ()}),
+}
 
 
 @wp.kernel

@@ -21,14 +21,8 @@ _EXAMPLE_SPEC = {
         "After the capsules disappear, the cables settle without exploding.",
     ),
     "runs": (
-        {
-            "args": ("--no-dahl",),
-            "success_criteria": ("The cables are mostly straight.",),
-        },
-        {
-            "args": (),
-            "success_criteria": ("The cables keep a clear S shape.",),
-        },
+        {"args": ("--no-dahl",), "success_criteria": ("The cables are mostly straight.",)},
+        {"args": (), "success_criteria": ("The cables keep a clear S shape.",)},
         {
             "args": ("--segments", "15"),
             "success_criteria": ("The cables have a more irregular S shape and fewer distinct colors.",),
@@ -37,10 +31,7 @@ _EXAMPLE_SPEC = {
             "args": ("--eps-max", "0.3"),
             "success_criteria": ("The cables retain a less-pronounced S shape than the default run.",),
         },
-        {
-            "args": ("--tau", "10.0"),
-            "success_criteria": ("The cables become mostly straight.",),
-        },
+        {"args": ("--tau", "10.0"), "success_criteria": ("The cables become mostly straight.",)},
     ),
 }
 

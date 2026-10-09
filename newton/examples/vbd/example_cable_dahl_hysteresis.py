@@ -1,30 +1,28 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Dahl Hysteresis Validation
-#
-# Four cantilever cables are driven through slow one-sided cycles:
-#
-#   1. bend elastic: cyclic transverse tip force
-#   2. bend Dahl:    same force, Dahl history enabled
-#   3. twist elastic: cyclic kinematic tip twist
-#   4. twist Dahl:    same kinematic twist, Dahl history enabled
-#
-# The bend pair validates visible force/deflection hysteresis and permanent
-# set. The twist pair validates torque/twist hysteresis in the split twist
-# subspace without the dynamic artifacts of a free moment-driven tip.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_dahl_hysteresis
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_dahl_hysteresis --test --viewer null
-#
-# Verification/report modes:
-#   --cable-dahl-mode {all,bend,twist}   (default: all)
-#
-###########################################################################
+"""Cable Dahl Hysteresis Validation
+
+Four cantilever cables are driven through slow one-sided cycles:
+
+  1. bend elastic: cyclic transverse tip force
+  2. bend Dahl:    same force, Dahl history enabled
+  3. twist elastic: cyclic kinematic tip twist
+  4. twist Dahl:    same kinematic twist, Dahl history enabled
+
+The bend pair validates visible force/deflection hysteresis and permanent
+set. The twist pair validates torque/twist hysteresis in the split twist
+subspace without the dynamic artifacts of a free moment-driven tip.
+
+Run interactively:
+  uv run --extra examples python -m newton.examples.vbd.example_cable_dahl_hysteresis
+
+Run as a test:
+  uv run --extra examples python -m newton.examples.vbd.example_cable_dahl_hysteresis --test --viewer null
+
+Verification/report modes:
+  --cable-dahl-mode {all,bend,twist}   (default: all)
+"""
 
 import math
 from typing import ClassVar
@@ -35,6 +33,22 @@ import warp as wp
 import newton
 import newton.examples
 from newton.examples.vbd._viewer import node_xyz, set_viewer_camera
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Elastic and Dahl cables follow the prescribed slow loading and unloading cycles.",
+        "Bend comparisons show force/deflection hysteresis and residual set for Dahl relative "
+        "to the elastic reference.",
+        "Twist comparisons show torque/twist hysteresis without substantial unintended bending.",
+        "Inspect the final settling interval separately from the driven cycles.",
+    ),
+    "runs": (
+        {"args": (), "success_criteria": ("Both bend and twist comparison pairs are displayed.",)},
+        {"args": ("--cable-dahl-mode", "bend"), "success_criteria": ("Only the bend comparison pair is displayed.",)},
+        {"args": ("--cable-dahl-mode", "twist"), "success_criteria": ("Only the twist comparison pair is displayed.",)},
+    ),
+}
 
 
 @wp.kernel

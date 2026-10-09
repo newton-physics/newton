@@ -706,7 +706,19 @@ arguments and any additional criteria:
     }
 
 Keep the value static and literal so tooling can inspect it without importing
-the example or initializing optional dependencies. The ``--describe`` command
+the example or initializing optional dependencies. Keep criteria concise and
+specific to the scene; shared viewer, interaction, jitter-capture, and reporting
+procedures live in ``.agents/skills/example-testing/``. A default-only example
+needs just one run entry with empty arguments and additional criteria. Do not
+add simulation methods or QA infrastructure just to supply this metadata.
+
+These are human acceptance criteria, not a guarantee of equivalent automated
+assertions. A successful ``--test`` run does not replace visual inspection.
+When adding or changing examples, update their metadata and run
+``python -m unittest newton.tests.test_example_spec``; the completeness check
+covers the full discovered registry.
+
+The ``--describe`` command
 prints the complete specification to standard output. It emits a Markdown
 document by default and can emit structured JSON for automation:
 

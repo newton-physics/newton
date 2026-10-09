@@ -1,16 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cube Stacking
-#
-# Shows how to set up a simulation of a cube stacking task for multiple
-# worlds using inverse kinematics to set joint target position references
-# for the Franka Emika Franka Panda robot arm.
-#
-# Command: python -m newton.examples ik_cube_stacking --world-count 16
-#
-###########################################################################
+"""Use inverse kinematics and a task state machine to stack three cubes with replicated Franka arms."""
 
 import enum
 import time
@@ -21,6 +12,15 @@ import warp as wp
 import newton
 import newton.examples
 import newton.ik as ik
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "4 identical setups appear consisting of a Franka robotic arm in front of a table with three cubes on it.",
+        "The Franka arm moves and stacks the three cubes together.",
+    ),
+    "runs": ({"args": ("--world-count", "4"), "success_criteria": ()},),
+}
 
 
 class TaskType(enum.IntEnum):

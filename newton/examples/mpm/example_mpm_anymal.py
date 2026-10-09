@@ -1,14 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example MPM ANYmal
-#
-# Shows ANYmal C with a pretrained policy coupled with implicit MPM sand.
-#
-# Example usage (via unified runner):
-#   python -m newton.examples mpm_anymal --viewer gl
-###########################################################################
+"""Walk an ANYmal C with a pretrained policy over sand coupled through implicit MPM."""
 
 import sys
 
@@ -27,6 +20,15 @@ from newton.examples.robot.example_robot_anymal_c_walk import (
 )
 from newton.examples.robot.onnx_policy_utils import validate_policy_io_shapes
 from newton.solvers import SolverImplicitMPM
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "An Anymal robot is walking on a ground covered by particles.",
+        "The particles are reacting realistically to the movement of the robot.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

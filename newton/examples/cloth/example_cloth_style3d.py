@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Drape a shirt around a mannequin using the Style3D cloth solver."""
+
 import warp as wp
 from pxr import Usd
 
@@ -10,6 +12,12 @@ import newton.usd
 import newton.utils
 from newton import Mesh, ParticleFlags
 from newton.solvers import style3d
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": ("A mannequin wearing a shirt appears.",),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 class Example:

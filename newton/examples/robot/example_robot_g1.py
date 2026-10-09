@@ -1,15 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot G1
-#
-# Shows how to set up a simulation of a G1 robot articulation
-# from a USD stage using newton.ModelBuilder.add_usd().
-#
-# Command: python -m newton.examples robot_g1 --world-count 16
-#
-###########################################################################
+"""Load replicated G1 humanoids from USD and simulate independent ground contact."""
 
 import warp as wp
 
@@ -17,6 +9,23 @@ import newton
 import newton.examples
 import newton.utils
 from newton import JointTargetMode
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "G1 humanoids initially stand on the ground, with the displayed world count matching --world-count.",
+        "Right-drag individual robots: robots in separate worlds do not collide with one "
+        "another but interact with their ground plane.",
+        "Without perturbations, robots remain supported and settle without persistent visible jitter.",
+    ),
+    "runs": (
+        {"args": ("--world-count", "3"), "success_criteria": ("Three G1 robots appear.",)},
+        {
+            "args": ("--world-count", "2"),
+            "success_criteria": ("Two G1 robots appear; use this scene for the shared viewer checklist.",),
+        },
+    ),
+}
 
 
 class Example:

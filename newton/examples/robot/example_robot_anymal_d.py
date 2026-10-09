@@ -1,15 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot Anymal D
-#
-# Shows how to simulate Anymal D with multiple worlds using MuJoCo or Kamino.
-#
-# Command: python -m newton.examples robot_anymal_d --world-count 16
-#          python -m newton.examples robot_anymal_d --solver kamino
-#
-###########################################################################
+"""Simulate replicated ANYmal D quadrupeds with independent worlds and ground contact."""
 
 import warp as wp
 
@@ -17,6 +9,16 @@ import newton
 import newton.examples
 import newton.utils
 from newton import JointTargetMode, JointType
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "4 Anymal robots appear standing on the ground.",
+        "The user can grasp every robot with a right click and move them around.",
+        "The robots do not interact with each other but collide properly with the ground plane.",
+    ),
+    "runs": ({"args": ("--world-count", "4"), "success_criteria": ()},),
+}
 
 
 class Example:

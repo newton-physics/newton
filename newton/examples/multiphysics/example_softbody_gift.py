@@ -1,22 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Softbody Gift
-#
-# This simulation demonstrates four stacked soft body blocks with two cloth
-# straps wrapped around them. The blocks fall under gravity, and the cloth
-# straps hold them together.
-#
-# Command: uv run -m newton.examples softbody_gift
-#
-###########################################################################
+"""Hold four falling soft blocks together with two cloth straps."""
 
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A stack of 4 deformable boxes are tied together by a ribbon.",
+        "The stack is dropping on the ground plane and bouncing while maintaining their structure.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
+
 
 # =============================================================================
 # Geometry Helpers

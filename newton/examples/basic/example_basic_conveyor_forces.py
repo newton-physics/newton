@@ -1,20 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Conveyor Forces
-#
-# A multi-belt conveyor circuit transports rigid boxes with a velocity field
-# rather than belt friction: every belt is a static, frictionless surface with
-# an attached constant or pivot velocity field. Each step the per-contact
-# normal forces are read back from the solver and converted into Coulomb-limited
-# tangential body forces, so boxes are carried around the loop, through the
-# 180-degree turn, up the incline, across the differential pair, and back.
-#
-# Command: python -m newton.examples basic_conveyor_forces
-#          python -m newton.examples basic_conveyor_forces --solver kamino
-#
-###########################################################################
+"""Transport boxes around a multi-belt circuit using contact forces and belt velocity fields.
+
+Static frictionless belts provide constant or pivot velocity fields. Solver
+normal forces are converted into Coulomb-limited tangential body forces.
+"""
 
 import math
 
@@ -24,7 +15,20 @@ import warp as wp
 import newton
 import newton.examples
 
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Boxes travel around the circuit, through its turn, up the incline, and across the differential belt pair.",
+        "After startup, every box has moved from its spawn location; the fleet does not stall at belt transitions.",
+        "Boxes remain supported on the circuit without non-finite poses or falling through the floor.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
+
+
 # Velocity field types: a constant world-space velocity, or a rotation about a pivot.
+
+
 VELOCITY_FIELD_TYPE_CONSTANT = 0
 VELOCITY_FIELD_TYPE_PIVOT = 1
 

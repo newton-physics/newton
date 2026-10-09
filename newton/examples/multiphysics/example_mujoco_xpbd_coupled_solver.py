@@ -1,21 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Rigid-XPBD Coupled Solver
-#
-# Rigid boxes and an articulated pendulum chain (driven by MuJoCo or Kamino)
-# interact with a cloth sheet (simulated by XPBD). Contact forces from the
-# deformable side are fed back to the rigid bodies through SolverCoupledProxy's
-# proxy-body coupling path with momentum-based force harvesting.
-#
-# Pass ``--solver xpbd`` to run the same scene with a single XPBD solver
-# (no coupling) as a reference baseline.
-#
-# Command: python -m newton.examples mujoco_xpbd_coupled_solver
-#          python -m newton.examples mujoco_xpbd_coupled_solver --solver xpbd
-#
-###########################################################################
+"""Rigid boxes and an articulated chain interact with XPBD cloth. Proxy coupling feeds contact impulses back to the rigid solver; --solver xpbd provides a single-solver reference."""
 
 from __future__ import annotations
 
@@ -28,6 +14,23 @@ from newton.solvers.experimental.coupled import SolverCoupledProxy
 import newton
 import newton.examples
 from newton.solvers import SolverKamino, SolverMuJoCo, SolverXPBD
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Rigid boxes and an articulated chain appear above a cloth sheet.",
+        "The rigid bodies interact with the deformables, bouncing on contact without flying "
+        "apart or excessively penetrating the ground.",
+        "The deformables remain bounded without stretching explosively or sinking through the ground.",
+    ),
+    "runs": (
+        {
+            "args": (),
+            "success_criteria": ("Deformable contact reactions affect the rigid bodies through proxy coupling.",),
+        },
+        {"args": ("--solver", "xpbd"), "success_criteria": ("The same scene runs as a single-solver XPBD reference.",)},
+    ),
+}
 
 
 def _add_rigid_solver_arg(parser) -> None:

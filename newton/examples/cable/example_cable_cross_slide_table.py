@@ -1,28 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Cross-Slide Table
-#
-# Demonstrates a cable-driven cross-slide table inspired by the Simscape
-# Multibody cable-driven XY table example:
-# https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html
-# The mechanism is laid out on the ground plane: the blue base is fixed, the
-# green carriage moves horizontally, and the beige carriage moves vertically on
-# the green carriage. The cable is driven only by the two blue input pulleys.
-#
-# The sample combines passive revolute pulleys, a closed cable loop, and two
-# commanded input pulleys. The input rotations trace a rectangle with the
-# beige table marker while the solver resolves cable wrapping and contact
-# against the guides.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table --test --viewer null
-#
-###########################################################################
+"""Drive an XY cross-slide table with a closed cable loop and two input pulleys.
+
+The fixed blue base supports green and beige carriages. Input rotations
+command a rectangular path while cable contact resolves wrapping around guides.
+"""
 
 from __future__ import annotations
 
@@ -33,6 +16,16 @@ import warp as wp
 
 import newton
 import newton.examples
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Two blue input pulleys pull the green and beige carriages through a deformable cable loop.",
+        "The beige table moves in the XY plane, tracking the commanded path without losing the cable from its guides.",
+        "Live plots report both blue input rotations, beige table X and Y positions, and tracking error.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 TABLE_RECT_HALF_X = 0.050
 TABLE_RECT_HALF_Y = 0.060

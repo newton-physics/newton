@@ -1,16 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Diffsim Spring Cage
-#
-# A single particle is attached with springs to each point of a cage.
-# The objective is to optimize the rest length of the springs in order
-# for the particle to be pulled towards a target position.
-#
-# Command: python -m newton.examples diffsim_spring_cage
-#
-###########################################################################
+"""Optimize spring rest lengths to pull a caged particle toward a target."""
+
 import numpy as np
 import warp as wp
 
@@ -18,6 +10,16 @@ import newton
 import newton.examples
 from newton.tests.unittest_utils import most
 from newton.utils import bourke_color_map
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A cage of anchor spheres, a spring-connected particle, and a red target appear.",
+        "With --verbose, training iterations and loss values are printed.",
+        "As training converges, the particle approaches its target and loss reaches below 1e-6.",
+    ),
+    "runs": ({"args": ("--verbose",), "success_criteria": ()},),
+}
 
 
 @wp.kernel
