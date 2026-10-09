@@ -62,7 +62,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
             get_right=lambda: (0.0, 1.0, 0.0),
             get_up=lambda: (0.0, 0.0, 1.0),
         )
-        viewer = SimpleNamespace(camera=camera, camera_speed=2.0)
+        viewer = SimpleNamespace(camera=camera, camera_speed=2.0, is_rendering_paused=lambda: False)
         gui = ViewerGui.__new__(ViewerGui)
         gui._viewer = viewer
         gui.ui = None
@@ -86,7 +86,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
             get_right=lambda: (0.0, 1.0, 0.0),
             get_up=lambda: (0.0, 0.0, 1.0),
         )
-        viewer = SimpleNamespace(camera=camera, camera_speed=2.0)
+        viewer = SimpleNamespace(camera=camera, camera_speed=2.0, is_rendering_paused=lambda: False)
         gui = ViewerGui.__new__(ViewerGui)
         gui._viewer = viewer
         gui.ui = None

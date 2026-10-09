@@ -93,7 +93,6 @@ class Example:
             bend_damping=bend_damping,
             label="y_graph",
             wrap_in_articulation=True,
-            body_frame_origin="com",
         )
 
         # Pin one tip capsule (end of the first branch).
@@ -118,7 +117,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
         )
 
         self.state_0 = self.model.state()

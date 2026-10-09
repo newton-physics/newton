@@ -23,6 +23,8 @@ from ..common import (
     warmstart_joint_constraints,
     warmstart_limit_constraints,
 )
+from .apgd import UnilateralAPGD
+from .apgd_kernels import guard_convergence
 from .kernels import (
     _FUSED_BILATERAL_BLOCK,
     _FUSED_INEQUALITY_BLOCK,
@@ -44,7 +46,12 @@ from .kernels import (
     _solve_dvi_inequalities_colored_pgs,
     _unprecondition_dvi_solution,
 )
-from .sparse import SparseDVIPath
+from .sparse import (
+    SparseDVIPath,
+    _compute_sparse_solution_vectors,
+    _factor_sparse_bilateral_block,
+    _solve_sparse_bilateral_block,
+)
 from .sparse_kernels import (
     _color_mapped_dvi_inequalities,
     _map_active_contacts,
@@ -66,10 +73,11 @@ class DVISolver:
     and contact rows enforce Coulomb-cone complementarity after the De Saxce
     velocity correction.
 
-    Bilateral constraints are solved as a direct block when available, while
-    every limit and frictional contact uses one graph-colored projected
-    Gauss-Seidel schedule. Dense and matrix-free sparse problems share the
-    same solution, warm-start, status, and diagnostics contract.
+    Bilateral constraints are solved as a direct block when available.
+    Bounds, limits, and contacts use graph-colored projected Gauss-Seidel
+    by default, or the APGD unilateral subsolver. Dense and
+    matrix-free sparse problems share the same solution, warm-start,
+    status, and diagnostics contract.
     """
 
     Config = DVISolverConfig
@@ -202,6 +210,9 @@ class DVISolver:
         self._joint_bounded_cts_offset = model.joints.bounded_cts_offset
         self._body_inv_mass = model.bodies.inv_m_i
         self._config = self._check_config(model, config)
+        if len({c.unilateral_solver for c in self._config}) != 1:
+            raise ValueError("All worlds must use the same DVI unilateral solver.")
+        self._apgd = None
         self._use_schur_complement = self._config[0].use_schur_complement
         if any(c.use_schur_complement != self._use_schur_complement for c in self._config[1:]):
             raise ValueError("All worlds must use the same DVI Schur-complement configuration.")
@@ -257,6 +268,8 @@ class DVISolver:
         configs = [convert_config_to_struct(c) for c in self._config]
         with wp.ScopedDevice(self._device):
             self._data.config = wp.array(configs, dtype=DVIConfigStruct)
+        if self._config[0].unilateral_solver == "apgd":
+            self._apgd = UnilateralAPGD(self)
 
     def _make_bilateral_solve_schedule(self, configs: list[DVISolver.Config]) -> tuple[bool, ...]:
         """Return host-side repeated bilateral solve points for direct-block DVI."""
@@ -430,6 +443,8 @@ class DVISolver:
                 raise ValueError(f"Invalid warmstart mode: {self._warmstart}")
 
     def _allocate_projection_workspace(self, problem: DualProblem) -> None:
+        if self._config and self._config[0].unilateral_solver == "apgd":
+            return
         with wp.ScopedDevice(self.device):
             if problem.sparse:
                 bilateral_vector_size = (
@@ -479,8 +494,9 @@ class DVISolver:
         alternated with unilateral sweeps. The optional Schur path instead
         eliminates the bilateral response through
         ``D_uu - D_ub * D_bb^-1 * D_bu``. The dense path materializes this
-        operator, while the sparse path applies it as a compact low-rank
-        correction. A final direct bilateral solve recovers consistent joint
+        operator for PGS, while sparse PGS applies a compact low-rank
+        correction. APGD applies the factored bilateral response in each
+        operator product. A final direct bilateral solve recovers consistent joint
         impulses. When no bilateral block exists, the iteration schedule
         applies to the original unilateral operator.
 
@@ -510,10 +526,16 @@ class DVISolver:
                 self._sparse_path.prepare(problem)
             # Apply projected iterations through matrix-free products
             # D * lambda = J * (M^-1 * (J^T * lambda)) + R * lambda.
-            self._sparse_path.solve(problem)
+            if self._apgd is None:
+                self._sparse_path.solve(problem)
+            else:
+                self._solve_apgd(problem)
+                _compute_sparse_solution_vectors(self._sparse_path, problem)
 
         if not problem.sparse:
-            if self._bilateral_solver is not None and self._data.bilateral_operator is not None:
+            if self._apgd is not None:
+                self._solve_apgd(problem)
+            elif self._bilateral_solver is not None and self._data.bilateral_operator is not None:
                 self._solve_with_bilateral_direct_block(problem)
             elif self._can_use_dense_inequality_pgs():
                 self._solve_dense_inequality_pgs(problem)
@@ -582,9 +604,13 @@ class DVISolver:
                 self._data.solution.lambdas,
                 self._data.status,
                 residual_workers,
+                1 if self._apgd is None else 0,
             ],
             device=self.device,
         )
+
+        if self._apgd is not None:
+            wp.launch(guard_convergence, dim=self._size.num_worlds, inputs=[self._data.status], device=self.device)
 
         if self._collect_info:
             wp.copy(self._data.info.status, self._data.status)
@@ -603,6 +629,37 @@ class DVISolver:
             ],
             device=self.device,
         )
+
+    def _solve_apgd(self, problem: DualProblem) -> None:
+        """Replace unilateral PGS phases while retaining the existing bilateral schedule."""
+        if self._bilateral_solver is None:
+            self._apgd.solve(problem)
+            return
+        if problem.sparse:
+            _factor_sparse_bilateral_block(self._sparse_path, problem)
+        else:
+            self._factor_bilateral_block(problem)
+
+        def solve_bilateral(active_dim=None):
+            """Refresh joint impulses using the existing factorization and row masks."""
+            if problem.sparse:
+                _solve_sparse_bilateral_block(self._sparse_path, problem, active_dim=active_dim)
+            else:
+                self._solve_bilateral_block(problem, active_dim=active_dim)
+
+        solve_bilateral()
+        if not self._has_unilateral_constraints:
+            return
+        if self._use_schur_complement:
+            self._apgd.solve(problem)
+        else:
+            for block in range(self._max_alternating_iterations):
+                self._apgd.solve(problem, block_iteration=block)
+                if self._should_solve_bilateral_after_block(block):
+                    self._set_bilateral_active_dim(problem, block)
+                    solve_bilateral(self._data.state.bilateral_active_dim)
+        self._set_bilateral_active_dim(problem, -1)
+        solve_bilateral(self._data.state.bilateral_active_dim)
 
     def _validate_inequality_topology(self) -> None:
         """Require the topology that graph-colored inequality solves consume.

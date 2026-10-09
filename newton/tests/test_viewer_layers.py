@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 import warp as wp
 
 import newton
+from newton._src.viewer.gl.frame_cache import FrameCache
 from newton._src.viewer.viewer import ViewerBase
 from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton._src.viewer.viewer_viser import ViewerViser
@@ -76,6 +77,7 @@ class _MinimalRTXViewer(ViewerRTX):
         self.gui = None
         self._render_result = None
         self._render_products = None
+        self._displayed_frame = FrameCache()
         self._rtx = None
         self._use_ovstage = True
         self._transform_binding = None
