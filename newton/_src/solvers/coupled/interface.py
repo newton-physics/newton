@@ -26,62 +26,7 @@ solver's model view; proxy entries contain the corresponding global proxy id in
 the shared model, while non-proxy entries contain ``-1``. Output force buffers
 passed to harvest hooks are indexed by those global proxy ids.
 
-Supported hook signatures are:
-
-.. code-block:: python
-
-    def coupling_eval_effective_mass(endpoint_kind, endpoint_index, endpoint_local_pos, out) -> None: ...
-
-
-    def coupling_eval_effective_mass_block(
-        endpoint_kind, endpoint_index, endpoint_local_pos, out_mass, out_inertia=None
-    ) -> None: ...
-
-
-    def coupling_notify_input_state_update(state, flags, *, iteration_restart=False, dt=0.0) -> None: ...
-
-
-    def coupling_supports_inertial_property_refresh() -> bool: ...
-
-
-    def coupling_supports_full_surface_soft_contacts() -> bool: ...
-
-
-    def coupling_rewind_proxy_body(
-        body_local_to_proxy_global, state, coupling_forces, body_gravity_acceleration, dt
-    ) -> None: ...
-
-
-    def coupling_rewind_proxy_particle(
-        particle_local_to_proxy_global, state, coupling_forces, particle_gravity_acceleration, dt
-    ) -> None: ...
-
-
-    def coupling_harvest_proxy_wrenches(
-        body_local_to_proxy_global,
-        out_body_f,
-        *,
-        body_qd_before,
-        state,
-        state_out,
-        contacts,
-        dt,
-    ) -> None: ...
-
-
-    def coupling_harvest_proxy_particle_forces(
-        particle_local_to_proxy_global,
-        out_particle_f,
-        *,
-        particle_qd_before,
-        state,
-        state_out,
-        contacts,
-        dt,
-    ) -> None: ...
-
-
-    def coupling_prepare_proxy_contacts(state, contacts, *, contacts_freshly_detected=False): ...
+See :class:`CouplingInterface` for the hook signatures and capability properties.
 """
 
 from __future__ import annotations
@@ -118,10 +63,24 @@ class CouplingInterface:
       Otherwise, the mixin's generic defaults are used.
     - Override a hook and raise :class:`NotImplementedError` when no generic
       default can produce a meaningful result for the solver.
+    - Override capability properties to opt into supported coupling behavior.
+      Capability reads must be cheap, side-effect-free, and return a boolean.
+      Defining a capability as a method raises :class:`TypeError` at subclass
+      definition time; use ``@property`` on the override instead.
 
     ``EndpointKind`` stays nested because it is coupling-specific. Input update
     notifications reuse :class:`newton.StateFlags`.
     """
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        for name in (
+            "coupling_supports_inertial_property_refresh",
+            "coupling_supports_full_surface_soft_contacts",
+        ):
+            # Resolve inherited overrides too: a bound method would be truthy.
+            if callable(getattr(cls, name)):
+                raise TypeError(f"{cls.__name__}.{name} must be a boolean property; add @property to the override.")
 
     class EndpointKind(IntEnum):
         """Kinds of model endpoints addressed by coupling hooks."""
@@ -245,16 +204,18 @@ class CouplingInterface:
         """
         del state, flags, iteration_restart, dt
 
+    @property
     def coupling_supports_inertial_property_refresh(self) -> bool:
         """Return whether inertial property refresh is safe during graph capture.
 
         Solvers that read mass and inertia arrays directly, or can refresh
         their derived inertial buffers with device work only, should override
-        this to return ``True`` and provide a graph-capturable implementation
-        of :meth:`notify_model_changed` for BODY_INERTIAL_PROPERTIES.
+        this property to return ``True`` and provide a graph-capturable
+        implementation of :meth:`notify_model_changed` for BODY_INERTIAL_PROPERTIES.
         """
         return False
 
+    @property
     def coupling_supports_full_surface_soft_contacts(self) -> bool:
         """Return whether the solver consumes edge and face soft contacts."""
         return False
