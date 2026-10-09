@@ -318,7 +318,7 @@ def _capture_frame(viewer, recording: _VideoRecording) -> bool:
         return False
 
     if recording.img_idx >= recording.num_skipped_frames:
-        frame = viewer.get_frame(target_image=recording.frame_buffer)
+        frame = viewer.get_frame(output=recording.frame_buffer)
         if recording.frame_buffer is None:
             recording.frame_buffer = frame
 

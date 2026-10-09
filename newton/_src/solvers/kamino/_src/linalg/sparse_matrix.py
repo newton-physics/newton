@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
 import warp as wp
-from warp.types import type_size_in_bytes
 
 from ..core.types import FloatType, IntType
 from .core import DenseSquareMultiLinearInfo
@@ -59,6 +58,8 @@ class BlockDType(Generic[BlockScalarType]):
         Args:
             dtype: The underlying scalar Warp data-type of each sparse block.
             shape: The shape of each sparse block as an integer (for vectors) or a tuple of integers (for matrices).
+                1d shapes are interpreted as per row-major format, i.e. shape (n,) corresponds to a 2d shape of
+                (1, n) in the final matrix. A 2d shape (n, 1) must be passed explicitly for column vectors.
                 If not provided, defaults to scalar blocks.
 
         Raises:
@@ -95,7 +96,7 @@ class BlockDType(Generic[BlockScalarType]):
         self._dtype: type[BlockScalarType] = dtype
         """The underlying data type of the sparse blocks."""
 
-        self._shape: int | tuple[int] | tuple[int, int] = shape
+        self._shape: tuple[()] | tuple[int] | tuple[int, int] = shape
         """The shape of each sparse block."""
 
     @property
@@ -104,16 +105,33 @@ class BlockDType(Generic[BlockScalarType]):
         return self._dtype
 
     @property
-    def shape(self) -> int | tuple[int] | tuple[int, int]:
+    def shape(self) -> tuple[()] | tuple[int] | tuple[int, int]:
         """Returns the shape of each sparse block."""
         return self._shape
 
     @property
+    def shape_2d(self) -> tuple[int, int]:
+        """Returns the explicit 2d shape of each sparse block, including length-1 dimensions."""
+        if isinstance(self._shape, tuple):
+            if len(self._shape) == 0:
+                block_nrows = 1
+                block_ncols = 1
+            elif len(self._shape) == 1:
+                block_nrows = 1
+                block_ncols = self._shape[0]
+            elif len(self._shape) == 2:
+                block_nrows = self._shape[0]
+                block_ncols = self._shape[1]
+            else:
+                raise RuntimeError("Unsupported block shape.")
+        else:
+            raise RuntimeError("Unsupported block shape.")
+        return block_nrows, block_ncols
+
+    @property
     def size(self) -> int:
         """Returns the number of elements contained in each sparse block."""
-        if isinstance(self._shape, int):
-            return self._shape
-        elif isinstance(self._shape, tuple):
+        if isinstance(self._shape, tuple):
             size = 1
             for dim in self._shape:
                 size *= dim
@@ -274,79 +292,33 @@ class BlockSparseMatrices(Generic[BlockScalarType, IndexType, BlockType]):
 
     @property
     def max_rows(self) -> wp.array[IndexType]:
-        assert self.max_dims is not None and self.max_dims.ptr is not None
-        index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
-            dtype=self.index_dtype,
-            shape=(self.num_matrices,),
-            ptr=self.max_dims.ptr,
-            strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-        )
+        assert self.max_dims is not None
+        return self.max_dims[:, 0]
 
     @property
     def max_cols(self) -> wp.array[IndexType]:
-        assert self.max_dims is not None and self.max_dims.ptr is not None
-        index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
-            dtype=self.index_dtype,
-            shape=(self.num_matrices,),
-            ptr=self.max_dims.ptr + index_dtype_size_bytes,
-            strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-        )
+        assert self.max_dims is not None
+        return self.max_dims[:, 1]
 
     @property
     def num_rows(self) -> wp.array[IndexType]:
-        assert self.dims is not None and self.dims.ptr is not None
-        index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
-            dtype=self.index_dtype,
-            shape=(self.num_matrices,),
-            ptr=self.dims.ptr,
-            strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-            device=self.device,
-        )
+        assert self.dims is not None
+        return self.dims[:, 0]
 
     @property
     def num_cols(self) -> wp.array[IndexType]:
-        assert self.dims is not None and self.dims.ptr is not None
-        index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
-            dtype=self.index_dtype,
-            shape=(self.num_matrices,),
-            ptr=self.dims.ptr + index_dtype_size_bytes,
-            strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-            device=self.device,
-        )
+        assert self.dims is not None
+        return self.dims[:, 1]
 
     @property
     def nzb_row(self) -> wp.array[IndexType]:
-        assert self.nzb_coords is not None and self.nzb_coords.ptr is not None
-        index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
-            dtype=self.index_dtype,
-            shape=(self.sum_of_num_nzb,),
-            ptr=self.nzb_coords.ptr,
-            strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-            device=self.device,
-        )
+        assert self.nzb_coords is not None
+        return self.nzb_coords[:, 0]
 
     @property
     def nzb_col(self) -> wp.array[IndexType]:
-        assert self.nzb_coords is not None and self.nzb_coords.ptr is not None
-        index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
-        return wp.array(
-            dtype=self.index_dtype,
-            shape=(self.sum_of_num_nzb,),
-            ptr=self.nzb_coords.ptr + index_dtype_size_bytes,
-            strides=(2 * index_dtype_size_bytes,),
-            copy=False,
-            device=self.device,
-        )
+        assert self.nzb_coords is not None
+        return self.nzb_coords[:, 1]
 
     ###
     # Operations
@@ -484,7 +456,7 @@ class BlockSparseMatrices(Generic[BlockScalarType, IndexType, BlockType]):
         self._assert_is_finalized()
 
         # Retrieve the fixed-size block dimensions
-        block_nrows, block_ncols = self._get_block_shape()
+        block_nrows, block_ncols = self.nzb_dtype.shape_2d
 
         # Populate each sparse matrix from the provided dense arrays
         nzb_values_np = np.zeros_like(self.nzb_values.numpy())
@@ -519,7 +491,7 @@ class BlockSparseMatrices(Generic[BlockScalarType, IndexType, BlockType]):
         self._assert_is_finalized()
 
         # Retrieve the fixed-size block dimensions
-        block_nrows, block_ncols = self._get_block_shape()
+        block_nrows, block_ncols = self.nzb_dtype.shape_2d
 
         # Retrieve sparse data from the device
         dims_np = self.dims.numpy()
@@ -576,29 +548,6 @@ class BlockSparseMatrices(Generic[BlockScalarType, IndexType, BlockType]):
     def _assert_is_finalized(self):
         if not self._is_finalized():
             raise RuntimeError("No data has been allocated. Call `finalize()` before use.")
-
-    def _get_block_shape(self) -> tuple[int, int]:
-        """Retrieves the fixed-size block shape as number of rows and columns according to row-major ordering."""
-        # NOTE: Assumes row-major ordering
-        block_shape = self.nzb_dtype.shape
-        if isinstance(block_shape, int):
-            block_nrows = 1
-            block_ncols = block_shape
-        elif isinstance(block_shape, tuple):
-            if len(block_shape) == 0:
-                block_nrows = 1
-                block_ncols = 1
-            elif len(block_shape) == 1:
-                block_nrows = 1
-                block_ncols = block_shape[0]
-            elif len(block_shape) == 2:
-                block_nrows = block_shape[0]
-                block_ncols = block_shape[1]
-            else:
-                raise RuntimeError("Unsupported block shape for NumPy conversion.")
-        else:
-            raise RuntimeError("Unsupported block shape for NumPy conversion.")
-        return block_nrows, block_ncols
 
 
 ###

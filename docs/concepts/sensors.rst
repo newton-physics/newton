@@ -121,10 +121,17 @@ attributes, and usage examples.
 Camera Rays from USD and Calibration Data
 -----------------------------------------
 
+Camera image allocation helpers share the ``allocate_image_`` prefix:
+``color``, ``color_hdr``, ``depth``, ``depth_forward``, ``normal``, ``albedo``,
+and ``shape_index``. These helpers return zero-initialized arrays on the model's
+device. For example, use
+:meth:`~newton.sensors.SensorCamera.allocate_image_color` for a packed RGBA
+buffer.
+
 :class:`~newton.sensors.SensorCamera` renders one view per world-space camera transform passed to
 :meth:`~newton.sensors.SensorCamera.update`. The caller owns the camera-space rays and the per-view transforms.
 The ray bundle for a standard USD pinhole camera can be built directly with
-:meth:`~newton.sensors.SensorCamera.compute_camera_rays_usd_pinhole`, and the matching world-space per-view
+:meth:`~newton.sensors.SensorCamera.compute_camera_rays_pinhole_usd`, and the matching world-space per-view
 transforms with :meth:`~newton.sensors.SensorCamera.compute_camera_transforms_usd` (which converts the USD stage's
 up axis to the model's and composes an optional import ``xform``). For lens models without standard USD attributes,
 read the attributes you use in your pipeline and pass the numeric values into the matching helper:
@@ -142,13 +149,13 @@ read the attributes you use in your pipeline and pass the numeric values into th
    camera.create_default_light()
 
    # Camera-space rays for one 640x480 pinhole camera, on the model device.
-   camera_rays = SensorCamera.compute_camera_rays_usd_pinhole(640, 480, usd_camera, device=model.device)
+   camera_rays = SensorCamera.compute_camera_rays_pinhole_usd(640, 480, usd_camera, device=model.device)
 
    # World-space transform per view, read from the USD camera(s).
    camera_transforms = camera.compute_camera_transforms_usd(usd_camera)
    view_count = camera_transforms.shape[0]
 
-   color = camera.create_color_image_output(view_count, 640, 480)
+   color = camera.allocate_image_color(view_count, 640, 480)
 
    # update() syncs deformable-mesh points from state by default; refit the
    # shape/particle BVHs first on any frame whose geometry moved.

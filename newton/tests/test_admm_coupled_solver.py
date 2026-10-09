@@ -17,6 +17,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.sim.collide import _TRIANGLE_PAIRS_MIN_CAPACITY
 from newton._src.solvers.coupled.interface import CouplingInterface
 from newton.solvers import (
     SolverBase,
@@ -276,9 +277,9 @@ def _build_body_particle_attachment_scene(enabled: bool = True) -> newton.Model:
         inertia=wp.mat33(np.eye(3)),
     )
     particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
-    builder.add_attachment_body_particle(
-        body,
+    builder.add_attachment_particle_body(
         particle,
+        body,
         stiffness=500.0,
         enabled=enabled,
     )
@@ -293,7 +294,7 @@ def _build_two_world_body_particle_attachment_scene() -> newton.Model:
     world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = world.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
     particle = world.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
-    world.add_attachment_body_particle(body, particle, stiffness=500.0)
+    world.add_attachment_particle_body(particle, body, stiffness=500.0)
     world.color()
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -1063,15 +1064,15 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
 
-        with self.assertWarnsRegex(DeprecationWarning, "add_attachment_body_particle"):
+        with self.assertWarnsRegex(DeprecationWarning, "add_attachment_particle_body"):
             attachment = SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=500.0)
 
         self.assertEqual(attachment, 0)
-        self.assertEqual(builder.attachment_body_particle_count, 0)
+        self.assertEqual(builder.attachment_particle_body_count, 0)
 
         builder.color()
         model = builder.finalize(device="cpu")
-        self.assertEqual(model.attachment_body_particle_count, 0)
+        self.assertEqual(model.attachment_particle_body_count, 0)
         self.assertEqual(
             model.custom_frequency_counts[SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_FREQUENCY],
             1,
@@ -1122,7 +1123,7 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
             )
 
         self.assertEqual(solver._admm_rp_groups, [])
-        self.assertEqual(solver.view("both").attachment_body_particle_count, 1)
+        self.assertEqual(solver.view("both").attachment_particle_body_count, 1)
 
     def test_unowned_attachment_endpoint_is_reported(self):
         """Warn about attachment rows that no entry can apply."""
@@ -1281,7 +1282,7 @@ class TestAdmmCollisionDetection(unittest.TestCase):
                     ),
                 )
                 pipeline = solver._admm_collision_pipeline
-                expected_capacity = capacity if capacity is not None else defaults["max_triangle_pairs"].default
+                expected_capacity = capacity if capacity is not None else _TRIANGLE_PAIRS_MIN_CAPACITY
                 expected_factor = (
                     factor if factor is not None else defaults["contact_reduction_hashtable_size_factor"].default
                 )

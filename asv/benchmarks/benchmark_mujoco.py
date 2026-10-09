@@ -11,6 +11,8 @@
 
 
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import numpy as np
 import warp as wp
@@ -31,6 +33,18 @@ else:
 _NEW_LAYOUT_AVAILABLE = hasattr(newton, "use_coord_layout_targets")
 _MAX_BODY_LINEAR_SPEED = 100.0
 _MAX_BODY_ANGULAR_SPEED = 500.0
+
+
+@contextmanager
+def _startup_phase(phase_times: dict[str, float] | None, phase: str) -> Iterator[None]:
+    """Record a phase's duration in seconds, including its device work, if ``phase_times`` is given."""
+    if phase_times is None:
+        yield
+        return
+    start_time = time.perf_counter()
+    yield
+    wp.synchronize_device()
+    phase_times[phase] = time.perf_counter() - start_time
 
 
 def _target_q(owner):
@@ -377,6 +391,8 @@ class Example:
         cone=None,
         fps=600,
         sim_substeps=10,
+        *,
+        startup_phase_times: dict[str, float] | None = None,
     ):
         if _NEW_LAYOUT_AVAILABLE:
             newton.use_coord_layout_targets = True
@@ -398,25 +414,35 @@ class Example:
         if not stage_path:
             stage_path = "example_" + robot + ".usd"
 
-        if builder is None:
-            builder = Example.create_model_builder(robot, world_count, environment, randomize, self.seed)
+        with _startup_phase(startup_phase_times, "model"):
+            if builder is None:
+                builder = Example.create_model_builder(
+                    robot,
+                    world_count,
+                    environment,
+                    randomize,
+                    self.seed,
+                    startup_phase_times=startup_phase_times,
+                )
 
-        # finalize model
-        self.model = builder.finalize()
+            # finalize model
+            with _startup_phase(startup_phase_times, "finalize"):
+                self.model = builder.finalize()
 
-        self.solver = Example.create_solver(
-            self.model,
-            robot,
-            use_mujoco_cpu=use_mujoco_cpu,
-            environment=environment,
-            solver=solver,
-            integrator=integrator,
-            solver_iteration=solver_iteration,
-            ls_iteration=ls_iteration,
-            njmax=njmax,
-            nconmax=nconmax,
-            cone=cone,
-        )
+        with _startup_phase(startup_phase_times, "solver"):
+            self.solver = Example.create_solver(
+                self.model,
+                robot,
+                use_mujoco_cpu=use_mujoco_cpu,
+                environment=environment,
+                solver=solver,
+                integrator=integrator,
+                solver_iteration=solver_iteration,
+                ls_iteration=ls_iteration,
+                njmax=njmax,
+                nconmax=nconmax,
+                cone=cone,
+            )
 
         if stage_path and not headless:
             self.renderer = newton.viewer.ViewerGL()
@@ -542,7 +568,15 @@ class Example:
         self.renderer.end_frame()
 
     @staticmethod
-    def create_model_builder(robot, world_count, environment="None", randomize=False, seed=123) -> newton.ModelBuilder:
+    def create_model_builder(
+        robot,
+        world_count,
+        environment="None",
+        randomize=False,
+        seed=123,
+        *,
+        startup_phase_times: dict[str, float] | None = None,
+    ) -> newton.ModelBuilder:
         rng = np.random.default_rng(seed)
 
         articulation_builder = newton.ModelBuilder()
@@ -572,7 +606,14 @@ class Example:
 
         builder = newton.ModelBuilder()
         builder.rigid_gap = articulation_builder.rigid_gap
-        builder.replicate(articulation_builder, world_count)
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
+        if robot != "cartpole":
+            # Disable all collisions for the cartpole benchmark
+            builder.add_ground_plane()
+
+        with _startup_phase(startup_phase_times, "replication"):
+            builder.replicate(articulation_builder, world_count)
         if randomize:
             njoint = len(articulation_builder.joint_q)
             for i in range(world_count):
@@ -580,11 +621,6 @@ class Example:
                 builder.joint_q[istart + root_dofs : istart + njoint] = rng.uniform(
                     -1.0, 1.0, size=(njoint - root_dofs)
                 ).tolist()
-        builder.default_shape_cfg.ke = 1.0e3
-        builder.default_shape_cfg.kd = 1.0e2
-        if robot != "cartpole":
-            # Disable all collisions for the cartpole benchmark
-            builder.add_ground_plane()
         return builder
 
     @staticmethod

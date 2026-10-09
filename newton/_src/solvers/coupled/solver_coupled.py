@@ -1078,7 +1078,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         if attachment_order is None:
             self._warn_compaction_fallback(
-                cfg, "the selected body-particle attachments do not have a homogeneous world layout"
+                cfg, "the selected particle-body attachments do not have a homogeneous world layout"
             )
             return None
         compact, failure_reason = self._compact_index_lists(
@@ -1244,7 +1244,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.TRIANGLE: list(range(model.tri_count)) if keep_deformables else [],
             model.AttributeFrequency.TETRAHEDRON: list(range(model.tet_count)) if keep_deformables else [],
             model.AttributeFrequency.SPRING: list(range(model.spring_count)) if keep_deformables else [],
-            model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE: attachment_order,
+            model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY: attachment_order,
             model.AttributeFrequency.WORLD: list(range(model.world_count)),
         }
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
@@ -1438,13 +1438,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
     ) -> set[int]:
         """Select attachments whose endpoints are both owned by one entry."""
         model = self.model
-        if model.attachment_body_particle_count == 0:
+        if model.attachment_particle_body_count == 0:
             return set()
-        body = model.attachment_body_particle_body.numpy()
-        particle = model.attachment_body_particle_particle.numpy()
+        body = model.attachment_particle_body_body.numpy()
+        particle = model.attachment_particle_body_particle.numpy()
         return {
             attachment
-            for attachment in range(model.attachment_body_particle_count)
+            for attachment in range(model.attachment_particle_body_count)
             if int(body[attachment]) in body_set and int(particle[attachment]) in particle_set
         }
 
@@ -1457,10 +1457,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         selected = self._body_particle_attachment_rows(body_set, particle_set)
         return self._ordered_world_subset(
             selected,
-            self.model.attachment_body_particle_world,
+            self.model.attachment_particle_body_world,
             None,
-            self.model.attachment_body_particle_count,
-            "body-particle attachments",
+            self.model.attachment_particle_body_count,
+            "particle-body attachments",
             allow_global=True,
         )
 
@@ -1477,7 +1477,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 {int(i) for i in cfg.particles},
             )
         )
-        attachment_frequency = model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE
+        attachment_frequency = model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY
         projections = self._entry_attribute_projections(None)
         world_frequency = model.AttributeFrequency.WORLD
         projections.setdefault(
@@ -1486,9 +1486,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         projections[attachment_frequency] = _compact_index_projection(
             rows,
-            model.attachment_body_particle_count,
+            model.attachment_particle_body_count,
         )
-        view.attachment_body_particle_count = len(rows)
+        view.attachment_particle_body_count = len(rows)
         self._project_compact_attributes(
             view,
             projections,
@@ -1520,7 +1520,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         tri_order = compact.order(frequency.TRIANGLE)
         tet_order = compact.order(frequency.TETRAHEDRON)
         spring_order = compact.order(frequency.SPRING)
-        attachment_order = compact.order(frequency.ATTACHMENT_BODY_PARTICLE)
+        attachment_order = compact.order(frequency.ATTACHMENT_PARTICLE_BODY)
 
         body_global_to_local = {global_id: local_id for local_id, global_id in enumerate(body_order)}
         view.body_count = len(body_order)
@@ -1533,7 +1533,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.articulation_count = len(articulation_order)
         view.constraint_mimic_count = len(mimic_order)
         view.spring_count = len(spring_order)
-        view.attachment_body_particle_count = len(attachment_order)
+        view.attachment_particle_body_count = len(attachment_order)
         view.tri_count = len(tri_order)
         view.edge_count = len(edge_order)
         view.tet_count = len(tet_order)
@@ -3185,7 +3185,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if frequency in (model_frequency.ONCE, model_frequency.WORLD):
                 return True
         if flags & int(ModelFlags.CONSTRAINT_PROPERTIES):
-            if frequency in (model_frequency.CONSTRAINT_MIMIC, model_frequency.ATTACHMENT_BODY_PARTICLE):
+            if frequency in (model_frequency.CONSTRAINT_MIMIC, model_frequency.ATTACHMENT_PARTICLE_BODY):
                 return True
             if any(token in attribute.name for token in ("constraint", ":eq_", "mimic")):
                 return True

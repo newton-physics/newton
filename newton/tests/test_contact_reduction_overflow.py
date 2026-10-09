@@ -4,6 +4,8 @@
 """Report contact candidates dropped inside global contact reduction."""
 
 import unittest
+import warnings
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -26,7 +28,7 @@ def _fill_reducer(data: GlobalContactReducerData, allocated: wp.array[int]):
     allocated[tid] = export_contact_to_buffer(0, 1, wp.vec3(0.0), wp.vec3(0.0, 0.0, 1.0), -0.01, tid, data)
 
 
-def _boxes_on_mesh_model(device, height: float = 0.095):
+def _boxes_on_mesh_model(device, height: float = 0.095, world_count: int | None = None):
     """Three boxes resting on a 4x4-cell triangle-mesh ground, which uses global reduction."""
     cells = 4
     xs, ys = np.meshgrid(np.linspace(-1.0, 1.0, cells + 1), np.linspace(-1.0, 1.0, cells + 1))
@@ -41,6 +43,10 @@ def _boxes_on_mesh_model(device, height: float = 0.095):
     for k in range(3):
         body = builder.add_body(xform=wp.transform(wp.vec3(-0.5 + 0.5 * k, 0.0, height), wp.quat_identity()))
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    if world_count is not None:
+        root = newton.ModelBuilder()
+        root.replicate(builder, world_count)
+        builder = root
     return builder.finalize(device=device)
 
 
@@ -218,6 +224,102 @@ def test_reducer_failures_reach_solver_status(test, device, pgs_mode="matrix_fre
     test.assertFalse(solver.constraint_overflow.numpy().any())
 
 
+def test_default_capacity_scales_with_world_count(test, device):
+    """Size the default reducer for every world, where a fixed capacity fits only a few."""
+    world_count = 8
+    single = newton.CollisionPipeline(_boxes_on_mesh_model(device), max_triangle_pairs=100_000)
+    single.collide(single.model.state(), single.contacts())
+    world_candidates = int(single.narrow_phase.global_contact_reducer.contact_count.numpy()[0])
+
+    model = _boxes_on_mesh_model(device, world_count=world_count)
+    state = model.state()
+    # A fixed capacity that holds two worlds' candidates stands in for the fixed legacy default.
+    fixed_capacity = 2 * world_candidates
+    fixed = newton.CollisionPipeline(model, max_triangle_pairs=fixed_capacity, verify_buffers=False)
+    fixed_contacts = fixed.contacts()
+    fixed.collide(state, fixed_contacts)
+    test.assertGreater(int(fixed.narrow_phase.global_contact_reducer.buffer_overflows.numpy()[0]), 0)
+    test.assertEqual(int(fixed_contacts._reduction_overflow.numpy()[0]), 1)
+
+    with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_MIN_CAPACITY", fixed_capacity):
+        auto = newton.CollisionPipeline(model, verify_buffers=False)
+    auto_contacts = auto.contacts()
+    auto.collide(state, auto_contacts)
+    reducer = auto.narrow_phase.global_contact_reducer
+    test.assertGreaterEqual(reducer.capacity, world_count * world_candidates)
+    test.assertEqual(int(reducer.buffer_overflows.numpy()[0]), 0)
+    test.assertEqual(int(reducer.contact_count.numpy()[0]), world_count * world_candidates)
+    test.assertEqual(int(auto_contacts._reduction_overflow.numpy()[0]), 0)
+
+
+def _tray_worlds_model(device, world_count: int):
+    """Replicate 8 boxes on a 16x16-cell mesh tray, about 800 reduction candidates per world."""
+    cells = 16
+    xs, ys = np.meshgrid(np.linspace(-1.0, 1.0, cells + 1), np.linspace(-1.0, 1.0, cells + 1))
+    vertices = np.stack([xs.ravel(), ys.ravel(), np.zeros(xs.size)], axis=1).astype(np.float32)
+    indices = []
+    for i in range(cells):
+        for j in range(cells):
+            a = i * (cells + 1) + j
+            indices += [a, a + 1, a + cells + 2, a, a + cells + 2, a + cells + 1]
+    world = newton.ModelBuilder()
+    world.add_shape_mesh(-1, mesh=newton.Mesh(vertices, np.array(indices, dtype=np.int32)))
+    for k in range(8):
+        pos = wp.vec3(-0.75 + 0.5 * (k % 4), -0.4 + 0.8 * (k // 4), 0.1)
+        body = world.add_body(xform=wp.transform(pos, wp.quat_identity()))
+        world.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    root = newton.ModelBuilder()
+    root.replicate(world, world_count)
+    return root.finalize(device=device)
+
+
+def test_default_capacity_holds_large_batches(test, device):
+    """Keep every world's mesh contacts at a batch size that exhausts a fixed 1,000,000-slot default."""
+    world_count = 2048
+    model = _tray_worlds_model(device, world_count)
+    state = model.state()
+    shape_world = model.shape_world.numpy()
+    # A model without a stored pair list exercises the NXN/SAP fallback.
+    stored_pairs = model.shape_contact_pairs
+    for broad_phase, pairs in (("explicit", stored_pairs), ("nxn", None), ("sap", None)):
+        with test.subTest(broad_phase=broad_phase, stored_pairs=pairs is not None):
+            model.shape_contact_pairs = pairs
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase, verify_buffers=False)
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
+            reducer = pipeline.narrow_phase.global_contact_reducer
+            test.assertEqual(int(reducer.buffer_overflows.numpy()[0]), 0)
+            test.assertLessEqual(
+                int(pipeline.narrow_phase.triangle_pairs_count.numpy()[0]), pipeline.narrow_phase.max_triangle_pairs
+            )
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+            shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+            per_world = np.bincount(np.maximum(shape_world[shape0], shape_world[shape1]), minlength=world_count)
+            test.assertEqual(int(np.count_nonzero(per_world == 0)), 0)
+
+
+def test_deterministic_limit_applies_only_with_reducer(test, device):
+    """Limit automatic capacity to the reducer's packing range only when a reducer exists, and say so."""
+    world_count = 1400  # about 1.4M estimated slots, above the 2**20 - 1 packing limit
+    model = _tray_worlds_model(device, world_count)
+    packing_limit = (1 << 20) - 1
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        unreduced = newton.CollisionPipeline(model, reduce_contacts=False, deterministic=True)
+    test.assertIsNone(unreduced.narrow_phase.global_contact_reducer)
+    test.assertGreater(unreduced.narrow_phase.max_triangle_pairs, packing_limit)
+
+    for kwargs in ({"deterministic": True}, {"contact_matching": "latest"}):
+        with test.subTest(**kwargs):
+            with test.assertWarnsRegex(RuntimeWarning, r"deterministic contact reduction.*at most 1,048,575"):
+                pipeline = newton.CollisionPipeline(model, **kwargs)
+            test.assertEqual(pipeline.narrow_phase.max_triangle_pairs, packing_limit)
+
+
 class TestContactReductionOverflow(unittest.TestCase):
     pass
 
@@ -265,6 +367,27 @@ add_function_test(
     test_reducer_failures_reach_solver_status,
     devices=devices,
     pgs_mode="split",
+)
+
+add_function_test(
+    TestContactReductionOverflow,
+    "test_default_capacity_scales_with_world_count",
+    test_default_capacity_scales_with_world_count,
+    devices=devices,
+)
+
+add_function_test(
+    TestContactReductionOverflow,
+    "test_default_capacity_holds_large_batches",
+    test_default_capacity_holds_large_batches,
+    devices=devices,
+)
+
+add_function_test(
+    TestContactReductionOverflow,
+    "test_deterministic_limit_applies_only_with_reducer",
+    test_deterministic_limit_applies_only_with_reducer,
+    devices=["cpu"],
 )
 
 if __name__ == "__main__":

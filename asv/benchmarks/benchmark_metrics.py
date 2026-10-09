@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import math
 import time
 from collections.abc import Callable, Sequence
@@ -9,6 +10,17 @@ from typing import Any
 
 import numpy as np
 import warp as wp
+
+
+@dataclass(frozen=True)
+class StartupMetrics:
+    """Mean startup durations in seconds through the first completed simulation frame."""
+
+    total_time: float
+    model_time: float
+    replication_time: float
+    finalize_time: float
+    solver_time: float
 
 
 @dataclass(frozen=True)
@@ -166,4 +178,42 @@ def collect_simulation_metrics(
         world_count=world_count,
         gpu_memory_bytes=gpu_memory_bytes,
         experience_frame_times=experience_frame_times,
+    )
+
+
+def collect_startup_metrics(
+    create_workload: Callable[[dict[str, float]], Any],
+    samples: int,
+    timer: Callable[[], float] = time.perf_counter,
+) -> StartupMetrics:
+    """Collect mean startup times in seconds through the first completed simulation frame.
+
+    ``create_workload`` records phase durations into the dictionary it receives,
+    and the workload's ``step()`` must complete its device work. ``total`` spans
+    construction through the first completed frame.
+    """
+    if samples <= 0:
+        raise ValueError("samples must be positive")
+    phase_names = ("model", "replication", "finalize", "solver")
+    sample_times = []
+    for _ in range(samples):
+        phase_times = {}
+        start_time = timer()
+        workload = create_workload(phase_times)
+        workload.step()
+        phase_times["total"] = timer() - start_time
+
+        # Free the workload before timing the next one: collect reference cycles and
+        # synchronize so the memory pool releases its allocations.
+        del workload
+        gc.collect()
+        wp.synchronize_device()
+
+        missing_phases = set(phase_names) - phase_times.keys()
+        if missing_phases:
+            raise RuntimeError(f"Missing startup phases: {sorted(missing_phases)}")
+        sample_times.append(phase_times)
+
+    return StartupMetrics(
+        **{f"{name}_time": float(np.mean([times[name] for times in sample_times])) for name in ("total", *phase_names)}
     )

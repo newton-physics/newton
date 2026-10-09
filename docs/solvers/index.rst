@@ -452,7 +452,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |yes| :sup:`6`
      - |yes| :sup:`5`
      - |no|
-   * - Body-particle attachments
+   * - Particle-body attachments
      - |no|
      - |no|
      - |no|
@@ -471,17 +471,17 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
 | :sup:`10` FeatherPGS clamps the explicit joint drive force to the effort limit. With the default ``drive_mode="augmented"`` the implicit stiffness and damping response is unbounded, so under a large external load the drive reaction can exceed the limit; the PGS drive rows of ``drive_mode="physx_pgs"`` bound the complete reaction.
 | :sup:`11` FeatherPGS enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True`` and ``pgs_mode="matrix_free"``. With ``drive_mode="physx_pgs"``, driven DOFs are clamped at the end of every solver iteration instead of using velocity-limit rows (``fuse_joint_velocity_limits``).
 | :sup:`12` With ``pgs_mode="matrix_free"``, FeatherPGS enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints. ``pgs_mode="split"`` rejects mimic relationships and loop-closing joints; the propagation contact responses (``articulated_contact_response``) reject loop-closing joints and solve mimic rows iteratively.
-| :sup:`13` See :ref:`Body-particle attachments` for authoring and semantics. Attachments spanning two
+| :sup:`13` See :ref:`Particle-body attachments` for authoring and semantics. Attachments spanning two
   solvers are coupled by :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
 
-.. _Body-particle attachments:
+.. _Particle-body attachments:
 
-Body-Particle Attachments
+Particle-Body Attachments
 -------------------------
 
-A body-particle attachment ties one cloth or solid particle to a point in a
+A particle-body attachment ties one cloth or solid particle to a point in a
 rigid body's local frame. Author attachments with
-:meth:`newton.ModelBuilder.add_attachment_body_particle`. They are stored on the
+:meth:`newton.ModelBuilder.add_attachment_particle_body`. They are stored on the
 :class:`~newton.Model` and do not require a coupled solver.
 
 :class:`~newton.solvers.SolverVBD` applies an attachment whenever it integrates

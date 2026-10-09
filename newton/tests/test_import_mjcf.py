@@ -141,6 +141,31 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertTrue(forced_collision_flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(forced_collision_flags & ShapeFlags.VISIBLE)
 
+    def test_builtin_texture_sets_mean_color(self):
+        """Procedural textures color their geoms with their mean color, tinted by the material rgba."""
+        mjcf = """
+<mujoco model="builtin_texture">
+    <asset>
+        <texture type="2d" name="grid" builtin="checker" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" width="8" height="8"/>
+        <texture type="2d" name="plain" builtin="flat" rgb1="0.6 0.4 0.2" width="8" height="8"/>
+        <material name="grid" texture="grid" rgba="1 1 0.5 1"/>
+        <material name="plain" texture="plain"/>
+    </asset>
+    <worldbody>
+        <geom name="floor" type="plane" size="0 0 0.05" material="grid"/>
+        <geom name="wall" type="box" size="0.1 0.1 0.1" material="plain"/>
+        <geom name="override" type="box" size="0.1 0.1 0.1" material="grid" rgba="0 1 0 1"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        colors = dict(zip(builder.shape_label, builder.shape_color, strict=True))
+        np.testing.assert_allclose(colors["builtin_texture/worldbody/floor"], (0.15, 0.25, 0.175), atol=1e-6)
+        np.testing.assert_allclose(colors["builtin_texture/worldbody/wall"], (0.6, 0.4, 0.2), atol=1e-6)
+        # An explicit geom rgba takes precedence, as without a texture.
+        np.testing.assert_allclose(colors["builtin_texture/worldbody/override"], (0.0, 1.0, 0.0), atol=1e-6)
+
     def test_collision_only_import_keeps_colliders_visible(self):
         """Collision-only MJCF assets must remain visible by default."""
         mjcf = """

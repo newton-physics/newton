@@ -1239,8 +1239,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
         builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
         external_particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
         owned_particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
-        builder.add_attachment_body_particle(body_a, owned_particle)
-        builder.add_attachment_body_particle(body_b, external_particle)
+        builder.add_attachment_particle_body(owned_particle, body_a)
+        builder.add_attachment_particle_body(external_particle, body_b)
         builder.color()
         model = builder.finalize(device="cpu")
 
@@ -1265,16 +1265,16 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         # The view compacts bodies but keeps every particle visible, so the retained row pairs a
         # view-local body index with the unchanged global particle index.
-        self.assertEqual(view.attachment_body_particle_count, 1)
-        np.testing.assert_array_equal(view.attachment_body_particle_body.numpy(), [0])
-        np.testing.assert_array_equal(view.attachment_body_particle_particle.numpy(), [owned_particle])
+        self.assertEqual(view.attachment_particle_body_count, 1)
+        np.testing.assert_array_equal(view.attachment_particle_body_body.numpy(), [0])
+        np.testing.assert_array_equal(view.attachment_particle_body_particle.numpy(), [owned_particle])
 
     def test_noncompact_views_hide_cross_entry_attachments(self):
         """Filter attachment ownership even when heterogeneous worlds prevent compaction."""
         world = newton.ModelBuilder()
         body = world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         particle = world.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
-        world.add_attachment_body_particle(body, particle)
+        world.add_attachment_particle_body(particle, body)
 
         builder = newton.ModelBuilder()
         builder.add_world(world)
@@ -1305,13 +1305,13 @@ class TestSolverCoupledBasic(unittest.TestCase):
         for world_index, name in enumerate(("world0", "world1")):
             view = coupled.view(name)
             self.assertEqual(view.body_count, model.body_count)
-            self.assertEqual(view.attachment_body_particle_count, 1)
+            self.assertEqual(view.attachment_particle_body_count, 1)
             np.testing.assert_array_equal(
-                view.attachment_body_particle_body.numpy(),
+                view.attachment_particle_body_body.numpy(),
                 [body_start[world_index]],
             )
             np.testing.assert_array_equal(
-                view.attachment_body_particle_particle.numpy(),
+                view.attachment_particle_body_particle.numpy(),
                 [particle_start[world_index]],
             )
 
