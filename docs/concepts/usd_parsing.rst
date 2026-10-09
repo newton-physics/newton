@@ -37,6 +37,35 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+Supported Schema Sources
+------------------------
+
+Newton reads a bounded set of USD schemas. Knowing which sources are supported explains why a
+property that renders in another application may not survive import into Newton.
+
+* **OpenUSD schemas** are the primary source and cover both physics and visuals: ``UsdGeom``,
+  ``UsdShade``, ``UsdPhysics``, and the
+  `USD Preview Surface <https://openusd.org/release/spec_usdpreviewsurface.html>`__ shading model
+  (``UsdPreviewSurface``, ``UsdUVTexture``, ``UsdTransform2d``). This includes ``UsdGeom``'s
+  ``primvars:displayColor`` and ``primvars:displayOpacity`` when no material is bound.
+* **Newton physics schemas** extend the ``UsdPhysics`` specification to configure the Newton runtime
+  data model, including Newton-specific concepts that do not belong in OpenUSD. They are registered
+  by ``newton-usd-schemas`` and authored in the ``newton:*`` namespace. See :ref:`custom_attributes`
+  for authoring your own attributes.
+* **Solver-native physics schemas**, such as ``physx*:*`` or ``mjc:*``, are a bounded fallback for
+  physics data only. Newly added fallbacks require an opt-in schema resolver passed to
+  :meth:`~newton.ModelBuilder.add_usd`. Existing direct reads and legacy compatibility paths remain,
+  including some on the default import path. See :ref:`schema_resolvers`.
+
+Proprietary shading systems are **not** a supported schema source. Newton does not add parsing for
+MDL shader networks or OmniPBR parameter conventions: they fall outside Newton's physics domain and
+are not governed by an open specification Newton can track. The importer still recognizes some
+vendor parameter names for historical reasons, but that handling is frozen — it is not extended to
+new vocabulary and should not be relied on.
+
+For supported material import, author with USD Preview Surface. When neither a supported schema nor
+existing compatibility handling supplies a property, Newton uses its defaults.
+
 Particle Simulation Geometry
 ----------------------------
 
