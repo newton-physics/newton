@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Apply random actions to batched double-cartpole articulations through ArticulationView."""
+"""Drive batched double-cartpoles from random initial states with center-directed cart forces via ArticulationView."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
         "8 identical setups appear consisting of a double pendulum attached to a rail.",
-        "Random actions are applied to each setup.",
+        "Each setup evolves from random initial cart and pole coordinates under a center-directed cart force.",
     ),
     "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
 }

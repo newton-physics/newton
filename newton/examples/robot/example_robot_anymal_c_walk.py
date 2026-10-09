@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Walk ANYmal C over rough terrain with an ONNX policy evaluated by Warp-NN."""
+"""Walk ANYmal C on a flat ground plane with an ONNX policy evaluated by Warp-NN."""
 
 import numpy as np
 import warp as wp
@@ -14,7 +14,7 @@ from newton.examples.robot.onnx_policy_utils import validate_policy_io_shapes
 
 _EXAMPLE_SPEC = {
     "schema_version": 1,
-    "success_criteria": ("An Anymal robot is walking on a rough terrain.",),
+    "success_criteria": ("An ANYmal C robot walks forward on a flat ground plane.",),
     "runs": ({"args": (), "success_criteria": ()},),
 }
 

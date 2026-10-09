@@ -16,7 +16,7 @@ _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
         "Six floating shapes appear from left to right: sphere, box, cone, cylinder, capsule, "
-        "and bunny; they move back and forth.",
+        "and bunny; the sphere bobs, the capsule sways, and the shapes rotate.",
         "The Custom UI text section provides Time and Spacing sliders that change animation time and shape spacing.",
         "With the GL renderer, Renderer Settings controls visibly affect exposure, diffuse "
         "brightness, specular highlights, shadow radius and extents, and spotlight "

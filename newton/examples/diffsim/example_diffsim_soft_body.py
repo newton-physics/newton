@@ -16,8 +16,8 @@ _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
         "A deformable box is bouncing on the ground plane then on a wall and tries to reach a "
-        "floating target (black box).",
-        "All past trajectories are drawn on the screen.",
+        "floating target (purple box).",
+        "Previously displayed rollout trajectories remain visible while newer trajectories are added.",
         "The deformable box is becoming increasingly good at reaching the target.",
     ),
     "runs": ({"args": (), "success_criteria": ()},),

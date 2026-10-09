@@ -32,7 +32,7 @@ import newton.examples
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "5 pieces of beige material are oriented so that they are parallel to the ground plane.",
+        "5 blue-and-white checkerboard sheets are oriented so that they are parallel to the ground plane.",
         "Each material is stretched so that it elongates towards the camera.",
         "The materials oscillate as they are stretched.",
         "The oscillations are damped and the materials quickly find a rest pose at the maximum stretch.",

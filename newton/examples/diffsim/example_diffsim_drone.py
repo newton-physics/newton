@@ -20,7 +20,7 @@ _EXAMPLE_SPEC = {
     "success_criteria": (
         "A simplified drone appears close to a long pole.",
         "A target red sphere is present and the drone is moving toward its direction.",
-        "Every time the target is reached, the red sphere changes position and the drone keeps chasing the target.",
+        "The red sphere alternates between scheduled target positions, and the drone repeatedly approaches the active target.",
         "The loss is plotted on the right side of the window.",
     ),
     "runs": ({"args": (), "success_criteria": ()},),

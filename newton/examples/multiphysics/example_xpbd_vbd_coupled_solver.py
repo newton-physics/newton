@@ -1,7 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""A VBD cloth presses into an XPBD particle bed through proxy-particle coupling. Single-solver XPBD and VBD modes provide references with different supported features and parameters."""
+"""An XPBD particle bed drops onto a pinned VBD cloth through proxy-particle coupling.
+
+Single-solver XPBD and VBD modes provide references with different supported features and parameters.
+"""
 
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ _EXAMPLE_SPEC = {
         {
             "args": (),
             "success_criteria": (
-                "The VBD cloth pushes into the XPBD bed; particle contact reactions push back on the cloth.",
+                "The XPBD particle bed lands on and deforms the pinned VBD cloth; cloth contact reactions support the bed.",
             ),
         },
         {"args": ("--solver", "xpbd"), "success_criteria": ("The scene runs as a monolithic XPBD reference.",)},

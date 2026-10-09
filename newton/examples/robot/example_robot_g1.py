@@ -13,7 +13,8 @@ from newton import JointTargetMode
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "G1 humanoids initially stand on the ground, with the displayed world count matching --world-count.",
+        "G1 humanoids begin upright slightly above the ground, then drop onto their feet and remain supported; "
+        "the displayed world count matches --world-count.",
         "Right-drag individual robots: robots in separate worlds do not collide with one "
         "another but interact with their ground plane.",
         "Without perturbations, robots remain supported and settle without persistent visible jitter.",

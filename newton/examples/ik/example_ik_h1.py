@@ -13,7 +13,7 @@ import newton.utils
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "The H1 torso stays fixed while four gizmos mark the hands and feet.",
+        "The H1 pelvis/base stays anchored while four gizmos mark the hands and feet.",
         "Left-drag each gizmo: its corresponding limb tracks reachable position and orientation targets.",
         "On release, each gizmo snaps to the solved limb pose.",
     ),

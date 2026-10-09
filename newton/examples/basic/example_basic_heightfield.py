@@ -14,7 +14,8 @@ _EXAMPLE_SPEC = {
     "success_criteria": (
         "Five spheres start above a wavy heightfield and drop onto its surface.",
         "Spheres roll along the terrain; some may roll off its edges while others come to rest on the surface.",
-        "Spheres that remain on the terrain settle without persistent visible contact jitter.",
+        "Spheres that come to rest on the terrain remain stable without persistent visible contact jitter; "
+        "other spheres may continue rolling smoothly.",
     ),
     "runs": ({"args": (), "success_criteria": ()},),
 }

@@ -16,7 +16,7 @@ import newton.ik as ik
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "4 identical setups appear consisting of a Franka robotic arm in front of a table with three cubes on it.",
+        "Four replicated setups appear, each consisting of a Franka robotic arm in front of a table with three cubes on it.",
         "The Franka arm moves and stacks the three cubes together.",
     ),
     "runs": ({"args": ("--world-count", "4"), "success_criteria": ()},),

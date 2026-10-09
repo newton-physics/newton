@@ -15,7 +15,7 @@ _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
         "A piece of cloth is thrown and tries to reach a floating target (red box).",
-        "All past trajectories are drawn on the screen.",
+        "Previously displayed rollout trajectories remain visible while newer trajectories are added.",
         "The cloth is becoming increasingly good at reaching the target.",
     ),
     "runs": ({"args": (), "success_criteria": ()},),

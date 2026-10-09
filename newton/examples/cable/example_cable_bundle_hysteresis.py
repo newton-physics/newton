@@ -25,7 +25,7 @@ _EXAMPLE_SPEC = {
         {"args": (), "success_criteria": ("The cables keep a clear S shape.",)},
         {
             "args": ("--segments", "15"),
-            "success_criteria": ("The cables have a more irregular S shape and fewer distinct colors.",),
+            "success_criteria": ("The cables have a more irregular S shape with visibly coarser segmentation.",),
         },
         {
             "args": ("--eps-max", "0.3"),
