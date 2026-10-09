@@ -891,6 +891,17 @@ class SolverKamino(SolverBase, CouplingInterface):
         violation; and ``r_c = max |lambda_k dot v_k|`` [J] is the maximum
         inequality complementarity violation.
 
+        For DVI APGD, ``iterations`` counts accepted inner steps;
+        ``apgd_corrections`` counts completed nonlinear corrections, and
+        ``apgd_backtracks`` counts rejected trials across unilateral phases.
+        ``apgd_residual`` is the last phase's fresh nonlinear natural-map
+        residual. Check it against ``config.dvi.apgd.tolerance`` when that
+        threshold is required: ``converged`` uses the independent full-system
+        checks with ``config.dvi.tolerance``. Budget exhaustion alone does not
+        determine ``converged``. An exhausted or non-finite line search sets
+        ``apgd_line_search_failed``, sets ``apgd_residual`` to ``3e38``, and
+        prevents convergence. APGD-specific fields are zero for PGS.
+
         The returned array aliases the solver's device-resident storage; reading
         it does not synchronize or copy data to the host. Terminal status is
         available regardless of :attr:`Config.collect_solver_info`.

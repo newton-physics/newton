@@ -1870,7 +1870,7 @@ for example_name in (
         TestUSDDependentExamples,
         name=example_name,
         devices=cuda_test_devices,
-        test_options={"allow_deprecation_warnings": True, "usd_required": True},
+        test_options={"usd_required": True},
         use_viewer=True,
     )
 

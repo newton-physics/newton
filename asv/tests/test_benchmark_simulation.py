@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import warp as wp
+from asv_runner.benchmarks.time import TimeBenchmark
 
 ASV_DIR = Path(__file__).parents[1]
 ROOT = ASV_DIR.parent
@@ -165,7 +166,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Cover selector crossovers, duplicate-heavy hulls, and every convex type."""
         self.assertEqual(
             tuple(bench_contacts.FastConvexCollision.params[0]),
-            (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 191)),
+            (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 64), ("mixed", 153), ("mixed", 191)),
         )
         self.assertEqual(
             {shape for pair in bench_contacts.MIXED_CONVEX_PAIR_TYPES for shape in pair},
@@ -374,6 +375,44 @@ class TestSimulationBenchmarks(unittest.TestCase):
             DRLegsBenchmarkWorkload.create_solver(Mock(), 0.005)
 
         solver_cls.assert_called_once()
+
+    def test_g1_dvi_remains_available_outside_pr_gate(self):
+        """Keep small and large G1 batches outside the PR gate with bounded sampling."""
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        for pr_gate in (False, True):
+            inventory = self._discover_benchmarks(pr_gate=pr_gate)
+            benchmarks = [benchmark for benchmark in inventory if "G1DVI" in benchmark["name"]]
+            self.assertEqual(len(benchmarks), 1)
+            benchmark = benchmarks[0]
+            self.assertFalse(any(pattern.search(benchmark["name"]) for pattern in patterns))
+            self.assertEqual(benchmark["params"], [["4", "512"]])
+            self.assertEqual((benchmark["rounds"], benchmark["repeat"]), (1, 3))
+
+    def test_g1_dvi_builds_once_per_world_count(self):
+        """Avoid rebuilding and warming G1 for each ASV timing sample."""
+        workload = bench_kamino.G1DVI()
+        with (
+            patch("newton.examples.robot.example_robot_g1.Example") as example_cls,
+            patch.object(wp, "get_cuda_device_count", return_value=1),
+            patch.object(wp, "ScopedDevice"),
+            patch.object(wp, "synchronize_device"),
+        ):
+            benchmark = TimeBenchmark("time_simulate", workload.time_simulate, [workload])
+            benchmark.set_param_idx(0)
+            benchmark.do_setup()
+            result = benchmark.do_run()
+            benchmark.do_teardown()
+
+            self.assertEqual(len(result["samples"]), 3)
+            self.assertEqual(example_cls.call_count, 1)
+            self.assertEqual(example_cls.return_value.step.call_count, 100 + 3 * 200)
+            self.assertEqual(example_cls.return_value.test_final.call_count, 3)
+
+            workload.setup(512)
+            self.assertEqual(example_cls.call_count, 2)
+            with patch.object(wp, "get_cuda_device_count", return_value=0):
+                with self.assertRaises(NotImplementedError):
+                    workload.setup(512)
 
     def test_aws_benchmark_comparison_gates_only_runtime_metrics(self):
         """Gate discovered PR runtimes while retaining dashboard-only metrics."""

@@ -131,6 +131,8 @@ class Example:
             self.config.dvi.inequality_sweeps_per_iteration = 3
             self.config.dvi.bilateral_solve_interval = 1
             self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
+            self.config.dvi.unilateral_solver = getattr(args, "unilateral_solver", "pgs")
+            self.config.dvi.use_schur_complement = getattr(args, "use_schur_complement", False)
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -332,6 +334,17 @@ class Example:
             choices=("padmm", "dvi"),
             default="padmm",
             help="Kamino dynamics solver to use.",
+        )
+        parser.add_argument(
+            "--unilateral-solver",
+            choices=("pgs", "apgd"),
+            default="pgs",
+            help="DVI unilateral subsolver; APGD uses De Saxce contact correction.",
+        )
+        parser.add_argument(
+            "--use-schur-complement",
+            action="store_true",
+            help="Eliminate bilateral rows during DVI unilateral solves.",
         )
         parser.add_argument(
             "--linear-solver-type",
