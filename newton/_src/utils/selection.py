@@ -2788,8 +2788,8 @@ class _DeformableParticleView(_DeformableViewBase):
         self._scatter("particle", values, _scatter_object_vec3_kernel, target.particle_qd, wp.vec3, mask)
 
 
-class _DeformableRigidBodyView(_DeformableViewBase):
-    """Share body state access without prescribing a geometric family."""
+class _DeformableRodView(_DeformableViewBase):
+    """Read and write the body state of rod segments."""
 
     @property
     def bodies_per_deformable_object(self) -> int:
@@ -2903,7 +2903,7 @@ class _DeformableRigidBodyView(_DeformableViewBase):
         self._scatter("body", values, _scatter_object_spatial_kernel, target.body_qd, wp.spatial_vector, mask)
 
 
-class DeformableCurveView(_DeformableRigidBodyView):
+class DeformableCurveView(_DeformableRodView):
     """Select curves by label and read or update their segment body state.
 
     .. experimental::
