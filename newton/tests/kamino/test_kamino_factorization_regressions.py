@@ -12,12 +12,44 @@ from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData,
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import (
     get_float32_array_offset_ptr,
     get_int32_array_offset_ptr,
+    make_llt_blocked_rcm_symbolic_fill_in_kernel,
 )
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
     _find_bilateral_factor_row_start,
     _find_bilateral_factor_row_start_rcm,
 )
+
+
+class TestKaminoSymbolicFill(unittest.TestCase):
+    def test_bitset_boundaries(self):
+        """Match classical fill across bitset boundaries and preserve upper entries and guards."""
+        rng = np.random.default_rng(731)
+        for tiles in (0, 1, 15, 31, 32, 33, 63, 64, 65):
+            initial = rng.choice([0, 0, 0, 1, 2], size=(tiles, tiles)).astype(np.int32)
+            expected = initial.copy()
+            np.fill_diagonal(expected, 1)
+            for j in range(tiles):
+                for i in range(j + 1, tiles):
+                    if expected[i, j] == 0 and np.any((expected[i, :j] != 0) & (expected[j, :j] != 0)):
+                        expected[i, j] = 1
+            padded = np.pad(initial.ravel(), (7, 9), constant_values=-77)
+            oracle = np.pad(expected.ravel(), (7, 9), constant_values=-77)
+            for device in wp.get_devices():
+                with self.subTest(tiles=tiles, device=device):
+                    pattern = wp.array(padded, dtype=wp.int32, device=device)
+                    wp.launch(
+                        make_llt_blocked_rcm_symbolic_fill_in_kernel(max(tiles, 1)),
+                        dim=1,
+                        inputs=[
+                            wp.array([max(0, tiles * 32 - 7)], dtype=wp.int32, device=device),
+                            wp.array([7], dtype=wp.int32, device=device),
+                            32,
+                            pattern,
+                        ],
+                        device=device,
+                    )
+                    np.testing.assert_array_equal(pattern.numpy(), oracle)
 
 
 class TestKaminoFactorRowStart(unittest.TestCase):
@@ -64,7 +96,7 @@ class TestKaminoFactorRowStart(unittest.TestCase):
                 pattern = wp.array(patterns, dtype=wp.int32, device=device)
                 reference = wp.full(len(expected), -77, dtype=wp.int32, device=device)
                 candidate = wp.full(len(expected), -77, dtype=wp.int32, device=device)
-                inputs = [dims, matrix_offsets, vector_offsets, matrices_wp]
+                inputs = [dims, matrix_offsets, dims, vector_offsets, matrices_wp]
                 wp.launch(
                     _find_bilateral_factor_row_start,
                     dim=(len(dimensions), max(dimensions)),
@@ -117,6 +149,50 @@ class TestKaminoFactorTileReuse(unittest.TestCase):
                         solver.compute(matrix)
                     factor = np.tril(solver.L.numpy().reshape(n, n))
                     np.testing.assert_array_equal(factor, np.eye(n, dtype=np.float32) * 2.0)
+
+
+class TestKaminoFailedPivotRetry(unittest.TestCase):
+    def test_only_failed_blocks_are_shifted(self):
+        """Refactor an indefinite block with a diagonal shift and leave healthy blocks untouched."""
+        if not wp.is_cuda_available():
+            self.skipTest("Blocked factorization requires CUDA")
+        device = wp.get_device("cuda:0")
+        shift = 1.0e-5
+        rng = np.random.default_rng(97)
+        n = 40
+        basis = rng.normal(size=(n, n))
+        healthy = (basis @ basis.T / n + np.eye(n)).astype(np.float32)
+        # One slightly negative eigenvalue mimics round-off on a singular block.
+        eigenvectors = np.linalg.qr(rng.normal(size=(n, n)))[0]
+        eigenvalues = np.linspace(1.0, 2.0, n)
+        eigenvalues[0] = -0.2 * shift
+        failing = (eigenvectors * eigenvalues @ eigenvectors.T).astype(np.float32)
+        for parallel in (False, True):
+            for captured in (False, True):
+                with self.subTest(parallel=parallel, captured=captured):
+                    info = DenseSquareMultiLinearInfo()
+                    info.finalize(dimensions=[n, n], dtype=wp.float32, device=device)
+                    matrix = wp.array(np.concatenate([healthy.ravel(), failing.ravel()]), device=device)
+                    solver = LLTBlockedRCMSolver(
+                        operator=DenseLinearOperatorData(info=info, mat=matrix),
+                        parallel_factorization=parallel,
+                        failed_pivot_shift=shift,
+                        device=device,
+                    )
+                    if captured:
+                        solver.compute(matrix)
+                        with wp.ScopedCapture(device=device) as capture:
+                            solver.compute(matrix)
+                        wp.capture_launch(capture.graph)
+                    else:
+                        solver.compute(matrix)
+                    factors = solver.L.numpy().reshape(2, n, n)
+                    permutation = solver.P.numpy().reshape(2, n)
+                    for block, (source, expected_shift) in enumerate(((healthy, 0.0), (failing, shift))):
+                        order = permutation[block]
+                        permuted = source[np.ix_(order, order)].astype(np.float64) + expected_shift * np.eye(n)
+                        expected = np.linalg.cholesky(permuted)
+                        np.testing.assert_allclose(np.tril(factors[block]), expected, rtol=0.0, atol=2.0e-3)
 
 
 @wp.kernel

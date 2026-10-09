@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import warnings
+import weakref
 from collections.abc import Mapping
 from typing import Any
 
@@ -60,6 +61,7 @@ from .particle_vbd_kernels import (
 )
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
+    CONTACT_HISTORY_NO_BUFFER,
     RigidContactHistory,
     RigidForceElementAdjacencyInfo,
     _count_body_particle_attachments_per_body,
@@ -231,14 +233,14 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
-    Body-particle attachment limitations:
+    Particle-body attachment limitations:
         - Attachments are translational and constrain one particle to a body-local point.
         - The constraint is compliant: ``stiffness`` and ``damping`` enter a quadratic
           penalty, so a loaded attachment keeps a small offset. There is no rigid mode.
         - Both endpoints must be integrated by this solver. Attachments are not supported
           with ``integrate_with_external_rigid_solver=True``.
 
-        See :ref:`Body-particle attachments` for authoring and cross-solver behavior.
+        See :ref:`Particle-body attachments` for authoring and cross-solver behavior.
 
     Buffer sizing:
         Body-body contact state is pre-allocated from ``model.rigid_contact_max`` when a
@@ -541,8 +543,14 @@ class SolverVBD(SolverBase, CouplingInterface):
                 numerical warm start; with sticky matching, tangential memory is
                 represented by the collision pipeline's replayed material anchor.
                 Legacy hard contacts restore the full multiplier; legacy soft contacts
-                restore penalty k only. Contact geometry remains owned by the
-                collision pipeline. Requires ``CollisionPipeline(contact_matching="latest")`` or ``"sticky"``.
+                restore penalty k only. History is restored only from the contact set
+                the previous step solved: a step on the same contacts (no collision
+                pass in between) restores each contact from itself, and the match
+                indices are used only when
+                ``Contacts.rigid_contact_match_generation`` reports that they refer
+                to that set. Contacts start cold after a collision pass into another
+                buffer, two passes between steps, or with another buffer. Contact
+                geometry remains owned by the collision pipeline. Requires ``CollisionPipeline(contact_matching="latest")`` or ``"sticky"``.
                 Ignored when ``integrate_with_external_rigid_solver=True`` or
                 ``model.body_count == 0``. During graph capture, construct the
                 collision pipeline before ``SolverVBD`` so history is pre-allocated,
@@ -775,9 +783,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             if _sc_gap < 0.0:
                 raise ValueError(f"particle_self_contact_gap must be >= 0, got {_sc_gap}")
 
-        if model.attachment_body_particle_count > 0 and integrate_with_external_rigid_solver:
+        if model.attachment_particle_body_count > 0 and integrate_with_external_rigid_solver:
             raise ValueError(
-                "Body-particle attachments require SolverVBD to integrate both endpoints; "
+                "Particle-body attachments require SolverVBD to integrate both endpoints; "
                 "integrate_with_external_rigid_solver=True is not supported."
             )
 
@@ -871,8 +879,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_deterministic_max_records = 0
         coupling_deterministic_max_records = 0
         if effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
-            if model.attachment_body_particle_count > 0:
-                attachment_particles = model.attachment_body_particle_particle.numpy()
+            if model.attachment_particle_body_count > 0:
+                attachment_particles = model.attachment_particle_body_particle.numpy()
                 attachment_records = int(np.bincount(attachment_particles, minlength=model.particle_count).max())
                 particle_deterministic_max_records = max(
                     particle_deterministic_max_records,
@@ -1302,6 +1310,12 @@ class SolverVBD(SolverBase, CouplingInterface):
             self._prev_contact_lambda = None
             self._prev_contact_penalty_k = None
             self._prev_contact_normal = None
+            # ``[buffer id, contact generation]`` of the snapshotted contact set, on the
+            # device so captured graphs replay it. Generations count collision passes
+            # per buffer, so each buffer gets its own positive id.
+            self._prev_contact_frame = None
+            self._contact_history_buffer_ids: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+            self._last_contact_history_buffer_id = 0  # CONTACT_HISTORY_NO_BUFFER; real ids start at 1
 
             # Joint augmented-Lagrangian state (vec3, per-joint, bilateral)
             self.joint_lambda_lin = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
@@ -1781,6 +1795,20 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._prev_contact_lambda = wp.zeros(cap, dtype=wp.vec3, device=self.device)
         self._prev_contact_penalty_k = wp.zeros(cap, dtype=float, device=self.device)
         self._prev_contact_normal = wp.zeros(cap, dtype=wp.vec3, device=self.device)
+        # Fresh history holds no contact set, so every contact starts cold.
+        self._prev_contact_frame = wp.full(2, CONTACT_HISTORY_NO_BUFFER, dtype=wp.int32, device=self.device)
+
+    def _contact_history_buffer_id(self, contacts: Contacts) -> int:
+        """Return the positive id rigid contact history uses for a contact buffer.
+
+        Ids are never reused, so a replaced buffer cannot alias the snapshotted set.
+        """
+        buffer_id = self._contact_history_buffer_ids.get(contacts)
+        if buffer_id is None:
+            self._last_contact_history_buffer_id += 1
+            buffer_id = self._last_contact_history_buffer_id
+            self._contact_history_buffer_ids[contacts] = buffer_id
+        return buffer_id
 
     def _raise_if_capturing_resize(self, name: str, current: int, required: int) -> None:
         if self.device.is_capturing and not is_graph_capture_allocation_enabled(self.device):
@@ -2355,15 +2383,15 @@ class SolverVBD(SolverBase, CouplingInterface):
         return adjacency
 
     def _compute_body_particle_attachment_adjacency(self, model: Model) -> tuple[wp.array, wp.array]:
-        """Build CSR adjacency from rigid bodies to body-particle attachments."""
-        if model.attachment_body_particle_count == 0:
+        """Build CSR adjacency from rigid bodies to particle-body attachments."""
+        if model.attachment_particle_body_count == 0:
             return (
                 wp.zeros(model.body_count + 1, dtype=wp.int32, device=self.device),
                 wp.empty(0, dtype=wp.int32, device=self.device),
             )
 
         indices, offsets = build_vertex_adjacency_with_warp(
-            model.attachment_body_particle_body.to("cpu"),
+            model.attachment_particle_body_body.to("cpu"),
             model.body_count,
             count_kernel=_count_body_particle_attachments_per_body,
             fill_kernel=_fill_body_particle_attachments_per_body,
@@ -2383,8 +2411,10 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         When True (default), the step refreshes rigid contact state from the
         provided ``Contacts`` buffer: rebuilds per-body contact lists, initializes
-        penalty_k/lambda/C0, and restores warm-start state from
-        ``Contacts.rigid_contact_match_index`` when contact history is enabled.
+        penalty_k/lambda/C0, and restores warm-start state when contact history
+        is enabled (from each contact's own state when ``Contacts`` was not
+        collided since the previous step, otherwise through
+        ``Contacts.rigid_contact_match_index``).
         When False, the step reuses the current rigid contact lists and contact
         state. In that mode, the caller must pass the same contact result/buffers
         used by the previous refresh; do not run collision into the contacts
@@ -2567,8 +2597,17 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._initialize_particles(state_in, state_out, contacts, dt)
 
         rigid_due, soft_due = self._collision_detection_due((_Frequency.PRE_POST_INIT,))
+        # With contact history, the post-initialization pass carries the state just
+        # restored, like the in-iteration passes; its match indices refer to the
+        # pre-initialization pass, not to the previous step's snapshot.
         self._mid_step_detection(
-            state_in, state_out, contacts, dt, rigid_due=rigid_due, soft_due=soft_due, preserve_history=False
+            state_in,
+            state_out,
+            contacts,
+            dt,
+            rigid_due=rigid_due,
+            soft_due=soft_due,
+            preserve_history=self.rigid_contact_history,
         )
 
         for iter_num in range(self.iterations):
@@ -2804,11 +2843,14 @@ class SolverVBD(SolverBase, CouplingInterface):
                 contacts.rigid_contact_normal,
                 self.body_body_contact_lambda,
                 self.body_body_contact_penalty_k,
+                contacts.contact_generation,
+                self._contact_history_buffer_id(contacts),
             ],
             outputs=[
                 self._prev_contact_lambda,
                 self._prev_contact_penalty_k,
                 self._prev_contact_normal,
+                self._prev_contact_frame,
             ],
             device=self.device,
         )
@@ -3303,7 +3345,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                             self.rigid_compliant_alm,
                             restore_compliant_tangent_warmstart,
                             contacts.rigid_contact_match_index,
+                            contacts.rigid_contact_match_generation,
+                            contacts.contact_generation,
+                            self._contact_history_buffer_id(contacts),
                             history,
+                            self._prev_contact_frame,
                             self._contact_history_reset_pending,
                             self._contact_history_reset_mask,
                             model.shape_world,
@@ -3746,10 +3792,10 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         # Iterate over color groups
         for color in range(len(self.model.particle_color_groups)):
-            if model.attachment_body_particle_count > 0:
+            if model.attachment_particle_body_count > 0:
                 wp.launch(
                     kernel=accumulate_body_particle_attachment_force_and_hessian,
-                    dim=model.attachment_body_particle_count,
+                    dim=model.attachment_particle_body_count,
                     inputs=[
                         dt,
                         color,
@@ -3758,12 +3804,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                         model.particle_colors,
                         body_q_for_particles,
                         body_q_prev_for_particles,
-                        model.attachment_body_particle_body,
-                        model.attachment_body_particle_particle,
-                        model.attachment_body_particle_body_point,
-                        model.attachment_body_particle_stiffness,
-                        model.attachment_body_particle_damping,
-                        model.attachment_body_particle_enabled,
+                        model.attachment_particle_body_body,
+                        model.attachment_particle_body_particle,
+                        model.attachment_particle_body_body_point,
+                        model.attachment_particle_body_stiffness,
+                        model.attachment_particle_body_damping,
+                        model.attachment_particle_body_enabled,
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
@@ -4015,7 +4061,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         for color in range(len(body_color_groups)):
             color_group = body_color_groups[color]
 
-            if model.attachment_body_particle_count > 0:
+            if model.attachment_particle_body_count > 0:
                 wp.launch(
                     kernel=accumulate_body_particle_attachments_per_body,
                     dim=color_group.size,
@@ -4028,11 +4074,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.body_q_prev,
                         model.body_com,
                         self.body_inv_mass_effective,
-                        model.attachment_body_particle_particle,
-                        model.attachment_body_particle_body_point,
-                        model.attachment_body_particle_stiffness,
-                        model.attachment_body_particle_damping,
-                        model.attachment_body_particle_enabled,
+                        model.attachment_particle_body_particle,
+                        model.attachment_particle_body_body_point,
+                        model.attachment_particle_body_stiffness,
+                        model.attachment_particle_body_damping,
+                        model.attachment_particle_body_enabled,
                         self.body_particle_attachment_offsets,
                         self.body_particle_attachment_indices,
                     ],
@@ -4762,9 +4808,10 @@ class SolverVBD(SolverBase, CouplingInterface):
     ) -> None:
         """Detect from the current rigid iterate and rebuild the rigid contact state.
 
-        Shared by the post-initialization pass and the in-iteration passes. The latter
-        set ``preserve_history`` so the in-flight ALM multipliers survive the pipeline
-        refresh through contact matching.
+        Shared by the post-initialization pass and the in-iteration passes. The latter,
+        and the former when contact history is enabled, set ``preserve_history``: the
+        current contact state is snapshotted before the pipeline refresh so the
+        in-flight ALM multipliers survive it through contact matching.
         """
         if not (rigid_due or soft_due):
             return

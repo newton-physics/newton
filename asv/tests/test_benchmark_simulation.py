@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import warp as wp
+from asv_runner.benchmarks.time import TimeBenchmark
 
 ASV_DIR = Path(__file__).parents[1]
 ROOT = ASV_DIR.parent
@@ -51,6 +52,7 @@ try:
     import benchmark_kamino
     from benchmark_kamino import DRLegsBenchmarkWorkload
     from benchmark_mujoco import Example as MuJoCoExample
+    from setup import bench_model
 finally:
     for _name, _value in _WARP_CONFIG_BEFORE_BENCHMARK_IMPORTS.items():
         setattr(wp.config, _name, _value)
@@ -72,7 +74,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
                 "update_sys_path(root); "
                 "benchmarks = disc_benchmarks(root); "
                 "data = [{key: getattr(benchmark, key, None) "
-                "for key in ('name', 'params', 'repeat', 'rounds')} "
+                "for key in ('name', 'params', 'repeat', 'rounds', 'setup_cache_key')} "
                 "for benchmark in benchmarks]; "
                 "print('ASV_INVENTORY=' + json.dumps(data))"
             )
@@ -165,7 +167,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Cover selector crossovers, duplicate-heavy hulls, and every convex type."""
         self.assertEqual(
             tuple(bench_contacts.FastConvexCollision.params[0]),
-            (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 191)),
+            (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 64), ("mixed", 153), ("mixed", 191)),
         )
         self.assertEqual(
             {shape for pair in bench_contacts.MIXED_CONVEX_PAIR_TYPES for shape in pair},
@@ -339,6 +341,54 @@ class TestSimulationBenchmarks(unittest.TestCase):
         self.assertEqual(metrics.solver_niter_mean, 3.0)
         self.assertEqual(metrics.solver_niter_max, 5.0)
 
+    def test_initialize_kpis_discard_a_matching_warmup_sample(self):
+        """Warm each measured configuration and exclude its first sample from the phase averages."""
+        cases = []
+
+        def create_example(**kwargs):
+            self.assertFalse(kwargs["randomize"])
+            case = (kwargs["robot"], kwargs["world_count"])
+            scale = 100.0 if case not in cases else 1.0
+            cases.append(case)
+            kwargs["startup_phase_times"].update(
+                model=4.0 * scale, replication=1.0 * scale, finalize=2.0 * scale, solver=3.0 * scale
+            )
+            return SimpleNamespace(graph=object(), step=Mock())
+
+        model = bench_model.KpiInitializeModel()
+        robots = ("humanoid", "g1", "cartpole", "ant")
+        world_counts = (256, 8192)
+        with (
+            patch.object(bench_model._KpiInitialize, "params", (robots, world_counts)),
+            patch.object(bench_model.wp, "get_cuda_device_count", return_value=1),
+            patch.object(bench_model, "Example", side_effect=create_example),
+            patch("benchmark_metrics.wp.synchronize_device"),
+        ):
+            metrics = model.setup_cache()
+
+        self.assertEqual(
+            cases,
+            [(robot, count) for robot in robots for count in world_counts for _ in range(model.samples + 1)],
+        )
+        self.assertEqual(set(metrics), {(robot, count) for robot in robots for count in world_counts})
+        for robot, count in metrics:
+            with self.subTest(robot=robot, world_count=count):
+                self.assertEqual(model.track_initialize_model(metrics, robot, count), 4.0)
+                self.assertEqual(model.track_mean_replication_time(metrics, robot, count), 1.0)
+                self.assertEqual(model.track_mean_finalize_time(metrics, robot, count), 2.0)
+                self.assertGreater(model.track_mean_startup_time(metrics, robot, count), 0.0)
+                self.assertEqual(bench_model.KpiInitializeSolver().track_initialize_solver(metrics, robot, count), 3.0)
+
+    def test_initialize_kpis_share_one_cache(self):
+        """Collect the model and solver KPIs once, since ASV shares an inherited ``setup_cache``."""
+        inventory = {entry["name"]: entry for entry in self._discover_benchmarks(pr_gate=False)}
+        model_key, solver_key = (
+            inventory[f"setup.bench_model.KpiInitialize{kind}.track_initialize_{kind.lower()}"]["setup_cache_key"]
+            for kind in ("Model", "Solver")
+        )
+        self.assertIsNotNone(model_key)
+        self.assertEqual(model_key, solver_key)
+
     def test_metric_setup_caches_skip_without_cuda(self):
         """Skip metric caches without constructing CPU workloads."""
         with (
@@ -349,6 +399,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             patch.object(bench_quadruped_xpbd, "_create_example") as create_quadruped,
         ):
             self.assertIsNone(bench_mujoco.FastCartpole().setup_cache())
+            self.assertIsNone(bench_model.KpiInitializeModel().setup_cache())
             self.assertIsNone(bench_kamino.KpiDRLegs().setup_cache())
             self.assertIsNone(bench_anymal.FastMetricsExampleAnymalPretrained().setup_cache())
             self.assertIsNone(bench_quadruped_xpbd.FastMetricsExampleQuadrupedXPBD().setup_cache())
@@ -374,6 +425,44 @@ class TestSimulationBenchmarks(unittest.TestCase):
             DRLegsBenchmarkWorkload.create_solver(Mock(), 0.005)
 
         solver_cls.assert_called_once()
+
+    def test_g1_dvi_remains_available_outside_pr_gate(self):
+        """Keep small and large G1 batches outside the PR gate with bounded sampling."""
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        for pr_gate in (False, True):
+            inventory = self._discover_benchmarks(pr_gate=pr_gate)
+            benchmarks = [benchmark for benchmark in inventory if "G1DVI" in benchmark["name"]]
+            self.assertEqual(len(benchmarks), 1)
+            benchmark = benchmarks[0]
+            self.assertFalse(any(pattern.search(benchmark["name"]) for pattern in patterns))
+            self.assertEqual(benchmark["params"], [["4", "512"]])
+            self.assertEqual((benchmark["rounds"], benchmark["repeat"]), (1, 3))
+
+    def test_g1_dvi_builds_once_per_world_count(self):
+        """Avoid rebuilding and warming G1 for each ASV timing sample."""
+        workload = bench_kamino.G1DVI()
+        with (
+            patch("newton.examples.robot.example_robot_g1.Example") as example_cls,
+            patch.object(wp, "get_cuda_device_count", return_value=1),
+            patch.object(wp, "ScopedDevice"),
+            patch.object(wp, "synchronize_device"),
+        ):
+            benchmark = TimeBenchmark("time_simulate", workload.time_simulate, [workload])
+            benchmark.set_param_idx(0)
+            benchmark.do_setup()
+            result = benchmark.do_run()
+            benchmark.do_teardown()
+
+            self.assertEqual(len(result["samples"]), 3)
+            self.assertEqual(example_cls.call_count, 1)
+            self.assertEqual(example_cls.return_value.step.call_count, 100 + 3 * 200)
+            self.assertEqual(example_cls.return_value.test_final.call_count, 3)
+
+            workload.setup(512)
+            self.assertEqual(example_cls.call_count, 2)
+            with patch.object(wp, "get_cuda_device_count", return_value=0):
+                with self.assertRaises(NotImplementedError):
+                    workload.setup(512)
 
     def test_aws_benchmark_comparison_gates_only_runtime_metrics(self):
         """Gate discovered PR runtimes while retaining dashboard-only metrics."""
@@ -409,6 +498,11 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_mujoco.FastG1.track_sim_dt",
             "simulation.bench_mujoco.FastG1.track_sim_substeps",
             "simulation.bench_mujoco.FastNewtonOverheadG1.track_simulate",
+            "setup.bench_model.KpiInitializeModel.track_initialize_model",
+            "setup.bench_model.KpiInitializeModel.track_mean_replication_time",
+            "setup.bench_model.KpiInitializeModel.track_mean_finalize_time",
+            "setup.bench_model.KpiInitializeModel.track_mean_startup_time",
+            "setup.bench_model.KpiInitializeSolver.track_initialize_solver",
             "simulation.bench_teleop_mujoco.TeleopMuJoCo.track_frame_overrun_pct",
             "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.track_mean_loop_ms",
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera.time_render_color_only",

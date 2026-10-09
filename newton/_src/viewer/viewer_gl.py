@@ -7,6 +7,7 @@ import ctypes
 import enum
 import re
 import time
+import warnings
 from collections.abc import Callable, Sequence
 from importlib import metadata
 from typing import Any, Literal
@@ -2086,7 +2087,11 @@ class ViewerGL(ViewerBase):
     @override
     @deprecate_nonkeyword_arguments
     def get_frame(
-        self, target_image: wp.array3d[wp.uint8] | None = None, *, render_ui: bool = False
+        self,
+        *,
+        output: wp.array3d[wp.uint8] | None = None,
+        render_ui: bool = False,
+        target_image: wp.array3d[wp.uint8] | None = None,
     ) -> wp.array3d[wp.uint8]:
         """
         Retrieve the last rendered frame.
@@ -2096,23 +2101,35 @@ class ViewerGL(ViewerBase):
         memory.
 
         .. deprecated:: 1.7
-            Passing ``render_ui`` positionally is deprecated. Use
-            ``get_frame(target_image, render_ui=...)`` instead.
+            ``target_image`` and passing optional arguments positionally are
+            deprecated. Use ``get_frame(output=..., render_ui=...)`` instead.
 
         Args:
-            target_image:
+            output:
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
             render_ui: Whether to render the UI.
+            target_image: Deprecated alias for ``output``.
 
         Returns:
             wp.array: RGB image data on the viewer device with shape
                 `(height, width, 3)` and dtype `wp.uint8`. Origin is top-left
                 (OpenGL's bottom-left is flipped).
+                If supplied, returns ``output``.
 
         Raises:
+            TypeError: Both ``output`` and ``target_image`` are supplied.
             RuntimeError: Rendering is paused before an image has been displayed.
         """
+        if target_image is not None:
+            if output is not None:
+                raise TypeError("Specify only one of `output` and `target_image`")
+            warnings.warn(
+                "ViewerGL.get_frame(target_image=...) is deprecated as of Newton 1.7; use output=... instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            output = target_image
 
         if self.is_rendering_paused() and not self._has_rendered_frame:
             raise RuntimeError("Frame capture requires at least one displayed frame")
@@ -2172,22 +2189,22 @@ class ViewerGL(ViewerBase):
             assert self._pbo_host_buffer is not None
             buf = self._pbo_host_buffer
 
-        if target_image is None:
-            target_image = wp.empty(
+        if output is None:
+            output = wp.empty(
                 shape=(h, w, 3),
                 dtype=wp.uint8,  # pyright: ignore[reportArgumentType]
                 device=self.device,
             )
 
-        if target_image.shape != (h, w, 3):
-            raise ValueError(f"Shape of `target_image` must be ({h}, {w}, 3), got {target_image.shape}")
+        if output.shape != (h, w, 3):
+            raise ValueError(f"Shape of `output` must be ({h}, {w}, 3), got {output.shape}")
 
         # Launch the RGB kernel.
         wp.launch(
             copy_rgb_frame_uint8,
             dim=(w, h),
             inputs=[buf, w, h],
-            outputs=[target_image],
+            outputs=[output],
             device=self.device,
         )
 
@@ -2195,7 +2212,7 @@ class ViewerGL(ViewerBase):
             assert self._wp_pbo is not None
             self._wp_pbo.unmap()
 
-        return target_image
+        return output
 
     @override
     def is_running(self) -> bool:

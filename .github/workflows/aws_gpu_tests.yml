@@ -144,6 +144,7 @@ jobs:
     env:
       HOME: /actions-runner
       PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
+      OVRTX_SHADER_CACHE: /actions-runner/.cache/ovrtx-nv-shadercache
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
@@ -164,6 +165,7 @@ jobs:
         run: |
           nvidia-smi --query-gpu=name,compute_cap --format=csv | tee -a "$GITHUB_STEP_SUMMARY"
           echo "sm=sm$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.')" >> "$GITHUB_OUTPUT"
+          echo "driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)" >> "$GITHUB_OUTPUT"
 
       # Warp kernel binaries are architecture-specific, so each GPU type keeps its own cache.
       # Post-submit (push) runs start cold to catch stale-cache issues without
@@ -181,33 +183,44 @@ jobs:
       - name: Check disk space
         run: df -h
 
+      # The first OVRTX renderer otherwise spends minutes compiling Vulkan shaders
+      # in the driver. OVRTX keeps that driver cache inside its installed package.
+      - name: Link OVRTX shader cache
+        id: ovrtx-shader-cache
+        run: |
+          ovrtx_info=$(uv run --extra dev --extra torch-cu13 --extra rtx python -c \
+            "import importlib.metadata as m, os, ovrtx; print(os.path.dirname(ovrtx.__file__), m.version('ovrtx'))")
+          ovrtx_dir=${ovrtx_info% *}
+          test -d "$ovrtx_dir/bin/cache"
+          mkdir -p "$OVRTX_SHADER_CACHE"
+          rm -rf "$ovrtx_dir/bin/cache/nv_shadercache"
+          ln -s "$OVRTX_SHADER_CACHE" "$ovrtx_dir/bin/cache/nv_shadercache"
+          echo "key=ovrtx-nv-shadercache-${{ steps.gpu-arch.outputs.sm }}-${{ steps.gpu-arch.outputs.driver }}-${ovrtx_info##* }" >> "$GITHUB_OUTPUT"
+
+      # Compiled shaders are specific to the GPU and driver. Unlike the Warp cache,
+      # post-submit runs restore it too: the driver validates its own entries.
+      - name: Restore OVRTX shader cache
+        id: restore-ovrtx-shader-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: ${{ env.OVRTX_SHADER_CACHE }}
+          key: ${{ steps.ovrtx-shader-cache.outputs.key }}
+          restore-keys: |
+            ovrtx-nv-shadercache-${{ steps.gpu-arch.outputs.sm }}-${{ steps.gpu-arch.outputs.driver }}-
+
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
           # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
           COVERAGE_CORE: "sysmon"
-        run: uv run --extra dev --extra torch-cu13 -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
-      - name: Test ViewerRTX with OVRTX 0.5
-        run: >
-          uv run --extra dev
-          --with ovrtx==0.5.0.377615
-          --with ovstage==0.2.0.377349
-          -m newton.tests
-          -k test_viewer_rtx
-          --strict-warnings
-          --no-cache-clear
-
-      - name: Smoke test ViewerRTX rendering with OVRTX 0.5
-        run: >
-          uv run --extra dev
-          --with ovrtx==0.5.0.377615
-          --with ovstage==0.2.0.377349
-          python -W error::DeprecationWarning
-          -m newton.examples basic_viewer
-          --viewer rtx
-          --headless
-          --num-frames 2
+      - name: Save OVRTX shader cache
+        if: github.event_name != 'merge_group' && steps.restore-ovrtx-shader-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: ${{ env.OVRTX_SHADER_CACHE }}
+          key: ${{ steps.ovrtx-shader-cache.outputs.key }}
 
       # Merge queue caches are scoped to throwaway gh-readonly-queue refs.
       # Cache keys are immutable, so cold runs only save when the key is new.
