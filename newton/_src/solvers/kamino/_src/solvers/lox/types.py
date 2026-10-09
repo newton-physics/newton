@@ -249,6 +249,7 @@ class ContactRows:
         compliant: Whether to allocate the normal compliance of each contact.
         restitution: Whether to allocate the in-kernel restitution inputs of each contact.
         delassus_type: Type of the unsplit Delassus block of each contact.
+        twist_response: Whether to allocate the twist response of each contact.
     """
 
     def __init__(
@@ -259,6 +260,7 @@ class ContactRows:
         restitution: bool = False,
         *,
         delassus_type: type = wp.mat33f,
+        twist_response: bool = True,
     ):
         world_count = len(world_capacity)
         offsets = capacity_offsets(world_capacity)
@@ -318,8 +320,9 @@ class ContactRows:
         """Normal-last impulse of each contact."""
         self.velocity = wp.zeros(self.capacity, dtype=wp.vec3f, device=device)
         """Contact velocity ``J v`` of each contact, without bias."""
-        self.response = wp.zeros((self.capacity, 2), dtype=mat36f, device=device)
-        """Transposed twist response ``J W^-1`` of each contact on its bodies A and B, prepared with the body weights."""
+        self.response = wp.zeros((self.capacity if twist_response else 0, 2), dtype=mat36f, device=device)
+        """Transposed twist response ``J W^-1`` of each contact on its bodies A and B, prepared with the body
+        weights. Spatial contacts apply the inverse body weights directly and leave it empty."""
         self.world_residual_max = wp.zeros(world_count, dtype=wp.float32, device=device)
         """Largest contact residual of each world."""
 
@@ -349,7 +352,14 @@ class SpatialContactRows(ContactRows):
         compliant: bool = False,
         restitution: bool = False,
     ):
-        super().__init__(world_capacity, device, compliant=compliant, restitution=restitution, delassus_type=mat66f)
+        super().__init__(
+            world_capacity,
+            device,
+            compliant=compliant,
+            restitution=restitution,
+            delassus_type=mat66f,
+            twist_response=False,
+        )
         self.frame = wp.zeros(self.capacity, dtype=wp.mat33f, device=device)
         self.angular_friction = wp.zeros(self.capacity, dtype=wp.vec2f, device=device)
         self.angular_reaction = wp.zeros(self.capacity, dtype=wp.vec3f, device=device)
