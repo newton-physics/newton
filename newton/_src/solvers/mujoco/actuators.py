@@ -242,7 +242,6 @@ def _dynamics_type(value: int | str) -> int:
             "filter": int(_ActuatorDynamicsType.FILTER),
             "filterexact": int(_ActuatorDynamicsType.FILTER_EXACT),
             "muscle": int(_ActuatorDynamicsType.MUSCLE),
-            "dcmotor": int(_ActuatorDynamicsType.DCMOTOR),
             "user": int(_ActuatorDynamicsType.USER),
         },
         "dyntype",
@@ -256,8 +255,6 @@ def _gain_type(value: int | str) -> int:
             "fixed": int(_ActuatorGainType.FIXED),
             "affine": int(_ActuatorGainType.AFFINE),
             "muscle": int(_ActuatorGainType.MUSCLE),
-            "dcmotor": int(_ActuatorGainType.DCMOTOR),
-            "so3": int(_ActuatorGainType.SO3),
             "user": int(_ActuatorGainType.USER),
         },
         "gaintype",
@@ -271,26 +268,10 @@ def _bias_type(value: int | str) -> int:
             "none": int(_ActuatorBiasType.NONE),
             "affine": int(_ActuatorBiasType.AFFINE),
             "muscle": int(_ActuatorBiasType.MUSCLE),
-            "dcmotor": int(_ActuatorBiasType.DCMOTOR),
-            "so3": int(_ActuatorBiasType.SO3),
             "user": int(_ActuatorBiasType.USER),
         },
         "biastype",
     )
-
-
-# MuJoCo ``mjtCtrlInput`` bits for the single-input DC-motor signatures that
-# SolverMuJoCo supports; matches the MJCF ``input`` attribute parser.
-_DCMOTOR_INPUT_MODES = {"position": 1, "pos": 1, "velocity": 2, "vel": 2, "voltage": 8}
-
-
-def _input_mode(value: int | str) -> int:
-    mode = _enum_value(value, _DCMOTOR_INPUT_MODES, "DC-motor input mode")
-    if mode not in _DCMOTOR_INPUT_MODES.values():
-        raise ValueError(
-            f"Unsupported DC-motor input mode {value!r}; expected voltage (8), position (1), or velocity (2)."
-        )
-    return mode
 
 
 def _add_actuator(
@@ -317,7 +298,6 @@ def _add_actuator(
     damping: float = 0.0,
     armature: float = 0.0,
     ctrl: float = 0.0,
-    specific_values: dict[str, Any] | None = None,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
     from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
@@ -375,8 +355,6 @@ def _add_actuator(
         "mujoco:ctrl_source": int(SolverMuJoCo.CtrlSource.CTRL_DIRECT),
         "mujoco:ctrl_type": int(ctrl_type),
     }
-    if specific_values:
-        values.update(specific_values)
 
     return _add_custom_frequency_row(
         builder,
@@ -651,108 +629,8 @@ def add_actuator_velocity(
     )
 
 
-def add_actuator_dcmotor(
-    builder: ModelBuilder,
-    target: ActuatorTarget,
-    *,
-    motorconst: Sequence[float] = (0.0, 0.0),
-    resistance: float = 0.0,
-    nominal: Sequence[float] = (0.0, 0.0, 0.0),
-    saturation: Sequence[float] = (0.0, 0.0, 0.0),
-    inductance: Sequence[float] = (0.0, 0.0),
-    cogging: Sequence[float] = (0.0, 0.0, 0.0),
-    controller: Sequence[float] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-    thermal: Sequence[float] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-    lugre: Sequence[float] = (0.0, 0.0, 0.0, 0.0, 0.0),
-    input_mode: int | str = "voltage",
-    gear: Sequence[float] = (1.0,),
-    ctrlrange: Sequence[float] | None = None,
-    ctrllimited: bool | int | str = "auto",
-    cranklength: float | None = None,
-    damping: float = 0.0,
-    armature: float = 0.0,
-    ctrl: float = 0.0,
-    custom_attributes: dict[str, Any] | None = None,
-) -> int:
-    """Add a MuJoCo DC-motor shortcut controlled through ``control.mujoco.ctrl``.
-
-    The high-level values are preserved until :class:`~newton.solvers.SolverMuJoCo` builds its
-    native MuJoCo model, where ``MjsActuator.set_to_dcmotor()`` compiles them.
-    Force limits are derived from ``saturation``; MuJoCo manages the activation
-    limits. See the `MuJoCo DC-motor reference
-    <https://mujoco.readthedocs.io/en/stable/XMLreference.html#actuator-dcmotor>`_
-    for parameter layouts and interactions.
-
-    Args:
-        builder: Model builder receiving the actuator.
-        target: Typed actuator transmission target.
-        motorconst: Torque constant [N·m/A] and back-EMF constant [V·s/rad].
-        resistance: Terminal resistance [ohm].
-        nominal: Voltage [V], stall torque [N·m], and no-load speed [rad/s].
-        saturation: Maximum torque [N·m], current [A], and current rate [A/s].
-            Torque takes precedence over current when deriving the force limit.
-        inductance: Winding inductance [H] and electrical time constant [s].
-        cogging: Torque amplitude [N·m], pole count, and phase [rad].
-        controller: ``(kp, ki, kd, slewmax, Imax, Vmax)``; see the MuJoCo
-            reference for input-dependent units and saturation behavior.
-        thermal: Thermal resistance [K/W], capacitance [J/K], time constant [s],
-            temperature coefficient [1/K], reference temperature [°C], and ambient temperature [°C].
-        lugre: Bristle stiffness [N·m/rad], damping [N·m·s/rad], Coulomb torque [N·m],
-            static torque [N·m], and Stribeck velocity [rad/s].
-        input_mode: Control input: ``"voltage"``, ``"position"``, or
-            ``"velocity"``, or the corresponding MuJoCo ``mjtCtrlInput`` value
-            (8, 1, or 2).
-        gear: Transmission gear, padded to six values.
-        ctrlrange: Optional control range.
-        ctrllimited: Control-limit tri-state (false, true, or auto).
-        cranklength: Slider-crank length [m]. Required for slider-crank targets.
-        damping: Actuator damping [N·s/m or N·m·s/rad].
-        armature: Actuator armature [kg or kg·m²].
-        ctrl: Initial MuJoCo control value.
-        custom_attributes: Additional registered ``mujoco:actuator`` attributes.
-
-    Returns:
-        The ``mujoco:actuator`` row index.
-    """
-    from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
-
-    _ensure_mujoco_attributes(builder, "mujoco:actuator_trnid")
-    SolverMuJoCo._register_dcmotor_custom_attributes(builder)
-    input_code = _input_mode(input_mode)
-    specific_values = {
-        "mujoco:actuator_dcmotor_motorconst": _vector(builder, "mujoco:actuator_dcmotor_motorconst", motorconst, 2),
-        "mujoco:actuator_dcmotor_resistance": float(resistance),
-        "mujoco:actuator_dcmotor_nominal": _vector(builder, "mujoco:actuator_dcmotor_nominal", nominal, 3),
-        "mujoco:actuator_dcmotor_saturation": _vector(builder, "mujoco:actuator_dcmotor_saturation", saturation, 3),
-        "mujoco:actuator_dcmotor_inductance": _vector(builder, "mujoco:actuator_dcmotor_inductance", inductance, 2),
-        "mujoco:actuator_dcmotor_cogging": _vector(builder, "mujoco:actuator_dcmotor_cogging", cogging, 3),
-        "mujoco:actuator_dcmotor_controller": _vector(builder, "mujoco:actuator_dcmotor_controller", controller, 6),
-        "mujoco:actuator_dcmotor_thermal": _vector(builder, "mujoco:actuator_dcmotor_thermal", thermal, 6),
-        "mujoco:actuator_dcmotor_lugre": _vector(builder, "mujoco:actuator_dcmotor_lugre", lugre, 5),
-        "mujoco:actuator_dcmotor_input": input_code,
-        # Mirror the MJCF importer, which also stores the input signature in
-        # the generic compiled-model attribute used by MuJoCo-Warp.
-        "mujoco:actuator_ctrlspec": input_code,
-    }
-    return _add_actuator(
-        builder,
-        target,
-        ctrl_type=int(SolverMuJoCo.CtrlType.DCMOTOR),
-        gear=gear,
-        ctrlrange=ctrlrange,
-        ctrllimited=ctrllimited,
-        cranklength=cranklength,
-        damping=damping,
-        armature=armature,
-        ctrl=ctrl,
-        specific_values=specific_values,
-        custom_attributes=custom_attributes,
-    )
-
-
 __all__ = [
     "ActuatorTarget",
-    "add_actuator_dcmotor",
     "add_actuator_general",
     "add_actuator_motor",
     "add_actuator_position",

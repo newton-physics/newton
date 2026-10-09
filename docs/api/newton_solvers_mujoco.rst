@@ -15,11 +15,11 @@ Example::
 
     from newton.solvers import mujoco
 
-    actuator = mujoco.add_actuator_dcmotor(
+    actuator = mujoco.add_actuator_position(
         builder,
         target=mujoco.ActuatorTarget.joint(joint),
-        motorconst=(0.05, 0.05),
-        resistance=2.0,
+        kp=10.0,
+        kv=2.0,
     )
 
 .. note::
@@ -42,8 +42,6 @@ Example::
 
 
 .. rubric:: Functions
-
-.. autofunction:: add_actuator_dcmotor
 
 .. autofunction:: add_actuator_general
 

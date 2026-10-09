@@ -386,10 +386,6 @@ def parse_mjcf(
     # Register the MuJoCo custom attributes needed to preserve imported model
     # properties. The operation is idempotent.
     SolverMuJoCo.register_custom_attributes(builder)
-    # Avoid replicating and allocating high-level DC-motor arrays for the
-    # overwhelmingly common case where the MJCF contains no DC motors.
-    if root.find(".//dcmotor") is not None:
-        SolverMuJoCo._register_dcmotor_custom_attributes(builder)
     # Bit 1 in one MJCF file may describe different shapes than bit 1 in
     # another. Give every add_mjcf() call a domain so those equal numbers are
     # not mistaken for one shared collision rule. The domain is only a source
@@ -3410,13 +3406,6 @@ def parse_mjcf(
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
-            elif actuator_type == "dcmotor":
-                # SolverMuJoCo applies MuJoCo's native DC-motor shortcut from
-                # the high-level parameters preserved by custom attributes.
-                gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
-
             elif actuator_type == "damper":
                 kv = parse_float(merged_attrib, "kv", 1.0)
                 gainprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -3447,15 +3436,6 @@ def parse_mjcf(
                 parsing_mode="mjcf",
                 context={"actuator_name": act_name},
             )
-            if actuator_type == "dcmotor":
-                # MuJoCo 3.12 stores the input signature separately from the
-                # compiled gain parameters. Keep both the high-level value and
-                # its generic compiled-model representation.
-                input_key = "mujoco:actuator_dcmotor_input"
-                parsed_attrs["mujoco:actuator_ctrlspec"] = parsed_attrs.get(
-                    input_key,
-                    builder.custom_attributes[input_key].default,
-                )
             if (
                 actuator_type in {"position", "velocity", "intvelocity"}
                 and target_joint_name in mjcf_slide_joint_names
@@ -3497,8 +3477,6 @@ def parse_mjcf(
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.POSITION)
             elif actuator_type == "velocity":
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.VELOCITY)
-            elif actuator_type == "dcmotor":
-                ctrl_type_val = int(SolverMuJoCo.CtrlType.DCMOTOR)
             else:
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.GENERAL)
 
