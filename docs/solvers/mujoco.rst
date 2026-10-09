@@ -701,6 +701,14 @@ a negative world index — assigning any of them to the global world
 raises ``ValueError``. Only shapes may live in the global world (-1);
 they are shared across all worlds without replication.
 
+Heightfields may differ between worlds; each world collides against its
+own. Cones are tessellated from the first world, so when MuJoCo generates
+their contacts, corresponding cones must have the same radius and
+half-height in every world, and :class:`~newton.solvers.SolverMuJoCo`
+raises ``ValueError`` otherwise. Use ``use_mujoco_contacts=False`` to
+collide each world against its own cones through Newton's collision
+pipeline.
+
 
 Runtime state synchronization
 -----------------------------
