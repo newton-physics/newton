@@ -6,6 +6,7 @@
 A curated list of research using the [Newton physics engine](https://github.com/newton-physics/newton).
 Entries must be research publications or preprints. Code and project websites
 may support an entry, but do not qualify on their own.
+BibTeX citations are available in [docs/publications.bib](docs/publications.bib).
 
 ## Inclusion criteria
 
@@ -22,7 +23,9 @@ Studies of Newton and work proposing improvements belong in the research section
 
 ## Contributing
 
-Open a PR adding a citation and BibTeX entry in the format below. Explain how the
+Every publication addition or update must change both this list and
+[docs/publications.bib](docs/publications.bib), keeping their citation metadata
+consistent. Open a PR using the format below. Explain how the
 work uses Newton and link material accessible to reviewers in the **PR description**.
 For paywalled papers, provide an accessible author version, code, or supplementary
 documentation demonstrating Newton use. These details do not need to appear in
@@ -38,14 +41,15 @@ published citation when available and retain an accessible preprint link.
   author surname, then given name, then subsequent authors, then title.
   Ignore capitalization and accents; preserve the published author order.
 - Use a bullet with **title**, abbreviated authors, date, and arXiv/DOI link.
-  Keep full author names in the collapsible BibTeX block.
-- Use `@article`, `@inproceedings`, or `@misc` as appropriate, with verified
+  Keep full author names in the corresponding `docs/publications.bib` entry.
+- In `docs/publications.bib`, use `@article`, `@inproceedings`, or `@misc` as appropriate, with verified
   `title`, `author`, `year`, `url`, and available venue/DOI or arXiv fields.
   Use `Family, Given` names separated by `and`; protect title acronyms with braces.
 - Use first-author surname and year as the key, such as `tsounis2026`, adding
   letters only for collisions (`tsounis2026a`, `tsounis2026b`). Preserve existing
   keys when adding or updating entries.
-  Keep Markdown and BibTeX metadata consistent; move entries if the cited year changes.
+  Keep the BibTeX entries in the same year/author order as this list; move entries
+  in both files if the cited year changes.
 
 ## Research using or developing Newton
 
@@ -53,43 +57,7 @@ published citation when available and retain an accessible preprint link.
 
 - **Kamino: GPU-based Massively Parallel Simulation of Multi-Body Systems with Challenging Topologies**. *V. Tsounis, G. Maloisel, C. Schumacher, R. Grandia, A. Serifi, D. Müller, C. Amevor, T. Widmer, M. Bächer*. March 2026. [arXiv:2603.16536](https://arxiv.org/abs/2603.16536)
 
-<details>
-<summary>BibTeX</summary>
-
-```bibtex
-@misc{tsounis2026,
-  title         = {{Kamino}: {GPU}-based Massively Parallel Simulation of Multi-Body Systems with Challenging Topologies},
-  author        = {Tsounis, Vassilios and Maloisel, Guirec and Schumacher, Christian and Grandia, Ruben and Serifi, Agon and Müller, David and Amevor, Chris and Widmer, Tobias and Bächer, Moritz},
-  year          = {2026},
-  month         = mar,
-  eprint        = {2603.16536},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.RO},
-  url           = {https://arxiv.org/abs/2603.16536}
-}
-```
-
-</details>
-
 - **SIM1: Physics-Aligned Simulator as Zero-Shot Data Scaler in Deformable Worlds**. *Y. Zhou, H. Liu, X. Jiang, X. Shen, Y. Zhou, H. Wang, B. Fang, Y. Tian, M. Yu, Q. Yu, L. Ma, H. Li, H. Wang, J. Zeng, J. Pang*. April 2026. [arXiv:2604.08544](https://arxiv.org/abs/2604.08544)
-
-<details>
-<summary>BibTeX</summary>
-
-```bibtex
-@misc{zhou2026,
-  title         = {{SIM1}: Physics-Aligned Simulator as Zero-Shot Data Scaler in Deformable Worlds},
-  author        = {Zhou, Yunsong and Liu, Hangxu and Jiang, Xuekun and Shen, Xing and Zhou, Yuanzhen and Wang, Hui and Fang, Baole and Tian, Yang and Yu, Mulin and Yu, Qiaojun and Ma, Li and Li, Hengjie and Wang, Hanqing and Zeng, Jia and Pang, Jiangmiao},
-  year          = {2026},
-  month         = apr,
-  eprint        = {2604.08544},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.RO},
-  url           = {https://arxiv.org/abs/2604.08544}
-}
-```
-
-</details>
 
 ## Newton used solely as a comparison baseline
 
