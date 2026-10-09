@@ -753,7 +753,6 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
     def _build_logical_1x1_bsm(self, block_shape: tuple[int, ...]) -> tuple[BlockSparseMatrices, list[np.ndarray]]:
         """Build the same logical scalar matrix for a scalar, vec1, or 1x1 block type."""
         blocks_per_dim = np.array([[4, 3], [2, 5]], dtype=np.int32)
-        block_dims = (1, 1)
         num_matrices = len(blocks_per_dim)
         max_blocks_per_dim = blocks_per_dim.copy()
         max_blocks_per_dim[0] += [1, 2]
