@@ -1,0 +1,1 @@
+Remap MuJoCo actuator transmission targets in `ModelBuilder.add_builder()` so ctrl-direct actuators in each merged builder copy drive their own joints, tendons, sites, and bodies instead of those of the first copy.

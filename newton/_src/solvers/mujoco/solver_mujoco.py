@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import warnings
+from array import array
 from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -135,6 +136,64 @@ else:
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
+
+
+def _remap_actuator_trnid(values: list[Any], context: dict[str, Any]) -> list[Any]:
+    """Remap heterogeneous MuJoCo actuator targets during builder composition.
+
+    ``actuator_trnid`` holds joint-DOF, tendon, site, or body indices depending on
+    each row's ``actuator_trntype``, so a single ``references`` offset cannot remap
+    it. Builder replication calls this once per copied builder, so rows are
+    decoded and re-encoded in bulk.
+    """
+    count = len(values)
+    trntype_attr = context["builder"].custom_attributes.get("mujoco:actuator_trntype")
+    if count == 0 or trntype_attr is None:
+        return values
+
+    entity_offsets = context["entity_offsets"]
+    dof_offsets = (entity_offsets["joint_dof"], 0)
+    shape_offsets = (entity_offsets["shape"], entity_offsets["shape"])
+    trn_type = SolverMuJoCo.TrnType
+    offsets_by_trntype = {
+        trn_type.JOINT: dof_offsets,
+        trn_type.JOINT_IN_PARENT: dof_offsets,
+        trn_type.TENDON: (context["custom_frequency_offsets"].get("mujoco:tendon", 0), 0),
+        trn_type.SITE: shape_offsets,
+        trn_type.BODY: (entity_offsets["body"], 0),
+        trn_type.SLIDERCRANK: shape_offsets,
+    }
+
+    vec2i = wp.vec2i
+    if all(type(value) is vec2i for value in values):
+        # Warp vectors are ctypes arrays; decode their bytes in bulk.
+        targets = array("i", b"".join(map(bytes, values)))
+    else:
+        targets = array("i")
+        for value in values:
+            targets.extend((-1, -1) if value is None else (int(value[0]), int(value[1])))
+
+    authored_trntypes = trntype_attr.values or []
+    is_sparse = isinstance(authored_trntypes, dict)
+    authored_count = len(authored_trntypes)
+    default_trntype = trntype_attr.default
+    for i, row in enumerate(context["row_indices"]):
+        if is_sparse:
+            trntype = authored_trntypes.get(row)
+        else:
+            trntype = authored_trntypes[row] if row < authored_count else None
+        primary_offset, secondary_offset = offsets_by_trntype.get(
+            int(default_trntype if trntype is None else trntype), (0, 0)
+        )
+        if primary_offset and targets[2 * i] >= 0:
+            targets[2 * i] += primary_offset
+        if secondary_offset and targets[2 * i + 1] >= 0:
+            targets[2 * i + 1] += secondary_offset
+
+    # Build all vectors from one buffer, as wp.array.list() does, instead of
+    # constructing each vector separately.
+    result = list((vec2i * count).from_buffer_copy(targets))
+    return [None if value is None else target for value, target in zip(values, result, strict=True)]
 
 
 def _required_specifier(package: str, requirements: Iterable[str]) -> str | None:
@@ -2363,6 +2422,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.vec2i,
                 default=wp.vec2i(-1, -1),
                 namespace="mujoco",
+                reference_value_transformer=_remap_actuator_trnid,
             )
         )
 
@@ -2594,6 +2654,31 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 usd_attribute_name="mjc:gear",
             )
         )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_damping",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="damping",
+                usd_attribute_name="mjc:damping",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_armature",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="armature",
+                usd_attribute_name="mjc:armature",
+            )
+        )
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_cranklength",
@@ -3805,6 +3890,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         actlimited_arr = (
             mujoco_attrs.actuator_actlimited.numpy() if hasattr(mujoco_attrs, "actuator_actlimited") else None
         )
+        damping_arr = mujoco_attrs.actuator_damping.numpy() if hasattr(mujoco_attrs, "actuator_damping") else None
+        armature_arr = mujoco_attrs.actuator_armature.numpy() if hasattr(mujoco_attrs, "actuator_armature") else None
         lengthrange_arr = (
             mujoco_attrs.actuator_lengthrange.numpy() if hasattr(mujoco_attrs, "actuator_lengthrange") else None
         )
@@ -3955,6 +4042,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if hasattr(mujoco_attrs, "actuator_cranklength"):
                 cranklength = float(mujoco_attrs.actuator_cranklength.numpy()[mujoco_act_idx])
                 general_args["cranklength"] = cranklength
+            if damping_arr is not None:
+                general_args["damping"] = float(damping_arr[mujoco_act_idx])
+            if armature_arr is not None:
+                general_args["armature"] = float(armature_arr[mujoco_act_idx])
             # Only pass range to MuJoCo when explicitly set in MJCF (has_*range flags),
             # so MuJoCo can correctly resolve auto-limited flags via spec.compiler.autolimits.
             if has_ctrlrange_arr is not None and has_ctrlrange_arr[mujoco_act_idx]:

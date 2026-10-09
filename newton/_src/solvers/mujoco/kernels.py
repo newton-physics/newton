@@ -3026,17 +3026,17 @@ def update_eq_data_and_active_kernel(
         data[1] = anchor[1]
         data[2] = anchor[2]
 
-        # data[3:6] = relpose translation
+        # A zero quaternion leaves relpose to the MuJoCo compiler. Preserve
+        # that compiled pose when synchronizing the authored equality row.
         relpose = eq_constraint_relpose[newton_eq]
-        pos = wp.transform_get_translation(relpose)
-        data[3] = pos[0]
-        data[4] = pos[1]
-        data[5] = pos[2]
-
-        # data[6:10] = relpose quaternion in MuJoCo order (wxyz)
         quat = quat_xyzw_to_wxyz(wp.transform_get_rotation(relpose))
-        for i in range(4):
-            data[6 + i] = quat[i]
+        if wp.dot(quat, quat) > 0.0:
+            pos = wp.transform_get_translation(relpose)
+            data[3] = pos[0]
+            data[4] = pos[1]
+            data[5] = pos[2]
+            for i in range(4):
+                data[6 + i] = quat[i]
 
         # data[10] = torquescale
         data[10] = eq_constraint_torquescale[newton_eq]
