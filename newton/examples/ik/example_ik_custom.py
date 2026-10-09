@@ -138,6 +138,7 @@ class Example:
         self.sim_time = 0.0
 
         self.viewer = viewer
+        self.viewer.picking_enabled = False
         self.viewer.show_particles = True
 
         # ------------------------------------------------------------------
@@ -166,7 +167,7 @@ class Example:
             pitch=0.0,
             yaw=90.0,
         )
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+        if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = 90.0
 
         self.state = self.model.state()

@@ -13,6 +13,7 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton.usd
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerRTX, ViewerUSD
 
@@ -67,6 +68,70 @@ class TestViewerUSD(unittest.TestCase):
         shader = UsdShade.Shader(material.GetPrim().GetChild("PreviewSurface"))
         self.assertTrue(shader)
         return shader
+
+    def test_log_mesh_exports_canonical_normals(self):
+        """Export imported normals on polygonal meshes without source subdivision."""
+        from pxr import Usd
+
+        viewer = self._make_viewer()
+        viewer.begin_frame(0.0)
+
+        for scheme in (None, UsdGeom.Tokens.none, UsdGeom.Tokens.bilinear, UsdGeom.Tokens.catmullClark):
+            with self.subTest(scheme=scheme):
+                stage = Usd.Stage.CreateInMemory()
+                source = UsdGeom.Mesh.Define(stage, "/mesh")
+                source.CreatePointsAttr([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+                source.CreateFaceVertexCountsAttr([3])
+                source.CreateFaceVertexIndicesAttr([0, 1, 2])
+                if scheme is not None:
+                    source.CreateSubdivisionSchemeAttr().Set(scheme)
+                mesh = newton.usd.get_mesh(source.GetPrim(), load_normals=True, compute_inertia=False)
+
+                name = f"/mesh_{scheme}"
+                viewer.log_geo(name, newton.GeoType.MESH, (1.0, 1.0, 1.0), 0.0, True, mesh)
+
+                mesh_prim = UsdGeom.Mesh.Get(viewer.stage, f"/root{name}")
+                attr = mesh_prim.GetSubdivisionSchemeAttr()
+                self.assertEqual(attr.Get(), UsdGeom.Tokens.none)
+                np.testing.assert_allclose(mesh_prim.GetNormalsAttr().Get(viewer._frame_index), mesh.normals)
+
+    def test_log_mesh_replaces_shading_on_reused_name(self):
+        """Replace old subdivision and normals when a mesh name is reused."""
+        viewer = self._make_viewer()
+        points = wp.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        normals = wp.array([[0, 1, 0]] * 3, dtype=wp.vec3)
+        for dynamic in (False, True):
+            with self.subTest(dynamic=dynamic):
+                name = f"/reuse_{dynamic}"
+                viewer.begin_frame(0.0)
+                viewer.log_mesh(name, points, indices, normals=normals, dynamic=dynamic)
+                prim = UsdGeom.Mesh.Get(viewer.stage, f"/root{name}")
+                prim.GetSubdivisionSchemeAttr().Set(UsdGeom.Tokens.bilinear)
+                viewer.begin_frame(1.0)
+                viewer.log_mesh(name, points, indices, dynamic=dynamic)
+                self.assertEqual(prim.GetSubdivisionSchemeAttr().Get(), UsdGeom.Tokens.none)
+                np.testing.assert_allclose(prim.GetNormalsAttr().Get(viewer._frame_index), [[0, 0, 1]] * 3)
+
+    def test_log_mesh_replaces_split_topology_on_reused_name(self):
+        """Replace a static prototype when sharp-to-smooth import changes topology."""
+        from pxr import Usd
+
+        viewer = self._make_viewer()
+        stage = Usd.Stage.CreateInMemory()
+        source = UsdGeom.Mesh.Define(stage, "/mesh")
+        source.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)])
+        source.CreateFaceVertexCountsAttr([3, 3])
+        source.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 3, 1])
+        for scheme in ("none", "catmullClark", "bilinear"):
+            with self.subTest(scheme=scheme):
+                source.CreateSubdivisionSchemeAttr(scheme)
+                mesh = newton.usd.get_mesh(source.GetPrim(), load_normals=True, compute_inertia=False)
+                viewer.begin_frame(0.0)
+                viewer.log_geo("/mesh", newton.GeoType.MESH, (1, 1, 1), 0.0, True, mesh)
+                exported = UsdGeom.Mesh.Get(viewer.stage, "/root/mesh")
+                np.testing.assert_array_equal(exported.GetFaceVertexIndicesAttr().Get(), mesh.indices)
+                np.testing.assert_allclose(exported.GetNormalsAttr().Get(viewer._frame_index), mesh.normals)
 
     def test_log_points_keeps_per_point_wp_vec3_colors_for_three_points(self):
         viewer = self._make_viewer()
@@ -555,15 +620,15 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(list(face_counts.Get(1)), [3, 3])
         self.assertEqual(list(face_indices.Get(1)), [0, 1, 2, 0, 2, 3])
 
-    def test_log_mesh_dynamic_clears_stale_normals(self):
-        """Clear normals when a later dynamic mesh update omits them."""
+    def test_log_mesh_dynamic_recomputes_missing_normals(self):
+        """Replace stale normals with generated normals on a dynamic update."""
         viewer = self._make_viewer()
         points = wp.array(
             [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             dtype=wp.vec3,
         )
         indices = wp.array([0, 1, 2], dtype=wp.int32)
-        normals = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3)
+        normals = wp.array([[0.0, 1.0, 0.0]] * 3, dtype=wp.vec3)
 
         viewer.begin_frame(0.0)
         viewer.log_mesh("/dynamic_mesh", points, indices, normals=normals, dynamic=True)
@@ -572,7 +637,7 @@ class TestViewerUSD(unittest.TestCase):
 
         mesh = UsdGeom.Mesh.Get(viewer.stage, viewer._get_path("/dynamic_mesh"))
         self.assertEqual(len(mesh.GetNormalsAttr().Get(0)), 3)
-        self.assertEqual(list(mesh.GetNormalsAttr().Get(1)), [])
+        np.testing.assert_allclose(mesh.GetNormalsAttr().Get(1), [[0, 0, 1]] * 3)
 
 
 if __name__ == "__main__":

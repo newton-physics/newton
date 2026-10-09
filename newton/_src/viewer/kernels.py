@@ -184,6 +184,37 @@ def update_shape_xforms(
 
 
 @wp.kernel
+def update_model_shape_xforms(
+    shape_xforms: wp.array[wp.transform],
+    shape_parents: wp.array[int],
+    body_q: wp.array[wp.transform],
+    shape_worlds: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    layer_xform: wp.transform,
+    slot_to_shape: wp.array[wp.int32],
+    world_xforms: wp.array[wp.transform],
+):
+    """Compute model shape transforms in viewer batch order."""
+    slot = wp.tid()
+    shape = slot_to_shape[slot]
+    shape_xform = shape_xforms[shape]
+    shape_parent = shape_parents[shape]
+
+    if shape_parent >= 0:
+        world_xform = wp.transform_multiply(body_q[shape_parent], shape_xform)
+    else:
+        world_xform = shape_xform
+
+    if world_offsets:
+        shape_world = shape_worlds[shape]
+        if shape_world >= 0 and shape_world < world_offsets.shape[0]:
+            offset = world_offsets[shape_world]
+            world_xform = wp.transform(world_xform.p + offset, world_xform.q)
+
+    world_xforms[slot] = wp.transform_multiply(layer_xform, world_xform)
+
+
+@wp.kernel
 def repack_shape_colors(
     shape_colors: wp.array[wp.vec3],
     slot_to_shape: wp.array[wp.int32],
@@ -293,6 +324,7 @@ def compute_contact_lines(
     body_q: wp.array[wp.transform],
     shape_body: wp.array[int],
     shape_world: wp.array[int],
+    shape_collision_radius: wp.array[float],
     world_offsets: wp.array[wp.vec3],
     layer_xform: wp.transform,
     visible_worlds_mask: wp.array[int],
@@ -352,9 +384,10 @@ def compute_contact_lines(
     contact_center = wp.transform_point(layer_xform, contact_center)
     normal = wp.quat_rotate(wp.transform_get_rotation(layer_xform), contact_normal[tid])
 
-    # Create line along normal direction
+    # Create line along the normal, relative to the smaller shape in the pair.
     # Normal points from shape0 to shape1, draw from center in normal direction
-    line_vector = normal * line_scale
+    pair_radius = wp.min(shape_collision_radius[shape_a], shape_collision_radius[shape_b])
+    line_vector = normal * (line_scale * pair_radius)
 
     line_start[tid] = contact_center
     line_end[tid] = contact_center + line_vector
@@ -380,6 +413,7 @@ def compute_contact_disk_transforms(
     body_com: wp.array[wp.vec3],
     shape_body: wp.array[int],
     shape_world: wp.array[int],
+    shape_collision_radius: wp.array[float],
     world_offsets: wp.array[wp.vec3],
     visible_worlds_mask: wp.array[int],
     contact_count: wp.array[int],
@@ -390,8 +424,8 @@ def compute_contact_disk_transforms(
     contact_offset0: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
     contact_force: wp.array[wp.spatial_vector],
-    disk_radius: float,
-    disk_thickness: float,
+    disk_radius_scale: float,
+    disk_thickness_scale: float,
     eps_force: float,
     eps_velocity: float,
     color_open: wp.vec3,
@@ -406,7 +440,8 @@ def compute_contact_disk_transforms(
 
     A thin oriented disk (rendered via a unit cylinder mesh whose local +Z
     axis is the cylinder axis) is placed at each active contact, oriented so
-    that its axis matches ``contact_normal``.
+    that its axis matches ``contact_normal``. Its dimensions are scaled from
+    the smaller shape's collision radius.
 
     When ``contact_force`` is provided (non-null), the disk is colored by an
     inferred contact mode computed from the linear contact force magnitude and
@@ -499,6 +534,10 @@ def compute_contact_disk_transforms(
                 color = color_slip
                 thickness_scaling = 1.01
 
+    pair_radius = wp.min(shape_collision_radius[shape_a], shape_collision_radius[shape_b])
+    disk_radius = disk_radius_scale * pair_radius
+    disk_thickness = disk_thickness_scale * pair_radius
+
     transforms[tid] = wp.transform(contact_center, q)
     scales[tid] = wp.vec3(disk_radius, disk_radius, disk_thickness * thickness_scaling)
     colors[tid] = color
@@ -509,6 +548,7 @@ def compute_contact_force_arrows(
     body_q: wp.array[wp.transform],
     shape_body: wp.array[int],
     shape_world: wp.array[int],
+    shape_collision_radius: wp.array[float],
     world_offsets: wp.array[wp.vec3],
     visible_worlds_mask: wp.array[int],
     contact_count: wp.array[int],
@@ -526,8 +566,9 @@ def compute_contact_force_arrows(
 
     The arrow starts at the world contact point on shape 0 and points along
     ``F = wp.spatial_top(contact_force[i])`` (the world-frame linear force on
-    body 0), with length ``force_scale * |F|``.  Inactive slots produce
-    degenerate (NaN) line segments that the renderer culls.
+    body 0). Its length is relative to the smaller shape's collision radius.
+    Inactive slots produce degenerate (NaN) line segments that the renderer
+    culls.
     """
     tid = wp.tid()
     nan_line = wp.vec3(wp.nan, wp.nan, wp.nan)
@@ -567,7 +608,8 @@ def compute_contact_force_arrows(
 
     f_lin = -wp.spatial_top(contact_force[tid])  # Flip sign so positive force is along normal
     line_start[tid] = contact_center
-    line_end[tid] = contact_center + force_scale * f_lin
+    pair_radius = wp.min(shape_collision_radius[shape_a], shape_collision_radius[shape_b])
+    line_end[tid] = contact_center + (force_scale * pair_radius) * f_lin
 
 
 @wp.kernel

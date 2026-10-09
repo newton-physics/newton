@@ -19,8 +19,6 @@ if TYPE_CHECKING:
 
 def _types_compatible(current, value) -> bool:
     """Return True iff *value* is type-compatible with *current* for an override."""
-    if isinstance(current, set):
-        return isinstance(value, set)
     if isinstance(current, wp.array):
         return (
             isinstance(value, wp.array)
@@ -73,7 +71,7 @@ class ModelView:
         view = ModelView(model, "vbd")
         view.body_inv_mass = zeroed_inv_mass  # override
         view.body_count  # delegates to model.body_count
-        solver = SolverVBD(model=view, rigid_compliant_alm=True)
+        solver = SolverVBD(model=view)
     """
 
     def __init__(self, parent: Model, name: str) -> None:

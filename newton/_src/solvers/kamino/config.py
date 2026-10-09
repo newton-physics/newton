@@ -25,6 +25,7 @@ __all__ = [
     "ConfigBase",
     "ConstrainedDynamicsConfig",
     "ConstraintStabilizationConfig",
+    "DVIAPGDConfig",
     "DVISolverConfig",
     "ForwardKinematicsSolverConfig",
     "PADMMSolverConfig",
@@ -793,11 +794,115 @@ class PADMMSolverConfig:
         self.validate()
 
 
+@dataclass(kw_only=True)
+class DVIAPGDConfig:
+    """Controls for the APGD unilateral subsolver.
+
+    Select APGD and set these controls before constructing the solver::
+
+        config = newton.solvers.SolverKamino.Config(dynamics_solver="dvi")
+        config.dvi.unilateral_solver = "apgd"
+        config.dvi.apgd.max_iterations = 64
+        config.dvi.apgd.max_nonlinear_corrections = 1
+        config.dvi.apgd.tolerance = 1.0e-5
+        solver = newton.solvers.SolverKamino(model, config=config)
+
+    Iteration budgets are upper limits. The inner and nonlinear loops stop
+    early in each world when their residual meets :attr:`tolerance`.
+    The nonlinear correction loop is separate
+    from the bilateral/unilateral alternation controlled by
+    :attr:`DVISolverConfig.max_alternating_iterations` and
+    :attr:`DVISolverConfig.bilateral_solve_interval`. Schur mode eliminates
+    bilateral rows during the unilateral solve and recovers their impulses
+    afterward.
+
+    These runtime solver controls are Python-only; they do not author a
+    material model or add USD schema attributes.
+    CUDA execution requires a Warp build and CUDA driver supporting CUDA
+    12.4+ conditional graphs. Capture the solve for GPU-only loop control;
+    uncaptured CUDA execution reads conditions back to the host.
+    """
+
+    max_iterations: int = 64
+    """Maximum accepted APGD steps per frozen-correction quadratic solve.
+
+    After an accepted step, the inner loop stops if its frozen-correction
+    residual meets :attr:`tolerance`. If the budget is exhausted, the nonlinear
+    loop relaxes the partial solution, checks its fresh residual, and starts
+    another correction if needed and budget remains.
+    """
+
+    max_backtracks: int = 24
+    """Maximum trial steps per APGD iteration, including the initial trial.
+
+    The search stops on a finite step satisfying the quadratic curvature test,
+    which has a roundoff allowance independent of :attr:`tolerance`. Exhaustion
+    or non-finite data sets ``apgd_line_search_failed`` in the terminal status,
+    retains the last accepted impulses, and stops all APGD loops for that world.
+    """
+
+    max_nonlinear_corrections: int = 1
+    """Maximum De Saxce fixed-point iterations per unilateral phase.
+
+    Each iteration freezes the correction for one inner APGD solve. The
+    default of one performs a single frozen-correction approximation.
+    Increase this budget for tighter nonlinear contact accuracy; increasing
+    ``max_iterations`` alone cannot resolve a stale correction. The nonlinear
+    loop stops when the fresh residual meets :attr:`tolerance`. Exhaustion
+    returns the last accepted, possibly unconverged impulses without raising
+    an exception; the residual remains available in the terminal status.
+    """
+
+    tolerance: float = 1.0e-5
+    """Shared absolute infinity-norm tolerance on inner and nonlinear natural maps.
+
+    The inner map uses the frozen correction; the nonlinear map recomputes
+    it at the accepted impulse after relaxation. Both use a unit projection
+    step, independent of the APGD step size and contact count. The residual
+    type is fixed. Backtracking uses a curvature test instead. Full-system
+    status checks use the independent :attr:`DVISolverConfig.tolerance`.
+    """
+
+    relaxation: float = 1.0
+    """Damping of each De Saxce impulse update, in ``(0, 1]``.
+
+    After each inner solve, blend its output with the impulse at the start of
+    the correction before testing the nonlinear residual. This convex
+    combination preserves feasibility. A failed line search skips relaxation.
+    """
+
+    def validate(self) -> None:
+        """Reject non-finite tolerances and invalid nonlinear or inner budgets."""
+        for name in ("max_iterations", "max_backtracks", "max_nonlinear_corrections"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"`{name}` must be a positive integer.")
+        if isinstance(self.tolerance, bool) or not math.isfinite(self.tolerance) or self.tolerance < 0.0:
+            raise ValueError("`tolerance` must be finite and non-negative.")
+        if isinstance(self.relaxation, bool) or not math.isfinite(self.relaxation) or not 0.0 < self.relaxation <= 1.0:
+            raise ValueError("`relaxation` must be finite and in (0, 1].")
+
+    def __post_init__(self) -> None:
+        """Validate constructor arguments."""
+        self.validate()
+
+
 @dataclass
 class DVISolverConfig:
     """
     A container to hold configurations for the DVI forward dynamics solver.
     """
+
+    unilateral_solver: Literal["pgs", "apgd"] = field(default="pgs", kw_only=True)
+    """Backend for bounded rows, limits, and contacts. Defaults to ``pgs``.
+
+    The ``apgd`` backend uses frozen De Saxce corrections around accelerated
+    cone-QP solves. It retains the existing bilateral coupling controls.
+    Nonlinear convergence depends on the contact problem and iteration budget.
+    """
+
+    apgd: DVIAPGDConfig = field(default_factory=DVIAPGDConfig, kw_only=True)
+    """APGD iteration controls; unused by the default PGS backend."""
 
     tolerance: float = 1e-5
     """
@@ -807,7 +912,8 @@ class DVISolverConfig:
 
     regularization: float = 1e-6
     """
-    Diagonal regularization added to each projected update denominator.
+    Diagonal regularization added to each PGS projected update denominator.
+    Unused by APGD, which uses backtracking on the existing dual operator.
     Must be positive. Defaults to `1e-6`.
     """
 
@@ -822,21 +928,37 @@ class DVISolverConfig:
     Maximum number of outer DVI iterations alternating direct bilateral
     solves with projected inequality solves. Must be greater than zero.
     This schedule is also used when no bilateral constraints are present;
-    in that case, the bilateral solve is skipped. Defaults to `24`.
+    in that case, the bilateral solve is skipped. APGD uses its own iteration
+    budgets when no bilateral rows are present or Schur elimination is enabled.
+    Defaults to `24`.
     """
 
     inequality_sweeps_per_iteration: int = 2
     """
     Number of projected Gauss-Seidel sweeps used for unilateral inequalities
     during each alternating DVI iteration. Contacts use graph-colored sweeps
-    on CUDA. Must be greater than zero. Defaults to `2`.
+    on CUDA. Unused by APGD. Must be greater than zero. Defaults to `2`.
+    """
+
+    use_schur_complement: bool = False
+    """
+    Whether to eliminate bilateral rows from the unilateral solve through a Schur complement.
+
+    .. experimental::
+
+        The ``True`` mode may change without prior notice. It requires the same
+        setting in every world. PGS adds response-matrix setup and storage;
+        APGD applies the response using the factored bilateral operator.
+
+    Defaults to ``False``.
     """
 
     bilateral_solve_interval: int = 1
     """
     Number of alternating DVI iterations between repeated direct bilateral solves.
-    A value of `1` re-solves after every projected inequality block, preserving
-    the standard direct-block schedule. Must be greater than zero. Defaults to `1`.
+    This controls coupling when :attr:`use_schur_complement` is ``False``.
+    Larger values trade coupling accuracy for fewer direct solves. Must be greater
+    than zero. Defaults to `1`.
     """
 
     tangential_warmstart_scale: float = 0.97
@@ -912,6 +1034,11 @@ class DVISolverConfig:
         from ._src.solvers.common import WarmStartMode  # noqa: PLC0415
         from ._src.solvers.warmstart import WarmstarterContacts  # noqa: PLC0415
 
+        if self.unilateral_solver not in {"pgs", "apgd"}:
+            raise ValueError("`unilateral_solver` must be 'pgs' or 'apgd'.")
+        if not isinstance(self.apgd, DVIAPGDConfig):
+            raise TypeError("`apgd` must be a DVIAPGDConfig.")
+        self.apgd.validate()
         if self.tolerance < 0.0:
             raise ValueError(f"Invalid tolerance: {self.tolerance}. Must be non-negative.")
         if self.regularization <= 0.0:
@@ -967,61 +1094,41 @@ class ForwardKinematicsSolverConfig:
     A container to hold configurations for the Gauss-Newton forward kinematics solver used for state resets.
     """
 
-    preconditioner: Literal["none", "jacobi_diagonal", "jacobi_block_diagonal"] = "jacobi_block_diagonal"
+    tolerance: float = 1e-6
     """
-    Preconditioner to use for the Conjugate Gradient solver if sparsity is enabled
-    Changing this setting after the solver's initialization leads to undefined behavior.
-    Defaults to `jacobi_block_diagonal`.
+    Maximal absolute kinematic constraint value that is acceptable at the solution.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
+    Defaults to `1e-6`.
     """
 
     max_newton_iterations: int = 30
     """
     Maximal number of Gauss-Newton iterations.
-    Changes to this setting after the solver's initialization will have no effect.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `30`.
     """
 
     max_line_search_iterations: int = 20
     """
     Maximal line search iterations in the inner loop.
-    Changes to this setting after the solver's initialization will have no effect.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `20`.
-    """
-
-    tolerance: float = 1e-6
-    """
-    Maximal absolute kinematic constraint value that is acceptable at the solution.
-    Changes to this setting after the solver's initialization will have no effect.
-    Defaults to `1e-6`.
-    """
-
-    use_sparsity: bool = False
-    """
-    Whether to use sparse Jacobian and solver; otherwise, dense versions are used.
-    Changes to this setting after the solver's initialization lead to undefined behavior.
-    Defaults to `False`.
-    """
-
-    use_adaptive_cg_tolerance: bool = True
-    """
-    Whether to use an adaptive tolerance strategy for the Conjugate Gradient solver if sparsity
-    is enabled, which reduces the number of CG iterations in most cases.
-    Changes to this setting after graph capture will have no effect.
-    Defaults to `True`.
     """
 
     reset_state: bool = True
     """
-    Whether to reset the state to initial states, to use as initial guess.
-    Changes to this setting after graph capture will have no effect.
+    Whether to reset the state before the FK solve, using the reference state of the system as initial guess.
+    If False, the current body poses are used as initial guess, which often leads to faster convergence
+    when solving forward kinematics along a trajectory (as opposed to isolated poses).
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `True`.
     """
 
     add_axis_joints: bool = True
     """
-    Whether to automatically add axis joints to take out superfluous DoFs at tie rods,
+    Whether to automatically add axis joints to take out superfluous DoFs at tie rods (i.e. bodies
+    between two passive spherical or gimbal joints, that may rotate freely about the connecting axis),
     that otherwise render the FK problem ill-posed.
-    Changes to this setting after the solver's initialization will have no effect.
     Defaults to `True`.
     """
 
@@ -1029,7 +1136,6 @@ class ForwardKinematicsSolverConfig:
     """
     Whether to automatically split large steps in actuator coordinates into smaller steps
     in the FK solve, to improve the solver's robustness for a mild added cost.
-    Changes to this setting after the solver's initialization lead to undefined behavior.
     Defaults to `True`.
     """
 
@@ -1037,7 +1143,6 @@ class ForwardKinematicsSolverConfig:
     """
     If incremental solve is enabled, maximal allowed step in linear actuator coordinates
     per solver iteration, in meters. A lower value results in more incremental steps.
-    Changes to this setting after the solver's initialization will have no effect.
     Defaults to `0.05`.
     """
 
@@ -1045,7 +1150,6 @@ class ForwardKinematicsSolverConfig:
     """
     If incremental solve is enabled, maximal allowed step in angular actuator coordinates
     per solver iteration, in radians. A lower value results in more incremental steps.
-    Changes to this setting after the solver's initialization will have no effect.
     Defaults to `math.radians(10.0)`, i.e. 10 degrees.
     """
 
@@ -1061,15 +1165,34 @@ class ForwardKinematicsSolverConfig:
     For systems that are only underactuated due to tie rods being free to rotate about their own axis,
     enabling `add_axis_joints` is recommended instead.
 
-    Changes to this setting after the solver's initialization lead to undefined behavior.
     Defaults to `False`.
     """
 
     regularization_weight: float = 1e-5
     """
     Weight applied to the rigid body pose least-squares regularizer, if regularization is enabled.
-    Changes to this setting after the solver's initialization lead to undefined behavior.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `1e-5`.
+    """
+
+    use_sparsity: bool = False
+    """
+    Whether to use sparse Jacobian and solver; else dense versions are used (recommended for most systems).
+    Defaults to `False`.
+    """
+
+    preconditioner: Literal["none", "jacobi_diagonal", "jacobi_block_diagonal"] = "jacobi_block_diagonal"
+    """
+    Preconditioner to use for the Conjugate Gradient solver if sparsity is enabled.
+    Defaults to `jacobi_block_diagonal`.
+    """
+
+    use_adaptive_cg_tolerance: bool = True
+    """
+    Whether to use an adaptive tolerance strategy for the Conjugate Gradient solver if sparsity
+    is enabled, which reduces the number of CG iterations in most cases.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
+    Defaults to `True`.
     """
 
     @override

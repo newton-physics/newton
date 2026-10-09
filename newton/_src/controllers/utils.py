@@ -55,5 +55,30 @@ def _validate_array(
         hint = ""
         if allow_indexed:
             # Only ports can be bound to a view, so only they get the hint.
-            hint = " To bind a simulation-sized array, pass a view: sim_array[selection.qd_start]."
+            hint = (
+                " To bind a simulation-sized array, pass a view: sim_array[ctrl.qd_start], using a "
+                "model-based controller's own q_start/qd_start properties."
+            )
         raise ValueError(f"{name} must have shape {shape}, got {tuple(array.shape)}.{hint}")
+
+
+def _bake_optional_float_array(
+    value: wp.array[wp.float32] | float | None,
+    size: int,
+    *,
+    device: wp.DeviceLike,
+    requires_grad: bool,
+) -> wp.array[wp.float32] | None:
+    """Broadcast a scalar, or copy an array, into a fresh buffer of the given size.
+
+    Returns ``None`` for a live parameter, which is read from the input
+    struct each step instead. A wp.array is already validated by
+    :func:`_validate_array`.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return wp.full(size, float(value), dtype=wp.float32, device=device, requires_grad=requires_grad)
+    baked = wp.zeros(size, dtype=wp.float32, device=device, requires_grad=requires_grad)
+    wp.copy(baked, value)
+    return baked

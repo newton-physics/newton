@@ -20,7 +20,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.edge_inward_filter import filter_fully_inward_edges
+from newton._src.geometry.edge_concave_filter import filter_fully_concave_edges
 
 # ``Mesh.build_sdf`` requires CUDA because the SDF cook only runs on GPU.
 _cuda_available = wp.is_cuda_available()
@@ -426,14 +426,14 @@ class TestBuildCollisionEdges(unittest.TestCase):
         with mock.patch.object(
             mesh, "_filter_edges_by_dihedral_angle", wraps=mesh._filter_edges_by_dihedral_angle
         ) as edge_filter:
-            self._build(mesh, enable_inward_filter=False)
+            self._build(mesh, edge_concave_filter=False)
 
         self.assertFalse(edge_filter.call_args.kwargs.get("return_diagnostics", False))
 
     def test_reused_topology_preserves_filter_output(self):
         """Preserve exact default output when reusing topology between filters."""
         mesh = _dimpled_box_mesh()
-        expected = filter_fully_inward_edges(
+        expected = filter_fully_concave_edges(
             mesh,
             mesh._filter_edges_by_dihedral_angle(math.radians(0.1)),
         )
@@ -470,18 +470,18 @@ class TestBuildCollisionEdges(unittest.TestCase):
         self.assertLess(len(kept), 18)
         self.assertGreaterEqual(len(kept), 12)
 
-    def test_inward_filter_removes_dimple_edges_by_default(self):
-        """Remove only edges joining fully inward manifold vertices."""
+    def test_concave_filter_removes_dimple_edges_by_default(self):
+        """Remove only edges joining fully concave manifold vertices."""
         mesh = _dimpled_box_mesh()
-        unfiltered = self._build(mesh, enable_inward_filter=False)
+        unfiltered = self._build(mesh, edge_concave_filter=False)
         filtered = self._build(mesh)
 
         self.assertEqual(len(unfiltered), 60)
         self.assertEqual(len(filtered), 48)
         self.assertTrue(_edge_set(filtered).issubset(_edge_set(unfiltered)))
 
-    def test_inward_filter_handles_inverted_winding(self):
-        """Classify the same inward features after global winding inversion."""
+    def test_concave_filter_handles_inverted_winding(self):
+        """Classify the same concave features after global winding inversion."""
         mesh = _dimpled_box_mesh()
         triangles = mesh.indices.reshape(-1, 3)[:, ::-1].copy()
         inverted = newton.Mesh(mesh.vertices.copy(), triangles.ravel(), compute_inertia=False)
@@ -490,8 +490,8 @@ class TestBuildCollisionEdges(unittest.TestCase):
 
         self.assertEqual(len(filtered), 48)
 
-    def test_inward_filter_handles_translated_mesh(self):
-        """Classify the same inward features far from the local origin."""
+    def test_concave_filter_handles_translated_mesh(self):
+        """Classify the same concave features far from the local origin."""
         mesh = _dimpled_box_mesh()
         translated = newton.Mesh(mesh.vertices + 1.0e6, mesh.indices.copy(), compute_inertia=False)
 
@@ -499,7 +499,7 @@ class TestBuildCollisionEdges(unittest.TestCase):
 
         self.assertEqual(len(filtered), 48)
 
-    def test_inward_filter_preserves_convex_edges(self):
+    def test_concave_filter_preserves_convex_edges(self):
         """Preserve every non-coplanar edge of a convex closed mesh."""
         mesh = newton.Mesh.create_box(0.5, compute_inertia=False)
         self.assertEqual(len(self._build(mesh)), 12)
@@ -568,6 +568,14 @@ class TestCollisionEdgesLifecycle(unittest.TestCase):
         # The cache must be an independent buffer so mutating one mesh's
         # edges does not bleed into the other.
         self.assertIsNot(copy._collision_edges, mesh._collision_edges)
+
+    @unittest.skipUnless(_cuda_available, "Requires CUDA device")
+    def test_build_sdf_disables_concave_filter(self):
+        mesh = _dimpled_box_mesh()
+
+        mesh.build_sdf(max_resolution=8, edge_concave_filter=False)
+
+        self.assertEqual(len(mesh._collision_edges), 60)
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_build_sdf_rolls_back_sdf_on_edge_option_failure(self):

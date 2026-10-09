@@ -539,9 +539,14 @@ def test_warp_dtype_roundtrip(test: TestRecorder, device):
             # Create test array with random data
             arr = wp.zeros(shape, dtype=dtype, device=device)
 
-            # Fill with non-zero values to verify data integrity
+            # Fill with representative values to verify data integrity.
             np_data = arr.numpy()
-            np_data[:] = rng.standard_normal(np_data.shape).astype(np_data.dtype)
+            if np.issubdtype(np_data.dtype, np.bool_):
+                np_data[:] = rng.integers(0, 2, size=np_data.shape, dtype=np.uint8).astype(np_data.dtype)
+            elif np.issubdtype(np_data.dtype, np.integer):
+                np_data[:] = rng.integers(1, 10, size=np_data.shape, dtype=np_data.dtype)
+            else:
+                np_data[:] = rng.standard_normal(np_data.shape).astype(np_data.dtype)
             arr = wp.array(np_data, dtype=dtype, device=device)
 
             # Serialize

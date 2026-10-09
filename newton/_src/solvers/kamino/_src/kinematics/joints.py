@@ -181,6 +181,58 @@ def get_joint_coord_correction_function(dof_type: JointDoFType):
 
 
 @wp.func
+def _correct_rotational_coord_in_place(coords: wp.array[wp.float32], coords_ref: wp.array[wp.float32], slot: wp.int32):
+    """Correct one angular coordinate stored at ``slot`` against its reference (in-place, ±2π)."""
+    coords[slot] = correct_rotational_coord(coords[slot], coords_ref[slot])
+
+
+@wp.func
+def _correct_quat_coord_in_place(coords: wp.array[wp.float32], coords_ref: wp.array[wp.float32], slot: wp.int32):
+    """Correct a quaternion stored at ``slot..slot+3`` against its reference (in-place, up to sign)."""
+    quat = wp.vec4f(coords[slot], coords[slot + 1], coords[slot + 2], coords[slot + 3])
+    quat_ref = wp.vec4f(coords_ref[slot], coords_ref[slot + 1], coords_ref[slot + 2], coords_ref[slot + 3])
+    quat = correct_quat_vector_coord(quat, quat_ref)
+    for i in range(4):
+        coords[slot + i] = quat[i]
+
+
+@wp.func
+def correct_joint_coords_in_place(
+    dof_type: wp.int32,
+    coords: wp.array[wp.float32],
+    coords_ref: wp.array[wp.float32],
+    offset: wp.int32,
+):
+    """
+    Correct the joint coordinates stored at ``coords[offset : offset + num_coords]`` against a
+    reference block in ``coords_ref``, in place, using ±2π wrapping for angles and sign correction
+    for quaternions. No limit wrapping is applied; use :func:`get_joint_coord_correction_function`
+    if bounded wrapping is needed.
+
+    The runtime ``dof_type`` dispatches to the appropriate per-type correction, matching the
+    joint DoF layouts defined in :class:`JointDoFType`. Types with no correction (Cartesian,
+    Fixed, Prismatic) are no-ops, and unrecognized values are also silently skipped to accommodate
+    solver-specific extensions with disjoint coord slots (e.g. FK's Axis type).
+    """
+    if dof_type == JointDoFType.CARTESIAN or dof_type == JointDoFType.FIXED or dof_type == JointDoFType.PRISMATIC:
+        return
+    elif dof_type == JointDoFType.CYLINDRICAL:
+        _correct_rotational_coord_in_place(coords, coords_ref, offset + 1)
+    elif dof_type == JointDoFType.FREE:
+        _correct_quat_coord_in_place(coords, coords_ref, offset + 3)
+    elif dof_type == JointDoFType.REVOLUTE:
+        _correct_rotational_coord_in_place(coords, coords_ref, offset)
+    elif dof_type == JointDoFType.SPHERICAL:
+        _correct_quat_coord_in_place(coords, coords_ref, offset)
+    elif dof_type == JointDoFType.UNIVERSAL:
+        _correct_rotational_coord_in_place(coords, coords_ref, offset)
+        _correct_rotational_coord_in_place(coords, coords_ref, offset + 1)
+    elif dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        for i in range(3):
+            _correct_rotational_coord_in_place(coords, coords_ref, offset + i)
+
+
+@wp.func
 def select_gimbal_coords(j_q_j: wp.quatf, reference: wp.vec3f, third_axis_sign: wp.float32) -> wp.vec3f:
     """Select the authored intrinsic-XYZ chart nearest to a reference triple."""
     principal = wp.quat_to_euler(j_q_j, 2, 1, 0)
@@ -423,27 +475,23 @@ def get_joint_constraint_angular_residual_function(dof_type: JointDoFType):
 
 
 @wp.func
-def convert_angular_vel_to_universal_joint_intermediary_frame(
-    j_q_j: wp.quatf, j_u_j: wp.spatial_vectorf
-) -> wp.spatial_vectorf:
+def universal_intermediary_axes(rel_ori_joint: wp.quatf) -> wp.mat33f:
     """
-    Converts the angular part of a relative body velocity at a universal joint, from the
-    joint frame on the base body to the intermediary frame.
+    Compute the columns of the universal-joint intermediary body frame, expressed as a rotation
+    matrix in the Base-side joint frame. Column 1 is the x-axis on the Base; column 2 is the y-axis
+    on the Follower (orthogonalized against the Base x-axis in case constraints are violated);
+    column 3 is their cross product.
+
+    Args:
+        rel_ori_joint: Relative orientation of the Follower joint frame w.r.t. the Base joint frame.
     """
-    # Compute intermediary body axes, in the joint frame on the base body
     e_x = wp.vec3f(1.0, 0.0, 0.0)
     e_y = wp.vec3f(0.0, 1.0, 0.0)
-    a_x = e_x  # x axis on base
-    a_y_raw = wp.quat_rotate(j_q_j, e_y)  #  y axis on follower (constrained to be orthogonal to a_x)
-    a_y = a_y_raw - wp.dot(a_y_raw, a_x) * a_x  # orthogonalize (in case of constraint violations)
-    a_y = wp.normalize(a_y)
+    a_x = e_x
+    a_y = wp.quat_rotate(rel_ori_joint, e_y)
+    a_y = wp.normalize(a_y - wp.dot(a_y, a_x) * a_x)
     a_z = wp.cross(a_x, a_y)
-
-    # Project angular velocity into intermediary body frame
-    omega = wp.spatial_bottom(j_u_j)
-    return wp.spatial_vectorf(
-        *wp.spatial_top(j_u_j), *wp.vec3f(wp.dot(omega, a_x), wp.dot(omega, a_y), wp.dot(omega, a_z))
-    )
+    return wp.matrix_from_cols(a_x, a_y, a_z)
 
 
 ###
@@ -492,7 +540,9 @@ def make_typed_write_joint_data(dof_type: JointDoFType, correction: JointCorrect
     ):
         # Convert angular velocity to intermediary body frame for universal joint
         if wp.static(dof_type == JointDoFType.UNIVERSAL):
-            j_u_j = convert_angular_vel_to_universal_joint_intermediary_frame(j_q_j, j_u_j)
+            axes = universal_intermediary_axes(j_q_j)
+            omega_intermediary = wp.transpose(axes) @ wp.spatial_bottom(j_u_j)
+            j_u_j = wp.spatial_vectorf(*wp.spatial_top(j_u_j), *omega_intermediary)
 
         # Only write the constraint residual and velocity if the joint defines constraints
         # NOTE: This will be disabled for free joints

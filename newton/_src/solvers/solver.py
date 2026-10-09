@@ -3,13 +3,17 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from enum import Enum, IntEnum
+from typing import Any, ClassVar
 
 import warp as wp
 
 from ..core.reset import normalize_reset_world_mask
 from ..geometry import ParticleFlags
-from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
+from ..sim import BodyFlags, CollisionPipeline, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
+from .observables import SolverObservables
 
 
 def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool:
@@ -196,12 +200,351 @@ class SolverBase:
     necessary.
     """
 
-    _module_options_revision = 0
+    class CollisionSlot(IntEnum):
+        """Collision-detection categories scheduled by a solver."""
 
-    def __init__(self, model: Model):
+        RIGID = 0
+        """Rigid-rigid and particle-shape collision detection."""
+        SOFT_SELF_CONTACT = 1
+        """Triangle-mesh soft self-contact detection."""
+
+    class CollisionFrequencyType(IntEnum):
+        """When, inside a :meth:`step`, a solver-owned collision pipeline runs detection.
+
+        The frequency number in ``collision_frequency`` applies only to
+        :attr:`ITERATIONS`; the other members ignore it. Skipping detection
+        across steps carries no hidden solver state — set a slot to
+        :attr:`NONE` between steps via :meth:`set_collision_frequency`.
+        """
+
+        NONE = 0
+        """Never detect; the user may run detection externally into :attr:`contacts`."""
+        PRE_INIT = 1
+        """Once per step, before solver initialization."""
+        PRE_POST_INIT = 2
+        """Before and after solver initialization (one detection each)."""
+        ITERATIONS = 3
+        """Before initialization, then immediately before iterations k, 2k, and so on."""
+        AUTO = 4
+        """Solver-specific default."""
+
+    supports_collision_pipeline: bool = False
+    """Whether this solver can own a :class:`~newton.CollisionPipeline` and drive detection itself.
+
+    Currently only :class:`~newton.solvers.SolverVBD` opts in; passing
+    ``collision_pipeline`` to any other solver raises ``ValueError`` (drive
+    detection externally instead).
+    """
+
+    _module_options_revision = 0
+    OBSERVABLES_TYPE: ClassVar[type[SolverObservables]] = SolverObservables
+    """Container type returned by :meth:`observables`."""
+
+    SUPPORTED_OBSERVABLE_FLAGS: ClassVar[frozenset[Enum]] = frozenset()
+    """Class-level capabilities; query :attr:`supported_observable_flags` for an instance."""
+
+    def __init__(
+        self,
+        model: Model,
+        *,
+        collision_pipeline: CollisionPipeline | None = None,
+        collision_frequency: Mapping[CollisionSlot, int] | None = None,
+        collision_frequency_type: Mapping[CollisionSlot, CollisionFrequencyType] | None = None,
+    ):
+        """Initialize common solver state and optional collision scheduling.
+
+        Args:
+            model: Simulation model integrated by the solver.
+            collision_pipeline: Collision pipeline owned and driven by the
+                solver. The pipeline must use ``model``, and the concrete
+                solver must set :attr:`supports_collision_pipeline`.
+            collision_frequency: Per-slot iteration frequencies. Values must
+                be at least one and are used only for slots scheduled with
+                :attr:`CollisionFrequencyType.ITERATIONS`. Unspecified slots
+                retain their defaults.
+            collision_frequency_type: Per-slot detection points. Unspecified
+                slots retain their defaults.
+        """
         self.model = model
         self._module_options: dict[Any, dict[str, Any]] = {}
         self._applied_module_options_revision = -1
+
+        if collision_pipeline is not None and not self.supports_collision_pipeline:
+            raise ValueError(
+                f"{type(self).__name__} cannot own a collision pipeline; "
+                "drive detection externally via model.collide()."
+            )
+        if collision_pipeline is not None and collision_pipeline.model is not model:
+            raise ValueError("collision_pipeline and solver must use the same model")
+        self.collision_pipeline = collision_pipeline
+        """The solver-owned collision pipeline, or ``None`` when detection is driven externally."""
+        if collision_pipeline is not None:
+            self._pipeline_contacts = collision_pipeline.contacts()
+        elif not hasattr(self, "_pipeline_contacts"):
+            # Preserve contact storage assigned by existing SolverBase subclasses
+            # before calling super().__init__().
+            self._pipeline_contacts = None
+
+        self._collision_frequency = dict.fromkeys(SolverBase.CollisionSlot, 1)
+        self._collision_frequency_type = dict.fromkeys(SolverBase.CollisionSlot, SolverBase.CollisionFrequencyType.AUTO)
+        self.set_collision_frequency(
+            collision_frequency=collision_frequency,
+            collision_frequency_type=collision_frequency_type,
+        )
+
+    @property
+    def contacts(self) -> Contacts | None:
+        """The solver-owned contacts buffer, or ``None`` when no pipeline is owned.
+
+        Unlike :meth:`Model.contacts`, this property does not allocate; it
+        returns the buffer created from the owned pipeline at construction.
+        With a slot set to ``CollisionFrequencyType.NONE`` the user may fill
+        this buffer externally, e.g. ``pipeline.collide(state, solver.contacts)``.
+        """
+        return self._pipeline_contacts
+
+    @contacts.setter
+    def contacts(self, value: Contacts | None) -> None:
+        """Set contact storage for compatibility with existing solver subclasses."""
+        self._pipeline_contacts = value
+
+    @property
+    def collision_frequency(self) -> dict[CollisionSlot, int]:
+        """Per-slot detection frequency numbers as a read-only copy."""
+        return dict(self._collision_frequency)
+
+    @property
+    def collision_frequency_type(self) -> dict[CollisionSlot, CollisionFrequencyType]:
+        """Per-slot :class:`CollisionFrequencyType` values as a read-only copy."""
+        return dict(self._collision_frequency_type)
+
+    def set_collision_frequency(
+        self,
+        *,
+        collision_frequency: Mapping[CollisionSlot, int] | None = None,
+        collision_frequency_type: Mapping[CollisionSlot, CollisionFrequencyType] | None = None,
+    ) -> None:
+        """Change the detection schedule; takes effect at the next :meth:`step`.
+
+        The solver keeps no hidden cross-step scheduling state, so detecting
+        every N steps is expressed by toggling a slot between
+        ``CollisionFrequencyType.NONE`` and an active type from the calling
+        loop. ``None`` keeps the corresponding current setting. Recapture an
+        existing CUDA graph after changing the schedule.
+
+        Args:
+            collision_frequency: Frequency numbers keyed by
+                :class:`CollisionSlot`; used only by ``ITERATIONS`` slots
+                (before iterations k, 2k, and so on) and must be at least one.
+            collision_frequency_type: Detection points keyed by
+                :class:`CollisionSlot`.
+        """
+        Slot = SolverBase.CollisionSlot
+        Frequency = SolverBase.CollisionFrequencyType
+        freq = dict(self._collision_frequency)
+        if collision_frequency is not None:
+            for slot_key, frequency_value in collision_frequency.items():
+                slot = Slot(slot_key)
+                frequency = int(frequency_value)
+                if frequency < 1:
+                    raise ValueError(f"collision_frequency[{slot.name}] must be >= 1, got {frequency}")
+                freq[slot] = frequency
+
+        ftype = dict(self._collision_frequency_type)
+        if collision_frequency_type is not None:
+            for slot, value in collision_frequency_type.items():
+                ftype[Slot(slot)] = Frequency(value)
+            if self.collision_pipeline is None and ftype[Slot.RIGID] not in (
+                Frequency.NONE,
+                Frequency.AUTO,
+            ):
+                raise ValueError(
+                    "an active rigid collision_frequency_type requires a solver-owned pipeline; "
+                    "pass collision_pipeline=... at construction or drive model.collide() externally."
+                )
+            if ftype[Slot.RIGID] == Frequency.ITERATIONS and self.collision_pipeline.contact_matching == "disabled":
+                raise ValueError(
+                    "rigid ITERATIONS collision scheduling requires contact matching so in-flight "
+                    "contact state can be carried across re-detection; construct collision_pipeline "
+                    "with contact_matching='latest' or 'sticky'."
+                )
+
+        self._collision_frequency = freq
+        self._collision_frequency_type = ftype
+
+    def _default_collision_frequency_type(self, slot: CollisionSlot) -> CollisionFrequencyType:
+        """Resolve ``AUTO`` for a slot; overridable per solver."""
+        if slot == SolverBase.CollisionSlot.RIGID and self.collision_pipeline is not None:
+            return SolverBase.CollisionFrequencyType.PRE_INIT
+        return SolverBase.CollisionFrequencyType.NONE
+
+    def _resolved_collision_frequency_type(self, slot: CollisionSlot) -> CollisionFrequencyType:
+        """The slot's effective type with ``AUTO`` resolved."""
+        ftype = self._collision_frequency_type[slot]
+        if ftype == SolverBase.CollisionFrequencyType.AUTO:
+            return self._default_collision_frequency_type(slot)
+        return ftype
+
+    def _resolve_step_contacts(self, contacts: Contacts | None) -> Contacts | None:
+        """Return the contacts buffer for this step; owning solvers call this first.
+
+        With an owned pipeline the ``contacts`` argument must be ``None`` and
+        the owned buffer is used (exactly one source of contact data).
+        """
+        if self.collision_pipeline is not None:
+            if contacts is not None:
+                raise ValueError(
+                    "step(contacts=...) must be None when the solver owns a collision "
+                    "pipeline; the solver detects into its own buffer (solver.contacts)."
+                )
+            return self._pipeline_contacts
+        return contacts
+
+    def _run_rigid_collision(self, state: State, dt: float | None = None) -> None:
+        """Run the owned pipeline into the owned contacts buffer."""
+        self.collision_pipeline.collide(state, self._pipeline_contacts, dt=dt)
+
+    @property
+    def supported_observable_flags(self) -> frozenset[Enum]:
+        """Effective capabilities accepted by :meth:`observables` on this instance.
+
+        Defaults to :attr:`SUPPORTED_OBSERVABLE_FLAGS`. Solvers may narrow the
+        class declaration for backend limitations, or derive capabilities from
+        child solvers. Applications should query this property.
+        """
+        return self.SUPPORTED_OBSERVABLE_FLAGS
+
+    def observables(
+        self,
+        flags: Iterable[Enum],
+        *,
+        requires_grad: bool | None = None,
+    ) -> SolverObservables:
+        """Allocate reusable arrays for requested solver observables.
+
+        A container is owned by the solver that allocates it and can be passed
+        to that solver's :meth:`step` method on every time step. Derived
+        solvers add custom flags to :attr:`SUPPORTED_OBSERVABLE_FLAGS` and
+        declare fields on a dataclass derived from :class:`SolverObservables`.
+        The default allocator handles both standard and custom fields.
+        Override this factory and delegate to ``super()`` when additional
+        solver-specific initialization is needed.
+
+        All requested arrays are allocated before this method returns; ``None``
+        always means unrequested. Contact arrays use the model's resolved rigid
+        and soft capacities, not the live contact count. Allocate before graph
+        capture and pass matching :class:`~newton.Contacts` to :meth:`step`.
+
+        Args:
+            flags: Set or other iterable of standard and solver-specific observable
+                enum members.
+            requires_grad: Whether allocated arrays require gradients. If
+                ``None``, use the model's setting.
+
+        Returns:
+            A solver-owned observable container with requested arrays allocated.
+
+        Raises:
+            TypeError: If a request is not a plain enum member or the
+                configured observable type does not derive from
+                :class:`SolverObservables`.
+            ValueError: If this solver does not support a requested observable
+                or its container does not declare a unique field for the flag.
+            RuntimeError: If contact-indexed observables are requested before
+                constructing :class:`~newton.CollisionPipeline` for the model.
+
+        .. experimental::
+
+            The solver observable API may change while additional solvers and
+            observable categories are migrated to it.
+        """
+        with self._create_observables(flags, requires_grad=requires_grad) as observables:
+            return observables
+
+    @contextmanager
+    def _create_observables(
+        self,
+        flags: Iterable[Enum],
+        *,
+        requires_grad: bool | None = None,
+    ) -> Iterator[SolverObservables]:
+        """Share built-in factory allocation, freezing capacities only after setup succeeds."""
+        requested = frozenset(flags)
+        invalid = [flag for flag in requested if not isinstance(flag, Enum) or isinstance(flag, (int, str))]
+        if invalid:
+            values = ", ".join(repr(flag) for flag in invalid)
+            raise TypeError(
+                "Solver observable flags must be plain enum.Enum members, not strings, integers, IntEnum members, "
+                f"or string-mixin enum members; got: {values}."
+            )
+        unsupported = requested.difference(self.supported_observable_flags)
+        if unsupported:
+            names = ", ".join(self._format_observable_flag(flag) for flag in unsupported)
+            raise ValueError(f"{type(self).__name__} does not support solver observable(s): {names}.")
+
+        if not issubclass(self.OBSERVABLES_TYPE, SolverObservables):
+            raise TypeError("OBSERVABLES_TYPE must derive from SolverObservables.")
+        declarations = self.OBSERVABLES_TYPE._observable_fields()
+        missing = requested.difference(declarations)
+        if missing:
+            names = ", ".join(self._format_observable_flag(flag) for flag in missing)
+            raise ValueError(f"No observable field declared for {names}.")
+        observables = self.OBSERVABLES_TYPE()
+        observables._flags = requested
+        observables._solver = self
+        if requires_grad is None:
+            requires_grad = self.model.requires_grad
+        if observables._has_contact_observables():
+            observables._contact_capacity = self.model._get_contact_capacity()
+        # Declaration order makes allocation deterministic even for unordered requests.
+        for flag, (name, spec) in declarations.items():
+            if flag not in requested:
+                continue
+            setattr(
+                observables,
+                name,
+                wp.zeros(
+                    self.model._attribute_frequency_count(spec.frequency),
+                    dtype=spec.dtype,
+                    device=self.model.device,
+                    requires_grad=requires_grad,
+                ),
+            )
+        yield observables
+        if observables._contact_capacity is not None:
+            self.model._solver_observable_contact_capacity = observables._contact_capacity
+
+    @staticmethod
+    def _format_observable_flag(flag: Enum) -> str:
+        """Format an observable flag for diagnostics."""
+        return f"{type(flag).__name__}.{flag.name}"
+
+    def validate_observables(self, observables: SolverObservables | None, contacts: Contacts | None = None) -> None:
+        """Validate ownership and contact storage before a custom solver step.
+
+        Call this at the start of :meth:`step`, before launching work or writing
+        observable arrays. Passing ``None`` is a no-op.
+
+        Args:
+            observables: Optional container allocated by this solver.
+            contacts: Required for contact-indexed observables.
+
+        Raises:
+            TypeError: If the container has an incompatible type.
+            ValueError: If the owner or contact storage is incompatible.
+
+        .. experimental::
+        """
+        if observables is None:
+            return
+        if not isinstance(observables, self.OBSERVABLES_TYPE):
+            raise TypeError(f"'observables' must be an instance of {self.OBSERVABLES_TYPE.__name__}.")
+        if observables._solver is not self:
+            raise ValueError("Solver observables must be passed to the solver instance that allocated them.")
+        if observables._contact_capacity is not None:
+            if contacts is None:
+                raise ValueError("Pass Contacts to solver.step() when using contact-indexed solver observables.")
+            observables.bind_contacts(contacts)
 
     def _set_module_options(self, options: dict[str, Any], module: Any) -> None:
         self._module_options[module] = dict(options)
@@ -226,7 +569,6 @@ class SolverBase:
             world_mask,
             world_count=int(self.model.world_count),
             device=self.model.device,
-            allow_legacy=True,
         )
 
     @property
@@ -363,11 +705,6 @@ class SolverBase:
                 local worlds by index, and the final entry selects global entities
                 whose world is ``-1``. If ``None``, all local and global entities
                 are reset.
-
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.
@@ -375,7 +712,14 @@ class SolverBase:
         self._normalize_reset_world_mask(world_mask)
 
     def step(
-        self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
+        self,
+        state_in: State,
+        state_out: State,
+        control: Control | None,
+        contacts: Contacts | None,
+        dt: float,
+        *,
+        observables: SolverObservables | None = None,
     ) -> None:
         """
         Simulate the model for a given time step using the given control input.
@@ -388,6 +732,7 @@ class SolverBase:
                 :class:`Model` are used.
             contacts: The contact information.
             dt: The time step (typically in seconds).
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
         """
         raise NotImplementedError()
 
@@ -400,12 +745,28 @@ class SolverBase:
         updated after the solver was created.  Passing the appropriate
         combination of flags enables a solver implementation to refresh its
         internal buffers without having to recreate the whole solver object.
+        Solver implementations must handle each relevant narrow DOF flag:
+        checking ``JOINT_DOF_PROPERTIES`` alone does not detect them. The broad
+        flag covers force, inertial, and reference properties; friction/damping
+        belongs to the force category. Solvers may ignore categories they do
+        not cache or support, but should preserve unrelated pending edits
+        except for documented backend dependencies. In MuJoCo, notifications
+        that recompute constants also republish the current tendon limit
+        modes, gains, raw solref values, and ranges, even without
+        ``TENDON_PROPERTIES``. Force-only joint notifications leave these
+        tendon parameters unchanged.
         Valid flags are:
 
-        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms or coordinates
+        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms, axes, or coordinates
           have changed.
-        * ``ModelFlags.JOINT_DOF_PROPERTIES``: Joint axis limits, targets,
-          modes, DOF state, or force buffers have changed.
+        * ``ModelFlags.JOINT_DOF_PROPERTIES``: Full joint DOF update, including
+          force, armature, and reference-pose properties (legacy behavior).
+        * ``ModelFlags.JOINT_DOF_FORCE_PROPERTIES``: Joint friction, damping,
+          target gains/modes, effort limits, passive stiffness, or limit
+          coefficients/bounds have changed.
+        * ``ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES``: Joint armature has changed.
+        * ``ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES``: Joint reference poses
+          or spring references have changed.
         * ``ModelFlags.BODY_PROPERTIES``: Rigid-body pose or velocity buffers
           have changed.
         * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass or inertia
@@ -429,9 +790,12 @@ class SolverBase:
         pass
 
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """
-        Update a Contacts object with forces from the solver state. Where the solver state contains
-        other contact data, convert that data to the Contacts format.
+        """Update a legacy Contacts object with forces from the solver state.
+
+        .. deprecated:: 1.7
+
+            Request :attr:`SolverObservableFlags.CONTACT_F` using :meth:`observables`
+            and pass the resulting container to :meth:`step` instead.
 
         Args:
             contacts: The object to update from the solver state.

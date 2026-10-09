@@ -678,13 +678,15 @@ class Example:
             segment_length=initial_segment_length,
             wrap_clearance=cable_wrap_clearance,
         )
-        cable_quats = newton.utils.rod_parallel_transport_quaternions(cable_points)
+        cable_rod = newton.Rod(cable_points)
+        cable_quats = [wp.quat(*(float(value) for value in frame)) for frame in cable_rod.quaternions]
         cable_segment_count = len(cable_points) - 1
-        straight_cable_points, straight_cable_quats = newton.utils.rod_straight_points_and_quaternions(
+        straight_rod = newton.Rod.create_straight(
             start=left_anchor_world,
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=cable_segment_count * cable_segment_length,
-            num_segments=cable_segment_count,
+            segment_count=cable_segment_count,
+            radius=cable_radius,
         )
 
         cable_cfg = builder.default_shape_cfg.copy()
@@ -692,9 +694,7 @@ class Example:
         cable_cfg.gap = 2.0 * cable_radius
 
         self.cable_bodies, cable_joints = builder.add_rod(
-            positions=straight_cable_points,
-            quaternions=straight_cable_quats,
-            radius=cable_radius,
+            rod=straight_rod,
             cfg=cable_cfg,
             stretch_stiffness=1.0e5,
             stretch_damping=1.0e-4,
@@ -702,7 +702,6 @@ class Example:
             bend_damping=1.0e-2,
             wrap_in_articulation=False,
             label="xy_table_cable",
-            body_frame_origin="com",
         )
         initial_cable_xforms = [
             wp.transform(cable_points[i] + (cable_points[i + 1] - cable_points[i]) * 0.5, cable_quats[i])
@@ -771,7 +770,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=sim_iterations,
-            rigid_compliant_alm=True,
             rigid_contact_history=True,
             rigid_body_contact_buffer_size=256,
         )

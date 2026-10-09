@@ -16,6 +16,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.linalg import ConjugateResidualSolver, ConjugateResidualSolverFused
@@ -25,10 +26,10 @@ from newton._src.solvers.kamino._src.linalg.conjugate_fused import (
     build_transpose_index,
     make_fused_cr_kernel,
 )
-from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
 from newton.tests.kamino import setup_tests
 from newton.tests.kamino.utils.make import make_containers, update_containers
+from newton.tests.utils import basics
 
 MB = MAX_BLOCKS_PER_ROW
 
@@ -218,10 +219,8 @@ class TestFusedCRKernel(unittest.TestCase):
 def _run_padmm_sparse(solver_cls, device):
     """Run a box-on-plane contact PADMM solve with the given sparse linear solver."""
     builder = basics.build_box_on_plane()
-    builder.gravity[0].enabled = True
-    model, data, state, limits, detector, jacobians = make_containers(
-        builder=builder, max_world_contacts=8, device=device, sparse=True
-    )
+    model = ModelKamino.from_newton(builder.finalize(device=device))
+    model, data, state, limits, detector, jacobians = make_containers(model=model, max_world_contacts=8, sparse=True)
     contacts = detector.contacts
     problem = DualProblem(
         model=model,

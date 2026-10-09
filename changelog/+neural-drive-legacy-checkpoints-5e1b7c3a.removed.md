@@ -1,0 +1,1 @@
+Remove support for loading TorchScript (`torch.jit.save`) and dict (`torch.save`) checkpoints in `DriveNeuralMLP` and `DriveNeuralLSTM`, deprecated since 1.4; re-export such checkpoints as pt2 archives with `torch.export.save()`. `DriveNeuralLSTM` Torch checkpoints now require `num_layers` and `hidden_size` in their metadata.

@@ -22,6 +22,14 @@ from typing import Any
 AwsCall = Callable[..., Any]
 Warn = Callable[[str], None]
 AWS_CLI_TIMEOUT_SECONDS = 120
+ALLOWED_REGIONS = (
+    "us-east-1",
+    "us-east-2",
+    "us-west-2",
+    "ap-northeast-1",
+    "ap-northeast-2",
+)
+DEFAULT_AMI_NAME = "Deep Learning Base AMI with Single CUDA (Ubuntu 22.04) ????????"
 
 
 def warning(message: str) -> None:
@@ -103,6 +111,7 @@ def discover_candidates(
     tag_key: str,
     aws_call: AwsCall = aws,
     warn: Warn = warning,
+    image_name: str = DEFAULT_AMI_NAME,
 ) -> list[dict[str, str]]:
     """Discover eligible EC2 runner candidates.
 
@@ -112,6 +121,7 @@ def discover_candidates(
         tag_key: Tag key used to find eligible subnets and security groups.
         aws_call: AWS EC2 call helper.
         warn: Warning callback.
+        image_name: AWS AMI name or name pattern to select in each region.
 
     Returns:
         Candidate objects accepted by ``machulav/ec2-github-runner``.
@@ -143,7 +153,7 @@ def discover_candidates(
             "--owners",
             "amazon",
             "--filters",
-            "Name=name,Values=Deep Learning Base AMI with Single CUDA (Ubuntu 22.04) ????????",
+            f"Name=name,Values={image_name}",
             "Name=state,Values=available",
             "--query",
             "reverse(sort_by(Images, &CreationDate))[:1].ImageId",
@@ -246,13 +256,37 @@ def set_output(name: str, value: str) -> None:
             output_file.write(f"{name}={value}\n")
 
 
+def parse_region_candidates(value: str) -> list[str]:
+    """Return ordered runner regions after enforcing the cleanup allowlist.
+
+    Args:
+        value: Space-separated AWS region candidates.
+
+    Returns:
+        Region candidates in caller-specified order.
+
+    Raises:
+        ValueError: If a candidate is outside the watchdog allowlist.
+    """
+    regions = value.split()
+    unsupported_regions = sorted(set(regions).difference(ALLOWED_REGIONS))
+    if unsupported_regions:
+        raise ValueError(f"Unsupported AWS runner regions: {', '.join(unsupported_regions)}")
+    return regions
+
+
 def main() -> int:
     """Entry point for the workflow step."""
-    regions = os.environ["AWS_REGION_CANDIDATES"].split()
+    try:
+        regions = parse_region_candidates(os.environ["AWS_REGION_CANDIDATES"])
+    except ValueError as exc:
+        error(str(exc))
+        return 1
     instance_type = os.environ["AWS_INSTANCE_TYPE"]
     tag_key = os.environ["AWS_RUNNER_RESOURCE_TAG"]
 
-    candidates = discover_candidates(regions, instance_type, tag_key)
+    image_name = os.environ.get("AWS_AMI_NAME") or DEFAULT_AMI_NAME
+    candidates = discover_candidates(regions, instance_type, tag_key, image_name=image_name)
     if not candidates:
         error("No eligible EC2 runner candidates were discovered.")
         return 1

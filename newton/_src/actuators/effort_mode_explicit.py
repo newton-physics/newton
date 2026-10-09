@@ -9,20 +9,20 @@ from typing import Any
 
 import warp as wp
 
-from .clamping.base import Clamping
-from .controllers.base import Controller
+from .clamping.base import ClampingBase
+from .drives.base import DriveBase
 
 
 class _EffortModeExplicit:
     """Explicit effort mode: control law at the current state, then clamps."""
 
-    def __init__(self, controller: Controller, clamping: list[Clamping], device: wp.Device):
-        self._controller = controller
+    def __init__(self, drive: DriveBase, clamping: list[ClampingBase], device: wp.Device):
+        self._drive = drive
         self._clamping = clamping
         self._device = device
 
     def is_graphable(self) -> bool:
-        return self._controller.is_graphable()
+        return self._drive.is_graphable()
 
     def compute_force(
         self,
@@ -38,14 +38,18 @@ class _EffortModeExplicit:
         target_vel_indices: wp.array[wp.uint32],
         computed_forces: wp.array[float],
         applied_forces: wp.array[float] | None,
-        ctrl_state: Controller.State | None,
+        drive_state: DriveBase.State | None,
         dt: float | None,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> wp.array[float]:
         """Compute raw effort into *computed_forces*, clamp into *applied_forces*.
 
         Returns the buffer holding the final (clamped) effort.
         """
-        self._controller.compute(
+        compute_kwargs: dict[str, Any] = {"device": self._device}
+        if self._drive.custom_inputs:
+            compute_kwargs["custom_inputs"] = custom_inputs
+        self._drive.compute(
             positions,
             velocities,
             target_pos,
@@ -56,9 +60,9 @@ class _EffortModeExplicit:
             target_pos_indices,
             target_vel_indices,
             computed_forces,
-            ctrl_state,
+            drive_state,
             dt,
-            device=self._device,
+            **compute_kwargs,
         )
         forces = computed_forces
         for clamp in self._clamping:

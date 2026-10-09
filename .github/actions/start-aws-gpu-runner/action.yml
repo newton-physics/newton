@@ -1,0 +1,196 @@
+name: Start AWS GPU runner
+description: >-
+  Launch an ephemeral EC2 GitHub runner, falling back to a second instance type
+  when the primary type cannot launch in any candidate availability zone.
+  Requires a repository checkout and configured AWS credentials.
+
+inputs:
+  github-token:
+    description: GitHub token used to register the runner
+    required: true
+  instance-type:
+    description: Preferred EC2 instance type
+    required: true
+  ami-name:
+    description: AWS AMI name override; empty selects the latest matching image
+    required: false
+    default: ''
+  fallback-instance-type:
+    description: EC2 instance type to try when the preferred type cannot launch; empty disables fallback
+    required: false
+    default: ''
+  region-candidates:
+    description: Space-separated AWS regions to try, in order
+    required: true
+  resource-tag:
+    description: Tag key marking subnets and security groups eligible for runners
+    required: true
+  volume-size:
+    description: EBS volume size in GB
+    required: true
+  volume-type:
+    description: EBS volume type
+    required: true
+  workload:
+    description: Value of the Newton-Workload resource tag
+    required: true
+  trigger-category:
+    description: Value of the Newton-Trigger resource tag
+    required: true
+
+outputs:
+  label:
+    description: Runner label
+    value: ${{ steps.select.outputs.label }}
+  ec2-instance-id:
+    description: Launched EC2 instance ID; set even when the runner failed to register so it can be stopped
+    value: ${{ steps.select.outputs.ec2-instance-id }}
+  region:
+    description: AWS region of the launched instance
+    value: ${{ steps.select.outputs.region }}
+  instance-type:
+    description: EC2 instance type that was launched
+    value: ${{ steps.select.outputs.instance-type }}
+  ready:
+    description: "'true' when the runner launched and registered"
+    value: ${{ steps.select.outputs.ready }}
+
+# Fallible steps use continue-on-error and the select step uses always(), so the
+# outputs needed to stop a launched instance are set even on failure or
+# cancellation.
+runs:
+  using: composite
+  steps:
+    - name: Discover networking for ${{ inputs.instance-type }}
+      id: discover-primary
+      continue-on-error: true
+      shell: bash
+      env:
+        AWS_INSTANCE_TYPE: ${{ inputs.instance-type }}
+        AWS_AMI_NAME: ${{ inputs.ami-name }}
+        AWS_REGION_CANDIDATES: ${{ inputs.region-candidates }}
+        AWS_RUNNER_RESOURCE_TAG: ${{ inputs.resource-tag }}
+      run: python scripts/ci/discover_aws_runner_config.py
+
+    - name: Start ${{ inputs.instance-type }} runner
+      id: start-primary
+      if: steps.discover-primary.outcome == 'success'
+      continue-on-error: true
+      uses: machulav/ec2-github-runner@343a1b2ae682e681c3cec9a235d882da17ff04ef  # v2.6.1
+      with:
+        mode: start
+        github-token: ${{ inputs.github-token }}
+        ec2-instance-type: ${{ inputs.instance-type }}
+        ec2-volume-size: ${{ inputs.volume-size }}
+        ec2-volume-type: ${{ inputs.volume-type }}
+        availability-zones-config: ${{ steps.discover-primary.outputs.availability-zones-config }}
+        pre-runner-script: |
+          if [ -d /opt/dlami/nvme ]; then
+            mkdir -p /opt/dlami/nvme/actions-runner/_work
+            mkdir -p /opt/dlami/nvme/actions-runner/.local
+            mkdir -p /opt/dlami/nvme/actions-runner/.cache
+            ln -s /opt/dlami/nvme/actions-runner/_work /actions-runner/_work
+            ln -s /opt/dlami/nvme/actions-runner/.local /actions-runner/.local
+            ln -s /opt/dlami/nvme/actions-runner/.cache /actions-runner/.cache
+          fi
+        aws-resource-tags: >
+          [
+            {"Key": "Name", "Value": "ec2-github-runner"},
+            {"Key": "created-by", "Value": "github-actions-newton-role"},
+            {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"},
+            {"Key": "Newton-Trigger", "Value": ${{ toJSON(inputs['trigger-category']) }}},
+            {"Key": "Newton-Workload", "Value": ${{ toJSON(inputs.workload) }}},
+            {"Key": "GitHub-Run-ID", "Value": "${{ github.run_id }}"},
+            {"Key": "GitHub-Run-Attempt", "Value": "${{ github.run_attempt }}"}
+          ]
+
+    # Fall back only when the primary never launched; a launched instance that
+    # failed to register would not be fixed by another instance type.
+    - name: Discover networking for ${{ inputs.fallback-instance-type }}
+      id: discover-fallback
+      if: inputs.fallback-instance-type != '' && steps.start-primary.outputs.ec2-instance-id == ''
+      continue-on-error: true
+      shell: bash
+      env:
+        AWS_INSTANCE_TYPE: ${{ inputs.fallback-instance-type }}
+        AWS_AMI_NAME: ${{ inputs.ami-name }}
+        AWS_REGION_CANDIDATES: ${{ inputs.region-candidates }}
+        AWS_RUNNER_RESOURCE_TAG: ${{ inputs.resource-tag }}
+      run: python scripts/ci/discover_aws_runner_config.py
+
+    - name: Start ${{ inputs.fallback-instance-type }} runner
+      id: start-fallback
+      if: steps.discover-fallback.outcome == 'success'
+      continue-on-error: true
+      uses: machulav/ec2-github-runner@343a1b2ae682e681c3cec9a235d882da17ff04ef  # v2.6.1
+      with:
+        mode: start
+        github-token: ${{ inputs.github-token }}
+        ec2-instance-type: ${{ inputs.fallback-instance-type }}
+        ec2-volume-size: ${{ inputs.volume-size }}
+        ec2-volume-type: ${{ inputs.volume-type }}
+        availability-zones-config: ${{ steps.discover-fallback.outputs.availability-zones-config }}
+        pre-runner-script: |
+          if [ -d /opt/dlami/nvme ]; then
+            mkdir -p /opt/dlami/nvme/actions-runner/_work
+            mkdir -p /opt/dlami/nvme/actions-runner/.local
+            mkdir -p /opt/dlami/nvme/actions-runner/.cache
+            ln -s /opt/dlami/nvme/actions-runner/_work /actions-runner/_work
+            ln -s /opt/dlami/nvme/actions-runner/.local /actions-runner/.local
+            ln -s /opt/dlami/nvme/actions-runner/.cache /actions-runner/.cache
+          fi
+        aws-resource-tags: >
+          [
+            {"Key": "Name", "Value": "ec2-github-runner"},
+            {"Key": "created-by", "Value": "github-actions-newton-role"},
+            {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"},
+            {"Key": "Newton-Trigger", "Value": ${{ toJSON(inputs['trigger-category']) }}},
+            {"Key": "Newton-Workload", "Value": ${{ toJSON(inputs.workload) }}},
+            {"Key": "GitHub-Run-ID", "Value": "${{ github.run_id }}"},
+            {"Key": "GitHub-Run-Attempt", "Value": "${{ github.run_attempt }}"}
+          ]
+
+    - name: Select launched runner
+      id: select
+      if: always()
+      shell: bash
+      env:
+        PRIMARY_TYPE: ${{ inputs.instance-type }}
+        PRIMARY_DISCOVER_OUTCOME: ${{ steps.discover-primary.outcome }}
+        PRIMARY_OUTCOME: ${{ steps.start-primary.outcome }}
+        PRIMARY_LABEL: ${{ steps.start-primary.outputs.label }}
+        PRIMARY_ID: ${{ steps.start-primary.outputs.ec2-instance-id }}
+        PRIMARY_REGION: ${{ steps.start-primary.outputs.region }}
+        FALLBACK_TYPE: ${{ inputs.fallback-instance-type }}
+        FALLBACK_OUTCOME: ${{ steps.start-fallback.outcome }}
+        FALLBACK_LABEL: ${{ steps.start-fallback.outputs.label }}
+        FALLBACK_ID: ${{ steps.start-fallback.outputs.ec2-instance-id }}
+        FALLBACK_REGION: ${{ steps.start-fallback.outputs.region }}
+      run: |
+        if [ -n "$PRIMARY_ID" ]; then
+          type=$PRIMARY_TYPE outcome=$PRIMARY_OUTCOME label=$PRIMARY_LABEL id=$PRIMARY_ID region=$PRIMARY_REGION
+        elif [ -n "$FALLBACK_ID" ]; then
+          type=$FALLBACK_TYPE outcome=$FALLBACK_OUTCOME label=$FALLBACK_LABEL id=$FALLBACK_ID region=$FALLBACK_REGION
+          # Fallback triggers on any primary failure, not just capacity, so
+          # point at the step whose error annotation has the cause.
+          if [ "$PRIMARY_DISCOVER_OUTCOME" != success ]; then
+            failed_step="Discover networking for $PRIMARY_TYPE"
+          else
+            failed_step="Start $PRIMARY_TYPE runner"
+          fi
+          echo "::warning::$PRIMARY_TYPE did not launch; running on fallback instance type $FALLBACK_TYPE. See the error from step '$failed_step' for the cause."
+        else
+          type= outcome=failure label= id= region=
+        fi
+        ready=false
+        if [ "$outcome" = success ]; then
+          ready=true
+        fi
+        {
+          echo "label=$label"
+          echo "ec2-instance-id=$id"
+          echo "region=$region"
+          echo "instance-type=$type"
+          echo "ready=$ready"
+        } >> "$GITHUB_OUTPUT"
+        echo "Instance type: ${type:-none}, instance: ${id:-none}, region: ${region:-none}, ready: $ready"

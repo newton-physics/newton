@@ -1,0 +1,1 @@
+Remove support for unsorted integer indices in `ArticulationView(include_joints=...)` and `ArticulationView(include_links=...)`; these now raise a `ValueError`. Sort the indices in ascending order before passing them.

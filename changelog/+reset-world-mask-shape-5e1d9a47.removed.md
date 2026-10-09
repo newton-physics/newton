@@ -1,0 +1,1 @@
+Remove support for reset `world_mask` arrays with shape `(world_count,)` in `SolverBase.reset()` and solver-specific `reset()` overrides; such masks now raise `ValueError`. Pass a mask with shape `(world_count + 1,)` instead, setting the final entry to `False` to select only local worlds.

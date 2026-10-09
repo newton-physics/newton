@@ -13,9 +13,9 @@ from collections.abc import Callable
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.joints import JointActuationType, JointDoFType
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton.tests import get_kamino_testing_asset
 
 ###
@@ -117,8 +117,8 @@ def run_test_single_joint_examples(
     # Load and test all examples
     success = True
     for file_path in file_paths:
-        importer = USDImporter()
-        builder = importer.import_from(source=file_path)
+        builder = newton.ModelBuilder()
+        builder.add_usd(source=file_path)
         file_stem_split = os.path.basename(file_path).split(".")[0].split("_")
         unary_binary_str = "unary" if file_stem_split[-1] == "unary" else "binary"
         passive_actuated_str = (
@@ -127,7 +127,7 @@ def run_test_single_joint_examples(
         joint_type_str = file_stem_split[2]
 
         # Run test
-        model = builder.finalize(device=device, requires_grad=False, base_auto=False)
+        model = ModelKamino.from_newton(builder.finalize(device=device, skip_validation_joints=True))
         single_test_success = test_fun(model)
         success &= single_test_success
         if not single_test_success:

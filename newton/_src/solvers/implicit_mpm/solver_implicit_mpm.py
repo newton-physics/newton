@@ -24,6 +24,7 @@ from ...core.types import override
 from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
 from ..coupled.interface import CouplingInterface
+from ..observables import SolverObservables
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
@@ -94,6 +95,9 @@ from .implicit_mpm_solver_kernels import (
     update_particle_strains,
     voxel_coordinates,
 )
+
+# Disabled until Warp includes the fix for NVIDIA/warp#2036 (see #4506).
+_ROW_COMPRESSED_CONTACT_CONSTRUCTION = False
 
 
 def _as_2d_array(array, shape, dtype):
@@ -646,7 +650,11 @@ class ImplicitMPMScratchpad:
             self.collider_total_volumes = fem.borrow_temporary(temporary_store, shape=collider_count, dtype=float)
 
         if max_colors > 0:
-            self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, strain_node_count), dtype=int)
+            # Cell-based coloring sorts one entry per partition cell, and cells without
+            # particles make that count exceed the particle-based strain node count.
+            partition_cell_count = self._strain_space_restriction.space_partition.geo_partition.cell_count()
+            color_block_capacity = max(strain_node_count, partition_cell_count)
+            self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, color_block_capacity), dtype=int)
             self.color_offsets = fem.borrow_temporary(temporary_store, shape=max_colors + 1, dtype=int)
 
     def release_temporaries(self):
@@ -778,10 +786,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     colliders backed by dynamic bodies are rejected.
 
     A sparse grid is rebuildable when :attr:`Config.max_active_cell_count` is
-    positive, :attr:`Config.grid_padding` is zero, the velocity basis is
-    ``"Q1"``, and the strain and collider bases support rebuilding. Cell and
-    node capacities are totals across all FEM environments, and resolved
-    capacities must satisfy ``upper <= lower <= leaf <= active``.
+    positive, :attr:`Config.grid_padding` is zero, and the strain and collider
+    bases support rebuilding. Every velocity basis supports rebuilding; the
+    ``"B2"`` and ``"B3"`` bases reserve 64 velocity nodes per active cell,
+    compared with 8 for ``"Q1"``. Cell and node capacities are totals across
+    all FEM environments, and resolved capacities must satisfy
+    ``upper <= lower <= leaf <= active``.
 
     Outer graph capture requires CUDA, an enabled memory pool, conditional
     graph support, ``enable_timers=False``, positive active-cell capacity, and
@@ -1470,7 +1480,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self.grid_type == "sparse"
             and self.max_active_cell_count > 0
             and self.grid_padding == 0
-            and self.velocity_basis == "Q1"
             and strain_rebuild_safe
             and collider_rebuild_safe
         )
@@ -1831,11 +1840,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 entry selects global objects whose world index is ``-1``. If
                 ``None``, reset all worlds and global objects.
 
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
-
                 .. experimental::
 
                     Selective per-world MPM reset behavior may change without prior notice.
@@ -1905,6 +1909,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         control: newton.Control,
         contacts: newton.Contacts,
         dt: float,
+        *,
+        observables: SolverObservables | None = None,
     ) -> None:
         """Advance the simulation by one time step.
 
@@ -1919,7 +1925,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             control: Control input (unused; material parameters come from the model).
             contacts: Contact information (unused; collisions are handled internally).
             dt: Time step duration [s].
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
+                This solver declares no supported observables, so only an empty
+                container is accepted.
         """
+        self.validate_observables(observables, contacts)
         model = self.model
 
         with wp.ScopedDevice(model.device):
@@ -3079,7 +3089,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     reduction="first",
                     fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
                     temporary_store=self.temporary_store,
+                    # Preserve first-sample arithmetic; older Warp falls back to triplets.
+                    bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
                 )
+
+    def _use_local_contact_construction(self, scratch: ImplicitMPMScratchpad) -> bool:
+        """Prefer row compression for validated CUDA contact-map layouts."""
+        # Compact maps with many inactive partition rows can still favor triplets,
+        # even when Warp packs active-row candidate capacity.
+        return (
+            _ROW_COMPRESSED_CONTACT_CONSTRUCTION
+            and self.model.device.is_cuda
+            and self.velocity_basis == "Q1"
+            and self.collider_basis in ("S2", "S3")
+            and scratch.collider_node_count <= scratch.collider_fraction_test.space_restriction.node_count()
+        )
 
     def _build_collider_rigidity_operator(
         self,
@@ -4001,9 +4025,9 @@ def _harvest_mpm_proxy_particle_forces_kernel(
     dst_k = collider.collider_particle_ids[vertex_offset + local_k]
 
     f = collider_impulses[i] / dt
-    w_j = query.u
-    w_k = query.v
-    w_i = 1.0 - w_j - w_k
+    w_i = query.u
+    w_j = query.v
+    w_k = 1.0 - w_i - w_j
 
     if dst_i >= 0 and dst_i < particle_local_to_proxy_global.shape[0]:
         proxy_global_i = particle_local_to_proxy_global[dst_i]

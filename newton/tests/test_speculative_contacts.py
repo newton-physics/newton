@@ -550,12 +550,12 @@ def _build_spheres(device, velocity: float, separation: float = 0.3, gap: float 
 
 def _collide(model, state, speculative: bool):
     """Run one collision pass and return the populated contact buffer."""
-    config = None
-    if speculative:
-        config = newton.CollisionPipeline.SpeculativeContactConfig(
-            max_speculative_extension=0.25,
-        )
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_config=config)
+    speculative_contact_gap_max = 0.25 if speculative else None
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        speculative_contact_gap_max=speculative_contact_gap_max,
+    )
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts, dt=0.02)
     return contacts
@@ -627,10 +627,7 @@ def test_speculative_candidates_require_approach(test, device):
 def test_speculative_candidates_require_dt(test, device):
     """Require a current horizon and suppress candidates that cannot reach it."""
     model, state = _build_spheres(device, velocity=10.0)
-    config = newton.CollisionPipeline.SpeculativeContactConfig(
-        max_speculative_extension=0.25,
-    )
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_config=config)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_contact_gap_max=0.25)
 
     contacts = pipeline.contacts()
     with test.assertRaisesRegex(ValueError, "dt must be provided"):
@@ -649,7 +646,7 @@ def test_speculative_gap_uses_larger_fixed_or_velocity_distance(test, device):
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(max_speculative_extension=0.25),
+        speculative_contact_gap_max=0.25,
     )
 
     contacts = pipeline.contacts()
@@ -666,12 +663,25 @@ def test_speculative_candidates_reject_invalid_dt_override(test, device):
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(),
+        speculative_contact_gap_max=0.1,
     )
     contacts = pipeline.contacts()
     for dt in (-0.01, float("nan"), float("inf"), float("-inf")):
         with test.subTest(dt=dt), test.assertRaisesRegex(ValueError, "dt must be a non-negative finite number"):
             pipeline.collide(state, contacts, dt=dt)
+
+
+def test_speculative_candidates_reject_invalid_gap_max(test, device):
+    """Reject negative and non-finite speculative gap limits."""
+    model, _state = _build_spheres(device, velocity=10.0)
+    for value in (-0.01, float("nan"), float("inf"), float("-inf")):
+        with (
+            test.subTest(value=value),
+            test.assertRaisesRegex(
+                ValueError, "speculative_contact_gap_max must be a non-negative finite number or None"
+            ),
+        ):
+            newton.CollisionPipeline(model, broad_phase="nxn", speculative_contact_gap_max=value)
 
 
 def test_speculative_candidates_reject_common_motion(test, device):
@@ -686,17 +696,13 @@ def test_speculative_candidates_reject_common_motion(test, device):
     builder.body_qd[body_b] = (20.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     model = builder.finalize(device=device)
     shape_pairs = wp.array([wp.vec2i(0, 1)], dtype=wp.vec2i, device=device)
-    config = newton.CollisionPipeline.SpeculativeContactConfig(
-        max_speculative_extension=0.25,
-    )
-
     for broad_phase in ("nxn", "sap", "explicit"):
         with test.subTest(broad_phase=broad_phase):
             pipeline = newton.CollisionPipeline(
                 model,
                 broad_phase=broad_phase,
                 shape_pairs_filtered=shape_pairs if broad_phase == "explicit" else None,
-                speculative_config=config,
+                speculative_contact_gap_max=0.25,
             )
             contacts = pipeline.contacts()
             pipeline.collide(model.state(), contacts, dt=0.1)
@@ -730,9 +736,7 @@ def test_speculative_candidates_include_angular_motion(test, device):
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-            max_speculative_extension=0.25,
-        ),
+        speculative_contact_gap_max=0.25,
     )
     contacts = pipeline.contacts()
     pipeline.collide(model.state(), contacts, dt=0.02)
@@ -752,9 +756,7 @@ def test_speculative_cone_reaches_infinite_plane(test, device):
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-            max_speculative_extension=0.75,
-        ),
+        speculative_contact_gap_max=0.75,
     )
     contacts = pipeline.contacts()
     pipeline.collide(model.state(), contacts, dt=0.03)
@@ -837,9 +839,7 @@ def test_stationary_contacts_match_non_speculative_pipeline(test, device):
             model,
             broad_phase="nxn",
             deterministic=True,
-            speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-                max_speculative_extension=0.25,
-            ),
+            speculative_contact_gap_max=0.25,
         ),
     )
     outputs = []
@@ -876,12 +876,12 @@ def test_speculative_contacts_prevent_dynamic_tunneling(test, device):
     dt = 0.03
 
     def step(speculative):
-        config = None
-        if speculative:
-            config = newton.CollisionPipeline.SpeculativeContactConfig(
-                max_speculative_extension=0.75,
-            )
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_config=config)
+        speculative_contact_gap_max = 0.75 if speculative else None
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            speculative_contact_gap_max=speculative_contact_gap_max,
+        )
         contacts = pipeline.contacts()
         state_in = model.state()
         state_out = model.state()
@@ -996,7 +996,7 @@ def test_speculative_pipeline_rejects_hydroelastic_before_sdf_construction(test,
     with test.assertRaisesRegex(NotImplementedError, "does not yet support hydroelastic"):
         newton.CollisionPipeline(
             model,
-            speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(),
+            speculative_contact_gap_max=0.1,
         )
 
 
@@ -1007,7 +1007,7 @@ def test_speculative_pipeline_allows_missing_explicit_pairs(test, device):
     newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(),
+        speculative_contact_gap_max=0.1,
     )
 
 
@@ -1074,9 +1074,7 @@ def test_speculative_mesh_sdf_manifold_is_bounded(test, device):
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-            max_speculative_extension=0.25,
-        ),
+        speculative_contact_gap_max=0.25,
     )
     contacts = pipeline.contacts()
     pipeline.collide(model.state(), contacts, dt=0.03)
@@ -1109,9 +1107,7 @@ def test_speculative_mesh_sdf_retains_rotating_leading_feature(test, device):
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-            max_speculative_extension=0.15,
-        ),
+        speculative_contact_gap_max=0.15,
     )
     contacts = pipeline.contacts()
     pipeline.collide(model.state(), contacts, dt=0.03)
@@ -1424,6 +1420,7 @@ for _name, _test in (
         test_speculative_gap_uses_larger_fixed_or_velocity_distance,
     ),
     ("test_speculative_candidates_reject_invalid_dt_override", test_speculative_candidates_reject_invalid_dt_override),
+    ("test_speculative_candidates_reject_invalid_gap_max", test_speculative_candidates_reject_invalid_gap_max),
     ("test_speculative_candidates_reject_common_motion", test_speculative_candidates_reject_common_motion),
     ("test_speculative_candidates_preserve_physical_geometry", test_speculative_candidates_preserve_physical_geometry),
     ("test_speculative_candidates_include_angular_motion", test_speculative_candidates_include_angular_motion),

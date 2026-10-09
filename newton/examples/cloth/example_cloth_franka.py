@@ -88,8 +88,8 @@ class Example:
         self.cloth_particle_radius = 0.8
         self.cloth_body_contact_margin = 0.8
         #       self-contact
-        self.particle_self_contact_radius = 0.2
         self.particle_self_contact_margin = 0.2
+        self.particle_self_contact_gap = 0.0
 
         self.soft_contact_ke = 1e4
         self.soft_contact_kd = 1e1
@@ -229,7 +229,7 @@ class Example:
         # Explicit collision pipeline for cloth-body contacts with custom margin
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            soft_contact_margin=self.cloth_body_contact_margin,
+            soft_contact_gap=self.cloth_body_contact_margin,
         )
         self.contacts = self.collision_pipeline.contacts()
 
@@ -246,14 +246,16 @@ class Example:
                 self.model,
                 iterations=self.iterations,
                 integrate_with_external_rigid_solver=True,
-                particle_self_contact_radius=self.particle_self_contact_radius,
                 particle_self_contact_margin=self.particle_self_contact_margin,
+                particle_self_contact_gap=self.particle_self_contact_gap,
                 particle_topological_contact_filter_threshold=1,
                 particle_rest_shape_contact_exclusion_radius=0.5,
                 particle_enable_self_contact=True,
                 particle_vertex_contact_buffer_size=16,
                 particle_edge_contact_buffer_size=20,
-                particle_collision_detection_interval=-1,
+                collision_frequency_type={
+                    newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT: newton.solvers.SolverBase.CollisionFrequencyType.PRE_INIT,
+                },
             )
 
         self.viewer.set_model(self.model)

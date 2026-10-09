@@ -24,8 +24,8 @@ class SimulationRunner:
 
     Args:
         example: An ``Example`` instance (must expose ``step``, ``sim_step``,
-            ``update_input``, ``reset``, ``render``, ``joystick``, and
-            ``sim_wrapper``).
+            ``reset``, ``render``, ``joystick``, and ``sim_wrapper``). It may
+            expose ``poll_input`` (preferred) or ``update_input`` for input.
         mode: ``"sync"`` (default) or ``"async"``.
         render_fps: Target rendering rate in Hz (async mode only).
         joystick_hz: Target joystick polling rate in Hz (async mode only).
@@ -112,9 +112,12 @@ class SimulationRunner:
                 # Single lock acquisition: snapshot root pos, run joystick
                 # filter + path integration, and write commands to obs.
                 with self._lock:
-                    root_pos_2d = ex.sim_wrapper.q_i[:, 0, :2].clone()
-                    ex.joystick.update(root_pos_2d=root_pos_2d)
-                    ex.update_input()
+                    if hasattr(ex, "poll_input"):
+                        ex.poll_input()
+                    else:
+                        root_pos_2d = ex.sim_wrapper.q_i[:, 0, :2].clone()
+                        ex.joystick.update(root_pos_2d=root_pos_2d)
+                        ex.update_input()
 
                 acted = True
 

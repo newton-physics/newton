@@ -181,6 +181,117 @@ class TestDownloadAssets(unittest.TestCase):
         self.assertTrue(p.exists())
         self.assertEqual((p / "foo.txt").read_text(encoding="utf-8"), "v1\n")
 
+    def test_transient_fetch_error_retries_from_clean_temp_dir(self):
+        """Retry a transient fetch from a clean temporary directory."""
+        ref = self.work.head.commit.hexsha
+        real_init = git.Repo.init
+        attempts = 0
+        incomplete_repo = mock.Mock()
+        incomplete_repo.git.fetch.side_effect = git.exc.GitCommandError(
+            "git fetch",
+            128,
+            stderr=b"error: RPC failed; HTTP 503\nfatal: expected 'packfile'",
+        )
+
+        def flaky_init(path, *args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            path = Path(path)
+            if attempts == 1:
+                path.mkdir(parents=True)
+                (path / "partial").write_text("incomplete", encoding="utf-8")
+                return incomplete_repo
+            self.assertFalse(path.exists())
+            return real_init(path, *args, **kwargs)
+
+        with (
+            mock.patch("git.Repo.init", side_effect=flaky_init),
+            mock.patch("newton._src.utils.download_assets.time.sleep") as mock_sleep,
+        ):
+            path = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref=ref)
+
+        self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+        self.assertEqual(attempts, 2)
+        incomplete_repo.git.fetch.assert_called_once_with("origin", ref, "--depth=1", "--filter=blob:none")
+        incomplete_repo.close.assert_called_once()
+        mock_sleep.assert_called_once_with(1.0)
+
+    def test_transient_clone_error_retries_from_clean_temp_dir(self):
+        """Retry a transient clone from a clean temporary directory."""
+        real_clone = git.Repo.clone_from
+        attempts = 0
+
+        def flaky_clone(url, path, *args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            path = Path(path)
+            if attempts == 1:
+                path.mkdir(parents=True)
+                (path / "partial").write_text("incomplete", encoding="utf-8")
+                raise git.exc.GitCommandError(
+                    "git clone",
+                    128,
+                    stderr="error: RPC failed; HTTP 502\nfatal: early EOF",
+                )
+            self.assertFalse(path.exists())
+            return real_clone(url, path, *args, **kwargs)
+
+        with (
+            mock.patch("git.Repo.clone_from", side_effect=flaky_clone),
+            mock.patch("newton._src.utils.download_assets.time.sleep") as mock_sleep,
+        ):
+            path = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
+
+        self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+        self.assertEqual(attempts, 2)
+        mock_sleep.assert_called_once_with(1.0)
+
+    def test_transient_fetch_error_stops_after_three_attempts(self):
+        """Stop retrying a transient fetch after three attempts."""
+        error = git.exc.GitCommandError(
+            "git fetch",
+            128,
+            stderr="error: RPC failed; HTTP 503\nfatal: expected 'packfile'",
+        )
+
+        with (
+            mock.patch("git.Repo.init", side_effect=error) as mock_init,
+            mock.patch("newton._src.utils.download_assets.time.sleep") as mock_sleep,
+            self.assertRaises(RuntimeError),
+        ):
+            download_git_folder(
+                self.remote_dir,
+                self.asset_rel,
+                cache_dir=self.cache_dir,
+                ref=self.work.head.commit.hexsha,
+            )
+
+        self.assertEqual(mock_init.call_count, 3)
+        self.assertEqual(mock_sleep.call_args_list, [mock.call(1.0), mock.call(2.0)])
+
+    def test_permanent_fetch_error_does_not_retry(self):
+        """Do not retry a permanent fetch error."""
+        error = git.exc.GitCommandError(
+            "git fetch",
+            128,
+            stderr="error: RPC failed; HTTP 403\nfatal: Authentication failed",
+        )
+
+        with (
+            mock.patch("git.Repo.init", side_effect=error) as mock_init,
+            mock.patch("newton._src.utils.download_assets.time.sleep") as mock_sleep,
+            self.assertRaises(RuntimeError),
+        ):
+            download_git_folder(
+                self.remote_dir,
+                self.asset_rel,
+                cache_dir=self.cache_dir,
+                ref=self.work.head.commit.hexsha,
+            )
+
+        mock_init.assert_called_once()
+        mock_sleep.assert_not_called()
+
 
 class TestSafeRename(unittest.TestCase):
     def setUp(self):

@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 import warp as wp
 
 import newton
+from newton._src.viewer.gl.frame_cache import FrameCache
 from newton._src.viewer.viewer import ViewerBase
 from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton._src.viewer.viewer_viser import ViewerViser
@@ -76,8 +77,18 @@ class _MinimalRTXViewer(ViewerRTX):
         self.gui = None
         self._render_result = None
         self._render_products = None
-        self._transform_binding = None
+        self._displayed_frame = FrameCache()
         self._rtx = None
+        self._use_ovstage = True
+        self._transform_binding = None
+        self._all_instance_paths = []
+        self._ovstage = None
+        self._ovstage_attached = False
+        self._ovstage_paths = None
+        self._ovstage_queries = {}
+        self._ovstage_ordinal = 0
+        self._ovstage_population_dirty = False
+        self._pending_transform_matrices = {}
         self._render_width = 640
         self._render_height = 480
         self._up_axis = "Z"
@@ -363,6 +374,36 @@ class TestViewerLayerBackends(unittest.TestCase):
     def _make_viser_viewer(self):
         captured_calls = {}
 
+        class GuiHandle:
+            def __init__(self, value=None, disabled=False):
+                self.value = value
+                self.disabled = disabled
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def on_update(self, callback):
+                return callback
+
+            def on_click(self, callback):
+                return callback
+
+            def remove(self):
+                return None
+
+        class Gui:
+            def add_folder(self, _name, **_kwargs):
+                return GuiHandle()
+
+            def add_checkbox(self, _label, initial_value, **_kwargs):
+                return GuiHandle(initial_value)
+
+            def add_button(self, _label, **kwargs):
+                return GuiHandle(disabled=kwargs.get("disabled", False))
+
         def add_mesh_simple(name, vertices, faces, color, wireframe, side):
             captured_calls["add_mesh_simple"] = {
                 "name": name,
@@ -382,6 +423,8 @@ class TestViewerLayerBackends(unittest.TestCase):
             batched_wxyzs,
             batched_scales,
             batched_colors,
+            batched_opacities,
+            wireframe,
             lod,
         ):
             captured_calls["add_batched_meshes_simple"] = {
@@ -405,9 +448,11 @@ class TestViewerLayerBackends(unittest.TestCase):
 
         server = Mock()
         server.scene = scene
+        server.gui = Gui()
         server.on_client_connect = Mock()
         server.on_client_disconnect = Mock()
         server.get_scene_serializer = Mock(return_value=None)
+        server.get_clients = Mock(return_value={})
         server.stop = Mock()
 
         fake_viser = Mock()
@@ -456,39 +501,37 @@ class TestViewerLayerBackends(unittest.TestCase):
             "/layers/solverA/instances",
         )
 
-    def test_viser_warns_when_appearance_argument_is_unsupported(self):
-        """Drop unsupported appearance arguments with an explicit warning."""
+    def test_viser_set_camera_preserves_orientation_when_omitted(self):
+        """Verify set_camera keeps the last angle for each axis omitted as None.
 
-        def add_batched_meshes_trimesh(name):
-            return name
+        Covers omitting both angles, omitting only one, and passing an
+        explicit 0.0 (which must be applied, not treated as missing).
+        """
+        viewer, _ = self._make_viser_viewer()
 
-        with self.assertWarnsRegex(UserWarning, "batched_opacities"):
-            result = ViewerViser._call_scene_method(
-                add_batched_meshes_trimesh,
-                name="instances",
-                batched_opacities=[0.5],
-            )
+        viewer.set_camera(wp.vec3(4.0, 5.0, 6.0), pitch=20.0, yaw=90.0)
+        self.assertEqual(viewer._camera_pitch, 20.0)
+        self.assertEqual(viewer._camera_yaw, 90.0)
 
-        self.assertEqual(result, "instances")
+        viewer.set_camera(wp.vec3(7.0, 8.0, 9.0))
+        self.assertEqual(viewer._camera_pitch, 20.0)
+        self.assertEqual(viewer._camera_yaw, 90.0)
 
-    def test_viser_does_not_retry_failed_scene_calls(self):
-        """Propagate scene failures without retrying with unsupported arguments."""
-        call_count = 0
+        viewer.set_camera(wp.vec3(0.0, 0.0, 0.0), pitch=-15.0)
+        self.assertEqual(viewer._camera_pitch, -15.0)
+        self.assertEqual(viewer._camera_yaw, 90.0)
 
-        def add_batched_meshes_trimesh(name):
-            nonlocal call_count
-            call_count += 1
-            raise RuntimeError(f"failed to add {name}")
+        viewer.set_camera(wp.vec3(0.0, 0.0, 0.0), yaw=45.0)
+        self.assertEqual(viewer._camera_pitch, -15.0)
+        self.assertEqual(viewer._camera_yaw, 45.0)
 
-        with self.assertWarnsRegex(UserWarning, "batched_opacities"):
-            with self.assertRaisesRegex(RuntimeError, "failed to add instances"):
-                ViewerViser._call_scene_method(
-                    add_batched_meshes_trimesh,
-                    name="instances",
-                    batched_opacities=[0.5],
-                )
+        viewer.set_camera(wp.vec3(0.0, 0.0, 0.0), pitch=0.0, yaw=0.0)
+        self.assertEqual(viewer._camera_pitch, 0.0)
+        self.assertEqual(viewer._camera_yaw, 0.0)
 
-        self.assertEqual(call_count, 1)
+        viewer.set_camera(wp.vec3(1.0, 1.0, 1.0))
+        self.assertEqual(viewer._camera_pitch, 0.0)
+        self.assertEqual(viewer._camera_yaw, 0.0)
 
 
 if __name__ == "__main__":

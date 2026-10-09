@@ -10,15 +10,16 @@ import unittest
 
 import warp as wp
 
+from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.math import quat_exp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.models.builders import basics, testing
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
+from newton.tests.utils import testing
+from newton.tests.utils.basics import build_boxes_fourbar
 
 ###
 # Module configs
@@ -175,9 +176,10 @@ class TestKinematicsLimits(unittest.TestCase):
         """
         Tests the allocation of a LimitsKamino container.
         """
-        # Construct the model description using the ModelBuilderKamino
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=basics.build_boxes_fourbar)
-        model = builder.finalize(device=self.default_device)
+        # Construct the model description
+        builder = ModelBuilder()
+        builder.replicate(builder=build_boxes_fourbar(), world_count=3)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Create a LimitsKamino container
         limits = LimitsKamino(model=model)
@@ -225,12 +227,13 @@ class TestKinematicsLimits(unittest.TestCase):
         msg.info("limits.velocity: %s", limits.velocity)
 
     def test_02_check_revolute_joint(self):
-        # Construct the model description using the ModelBuilderKamino
-        builder = make_homogeneous_builder(num_worlds=4, build_fn=testing.build_unary_revolute_joint_test)
-        num_worlds = builder.num_worlds
+        # Construct the model description
+        builder = ModelBuilder()
+        builder.replicate(builder=testing.build_unary_revolute_joint_test(), world_count=4)
+        num_worlds = builder.world_count
 
         # Create the model and state
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         data = model.data(device=self.default_device)
 
         # Set the state of the Follower body to a known state

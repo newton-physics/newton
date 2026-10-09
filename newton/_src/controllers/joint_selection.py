@@ -1,13 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-""":func:`select_joints` and its result type — an internal helper used by
-:class:`~newton.controllers.ControllerJointImpedance` to resolve its
+""":func:`select_joints` and :func:`resolve_joint_selection` — internal
+helpers every model-based controller uses to resolve its
 ``articulations``/``joints`` constructor arguments into index arrays.
 
-:func:`select_joints` is a pure helper: it does not construct a controller
-itself. It only resolves a set of joints against a :class:`~newton.Model` into
-the :class:`JointSelection` the controller builds internally.
+Both are pure helpers: neither constructs a controller itself.
+:func:`select_joints` only resolves a set of joints against a
+:class:`~newton.Model` into a :class:`JointSelection`; :func:`resolve_joint_selection`
+additionally validates that selection and packs it by robot, since every
+model-based controller (:class:`~newton.controllers.ControllerDifferentialIK`,
+:class:`~newton.controllers.ControllerOperationalSpace`,
+:class:`~newton.controllers.ControllerJointImpedance`) needs the same checks
+and bookkeeping.
 """
 
 from __future__ import annotations
@@ -18,9 +23,11 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
+from newton import JointType
 from newton._src.sim.model import Model
 
 from ..utils.selection import get_name_from_label, match_labels
+from .utils import _validate_array
 
 
 @dataclass(frozen=True)
@@ -212,4 +219,190 @@ def select_joints(
     return JointSelection(
         q_start=wp.array(np.concatenate(q_start_chunks), dtype=wp.int32, device=device),
         qd_start=wp.array(np.concatenate(qd_start_chunks), dtype=wp.int32, device=device),
+    )
+
+
+@dataclass(frozen=True)
+class ResolvedJointSelection:
+    """Validated, packed-robot-grouped form of a :class:`JointSelection`.
+
+    Returned by :func:`resolve_joint_selection`. ``q_idx``/``qd_idx`` are the
+    (cloned) input arrays; the rest are derived from them.
+    """
+
+    q_idx: wp.array[wp.int32]
+    qd_idx: wp.array[wp.int32]
+    q_idx_np: np.ndarray
+    qd_idx_np: np.ndarray
+    owning_joint: np.ndarray
+    """Model joint index owning each controlled coordinate/DOF, shape [total_controlled_dofs]."""
+    model_robot_index_np: np.ndarray
+    """Ascending model articulation index of each controlled (packed) robot slot."""
+    controlled_dofs_per_robot_np: np.ndarray
+    controlled_dofs_per_robot: wp.array[wp.int32]
+    controlled_robot_count: int
+    max_controlled_dofs: int
+    total_controlled_dofs: int
+    model_robot_index: wp.array[wp.int32]
+    controlled_robot_mask: wp.array[wp.bool]
+    """model_robot_count-length mask, true for every controlled articulation."""
+
+
+def resolve_joint_selection(
+    model: Model,
+    *,
+    articulations: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None,
+    joints: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None,
+    device: wp.DeviceLike,
+    controller_name: str,
+    ownerless_joint_reason: str,
+) -> ResolvedJointSelection:
+    """Call :func:`select_joints`, validate its result, and pack it by robot.
+
+    Shared by every model-based controller
+    (:class:`~newton.controllers.ControllerDifferentialIK`,
+    :class:`~newton.controllers.ControllerOperationalSpace`,
+    :class:`~newton.controllers.ControllerJointImpedance`): each takes the
+    same ``articulations``/``joints`` arguments and needs the same
+    validation and packed-robot bookkeeping, only the wording of two error
+    messages differs.
+
+    Args:
+        model: Model to select from.
+        articulations: Forwarded to :func:`select_joints`.
+        joints: Forwarded to :func:`select_joints`.
+        device: Device the returned arrays live on (the caller's own
+            ``self._device``, which may differ from ``model.device``).
+        controller_name: Class name, used in the "unsupported joint" message.
+        ownerless_joint_reason: Clause appended to the "belongs to no robot"
+            message, naming what the caller cannot compute without an owner
+            (e.g. "so such a joint has no Jacobian.").
+
+    Raises:
+        ValueError: If the selection fails any of the checks documented on
+            :class:`ResolvedJointSelection`'s fields.
+    """
+    joint_selection = select_joints(model, articulations=articulations, joints=joints)
+    joint_q_idx = joint_selection.q_start
+    joint_qd_idx = joint_selection.qd_start
+
+    # ------------------------------------------------------------------
+    # Validate the two model-space index arrays select_joints returns:
+    #   1. type/dtype/shape of q_start, then qd_start against its length
+    #   2. non-empty
+    #   3. both index within the model's coordinate/DOF space
+    #   4. qd_start has no duplicate DOF
+    #   5. q_start[i]/qd_start[i] name the same joint for every i
+    #   6. every addressed joint spans a single coordinate and single DOF
+    #   7. every joint belongs to a robot (articulation)
+    #   8. joints are grouped by robot, ascending
+    # ------------------------------------------------------------------
+    if not isinstance(joint_q_idx, wp.array):
+        raise TypeError(f"joint_selection.q_start must be a wp.array, got {type(joint_q_idx).__name__}.")
+    _validate_array(
+        array=joint_q_idx,
+        name="joint_selection.q_start",
+        dtype=wp.int32,
+        shape=(joint_q_idx.size,),
+        device=device,
+    )
+    total_controlled_dofs = int(joint_q_idx.size)
+    if total_controlled_dofs < 1:
+        raise ValueError("joint_selection.q_start is empty; there is nothing to control.")
+    _validate_array(
+        array=joint_qd_idx,
+        name="joint_selection.qd_start",
+        dtype=wp.int32,
+        shape=(total_controlled_dofs,),
+        device=device,
+    )
+
+    q_idx_np = joint_q_idx.numpy()
+    qd_idx_np = joint_qd_idx.numpy()
+    coord_count = int(model.joint_coord_count)
+    dof_count = int(model.joint_dof_count)
+    for name, idx_np, limit, space in (
+        ("joint_selection.q_start", q_idx_np, coord_count, "coordinate"),
+        ("joint_selection.qd_start", qd_idx_np, dof_count, "DOF"),
+    ):
+        if idx_np.min() < 0 or idx_np.max() >= limit:
+            raise ValueError(
+                f"{name} must index the model's {space} space [0, {limit}), got "
+                f"range [{int(idx_np.min())}, {int(idx_np.max())}]."
+            )
+
+    if np.unique(qd_idx_np).size != qd_idx_np.size:
+        duplicate = int(np.bincount(qd_idx_np).argmax())
+        raise ValueError(
+            f"joint_selection.qd_start contains DOF {duplicate} more than once; two controlled slots "
+            f"cannot map to the same simulation DOF."
+        )
+
+    owning_joint = np.searchsorted(model.joint_q_start.numpy(), q_idx_np, side="right") - 1
+    owning_joint_qd = np.searchsorted(model.joint_qd_start.numpy(), qd_idx_np, side="right") - 1
+    if not np.array_equal(owning_joint, owning_joint_qd):
+        mismatched = int(np.flatnonzero(owning_joint != owning_joint_qd)[0])
+        raise ValueError(
+            f"joint_selection.q_start and joint_selection.qd_start disagree at entry {mismatched}: "
+            f"coordinate {int(q_idx_np[mismatched])} belongs to joint {int(owning_joint[mismatched])} "
+            f"but DOF {int(qd_idx_np[mismatched])} belongs to joint {int(owning_joint_qd[mismatched])}. "
+            f"Did you swap the two arrays?"
+        )
+
+    # A joint is controllable when its DOF maps to exactly one Jacobian
+    # column, i.e. it spans exactly one coordinate and one DOF.
+    joint_type_np = model.joint_type.numpy()
+    coord_span = np.diff(model.joint_q_start.numpy())[owning_joint]
+    dof_span = np.diff(model.joint_qd_start.numpy())[owning_joint]
+    unsupported = sorted(
+        {
+            (int(j), JointType(joint_type_np[j]).name)
+            for j, coords, dofs in zip(owning_joint, coord_span, dof_span, strict=True)
+            if coords != 1 or dofs != 1
+        }
+    )
+    if unsupported:
+        raise ValueError(
+            f"{controller_name} only supports controlling joints that span a single coordinate and a "
+            f"single DOF; joint_selection addresses unsupported joints: {unsupported}"
+        )
+
+    owning_robot = model.joint_articulation.numpy()[owning_joint]
+    loose = np.flatnonzero(owning_robot < 0)
+    if loose.size:
+        raise ValueError(
+            f"joint_selection addresses joint {int(owning_joint[loose[0]])}, which belongs to no "
+            f"robot. {ownerless_joint_reason}"
+        )
+    if np.any(np.diff(owning_robot) < 0):
+        raise ValueError(
+            "joint_selection.q_start/qd_start must be grouped by robot (robot 0's DOFs first, "
+            f"then robot 1's, ...); got robot order {owning_robot.tolist()}."
+        )
+
+    model_robot_index_np, controlled_dofs_per_robot_np = np.unique(owning_robot, return_counts=True)
+    model_robot_index_np = model_robot_index_np.astype(np.int32)
+    controlled_dofs_per_robot_np = controlled_dofs_per_robot_np.astype(np.int32)
+    controlled_robot_count = int(model_robot_index_np.size)
+    controlled_dofs_per_robot = wp.array(controlled_dofs_per_robot_np, dtype=wp.int32, device=device)
+    max_controlled_dofs = int(controlled_dofs_per_robot_np.max())
+    model_robot_index = wp.array(model_robot_index_np, dtype=wp.int32, device=device)
+    mask_np = np.zeros(int(model.articulation_count), dtype=bool)
+    mask_np[model_robot_index_np] = True
+    controlled_robot_mask = wp.array(mask_np, dtype=wp.bool, device=device)
+
+    return ResolvedJointSelection(
+        q_idx=wp.clone(joint_q_idx),
+        qd_idx=wp.clone(joint_qd_idx),
+        q_idx_np=q_idx_np,
+        qd_idx_np=qd_idx_np,
+        owning_joint=owning_joint,
+        model_robot_index_np=model_robot_index_np,
+        controlled_dofs_per_robot_np=controlled_dofs_per_robot_np,
+        controlled_dofs_per_robot=controlled_dofs_per_robot,
+        controlled_robot_count=controlled_robot_count,
+        max_controlled_dofs=max_controlled_dofs,
+        total_controlled_dofs=total_controlled_dofs,
+        model_robot_index=model_robot_index,
+        controlled_robot_mask=controlled_robot_mask,
     )

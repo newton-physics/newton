@@ -1685,6 +1685,7 @@ class HydroelasticContactReduction:
         else:
             self.reducer.contact_count.zero_()
             self.reducer.ht_insert_failures.zero_()
+            self.reducer.buffer_overflows.zero_()
         if self.deterministic:
             self._fixed_accum.zero_()
             self._fixed_scale.fill_(FIXED_EXP_NONE)

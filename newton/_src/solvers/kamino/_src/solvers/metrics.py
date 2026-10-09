@@ -18,24 +18,25 @@ Usage
 A typical example for using this module is:
 
     # Import all relevant types from Kamino
-    from newton._src.solvers.kamino.core import ModelBuilderKamino
+    import newton
+    from newton._src.solvers.kamino._src.core import ModelKamino
     from newton._src.solvers.kamino._src.geometry import ContactsKamino
     from newton._src.solvers.kamino._src.kinematics import LimitsKamino
     from newton._src.solvers.kamino._src.kinematics import DenseSystemJacobians
     from newton._src.solvers.kamino._src.dynamics import DualProblem
     from newton._src.solvers.kamino.solvers import PADMMSolver
 
-    # Create a model builder and add bodies, joints, geoms, etc.
-    builder = ModelBuilderKamino()
+    # Create a model builder and add bodies, joints, shapes, etc.
+    builder = newton.ModelBuilder()
     ...
 
     # Create a model from the builder and construct additional
     # containers to hold joint-limits, contacts, Jacobians
-    model = builder.finalize()
+    model = ModelKamino.from_newton(builder.finalize())
     state_p = model.state()
     data = model.data()
     limits = LimitsKamino(model)
-    contacts = ContactsKamino(builder)
+    contacts = ContactsKamino(model)
     jacobians = DenseSystemJacobians(model, limits, contacts)
 
     # Build the Jacobians for the model and active limits and contacts
@@ -917,12 +918,12 @@ def _compute_cts_joints_residual(
     wid = model_joint_wid[jid]
     num_cts_j = model_joint_num_kinematic_cts[jid]
     cio_j = model_joint_kinematic_cts_offset[jid]
+    # Early return for free joints
+    if num_cts_j == 0:
+        return
 
     # Compute the per-joint constraint residual (infinity-norm) and local argmax row
-    r_cts_joints_j = wp.float32(0.0)
-    argmax_j = wp.int32(0)
-    if num_cts_j > 0:
-        r_cts_joints_j, argmax_j = _vector_segment_abs_infnorm(num_cts_j, cio_j, data_joints_r_j)
+    r_cts_joints_j, argmax_j = _vector_segment_abs_infnorm(num_cts_j, cio_j, data_joints_r_j)
 
     cio_j_loc = cio_j - model_info_joint_kinematic_cts_offset[wid]
 

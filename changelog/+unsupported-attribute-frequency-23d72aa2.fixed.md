@@ -1,0 +1,1 @@
+Raise a `ValueError` in `ModelBuilder.finalize()` for custom attributes whose frequency is not a `Model.AttributeFrequency` member or custom frequency string, instead of silently omitting them from the `Model`.

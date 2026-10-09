@@ -147,8 +147,7 @@ class Example:
         )
         self.ball_joint = builder.joint_count - 1
         builder.add_shape_sphere(self.ball_body, radius=ball_radius)
-        SolverCoupledADMM.add_body_particle_attachment(
-            builder,
+        builder.add_attachment_body_particle(
             self.ball_body,
             self.center_particle,
             body_point=wp.vec3(0.0, 0.0, ball_radius),
@@ -213,7 +212,7 @@ class Example:
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
-                    solver=lambda v: SolverVBD(model=v, iterations=8, rigid_compliant_alm=True),
+                    solver=lambda v: SolverVBD(model=v, iterations=8),
                     bodies=[self.payload_body],
                     joints=[self.payload_free_joint],
                     particles=list(range(self.model.particle_count)),

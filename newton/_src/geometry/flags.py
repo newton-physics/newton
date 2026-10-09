@@ -60,6 +60,9 @@ class MeshProperties(IntFlag):
     WATERTIGHT = 1 << 0
     """The source mesh is closed (every edge shared by exactly two triangles)."""
 
+    SURFACE_VELOCITY = 1 << 1
+    """The source mesh provides per-vertex surface velocities to rigid contacts."""
+
 
 __all__ = [
     "MeshProperties",

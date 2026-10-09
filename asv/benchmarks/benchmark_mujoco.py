@@ -433,15 +433,17 @@ class Example:
             self.init_waypoint_control()
 
         self.sensor_contact = None
+        self.solver_observables = None
         sensing_bodies = ROBOT_CONFIGS.get(robot, {}).get("sensing_bodies", None)
         if sensing_bodies is not None:
-            self.sensor_contact = SensorContact(self.model, sensing_bodies=sensing_bodies, counterpart_bodies="*")
-            self.contacts = newton.Contacts(
-                self.solver.get_max_contact_count(),
-                0,
-                device=self.model.device,
-                requested_attributes=self.model.get_requested_contact_attributes(),
+            self.sensor_contact = SensorContact(
+                self.model, request_contact_attributes=False, sensing_bodies=sensing_bodies, counterpart_bodies="*"
             )
+            self.collision_pipeline = newton.CollisionPipeline(
+                self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+            )
+            self.contacts = self.collision_pipeline.contacts()
+            self.solver_observables = self.solver.observables(self.sensor_contact.solver_observable_flags)
 
         self.graph = None
         if self.use_cuda_graph:
@@ -455,13 +457,23 @@ class Example:
                 self.graph = capture.graph
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            # The contact sensor consumes only the final substep's forces.
+            if self.solver_observables is not None and substep == self.sim_substeps - 1:
+                self.solver.step(
+                    self.state_0,
+                    self.state_1,
+                    self.control,
+                    self.contacts,
+                    self.sim_dt,
+                    observables=self.solver_observables,
+                )
+            else:
+                self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
         if self.sensor_contact is not None:
-            self.solver.update_contacts(self.contacts, self.state_0)
-            self.sensor_contact.update(self.state_0, self.contacts)
+            self.sensor_contact.update(self.state_0, self.contacts, observables=self.solver_observables)
 
     def init_waypoint_control(self):
         lo, hi = _target_bounds(self.model)
@@ -502,6 +514,17 @@ class Example:
 
         self.benchmark_time += end_time - start_time
         self.sim_time += self.frame_dt
+
+    def reset(self):
+        """Restore the initial simulation state in place, keeping the captured graph valid."""
+        # The graph alternates both state buffers, so reset each one.
+        for state in (self.state_0, self.state_1):
+            self.solver.reset(state)
+            newton.eval_fk(self.model, state.joint_q, state.joint_qd, state)
+        _target_q(self.control).assign(_target_q(self.model))
+        if self.actuation == "random":
+            self._target_frame.zero_()
+        self.sim_time = 0.0
 
     def test_final(self):
         validate_simulation_state(

@@ -71,7 +71,6 @@ class Example:
             solver="newton",
             integrator="euler",
             iterations=10,
-            ls_iterations=5,
             njmax=100,
         )
 

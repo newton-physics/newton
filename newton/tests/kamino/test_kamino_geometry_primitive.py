@@ -8,7 +8,7 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
@@ -32,9 +32,9 @@ from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import (
     PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS,
     primitive_narrowphase,
 )
-from newton._src.solvers.kamino._src.models.builders import basics, testing
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
+from newton.tests.utils import basics, testing
 
 ###
 # Constants
@@ -163,24 +163,23 @@ PrimitiveBroadPhaseType = PrimitiveBroadPhaseTestBS | PrimitiveBroadPhaseTestAAB
 
 def check_broadphase_allocations(
     testcase: unittest.TestCase,
-    builder: ModelBuilderKamino,
+    model: ModelKamino,
     broadphase: PrimitiveBroadPhaseType,
 ):
-    # Calculate the maximum number of geometry pairs
-    model_candidate_pairs, candidate_pairs_offset = builder.make_collision_candidate_pairs()
-    num_candidate_pairs = len(model_candidate_pairs)
+    # Retrieve the model's collidable-pair bookkeeping
+    model_candidate_pairs = model.geoms.collidable_pairs.numpy()
+    num_candidate_pairs = model.geoms.num_collidable_pairs
+    num_worlds = model.size.num_worlds
     # Construct a broad-phase
-    testcase.assertEqual(len(candidate_pairs_offset), builder.num_worlds + 1)
-    testcase.assertEqual(candidate_pairs_offset[-1], num_candidate_pairs)
     testcase.assertEqual(broadphase._cmodel.num_model_geom_pairs, num_candidate_pairs)
     testcase.assertEqual(sum(broadphase._cmodel.num_world_geom_pairs), num_candidate_pairs)
     testcase.assertEqual(broadphase._cmodel.model_num_pairs.size, 1)
-    testcase.assertEqual(broadphase._cmodel.world_num_pairs.size, builder.num_worlds)
+    testcase.assertEqual(broadphase._cmodel.world_num_pairs.size, num_worlds)
     testcase.assertEqual(broadphase._cmodel.wid.size, num_candidate_pairs)
     testcase.assertEqual(broadphase._cmodel.geom_pair.size, num_candidate_pairs)
     np.testing.assert_array_equal(broadphase._cmodel.geom_pair.numpy(), model_candidate_pairs)
     testcase.assertEqual(broadphase._cdata.model_num_collisions.size, 1)
-    testcase.assertEqual(broadphase._cdata.world_num_collisions.size, builder.num_worlds)
+    testcase.assertEqual(broadphase._cdata.world_num_collisions.size, num_worlds)
     testcase.assertEqual(broadphase._cdata.wid.size, num_candidate_pairs)
     testcase.assertEqual(broadphase._cdata.geom_pair.size, num_candidate_pairs)
 
@@ -188,7 +187,7 @@ def check_broadphase_allocations(
 def test_broadphase(
     testcase: unittest.TestCase,
     broadphase_type: type[PrimitiveBroadPhaseType],
-    builder: ModelBuilderKamino,
+    builder: ModelBuilder,
     expected_model_collisions: int,
     expected_world_collisions: list[int],
     expected_worlds: list[int] | None = None,
@@ -197,16 +196,16 @@ def test_broadphase(
     device: wp.DeviceLike = None,
 ):
     """
-    Tests a primitive broad-phase backend on a system specified via a ModelBuilderKamino.
+    Tests a primitive broad-phase backend on a system specified via a ModelBuilder.
     """
     # Create a test model and data
-    model = builder.finalize(device)
+    model = ModelKamino.from_newton(builder.finalize(device))
     data = model.data()
     state = model.state()
 
     # Create a broad-phase backend
     broadphase = broadphase_type(model=model)
-    check_broadphase_allocations(testcase, builder, broadphase)
+    check_broadphase_allocations(testcase, model, broadphase)
 
     # Perform broad-phase collision detection and check results
     broadphase.collide(model, data, state, default_gap=gap)
@@ -361,7 +360,7 @@ def check_contacts(
 
 def test_narrowphase(
     testcase: unittest.TestCase,
-    builder: ModelBuilderKamino,
+    builder: ModelBuilder,
     expected: dict,
     max_contacts_per_pair: int = 12,
     gap: float = 0.0,
@@ -372,7 +371,7 @@ def test_narrowphase(
 ):
     """
     Runs the primitive narrow-phase collider using all broad-phase backends
-    on a system specified via a ModelBuilderKamino and checks the results.
+    on a system specified via a ModelBuilder and checks the results.
     """
     # Run the narrow-phase test over each broad-phase backend
     broadphase_types = [PrimitiveBroadPhaseTestAABB, PrimitiveBroadPhaseTestBS]
@@ -381,7 +380,7 @@ def test_narrowphase(
         msg.info("Running narrow-phase test on '%s' using '%s'", case, bp_name)
 
         # Create a test model and data
-        model = builder.finalize(device)
+        model = ModelKamino.from_newton(builder.finalize(device))
         data = model.data()
         state = model.state()
 
@@ -390,7 +389,7 @@ def test_narrowphase(
         broadphase.collide(model, data, state, default_gap=gap)
 
         # Create a contacts container
-        _, world_req_contacts = builder.compute_required_contact_capacity(max_contacts_per_pair=max_contacts_per_pair)
+        world_req_contacts = model.geoms.world_minimum_contacts
         contacts = ContactsKamino(capacity=world_req_contacts, device=device)
         contacts.clear()
 
@@ -568,7 +567,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         # - zero distance: (i.e., exactly touching)
         # - zero gap: no preemption of collisions
         msg.info("[BS]: testing broadphase with overlapping shapes on all shape pairs")
-        builder = testing.make_shape_pairs_builder(
+        builder = testing.build_shape_pairs_test(
             shape_pairs=self.supported_shape_pairs,
             distance=0.0,
         )
@@ -652,7 +651,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         # - zero distance: (i.e., exactly touching)
         # - zero gap: no preemption of collisions
         msg.info("[AABB]: testing broadphase with overlapping shapes on all shape pairs")
-        builder = testing.make_shape_pairs_builder(
+        builder = testing.build_shape_pairs_test(
             shape_pairs=self.supported_shape_pairs,
             distance=0.0,
         )
@@ -1059,15 +1058,14 @@ class TestPipelinePrimitive(unittest.TestCase):
         }
 
         # Create a builder for all supported shape pairs
-        builder = testing.make_shape_pairs_builder(
+        builder = testing.build_shape_pairs_test(
             shape_pairs=collidable_shape_pairs, per_shape_pair_args=per_shape_pair_args
         )
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         data = model.data()
 
         # Create a contacts container
-        max_contacts_per_pair = 12  # Conservative estimate based on max contacts for any supported shape pair
-        _, world_req_contacts = builder.compute_required_contact_capacity(max_contacts_per_pair=max_contacts_per_pair)
+        world_req_contacts = model.geoms.world_minimum_contacts
         contacts = ContactsKamino(capacity=world_req_contacts, device=self.default_device)
         contacts.clear()
 
@@ -1097,8 +1095,8 @@ class TestPipelinePrimitive(unittest.TestCase):
 
     def test_03_reports_contact_capacity_overflow(self):
         """Reset the primitive overflow warning flag between collision runs."""
-        builder = testing.make_shape_pairs_builder(shape_pairs=[("box", "box")])
-        model = builder.finalize(device=self.default_device)
+        builder = testing.build_shape_pairs_test(shape_pairs=[("box", "box")])
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         data = model.data()
         contacts_small = ContactsKamino(capacity=1, device=self.default_device)
         contacts_large = ContactsKamino(capacity=8, device=self.default_device)

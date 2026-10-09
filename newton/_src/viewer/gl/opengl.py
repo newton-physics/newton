@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
-import io
 import os
 import sys
 import warnings
@@ -15,6 +14,7 @@ from newton import Mesh
 from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
 from ..utils import OPAQUE_OPACITY_THRESHOLD
+from .icon import set_window_icon
 from .shaders import (
     FrameShader,
     OITResolveShader,
@@ -1213,7 +1213,7 @@ class RendererGL:
             )
             self.msaa_samples = 0
 
-        self._set_icon()
+        set_window_icon(self.window)
 
         # Pyglet on Windows 8+ (where _always_dwm=True) disables the GL
         # swap interval to avoid double-syncing with DWM, but then also
@@ -1486,6 +1486,8 @@ class RendererGL:
         texture_id: int | None,
         texture_width: int = 0,
         texture_height: int = 0,
+        *,
+        flip_y: bool = True,
     ):
         """Draw a texture to the frame buffer without rendering the 3D scene.
 
@@ -1493,6 +1495,7 @@ class RendererGL:
             texture_id: OpenGL texture id to draw, or ``None`` to only clear.
             texture_width: Source texture width in pixels.
             texture_height: Source texture height in pixels.
+            flip_y: Whether the source stores its top row first.
         """
         gl = RendererGL.gl
         self._make_current()
@@ -1525,7 +1528,7 @@ class RendererGL:
             gl.glActiveTexture(gl.GL_TEXTURE0)
             gl.glBindTexture(gl.GL_TEXTURE_2D, int(texture_id))
             with self._frame_shader:
-                self._frame_shader.update(0, flip_y=True)
+                self._frame_shader.update(0, flip_y=flip_y)
                 gl.glBindVertexArray(self._frame_vao)
                 gl.glDrawElements(gl.GL_TRIANGLES, len(self._frame_indices), gl.GL_UNSIGNED_INT, None)
                 gl.glBindVertexArray(0)
@@ -2466,27 +2469,3 @@ class RendererGL:
             # The window could be in the process of being closed, in which case
             # its corresponding context might have been destroyed and set to `None`.
             pass
-
-    def _set_icon(self):
-        import pyglet
-
-        def load_icon(filename):
-            filename = os.path.join(os.path.dirname(__file__), filename)
-
-            if not os.path.exists(filename):
-                raise FileNotFoundError(
-                    f"Error: Icon file '{filename}' not found. Please run the 'generate_icons.py' script first."
-                )
-
-            with open(filename, "rb") as f:
-                icon_bytes = f.read()
-
-            icon_stream = io.BytesIO(icon_bytes)
-            icon = pyglet.image.load(filename=filename, file=icon_stream)
-
-            return icon
-
-        icons = [load_icon("icon_16.png"), load_icon("icon_32.png"), load_icon("icon_64.png")]
-
-        # 5. Create the window and set the icon
-        self.window.set_icon(*icons)

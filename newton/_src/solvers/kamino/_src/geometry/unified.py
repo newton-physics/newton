@@ -693,6 +693,7 @@ class CollisionPipelineUnifiedKamino:
                     device=self._device,
                     filter_pairs=self._excluded_pairs,
                     num_filter_pairs=self._num_excluded_pairs,
+                    shape_body=self._model.geoms.bid,
                 )
             case "sap":
                 self.sap_broadphase.launch(
@@ -707,6 +708,7 @@ class CollisionPipelineUnifiedKamino:
                     device=self._device,
                     filter_pairs=self._excluded_pairs,
                     num_filter_pairs=self._num_excluded_pairs,
+                    shape_body=self._model.geoms.bid,
                 )
             case "explicit":
                 self.explicit_broadphase.launch(
