@@ -2992,7 +2992,7 @@ def _empty_material_properties() -> dict[str, Any]:
 
 
 def _coerce_color(value: Any) -> tuple[float, float, float] | None:
-    """Coerce a value to an RGB color tuple, or None if not possible."""
+    """Coerce a value to a clamped RGB color tuple, or None if not possible."""
     if value is None:
         return None
     # A per-vertex or per-face primvar holds one entry per element and only the leading one
@@ -3000,9 +3000,22 @@ def _coerce_color(value: Any) -> tuple[float, float, float] | None:
     if hasattr(value, "__len__") and len(value) > 0 and hasattr(value[0], "__len__"):
         value = value[0]
     color_np = np.array(value, dtype=np.float32).reshape(-1)
-    if color_np.size >= 3:
-        return (float(color_np[0]), float(color_np[1]), float(color_np[2]))
-    return None
+    if color_np.size < 3:
+        return None
+    rgb = color_np[:3]
+    color = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+    if not np.all(np.isfinite(rgb)):
+        warnings.warn(f"Ignoring non-finite imported color {color!r}.", stacklevel=2)
+        return None
+    # Builder triangle colors reject values outside [0, 1]; clamp like opacity so display-only data cannot abort an import.
+    rgb = np.clip(rgb, 0.0, 1.0)
+    clamped_color = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+    if clamped_color != color:
+        warnings.warn(
+            f"Clamping imported color {color!r} to {clamped_color!r}.",
+            stacklevel=2,
+        )
+    return clamped_color
 
 
 def _coerce_float(value: Any) -> float | None:
