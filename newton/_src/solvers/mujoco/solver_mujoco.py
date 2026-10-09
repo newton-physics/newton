@@ -1272,6 +1272,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 return angle * (np.pi / 180.0)
             return angle
 
+        def parse_joint_springref_usd(value: Any, context: dict[str, Any]) -> float:
+            """Keep the legacy raw spring reference only when explicitly requested."""
+            if context.get("legacy_springref_units", False):
+                return float(value)
+            return parse_joint_angle_usd(value, context)
+
         # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))
         builder.add_custom_frequency(
@@ -1598,7 +1604,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:springref",
                 mjcf_attribute_name="springref",
-                usd_value_transformer=parse_joint_angle_usd,
+                usd_value_transformer=parse_joint_springref_usd,
                 mjcf_value_transformer=cls._angle_value_transformer,
             )
         )

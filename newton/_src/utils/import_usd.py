@@ -178,6 +178,8 @@ def parse_usd(
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
     legacy_margin_gap: bool = False,
+    legacy_angular_velocity_units: bool = False,
+    legacy_springref_units: bool = False,
     return_deformable_results: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
@@ -315,6 +317,20 @@ def parse_usd(
             where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
             False (identity translation matching MuJoCo 3.9 semantics).
+        legacy_angular_velocity_units: If True, restore Newton 1.6 joint-state
+            angular velocity handling: resolved ``state:angular:physics:velocity``
+            and D6 ``state:rot*:physics:velocity`` values are copied into
+            ``joint_qd`` without converting degrees/s to radians/s. Applies
+            to revolute, native D6, and merged joints. Rigid-body velocities,
+            linear joint velocities, positions, and drive targets retain their
+            usual unit conversion. Defaults to False.
+        legacy_springref_units: If True, restore Newton 1.6 handling of
+            ``mjc:springref`` as an already converted Newton value, ignoring
+            ``mjc:compiler:angle`` for spring references only. ``mjc:ref``
+            conversion is unchanged. Requires registered MuJoCo custom
+            attributes to load spring references. Defaults to False, which
+            interprets revolute spring references using the compiler's angle
+            units (degrees if unauthored) and converts them to radians.
 
         return_deformable_results: If True, include the experimental deformable entries in the
             returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
@@ -613,6 +629,8 @@ def parse_usd(
         limit_gains_configured=default_joint_limit_gains_configured,
         mjc_resolver=mjc_resolver,
         verbose=verbose,
+        legacy_angular_velocity_units=legacy_angular_velocity_units,
+        legacy_springref_units=legacy_springref_units,
     )
     solreflimit_mode_key = "mujoco:solreflimit_mode"
     solreflimit_gain_baseline_key = "mujoco:solreflimit_gain_baseline"
