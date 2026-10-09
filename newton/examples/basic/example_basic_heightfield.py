@@ -92,7 +92,9 @@ class Example:
             soft_contact_max=0,
         )
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables(kinds={self.solver.ObservableKind.CONTACT_F})
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

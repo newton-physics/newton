@@ -261,11 +261,11 @@ class TestSolverObservableFields(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
             solver.observables(kinds={CustomKind.PRESSURE})
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=0, soft_contact_max=0)
-        observables = solver.observables(kinds={CustomKind.PRESSURE})
+        contacts = pipeline.contacts()
+        observables = solver.observables(contacts=contacts, kinds={CustomKind.PRESSURE})
         selected = observables.select({CustomKind.PRESSURE})
         self.assertEqual(selected.pressure.shape, (0,))
         self.assertTrue(selected.is_requested(CustomKind.PRESSURE))
-        contacts = pipeline.contacts()
         solver.validate_observables(selected, contacts)
         self.assertIs(observables.contacts, contacts)
         self.assertIsNone(observables.select(set()).contacts)
@@ -393,8 +393,8 @@ class TestSolverObservableFields(unittest.TestCase):
         calls = []
 
         class CustomSolver(solver_type):
-            def observables(self, *, kinds=None, requires_grad=None):
-                result = super().observables(kinds=kinds, requires_grad=requires_grad)
+            def observables(self, *, kinds=None, contacts=None, requires_grad=None):
+                result = super().observables(kinds=kinds, contacts=contacts, requires_grad=requires_grad)
                 calls.append(result.kinds)
                 if result.is_requested(CustomKind.TEMPERATURE):
                     result.temperature.fill_(3.0)
@@ -410,8 +410,9 @@ class TestSolverObservableFields(unittest.TestCase):
         np.testing.assert_array_equal(observables.temperature.numpy(), [3.0])
         observables.select(set())
         self.assertEqual(calls, [frozenset({CustomKind.TEMPERATURE})])
-        newton.CollisionPipeline(self.model, rigid_contact_max=1, soft_contact_max=0)
-        default = solver.observables()
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=1, soft_contact_max=0)
+        contacts = pipeline.contacts()
+        default = solver.observables(contacts=contacts)
         self.assertEqual(default.kinds, solver.supported_observables)
         self.assertEqual(calls[-1], solver.supported_observables)
         np.testing.assert_array_equal(default.temperature.numpy(), [3.0])
@@ -427,7 +428,8 @@ class TestSolverObservableFields(unittest.TestCase):
 
     def test_kamino_factory_failure_can_be_retried(self):
         """Keep capacity and scratch storage uncommitted when backend setup fails."""
-        newton.CollisionPipeline(self.model, rigid_contact_max=1, soft_contact_max=0)
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=1, soft_contact_max=0)
+        contacts = pipeline.contacts()
         solver = object.__new__(newton.solvers.SolverKamino)
         SolverBase.__init__(solver, self.model)
         solver._collision_detector_kamino = None
@@ -437,24 +439,27 @@ class TestSolverObservableFields(unittest.TestCase):
             patch("newton._src.solvers.kamino.solver_kamino.wp.empty", side_effect=MemoryError("scratch allocation")),
             self.assertRaisesRegex(MemoryError, "scratch allocation"),
         ):
-            solver.observables(kinds=kinds)
+            solver.observables(contacts=contacts, kinds=kinds)
         self.assertIsNone(solver._contact_observable_state)
-        newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
-        observables = solver.observables(kinds=kinds)
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
+        contacts = pipeline.contacts()
+        observables = solver.observables(contacts=contacts, kinds=kinds)
         self.assertEqual(observables.contact_f.shape, (2,))
         self.assertEqual(solver._contact_observable_state.body_q.shape, (self.model.body_count,))
 
     def test_allocation_failure_does_not_freeze_capacity(self):
         """Leave contact capacities mutable if array allocation fails."""
         solver = self.make_solver(self.model)
-        newton.CollisionPipeline(self.model, rigid_contact_max=1, soft_contact_max=0)
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=1, soft_contact_max=0)
+        contacts = pipeline.contacts()
         with (
             patch("newton._src.solvers.solver.wp.zeros", side_effect=MemoryError("array allocation")),
             self.assertRaisesRegex(MemoryError, "array allocation"),
         ):
-            solver.observables(kinds={CustomKind.PRESSURE})
-        newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
-        self.assertEqual(solver.observables(kinds={CustomKind.PRESSURE}).pressure.shape, (2,))
+            solver.observables(contacts=contacts, kinds={CustomKind.PRESSURE})
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
+        contacts = pipeline.contacts()
+        self.assertEqual(solver.observables(contacts=contacts, kinds={CustomKind.PRESSURE}).pressure.shape, (2,))
 
     def test_empty_request_does_not_allocate(self):
         """Return an owned empty container without allocating arrays or requiring contacts."""

@@ -298,7 +298,8 @@ class SensorContact:
 
     .. rubric:: Construction and update order
 
-    Construct a :class:`~newton.CollisionPipeline` before requesting
+    Construct a :class:`~newton.CollisionPipeline` and pass its contacts to
+    :meth:`~newton.solvers.SolverBase.observables` when requesting
     :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` from the solver. Pass the resulting
     :class:`~newton.solvers.SolverBase.Observables` and the pipeline's :class:`~newton.Contacts`
     buffer to both the solver step and :meth:`update`. The sensor uses only the linear part of
@@ -328,7 +329,7 @@ class SensorContact:
                 model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
             )
             contacts = collision_pipeline.contacts()
-            observables = solver.observables(kinds=sensor.solver_observable_kinds)
+            observables = solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts)
 
             solver.step(state, state, None, contacts, dt=1.0 / 60.0, observables=observables)
             sensor.update(state, contacts, observables=observables)
@@ -445,7 +446,7 @@ class SensorContact:
         if request_contact_attributes:
             warnings.warn(
                 "SensorContact(request_contact_attributes=True) is deprecated in Newton 1.7; "
-                "allocate SolverBase.Observables with solver.observables(kinds=sensor.solver_observable_kinds) "
+                "allocate SolverBase.Observables with solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts) "
                 "and pass them to update(..., observables=...).",
                 DeprecationWarning,
                 stacklevel=2,
@@ -628,13 +629,14 @@ class SensorContact:
             contacts: The contact data to evaluate.
             observables: Solver observable arrays containing :attr:`~newton.solvers.SolverBase.Observables.contact_f`.
                 If omitted, the deprecated ``contacts.force`` array is used when available.
-                On first use, validates and binds contact storage. Before the first
-                solver step, newly allocated observables report zero contact forces.
+                Must use the same contacts supplied to :meth:`~newton.solvers.SolverBase.observables`.
+                Before the first solver step, newly allocated observables report zero contact forces.
+                See :ref:`solver_observables` for allocation and usage examples.
 
         Raises:
             ValueError: If ``observables`` belong to a different model, no contact-force
                 output is available, or the observables are bound to a different ``contacts`` instance.
-            ValueError: If the contact device or capacities do not match the allocated observables.
+            ValueError: If legacy contacts are on a different device from the sensor.
         """
         if observables is not None and observables.model is not self._model:
             raise ValueError("Solver observables must belong to the sensor's model.")
@@ -645,8 +647,9 @@ class SensorContact:
                 "SolverBase.ObservableKind.CONTACT_F and pass the SolverBase.Observables to update()."
             )
         if observables is not None:
-            observables.bind_contacts(contacts)
-        if contacts.device != self.device:
+            if observables.contacts is not contacts:
+                raise ValueError("Contact solver observables must use the Contacts instance supplied at allocation.")
+        elif contacts.device != self.device:
             raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
 
         # update sensing transforms

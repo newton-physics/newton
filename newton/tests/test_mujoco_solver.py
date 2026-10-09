@@ -5540,7 +5540,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
             "contact_generation",
         )
         snapshots = {field: getattr(contacts, field).numpy().copy() for field in fields}
-        observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
+        observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
         for _ in range(3):
             observables.contact_f.fill_(float("nan"))
             solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
@@ -5585,7 +5585,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
             model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
         )
         contacts = collision_pipeline.contacts()
-        observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
+        observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
         dt = 0.002
@@ -11400,7 +11400,7 @@ class TestContactObservablePointPositions(unittest.TestCase):
         control = model.control()
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
-        observables = solver.observables()
+        observables = solver.observables(contacts=contacts)
         self.assertEqual(observables.kinds, solver.supported_observables)
         self.assertIsNotNone(observables.body_qdd)
         self.assertIsNotNone(observables.body_parent_f)

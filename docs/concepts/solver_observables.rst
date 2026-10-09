@@ -37,20 +37,22 @@ an application needs by composing entries from ``solver.ObservableKind`` in a se
 The ``kinds`` argument is optional and keyword-only. Calling ``solver.observables()``
 or ``solver.observables(kinds=None)`` allocates every observable supported by the
 configured solver, including its solver-specific entries. Pass ``kinds={...}``
-to request a subset, or ``kinds=set()`` to allocate an empty container.
+to request a subset, or ``kinds=set()`` to allocate an empty container. Supply
+``contacts=contacts`` whenever the requested set includes contact-indexed fields,
+including when ``kinds`` is omitted.
 
 Allocate an observable container once and reuse it across steps. The container is
 owned by the solver instance that allocated it. For contact-indexed observables,
 construct a :class:`~newton.CollisionPipeline` first. It publishes the resolved
 rigid and soft contact capacities on the model; the solver allocates from those
-capacities without needing a :class:`~newton.Contacts` instance:
+capacities. Create its :class:`~newton.Contacts` instance and pass it to the factory:
 
 .. code-block:: python
 
    pipeline = newton.CollisionPipeline(model)
    solver = newton.solvers.SolverXPBD(model)
-   observables = solver.observables(kinds={solver.ObservableKind.CONTACT_F})
    contacts = pipeline.contacts()
+   observables = solver.observables(kinds={solver.ObservableKind.CONTACT_F}, contacts=contacts)
 
    pipeline.collide(state_in, contacts)
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
@@ -61,7 +63,10 @@ field is ``None``; a requested field with zero capacity is an empty array.
 ``Model.rigid_contact_max`` and ``Model.soft_contact_max`` use ``None`` for
 uninitialized capacities and nonnegative integers for resolved capacities.
 Requesting contact observables before pipeline construction raises an error.
-Body-only observables do not require a pipeline.
+Contact-indexed requests require contacts even when their capacity is zero.
+Body- and joint-only observables need neither a pipeline nor contacts; if contacts
+are supplied for such requests or an empty request, they are ignored and
+``observables.contacts`` is ``None``.
 The same setup requirement applies when omitting ``kinds`` if the solver's
 supported observables include contact arrays.
 
@@ -72,15 +77,19 @@ Allocation freezes the model's contact capacities: later changes, including a
 replacement pipeline with different capacities, are rejected. Configure or
 rebuild pipelines before requesting contact-indexed observables.
 
-The first solver step or consumer read binds the observable container to its
-contact storage after validating device and both capacities. Newly allocated
+The factory validates the contact device and both capacities once, then stores
+that instance as ``observables.contacts``. Steps and consumers check ownership and
+contact identity, so they must use the same storage. Custom consumers should check
+``observables.model is model`` and, when reading contact fields,
+``observables.contacts is contacts`` before reading the arrays. Newly allocated
 forces are zero and can be read by a sensor or viewer before the first step.
-Custom consumers can use :meth:`SolverBase.Observables.bind_contacts()
-<newton.solvers.SolverBase.Observables.bind_contacts>` for the same validation.
-Subsequent steps and consumers must use that same storage. Allocate observables and
-contacts before graph capture; neither ordinary nor conditional graph execution
-needs deferred observable allocation. Other solver scratch buffers may still need
-their usual warmup.
+Allocate observables and contacts before graph capture; neither ordinary nor
+conditional graph execution needs deferred observable allocation. Other solver
+scratch buffers may still need their usual warmup.
+
+If the solver owns a collision pipeline, bind its existing storage with
+``solver.observables(contacts=solver.contacts, kinds=...)``. The solver resolves
+that storage internally when ``step()`` receives ``contacts=None``.
 
 Native collision backends
 -------------------------
@@ -94,8 +103,8 @@ the pipeline for the backend's export capacity:
    pipeline = newton.CollisionPipeline(
        model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
    )
-   observables = solver.observables(kinds={solver.ObservableKind.CONTACT_F})
    contacts = pipeline.contacts()
+   observables = solver.observables(kinds={solver.ObservableKind.CONTACT_F}, contacts=contacts)
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
 
 There is no ``pipeline.collide()`` call in this mode: the solver fills contact
@@ -221,8 +230,8 @@ container, and pass it through the step:
    )
 
    kinds = imu.solver_observable_kinds | contact_sensor.solver_observable_kinds
-   # Construct a pipeline with a compatible capacity before requesting contacts.
-   observables = solver.observables(kinds=kinds)
+   # Use contacts from a pipeline configured with a compatible capacity.
+   observables = solver.observables(kinds=kinds, contacts=contacts)
 
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
    imu.update(state_out, observables=observables)
@@ -252,7 +261,7 @@ pipeline, and sensors as above:
 .. code-block:: python
 
    kinds = imu.solver_observable_kinds | contact_sensor.solver_observable_kinds
-   observables = solver.observables(kinds=kinds)
+   observables = solver.observables(kinds=kinds, contacts=contacts)
    every_substep = observables.select(imu.solver_observable_kinds)
    substep_dt = frame_dt / num_substeps
 
@@ -272,9 +281,9 @@ Selecting a field absent from the source raises :class:`ValueError`; selecting
 an existing subset can only narrow it. Select from the original container to
 create a different combination. Do not temporarily replace fields with ``None``.
 
-Contact-indexed subsets share one contact binding with their source and siblings,
-even if they are created before the first step. A body-only subset needs no
-contact binding even when the original container includes contact fields.
+Contact-indexed subsets share the contacts supplied at allocation with their source
+and siblings. A body-only or empty subset has ``contacts=None`` even when the
+original container includes contact fields.
 
 Create selections before graph capture and reuse them. A fixed Python substep
 schedule is captured with the graph; changing a Python selection afterward does
@@ -303,8 +312,8 @@ Contact forces from SolverVBD
 contacts, and rigid-soft particle, edge, and face records against rigid shapes -- through
 :attr:`~newton.solvers.SolverBase.Observables.contact_f`:
 
-1. Create the :class:`~newton.CollisionPipeline` to establish contact capacities, then request
-   ``SolverBase.ObservableKind.CONTACT_F`` with ``solver.observables()``. This allocates the entire
+1. Create the :class:`~newton.CollisionPipeline` to establish contact capacities, create its contacts, then request
+   ``SolverBase.ObservableKind.CONTACT_F`` with ``solver.observables(contacts=contacts, kinds=...)``. This allocates the entire
    force array before stepping or graph capture; no contact attributes need to be requested.
 2. Each frame, run collision detection and pass the container to ``solver.step(...,
    observables=observables)``. The step evaluates the wrenches directly into the array only
@@ -357,7 +366,7 @@ Construct it with ``request_contact_attributes=False`` and pass the container as
    pipeline = newton.CollisionPipeline(model)
    contacts = pipeline.contacts()
    solver = newton.solvers.SolverVBD(model)
-   observables = solver.observables(kinds={solver.ObservableKind.CONTACT_F})
+   observables = solver.observables(kinds={solver.ObservableKind.CONTACT_F}, contacts=contacts)
    state_in, state_out = model.state(), model.state()
 
    pipeline.collide(state_in, contacts)
@@ -422,7 +431,7 @@ The following compatibility paths remain available for a deprecation period:
      - ``solver.observables(kinds={...})``
    * - ``Model.request_contact_attributes()`` and
        ``ModelBuilder.request_contact_attributes()``
-     - ``solver.observables(kinds={...})``
+     - ``solver.observables(kinds={...}, contacts=contacts)``
    * - ``solver.update_contacts()``
      - Pass contact observables to ``solver.step(..., observables=observables)``
 
@@ -505,12 +514,15 @@ parents or siblings. Missing declarations, duplicate kinds, and missing
 dataclass decorators are rejected before allocation.
 
 Contact dependencies follow the field's frequency. The base solver requires
-pipeline initialization, freezes capacities, and binds contact storage for any
-requested contact frequency, including custom fields requested without
-``CONTACT_F``. Body- and joint-indexed fields do not require a collision pipeline.
+pipeline initialization and a compatible ``contacts=`` argument for any requested
+contact frequency, including custom fields requested without ``CONTACT_F``. It binds
+that storage and freezes capacities after successful allocation. Body- and
+joint-indexed fields do not require a collision pipeline or contact storage.
 
 In ``step()``, call :meth:`~newton.solvers.SolverBase.validate_observables` before
-launching work or modifying outputs. Compute diagnostics only when requested:
+launching work or modifying outputs. This checks the container type, solver owner,
+and contact identity without repeating allocation-time layout validation. Compute
+diagnostics only when requested:
 
 .. code-block:: python
 
@@ -533,9 +545,9 @@ Customizing the factory and selection
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Most custom fields need only their declarations. For additional initialization,
-override ``observables(*, kinds=None, requires_grad=None)`` and delegate to
-``super().observables(kinds=kinds, requires_grad=requires_grad)``. Preserve both
-defaults. Perform backend preflight checks before delegating and finish auxiliary
+override ``observables(*, kinds=None, contacts=None, requires_grad=None)`` and delegate
+to ``super().observables(kinds=kinds, contacts=contacts, requires_grad=requires_grad)``.
+Preserve these defaults. Perform backend preflight checks before delegating and finish auxiliary
 allocation before returning the container. All factory allocations must finish
 before graph capture; neither ``step()`` nor ``select()`` calls the factory.
 

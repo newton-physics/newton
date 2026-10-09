@@ -124,7 +124,9 @@ class Example:
         else:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables(kinds={self.solver.ObservableKind.CONTACT_F})
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets((3.0, 3.0, 0.0))

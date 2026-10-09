@@ -1026,8 +1026,9 @@ Pipeline construction publishes the resolved rigid and soft capacities as
 ``model.rigid_contact_max`` and ``model.soft_contact_max``. Before collision
 setup these are ``None``; zero is a valid empty capacity. Contact-indexed
 :ref:`solver_observables` use these capacities for eager allocation and freeze them
-once allocated. Construct the pipeline before calling ``solver.observables()`` for
-contact diagnostics; the live contact counts are not needed during allocation.
+once allocated. Construct the pipeline and create its contacts before calling
+``solver.observables(contacts=contacts, kinds=...)`` for contact diagnostics; the live
+contact counts are not needed during allocation.
 
 .. _Mesh Collisions:
 

@@ -183,13 +183,13 @@ linear part of each ``CONTACT_F`` wrench (force [N]); the torque part is ignored
 Each sensor's ``solver_observable_kinds`` property provides its requirements
 without mutating the model. Union the sets when both sensors are present.
 Construct the collision pipeline before requesting contact-indexed observables,
-then pass its contacts buffer to the solver step and sensor. The first step binds
-the observable container to that storage:
+then pass its contacts buffer to the factory to bind the observable container.
+Reuse that same buffer for the solver step and sensor:
 
 .. code-block:: python
 
    kinds = imu.solver_observable_kinds | contact_sensor.solver_observable_kinds
-   observables = solver.observables(kinds=kinds)
+   observables = solver.observables(kinds=kinds, contacts=contacts)
 
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
    imu.update(state_out, observables=observables)

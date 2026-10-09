@@ -396,13 +396,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return frozenset(kinds)
 
     def observables(
-        self, *, kinds: Iterable[str] | None = None, requires_grad: bool | None = None
+        self, *, kinds: Iterable[str] | None = None, contacts: Contacts | None = None, requires_grad: bool | None = None
     ) -> SolverCoupled.Observables:
         """Allocate parent-model observables and matching entry-local containers.
 
         If ``kinds`` is omitted or ``None``, allocate all :attr:`supported_observables`.
         An empty collection allocates no arrays. ``requires_grad=None`` uses the
         model's gradient setting.
+        ``contacts`` is unused because this solver exposes only body observables.
 
         See :meth:`SolverBase.observables() <newton.solvers.SolverBase.observables>`
         for the shared allocation contract and errors, and :ref:`solver_observables`
@@ -410,7 +411,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         """
         if requires_grad is None:
             requires_grad = self.model.requires_grad
-        with self._create_observables(kinds, requires_grad=requires_grad) as observables:
+        with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
             for entry in self._entries.values():
                 entry_kinds = observables.kinds if entry.body_indices.shape[0] > 0 else ()
                 observables.entry_observables[entry.name] = entry.solver.observables(

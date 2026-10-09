@@ -1026,13 +1026,15 @@ class SolverKamino(SolverBase, CouplingInterface):
             config.base_pose = config_cache
 
     def observables(
-        self, *, kinds: Iterable[str] | None = None, requires_grad: bool | None = None
+        self, *, kinds: Iterable[str] | None = None, contacts: Contacts | None = None, requires_grad: bool | None = None
     ) -> SolverBase.Observables:
         """Allocate solver observables and the input poses needed for contact export.
 
         If ``kinds`` is omitted or ``None``, allocate all :attr:`supported_observables`.
         An empty collection allocates no arrays. ``requires_grad=None`` uses the
         model's gradient setting.
+        Supply ``contacts`` when requesting contact-indexed fields; the factory
+        validates and binds that storage for subsequent steps and consumers.
 
         See :meth:`SolverBase.observables` for the shared allocation contract and
         errors, and :ref:`solver_observables` for usage and native collision setup.
@@ -1041,7 +1043,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             ValueError: If the native contact export capacity exceeds the
                 :class:`~newton.CollisionPipeline` rigid contact capacity.
         """
-        with self._create_observables(kinds, requires_grad=requires_grad) as observables:
+        with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
             if observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
                 if self._collision_detector_kamino is not None:
                     native_max = (

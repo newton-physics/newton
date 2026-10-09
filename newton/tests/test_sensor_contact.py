@@ -118,12 +118,12 @@ class TestSensorContact(unittest.TestCase):
         contacts = pipeline.contacts()
         solver = newton.solvers.SolverXPBD(model)
         flags = newton.solvers.SolverBase.ObservableKind
-        observables = solver.observables(kinds={flags.CONTACT_F, flags.BODY_PARENT_F})
+        observables = solver.observables(contacts=contacts, kinds={flags.CONTACT_F, flags.BODY_PARENT_F})
         selected = observables.select({flags.CONTACT_F})
         sensor = SensorContact(model, sensing_bodies="*", request_contact_attributes=False)
-        with self.assertRaisesRegex(ValueError, "capacit"):
+        with self.assertRaisesRegex(ValueError, "Contacts instance"):
             sensor.update(model.state(), newton.Contacts(1, 0, device="cpu"), observables=selected)
-        self.assertIsNone(observables.contacts)
+        self.assertIs(observables.contacts, contacts)
         sensor.update(model.state(), contacts, observables=selected)
         np.testing.assert_array_equal(sensor.total_force.numpy(), 0.0)
         self.assertIs(observables.contacts, contacts)
@@ -131,14 +131,14 @@ class TestSensorContact(unittest.TestCase):
             sensor.update(model.state(), pipeline.contacts(), observables=observables)
 
     def test_selected_contact_observables_share_sensor_binding(self):
-        """Consume root and subset forces after binding through a selected container."""
+        """Consume root and subset forces using the storage bound at allocation."""
         model = _make_two_world_model(device="cpu")
         newton.CollisionPipeline(model, rigid_contact_max=1, soft_contact_max=0)
         solver = newton.solvers.SolverXPBD(model)
         flags = newton.solvers.SolverBase.ObservableKind
-        observables = solver.observables(kinds={flags.CONTACT_F, flags.BODY_PARENT_F})
-        selected = observables.select({flags.CONTACT_F})
         contacts = create_contacts("cpu", [(0, 1)], 1, forces=[2.0])
+        observables = solver.observables(contacts=contacts, kinds={flags.CONTACT_F, flags.BODY_PARENT_F})
+        selected = observables.select({flags.CONTACT_F})
         selected.contact_f.assign(contacts.force)
         solver.validate_observables(selected, contacts)
         sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*")
@@ -154,8 +154,8 @@ class TestSensorContact(unittest.TestCase):
         foreign_model = _make_two_world_model(device="cpu")
         newton.CollisionPipeline(foreign_model, rigid_contact_max=1, soft_contact_max=0)
         solver = newton.solvers.SolverXPBD(foreign_model)
-        observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
         contacts = create_contacts("cpu", [(0, 1)], 1, forces=[2.0])
+        observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
         solver.validate_observables(observables, contacts)
         sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*")
         sensing_transforms = sensor.sensing_transforms.numpy().copy()
@@ -811,7 +811,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         )
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
-        allocated = solver.observables(kinds=sensor.solver_observable_kinds)
+        allocated = solver.observables(contacts=contacts, kinds=sensor.solver_observable_kinds)
         observables = allocated.select(sensor.solver_observable_kinds)
 
         # Simulate 2s
@@ -895,7 +895,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies=["a"])
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
-        observables = solver.observables(kinds=sensor.solver_observable_kinds)
+        observables = solver.observables(contacts=contacts, kinds=sensor.solver_observable_kinds)
 
         state_in, state_out, control = model.state(), model.state(), model.control()
         sim_dt = 1.0 / 240.0
@@ -949,7 +949,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         sensor_base = SensorContact(model, request_contact_attributes=False, sensing_shapes=["base"])
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
-        observables = solver.observables(kinds=sensor_abc.solver_observable_kinds)
+        observables = solver.observables(contacts=contacts, kinds=sensor_abc.solver_observable_kinds)
 
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()
@@ -1025,7 +1025,7 @@ class TestSensorContactKamino(unittest.TestCase):
         sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies=["box"])
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
-        allocated = solver.observables(kinds=sensor.solver_observable_kinds)
+        allocated = solver.observables(contacts=contacts, kinds=sensor.solver_observable_kinds)
         observables = allocated.select(sensor.solver_observable_kinds)
         self.assertIsNotNone(observables.contact_f)
 

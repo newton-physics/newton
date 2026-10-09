@@ -481,7 +481,7 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
 
         self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
 
-    def test_eager_contact_outputs_bind_during_step(self):
+    def test_contact_observables_bind_at_allocation(self):
         """Allocate from published native capacity and populate bound contacts."""
         model = self._make_three_world_model()
         solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
@@ -489,12 +489,12 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
             solver.observables()
         pipeline = newton.CollisionPipeline(model)
-        observables = solver.observables()
+        contacts = pipeline.contacts()
+        observables = solver.observables(contacts=contacts)
         self.assertEqual(observables.kinds, solver.supported_observables)
         self.assertEqual(observables.body_qdd.shape, (model.body_count,))
         self.assertEqual(observables.contact_f.shape, (pipeline.rigid_contact_max + pipeline.soft_contact_max,))
-        self.assertIsNone(observables.contacts)
-        contacts = pipeline.contacts()
+        self.assertIs(observables.contacts, contacts)
         pointer = observables.contact_f.ptr
         solver.step(model.state(), model.state(), model.control(), contacts, SIM_DT, observables=observables)
         self.assertIs(observables.contacts, contacts)
@@ -569,7 +569,9 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
                     )
                     pipeline = newton.CollisionPipeline(model)
                     contacts = pipeline.contacts()
-                    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
+                    observables = solver.observables(
+                        contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+                    )
                     state_in = model.state()
                     state_in.body_qd.assign(
                         np.array([[1.0, 0.0, -0.2, 0.0, 3.0, 0.0], [-1.0, 0.0, 0.2, 0.0, -3.0, 0.0]], dtype=np.float32)

@@ -128,7 +128,9 @@ class Example:
         else:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables(kinds={self.solver.ObservableKind.CONTACT_F})
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)

@@ -825,7 +825,9 @@ class Example:
             rigid_contact_max=self.solver.get_max_contact_count() if self.solver_type == "mujoco" else None,
         )
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables(kinds={self.solver.ObservableKind.CONTACT_F})
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
