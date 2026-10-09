@@ -356,9 +356,20 @@ class ControllerOperationalSpace(ControllerBase):
         tool_sites_resolved = resolve_tool_sites(
             model, model_robot_index_np=model_robot_index_np, tool_sites=tool_sites, device=self._device
         )
+        frames_per_robot_np = tool_sites_resolved.frames_per_robot.numpy()
+        if np.any(frames_per_robot_np > 1):
+            bad_robots = model_robot_index_np[frames_per_robot_np > 1]
+            raise ValueError(
+                f"tool_sites matches more than one site on articulation(s) {bad_robots.tolist()}; "
+                f"ControllerOperationalSpace requires exactly one tool site per robot."
+            )
         self._tool_body = tool_sites_resolved.tool_body
         self._tool_transform_body = tool_sites_resolved.tool_transform_body
         self._robot_link_idx = tool_sites_resolved.robot_link_idx
+        # One frame per robot here (enforced above), so frame index == robot slot.
+        self._frame_robot_idx = wp.array(
+            np.arange(controlled_robot_count, dtype=np.int32), dtype=wp.int32, device=self._device
+        )
 
         # ------------------------------------------------------------------
         # Dynamics buffers. Allocated up front; populated by step().
@@ -725,6 +736,7 @@ class ControllerOperationalSpace(ControllerBase):
                 self._model.body_com,
                 self._tool_body,
                 self._tool_transform_body,
+                self._frame_robot_idx,
                 self._model_robot_index,
                 self._robot_link_idx,
                 self._articulation_dof_idx_of_padded_dof_idx,

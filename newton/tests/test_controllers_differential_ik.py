@@ -82,7 +82,7 @@ def _solve_dls_svd(jacobian_np, error_np, damping_val, dof_counts, bandwidth_np,
     dof_count = wp.array(dof_counts, dtype=wp.int32, device=device)
     task_dim = wp.array(task_dim_np, dtype=wp.int32, device=device)
     damping = wp.array(damping_np, dtype=wp.float32, device=device)
-    error = wp.array([wp.spatial_vector(*row) for row in error_np], dtype=wp.spatial_vector, device=device)
+    error = wp.array2d(error_np, dtype=wp.float32, device=device)
 
     u = wp.zeros((robot_count, 6, 6), dtype=wp.float32, device=device)
     s = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
@@ -147,7 +147,7 @@ def _solve_truncated_svd(jacobian_np, error_np, threshold_val, dof_counts, bandw
     dof_count = wp.array(dof_counts, dtype=wp.int32, device=device)
     task_dim = wp.array(task_dim_np, dtype=wp.int32, device=device)
     threshold = wp.array(threshold_np, dtype=wp.float32, device=device)
-    error = wp.array([wp.spatial_vector(*row) for row in error_np], dtype=wp.spatial_vector, device=device)
+    error = wp.array2d(error_np, dtype=wp.float32, device=device)
 
     u = wp.zeros((robot_count, 6, 6), dtype=wp.float32, device=device)
     s = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
@@ -206,18 +206,29 @@ def test_qd_from_y_matches_formula(test: unittest.TestCase, device):
     bandwidth_np = np.array([2.0, 0.5, 1.0], dtype=np.float32)
 
     jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    y = wp.array([wp.spatial_vector(*y_np)], dtype=wp.spatial_vector, device=device)
+    y = wp.array2d(y_np.reshape(1, -1), dtype=wp.float32, device=device)
     bandwidth = wp.array(bandwidth_np, dtype=wp.float32, device=device)
     robot_of_dof = wp.array([0, 0, 0], dtype=wp.int32, device=device)
     slot_of_dof = wp.array([0, 1, 2], dtype=wp.int32, device=device)
     task_dim = wp.full(1, 6, dtype=wp.int32, device=device)
+    active_frame_of_slot = wp.zeros((1, 6), dtype=wp.int32, device=device)
     active_axis_of_slot = wp.array2d(np.tile(np.arange(6, dtype=np.int32), (1, 1)), dtype=wp.int32, device=device)
     axis_weight = wp.full(1, wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=wp.spatial_vector, device=device)
     joint_qd_target = wp.zeros(3, dtype=wp.float32, device=device)
     wp.launch(
         _qd_from_y_kernel,
         dim=3,
-        inputs=[jacobian, y, bandwidth, robot_of_dof, slot_of_dof, task_dim, active_axis_of_slot, axis_weight],
+        inputs=[
+            jacobian,
+            y,
+            bandwidth,
+            robot_of_dof,
+            slot_of_dof,
+            task_dim,
+            active_frame_of_slot,
+            active_axis_of_slot,
+            axis_weight,
+        ],
         outputs=[joint_qd_target],
         device=device,
     )
@@ -246,16 +257,27 @@ def test_qd_from_y_ignores_garbage_in_ys_padding_slots(test: unittest.TestCase, 
     robot_of_dof = wp.array([0, 0, 0], dtype=wp.int32, device=device)
     slot_of_dof = wp.array([0, 1, 2], dtype=wp.int32, device=device)
     task_dim = wp.array([3], dtype=wp.int32, device=device)
+    active_frame_of_slot = wp.zeros((1, 6), dtype=wp.int32, device=device)
     active_axis_of_slot = wp.array2d(np.tile(np.arange(6, dtype=np.int32), (1, 1)), dtype=wp.int32, device=device)
     axis_weight = wp.full(1, wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=wp.spatial_vector, device=device)
 
     def run(y_np):
-        y = wp.array([wp.spatial_vector(*y_np)], dtype=wp.spatial_vector, device=device)
+        y = wp.array2d(y_np.reshape(1, -1), dtype=wp.float32, device=device)
         joint_qd_target = wp.zeros(3, dtype=wp.float32, device=device)
         wp.launch(
             _qd_from_y_kernel,
             dim=3,
-            inputs=[jacobian, y, bandwidth, robot_of_dof, slot_of_dof, task_dim, active_axis_of_slot, axis_weight],
+            inputs=[
+                jacobian,
+                y,
+                bandwidth,
+                robot_of_dof,
+                slot_of_dof,
+                task_dim,
+                active_frame_of_slot,
+                active_axis_of_slot,
+                axis_weight,
+            ],
             outputs=[joint_qd_target],
             device=device,
         )
@@ -2562,6 +2584,203 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Multi-frame soft combination: several tool frames per robot, stacked into
+# one weighted-least-squares task and solved jointly.
+# ---------------------------------------------------------------------------
+
+
+def _dls_multiframe_oracle(jacobians_np, errors_np, damping_val, bandwidth_np):
+    """Hand-stacked damped-least-squares solve over several frames' position-only rows, as a ground truth.
+
+    ``jacobians_np``/``errors_np`` are one ``(3, max_dofs)``/``(3,)`` per
+    frame (rows/entries 0-2, position only); stacking them by hand here is
+    exactly what the controller's own frame gather is under test for.
+    """
+    j_stacked = np.concatenate(jacobians_np, axis=0).astype(np.float64)
+    e_stacked = np.concatenate(errors_np, axis=0).astype(np.float64)
+    y = np.linalg.solve(j_stacked @ j_stacked.T + damping_val**2 * np.eye(j_stacked.shape[0]), e_stacked)
+    return bandwidth_np * (j_stacked.T @ y)
+
+
+class TestControllerDifferentialIKModelFreeMultiFrame(unittest.TestCase):
+    def test_frames_per_robot_defaults_to_one_frame_per_robot(self):
+        """Omitting frames_per_robot gives every robot exactly one frame, matching today's behavior."""
+        device = wp.get_device()
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6, 6], device), bandwidth=1.0, damping=0.1, device=device
+        )
+        self.assertEqual(ctrl.total_frame_count, 2)
+
+    def test_two_frames_soft_combination_matches_hand_stacked_jacobian(self):
+        """One robot, two position-only frames: qd_target matches a hand-stacked 6-row DLS solve exactly."""
+        device = wp.get_device()
+        rng = np.random.default_rng(11)
+        max_dofs = 5
+        damping_val = 0.2
+        bandwidth_np = np.ones(max_dofs, dtype=np.float32)
+
+        jacobians_np = [rng.normal(size=(3, max_dofs)).astype(np.float32) for _ in range(2)]
+        errors_np = [rng.normal(size=3).astype(np.float32) for _ in range(2)]
+
+        full_jacobian_np = np.zeros((2, 6, max_dofs), dtype=np.float32)
+        full_jacobian_np[0, :3, :] = jacobians_np[0]
+        full_jacobian_np[1, :3, :] = jacobians_np[1]
+
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([max_dofs], device),
+            frames_per_robot=_dofs_arr([2], device),
+            axis_weight=_axis_weight_arr([_POSITION_ONLY_AXIS_WEIGHT, _POSITION_ONLY_AXIS_WEIGHT], device),
+            bandwidth=1.0,
+            damping=damping_val,
+            device=device,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(max_dofs, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(2, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(*e.tolist()), q=wp.quat_identity()) for e in errors_np],
+            dtype=wp.transform,
+            device=device,
+        )
+        inputs.jacobian_tool_world = wp.array3d(full_jacobian_np, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        expected = _dls_multiframe_oracle(jacobians_np, errors_np, damping_val, bandwidth_np)
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-4)
+
+    def test_shared_dofs_across_two_frames_soft_combination(self):
+        """Two frames whose Jacobians share nonzero columns (e.g. a shoulder shared by two arms) stack correctly."""
+        device = wp.get_device()
+        rng = np.random.default_rng(23)
+        max_dofs = 4
+        damping_val = 0.3
+        bandwidth_np = np.ones(max_dofs, dtype=np.float32)
+
+        # Both frames' Jacobians are dense over every column, so every
+        # column is genuinely shared between the two frames' rows.
+        jacobians_np = [rng.normal(size=(3, max_dofs)).astype(np.float32) for _ in range(2)]
+        errors_np = [rng.normal(size=3).astype(np.float32) for _ in range(2)]
+
+        full_jacobian_np = np.zeros((2, 6, max_dofs), dtype=np.float32)
+        full_jacobian_np[0, :3, :] = jacobians_np[0]
+        full_jacobian_np[1, :3, :] = jacobians_np[1]
+
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([max_dofs], device),
+            frames_per_robot=_dofs_arr([2], device),
+            axis_weight=_axis_weight_arr([_POSITION_ONLY_AXIS_WEIGHT, _POSITION_ONLY_AXIS_WEIGHT], device),
+            bandwidth=1.0,
+            damping=damping_val,
+            device=device,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(max_dofs, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(2, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(*e.tolist()), q=wp.quat_identity()) for e in errors_np],
+            dtype=wp.transform,
+            device=device,
+        )
+        inputs.jacobian_tool_world = wp.array3d(full_jacobian_np, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        expected = _dls_multiframe_oracle(jacobians_np, errors_np, damping_val, bandwidth_np)
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-4)
+
+    def test_heterogeneous_frame_counts_across_fleet(self):
+        """A batch mixing a 1-frame and a 3-frame robot constructs and steps without error."""
+        device = wp.get_device()
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6, 7], device),
+            frames_per_robot=_dofs_arr([1, 3], device),
+            bandwidth=1.0,
+            damping=0.1,
+            device=device,
+        )
+        self.assertEqual(ctrl.total_frame_count, 4)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(13, dtype=wp.float32, device=device)
+        pose = _identity_transform(4, device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = pose
+        inputs.jacobian_tool_world = _identity_jacobian(4, 7, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), np.zeros(13), atol=1e-6)
+
+    def test_frames_per_robot_rejects_mismatched_axis_weight_length(self):
+        """axis_weight must have one entry per frame, not per robot, once frames_per_robot > 1."""
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDifferentialIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                frames_per_robot=_dofs_arr([2], device),
+                axis_weight=_axis_weight_arr([_POSITION_ONLY_AXIS_WEIGHT], device),  # 1 entry, needs 2
+                bandwidth=1.0,
+                damping=0.1,
+                device=device,
+            )
+
+    def test_frames_per_robot_rejects_non_positive_entry(self):
+        """Every robot needs at least one frame; a robot with none has nothing to solve for."""
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDifferentialIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6, 6], device),
+                frames_per_robot=_dofs_arr([1, 0], device),
+                bandwidth=1.0,
+                damping=0.1,
+                device=device,
+            )
+
+    def test_null_space_velocity_does_not_disturb_multi_frame_primary_task(self):
+        """With zero primary-task error across both frames, qd must satisfy the stacked J_active @ qd == 0.
+
+        null_space_axes defaults to axis_weight, so the null-space
+        projector's own protected task here is the same 2-frame, 6-row
+        stack (3 position rows each) the primary DLS solve combines --
+        exercising the same frame-widened null-space machinery
+        (_gather_jacobian_by_axis_kernel/_svd_reconstruct_scaled_kernel/
+        _null_space_projector_kernel) across more than one frame.
+        """
+        device = wp.get_device()
+        rng = np.random.default_rng(31)
+        max_dofs = 8
+        jacobian_np = np.zeros((2, 6, max_dofs), dtype=np.float32)
+        jacobian_np[0, :3, :] = rng.normal(size=(3, max_dofs))
+        jacobian_np[1, :3, :] = rng.normal(size=(3, max_dofs))
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([max_dofs], device),
+            frames_per_robot=_dofs_arr([2], device),
+            axis_weight=_axis_weight_arr([_POSITION_ONLY_AXIS_WEIGHT, _POSITION_ONLY_AXIS_WEIGHT], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=2.0,
+            joint_limit_avoidance_margin=0.3,
+            joint_pos_lower=wp.full(max_dofs, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(max_dofs, 1.0, dtype=wp.float32, device=device),
+            use_null_space_posture_control=True,
+            null_space_stiffness=1.0,
+            device=device,
+        )
+        pose = _identity_transform(2, device)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.array([0.99, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = pose
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        inputs.q_des_null = wp.zeros(max_dofs, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        qd = outputs.joint_qd_target.numpy()
+        j_active_stacked = np.concatenate([jacobian_np[0, :3, :], jacobian_np[1, :3, :]], axis=0)
+        np.testing.assert_allclose(j_active_stacked.astype(np.float64) @ qd.astype(np.float64), np.zeros(6), atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
 # ControllerDifferentialIK
 # ---------------------------------------------------------------------------
 
@@ -2621,6 +2840,39 @@ def _build_two_robot_arms_with_tool_sites(device):
     )
     builder.add_articulation([j1a, j1b], label="robot1")
     builder.add_site(l1b, label="tool1", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+    return builder.finalize(device=device)
+
+
+def _build_three_link_arm_with_two_tool_sites(device):
+    """3 planar revolute joints; "mid" (after joint 0 alone) and "tip" (after all 3) share joint 0."""
+    builder = newton.ModelBuilder()
+    link0 = builder.add_link()
+    link1 = builder.add_link()
+    link2 = builder.add_link()
+    j0 = builder.add_joint_revolute(
+        parent=-1,
+        child=link0,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    j1 = builder.add_joint_revolute(
+        parent=link0,
+        child=link1,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        parent_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0)),
+        child_xform=wp.transform_identity(),
+    )
+    j2 = builder.add_joint_revolute(
+        parent=link1,
+        child=link2,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        parent_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0)),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([j0, j1, j2], label="arm")
+    builder.add_site(link0, label="mid", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+    builder.add_site(link2, label="tip", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
     return builder.finalize(device=device)
 
 
@@ -2835,6 +3087,93 @@ class TestControllerDifferentialIK(unittest.TestCase):
         # design, not just a numerical-convergence tolerance.
         np.testing.assert_allclose(np.array(tip_pos), [1.2, 0.8, 0.0], atol=0.1)
 
+    def test_two_frames_sharing_a_dof_converge_to_a_jointly_consistent_target(self):
+        """Two tool sites on one robot ("mid", "tip"), sharing joint 0, both converge when the targets are jointly reachable."""
+        device = wp.get_device()
+        model = _build_three_link_arm_with_two_tool_sites(device)
+        q_target = np.array([0.4, -0.3, 0.5], dtype=np.float32)
+        state = model.state()
+        newton.eval_fk(
+            model,
+            wp.array(q_target, dtype=wp.float32, device=device),
+            wp.zeros(3, dtype=wp.float32, device=device),
+            state,
+        )
+        mid_target = wp.transform_point(wp.transform(*state.body_q.numpy()[0]), wp.vec3(1.0, 0.0, 0.0))
+        tip_target = wp.transform_point(wp.transform(*state.body_q.numpy()[2]), wp.vec3(1.0, 0.0, 0.0))
+        target = wp.array(
+            [
+                wp.transform(p=mid_target, q=wp.quat_identity()),
+                wp.transform(p=tip_target, q=wp.quat_identity()),
+            ],
+            dtype=wp.transform,
+            device=device,
+        )
+
+        ctrl = ControllerDifferentialIK(
+            model,
+            tool_sites=["mid", "tip"],
+            axis_weight=_POSITION_ONLY_AXIS_WEIGHT,
+            bandwidth=1.0,
+            damping=0.05,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        q = np.zeros(3, dtype=np.float32)
+        dt = 0.05
+        for _ in range(300):
+            inputs.joint_q = wp.array(q, dtype=wp.float32, device=device)
+            inputs.joint_qd = wp.zeros(3, dtype=wp.float32, device=device)
+            inputs.desired_tool_pose_world = target
+            ctrl.step(inputs=inputs, outputs=outputs, dt=dt)
+            q = outputs.joint_q_target.numpy().copy()
+
+        newton.eval_fk(
+            model, wp.array(q, dtype=wp.float32, device=device), wp.zeros(3, dtype=wp.float32, device=device), state
+        )
+        mid_pos = wp.transform_point(wp.transform(*state.body_q.numpy()[0]), wp.vec3(1.0, 0.0, 0.0))
+        tip_pos = wp.transform_point(wp.transform(*state.body_q.numpy()[2]), wp.vec3(1.0, 0.0, 0.0))
+        np.testing.assert_allclose(np.array(mid_pos), np.array(mid_target), atol=0.1)
+        np.testing.assert_allclose(np.array(tip_pos), np.array(tip_target), atol=0.1)
+
+    def test_zeroed_frame_axis_weight_matches_single_frame_controller_exactly(self):
+        """A frame with all-zero axis_weight contributes nothing -- output must match a single-frame controller."""
+        device = wp.get_device()
+        model = _build_three_link_arm_with_two_tool_sites(device)
+        joint_q = wp.array([0.2, -0.1, 0.3], dtype=wp.float32, device=device)
+        joint_qd = wp.zeros(3, dtype=wp.float32, device=device)
+        mid_target = wp.transform(p=wp.vec3(0.3, 0.5, 0.0), q=wp.quat_identity())
+
+        two_frame_ctrl = ControllerDifferentialIK(
+            model,
+            tool_sites=["mid", "tip"],
+            axis_weight=_axis_weight_arr([_POSITION_ONLY_AXIS_WEIGHT, [0.0] * 6], device),
+            bandwidth=1.0,
+            damping=0.1,
+        )
+        two_frame_inputs = two_frame_ctrl.input()
+        two_frame_outputs = two_frame_ctrl.output()
+        two_frame_inputs.joint_q = joint_q
+        two_frame_inputs.joint_qd = joint_qd
+        two_frame_inputs.desired_tool_pose_world = wp.array(
+            [mid_target, wp.transform_identity()], dtype=wp.transform, device=device
+        )
+        two_frame_ctrl.step(inputs=two_frame_inputs, outputs=two_frame_outputs, dt=0.01)
+
+        single_frame_ctrl = ControllerDifferentialIK(
+            model, tool_sites="mid", axis_weight=_POSITION_ONLY_AXIS_WEIGHT, bandwidth=1.0, damping=0.1
+        )
+        single_frame_inputs = single_frame_ctrl.input()
+        single_frame_outputs = single_frame_ctrl.output()
+        single_frame_inputs.joint_q = joint_q
+        single_frame_inputs.joint_qd = joint_qd
+        single_frame_inputs.desired_tool_pose_world = wp.array([mid_target], dtype=wp.transform, device=device)
+        single_frame_ctrl.step(inputs=single_frame_inputs, outputs=single_frame_outputs, dt=0.01)
+
+        np.testing.assert_allclose(
+            two_frame_outputs.joint_qd_target.numpy(), single_frame_outputs.joint_qd_target.numpy(), atol=1e-5
+        )
+
     def test_heterogeneous_fleet_selection(self):
         """Selecting tool sites on two differently-sized robots packs their DOF counts correctly."""
         device = wp.get_device()
@@ -2886,8 +3225,8 @@ class TestControllerDifferentialIK(unittest.TestCase):
         self.assertEqual(ctrl.controlled_robot_count, 1)
         self.assertEqual(ctrl.total_controlled_dofs, 1)
 
-    def test_tool_pattern_matching_multiple_sites_on_one_robot_raises(self):
-        """tool_sites matching more than one site on the same robot must raise, not pick one silently."""
+    def test_tool_pattern_matching_multiple_sites_on_one_robot_gives_multiple_frames(self):
+        """tool_sites matching more than one site on a robot gives it that many frames, not an error."""
         device = wp.get_device()
         builder = newton.ModelBuilder()
         link0 = builder.add_link()
@@ -2902,8 +3241,8 @@ class TestControllerDifferentialIK(unittest.TestCase):
         builder.add_site(link0, label="tool_a", xform=wp.transform_identity())
         builder.add_site(link0, label="tool_b", xform=wp.transform_identity())
         model = builder.finalize(device=device)
-        with self.assertRaises(ValueError):
-            ControllerDifferentialIK(model, tool_sites=["tool_a", "tool_b"], bandwidth=1.0, damping=0.1)
+        ctrl = ControllerDifferentialIK(model, tool_sites=["tool_a", "tool_b"], bandwidth=1.0, damping=0.1)
+        self.assertEqual(ctrl.total_frame_count, 2)
 
     def test_tool_site_missing_raises(self):
         """tool_sites matching no site in the model must raise, not silently produce zero controlled robots."""

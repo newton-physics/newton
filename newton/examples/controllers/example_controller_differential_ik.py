@@ -4,16 +4,16 @@
 ###########################################################################
 # Example Controllers — Differential IK
 #
-# Demonstrates ControllerDifferentialIK on four real, heterogeneous robots at
+# Demonstrates ControllerDifferentialIK on five heterogeneous robots at
 # once -- a 7-DOF Franka Panda arm tasking the full 6D pose (redundant by 1
 # DOF), a 6-DOF UR10 arm tasking position only (redundant by 3 DOFs), a 4-DOF
 # planar arm restricted to a 3D task (X, Y, yaw) via axis_weight (redundant
 # by 1 DOF), and a 5-DOF elbow-type arm that softly tracks roll and pitch but
 # leaves every rotation axis unprotected by its own null space (see
 # null_space_axes below) -- each independently tracking its own draggable
-# gizmo target. One
-# controller call handles all four, each robot resolved through its own tool
-# site and Jacobian.
+# gizmo target. A fifth, 7-DOF dual-arm robot tracks both tips in position
+# through two tool sites on the same articulation. One controller call
+# handles all five robots, with one draggable gizmo per tool frame.
 #
 # Kinematics only: the controller's joint targets are applied directly to
 # the sim state each frame (no physics solver), keeping the demo focused on
@@ -83,6 +83,14 @@ FIVE_DOF_READY_POSE = [0.3, -0.6, 0.9, 0.4, 0.0]
 FIVE_DOF_ARM_DOFS = len(FIVE_DOF_READY_POSE)
 FIVE_DOF_BASE_POSITION = wp.vec3(0.0, 5.4, 0.3)  # separated from the planar arm along Y; raised clear of the ground
 
+# A shared pan joint with two 3-DOF arms: seven DOFs for two 3D position
+# tasks, leaving one redundant DOF for null-space posture control.
+DUAL_ARM_LINK_LENGTH = 0.3
+DUAL_ARM_SIDE_OFFSET = 0.3
+DUAL_ARM_READY_POSE = [0.0, 0.5, -0.8, 0.3, 0.5, -0.8, 0.3]
+DUAL_ARM_DOFS = len(DUAL_ARM_READY_POSE)
+DUAL_ARM_BASE_POSITION = wp.vec3(0.0, 7.2, 0.6)
+
 TOOL_SITE_SCALE = (0.02, 0.02, 0.02)
 
 # Franka tasks the full 6D pose; UR10 position only; the planar arm only
@@ -98,7 +106,7 @@ _XYZ_AXES = (Axis.X, Axis.Y, Axis.Z)
 
 
 def _gizmo_axes_from_weight(axis_weight):
-    """log_gizmo's translate/rotate axis lists for a robot's own axis_weight, one gizmo handle per active axis."""
+    """log_gizmo's translate/rotate axis lists for a frame's own axis_weight, one gizmo handle per active axis."""
     return {
         "translate": [axis for i, axis in enumerate(_XYZ_AXES) if axis_weight[i] > 0.0],
         "rotate": [axis for i, axis in enumerate(_XYZ_AXES) if axis_weight[3 + i] > 0.0],
@@ -251,10 +259,14 @@ class Example:
         five_dof_joints, five_dof_tool_body, five_dof_tool_site_transform = self._add_five_dof_arm(
             builder, FIVE_DOF_BASE_POSITION
         )
+        dual_arm_joints, dual_arm_tool_bodies, dual_arm_tool_site_transform = self._add_dual_arm_robot(
+            builder, DUAL_ARM_BASE_POSITION
+        )
         self._franka_joints = franka_joints
         self._ur10_joints = ur10_joints
         self._planar_joints = planar_joints
         self._five_dof_joints = five_dof_joints
+        self._dual_arm_joints = dual_arm_joints
 
         builder.add_ground_plane()
 
@@ -263,17 +275,19 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # ---- Differential-kinematics controller -------------------------------
-        # One controller call handles all four robots; joints lists robot
+        # One controller call handles all five robots; joints lists robot
         # 0's (Franka's) controlled joints first, then robot 1's (UR10's),
         # then robot 2's (the planar arm's), then robot 3's (the 5-DOF
-        # arm's), matching axis_weight's/null_space_axes's/
-        # desired_tool_pose_world's per-robot ordering below.
-        joints = franka_joints + ur10_joints + planar_joints + five_dof_joints
+        # arm's), then robot 4's (the dual arm's). The per-frame arrays
+        # below follow this order, with two rows for the dual arm's tips.
+        joints = franka_joints + ur10_joints + planar_joints + five_dof_joints + dual_arm_joints
         axis_weight_rows = [
             FULL_POSE_AXIS_WEIGHT,
             POSITION_ONLY_AXIS_WEIGHT,
             PLANAR_AXIS_WEIGHT,
             SOFT_ORIENTATION_AXIS_WEIGHT,
+            POSITION_ONLY_AXIS_WEIGHT,
+            POSITION_ONLY_AXIS_WEIGHT,
         ]
         axis_weight = wp.array(axis_weight_rows, dtype=wp.spatial_vector, device=self.device)
         # Every robot's null-space projector protects exactly the axes its
@@ -281,7 +295,14 @@ class Example:
         # softly tracks roll and pitch for it, but null_space_axes leaves all three
         # rotations unprotected, leaving a 2D null space in position.
         null_space_axes = wp.array(
-            [FULL_POSE_AXIS_WEIGHT, POSITION_ONLY_AXIS_WEIGHT, PLANAR_AXIS_WEIGHT, POSITION_ONLY_AXIS_WEIGHT],
+            [
+                FULL_POSE_AXIS_WEIGHT,
+                POSITION_ONLY_AXIS_WEIGHT,
+                PLANAR_AXIS_WEIGHT,
+                POSITION_ONLY_AXIS_WEIGHT,
+                POSITION_ONLY_AXIS_WEIGHT,
+                POSITION_ONLY_AXIS_WEIGHT,
+            ],
             dtype=wp.spatial_vector,
             device=self.device,
         )
@@ -324,7 +345,8 @@ class Example:
         if self._input.q_des_null is not None:
             self._input.q_des_null.assign(
                 np.array(
-                    FRANKA_READY_POSE + UR10_READY_POSE + PLANAR_READY_POSE + FIVE_DOF_READY_POSE, dtype=np.float32
+                    FRANKA_READY_POSE + UR10_READY_POSE + PLANAR_READY_POSE + FIVE_DOF_READY_POSE + DUAL_ARM_READY_POSE,
+                    dtype=np.float32,
                 )
             )
         # The controller's outputs are compact (one entry per controlled
@@ -334,7 +356,7 @@ class Example:
         self._output.joint_q_target = self.state_0.joint_q[self.controller.q_start]
         self._output.joint_qd_target = self.state_0.joint_qd[self.controller.qd_start]
 
-        # Draggable gizmo per robot, seeded at each tool's actual starting
+        # Draggable gizmo per tool frame, seeded at each tool's actual starting
         # world pose -- zero initial error, rather than a sudden snap at
         # startup. Mutated in place by the viewer each render() call.
         body_q_np = self.state_0.body_q.numpy()
@@ -343,17 +365,19 @@ class Example:
             wp.transform(*body_q_np[ur10_tool_body].tolist()) * ur10_tool_site_transform,
             wp.transform(*body_q_np[planar_tool_body].tolist()) * planar_tool_site_transform,
             wp.transform(*body_q_np[five_dof_tool_body].tolist()) * five_dof_tool_site_transform,
+            wp.transform(*body_q_np[dual_arm_tool_bodies[0]].tolist()) * dual_arm_tool_site_transform,
+            wp.transform(*body_q_np[dual_arm_tool_bodies[1]].tolist()) * dual_arm_tool_site_transform,
         ]
-        # A zero-weighted axis is excluded from that robot's solve entirely
+        # A zero-weighted axis is excluded from that frame's solve entirely
         # (see axis_weight above), so its gizmo handle is dropped too -- the
         # widget can't suggest a motion the controller would ignore.
         self.gizmo_axes = [_gizmo_axes_from_weight(weight) for weight in axis_weight_rows]
 
         # Set such that Franka at y=0, UR10 at y=1.8, planar arm at y=3.6,
-        # and the 5-DOF arm at y=5.4 are all in view together.
-        self.viewer.set_camera(pos=wp.vec3(4.0, -2.4, 3.0), pitch=-22.6114, yaw=125.2176)
+        # the 5-DOF arm at y=5.4, and the dual arm at y=7.2 are all in view together.
+        self.viewer.set_camera(pos=wp.vec3(6.0, -4.0, 4.2), pitch=-22.6114, yaw=125.2176)
         if hasattr(self.viewer, "camera"):
-            self.viewer.camera.look_at(wp.vec3(0.4, 2.7, 0.4))
+            self.viewer.camera.look_at(wp.vec3(0.4, 3.6, 0.4))
 
         self.viewer.set_model(self.model)
 
@@ -552,6 +576,64 @@ class Example:
 
         return arm_joints, tool_body, tool_site_transform
 
+    @staticmethod
+    def _add_dual_arm_robot(builder, base_position):
+        """Build a shared-pan dual arm and add a tool site at each tip.
+
+        Returns:
+            Tuple of (joint indices, left/right tip body indices, tool
+            sites' shared body-local transform).
+        """
+        coord_count_before = builder.joint_coord_count
+        capsule_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)
+        pan = builder.add_link()
+        joint_pan = builder.add_joint_revolute(
+            parent=-1,
+            child=pan,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(base_position, wp.quat_identity()),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_shape_capsule(
+            pan,
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), np.pi / 2.0)),
+            radius=0.02,
+            half_height=DUAL_ARM_SIDE_OFFSET,
+        )
+        arm_joints = [joint_pan]
+        tool_bodies = []
+        tool_site_transform = wp.transform(wp.vec3(DUAL_ARM_LINK_LENGTH, 0.0, 0.0), wp.quat_identity())
+        for side_offset in (DUAL_ARM_SIDE_OFFSET, -DUAL_ARM_SIDE_OFFSET):
+            parent = pan
+            parent_xform = wp.transform(wp.vec3(0.0, side_offset, 0.0), wp.quat_identity())
+            for axis in (wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 1.0, 0.0)):
+                link = builder.add_link()
+                joint = builder.add_joint_revolute(
+                    parent=parent,
+                    child=link,
+                    axis=axis,
+                    parent_xform=parent_xform,
+                    child_xform=wp.transform_identity(),
+                )
+                builder.add_shape_capsule(
+                    link,
+                    xform=wp.transform(wp.vec3(DUAL_ARM_LINK_LENGTH / 2.0, 0.0, 0.0), capsule_rotation),
+                    radius=0.03,
+                    half_height=DUAL_ARM_LINK_LENGTH / 2.0,
+                )
+                arm_joints.append(joint)
+                parent = link
+                parent_xform = tool_site_transform
+            # Both sites match the existing selector, in left/right order.
+            builder.add_site(parent, xform=tool_site_transform, label="tool_site", visible=True, scale=TOOL_SITE_SCALE)
+            tool_bodies.append(parent)
+        builder.add_articulation(arm_joints, label="dual_arm")
+
+        arm_coords = list(range(coord_count_before, coord_count_before + DUAL_ARM_DOFS))
+        for coord, angle in zip(arm_coords, DUAL_ARM_READY_POSE, strict=True):
+            builder.joint_q[coord] = angle
+        return arm_joints, tool_bodies, tool_site_transform
+
     def _simulate(self):
         # joint_q_target/joint_qd_target write straight into state_0 (see
         # the output bindings in __init__); eval_fk brings body_q/body_qd
@@ -594,7 +676,7 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        """Verify all four arms stay near their ready pose, since gizmos aren't dragged in headless test mode."""
+        """Verify all five robots stay near their ready pose, since gizmos aren't dragged in headless test mode."""
         joint_q = self.state_0.joint_q.numpy()
         joint_qd = self.state_0.joint_qd.numpy()
         assert np.all(np.isfinite(joint_q)), f"joint_q has NaN/Inf: {joint_q}"
@@ -623,6 +705,13 @@ class Example:
         five_dof_ready_q = np.array(FIVE_DOF_READY_POSE, dtype=np.float32)
         assert np.all(np.abs(five_dof_q - five_dof_ready_q) < 0.2), (
             f"5-DOF arm joints drifted from its ready pose: {five_dof_q}"
+        )
+
+        dual_arm_q_start = self.model.joint_q_start.numpy()[self._dual_arm_joints[0]]
+        dual_arm_q = joint_q[dual_arm_q_start : dual_arm_q_start + DUAL_ARM_DOFS]
+        dual_arm_ready_q = np.array(DUAL_ARM_READY_POSE, dtype=np.float32)
+        assert np.all(np.abs(dual_arm_q - dual_arm_ready_q) < 0.2), (
+            f"Dual-arm joints drifted from its ready pose: {dual_arm_q}"
         )
 
 
