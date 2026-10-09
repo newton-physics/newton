@@ -4054,6 +4054,63 @@ def test_mesh_scale_update_matches_rebuild(test, device):
                 np.testing.assert_allclose(points, expected, atol=1.0e-5)
 
 
+def test_packed_mesh_edges_use_mesh_coordinates(test, device):
+    """Read caller-packed edges in unscaled mesh coordinates, matching edges read from the mesh."""
+    scale = np.array((2.0, 1.6, 1.8), dtype=np.float32)
+    n = 17
+    xs = np.linspace(-1.0, 1.0, n)
+    elevation = (0.5 + 0.5 * np.sin(3.0 * xs)[None, :] * np.cos(2.0 * xs)[:, None]).astype(np.float32)
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.2, 1.0)), 0.4)
+    cube = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
+    builder = newton.ModelBuilder()
+    builder.add_shape_heightfield(
+        heightfield=newton.Heightfield(data=elevation, nrow=n, ncol=n, hx=1.0, hy=1.0, min_z=0.0, max_z=0.04)
+    )
+    for i in range(2):
+        body = builder.add_body(xform=wp.transform((-0.4 + 0.5 * i, 0.1 * i, 0.07), rotation))
+        builder.add_shape_mesh(body=body, mesh=cube, scale=tuple(float(value) for value in scale))
+    model = builder.finalize(device=device)
+
+    # Ownership code zero allows both endpoints, as edges read from the mesh do.
+    edges = model.mesh_edge_indices.numpy()
+    vertices = np.asarray(cube.vertices, dtype=np.float32)
+    edge_v0, edge_v1 = vertices[edges[:, 0]], vertices[edges[:, 1]]
+    halves = (edge_v1 - edge_v0) * 0.5
+    radii = np.linalg.norm(halves, axis=1, keepdims=True)
+    centers = np.concatenate(((edge_v0 + edge_v1) * 0.5, radii), axis=1)
+    halves = np.concatenate((halves, np.zeros_like(radii)), axis=1)
+    np.testing.assert_allclose(model.mesh_edge_centers.numpy(), centers, rtol=1e-6)
+    np.testing.assert_allclose(model.mesh_edge_halves.numpy()[:, :3], halves[:, :3], rtol=1e-6)
+
+    class PackedEdgeNarrowPhase(NarrowPhase):
+        def __init__(self, wrapped, edge_centers, edge_halves):
+            self.__dict__ = wrapped.__dict__
+            self.edge_centers = edge_centers
+            self.edge_halves = edge_halves
+
+        def launch_custom_write(self, **kwargs):
+            kwargs["mesh_edge_centers"] = self.edge_centers
+            kwargs["mesh_edge_halves"] = self.edge_halves
+            return super().launch_custom_write(**kwargs)
+
+    def collide(edge_centers, edge_halves):
+        pipeline = newton.CollisionPipeline(model, deterministic=True)
+        pipeline.narrow_phase = PackedEdgeNarrowPhase(pipeline.narrow_phase, edge_centers, edge_halves)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        points = np.concatenate(
+            (contacts.rigid_contact_point0.numpy()[:count], contacts.rigid_contact_point1.numpy()[:count]), axis=1
+        )
+        return points[np.lexsort(points.T[::-1])]
+
+    expected = collide(None, None)
+    points = collide(wp.array(centers, dtype=wp.vec4, device=device), wp.array(halves, dtype=wp.vec4, device=device))
+    test.assertGreater(len(expected), 0)
+    test.assertEqual(len(points), len(expected))
+    np.testing.assert_allclose(points, expected, atol=1.0e-5)
+
+
 add_function_test(
     TestDeterministicPipeline,
     "test_separated_analytic_pair_skips_gjk_queue",
@@ -4070,6 +4127,12 @@ add_function_test(
     TestDeterministicPipeline,
     "test_mesh_scale_update_matches_rebuild",
     test_mesh_scale_update_matches_rebuild,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestDeterministicPipeline,
+    "test_packed_mesh_edges_use_mesh_coordinates",
+    test_packed_mesh_edges_use_mesh_coordinates,
     devices=get_test_devices(),
 )
 add_function_test(
