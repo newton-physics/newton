@@ -1620,6 +1620,7 @@ class Model:
                 self.shape_type,
                 self.shape_flags,
                 int(shape_flags),
+                self.shape_opacity if self.shape_opacity is not None else wp.empty(0, dtype=wp.float32, devi
                 self.bvh_shape_enabled,
                 num_enabled,
             ],
