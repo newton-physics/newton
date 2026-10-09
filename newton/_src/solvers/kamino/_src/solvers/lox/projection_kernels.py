@@ -114,31 +114,40 @@ _UNRESOLVED_RESIDUAL = 1.0e30
 @wp.func
 def _compute_box_delassus(
     jacobian_a: vec6f,
-    inverse_weight_a: mat66f,
+    response_a: vec6f,
+    scale_a: wp.float32,
     jacobian_b: vec6f,
-    inverse_weight_b: mat66f,
+    response_b: vec6f,
+    scale_b: wp.float32,
 ) -> wp.float32:
-    """Compute the scalar local Delassus coefficient ``J W^-1 J^T`` of a box row."""
-    return wp.dot(jacobian_a, apply_body_weight(inverse_weight_a, jacobian_a)) + wp.dot(
-        jacobian_b, apply_body_weight(inverse_weight_b, jacobian_b)
-    )
+    """Compute the scalar local Delassus coefficient ``J W^-1 J^T`` of a box row from its twist responses.
+
+    Each body side is scaled by its mass-split factor, one for the unsplit coefficient.
+    """
+    return scale_a * wp.dot(jacobian_a, response_a) + scale_b * wp.dot(jacobian_b, response_b)
 
 
 @wp.func
 def _compute_contact_delassus(
     jacobian_a: mat36f,
-    inverse_weight_a: mat66f,
+    response_a: mat36f,
+    scale_a: wp.float32,
     jacobian_b: mat36f,
-    inverse_weight_b: mat66f,
+    response_b: mat36f,
+    scale_b: wp.float32,
 ) -> wp.mat33f:
-    """Compute the ``3 x 3`` local Delassus block ``J W^-1 J^T`` of a contact, evaluating each pair of rows once."""
+    """Compute the ``3 x 3`` local Delassus block ``J W^-1 J^T`` of a contact from its transposed twist responses.
+
+    Each body side is scaled by its mass-split factor, one for the unsplit block. Each pair of rows is
+    evaluated once, so the block is exactly symmetric.
+    """
     delassus = wp.mat33f(0.0)
     for row in range(3):
-        weighted_a = apply_body_weight(inverse_weight_a, jacobian_a[row])
-        weighted_b = apply_body_weight(inverse_weight_b, jacobian_b[row])
         for col in range(3):
             if col >= row:
-                value = wp.dot(weighted_a, jacobian_a[col]) + wp.dot(weighted_b, jacobian_b[col])
+                value = scale_a * wp.dot(response_a[row], jacobian_a[col]) + scale_b * wp.dot(
+                    response_b[row], jacobian_b[col]
+                )
                 delassus[row, col] = value
                 delassus[col, row] = value
     return delassus
@@ -300,6 +309,14 @@ def _contact_law_velocity(
 
 
 @wp.func
+def _split_factor(bid: wp.int32, color: wp.int32, occupancy: wp.array2d[wp.int32]) -> wp.float32:
+    """Return the mass-split factor ``m`` of a body, the number of its rows in the color, or zero if absent."""
+    if bid < 0:
+        return 0.0
+    return wp.float32(wp.max(1, occupancy[bid, color]))
+
+
+@wp.func
 def _split_inverse_weight(
     bid: wp.int32,
     color: wp.int32,
@@ -309,7 +326,7 @@ def _split_inverse_weight(
     """Return the mass-split inverse weight ``m W^-1`` of a body, or zero if absent."""
     if bid < 0:
         return mat66f(0.0)
-    return wp.float32(wp.max(1, occupancy[bid, color])) * inverse_weight[bid]
+    return _split_factor(bid, color, occupancy) * inverse_weight[bid]
 
 
 @wp.func
@@ -672,8 +689,8 @@ def _prepare_box_rows(
     box_body_b: wp.array[wp.int32],
     box_jacobian_a: wp.array[vec6f],
     box_jacobian_b: wp.array[vec6f],
+    box_response: wp.array2d[vec6f],
     occupancy: wp.array2d[wp.int32],
-    inverse_weight: wp.array[mat66f],
     # Outputs:
     box_delassus: wp.array[wp.float32],
     world_failed: wp.array[wp.bool],
@@ -690,9 +707,11 @@ def _prepare_box_rows(
     color = row_color(row, box_color)
     value = _compute_box_delassus(
         box_jacobian_a[row],
-        _split_inverse_weight(bid_a, color, inverse_weight, occupancy),
+        box_response[row, 0],
+        _split_factor(bid_a, color, occupancy),
         box_jacobian_b[row],
-        _split_inverse_weight(bid_b, color, inverse_weight, occupancy),
+        box_response[row, 1],
+        _split_factor(bid_b, color, occupancy),
     )
     box_delassus[row] = value
     if not wp.isfinite(value) or value <= 0.0:
@@ -713,8 +732,8 @@ def _prepare_contacts(
     contact_bias: wp.array[wp.vec3f],
     contact_friction: wp.array[wp.float32],
     contact_compliance: wp.array[wp.float32],
+    contact_response: wp.array2d[mat36f],
     occupancy: wp.array2d[wp.int32],
-    inverse_weight: wp.array[mat66f],
     # Outputs:
     contact_delassus: wp.array[wp.mat33f],
     world_failed: wp.array[wp.bool],
@@ -729,13 +748,15 @@ def _prepare_contacts(
         contact_delassus[cid] = wp.mat33f(0.0)
         return
     color = row_color(cid, contact_color)
-    # A non-finite Jacobian or inverse weight makes the block non-finite, which fails the world
+    # A non-finite Jacobian or response makes the block non-finite, which fails the world
     delassus, valid = _regularize_contact_delassus(
         _compute_contact_delassus(
             contact_jacobian_a[cid],
-            _split_inverse_weight(bid_a, color, inverse_weight, occupancy),
+            contact_response[cid, 0],
+            _split_factor(bid_a, color, occupancy),
             contact_jacobian_b[cid],
-            _split_inverse_weight(bid_b, color, inverse_weight, occupancy),
+            contact_response[cid, 1],
+            _split_factor(bid_b, color, occupancy),
         ),
         contact_bias[cid],
         contact_friction[cid],
@@ -806,28 +827,21 @@ def _prepare_physical_box_rows(
     box_world: wp.array[wp.int32],
     box_local: wp.array[wp.int32],
     world_box_count: wp.array[wp.int32],
-    box_body_a: wp.array[wp.int32],
-    box_body_b: wp.array[wp.int32],
     box_jacobian_a: wp.array[vec6f],
     box_jacobian_b: wp.array[vec6f],
-    inverse_weight: wp.array[mat66f],
+    box_response: wp.array2d[vec6f],
     # Outputs:
     physical_delassus: wp.array[wp.float32],
 ):
-    """Prepare the unsplit Delassus coefficient of each box row, used by the residuals."""
+    """Prepare the unsplit Delassus coefficient of each box row, used by the residuals.
+
+    The response of a missing body is zero.
+    """
     row = wp.tid()
     if box_local[row] >= world_box_count[box_world[row]]:
         return
-    bid_a = box_body_a[row]
-    bid_b = box_body_b[row]
-    inverse_weight_a = mat66f(0.0)
-    inverse_weight_b = mat66f(0.0)
-    if bid_a >= 0:
-        inverse_weight_a = inverse_weight[bid_a]
-    if bid_b >= 0:
-        inverse_weight_b = inverse_weight[bid_b]
     physical_delassus[row] = _compute_box_delassus(
-        box_jacobian_a[row], inverse_weight_a, box_jacobian_b[row], inverse_weight_b
+        box_jacobian_a[row], box_response[row, 0], 1.0, box_jacobian_b[row], box_response[row, 1], 1.0
     )
 
 
@@ -837,29 +851,27 @@ def _prepare_physical_contacts(
     contact_world: wp.array[wp.int32],
     contact_local: wp.array[wp.int32],
     world_contact_count: wp.array[wp.int32],
-    contact_body_a: wp.array[wp.int32],
-    contact_body_b: wp.array[wp.int32],
     contact_jacobian_a: wp.array[mat36f],
     contact_jacobian_b: wp.array[mat36f],
     normal_compliance: wp.array[wp.float32],
-    inverse_weight: wp.array[mat66f],
+    contact_response: wp.array2d[mat36f],
     # Outputs:
     physical_delassus: wp.array[wp.mat33f],
 ):
-    """Prepare the unsplit compliant Delassus block of each contact, used by the residuals."""
+    """Prepare the unsplit compliant Delassus block of each contact, used by the residuals.
+
+    The response of a missing body is zero.
+    """
     cid = wp.tid()
     if contact_local[cid] >= world_contact_count[contact_world[cid]]:
         return
-    bid_a = contact_body_a[cid]
-    bid_b = contact_body_b[cid]
-    inverse_weight_a = mat66f(0.0)
-    inverse_weight_b = mat66f(0.0)
-    if bid_a >= 0:
-        inverse_weight_a = inverse_weight[bid_a]
-    if bid_b >= 0:
-        inverse_weight_b = inverse_weight[bid_b]
     delassus = _compute_contact_delassus(
-        contact_jacobian_a[cid], inverse_weight_a, contact_jacobian_b[cid], inverse_weight_b
+        contact_jacobian_a[cid],
+        contact_response[cid, 0],
+        1.0,
+        contact_jacobian_b[cid],
+        contact_response[cid, 1],
+        1.0,
     )
     delassus[2, 2] += _contact_normal_compliance(cid, normal_compliance)
     physical_delassus[cid] = delassus
