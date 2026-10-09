@@ -121,9 +121,11 @@ class KpiInitializeModelLargeWorld:
     min_run_count = 1
     timeout = 3600
 
-    def setup(self):
+    def setup_cache(self):
+        # Compile kernels for both devices outside the measured runs.
         self._initialize(4)
-        wp.synchronize_device()
+        with wp.ScopedDevice("cpu"):
+            self._initialize(4)
 
     @staticmethod
     def _initialize(shape_count):
@@ -151,6 +153,14 @@ class KpiInitializeModelLargeWorld:
     def time_initialize_model(self):
         _model, _pipeline, _solver = self._initialize(10000)
         wp.synchronize_device()
+
+    def peakmem_initialize_model_cpu(self):
+        gc.collect()
+
+        with wp.ScopedDevice("cpu"):
+            model, pipeline, solver = self._initialize(10000)
+
+        del model, pipeline, solver
 
 
 class KpiInitializeViewerGL:
