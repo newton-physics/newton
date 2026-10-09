@@ -49,12 +49,33 @@ class DVIConfigStruct:
 
 @wp.struct
 class DVIStatus:
-    """Per-world DVI convergence status."""
+    """Per-world DVI convergence status after bilateral recovery.
+
+    The terminal feasibility, bilateral, and complementarity checks use
+    ``DVISolverConfig.tolerance``, independently of the APGD natural-map
+    tolerance. An inner or nonlinear APGD budget can be exhausted without
+    determining the full-system ``converged`` flag; inspect ``apgd_residual``
+    when requiring the APGD threshold as well. A failed APGD line search
+    always prevents convergence.
+    """
 
     converged: int32
     """Whether all terminal feasibility, equality, and complementarity residuals satisfy tolerance."""
     iterations: int32
-    """Projected sweeps; direct-bilateral solves report block/contact sweeps."""
+    """Projected PGS sweeps or accepted APGD iterations across unilateral phases."""
+    apgd_corrections: int32
+    """Completed De Saxce fixed-point iterations across unilateral phases; zero for PGS."""
+    apgd_backtracks: int32
+    """Rejected APGD trial steps across unilateral phases; zero for PGS."""
+    apgd_residual: float32
+    """Last unilateral APGD phase's nonlinear natural-map residual; zero for PGS.
+
+    Uses the fresh De Saxce correction at the relaxed impulse with a unit
+    projection step and infinity norm. Budget exhaustion can leave this above
+    ``DVIAPGDConfig.tolerance``. A failed line search sets it to ``3e38``.
+    """
+    apgd_line_search_failed: int32
+    """Whether an APGD line search exhausted its budget or encountered non-finite data."""
     r_p: float32
     """Maximum primal box- and cone-feasibility residual."""
     r_d: float32

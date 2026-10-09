@@ -370,7 +370,7 @@ class TestDVIResiduals(unittest.TestCase):
                 wp.launch(
                     _compute_dvi_status_residuals,
                     dim=len(counts) * workers,
-                    inputs=[*inputs, floats(velocities), floats(impulses), status, workers],
+                    inputs=[*inputs, floats(velocities), floats(impulses), status, workers, 1],
                     block_dim=128,
                     device=device,
                 )

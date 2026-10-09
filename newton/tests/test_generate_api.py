@@ -80,6 +80,27 @@ class TestGenerateApiPublicSymbols(unittest.TestCase):
 
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
+class TestGenerateApiSolverSubmodules(unittest.TestCase):
+    def test_style3d_helpers_use_public_documentation_paths(self):
+        """Register Style3D helpers under their canonical public paths."""
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "api"
+            with (
+                mock.patch.object(generate_api, "OUTPUT_DIR", output_dir),
+                mock.patch.object(generate_api, "REPO_ROOT", output_dir.parent),
+            ):
+                generate_api.write_module_page("newton.solvers.style3d", api_toctree_modules=set())
+
+            page = (output_dir / "newton_solvers_style3d.rst").read_text(encoding="utf-8")
+
+        self.assertIn(".. py:module:: newton.solvers.style3d", page)
+        self.assertIn(".. currentmodule:: newton.solvers.style3d", page)
+        self.assertIn(".. autofunction:: add_cloth_grid", page)
+        self.assertIn(".. autofunction:: add_cloth_mesh", page)
+        self.assertNotIn("newton._src", page)
+
+
+@unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
 class TestGenerateApiCopyright(unittest.TestCase):
     def tearDown(self):
         generate_api._COPYRIGHT_LINES.clear()

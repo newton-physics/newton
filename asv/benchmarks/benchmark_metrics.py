@@ -106,8 +106,13 @@ def collect_simulation_metrics(
     synchronize: Callable[[], None] | None = None,
     validate: Callable[[Any], None] | None = None,
     timer: Callable[[], float] = time.perf_counter,
+    reset_workload: Callable[[Any], None] | None = None,
 ) -> SimulationMetrics:
-    """Collect simulation metrics using internal or synchronized wall timing."""
+    """Collect simulation metrics using internal or synchronized wall timing.
+
+    With *reset_workload*, later samples reset the first workload instead of
+    rebuilding it, which dominates the runtime of large workloads.
+    """
     frame_times = []
     experience_frame_times = []
     gpu_memory_bytes = None
@@ -118,8 +123,12 @@ def collect_simulation_metrics(
     device = wp.get_device()
     free_memory_before = device.free_memory
 
+    workload = None
     for sample_index in range(samples):
-        workload = create_workload()
+        if workload is None or reset_workload is None:
+            workload = create_workload()
+        else:
+            reset_workload(workload)
         if sim_dt is None:
             sim_dt = workload.sim_dt
             sim_substeps = workload.sim_substeps

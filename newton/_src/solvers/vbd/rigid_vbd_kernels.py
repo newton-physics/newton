@@ -235,6 +235,39 @@ class RigidContactHistory:
     normal: wp.array[wp.vec3]
 
 
+CONTACT_HISTORY_NO_BUFFER = wp.constant(wp.int32(0))
+"""Contact history buffer id of a history that holds no contact set."""
+
+
+@wp.func
+def _contact_history_slot(
+    i: int,
+    match_index: wp.array[wp.int32],
+    match_generation: wp.array[wp.int32],
+    contact_generation: wp.array[wp.int32],
+    contact_buffer_id: int,
+    history_frame: wp.array[wp.int32],
+):
+    """Return the history row of contact ``i``, or -1 when it has none.
+
+    ``history_frame`` holds ``[buffer id, contact generation]`` of the contact set
+    the history was snapshotted from. The same contact set (same buffer, unchanged
+    generation) restores each row from itself. Otherwise ``match_index`` applies only
+    when the buffer's last collision pass matched against that snapshotted set, as
+    :attr:`~newton.Contacts.rigid_contact_match_generation` reports; the indices of
+    any other pass refer to contacts this history never stored.
+    """
+    # Buffer ids are positive, so an empty history (CONTACT_HISTORY_NO_BUFFER) never matches.
+    if history_frame[0] != contact_buffer_id:
+        return -1
+    saved_generation = history_frame[1]
+    if contact_generation[0] == saved_generation:
+        return i
+    if match_generation[0] == saved_generation:
+        return match_index[i]
+    return -1
+
+
 @wp.func
 def _world_selected(world: int, mask: wp.array[wp.bool]):
     """Query an internal world mask whose final entry selects global entities."""
@@ -4730,7 +4763,11 @@ def init_body_body_contacts_alm(
     restore_compliant_tangent_warmstart: int,
     # Pipeline-owned correspondence and VBD-owned cross-step state
     match_index: wp.array[wp.int32],
+    match_generation: wp.array[wp.int32],
+    contact_generation: wp.array[wp.int32],
+    contact_buffer_id: int,
     history: RigidContactHistory,
+    history_frame: wp.array[wp.int32],
     # Optional reset context; a null pending array disables masked invalidation.
     contact_history_reset_pending: wp.array[wp.int32],
     contact_history_reset_mask: wp.array[wp.bool],
@@ -4746,7 +4783,11 @@ def init_body_body_contacts_alm(
     contact_material_mu: wp.array[float],
     contact_material_ke: wp.array[float],
 ):
-    """Warm-start body-body contact state from match indices.
+    """Warm-start body-body contact state from the snapshotted contact set.
+
+    Each row restores from the history row :func:`_contact_history_slot` names (its
+    own row on the same contact set, else its match index when the indices refer to
+    the snapshotted set) and starts cold otherwise.
 
     ALM: always restore matched ``lambda_n``; with ``latest`` matching also
     restore cone-clamped ``lambda_t``. Sticky matching keeps tangent memory in
@@ -4778,7 +4819,7 @@ def init_body_body_contacts_alm(
     contact_material_mu[i] = avg_mu
 
     k_floor = _contact_penalty_floor(avg_ke, k_start)
-    slot = match_index[i]
+    slot = _contact_history_slot(i, match_index, match_generation, contact_generation, contact_buffer_id, history_frame)
     # Drop the saved match for reset-selected worlds so they cold-start instead
     # of warm-starting from pre-reset history.
     if slot >= 0 and contact_history_reset_pending:
@@ -4818,17 +4859,24 @@ def snapshot_body_body_contact_history(
     rigid_contact_normal: wp.array[wp.vec3],
     contact_lambda: wp.array[wp.vec3],
     contact_penalty_k: wp.array[float],
+    contact_generation: wp.array[wp.int32],
+    contact_buffer_id: int,
     # Persistent outputs, in RigidContactHistory order
     prev_lambda: wp.array[wp.vec3],
     prev_penalty_k: wp.array[float],
     prev_normal: wp.array[wp.vec3],
+    history_frame: wp.array[wp.int32],
 ):
     """Snapshot post-iteration contact state by contact row.
 
-    The next match_index refers to the rows written here, so VBD history is
-    stored directly by contact row index.
+    Also records ``[buffer id, contact generation]`` of the contact set in
+    ``history_frame`` on the device, so captured graphs replay it; restoring checks
+    that the match indices refer to this set (:func:`_contact_history_slot`).
     """
     i = wp.tid()
+    if i == 0:
+        history_frame[0] = contact_buffer_id
+        history_frame[1] = contact_generation[0]
     if i >= rigid_contact_count[0]:
         return
 

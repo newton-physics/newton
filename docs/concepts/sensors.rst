@@ -178,11 +178,13 @@ Solver Observables
 ------------------
 
 ``SensorIMU`` requires ``SolverObservableFlags.BODY_QDD`` and ``SensorContact``
-requires ``SolverObservableFlags.CONTACT_F``. Their ``solver_observable_flags``
-properties provide these requirements without mutating the model. Union the
-sets when both sensors are present. Construct the collision pipeline before
-requesting contact-indexed observables, then pass its contacts buffer to the solver
-step and sensor. The first step binds the observable container to that storage:
+requires ``SolverObservableFlags.CONTACT_F``. ``SensorContact`` uses only the
+linear part of each ``CONTACT_F`` wrench (force [N]); the torque part is ignored.
+Each sensor's ``solver_observable_flags`` property provides its requirements
+without mutating the model. Union the sets when both sensors are present.
+Construct the collision pipeline before requesting contact-indexed observables,
+then pass its contacts buffer to the solver step and sensor. The first step binds
+the observable container to that storage:
 
 .. code-block:: python
 
