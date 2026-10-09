@@ -1087,6 +1087,20 @@ class TestMuJoCoMuscleActuators(unittest.TestCase):
         self.assertFalse(np.array_equal(native_model.actuator_gainprm, native_model.actuator_biasprm))
         self._assert_muscle_matches_native_mujoco(mjcf)
 
+        # Equal defined muscle slots must not erase separately authored trailing slots.
+        trailing_mjcf = (
+            mjcf.replace('dynprm="0.02 0.05 0"', 'dynprm="0.02 0.05 0 7"')
+            .replace(
+                'gainprm="0.8 1.2 5 250 0.6 1.7 1.8 1.4 1.5"',
+                'gainprm="0.8 1.2 5 250 0.6 1.7 1.8 1.4 1.5 8"',
+            )
+            .replace(
+                'biasprm="0.8 1.2 5 250 0.6 1.7 1.8 2.5 1.5"',
+                'biasprm="0.8 1.2 5 250 0.6 1.7 1.8 1.4 1.5 9"',
+            )
+        )
+        self._assert_muscle_matches_native_mujoco(trailing_mjcf)
+
     def _assert_muscle_matches_native_mujoco(self, mjcf):
         """Match native muscle activation, force and motion through SolverMuJoCo.step."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
@@ -1156,15 +1170,7 @@ class TestMuJoCoMuscleActuators(unittest.TestCase):
     </actuator>
 </mujoco>
 """
-        mujoco, _ = SolverMuJoCo.import_mujoco()
-        native_model = mujoco.MjModel.from_xml_string(mjcf)
-        builder = ModelBuilder()
-        builder.add_mjcf(mjcf, ctrl_direct=True)
-        model = builder.finalize()
-
-        np.testing.assert_allclose(model.mujoco.actuator_dynprm.numpy(), native_model.actuator_dynprm)
-        np.testing.assert_allclose(model.mujoco.actuator_gainprm.numpy(), native_model.actuator_gainprm)
-        np.testing.assert_allclose(model.mujoco.actuator_biasprm.numpy(), native_model.actuator_biasprm)
+        self._assert_muscle_matches_native_mujoco(mjcf)
 
 
 class TestMuJoCoJointInParentActuators(unittest.TestCase):

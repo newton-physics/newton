@@ -3911,32 +3911,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # Detect position/velocity actuator shortcuts. Use set_to_position/
             # set_to_velocity after add_actuator so MuJoCo's compiler computes kd
             # from dampratio via mj_setConst (kd = dampratio * 2 * sqrt(kp * acc0)).
-            shortcut = None  # Recognized MuJoCo shortcut type, if any
-            shortcut_args: dict[str, Any] = {}
-            if (
-                general_args.get("dyntype") == mujoco.mjtDyn.mjDYN_MUSCLE
-                and general_args.get("gaintype") == mujoco.mjtGain.mjGAIN_MUSCLE
-                and general_args.get("biastype") == mujoco.mjtBias.mjBIAS_MUSCLE
-                # The shortcut overwrites biasprm; general muscles can author it independently.
-                and np.array_equal(general_args["biasprm"][:9], general_args["gainprm"][:9])
-            ):
-                dynprm = general_args["dynprm"]
-                gainprm = general_args["gainprm"]
-                shortcut = "muscle"
-                shortcut_args = {
-                    "timeconst": dynprm[:2],
-                    "tausmooth": dynprm[2],
-                    "range": gainprm[:2],
-                    "force": gainprm[2],
-                    "scale": gainprm[3],
-                    "lmin": gainprm[4],
-                    "lmax": gainprm[5],
-                    "vmax": gainprm[6],
-                    "fpmax": gainprm[7],
-                    "fvmax": gainprm[8],
-                }
-                for key in ("dynprm", "dyntype", "biasprm", "biastype", "gainprm", "gaintype"):
-                    general_args.pop(key, None)
+            shortcut = None  # "position" or "velocity" if detected
+            shortcut_args: dict[str, float] = {}
             if general_args.get("biastype") == mujoco.mjtBias.mjBIAS_AFFINE and general_args.get("gainprm", [0])[0] > 0:
                 kp = general_args["gainprm"][0]
                 bp = general_args.get("biasprm", [0, 0, 0])
@@ -3977,8 +3953,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 act.set_to_position(**shortcut_args)
             elif shortcut == "velocity":
                 act.set_to_velocity(**shortcut_args)
-            elif shortcut == "muscle":
-                act.set_to_muscle(**shortcut_args)
             # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
             # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
             mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
