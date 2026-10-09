@@ -559,6 +559,22 @@ Newton's pipeline supports non-convex meshes, SDF-based contacts, and
 hydroelastic contacts, which are not available through MuJoCo's collision
 detection.
 
+Hydroelastic material response
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The default preserves the legacy hydroelastic response and existing tuning.
+To opt into experimental physical stiffness that is consistent across body
+masses and contact subdivision, construct the solver with
+``use_mujoco_contacts=False, hydroelastic_force_space=True``.
+The opt-in may require material and timestep retuning. It uses MuJoCo-Warp's
+existing split-step API with Euler, implicit, or implicitfast integration;
+RK4 is unsupported in this mode. No backend patch is required.
+This is a construction-time solver option, not a USD or MJCF material setting.
+
+.. experimental::
+
+   The ``hydroelastic_force_space=True`` mode may change without prior notice.
+
 Collision filtering
 ~~~~~~~~~~~~~~~~~~~
 

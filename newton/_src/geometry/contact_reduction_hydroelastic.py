@@ -258,6 +258,18 @@ def _make_contact_value_variant(deterministic: bool):
 
 
 @wp.func
+def _has_reliable_pressure_direction(force_magnitude: float, pressure_weight: float) -> bool:
+    """Check force cancellation independently of the contact patch's scale."""
+    return (
+        wp.isfinite(force_magnitude)
+        and wp.isfinite(pressure_weight)
+        and pressure_weight > EPS_SMALL
+        and force_magnitude > EPS_SMALL
+        and force_magnitude > EPS_LARGE * pressure_weight
+    )
+
+
+@wp.func
 def _compute_normal_matching_rotation(
     selected_normal_sum: wp.vec3,
     agg_force_vec: wp.vec3,
@@ -265,8 +277,8 @@ def _compute_normal_matching_rotation(
 ) -> wp.quat:
     """Compute rotation quaternion that aligns selected_normal_sum with agg_force direction.
 
-    Callers gate reliability on the aggregate depth-volume magnitude; this helper
-    only needs ``agg_force_mag`` above ``EPS_SMALL`` so the
+    Callers reject unreliable aggregate directions; this helper also requires
+    ``agg_force_mag`` above ``EPS_SMALL`` so the
     ``agg_force_vec / agg_force_mag`` normalization is well-defined.
     """
     rotation_q = wp.quat_identity()
@@ -878,7 +890,6 @@ def _create_accumulate_moments_kernel(
         weighted_pos_sum: wp.array[wp.vec3],
         weight_sum: wp.array[wp.float32],
         agg_force: wp.array[wp.vec3],
-        agg_depth_volume: wp.array[wp.vec3],
         total_normal_reduced: wp.array[wp.vec3],
         agg_moment_reduced: wp.array[wp.float32],
         agg_moment2_reduced: wp.array[wp.float32],
@@ -941,8 +952,7 @@ def _create_accumulate_moments_kernel(
                     nbin_agg_force = agg_force[nbin_idx]
                     nbin_agg_mag = wp.length(nbin_agg_force)
                     # Same reliability gate as the export kernel.
-                    nbin_dv_mag = wp.length(agg_depth_volume[nbin_idx])
-                    if nbin_dv_mag > EPS_LARGE and nbin_agg_mag > EPS_SMALL:
+                    if _has_reliable_pressure_direction(nbin_agg_mag, ws):
                         nbin_nsum = total_normal_reduced[nbin_idx]
                         rot_q = _compute_normal_matching_rotation(nbin_nsum, nbin_agg_force, nbin_agg_mag)
                         rotated_normal = wp.normalize(wp.quat_rotate(rot_q, contact_normal))
@@ -1156,14 +1166,15 @@ def create_export_hydroelastic_reduced_contacts_kernel(
             agg_force_vec = agg_force[entry_idx]
             agg_force_mag = wp.length(agg_force_vec)
 
-            # Reliability gate for normal matching / anchor placement. The geometric
-            # depth-volume is pressure-law-independent (= |agg_force| / kh for the
-            # linear law); the EPS_SMALL term keeps agg_force_vec safe to normalize
-            # for the direction even under a degenerate custom pressure law.
+            # Preserve the legacy geometric gate outside the moment-matching opt-in.
+            # Moment matching needs its compensating anchor even on small patches.
             agg_direction_mag = wp.length(agg_depth_volume[entry_idx])
             has_reliable_agg_direction = agg_direction_mag > wp.static(EPS_LARGE) and agg_force_mag > wp.static(
                 EPS_SMALL
             )
+
+            if wp.static(moment_matching):
+                has_reliable_agg_direction = _has_reliable_pressure_direction(agg_force_mag, weight_sum[entry_idx])
 
             # Compute anchor position (center of pressure) for normal bin entries
             anchor_pos = wp.vec3(0.0, 0.0, 0.0)
@@ -1315,6 +1326,11 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                         nbin_dir_reliable = nbin_direction_mag > wp.static(EPS_LARGE) and nbin_agg_mag > wp.static(
                             EPS_SMALL
                         )
+
+                        if wp.static(moment_matching):
+                            nbin_dir_reliable = _has_reliable_pressure_direction(
+                                nbin_agg_mag, weight_sum[nbin_entry_idx]
+                            )
 
                         # Normal matching from the normal bin's rotation
                         if wp.static(normal_matching) and nbin_dir_reliable:
@@ -1839,7 +1855,6 @@ class HydroelasticContactReduction:
                         self.reducer.weighted_pos_sum,
                         self.reducer.weight_sum,
                         self.reducer.agg_force,
-                        self.reducer.agg_depth_volume,
                         self.reducer.total_normal_reduced,
                         self.reducer.agg_moment_reduced,
                         self.reducer.agg_moment2_reduced,
