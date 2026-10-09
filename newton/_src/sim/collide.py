@@ -328,24 +328,6 @@ def _record_reduction_overflow(
 
 
 @wp.kernel(enable_backward=False)
-def _flag_unit_scale_sdf_shape_rescale(
-    shape_indices: wp.array[wp.int32],
-    shape_scale: wp.array[wp.vec3],
-    rescaled: wp.array[wp.int32],
-):
-    """Set a sticky flag when a shape queried with a unit-scale texture SDF has a non-unit scale."""
-    shape = shape_indices[wp.tid()]
-    scale = shape_scale[shape]
-    if scale[0] != 1.0 or scale[1] != 1.0 or scale[2] != 1.0:
-        if wp.atomic_max(rescaled, 0, 1) == 0:
-            wp.printf(
-                "Warning: shape_scale of shape %d changed, but its texture SDF is queried at unit scale. "
-                "Construct CollisionPipeline with dynamic_shape_scale=True, which is slower.\n",
-                shape,
-            )
-
-
-@wp.kernel(enable_backward=False)
 def compute_shape_aabbs(
     body_q: wp.array[wp.transform],
     shape_transform: wp.array[wp.transform],
@@ -363,11 +345,14 @@ def compute_shape_aabbs(
     contact_generation: wp.array[wp.int32],
     broad_phase_pair_count: wp.array[wp.int32],
     num_contact_counters: int,
+    # Per-shape nonzero when its texture SDF is queried at unit scale; empty when no shape is.
+    shape_unit_scale_sdf: wp.array[wp.int32],
     # outputs
     aabb_lower: wp.array[wp.vec3],
     aabb_upper: wp.array[wp.vec3],
     geom_data: wp.array[wp.vec4],
     geom_xform: wp.array[wp.transform],
+    unit_scale_sdf_rescaled: wp.array[wp.int32],
 ):
     """Compute AABBs, narrow-phase geometry data, and zero collision counters.
 
@@ -409,6 +394,14 @@ def compute_shape_aabbs(
 
     # Check if this is an infinite plane or a shape with a pre-computed local AABB
     scale = shape_scale[shape_id]
+    if shape_unit_scale_sdf.shape[0] > 0:
+        if shape_unit_scale_sdf[shape_id] != 0 and (scale[0] != 1.0 or scale[1] != 1.0 or scale[2] != 1.0):
+            if wp.atomic_max(unit_scale_sdf_rescaled, 0, 1) == 0:
+                wp.printf(
+                    "Warning: shape_scale of shape %d changed, but its texture SDF is queried at unit scale. "
+                    "Construct CollisionPipeline with dynamic_shape_scale=True, which is slower.\n",
+                    shape_id,
+                )
     is_infinite_plane = (geo_type == GeoType.PLANE) and (scale[0] == 0.0 and scale[1] == 0.0)
     has_local_aabb = geo_type == GeoType.MESH or geo_type == GeoType.HFIELD or geo_type == GeoType.CONVEX_MESH
 
@@ -1846,11 +1839,14 @@ class CollisionPipeline:
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
 
-        # Shapes whose texture SDF queries assume the unit scale they had at construction.
-        self._unit_scale_sdf_shapes = None
+        # Marks shapes whose texture SDF queries assume the unit scale they had at construction.
+        shape_unit_scale_sdf = np.zeros(shape_count if unit_scale_sdf_shapes is not None else 0, dtype=np.int32)
         if unit_scale_sdf_shapes is not None:
-            self._unit_scale_sdf_shapes = wp.array(unit_scale_sdf_shapes, dtype=wp.int32, device=device)
-            self._unit_scale_sdf_rescaled = wp.zeros(1, dtype=wp.int32, device=device)
+            shape_unit_scale_sdf[unit_scale_sdf_shapes] = 1
+        self._shape_unit_scale_sdf = wp.array(shape_unit_scale_sdf, dtype=wp.int32, device=device)
+        self._unit_scale_sdf_rescaled = wp.zeros(min(len(shape_unit_scale_sdf), 1), dtype=wp.int32, device=device)
+        self._unit_scale_sdf_rescaled_host = None
+        if unit_scale_sdf_shapes is not None:
             self._unit_scale_sdf_rescaled_host = wp.zeros(
                 1, dtype=wp.int32, device="cpu", pinned=wp.get_device(device).is_cuda
             )
@@ -2404,19 +2400,10 @@ class CollisionPipeline:
         # augmentation and soft-contact kernels that follow are tape-safe
         # and recorded normally.
 
-        if self._unit_scale_sdf_shapes is not None:
-            # The host flag lags the device flag by the copies still in flight; reading it never syncs.
-            if not wp.get_device(self.device).is_capturing and self._unit_scale_sdf_rescaled_host.numpy()[0]:
-                raise RuntimeError("Rescaled a unit-scale texture SDF shape; set dynamic_shape_scale=True (slower).")
-            wp.launch(
-                kernel=_flag_unit_scale_sdf_shape_rescale,
-                dim=self._unit_scale_sdf_shapes.shape[0],
-                inputs=[self._unit_scale_sdf_shapes, model.shape_scale],
-                outputs=[self._unit_scale_sdf_rescaled],
-                device=self.device,
-                record_tape=False,
-            )
-            wp.copy(self._unit_scale_sdf_rescaled_host, self._unit_scale_sdf_rescaled)
+        # Eager calls copy the sticky rescale flag to the host and raise on a copy from an earlier call; never syncs.
+        check_unit_scale_sdf = self._shape_unit_scale_sdf.shape[0] > 0 and not wp.get_device(self.device).is_capturing
+        if check_unit_scale_sdf and self._unit_scale_sdf_rescaled_host.numpy()[0]:
+            raise RuntimeError("Rescaled a unit-scale texture SDF shape; set dynamic_shape_scale=True (slower).")
 
         # Compute AABBs for all shapes, zero counters, bump generation.
         # Fuses contacts.clear() + broad_phase_pair_count.zero_() + AABB update.
@@ -2439,16 +2426,20 @@ class CollisionPipeline:
                 contacts.contact_generation,
                 self.broad_phase_pair_count,
                 contacts.contact_counters.shape[0],
+                self._shape_unit_scale_sdf,
             ],
             outputs=[
                 self.narrow_phase.shape_aabb_lower,
                 self.narrow_phase.shape_aabb_upper,
                 self.geom_data,
                 self.geom_transform,
+                self._unit_scale_sdf_rescaled,
             ],
             device=self.device,
             record_tape=False,
         )
+        if check_unit_scale_sdf:
+            wp.copy(self._unit_scale_sdf_rescaled_host, self._unit_scale_sdf_rescaled)
 
         if speculative_active:
             wp.launch(

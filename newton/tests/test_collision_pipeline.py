@@ -4078,7 +4078,7 @@ def test_dynamic_shape_scale_selects_sdf_scale_path(test, device):
             pipeline = newton.CollisionPipeline(model, dynamic_shape_scale=dynamic)
             test.assertTrue(pipeline.narrow_phase.mesh_sdf_texture_only)
             test.assertEqual(pipeline.narrow_phase.mesh_sdf_identity_scale_only, expected_identity)
-            test.assertEqual(pipeline._unit_scale_sdf_shapes is not None, expected_checked)
+            test.assertEqual(pipeline._shape_unit_scale_sdf.shape[0] > 0, expected_checked)
 
 
 def test_unit_scale_sdf_rescale_raises(test, device):
@@ -4111,9 +4111,12 @@ def test_unit_scale_sdf_rescale_raises(test, device):
                 pipeline.collide(state, contacts)
             wp.synchronize()
             test.assertEqual(int(pipeline._unit_scale_sdf_rescaled.numpy()[0]), 1)
-            for _ in range(2):
-                with test.assertRaisesRegex(RuntimeError, "dynamic_shape_scale=True"):
+            # The first eager call after a replay copies the flag; the raise comes from it or the next.
+            with test.assertRaisesRegex(RuntimeError, "dynamic_shape_scale=True"):
+                for _ in range(2):
                     pipeline.collide(state, contacts)
+            with test.assertRaisesRegex(RuntimeError, "dynamic_shape_scale=True"):
+                pipeline.collide(state, contacts)
 
 
 def test_dynamic_shape_scale_graph_replay_matches_rebuild(test, device):
