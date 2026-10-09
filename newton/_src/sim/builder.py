@@ -3771,9 +3771,36 @@ class ModelBuilder:
         self.joint_coord_count += world_count * counts["joint_coord"]
         self.joint_constraint_count += world_count * counts["joint_constraint"]
 
+        # Decode polymorphic actuator targets once, not once per replicated world.
+        actuator_transmissions = []
+        transmission_attr = builder.custom_attributes.get("mujoco:actuator_trnid")
+        if transmission_attr is not None and transmission_attr.values:
+            from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+
+            type_attr = builder.custom_attributes.get("mujoco:actuator_trntype")
+            transmission_types = type_attr.values if type_attr is not None else ()
+            default_transmission_type = type_attr.default if type_attr is not None else SolverMuJoCo.TrnType.JOINT
+            transmission_references = {
+                SolverMuJoCo.TrnType.JOINT: "joint_dof",
+                SolverMuJoCo.TrnType.JOINT_IN_PARENT: "joint_dof",
+                SolverMuJoCo.TrnType.TENDON: "mujoco:tendon",
+                SolverMuJoCo.TrnType.SITE: "shape",
+                SolverMuJoCo.TrnType.BODY: "body",
+                SolverMuJoCo.TrnType.SLIDERCRANK: "shape",
+            }
+            for entity_idx, value in enumerate(transmission_attr.values):
+                transmission_type = default_transmission_type
+                if entity_idx < len(transmission_types) and transmission_types[entity_idx] is not None:
+                    transmission_type = transmission_types[entity_idx]
+                actuator_transmissions.append(
+                    None if value is None else (value[0], value[1], transmission_references.get(transmission_type))
+                )
+
         for world_index, world in enumerate(worlds.tolist()):
             entity_offsets = {kind: int(starts(kind)[world_index]) for kind in counts}
-            self._merge_builder_custom_attributes(builder, entity_offsets, world, label_prefixes[world_index])
+            self._merge_builder_custom_attributes(
+                builder, entity_offsets, world, label_prefixes[world_index], actuator_transmissions
+            )
             self._merge_builder_actuators(
                 builder,
                 int(joint_dof_starts[world_index]),
@@ -4948,6 +4975,7 @@ class ModelBuilder:
         entity_offsets: dict[str, int],
         world: int,
         label_prefix: str | None,
+        actuator_transmissions: Sequence[tuple[int, int, str | None] | None],
     ) -> None:
         # Resolve source rows before ordinary reference remapping copies them.
         # Resolve existing destination rows too, since its topology may have
@@ -5017,9 +5045,14 @@ class ModelBuilder:
             use_current_world = attr.references == "world"
             value_offset = 0 if use_current_world else get_offset(attr.references)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
+            is_actuator_transmission_attr = full_key == "mujoco:actuator_trnid"
             is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
             needs_remap = (
-                value_offset != 0 or use_current_world or is_equality_target_attr or is_collision_mask_domain_attr
+                value_offset != 0
+                or use_current_world
+                or is_equality_target_attr
+                or is_actuator_transmission_attr
+                or is_collision_mask_domain_attr
             )
 
             if needs_remap:
@@ -5050,6 +5083,22 @@ class ModelBuilder:
                     if target_kind == 2:
                         return target + entity_offsets["constraint_mimic"]
                     return value
+
+                def transform_actuator_transmission_value(entity_idx: int, value: Any) -> Any:
+                    if value is None:
+                        return value
+                    target, alternate, reference = actuator_transmissions[entity_idx]
+                    if reference is None:
+                        return value
+                    offset = get_offset(reference)
+                    if offset == 0:
+                        return value
+                    # Only site/refsite and slider/crank transmissions use two indices.
+                    # Finalize packs these pairs into the attribute's Warp dtype.
+                    return (
+                        target + offset if target >= 0 else target,
+                        alternate + offset if alternate >= 0 and reference == "shape" else alternate,
+                    )
 
                 def transform_value(
                     value: Any,
@@ -5083,6 +5132,9 @@ class ModelBuilder:
                     if is_collision_mask_domain:
                         return collision_mask_domain_remap.get(int(value), value)
                     return transform_value(value)
+
+                if is_actuator_transmission_attr:
+                    transform_enum_value = transform_actuator_transmission_value
 
             merged = self.custom_attributes.get(full_key)
             if merged is None:
