@@ -639,6 +639,25 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(len(mesh.GetNormalsAttr().Get(0)), 3)
         np.testing.assert_allclose(mesh.GetNormalsAttr().Get(1), [[0, 0, 1]] * 3)
 
+    def test_accumulated_frame_time_maps_to_consecutive_time_codes(self):
+        """Author one time code per frame when time is accumulated from frame_dt."""
+        viewer = self._make_viewer()
+        viewer.num_frames = None
+        frame_dt = 1.0 / viewer.fps
+        num_frames = 300
+        points = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3)
+
+        sim_time = 0.0
+        for _ in range(num_frames):
+            viewer.begin_frame(sim_time)
+            path = viewer.log_points("/points", points, radii=0.01)
+            viewer.end_frame()
+            sim_time += frame_dt
+
+        time_samples = UsdGeom.Points.Get(viewer.stage, path).GetPointsAttr().GetTimeSamples()
+        self.assertEqual([int(t) for t in time_samples], list(range(num_frames)))
+        self.assertEqual(viewer.stage.GetEndTimeCode(), num_frames - 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
