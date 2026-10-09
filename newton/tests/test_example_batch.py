@@ -1,12 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import subprocess
 import sys
 import unittest
 from unittest import mock
 
-from newton.tests import example_batch
+from newton.tests import example_batch, test_examples, unittest_utils
 from newton.tests.test_examples import _check_example_result
 from newton.tests.unittest_utils import NewtonTestCase
 
@@ -76,6 +77,41 @@ class TestExampleBatch(unittest.TestCase):
         self.assertIn("variant='second'", test.id())
         self.assertIn("Missing expected output", failure)
         self.assertIn("Unexpected stdout:\nbackend notice", failure)
+
+    def test_reproduction_command_keeps_warning_policy(self):
+        """Print the strict-warning options the batch ran each variant with."""
+
+        def run_batch(module, argv, timeout, **kwargs):
+            with open(argv[1], "w", encoding="utf-8") as stream:
+                json.dump([{"returncode": 1, "stdout": "", "stderr": ""}] * 2, stream)
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        class Batch(NewtonTestCase):
+            pass
+
+        test_examples.add_example_test(
+            Batch,
+            "basic.example_basic_pendulum",
+            devices=["cpu"],
+            variants=[
+                {"test_suffix": "strict"},
+                {"test_suffix": "lenient", "test_options": {"allow_deprecation_warnings": True}},
+            ],
+        )
+        result = unittest.TestResult()
+        with (
+            mock.patch.object(unittest_utils, "strict_warnings", True),
+            mock.patch.object(test_examples, "_run_example_subprocess", side_effect=run_batch),
+        ):
+            Batch("test_basic.example_basic_pendulum_cpu").run(result)
+        failures = {test.id(): failure for test, failure in result.failures}
+        self.assertEqual(len(failures), 2)
+        strict, lenient = (
+            next(failure for test_id, failure in failures.items() if f"variant='{suffix}'" in test_id)
+            for suffix in ("strict", "lenient")
+        )
+        self.assertIn("-W error::DeprecationWarning -m newton.examples.basic.example_basic_pendulum", strict)
+        self.assertNotIn("-W error", lenient)
 
 
 if __name__ == "__main__":

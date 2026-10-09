@@ -145,14 +145,16 @@ def _merge_options(base_options: dict[str, Any], device_options: dict[str, Any])
     return merged_options
 
 
+def _warning_args(allow_deprecation_warnings):
+    return [] if allow_deprecation_warnings else newton.tests.unittest_utils.get_strict_warning_args()
+
+
 def _run_example_subprocess(module, argv, timeout, *, allow_deprecation_warnings=False):
     env = os.environ.copy()
     env.pop("PYTHONWARNINGS", None)
     if wp.config.kernel_cache_dir is not None:
         env["WARP_CACHE_PATH"] = os.path.dirname(wp.config.kernel_cache_dir)
-    strict_warnings = newton.tests.unittest_utils.strict_warnings and not allow_deprecation_warnings
-    warning_args = newton.tests.unittest_utils.get_strict_warning_args() if strict_warnings else []
-    command = [sys.executable, *warning_args]
+    command = [sys.executable, *_warning_args(allow_deprecation_warnings)]
     if newton.tests.unittest_utils.coverage_enabled:
         with tempfile.NamedTemporaryFile(dir=newton.tests.unittest_utils.coverage_temp_dir, delete=False) as coverage:
             pass
@@ -285,7 +287,16 @@ def add_example_test(
                 _check_example_result(test, batch, is_cuda=is_cuda)
                 with open(output, encoding="utf-8") as stream:
                     results = [
-                        subprocess.CompletedProcess(args=[sys.executable, "-m", module, *case["argv"]], **result)
+                        subprocess.CompletedProcess(
+                            args=[
+                                sys.executable,
+                                *_warning_args(case["allow_deprecation_warnings"]),
+                                "-m",
+                                module,
+                                *case["argv"],
+                            ],
+                            **result,
+                        )
                         for case, result in zip(cases, json.load(stream), strict=True)
                     ]
 
