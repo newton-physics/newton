@@ -353,7 +353,7 @@ class TestJointDrive(unittest.TestCase):
 
 
 def test_semi_implicit_d6_2dof_drive_at_target(test: TestJointDrive, device):
-    """A D6 joint with two angular drives must stay at rest when q equals the targets, for any axis pair."""
+    """Verify that a D6 joint with two angular drives stays at rest at its targets for any axis pair."""
     for axes in ((newton.Axis.X, newton.Axis.Y), (newton.Axis.Y, newton.Axis.Z), (newton.Axis.Z, newton.Axis.X)):
         with test.subTest(axes=axes):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
