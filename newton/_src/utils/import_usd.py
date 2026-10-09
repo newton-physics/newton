@@ -2625,6 +2625,22 @@ def parse_usd(
 
     initialize_free_joint_velocities()
 
+    def _set_imported_mimic(joint_idx: int, leader_idx: int, coef0: float, coef1: float) -> None:
+        """Keep one direction of equivalent reciprocal USD declarations."""
+        if builder.joint_mimic_joint[leader_idx] == joint_idx:
+            reverse_offset, reverse_multiplier = builder.joint_mimic_coeffs[leader_idx]
+            # Vendor and Newton schemas can author opposite directions of the
+            # same relation. Only discard the redundant equation, not a chain
+            # or a conflicting cycle. Coefficients may come from USD floats.
+            if (
+                math.isfinite(coef0)
+                and math.isfinite(coef1)
+                and math.isclose(coef1 * reverse_multiplier, 1.0, rel_tol=1.0e-6)
+                and math.isclose(coef0, -coef1 * reverse_offset, rel_tol=1.0e-6, abs_tol=1.0e-8)
+            ):
+                return
+        builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
+
     # Mimic constraints from PhysxMimicJointAPI (run after collapse so joint indices are final).
     # PhysxMimicJointAPI is an instance-applied schema (e.g. PhysxMimicJointAPI:rotZ)
     # that couples a follower joint to a leader (reference) joint with a gearing ratio.
@@ -2690,7 +2706,7 @@ def parse_usd(
             offset_attr = joint_prim.GetAttribute(f"physxMimicJoint:{axis_instance}:offset")
             offset = float(offset_attr.Get()) if offset_attr and offset_attr.HasValue() else 0.0
 
-            builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(-offset, -gearing))
+            _set_imported_mimic(joint_idx, leader_idx, -offset, -gearing)
 
             if verbose:
                 print(
@@ -2745,7 +2761,7 @@ def parse_usd(
                 stacklevel=2,
             )
         leader_idx = path_joint_map[leader_path_str]
-        builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
+        _set_imported_mimic(joint_idx, leader_idx, coef0, coef1)
 
     # Parse Newton actuator prims from the USD stage.
     from ..actuators.delay import Delay  # noqa: PLC0415
