@@ -9,6 +9,7 @@ import warp as wp
 
 from ..core.types import Devicelike
 from .articulation import eval_jacobian, eval_mass_matrix
+from .enums import JointType
 
 if TYPE_CHECKING:
     from .model import Model
@@ -26,6 +27,39 @@ def _compute_body_q_com_kernel(
     body-CoM-anchored transform consumed by :func:`eval_rigid_id`."""
     i = wp.tid()
     body_q_com[i] = body_q[i] * wp.transform(body_com[i], wp.quat_identity())
+
+
+@wp.kernel
+def _free_joint_qdd_internal_at_rest_kernel(
+    joint_type: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_qd_public: wp.array[float],
+    # output
+    joint_qdd_internal: wp.array[float],
+):
+    """Internal joint accelerations that correspond to public ``joint_qdd = 0``.
+
+    For free and distance joints the public linear acceleration is that of the
+    child CoM, while RNEA's internal one is spatial. Holding the CoM
+    unaccelerated takes the internal linear acceleration ``-omega x v_com``
+    (parent frame); the angular part stays zero. Every other joint keeps zero.
+    """
+    joint_id = wp.tid()
+    qd_start = joint_qd_start[joint_id]
+    qd_end = joint_qd_start[joint_id + 1]
+    for i in range(qd_start, qd_end):
+        joint_qdd_internal[i] = 0.0
+
+    jtype = joint_type[joint_id]
+    if jtype != JointType.FREE and jtype != JointType.DISTANCE:
+        return
+
+    v_com = wp.vec3(joint_qd_public[qd_start + 0], joint_qd_public[qd_start + 1], joint_qd_public[qd_start + 2])
+    omega = wp.vec3(joint_qd_public[qd_start + 3], joint_qd_public[qd_start + 4], joint_qd_public[qd_start + 5])
+    a_internal = -wp.cross(omega, v_com)
+    joint_qdd_internal[qd_start + 0] = a_internal[0]
+    joint_qdd_internal[qd_start + 1] = a_internal[1]
+    joint_qdd_internal[qd_start + 2] = a_internal[2]
 
 
 class _InverseDynamicsScratchBuffer:
@@ -87,6 +121,7 @@ class _InverseDynamicsScratchBuffer:
         self.body_I_m = wp.empty(bc, dtype=wp.spatial_matrix, device=device)
         self.body_q_com = wp.empty(bc, dtype=wp.transform, device=device)
         self.joint_qd_internal = wp.empty(jdc, dtype=wp.float32, device=device)
+        self.joint_qdd_internal = wp.empty(jdc, dtype=wp.float32, device=device)
         self.body_qd_fk = wp.empty(bc, dtype=wp.spatial_vector, device=device)
         self.body_solve_origin = wp.zeros(bc, dtype=wp.vec3, device=device)
         self.joint_S_s = wp.empty(jdc, dtype=wp.spatial_vector, device=device)
@@ -127,8 +162,8 @@ def _rnea_compensation_pass(
     callers must invoke :func:`~newton.eval_fk` (or otherwise update
     ``state.body_q``) before calling this.
 
-    With ``qdd = 0`` implicit in :func:`eval_rigid_id` and the result
-    sign-flipped to match the standard convention, the output is
+    With public ``qdd = 0`` and the result sign-flipped to match the
+    standard convention, the output is
     ``g(q) = ∂U/∂q`` when ``joint_qd`` is zero (gravity only),
     ``C(q, q_dot)*q_dot`` when ``gravity`` is zero (Coriolis only), or
     their sum when both are non-zero.
@@ -203,6 +238,13 @@ def _rnea_compensation_pass(
         outputs=[scratch.joint_qd_internal],
         device=device,
     )
+    wp.launch(
+        _free_joint_qdd_internal_at_rest_kernel,
+        dim=model.joint_count,
+        inputs=[model.joint_type, model.joint_qd_start, joint_qd],
+        outputs=[scratch.joint_qdd_internal],
+        device=device,
+    )
 
     # RNEA forward pass: body bias wrenches in the spatial frame.
     wp.launch(
@@ -219,6 +261,7 @@ def _rnea_compensation_pass(
             model.joint_qd_start,
             state.joint_q,
             scratch.joint_qd_internal,
+            scratch.joint_qdd_internal,
             model.joint_axis,
             model.joint_dof_dim,
             scratch.body_I_m,
@@ -279,14 +322,11 @@ def _rnea_compensation_pass(
         device=device,
     )
 
-    # Convert output tau_out from RNEA's internal body-origin convention to
-    # Newton's documented free-joint joint_f convention (wrench at body CoM)
-    # and flip the RNEA sign so tau_out stores the standard ``+g(q)`` /
-    # ``+C(q, q_dot)*q_dot`` directly. Subtracts the spatial-vs-classical
-    # acceleration bias, shifts the wrench from body origin to body CoM,
-    # then negates every per-DOF entry. Non-free / non-distance joints
-    # skip the corrections (their joint_f is reference-point-invariant)
-    # but still get the sign flip.
+    # Convert output tau_out from RNEA's internal parent-frame-origin convention to
+    # Newton's documented free-joint joint_f convention (world-frame wrench
+    # at body CoM) and flip the RNEA sign so tau_out stores the standard
+    # ``+g(q)`` / ``+C(q, q_dot)*q_dot`` directly. Non-free / non-distance
+    # joints only get the sign flip (their joint_f is reference-point-invariant).
     wp.launch(
         convert_free_distance_joint_f_internal_to_public,
         dim=model.joint_count,
@@ -300,8 +340,6 @@ def _rnea_compensation_pass(
             model.joint_X_p,
             state.body_q,
             scratch.body_q_com,
-            model.body_mass,
-            joint_qd,
         ],
         outputs=[tau_out],
         device=device,

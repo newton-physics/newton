@@ -566,6 +566,8 @@ class Actuator:
         current_act_state: Actuator.State | None = None,
         next_act_state: Actuator.State | None = None,
         dt: float | None = None,
+        *,
+        bias_force: wp.array[float] | None = None,
     ) -> None:
         """Execute one control step.
 
@@ -593,6 +595,16 @@ class Actuator:
             current_act_state: Current composed state (None if stateless).
             next_act_state: Next composed state (None if stateless).
             dt: Timestep [s].
+            bias_force: Optional per-DOF bias force ``C qd + g`` of the
+                manipulator equation ``tau = M qdd + bias_force``, indexed like
+                ``joint_qd`` [N or N·m, depending on joint type]: the force the
+                joints need to hold still against Coriolis and gravity. The
+                step itself applies ``-bias_force``. For example
+                ``gravity_force + coriolis_force`` from
+                :func:`~newton.eval_inverse_dynamics_passive`. Used only in
+                implicit mode, where the predicted end-of-step velocity becomes
+                ``qd + A (p - dt bias_force)``. Explicit mode ignores it.
+                ``None`` (default) leaves the prediction ``qd + A p``.
         """
         if self.is_stateful() and (current_act_state is None or next_act_state is None):
             raise ValueError(
@@ -647,6 +659,7 @@ class Actuator:
             drive_state,
             dt,
             custom_inputs,
+            bias_force,
         )
 
         # --- 4. Scatter-add to output ---

@@ -8,7 +8,7 @@ predicted end-of-step state:
 
     ``r(p) = p - h g(q(p), qd(p)) = 0``
 
-    ``qd(p) = qd + A p``
+    ``qd(p) = qd + A (p - h b)``
 
     ``q(p) = q + h qd(p)``
 
@@ -16,9 +16,12 @@ Here ``h`` is the timestep, ``g`` is the drive force law with clamping,
 and ``A`` is the coupled inverse-mass response supplied by
 :class:`JointSpaceResponse`. Options: :class:`ImplicitOptions`.
 
+``b`` is the optional bias force passed to
+:meth:`Actuator.step <newton.actuators.Actuator.step>`, in the sign convention
+of the manipulator equation ``tau = M qdd + b``: the Coriolis and gravity
+forces ``C qd + g`` from :func:`~newton.eval_inverse_dynamics_passive`. The
+step itself applies ``-b``. Without it, ``b`` is zero and
 ``qd(p)`` advances the step-start velocity by this actuator's own impulse alone.
-Gravity, any other applied force, other actuators on the same articulation, and
-joint drive applied without the actuator do not enter the prediction.
 """
 
 from __future__ import annotations
@@ -123,6 +126,28 @@ def _gather_slot_response_kernel(
     slot_response[i] = inverse_blocks[slot_art[i], li, li]
 
 
+@wp.kernel(enable_backward=False)
+def _bias_velocity_kernel(
+    inverse_blocks: wp.array3d[float],
+    bias_force: wp.array[float],
+    dt: float,
+    slot_art: wp.array[wp.int32],
+    slot_local: wp.array[wp.int32],
+    art_base: wp.array[wp.int32],
+    art_ndof: wp.array[wp.int32],
+    bias_velocity: wp.array[wp.float64],
+):
+    """Per-slot velocity change ``-h (A b)_i`` over the slot's whole articulation row."""
+    i = wp.tid()
+    a = slot_art[i]
+    li = slot_local[i]
+    base = art_base[a]
+    acc = wp.float64(0.0)
+    for j in range(art_ndof[a]):
+        acc += wp.float64(inverse_blocks[a, li, j]) * wp.float64(bias_force[base + j])
+    bias_velocity[i] = -wp.float64(dt) * acc
+
+
 # ---------------------------------------------------------------------------
 # Coupled solve kernel
 # ---------------------------------------------------------------------------
@@ -155,9 +180,12 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
         i: wp.int32,
         ng: wp.int32,
         si: wp.int32,
+        bias_velocity: wp.array[wp.float64],
     ) -> wp.float64:
-        """End-of-step velocity of row *i*: ``qd + (A p)_i``."""
+        """End-of-step velocity of row *i*: ``qd - h (A b)_i + (A p)_i``."""
         qd_i = wp.float64(velocities[vel_indices[si]])
+        if bias_velocity:
+            qd_i += bias_velocity[si]
         li = group_local[g, i]
         for jj in range(ng):
             qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
@@ -213,6 +241,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
         rbuf: wp.array2d[wp.float64],
         sbuf: wp.array2d[wp.float64],
         jbuf: wp.array3d[wp.float64],
+        bias_velocity: wp.array[wp.float64],
         computed_efforts: wp.array[float],
         applied_efforts: wp.array[float],
     ):
@@ -252,7 +281,9 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
             rn = wp.float64(0.0)
             for i in range(ng):
                 si = group_slot[g, i]
-                qd_i = predict_qd(velocities, vel_indices, inverse_blocks, group_local, pbuf, art, g, i, ng, si)
+                qd_i = predict_qd(
+                    velocities, vel_indices, inverse_blocks, group_local, pbuf, art, g, i, ng, si, bias_velocity
+                )
                 q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
                 f_i = force_at(
                     q_i,
@@ -328,7 +359,9 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
         # Re-clamp at the final predicted state and write effort.
         for i in range(ng):
             si = group_slot[g, i]
-            qd_i = predict_qd(velocities, vel_indices, inverse_blocks, group_local, pbuf, art, g, i, ng, si)
+            qd_i = predict_qd(
+                velocities, vel_indices, inverse_blocks, group_local, pbuf, art, g, i, ng, si, bias_velocity
+            )
             q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
             tq = wp.float64(target_pos[target_pos_indices[si]])
             tqd = wp.float64(target_vel[target_vel_indices[si]])
@@ -547,6 +580,10 @@ class _EffortModeImplicit:
         self._slot_local = wp.array(slot_local, dtype=wp.int32, device=device)
         self._slot_response = wp.zeros(self._num_actuators, dtype=float, device=device)
         self._num_groups = num_groups
+        self._art_base = wp.array(np.asarray(art_base, dtype=np.int32), dtype=wp.int32, device=device)
+        self._art_ndof = wp.array(np.asarray(art_ndof, dtype=np.int32), dtype=wp.int32, device=device)
+        self._bias_velocity = wp.zeros(self._num_actuators, dtype=wp.float64, device=device)
+        self._joint_dof_count = int(model.joint_dof_count)
 
     def is_graphable(self) -> bool:
         return self._drive.is_graphable()
@@ -568,6 +605,7 @@ class _EffortModeImplicit:
         drive_state: Any,
         dt: float | None,
         custom_inputs: dict[str, Any] | None = None,
+        bias_force: wp.array[float] | None = None,
     ) -> wp.array[float]:
         """Solve implicit effort and return the applied-effort buffer.
 
@@ -579,6 +617,11 @@ class _EffortModeImplicit:
         :attr:`~newton.actuators.DriveBase.custom_inputs`, and is forwarded to
         :meth:`~newton.actuators.DriveBase.prepare_implicit` so the
         linearization sees the same extra arrays the explicit path does.
+
+        *bias_force* is a per-DOF force indexed like ``joint_qd`` [N or N·m],
+        in the convention ``tau = M qdd + bias_force``. When given, the
+        predicted end-of-step velocity is ``qd + A (p - h bias_force)`` instead
+        of ``qd + A p``.
         """
         if dt is None:
             raise ValueError("Implicit actuation requires dt")
@@ -612,6 +655,33 @@ class _EffortModeImplicit:
                 **prepare_kwargs,
             )
         inverse_blocks = self._response.inverse_blocks
+        bias_velocity = None
+        if bias_force is not None:
+            if not isinstance(bias_force, wp.array):
+                raise TypeError(f"bias_force must be a wp.array, got {type(bias_force).__name__}")
+            if bias_force.ndim != 1 or bias_force.dtype != wp.float32 or bias_force.shape[0] != self._joint_dof_count:
+                raise ValueError(
+                    f"bias_force must be a 1-D float32 array with joint_dof_count = {self._joint_dof_count} entries; "
+                    f"got shape {bias_force.shape} and dtype {wp.types.type_repr(bias_force.dtype)}"
+                )
+            if bias_force.device != self._device:
+                raise ValueError(f"bias_force is on {bias_force.device}, but the actuator runs on {self._device}")
+            bias_velocity = self._bias_velocity
+            wp.launch(
+                _bias_velocity_kernel,
+                dim=self._num_actuators,
+                inputs=[
+                    inverse_blocks,
+                    bias_force,
+                    dt,
+                    self._slot_art,
+                    self._slot_local,
+                    self._art_base,
+                    self._art_ndof,
+                ],
+                outputs=[bias_velocity],
+                device=self._device,
+            )
 
         opts = self._options
         wp.launch(
@@ -645,6 +715,7 @@ class _EffortModeImplicit:
                 self._rbuf,
                 self._sbuf,
                 self._jbuf,
+                bias_velocity,
             ],
             outputs=[computed_forces, applied_forces],
             device=self._device,
