@@ -643,7 +643,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         - :attr:`DCMOTOR`: Set by the MJCF importer to reconstruct ``<dcmotor>`` from importer-managed parameters.
           Do not set this value manually. Runtime edits to ``actuator_gainprm``, ``actuator_biasprm``,
           ``actuator_dynprm``, and ``actuator_forcerange`` are ignored for these rows.
-          Compiled USD DC motors instead use :attr:`GENERAL` with ``actuator_gaintype`` set to DC motor.
+          Compiled MJCF and USD DC motors instead use :attr:`GENERAL` with ``actuator_gaintype`` set to DC motor.
         """
 
         POSITION = 0
@@ -4029,11 +4029,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"Missing: {', '.join(missing_dcmotor_parameters)}."
             )
         dcmotor_parameter_arrays = (
-            {
-                name: getattr(mujoco_attrs, name).numpy()
-                for name in SolverMuJoCo._DCMOTOR_PARAMETER_NAMES
-                if hasattr(mujoco_attrs, name)
-            }
+            {name: getattr(mujoco_attrs, name).numpy() for name in SolverMuJoCo._DCMOTOR_PARAMETER_NAMES}
             if has_dcmotor_shortcut
             else {}
         )
@@ -4233,12 +4229,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             is_dcmotor = ctrl_type == int(SolverMuJoCo.CtrlType.DCMOTOR) or general_args.get("gaintype") == int(
                 mujoco.mjtGain.mjGAIN_DCMOTOR
             )
-            if is_dcmotor and ctrlspec not in (0, 1, 2, 8):
-                raise NotImplementedError(
-                    "SolverMuJoCo supports one DC-motor control input per actuator row: "
-                    "'voltage', 'pos', or 'vel'. MuJoCo 'ff', 'none', and combined input "
-                    "signatures are not supported by Newton's one-control-per-actuator mapping."
-                )
+            if is_dcmotor and ctrlspec != 0:  # Zero leaves input inference to MuJoCo.
+                SolverMuJoCo._parse_dcmotor_input(ctrlspec)
             # Apply shortcut helpers after add_actuator so MuJoCo derives all
             # compiled parameters exactly as it does for native MJCF.
             shortcut = None

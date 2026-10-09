@@ -416,17 +416,17 @@ Commands use the MJCF actuator order in ``control.mujoco.ctrl``. The supported
 ``vel``; ``position`` and ``velocity`` are Newton-only aliases, not valid
 native MuJoCo MJCF keywords.
 MuJoCo's ``ff``, ``none``, and combined multi-input signatures are not yet
-supported by Newton's one-control-per-actuator mapping. Compiled USD
-``MjcActuator`` rows can preserve the low-level parameter arrays and a supported
-``mjc:ctrlSpec`` value instead.
+supported by Newton's one-control-per-actuator mapping. Compiled MJCF
+``<general>`` and USD ``MjcActuator`` rows preserve the low-level parameter
+arrays and a supported ``input`` or ``mjc:ctrlSpec`` value, respectively.
 
 The MJCF importer sets :attr:`~newton.solvers.SolverMuJoCo.CtrlType.DCMOTOR`
 and registers ``mujoco:actuator_dcmotor_*`` parameters only when the source
 contains ``<dcmotor>``. These are importer-managed construction parameters;
 do not set ``CtrlType.DCMOTOR`` manually. Runtime edits to ``actuator_gainprm``,
 ``actuator_biasprm``, ``actuator_dynprm``, and ``actuator_forcerange`` are ignored
-for these rows to preserve the native compiler's output. Compiled USD DC motors
-instead use ``CtrlType.GENERAL`` with ``actuator_gaintype`` set to DC motor.
+for these rows to preserve the native compiler's output. Compiled MJCF and USD
+DC motors instead use ``CtrlType.GENERAL`` with ``actuator_gaintype`` set to DC motor.
 
 Actuator damping and armature are preserved for the native MuJoCo CPU backend
 (``use_mujoco_cpu=True``). The pinned MuJoCo-Warp 3.14 backend ignores these
@@ -434,7 +434,8 @@ properties; :class:`~newton.solvers.SolverMuJoCo` emits a ``RuntimeWarning`` whe
 they are nonzero. This limitation applies to all actuator types,
 not only DC motors. MJCF ``damping`` accepts one, two, or three coefficients:
 the first is stored in ``mujoco:actuator_damping`` and the remaining two in
-``mujoco:actuator_dampingpoly``, padded with zeros. Compiled USD rows can author
+``mujoco:actuator_dampingpoly``. Partial overrides retain inherited trailing
+coefficients; otherwise omitted coefficients default to zero. Compiled USD rows can author
 the corresponding ``mjc:damping`` scalar and ``mjc:dampingPoly`` pair. These
 passive properties are set at solver construction, must be uniform across
 replicated worlds, and are not refreshed by ``notify_model_changed(ACTUATOR_PROPERTIES)``.

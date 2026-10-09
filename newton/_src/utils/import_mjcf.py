@@ -560,7 +560,7 @@ def parse_mjcf(
             if key in attrib:
                 if isinstance(attrib[key], dict):
                     attrib[key] = merge_attrib(attrib[key], value, tag=key)
-                elif (tag == "dcmotor" and key == "controller") or (
+                elif (tag == "dcmotor" and key in {"controller", "cogging", "lugre"}) or (
                     tag in {"general", "motor", "position", "velocity", "intvelocity", "damper", "dcmotor"}
                     and key == "damping"
                 ):

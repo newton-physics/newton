@@ -382,9 +382,13 @@ class TestMuJoCoActuators(unittest.TestCase):
         inherited_mjcf = MJCF_DCMOTOR_SIMPLE.replace(
             "<worldbody>",
             '<default><dcmotor motorconst="0.05" resistance="2" input="pos" '
-            'controller="5 1 0.2 10 2 3" damping="0.7 0.2 0.1" armature="0.02"/>'
-            '<default class="drive"><dcmotor controller="6" damping="0.8"/></default></default><worldbody>',
-        ).replace('name="dc"', 'name="dc" class="drive" controller="7 0.5" damping="0.9 0.3"')
+            'controller="5 1 0.2 10 2 3" cogging="0.1 6 0.2" lugre="0.3 0.4 0.5 12 0.02" '
+            'damping="0.7 0.2 0.1" armature="0.02"/>'
+            '<default class="drive"><dcmotor controller="6" cogging="0.2" lugre="0.6" '
+            'damping="0.8"/></default></default><worldbody>',
+        ).replace(
+            'name="dc"', 'name="dc" class="drive" controller="7 0.5" cogging="0.3 8" lugre="0.7 0.8" damping="0.9 0.3"'
+        )
         for mjcf in (MJCF_DCMOTOR_SIMPLE, inherited_mjcf):
             with self.subTest(inherited=mjcf == inherited_mjcf):
                 native_model = mujoco.MjModel.from_xml_string(mjcf)
@@ -507,14 +511,17 @@ class TestMuJoCoActuators(unittest.TestCase):
                     ModelBuilder().add_mjcf(mjcf)
 
     def test_mjcf_dcmotor_dynamics_match_native_mujoco(self):
-        """Match native DC-motor parameters and dynamics on both solver backends."""
+        """Match stateful and stateless DC-motor dynamics on both solver backends."""
         mujoco = SolverMuJoCo.import_mujoco()[0]
-        native_model = mujoco.MjModel.from_xml_string(MJCF_DCMOTOR_ACTUATOR)
+        mjcf = MJCF_DCMOTOR_ACTUATOR.replace(
+            "</actuator>", '<dcmotor name="voltage" joint="hinge" resistance="2" motorconst="0.05"/></actuator>'
+        )
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
 
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
                 builder = ModelBuilder()
-                builder.add_mjcf(MJCF_DCMOTOR_ACTUATOR)
+                builder.add_mjcf(mjcf)
                 model = builder.finalize()
                 solver = SolverMuJoCo(
                     model,
@@ -524,8 +531,9 @@ class TestMuJoCoActuators(unittest.TestCase):
                     # Isolate import parity from MuJoCo-Warp's approximate implicit DC-motor derivatives.
                     integrator="euler",
                 )
-                self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
-                np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
+                self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 2)
+                np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), SolverMuJoCo.CtrlSource.CTRL_DIRECT)
+                np.testing.assert_array_equal(solver.mj_model.actuator_actnum > 0, [True, False])
                 self.assertEqual(solver.mj_model.nu, native_model.nu)
                 self.assertEqual(solver.mj_model.na, native_model.na)
                 for attribute in (
@@ -548,11 +556,11 @@ class TestMuJoCoActuators(unittest.TestCase):
                 state_0.joint_q.assign([0.2])
                 state_0.joint_qd.assign([0.5])
                 control = model.control()
-                control.mujoco.ctrl.assign([0.25])
+                control.mujoco.ctrl.assign([0.25, 1.0])
                 native_model.opt.timestep = 0.001
                 native_model.opt.integrator = solver.mj_model.opt.integrator
                 reference_data = mujoco.MjData(native_model)
-                reference_data.ctrl[0] = 0.25
+                reference_data.ctrl[:] = [0.25, 1.0]
                 reference_data.qpos[0] = 0.2
                 reference_data.qvel[0] = 0.5
 

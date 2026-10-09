@@ -1377,6 +1377,10 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
                          resistance="2" ctrlrange="-0.2 0.2"/>
                 <dcmotor name="dc_angular" joint="hinge" input="pos" motorconst="0.05"
                          resistance="2" ctrlrange="-0.2 0.2"/>
+                <general name="dc_compiled_position" joint="slide" gaintype="dcmotor"
+                         input="pos" ctrlrange="-0.2 0.2"/>
+                <general name="dc_compiled_voltage" joint="slide" gaintype="dcmotor"
+                         input="voltage" ctrlrange="-0.2 0.2"/>
             </actuator>
         </mujoco>
         """
@@ -1395,6 +1399,8 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
                 [-0.4, 0.4],
                 [-0.4, 0.4],
                 [-0.2, 0.2],
+                [-0.2, 0.2],
+                [-0.4, 0.4],
                 [-0.2, 0.2],
             ],
         )
