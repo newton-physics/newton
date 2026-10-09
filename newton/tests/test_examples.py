@@ -22,6 +22,7 @@ import io
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -284,7 +285,7 @@ def add_example_test(
                 _check_example_result(test, batch, is_cuda=is_cuda)
                 with open(output, encoding="utf-8") as stream:
                     results = [
-                        subprocess.CompletedProcess(args=case["argv"], **result)
+                        subprocess.CompletedProcess(args=[sys.executable, "-m", module, *case["argv"]], **result)
                         for case, result in zip(cases, json.load(stream), strict=True)
                     ]
 
@@ -300,7 +301,11 @@ def add_example_test(
 
 
 def _check_example_result(test, result, *, is_cuda, variant=None):
-    test.assertEqual(result.returncode, 0, f"Example failed: {result.args}\n{result.stdout}\n{result.stderr}")
+    test.assertEqual(
+        result.returncode,
+        0,
+        f"Example failed. Reproduce with:\n{shlex.join(result.args)}\n\n{result.stdout}\n{result.stderr}",
+    )
     if not isinstance(test, NewtonTestCase):
         if result.stderr:
             print(result.stderr)
@@ -555,7 +560,11 @@ add_example_batch(
     TestBasicExamples,
     name="basic.example_basic_mimic_joint",
     variants=[
-        {"devices": test_devices, "test_options": {"num-frames": 120, "solver": solver}, "test_suffix": solver}
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 120, "solver": solver},
+            "test_suffix": solver,
+        }
         for solver in ("featherstone", "semi_implicit", "xpbd", "mujoco", "vbd")
     ],
 )

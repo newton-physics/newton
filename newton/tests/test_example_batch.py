@@ -20,9 +20,11 @@ class TestExampleBatch(unittest.TestCase):
                 """Validate each variant's captured result in the parent."""
                 for case in cases:
                     with test.subTest(variant=case["label"]):
-                        output = example_batch.run_variant("example_module", case.get("argv", []))
+                        argv = case.get("argv", [])
+                        output = example_batch.run_variant("example_module", argv)
+                        command = [sys.executable, "-m", "example_module", *argv]
                         _check_example_result(
-                            test, subprocess.CompletedProcess(args=case, **output), is_cuda=False, variant=case
+                            test, subprocess.CompletedProcess(args=command, **output), is_cuda=False, variant=case
                         )
 
         with (
@@ -52,6 +54,7 @@ class TestExampleBatch(unittest.TestCase):
         self.assertEqual(len(result.failures), 1)
         self.assertIn("variant='xpbd'", result.failures[0][0].id())
         self.assertIn("example assertion failed", result.failures[0][1])
+        self.assertIn("-m example_module --test --solver xpbd", result.failures[0][1])
 
     def test_output_contract_is_isolated_between_variants(self):
         """Keep allowances and required output local to each variant."""
