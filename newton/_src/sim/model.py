@@ -209,8 +209,8 @@ class Model:
         """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
         WORLD = 15
         """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.world_count`)."""
-        ATTACHMENT_BODY_PARTICLE = 16
-        """Attribute frequency follows the number of body-particle attachments."""
+        ATTACHMENT_PARTICLE_BODY = 16
+        """Attribute frequency follows the number of particle-body attachments."""
         CONTACT = 17
         """Packed rigid and soft-rigid contact slots, sized by the sum of their capacities.
 
@@ -385,21 +385,21 @@ class Model:
         "spring_damping": AttributeSpec(AttributeFrequency.SPRING),
         "spring_control": AttributeSpec(AttributeFrequency.SPRING),
         "spring_constraint_lambdas": AttributeSpec(AttributeFrequency.SPRING),
-        # body-particle attachments
-        "attachment_body_particle_body": AttributeSpec(
-            AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+        # particle-body attachments
+        "attachment_particle_body_body": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             references=AttributeFrequency.BODY,
         ),
-        "attachment_body_particle_particle": AttributeSpec(
-            AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+        "attachment_particle_body_particle": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             references=AttributeFrequency.PARTICLE,
         ),
-        "attachment_body_particle_body_point": AttributeSpec(AttributeFrequency.ATTACHMENT_BODY_PARTICLE),
-        "attachment_body_particle_stiffness": AttributeSpec(AttributeFrequency.ATTACHMENT_BODY_PARTICLE),
-        "attachment_body_particle_damping": AttributeSpec(AttributeFrequency.ATTACHMENT_BODY_PARTICLE),
-        "attachment_body_particle_enabled": AttributeSpec(AttributeFrequency.ATTACHMENT_BODY_PARTICLE),
-        "attachment_body_particle_world": AttributeSpec(
-            AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+        "attachment_particle_body_body_point": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_stiffness": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_damping": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_enabled": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_world": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             references=AttributeFrequency.WORLD,
         ),
         "tri_indices": AttributeSpec(
@@ -549,7 +549,7 @@ class Model:
         AttributeFrequency.SPRING: "spring_count",
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
         AttributeFrequency.WORLD: "world_count",
-        AttributeFrequency.ATTACHMENT_BODY_PARTICLE: "attachment_body_particle_count",
+        AttributeFrequency.ATTACHMENT_PARTICLE_BODY: "attachment_particle_body_count",
         AttributeFrequency.CONTACT: "contact_max",
         AttributeFrequency.CONTACT_RIGID: "rigid_contact_max",
         AttributeFrequency.CONTACT_SOFT: "soft_contact_max",
@@ -885,20 +885,20 @@ class Model:
         self.spring_constraint_lambdas: wp.array[wp.float32] | None = None
         """Lagrange multipliers for spring constraints (internal use)."""
 
-        self.attachment_body_particle_body: wp.array[wp.int32] | None = None
-        """Rigid body indices, shape [attachment_body_particle_count], int."""
-        self.attachment_body_particle_particle: wp.array[wp.int32] | None = None
-        """Particle indices, shape [attachment_body_particle_count], int."""
-        self.attachment_body_particle_body_point: wp.array[wp.vec3] | None = None
-        """Attachment points in body-local coordinates [m], shape [attachment_body_particle_count, 3]."""
-        self.attachment_body_particle_stiffness: wp.array[wp.float32] | None = None
-        """Attachment stiffness [N/m], shape [attachment_body_particle_count]."""
-        self.attachment_body_particle_damping: wp.array[wp.float32] | None = None
-        """Attachment damping [N·s/m], shape [attachment_body_particle_count]."""
-        self.attachment_body_particle_enabled: wp.array[wp.bool] | None = None
-        """Whether each attachment is active, shape [attachment_body_particle_count]."""
-        self.attachment_body_particle_world: wp.array[wp.int32] | None = None
-        """World index for each attachment, shape [attachment_body_particle_count], int."""
+        self.attachment_particle_body_body: wp.array[wp.int32] | None = None
+        """Rigid body indices, shape [attachment_particle_body_count], int."""
+        self.attachment_particle_body_particle: wp.array[wp.int32] | None = None
+        """Particle indices, shape [attachment_particle_body_count], int."""
+        self.attachment_particle_body_body_point: wp.array[wp.vec3] | None = None
+        """Attachment points in body-local coordinates [m], shape [attachment_particle_body_count, 3]."""
+        self.attachment_particle_body_stiffness: wp.array[wp.float32] | None = None
+        """Attachment stiffness [N/m], shape [attachment_particle_body_count]."""
+        self.attachment_particle_body_damping: wp.array[wp.float32] | None = None
+        """Attachment damping [N·s/m], shape [attachment_particle_body_count]."""
+        self.attachment_particle_body_enabled: wp.array[wp.bool] | None = None
+        """Whether each attachment is active, shape [attachment_particle_body_count]."""
+        self.attachment_particle_body_world: wp.array[wp.int32] | None = None
+        """World index for each attachment, shape [attachment_particle_body_count], int."""
 
         self.tri_indices: wp.array[wp.int32] | None = None
         """Triangle element indices, shape [tri_count*3], int."""
@@ -1280,7 +1280,7 @@ class Model:
         """Total number of edges in the system."""
         self.spring_count: int = 0
         """Total number of springs in the system."""
-        self.attachment_body_particle_count: int = 0
+        self.attachment_particle_body_count: int = 0
         """Total number of rigid-body-to-particle attachments in the system."""
         self.muscle_count: int = 0
         """Total number of muscles in the system."""
@@ -1498,7 +1498,7 @@ class Model:
             "triangle": Model.AttributeFrequency.TRIANGLE,
             "tetrahedron": Model.AttributeFrequency.TETRAHEDRON,
             "spring": Model.AttributeFrequency.SPRING,
-            "attachment_body_particle": Model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+            "attachment_particle_body": Model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             "world": Model.AttributeFrequency.WORLD,
         }
         frequency = built_in.get(references)
