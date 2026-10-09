@@ -2424,7 +2424,8 @@ class NarrowPhase:
             mesh_sdf_texture_only: Whether every participating mesh SDF has a texture representation,
                 allowing BVH fallback branches to be removed from mesh/SDF kernels.
             mesh_sdf_identity_scale_only: Whether every participating texture SDF is queried with
-                identity scale, allowing scale conversion branches to be removed.
+                identity scale, allowing scale conversion branches to be removed. Shapes whose SDF
+                has no baked scale must then keep unit ``shape_scale``.
             sdf_texture_paired_samples: Whether texture SDFs store adjacent x samples together.
                 This is model-wide so mesh-SDF kernels require only two bounded static variants.
             deterministic: Make contact generation and ordering independent of
@@ -2962,8 +2963,12 @@ class NarrowPhase:
             shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
             mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
-            mesh_edge_centers: Packed precomputed mesh edge centers [m].
-            mesh_edge_halves: Packed precomputed mesh edge half-vectors [m].
+            mesh_edge_centers: Packed precomputed mesh edge centers (xyz) and radii (w) in
+                unscaled mesh coordinates [m]; the shape scale in ``shape_data`` is applied when read.
+                Layout matches :attr:`~newton.Model.mesh_edge_centers`.
+            mesh_edge_halves: Packed precomputed mesh edge half-vectors (xyz) in unscaled mesh
+                coordinates [m] and endpoint-ownership codes (w). Layout matches
+                :attr:`~newton.Model.mesh_edge_halves`.
             shape_edge_range: Per-shape (start, count) into mesh_edge_indices.
             hydroelastic_shape_sdf_data_prepared: Whether finalized hydroelastic SDF descriptors were cached upstream.
             shape_linear_velocity: Shape-origin linear velocities [m/s]. Required in speculative mode.

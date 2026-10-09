@@ -1,0 +1,1 @@
+Add `CollisionPipeline(dynamic_shape_scale=...)` to query texture SDFs built without a baked scale with the current `Model.shape_scale` on every call, for scenes that rescale such shapes after construction.

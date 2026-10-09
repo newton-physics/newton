@@ -1109,6 +1109,14 @@ full contact detection range. Pass ``scale`` when the shape will be added with n
 to bake it into the SDF grid. ``shape_margin`` is mainly useful for hydroelastic collision
 where a compliant-layer offset is desired.
 
+An SDF built without ``scale`` follows the shape's current ``shape_scale``. When every such
+shape has unit scale at construction, :class:`~newton.CollisionPipeline` compiles its SDF
+queries for unit scale. To change ``shape_scale`` of such a shape afterwards, construct the
+pipeline with ``dynamic_shape_scale=True``, which keeps the slower scaled queries. Otherwise,
+rescaling a shape whose queries were compiled for unit scale prints a device warning, and a
+later :meth:`~newton.CollisionPipeline.collide` call outside graph capture raises
+:class:`RuntimeError`; graph replays alone do not raise.
+
 **Edge simplification.** ``mesh.build_sdf(...)`` also runs a dihedral-angle pre-filter over
 the mesh's manifold edges and caches the surviving subset on the mesh; the SDF-mesh contact
 pipeline picks up that cached set in preference to the unfiltered :attr:`~Mesh.edges`,

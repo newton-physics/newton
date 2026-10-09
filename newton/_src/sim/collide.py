@@ -346,11 +346,14 @@ def compute_shape_aabbs(
     contact_generation: wp.array[wp.int32],
     broad_phase_pair_count: wp.array[wp.int32],
     num_contact_counters: int,
+    # Per-shape nonzero when its texture SDF is queried at unit scale; empty when no shape is.
+    shape_unit_scale_sdf: wp.array[wp.int32],
     # outputs
     aabb_lower: wp.array[wp.vec3],
     aabb_upper: wp.array[wp.vec3],
     geom_data: wp.array[wp.vec4],
     geom_xform: wp.array[wp.transform],
+    unit_scale_sdf_rescaled: wp.array[wp.int32],
 ):
     """Compute AABBs, narrow-phase geometry data, and zero collision counters.
 
@@ -392,6 +395,14 @@ def compute_shape_aabbs(
 
     # Check if this is an infinite plane or a shape with a pre-computed local AABB
     scale = shape_scale[shape_id]
+    if shape_unit_scale_sdf.shape[0] > 0:
+        if shape_unit_scale_sdf[shape_id] != 0 and (scale[0] != 1.0 or scale[1] != 1.0 or scale[2] != 1.0):
+            if wp.atomic_max(unit_scale_sdf_rescaled, 0, 1) == 0:
+                wp.printf(
+                    "Warning: shape_scale of shape %d changed, but its texture SDF is queried at unit scale. "
+                    "Construct CollisionPipeline with dynamic_shape_scale=True, which is slower.\n",
+                    shape_id,
+                )
     is_infinite_plane = (geo_type == GeoType.PLANE) and (scale[0] == 0.0 and scale[1] == 0.0)
     has_local_aabb = geo_type == GeoType.MESH or geo_type == GeoType.HFIELD or geo_type == GeoType.CONVEX_MESH
 
@@ -1551,6 +1562,7 @@ class CollisionPipeline:
         verify_buffers: bool = True,
         contact_reduction_hashtable_size_factor: float = 0.25,
         speculative_contact_gap_max: float | None = None,
+        dynamic_shape_scale: bool = False,
     ):
         """
         Initialize the CollisionPipeline (expert API).
@@ -1691,6 +1703,13 @@ class CollisionPipeline:
                 ``0.0`` enables them without enlarging authored gaps. Defaults to
                 ``None``. See
                 :ref:`Speculative contacts <speculative-contacts>`.
+            dynamic_shape_scale: Query texture SDFs built without a baked scale with the current
+                :attr:`Model.shape_scale <newton.Model.shape_scale>` on every call, which is slower.
+                Enable this when such a shape's scale changes after construction. When ``False`` and
+                every such shape has unit scale at construction, these queries are compiled for unit
+                scale; rescaling one of these shapes afterwards makes the device print a warning once
+                and a later :meth:`collide` call outside graph capture raise :class:`RuntimeError`.
+                Ignored when ``narrow_phase`` is provided. Defaults to ``False``.
 
         .. experimental::
 
@@ -1790,6 +1809,7 @@ class CollisionPipeline:
         self._speculative_enabled = speculative_contact_gap_max is not None
         contact_writer = write_contact_speculative if self._speculative_enabled else write_contact
 
+        unit_scale_sdf_shapes = None
         if using_expert_components:
             if broad_phase_instance is None or narrow_phase is None:
                 raise ValueError("Provide both broad_phase and narrow_phase for expert component construction")
@@ -1962,12 +1982,19 @@ class CollisionPipeline:
                     if mesh_sdf_texture_only:
                         texture_sdf_data = model._texture_sdf_data.numpy()
                         scale_baked = texture_sdf_data["scale_baked"]
-                        shape_scale = model.shape_scale.numpy()
-                        identity_shape_scale = np.all(shape_scale == np.float32(1.0), axis=1)
-                        mesh_sdf_identity_scale_only = all(
-                            bool(scale_baked[shape_sdf_index[shape_idx]]) or identity_shape_scale[shape_idx]
-                            for shape_idx in np.flatnonzero(mesh_sdf_shapes)
-                        )
+                        mesh_sdf_shape_indices = np.flatnonzero(mesh_sdf_shapes)
+                        runtime_scale_sdf_shapes = mesh_sdf_shape_indices[
+                            ~scale_baked[shape_sdf_index[mesh_sdf_shape_indices]].astype(bool)
+                        ]
+                        if dynamic_shape_scale:
+                            mesh_sdf_identity_scale_only = runtime_scale_sdf_shapes.size == 0
+                        else:
+                            shape_scale = model.shape_scale.numpy()
+                            mesh_sdf_identity_scale_only = bool(
+                                np.all(shape_scale[runtime_scale_sdf_shapes] == np.float32(1.0))
+                            )
+                            if mesh_sdf_identity_scale_only and runtime_scale_sdf_shapes.size > 0:
+                                unit_scale_sdf_shapes = runtime_scale_sdf_shapes
                 if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
                     # Explicit pair types are fixed at pipeline construction, including
                     # intentional cross-world pairs, so size only the stages they can reach.
@@ -2106,6 +2133,18 @@ class CollisionPipeline:
                 contact_writer_supports_speculative=self._speculative_enabled,
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
+
+        # Marks shapes whose texture SDF queries assume the unit scale they had at construction.
+        shape_unit_scale_sdf = np.zeros(shape_count if unit_scale_sdf_shapes is not None else 0, dtype=np.int32)
+        if unit_scale_sdf_shapes is not None:
+            shape_unit_scale_sdf[unit_scale_sdf_shapes] = 1
+        self._shape_unit_scale_sdf = wp.array(shape_unit_scale_sdf, dtype=wp.int32, device=device)
+        self._unit_scale_sdf_rescaled = wp.zeros(min(len(shape_unit_scale_sdf), 1), dtype=wp.int32, device=device)
+        self._unit_scale_sdf_rescaled_host = None
+        if unit_scale_sdf_shapes is not None:
+            self._unit_scale_sdf_rescaled_host = wp.zeros(
+                1, dtype=wp.int32, device="cpu", pinned=wp.get_device(device).is_cuda
+            )
 
         # Analytic and convex manifolds use compact unique sub-keys even when
         # matching; complex contact families retain the full fingerprint width.
@@ -2656,6 +2695,11 @@ class CollisionPipeline:
         # augmentation and soft-contact kernels that follow are tape-safe
         # and recorded normally.
 
+        # Eager calls copy the sticky rescale flag to the host and raise on a copy from an earlier call; never syncs.
+        check_unit_scale_sdf = self._shape_unit_scale_sdf.shape[0] > 0 and not wp.get_device(self.device).is_capturing
+        if check_unit_scale_sdf and self._unit_scale_sdf_rescaled_host.numpy()[0]:
+            raise RuntimeError("Rescaled a unit-scale texture SDF shape; set dynamic_shape_scale=True (slower).")
+
         # Compute AABBs for all shapes, zero counters, bump generation.
         # Fuses contacts.clear() + broad_phase_pair_count.zero_() + AABB update.
         wp.launch(
@@ -2677,16 +2721,20 @@ class CollisionPipeline:
                 contacts.contact_generation,
                 self.broad_phase_pair_count,
                 contacts.contact_counters.shape[0],
+                self._shape_unit_scale_sdf,
             ],
             outputs=[
                 self.narrow_phase.shape_aabb_lower,
                 self.narrow_phase.shape_aabb_upper,
                 self.geom_data,
                 self.geom_transform,
+                self._unit_scale_sdf_rescaled,
             ],
             device=self.device,
             record_tape=False,
         )
+        if check_unit_scale_sdf:
+            wp.copy(self._unit_scale_sdf_rescaled_host, self._unit_scale_sdf_rescaled)
 
         if speculative_active:
             wp.launch(

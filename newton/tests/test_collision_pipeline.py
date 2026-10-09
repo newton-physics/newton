@@ -4166,6 +4166,219 @@ def test_cylinder_scale_update_keeps_generic_stage(test, device):
     test.assertEqual(reused_count, int(rebuilt_contacts.rigid_contact_count.numpy()[0]))
 
 
+def _build_meshes_on_terrain(device, terrain, mesh, scales):
+    """Build a heightfield or mesh slab with one rotated mesh body per scale."""
+    n = 17
+    xs = np.linspace(-1.0, 1.0, n)
+    elevation = (0.5 + 0.5 * np.sin(3.0 * xs)[None, :] * np.cos(2.0 * xs)[:, None]).astype(np.float32)
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.2, 1.0)), 0.4)
+    builder = newton.ModelBuilder()
+    if terrain == "heightfield":
+        builder.add_shape_heightfield(
+            heightfield=newton.Heightfield(data=elevation, nrow=n, ncol=n, hx=1.0, hy=1.0, min_z=0.0, max_z=0.04)
+        )
+    else:
+        slab = newton.Mesh.create_box(1.0, 1.0, 0.05, compute_inertia=False)
+        builder.add_shape_mesh(body=-1, mesh=slab, xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()))
+    for i, scale in enumerate(scales):
+        body = builder.add_body(xform=wp.transform((-0.4 + 0.5 * i, 0.1 * i, 0.07), rotation))
+        builder.add_shape_mesh(body=body, mesh=mesh, scale=scale)
+    return builder.finalize(device=device)
+
+
+def _assign_rebuilt_shape_scale(model, rebuilt):
+    for name in ("shape_scale", "shape_collision_radius", "shape_collision_aabb_lower", "shape_collision_aabb_upper"):
+        getattr(model, name).assign(getattr(rebuilt, name))
+
+
+def _sorted_contact_points(contacts):
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    points = np.concatenate(
+        (contacts.rigid_contact_point0.numpy()[:count], contacts.rigid_contact_point1.numpy()[:count]), axis=1
+    )
+    return points[np.lexsort(points.T[::-1])]
+
+
+_INITIAL_MESH_SCALES = ((1.0, 1.0, 1.0), (1.0, 1.0, 1.0))
+_UPDATED_MESH_SCALES = ((2.0, 1.6, 1.8), (1.8, 2.0, 2.0))
+
+
+def test_mesh_scale_update_matches_rebuild(test, device):
+    """Match a rebuilt model's contacts after changing a mesh's shape_scale on non-planar terrain."""
+    cube = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
+    cube_with_sdf = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
+    if device.is_cuda:
+        cube_with_sdf.build_sdf(max_resolution=32, device=device)
+
+    def collide(model, pipeline):
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+        return _sorted_contact_points(contacts)
+
+    meshes = {"no_sdf": cube, "texture_sdf": cube_with_sdf} if device.is_cuda else {"no_sdf": cube}
+    for terrain in ("heightfield", "mesh"):
+        for mesh_name, mesh in meshes.items():
+            with test.subTest(terrain=terrain, mesh=mesh_name):
+                model = _build_meshes_on_terrain(device, terrain, mesh, _INITIAL_MESH_SCALES)
+                pipeline = newton.CollisionPipeline(model, deterministic=True, dynamic_shape_scale=True)
+                rebuilt = _build_meshes_on_terrain(device, terrain, mesh, _UPDATED_MESH_SCALES)
+                _assign_rebuilt_shape_scale(model, rebuilt)
+
+                points = collide(model, pipeline)
+                expected = collide(rebuilt, newton.CollisionPipeline(rebuilt, deterministic=True))
+                test.assertGreater(len(expected), 0)
+                test.assertEqual(len(points), len(expected))
+                np.testing.assert_allclose(points, expected, atol=1.0e-5)
+
+
+def test_dynamic_shape_scale_selects_sdf_scale_path(test, device):
+    """Specialize unit-scale texture SDFs unless dynamic_shape_scale is set; baked SDFs always qualify."""
+    runtime_cube = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
+    runtime_cube.build_sdf(max_resolution=32, device=device)
+    baked_cube = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
+    baked_cube.build_sdf(max_resolution=32, device=device, scale=(1.0, 1.0, 1.0))
+    for mesh_name, mesh, dynamic, expected_identity, expected_checked in (
+        ("runtime", runtime_cube, False, True, True),
+        ("runtime", runtime_cube, True, False, False),
+        ("baked", baked_cube, False, True, False),
+        ("baked", baked_cube, True, True, False),
+    ):
+        with test.subTest(mesh=mesh_name, dynamic_shape_scale=dynamic):
+            model = _build_meshes_on_terrain(device, "heightfield", mesh, _INITIAL_MESH_SCALES)
+            pipeline = newton.CollisionPipeline(model, dynamic_shape_scale=dynamic)
+            test.assertTrue(pipeline.narrow_phase.mesh_sdf_texture_only)
+            test.assertEqual(pipeline.narrow_phase.mesh_sdf_identity_scale_only, expected_identity)
+            test.assertEqual(pipeline._shape_unit_scale_sdf.shape[0] > 0, expected_checked)
+
+
+def test_unit_scale_sdf_rescale_raises(test, device):
+    """Raise on a later eager collide() after rescaling a unit-scale texture SDF, in eager and replayed graphs."""
+    cube = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
+    cube.build_sdf(max_resolution=32, device=device)
+    rebuilt = _build_meshes_on_terrain(device, "heightfield", cube, _UPDATED_MESH_SCALES)
+    for use_graph in (False, True):
+        with test.subTest(use_graph=use_graph):
+            model = _build_meshes_on_terrain(device, "heightfield", cube, _INITIAL_MESH_SCALES)
+            pipeline = newton.CollisionPipeline(model)
+            test.assertTrue(pipeline.narrow_phase.mesh_sdf_identity_scale_only)
+            contacts = pipeline.contacts()
+            state = model.state()
+            pipeline.collide(state, contacts)
+            if use_graph:
+                with wp.ScopedCapture(device=device) as capture:
+                    pipeline.collide(state, contacts)
+                wp.capture_launch(capture.graph)
+            pipeline.collide(state, contacts)
+            wp.synchronize_device(device)
+            pipeline.collide(state, contacts)
+            test.assertEqual(int(pipeline._unit_scale_sdf_rescaled.numpy()[0]), 0)
+
+            _assign_rebuilt_shape_scale(model, rebuilt)
+            if use_graph:
+                wp.capture_launch(capture.graph)
+                wp.capture_launch(capture.graph)
+            else:
+                pipeline.collide(state, contacts)
+            wp.synchronize()
+            test.assertEqual(int(pipeline._unit_scale_sdf_rescaled.numpy()[0]), 1)
+            # The host reads a copy queued by an earlier eager call, so the raise may need one more call.
+            try:
+                pipeline.collide(state, contacts)
+            except RuntimeError as error:
+                test.assertIn("dynamic_shape_scale=True", str(error))
+            else:
+                wp.synchronize()
+                with test.assertRaisesRegex(RuntimeError, "dynamic_shape_scale=True"):
+                    pipeline.collide(state, contacts)
+            with test.assertRaisesRegex(RuntimeError, "dynamic_shape_scale=True"):
+                pipeline.collide(state, contacts)
+
+
+def test_dynamic_shape_scale_graph_replay_matches_rebuild(test, device):
+    """Replay a graph captured before a texture-SDF rescale and match a rebuilt model's contacts."""
+    cube = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
+    cube.build_sdf(max_resolution=32, device=device)
+    model = _build_meshes_on_terrain(device, "heightfield", cube, _INITIAL_MESH_SCALES)
+    pipeline = newton.CollisionPipeline(model, deterministic=True, dynamic_shape_scale=True)
+    contacts = pipeline.contacts()
+    state = model.state()
+    pipeline.collide(state, contacts)
+    with wp.ScopedCapture(device=device) as capture:
+        pipeline.collide(state, contacts)
+    wp.capture_launch(capture.graph)
+    initial_points = _sorted_contact_points(contacts)
+
+    rebuilt = _build_meshes_on_terrain(device, "heightfield", cube, _UPDATED_MESH_SCALES)
+    _assign_rebuilt_shape_scale(model, rebuilt)
+    wp.capture_launch(capture.graph)
+    rebuilt_pipeline = newton.CollisionPipeline(rebuilt, deterministic=True)
+    expected = rebuilt_pipeline.contacts()
+    rebuilt_pipeline.collide(rebuilt.state(), expected)
+    points = _sorted_contact_points(contacts)
+    expected_points = _sorted_contact_points(expected)
+    test.assertGreater(len(expected_points), 0)
+    test.assertEqual(len(points), len(expected_points))
+    np.testing.assert_allclose(points, expected_points, atol=1.0e-5)
+    test.assertFalse(np.array_equal(points, initial_points))
+
+
+def test_packed_mesh_edges_use_mesh_coordinates(test, device):
+    """Read caller-packed edges in unscaled mesh coordinates, matching edges read from the mesh."""
+    scale = np.array((2.0, 1.6, 1.8), dtype=np.float32)
+    n = 17
+    xs = np.linspace(-1.0, 1.0, n)
+    elevation = (0.5 + 0.5 * np.sin(3.0 * xs)[None, :] * np.cos(2.0 * xs)[:, None]).astype(np.float32)
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.2, 1.0)), 0.4)
+    cube = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
+    builder = newton.ModelBuilder()
+    builder.add_shape_heightfield(
+        heightfield=newton.Heightfield(data=elevation, nrow=n, ncol=n, hx=1.0, hy=1.0, min_z=0.0, max_z=0.04)
+    )
+    for i in range(2):
+        body = builder.add_body(xform=wp.transform((-0.4 + 0.5 * i, 0.1 * i, 0.07), rotation))
+        builder.add_shape_mesh(body=body, mesh=cube, scale=tuple(float(value) for value in scale))
+    model = builder.finalize(device=device)
+
+    # Ownership code zero allows both endpoints, as edges read from the mesh do.
+    edges = model.mesh_edge_indices.numpy()
+    vertices = np.asarray(cube.vertices, dtype=np.float32)
+    edge_v0, edge_v1 = vertices[edges[:, 0]], vertices[edges[:, 1]]
+    halves = (edge_v1 - edge_v0) * 0.5
+    radii = np.linalg.norm(halves, axis=1, keepdims=True)
+    centers = np.concatenate(((edge_v0 + edge_v1) * 0.5, radii), axis=1)
+    halves = np.concatenate((halves, np.zeros_like(radii)), axis=1)
+    np.testing.assert_allclose(model.mesh_edge_centers.numpy(), centers, rtol=1e-6)
+    np.testing.assert_allclose(model.mesh_edge_halves.numpy()[:, :3], halves[:, :3], rtol=1e-6)
+
+    class PackedEdgeNarrowPhase(NarrowPhase):
+        def __init__(self, wrapped, edge_centers, edge_halves):
+            self.__dict__ = wrapped.__dict__
+            self.edge_centers = edge_centers
+            self.edge_halves = edge_halves
+
+        def launch_custom_write(self, **kwargs):
+            kwargs["mesh_edge_centers"] = self.edge_centers
+            kwargs["mesh_edge_halves"] = self.edge_halves
+            return super().launch_custom_write(**kwargs)
+
+    def collide(edge_centers, edge_halves):
+        pipeline = newton.CollisionPipeline(model, deterministic=True)
+        pipeline.narrow_phase = PackedEdgeNarrowPhase(pipeline.narrow_phase, edge_centers, edge_halves)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        points = np.concatenate(
+            (contacts.rigid_contact_point0.numpy()[:count], contacts.rigid_contact_point1.numpy()[:count]), axis=1
+        )
+        return points[np.lexsort(points.T[::-1])]
+
+    expected = collide(None, None)
+    points = collide(wp.array(centers, dtype=wp.vec4, device=device), wp.array(halves, dtype=wp.vec4, device=device))
+    test.assertGreater(len(expected), 0)
+    test.assertEqual(len(points), len(expected))
+    np.testing.assert_allclose(points, expected, atol=1.0e-5)
+
+
 add_function_test(
     TestDeterministicPipeline,
     "test_separated_analytic_pair_skips_gjk_queue",
@@ -4176,6 +4389,37 @@ add_function_test(
     TestDeterministicPipeline,
     "test_cylinder_scale_update_keeps_generic_stage",
     test_cylinder_scale_update_keeps_generic_stage,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestDeterministicPipeline,
+    "test_mesh_scale_update_matches_rebuild",
+    test_mesh_scale_update_matches_rebuild,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestDeterministicPipeline,
+    "test_dynamic_shape_scale_selects_sdf_scale_path",
+    test_dynamic_shape_scale_selects_sdf_scale_path,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestDeterministicPipeline,
+    "test_unit_scale_sdf_rescale_raises",
+    test_unit_scale_sdf_rescale_raises,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+add_function_test(
+    TestDeterministicPipeline,
+    "test_dynamic_shape_scale_graph_replay_matches_rebuild",
+    test_dynamic_shape_scale_graph_replay_matches_rebuild,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestDeterministicPipeline,
+    "test_packed_mesh_edges_use_mesh_coordinates",
+    test_packed_mesh_edges_use_mesh_coordinates,
     devices=get_test_devices(),
 )
 add_function_test(
