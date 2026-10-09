@@ -1139,6 +1139,46 @@ def _extract_trimesh_material_params(
     return roughness, metallic, base_color
 
 
+def _load_mujoco_msh(filename: str):
+    """Load MuJoCo's binary ``.msh`` mesh format as a trimesh.
+
+    The file holds four int32 counts (vertices, normals, texture coordinates, faces) followed by
+    float32 vertex positions, normals, and texture coordinates, and int32 triangle indices.
+    """
+    import trimesh
+
+    data = np.fromfile(filename, dtype=np.uint8)
+    if data.size < 16:
+        raise ValueError(f"MuJoCo mesh file is too short: {filename}")
+    nvert, nnormal, ntexcoord, nface = (int(v) for v in data[:16].view(np.int32))
+    sizes = (3 * nvert * 4, 3 * nnormal * 4, 2 * ntexcoord * 4, 3 * nface * 4)
+    if min(nvert, nnormal, ntexcoord, nface) < 0 or data.size != 16 + sum(sizes):
+        raise ValueError(f"Invalid MuJoCo mesh file: {filename}")
+    offset = 16
+    arrays = []
+    for size, dtype in zip(sizes, (np.float32, np.float32, np.float32, np.int32), strict=True):
+        arrays.append(data[offset : offset + size].view(dtype))
+        offset += size
+    vertices = arrays[0].reshape(-1, 3)
+    faces = arrays[3].reshape(-1, 3)
+    source_indices = slice(None)
+    if nface == 0:
+        # MuJoCo builds the convex hull of vertex-only meshes.
+        mesh = trimesh.Trimesh(vertices=vertices, process=False).convex_hull
+        # Hull construction can reorder vertices and discard interior or duplicate points.
+        source_index_by_vertex = {}
+        for index, vertex in enumerate(vertices):
+            source_index_by_vertex.setdefault(tuple(vertex), index)
+        source_indices = np.array([source_index_by_vertex[tuple(vertex)] for vertex in mesh.vertices], dtype=np.int32)
+    else:
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    if nnormal == nvert:
+        mesh.vertex_normals = arrays[1].reshape(-1, 3)[source_indices]
+    if ntexcoord == nvert:
+        mesh.visual = trimesh.visual.TextureVisuals(uv=arrays[2].reshape(-1, 2)[source_indices])
+    return mesh
+
+
 def load_meshes_from_file(
     filename: str,
     *,
@@ -1362,6 +1402,8 @@ def load_meshes_from_file(
                 module=r"^collada\.",
             )
             tri = trimesh.load(filename, force="mesh")
+    elif filename.lower().endswith(".msh"):
+        tri = _load_mujoco_msh(filename)
     else:
         tri = trimesh.load(filename, force="mesh")
     tri_meshes = tri.geometry.values() if hasattr(tri, "geometry") else [tri]
