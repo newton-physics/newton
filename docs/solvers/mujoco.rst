@@ -698,7 +698,10 @@ MuJoCo contacts require matching collision groups and exclusions for
 corresponding geom slots; differing convex-hull counts additionally require a
 ``mujoco_warp`` build containing `google-deepmind/mujoco_warp#1689
 <https://github.com/google-deepmind/mujoco_warp/pull/1689>`__, so use
-``use_mujoco_contacts=False`` with the 3.14.0 release. The solver validates
+``use_mujoco_contacts=False`` with the 3.14.0 release. With native contacts,
+per-world mesh scales are compiled into the MuJoCo assets, so changing their
+:attr:`~newton.Model.shape_scale` after construction raises ``ValueError``;
+recreate the solver to resize them. The solver validates
 compatibility at construction and raises ``ValueError`` on a mismatch.
 
 Bodies, joints, equality constraints, and mimic relationships cannot have

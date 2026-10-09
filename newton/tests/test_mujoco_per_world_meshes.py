@@ -406,13 +406,30 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
         solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertEqual(solver.mjw_model.nmesh, 3)
 
-    def test_mesh_scale_change_rejected(self):
-        """Require recompilation when a compiled mesh scale changes."""
+    def test_mesh_scale_change_with_newton_contacts(self):
+        """Allow mesh resizing when Newton generates contacts."""
         builder = newton.ModelBuilder()
         builder.add_world(build_world(2))
         builder.add_world(build_world(5))
         model = builder.finalize()
         solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        scales = model.shape_scale.numpy()
+        scales[0] *= 2.0
+        model.shape_scale.assign(scales)
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        state_0, state_1 = model.state(), model.state()
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, model.control(), contacts, 0.01)
+
+    def test_mesh_scale_change_rejected_with_native_contacts(self):
+        """Require recompilation when a natively collided mesh scale changes."""
+        builder = newton.ModelBuilder()
+        builder.add_world(build_world(2))
+        builder.add_world(build_world(2, half_height=0.15))
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         scales = model.shape_scale.numpy()
         scales[0] *= 2.0
         model.shape_scale.assign(scales)

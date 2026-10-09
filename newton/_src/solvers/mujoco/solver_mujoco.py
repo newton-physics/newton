@@ -8161,8 +8161,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._shape_hfield_offset = wp.array(shape_hfield_offset_np, dtype=wp.float32, device=model.device)
 
             converted_shapes = np.unique(geom_shape_mapping[geom_shape_mapping >= 0])
+            # Newton contacts read shape_scale directly, so only native contacts pin per-world mesh scales.
             compiled_types = (
-                (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.CONE) if heterogeneous_geoms else (GeoType.CONE,)
+                (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.CONE)
+                if heterogeneous_geoms and self._use_mujoco_contacts and not disable_contacts
+                else (GeoType.CONE,)
             )
             self._compiled_mesh_shape_indices = converted_shapes[np.isin(shape_type[converted_shapes], compiled_types)]
             self._compiled_mesh_shape_scales = shape_scale_np[self._compiled_mesh_shape_indices].copy()
