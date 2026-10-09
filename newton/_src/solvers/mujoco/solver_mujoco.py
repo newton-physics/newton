@@ -1221,6 +1221,110 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             owners.append(owner)
         return owners
 
+    @classmethod
+    def create_from_usd(cls, path: str, model: Model) -> SolverMuJoCo:
+        """Create a solver from a USD file that applies ``NewtonMuJoCoSceneAPI``.
+
+        The ``newton:mujoco:*`` attributes of ``NewtonMuJoCoSceneAPI`` and the
+        ``mjc:flag:contact``, ``mjc:flag:sensor``, and ``mjc:flag:multiccd`` flags authored on the
+        scene are passed to the constructor. Only authored values override the constructor
+        defaults; integer attributes authored as ``-1`` request the solver's automatic default.
+
+        Args:
+            path: Path or URL of the USD stage. The first ``UsdPhysics.Scene`` prim, which is the
+                scene :meth:`ModelBuilder.add_usd` imports model options from, must apply
+                ``NewtonMuJoCoSceneAPI`` and configures the solver.
+            model: The model to simulate, typically built from the same stage. ``mjc:option:*``
+                values reach the solver only if the model was built after calling
+                :meth:`register_custom_attributes` on its builder.
+
+        Returns:
+            A solver for ``model``.
+
+        Raises:
+            ImportError: If ``usd-core`` is not installed.
+            ValueError: If the stage has no scene, its first scene does not apply
+                ``NewtonMuJoCoSceneAPI``, or an authored value is invalid.
+        """
+        try:
+            from pxr import Usd
+        except ImportError as error:
+            raise ImportError("Creating a MuJoCo solver from USD requires usd-core.") from error
+
+        from ...usd import utils as usd  # noqa: PLC0415
+
+        stage = Usd.Stage.Open(path)
+        if not stage:
+            raise ValueError(f"Failed to open USD stage {path!r}.")
+
+        # Use the scene that ModelBuilder.add_usd() imports model options from, so that the
+        # solver arguments and the model's ``mjc:option:*`` values come from the same scene.
+        scenes = usd.get_physics_scenes(stage)
+        if not scenes:
+            raise ValueError(f"{path}: the stage has no UsdPhysics.Scene prim.")
+        scene_prim = scenes[0].GetPrim()
+        if not usd.has_applied_api_schema(scene_prim, "NewtonMuJoCoSceneAPI"):
+            raise ValueError(
+                f"{path}: NewtonMuJoCoSceneAPI is not applied to {scene_prim.GetPath()}, the first "
+                "UsdPhysics.Scene prim, which is the scene that ModelBuilder.add_usd() uses."
+            )
+        scene_path = str(scene_prim.GetPath())
+
+        def authored(name: str):
+            attr = scene_prim.GetAttribute(name)
+            if not attr or not attr.HasAuthoredValue():
+                return None
+            return attr.Get()
+
+        def authored_bool(name: str) -> bool | None:
+            value = authored(name)
+            return None if value is None else bool(value)
+
+        def authored_count(name: str, *, minimum: int = -1) -> int | None:
+            value = authored(name)
+            if value is None:
+                return None
+            if isinstance(value, bool) or not isinstance(value, int | np.integer) or value < minimum:
+                raise ValueError(f"{scene_path}: {name} must be an integer >= {minimum}, got {value!r}.")
+            # -1 requests the solver's automatic default
+            return None if value == -1 else int(value)
+
+        deterministic_modes = {
+            "inherit": None,
+            "notGuaranteed": wp.DeterministicMode.NOT_GUARANTEED,
+            "runToRun": wp.DeterministicMode.RUN_TO_RUN,
+            "gpuToGpu": wp.DeterministicMode.GPU_TO_GPU,
+        }
+        deterministic = authored("newton:mujoco:deterministic")
+        if deterministic is not None and str(deterministic) not in deterministic_modes:
+            raise ValueError(
+                f"{scene_path}: newton:mujoco:deterministic must be one of {sorted(deterministic_modes)}, "
+                f"got {deterministic!r}."
+            )
+
+        kwargs: dict[str, Any] = {
+            "njmax": authored_count("newton:mujoco:njmax"),
+            "njmax_nnz": authored_count("newton:mujoco:njmax_nnz"),
+            "nconmax": authored_count("newton:mujoco:nconmax"),
+            "nvmax": authored_count("newton:mujoco:nvmax"),
+            "deterministic": None if deterministic is None else deterministic_modes[str(deterministic)],
+            "update_data_interval": authored_count("newton:mujoco:updateDataInterval", minimum=0),
+            "use_mujoco_cpu": authored_bool("newton:mujoco:useMujocoCpu"),
+            "use_mujoco_contacts": authored_bool("newton:mujoco:useMujocoContacts"),
+            "enable_sleeping": authored_bool("newton:mujoco:enableSleeping"),
+            "include_sites": authored_bool("newton:mujoco:includeSites"),
+            "skip_visual_only_geoms": authored_bool("newton:mujoco:skipVisualOnlyGeoms"),
+        }
+        # MjcSceneAPI authors these as enable flags; the constructor takes the disable form
+        contact_flag = authored_bool("mjc:flag:contact")
+        sensor_flag = authored_bool("mjc:flag:sensor")
+        kwargs["enable_multiccd"] = authored_bool("mjc:flag:multiccd")
+        kwargs["disable_contacts"] = None if contact_flag is None else not contact_flag
+        kwargs["disable_sensors"] = None if sensor_flag is None else not sensor_flag
+        kwargs = {key: value for key, value in kwargs.items() if value is not None}
+
+        return cls(model, **kwargs)
+
     @override
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
