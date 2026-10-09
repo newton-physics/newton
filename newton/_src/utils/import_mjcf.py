@@ -1667,6 +1667,7 @@ def parse_mjcf(
             )
             site_shapes.append(s)
             site_name_to_idx[sanitize_name(site_name)] = s
+            raw_site_name_to_idx[site_name] = s
 
         return site_shapes
 
@@ -2772,6 +2773,8 @@ def parse_mjcf(
     # Used to resolve equality constraints and actuators that reference entities by their short name.
     body_name_to_idx: dict[str, int] = {}
     site_name_to_idx: dict[str, int] = {}
+    # Spatial tendons need exact site names within this import, without sanitized aliases.
+    raw_site_name_to_idx: dict[str, int] = {}
     joint_name_to_idx: dict[str, int] = {}
 
     # Extract articulation label early for hierarchical label construction
@@ -3084,7 +3087,10 @@ def parse_mjcf(
 
             Returns -1 if no shape with the matching name and type is found.
             """
-            for i, label in enumerate(builder.shape_label):
+            if want_site:
+                return raw_site_name_to_idx.get(name, -1)
+            for i in range(start_shape_count, len(builder.shape_label)):
+                label = builder.shape_label[i]
                 if label == name or label.endswith(f"/{name}"):
                     is_site = bool(builder.shape_flags[i] & ShapeFlags.SITE)
                     if is_site == want_site:
@@ -3103,8 +3109,6 @@ def parse_mjcf(
             for child in spatial:
                 if child.tag == "site":
                     site_name = child.attrib.get("site", "")
-                    if site_name:
-                        site_name = sanitize_name(site_name)
                     site_idx = find_shape_by_name(site_name, want_site=True) if site_name else -1
                     if site_idx < 0:
                         warnings.warn(
@@ -3129,7 +3133,6 @@ def parse_mjcf(
                     sidesite_name = child.attrib.get("sidesite", "")
                     sidesite_idx = -1
                     if sidesite_name:
-                        sidesite_name = sanitize_name(sidesite_name)
                         sidesite_idx = find_shape_by_name(sidesite_name, want_site=True)
                         if sidesite_idx < 0:
                             warnings.warn(
