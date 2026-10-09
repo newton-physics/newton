@@ -159,6 +159,7 @@ class ProjectionSchedule:
             world_failed: Failure flag of each world, set for worlds with an invalid local block.
         """
         p = self.problem_data
+        # The local blocks of the box rows and normal-last contacts read the twist responses
         self._weights = self._prepare_weights(inverse_weight)
         if self.coloring is not None:
             self.coloring.build()
@@ -262,11 +263,9 @@ class ProjectionSchedule:
                     rows.world,
                     rows.local,
                     rows.world_count,
-                    rows.body_a,
-                    rows.body_b,
                     rows.jacobian_a,
                     rows.jacobian_b,
-                    inverse_weight,
+                    rows.response,
                 ],
                 outputs=[rows.physical_delassus],
                 device=self.device,
@@ -282,12 +281,10 @@ class ProjectionSchedule:
                     rows.world,
                     rows.local,
                     rows.world_count,
-                    rows.body_a,
-                    rows.body_b,
                     rows.jacobian_a,
                     rows.jacobian_b,
                     rows.normal_compliance,
-                    inverse_weight,
+                    rows.response,
                 ],
                 outputs=[rows.physical_delassus],
                 device=self.device,
@@ -386,8 +383,8 @@ class ProjectionSchedule:
                     p.box_rows.body_b,
                     p.box_rows.jacobian_a,
                     p.box_rows.jacobian_b,
+                    p.box_rows.response,
                     occupancy,
-                    inverse_weight,
                 ],
                 outputs=[box_delassus, world_failed],
                 device=self.device,
@@ -437,8 +434,8 @@ class ProjectionSchedule:
                     p.contact_rows.bias,
                     p.contact_rows.friction,
                     p.contact_rows.normal_compliance,
+                    p.contact_rows.response,
                     occupancy,
-                    inverse_weight,
                 ],
                 outputs=[contact_delassus, world_failed],
                 device=self.device,
