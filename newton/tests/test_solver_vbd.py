@@ -4824,7 +4824,7 @@ def _soft_contact_presize_is_world_aware(test, device):
 
 
 def _body_particle_attachment_is_native_vbd(test, device):
-    """Verify SolverVBD transfers motion through a native body-particle attachment."""
+    """Verify SolverVBD transfers motion through a native particle-body attachment."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_body(
         mass=1.0,
@@ -4868,7 +4868,7 @@ def _body_particle_attachment_is_native_vbd(test, device):
 
 
 def _body_particle_attachment_validates_inputs(test, device):
-    """Reject invalid native body-particle attachment endpoints and coefficients."""
+    """Reject invalid native particle-body attachment endpoints and coefficients."""
     builder = newton.ModelBuilder()
     body = builder.add_body()
     particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
