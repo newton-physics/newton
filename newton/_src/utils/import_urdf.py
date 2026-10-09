@@ -83,6 +83,7 @@ def parse_urdf(
     mesh_maxhullvert: int | None = None,
     force_position_velocity_actuation: bool = False,
     override_root_xform: bool = False,
+    legacy_joint_damping: bool = False,
 ):
     """
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -182,6 +183,14 @@ def parse_urdf(
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
             damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+        legacy_joint_damping: If True, restore the Newton 1.6 mapping of URDF
+            ``<dynamics damping>`` to ``joint_target_kd``. Missing values use
+            ``default_joint_cfg.target_kd``. Passive damping retains its former
+            defaults: ``default_joint_cfg.damping`` for revolute/prismatic joints
+            and zero for planar joints. Defaults to False, which imports URDF
+            damping into ``joint_damping`` and keeps drive gains independent.
+            Use this option while migrating previously tuned controllers,
+            especially with XPBD/VBD, which do not consume passive joint damping.
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
@@ -230,6 +239,7 @@ def parse_urdf(
     default_joint_limit_effort = builder.default_joint_cfg.effort_limit
     default_joint_target_kd = builder.default_joint_cfg.target_kd
     default_joint_damping = builder.default_joint_cfg.damping
+    urdf_default_damping = default_joint_target_kd if legacy_joint_damping else default_joint_damping
     default_joint_friction = builder.default_joint_cfg.friction
 
     # load shape defaults
@@ -572,7 +582,7 @@ def parse_urdf(
             "child": child,
             "type": joint.get("type"),
             "origin": parse_transform(joint),
-            "damping": default_joint_damping,
+            "damping": urdf_default_damping,
             "friction": default_joint_friction,
             "axis": wp.vec3(1.0, 0.0, 0.0),
             "limit_lower": default_joint_limit_lower,
@@ -586,7 +596,7 @@ def parse_urdf(
             joint_data["axis"] = wp.vec3(float(ax[0]), float(ax[1]), float(ax[2]))
         el_dynamics = joint.find("dynamics")
         if el_dynamics is not None:
-            joint_data["damping"] = float(el_dynamics.get("damping", default_joint_damping))
+            joint_data["damping"] = float(el_dynamics.get("damping", urdf_default_damping))
             joint_data["friction"] = float(el_dynamics.get("friction", default_joint_friction))
         el_limit = joint.find("limit")
         if el_limit is not None:
@@ -787,6 +797,8 @@ def parse_urdf(
         effort_limit = joint.get("limit_effort", None)
         velocity_limit = joint.get("limit_velocity")
         joint_damping = joint["damping"]
+        joint_target_kd = joint_damping if legacy_joint_damping else default_joint_target_kd
+        joint_passive_damping = default_joint_damping if legacy_joint_damping else joint_damping
         joint_friction = joint["friction"]
 
         parent_xform = joint["origin"]
@@ -809,7 +821,8 @@ def parse_urdf(
         if joint["type"] == "revolute" or joint["type"] == "continuous":
             created_joint_idx = builder.add_joint_revolute(
                 axis=joint["axis"],
-                damping=joint_damping,
+                target_kd=joint_target_kd,
+                damping=joint_passive_damping,
                 friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower,
@@ -821,7 +834,8 @@ def parse_urdf(
         elif joint["type"] == "prismatic":
             created_joint_idx = builder.add_joint_prismatic(
                 axis=joint["axis"],
-                damping=joint_damping,
+                target_kd=joint_target_kd,
+                damping=joint_passive_damping,
                 friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower * scale,
@@ -854,8 +868,8 @@ def parse_urdf(
                         axis=u,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
-                        target_kd=default_joint_target_kd,
-                        damping=joint_damping,
+                        target_kd=joint_target_kd,
+                        damping=0.0 if legacy_joint_damping else joint_damping,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
@@ -863,8 +877,8 @@ def parse_urdf(
                         axis=v,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
-                        target_kd=default_joint_target_kd,
-                        damping=joint_damping,
+                        target_kd=joint_target_kd,
+                        damping=0.0 if legacy_joint_damping else joint_damping,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),

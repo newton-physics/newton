@@ -2329,6 +2329,58 @@ FRICTION_URDF = """
 
 
 class TestUrdfJointFriction(unittest.TestCase):
+    def test_legacy_joint_damping_mapping(self):
+        """Restore per-joint drive damping without adding passive damping twice."""
+        for urdf, expected in (
+            (FRICTION_URDF, [1.0, 2.0]),
+            (FRICTION_URDF.replace('damping="1.0"', 'damping="0.0"'), [0.0, 2.0]),
+            (FRICTION_URDF.replace(' damping="1.0"', "").replace(' damping="2.0"', ""), [3.0, 3.0]),
+        ):
+            with self.subTest(expected=expected):
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.damping = 0.5
+                builder.default_joint_cfg.target_kd = 3.0
+                parse_urdf(urdf, builder, legacy_joint_damping=True)
+                model = builder.finalize(device="cpu")
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), expected)
+                np.testing.assert_allclose(model.joint_damping.numpy(), [0.5, 0.5])
+                np.testing.assert_allclose(model.joint_friction.numpy(), [0.25, 0.75])
+
+    def test_legacy_planar_joint_damping_mapping(self):
+        """Preserve the old planar defaults, including zero passive damping."""
+        urdf = """
+<robot name="planar_damping_test">
+    <link name="base_link"/>
+    <link name="child_link"/>
+    <joint name="planar_joint" type="planar">
+        <parent link="base_link"/>
+        <child link="child_link"/>
+        <axis xyz="0 0 1"/>
+        <dynamics damping="4.0"/>
+    </joint>
+</robot>
+"""
+        for source, expected in ((urdf, 4.0), (urdf.replace('<dynamics damping="4.0"/>', ""), 3.0)):
+            with self.subTest(expected=expected):
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.damping = 0.5
+                builder.default_joint_cfg.target_kd = 3.0
+                parse_urdf(source, builder, legacy_joint_damping=True)
+                model = builder.finalize(device="cpu")
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), [expected, expected])
+                np.testing.assert_allclose(model.joint_damping.numpy(), [0.0, 0.0])
+
+    def test_legacy_joint_damping_is_per_import(self):
+        """An opt-in import must not change defaults for the next asset."""
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.damping = 0.5
+        builder.default_joint_cfg.target_kd = 3.0
+        parse_urdf(FRICTION_URDF, builder, legacy_joint_damping=True)
+        parse_urdf(FRICTION_URDF, builder)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.joint_target_kd.numpy(), [1.0, 2.0, 3.0, 3.0])
+        np.testing.assert_allclose(model.joint_damping.numpy(), [0.5, 0.5, 1.0, 2.0])
+
     def test_joint_damping_parsed_as_passive_damping(self):
         """Verify URDF joint damping populates passive damping, not drive damping."""
         builder = newton.ModelBuilder()

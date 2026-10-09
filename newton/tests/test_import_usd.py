@@ -141,13 +141,14 @@ class TestImportUsdPhysics(unittest.TestCase):
             (10.0, 20.0, 30.0),
             wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi),
         )
-        for bodies_follow_joint_ordering in (False, True):
-            with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering):
+        for bodies_follow_joint_ordering, legacy_units in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering, legacy_units=legacy_units):
                 builder = newton.ModelBuilder()
                 result = builder.add_usd(
                     stage,
                     xform=scene_xform,
                     bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                    legacy_angular_velocity_units=legacy_units,
                 )
                 body_id = result["path_body_map"]["/World/Body"]
                 model = builder.finalize()
@@ -163,7 +164,7 @@ class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_physx_joint_state_velocity_units(self):
         """PhysX joint-state angular velocities are authored in deg/s and imported in rad/s."""
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -173,7 +174,9 @@ class TestImportUsdPhysics(unittest.TestCase):
             # Each joint attaches its own body to the world.
             body = UsdGeom.Xform.Define(stage, f"/World/{body_name}")
             UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-            UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr().Set(1.0)
+            mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass.CreateMassAttr(1.0)
+            mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
             joint.CreateBody1Rel().SetTargets([body.GetPath()])
             return joint.GetPrim()
 
@@ -190,7 +193,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         set_state(connect(prismatic, "Slider"), "linear", 0.25, 0.5)
 
         d6 = connect(UsdPhysics.Joint.Define(stage, "/World/D6"), "Gimbal")
-        # Newton creates D6 DOFs only for axes with a limit; rotX is the single rotational DOF.
+        # Newton creates D6 DOFs only for axes with a limit; rotX is the rotational DOF.
         limit = UsdPhysics.LimitAPI.Apply(d6, "rotX")
         limit.CreateLowAttr().Set(-180.0)
         limit.CreateHighAttr().Set(180.0)
@@ -205,23 +208,30 @@ class TestImportUsdPhysics(unittest.TestCase):
         merged_hinge.CreateBody1Rel().SetTargets(["/World/Merged"])
         set_state(merged_hinge.GetPrim(), "angular", 90.0, 180.0)
 
+        # Reuse the stage and builder to catch options leaking across imports.
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()])
-        joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
-        for path, position, velocity in (
-            ("/World/Revolute", 0.5 * np.pi, np.pi),
-            ("/World/Prismatic", 0.25, 0.5),
-            ("/World/D6", 0.5 * np.pi, np.pi),
+        for kwargs, angular_velocity in (
+            ({"legacy_angular_velocity_units": True}, 180.0),
+            ({}, np.pi),
+            ({"legacy_angular_velocity_units": False}, np.pi),
         ):
-            with self.subTest(joint=path):
-                joint = result["path_joint_map"][path]
-                self.assertAlmostEqual(joint_q[builder.joint_q_start[joint]], position, places=5)
-                self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint]], velocity, places=5)
+            with self.subTest(kwargs=kwargs):
+                result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()], **kwargs)
+                joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
+                for path, offset, position, velocity in (
+                    ("/World/Revolute", 0, 0.5 * np.pi, angular_velocity),
+                    ("/World/Prismatic", 0, 0.25, 0.5),
+                    ("/World/D6", 0, 0.5 * np.pi, angular_velocity),
+                ):
+                    with self.subTest(joint=path):
+                        joint = result["path_joint_map"][path]
+                        self.assertAlmostEqual(joint_q[builder.joint_q_start[joint] + offset], position, places=5)
+                        self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint] + offset], velocity, places=5)
 
-        merged = result["path_joint_map"]["/World/MergedHinge"]
-        self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
-        qd_start = builder.joint_qd_start[merged]
-        np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, np.pi], atol=1e-5)
+                merged = result["path_joint_map"]["/World/MergedHinge"]
+                self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
+                qd_start = builder.joint_qd_start[merged]
+                np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, angular_velocity], atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity_with_collapsed_fixed_joint(self):
@@ -4975,6 +4985,67 @@ def Xform "Articulation" (
         joint_idx = model.joint_label.index("/Articulation/joint")
         target_idx = model.joint_target_q_start.numpy()[joint_idx]
         self.assertAlmostEqual(model.joint_target_q.numpy()[target_idx], np.deg2rad(20.0), places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_legacy_springref_units(self):
+        """Restore raw springrefs without changing refs, lengths, or later imports."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        for angle_units in (None, "degree", "radian", "no_scene"):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            if angle_units != "no_scene":
+                scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+                if angle_units is not None:
+                    scene.GetPrim().CreateAttribute("mjc:compiler:angle", Sdf.ValueTypeNames.Token).Set(angle_units)
+
+            for path in ("Hinge", "Slider", "Merged"):
+                body = UsdGeom.Xform.Define(stage, f"/World/{path}")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                mass.CreateMassAttr(1.0)
+                mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
+
+            for path, body, angular in (
+                ("Revolute", "Hinge", True),
+                ("Prismatic", "Slider", False),
+                ("MergedHinge", "Merged", True),
+                ("MergedSlide", "Merged", False),
+            ):
+                joint_schema = UsdPhysics.RevoluteJoint if angular else UsdPhysics.PrismaticJoint
+                joint = joint_schema.Define(stage, f"/World/{path}")
+                joint.CreateBody1Rel().SetTargets([f"/World/{body}"])
+                prim = joint.GetPrim()
+                prim.CreateAttribute("mjc:ref", Sdf.ValueTypeNames.Float).Set(15.0 if angular else 0.1)
+                prim.CreateAttribute("mjc:springref", Sdf.ValueTypeNames.Float).Set(30.0 if angular else 0.25)
+
+            builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(builder)
+            for kwargs, legacy in (
+                ({"legacy_springref_units": True}, True),
+                ({}, False),
+                ({"legacy_springref_units": False}, False),
+            ):
+                with self.subTest(angle_units=angle_units, kwargs=kwargs):
+                    result = builder.add_usd(stage, **kwargs)
+                    model = builder.finalize(device="cpu")
+                    springref = model.mujoco.dof_springref.numpy()
+                    reference = model.mujoco.dof_ref.numpy()
+                    angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
+                    expected_springref = 30.0 if legacy else 30.0 * angular_factor
+
+                    for path, offset, expected_spring, expected_ref in (
+                        ("Revolute", 0, expected_springref, 15.0 * angular_factor),
+                        ("Prismatic", 0, 0.25, 0.1),
+                        ("MergedHinge", 1, expected_springref, 15.0 * angular_factor),
+                        ("MergedSlide", 0, 0.25, 0.1),
+                    ):
+                        joint = result["path_joint_map"][f"/World/{path}"]
+                        dof = builder.joint_qd_start[joint] + offset
+                        self.assertAlmostEqual(springref[dof], expected_spring, places=5)
+                        self.assertAlmostEqual(reference[dof], expected_ref, places=5)
+
+                    self.assertEqual(stage.GetPrimAtPath("/World/Revolute").GetAttribute("mjc:springref").Get(), 30.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):
