@@ -8,7 +8,6 @@ import re
 import warnings
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
-from copy import deepcopy
 from typing import Any
 
 import numpy as np
@@ -21,7 +20,7 @@ from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
-from ..solvers.mujoco import SolverMuJoCo
+from ..solvers.mujoco import SolverMuJoCo, dcmotor
 from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
 from ..solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
@@ -222,81 +221,6 @@ def _load_and_expand_mjcf(
     return root, base_dir
 
 
-def _resolve_dcmotor_parameters(root: ET.Element) -> dict[ET.Element, dict[str, str]]:
-    """Resolve DC-motor shortcuts and inherited defaults with native MuJoCo."""
-    motors = root.findall("actuator/dcmotor")
-    if not motors:
-        return {}
-    try:
-        import mujoco
-    except ImportError as exc:
-        raise ImportError(
-            "Importing MJCF <dcmotor> actuators requires MuJoCo. Install it with `uv pip install 'newton[sim]'`."
-        ) from exc
-
-    # Parsing an actuator-only spec resolves shortcuts without compiling a model
-    # or loading geometry/assets. Keep the default hierarchy and shortcut order:
-    # DC-motor defaults inherit compiled values, not the original XML vectors.
-    native_root = ET.Element("mujoco")
-    actuator_tags = {
-        "general",
-        "motor",
-        "position",
-        "velocity",
-        "intvelocity",
-        "damper",
-        "cylinder",
-        "muscle",
-        "adhesion",
-        "dcmotor",
-        "orientation",
-        "pid",
-    }
-    for default in root.findall("default"):
-        copied = deepcopy(default)
-        for node in copied.iter("default"):
-            for child in list(node):
-                if child.tag != "default" and child.tag not in actuator_tags:
-                    node.remove(child)
-        native_root.append(copied)
-    actuator_section = ET.SubElement(native_root, "actuator")
-    for motor in motors:
-        actuator_section.append(deepcopy(motor))
-    for element in native_root.iter():
-        if "input" in element.attrib:
-            value = element.attrib["input"].strip().lower()
-            element.set("input", {"position": "pos", "velocity": "vel"}.get(value, value))
-
-    spec = mujoco.MjSpec.from_string(ET.tostring(native_root, encoding="unicode"))
-    resolved = {}
-    for motor, actuator in zip(motors, spec.actuators, strict=True):
-        values = {}
-        for name in (
-            "gainprm",
-            "biasprm",
-            "dynprm",
-            "gear",
-            "ctrlrange",
-            "forcerange",
-            "actrange",
-            "lengthrange",
-            "damping",
-        ):
-            values[name] = " ".join(str(value) for value in getattr(actuator, name))
-        for name in ("dyntype", "gaintype", "biastype", "actdim"):
-            values[name] = str(int(getattr(actuator, name)))
-        for name in ("ctrllimited", "forcelimited", "actlimited"):
-            values[name] = {0: "false", 1: "true", 2: "auto"}[int(getattr(actuator, name))]
-        for name in ("cranklength", "armature"):
-            values[name] = str(getattr(actuator, name))
-        values["actearly"] = str(bool(actuator.actearly)).lower()
-        # Zero is MuJoCo's automatic signature, which defaults to voltage for DC motors.
-        signature = SolverMuJoCo._parse_dcmotor_input(int(actuator.ctrlspec) or 8)
-        values["input"] = {1: "pos", 2: "vel", 8: "voltage"}[signature]
-        resolved[motor] = values
-    return resolved
-
-
 AttributeFrequency = Model.AttributeFrequency
 
 
@@ -476,7 +400,7 @@ def parse_mjcf(
     source = os.fspath(source) if hasattr(source, "__fspath__") else source
 
     root, base_dir = _load_and_expand_mjcf(source, path_resolver)
-    dcmotor_parameters = _resolve_dcmotor_parameters(root)
+    dcmotor_parameters = dcmotor.resolve_mjcf_parameters(root)
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
     contact_sections = root.findall("contact")
@@ -3596,14 +3520,12 @@ def parse_mjcf(
             if is_dcmotor:
                 # MuJoCo writes compiled DC motors as <general input="...">.
                 # Preserve their signature without allocating high-level parameters.
-                parsed_attrs["mujoco:actuator_ctrlspec"] = SolverMuJoCo._parse_dcmotor_input(
-                    merged_attrib.get("input", "voltage")
-                )
+                parsed_attrs["mujoco:actuator_ctrlspec"] = dcmotor.parse_input(merged_attrib.get("input", "voltage"))
+            ctrlrange_uses_joint_units = actuator_type in {"position", "velocity", "intvelocity"} or (
+                is_dcmotor and parsed_attrs["mujoco:actuator_ctrlspec"] in (1, 2)
+            )
             if (
-                (
-                    actuator_type in {"position", "velocity", "intvelocity"}
-                    or (is_dcmotor and parsed_attrs["mujoco:actuator_ctrlspec"] in (1, 2))
-                )
+                ctrlrange_uses_joint_units
                 and target_joint_name in mjcf_slide_joint_names
                 and not ctrlrange_is_derived
                 and "mujoco:actuator_ctrlrange" in parsed_attrs

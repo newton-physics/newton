@@ -42,7 +42,7 @@ from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
 from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
-from . import kernels
+from . import dcmotor, kernels
 from .collision_masks import (
     MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
     MUJOCO_COLLISION_MASK_UNSET,
@@ -928,43 +928,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             }
             for joint_idx, coef in joint_entries
         ]
-
-    _DCMOTOR_PARAMETER_NAMES = (
-        "actuator_gainprm",
-        "actuator_biasprm",
-        "actuator_dynprm",
-        "actuator_dyntype",
-        "actuator_gaintype",
-        "actuator_biastype",
-        "actuator_actdim",
-        "actuator_actearly",
-        "actuator_forcerange",
-        "actuator_forcelimited",
-        "actuator_ctrlspec",
-    )
-    """Resolved MJCF ``<dcmotor>`` parameters that must match across replicated worlds."""
-
-    @classmethod
-    def _parse_dcmotor_input(cls, value: Any) -> int:
-        """Parse a supported single-input DC-motor control signature."""
-        control_signatures = {
-            "pos": 1,
-            "position": 1,
-            "vel": 2,
-            "velocity": 2,
-            "voltage": 8,
-        }
-        try:
-            control_signature = cls._parse_named_int(value, control_signatures)
-        except ValueError:
-            control_signature = -1
-        if control_signature not in control_signatures.values():
-            raise NotImplementedError(
-                "SolverMuJoCo supports one DC-motor control input per actuator row: "
-                "'voltage', 'pos', or 'vel'. MuJoCo 'ff', 'none', and combined input "
-                "signatures are not supported by Newton's one-control-per-actuator mapping."
-            )
-        return control_signature
 
     @staticmethod
     def _mjc_tendon_type(prim) -> int:
@@ -4111,7 +4074,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mujoco.mjtGain.mjGAIN_DCMOTOR
             )
             if is_dcmotor and ctrlspec != 0:  # Zero leaves input inference to MuJoCo.
-                SolverMuJoCo._parse_dcmotor_input(ctrlspec)
+                dcmotor.parse_input(ctrlspec)
             # Apply shortcut helpers after add_actuator so MuJoCo derives all
             # compiled parameters exactly as it does for native MJCF.
             shortcut = None
@@ -10284,53 +10247,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if world_count <= 1:
             return
 
-        # DC-motor shortcut parameters are resolved during import, then the
-        # template model arrays are replicated across worlds. Reject
-        # per-world differences instead of silently simulating every world with
-        # world 0's electrical and controller parameters. Low-level compiled
-        # actuator arrays remain independently updateable per world.
-        mujoco_attrs = getattr(model, "mujoco", None)
-        actuator_world_attr = getattr(mujoco_attrs, "actuator_world", None) if mujoco_attrs is not None else None
-        ctrl_type_attr = getattr(mujoco_attrs, "ctrl_type", None) if mujoco_attrs is not None else None
-        if actuator_world_attr is not None and ctrl_type_attr is not None:
-            actuator_world = actuator_world_attr.numpy()
-            ctrl_type = ctrl_type_attr.numpy()
-            dcmotor_type = int(SolverMuJoCo.CtrlType.DCMOTOR)
-            if np.any(ctrl_type == dcmotor_type):
-                # Group once, preserving actuator order within each world, rather
-                # than scanning all rows separately for every replicated world.
-                rows = np.flatnonzero((actuator_world >= 0) & (actuator_world < world_count))
-                row_counts = np.bincount(actuator_world[rows], minlength=world_count)
-                mismatches = row_counts != row_counts[0]
-                if np.any(mismatches):
-                    world = int(np.argmax(mismatches))
-                    raise ValueError(
-                        "SolverMuJoCo with separate_worlds=True requires matching high-level "
-                        f"DC-motor actuator layouts; world {world} differs from world 0."
-                    )
-                rows = rows[np.argsort(actuator_world[rows], kind="stable")].reshape(world_count, row_counts[0])
-                dcmotor_rows = ctrl_type[rows] == dcmotor_type
-                mismatches = np.any(dcmotor_rows != dcmotor_rows[0], axis=1)
-                if np.any(mismatches):
-                    world = int(np.argmax(mismatches))
-                    raise ValueError(
-                        "SolverMuJoCo with separate_worlds=True requires matching high-level "
-                        f"DC-motor actuator layouts; world {world} differs from world 0."
-                    )
-                rows = rows[:, dcmotor_rows[0]]
-
-                for name in SolverMuJoCo._DCMOTOR_PARAMETER_NAMES:
-                    attribute = getattr(mujoco_attrs, name, None)
-                    if attribute is None:
-                        raise ValueError(f"High-level DC-motor actuator rows are missing mujoco:{name}.")
-                    values = attribute.numpy()[rows]
-                    mismatches = np.any((values[1:] != values[:1]).reshape(world_count - 1, -1), axis=1)
-                    if np.any(mismatches):
-                        world = int(np.argmax(mismatches)) + 1
-                        raise ValueError(
-                            "SolverMuJoCo with separate_worlds=True requires identical high-level "
-                            f"DC-motor parameters; mujoco:{name} differs in world {world}."
-                        )
+        dcmotor.validate_worlds(model, dcmotor_type=SolverMuJoCo.CtrlType.DCMOTOR)
 
         # --- Check entity count homogeneity ---
         # Count entities per world (excluding global shapes)
