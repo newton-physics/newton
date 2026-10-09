@@ -252,7 +252,7 @@ windowed mode:
     rgb = frame.numpy()  # NumPy uint8 array with shape (height, width, 3)
 
     # Reuse the output buffer after rendering subsequent frames.
-    viewer.get_frame(target_image=frame)
+    viewer.get_frame(output=frame)
 
 Use an image library to save the captured pixels, for example:
 
