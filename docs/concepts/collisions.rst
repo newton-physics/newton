@@ -1919,8 +1919,63 @@ needed.
 **Hydroelastic stiffness (kh):**
 
 The ``kh`` parameter on each shape controls area-dependent contact stiffness.
-For a pair, the material slope is the series combination
-``k_eff = k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
+The default spring uses geometric pair separation and stiffness ``A * p / (-d)``
+for a penetrating face. The experimental runtime option
+``HydroelasticSDF.Config(use_pressure_gradient=True)`` selects pressure-tangent
+springs for the built-in linear pressure law. It is disabled by default and is
+not a shape material property or an authored USD attribute.
+
+With this option, penetrating contacts use the pressure
+gradients projected onto the contact-face normal ``n`` (from shape A to B):
+``g_a = kh_a * dot(grad(sdf_a), n)`` and
+``g_b = -kh_b * dot(grad(sdf_b), n)``. Newton differentiates the trilinear
+corner fields used by marching cubes, including their physical voxel spacing.
+The gradient magnitude is retained rather than normalized.
+
+When both projections are positive and finite, their series combination
+``g = g_a * g_b / (g_a + g_b)`` gives the local pressure response to normal
+approach. An unreduced face of area ``A`` and pressure ``p`` has the tangent
+spring ``k = A * g`` and effective separation ``phi = -p / g``, subject to
+the numerical safeguards for very small separations. Together these preserve
+the exported spring's current normal force ``k * (-phi) = A * p``. Opposing unit SDF gradients
+recover the material-only series slope; oblique gradients change the tangent.
+
+This distinction matters when a force-based solver, such as
+:class:`~solvers.SolverSemiImplicit`, reuses contacts across multiple substeps
+(see :ref:`collision-frequency-in-the-simulation-loop`). Matching the current
+force alone does not match its response to subsequent motion. The preloaded-pad
+regression in :github:`newton/tests/test_hydroelastic_contact_dynamics.py`
+exercises this response against an independently derived pressure-continuity
+reference, with every-step refresh and head-on fields as controls.
+
+The effective spring separation is distinct from the geometric pair separation
+``d`` used for contact detection, reduction, and surface visualization. Contact
+reduction retains its existing normal-force allocation. Before selection or
+pre-pruning, Newton accumulates the source translational tangent
+``K = sum(A_i * g_i * outer(n_i, n_i))`` in each normal bin. Unusable derivatives
+contribute the original face's secant stiffness instead. For the aggregate
+force direction ``u``, it distributes ``u.T * K * u`` across the exported faces
+and synthetic anchor using their geometric depths and final normals. The
+denominator is ``sum((-d_i) * dot(n_i, u)**2)`` plus the anchor depth; the sum
+includes both normal-bin and voxel-bin exports. Each spring's effective
+separation is chosen to retain its allocated current force.
+
+Thus aligned normals preserve both total force and total stiffness, including
+heterogeneous source gradients. Normal matching preserves the translation
+tangent along ``u`` after rotating the selected normals. This does not preserve
+the full unreduced stiffness tensor, rotational tangent, or all force moments.
+The exported effective separation also changes the witness-point separation,
+so friction lever arms and simulated trajectories can differ from those of the
+previous geometric-separation springs. In particular, preserving the spring
+force does not preserve the correction of a solver that uses separation without
+the exported stiffness, such as XPBD's positional contact solve.
+
+Custom pressure callbacks retain the pressure-over-geometric-depth spring.
+Without reduction, faces with nonpositive, nonfinite, or numerically unusable
+gradients retain that spring as well; with reduction, they contribute its
+secant stiffness to the source patch tangent as described above. Speculative
+contacts retain the material-only activation stiffness described above. Tune
+``kh`` for the desired penetration response.
 
 **Custom pressure laws:**
 
@@ -1971,7 +2026,10 @@ additional gain unless you intentionally want a redundant parameterization: only
 their product affects the resulting pressure.
 When contact reduction is enabled, Newton reduces contacts after evaluating the
 same pressure law on the hydroelastic faces; no separate linear stiffness law is
-applied to reduced penetrating contacts. The evaluated pressure is stored once
+inferred for custom callbacks. Custom callbacks retain the geometric-depth
+spring even if they implement a linear law; the projected-gradient tangent is
+selected only when ``use_pressure_gradient=True`` and ``pressure_func=None``.
+The evaluated pressure is stored once
 per buffered face because the pair separation does not contain either shape's
 individual SDF depth. Speculative contacts do not use this stored pressure;
 their activation stiffness uses the declared ``kh`` values and the deprecated
@@ -1979,6 +2037,11 @@ their activation stiffness uses the declared ``kh`` values and the deprecated
 
 See :github:`newton/examples/contacts/example_nut_bolt_hydro.py` for a worked
 example.
+
+The ``nut_bolt_hydro`` and ``panda_hydro`` examples accept
+``--use-pressure-gradient`` to compare the experimental springs with the
+unchanged default. The nut-and-bolt comparison uses the built-in linear law
+when opted in and the equivalent explicit callback in its default mode.
 
 Contact reduction options for hydroelastic contacts are configured via :class:`~geometry.HydroelasticSDF.Config` (see :ref:`Contact Reduction`).
 

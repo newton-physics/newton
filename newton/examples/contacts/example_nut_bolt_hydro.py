@@ -220,8 +220,9 @@ class Example:
         pressure_data = LinearPressureData()
         pressure_data.shape_kh = self.model.shape_material_kh
         sdf_hydroelastic_config = HydroelasticSDF.Config(
-            pressure_func=linear_pressure,
-            pressure_data=pressure_data,
+            pressure_func=None if args.use_pressure_gradient else linear_pressure,
+            pressure_data=None if args.use_pressure_gradient else pressure_data,
+            use_pressure_gradient=args.use_pressure_gradient,
             mc_edge_clamp_min=0.0,
         )
 
@@ -485,6 +486,12 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=None)
+        parser.add_argument(
+            "--use-pressure-gradient",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Compare experimental patch-tangent springs with the default geometric springs.",
+        )
         parser.add_argument(
             "--deterministic",
             action=argparse.BooleanOptionalAction,
