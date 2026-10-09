@@ -104,6 +104,35 @@ def _pack_joint_constraint_reactions(
 
 
 @wp.kernel
+def _add_joint_dynamic_compliance_velocity(
+    # Inputs:
+    model_joint_num_dynamic_cts: wp.array[wp.int32],
+    model_joint_dynamic_cts_offset: wp.array[wp.int32],
+    model_joint_dynamic_cts_offset_total_cts: wp.array[wp.int32],
+    data_joints_inv_m_j: wp.array[wp.float32],
+    constraint_impulse: wp.array[wp.float32],
+    # Outputs:
+    constraint_velocity: wp.array[wp.float32],
+):
+    """Add the armature and implicit-PD compliance ``inv_m_j * lambda`` of the joint dynamic rows.
+
+    The dual problem carries this term on the Delassus diagonal, so the measured
+    velocity of a dynamic row matches the dual velocity once it is added.
+    """
+    # Retrieve the joint index from the thread index
+    jid = wp.tid()
+
+    # Retrieve the dynamic constraint size and offsets of the joint
+    num_dyn_cts_j = model_joint_num_dynamic_cts[jid]
+    dyn_cio_j = model_joint_dynamic_cts_offset[jid]
+    dyn_vio_j = model_joint_dynamic_cts_offset_total_cts[jid]
+
+    for row in range(num_dyn_cts_j):
+        vio_row = dyn_vio_j + row
+        constraint_velocity[vio_row] += data_joints_inv_m_j[dyn_cio_j + row] * constraint_impulse[vio_row]
+
+
+@wp.kernel
 def _pack_limit_constraint_reactions(
     # Inputs:
     model_time_dt: wp.array[wp.float32],
@@ -245,7 +274,8 @@ class DualSolution:
     The reconstruction reads the reactions written by LOX and the analysis dual
     problem, which must have been built at the LOX linearization before the
     solve. The velocity is the measured constraint velocity at the final body
-    velocity, so metrics must be evaluated with ``use_solution_velocity=True``.
+    velocity, plus the compliance ``inv_m_j * lambda`` on the joint dynamic rows,
+    so metrics must be evaluated with ``use_solution_velocity=True``.
     """
 
     def __init__(self, model: ModelKamino, config: LOXSolverConfig):
@@ -359,6 +389,21 @@ class DualSolution:
             outputs=[self.v_plus],
             device=model.device,
         )
+        if model.size.sum_of_num_dynamic_joints > 0:
+            # Joint dynamic rows: v += inv_m_j * lambda
+            wp.launch(
+                _add_joint_dynamic_compliance_velocity,
+                dim=model.size.sum_of_num_joints,
+                inputs=[
+                    model.joints.num_dynamic_cts,
+                    model.joints.dynamic_cts_offset,
+                    model.joints.dynamic_cts_offset_total_cts,
+                    data.joints.inv_m_j,
+                    self.lambdas,
+                ],
+                outputs=[self.v_plus],
+                device=model.device,
+            )
 
         # Pack the contacts last, since masking also zeroes their velocity rows
         if contacts is not None and contacts.model_max_contacts_host > 0:
