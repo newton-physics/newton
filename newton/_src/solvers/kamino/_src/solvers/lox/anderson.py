@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ...core.types import mat36f, mat66f, vec6f
+from ...core.types import mat36f, vec6f
 from ..padmm.math import project_to_coulomb_cone
 from .contact import (
     angular_contact_reaction,
@@ -20,6 +20,7 @@ from .contact import (
     scatter_spatial_impulse,
 )
 from .projection_kernels import is_active_row, scatter_box_impulse, scatter_contact_impulse
+from .system_kernels import ProjectionWeights
 
 if TYPE_CHECKING:
     from .types import AndersonData, LOXProblemData
@@ -308,7 +309,7 @@ def mix_box_anderson_row(
     box_lower: wp.array[wp.float32],
     box_upper: wp.array[wp.float32],
     box_direction_image: wp.array[wp.float32],
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     box_input: wp.array[wp.float32],
     box_reaction: wp.array[wp.float32],
     body_delta: wp.array[vec6f],
@@ -329,7 +330,7 @@ def mix_box_anderson_row(
         box_jacobian_a,
         box_jacobian_b,
         mixed - current,
-        inverse_weight,
+        weights,
         body_delta,
     )
 
@@ -347,7 +348,7 @@ def mix_contact_anderson_row(
     angular_friction: wp.array[wp.vec2f],
     contact_frame: wp.array[wp.mat33f],
     angular_direction_image: wp.array[wp.vec3f],
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     contact_input: wp.array[wp.vec3f],
     contact_reaction: wp.array[wp.vec3f],
     angular_input: wp.array[wp.vec3f],
@@ -383,7 +384,7 @@ def mix_contact_anderson_row(
             contact_jacobian_b,
             contact_frame,
             spatial_mixed - pack_contact_reaction(current, angular_current),
-            inverse_weight,
+            weights,
             body_delta,
         )
         return
@@ -397,7 +398,7 @@ def mix_contact_anderson_row(
         contact_jacobian_a,
         contact_jacobian_b,
         mixed - current,
-        inverse_weight,
+        weights,
         body_delta,
     )
 
@@ -646,7 +647,7 @@ def _mix_anderson_reactions(
     angular_direction_image: wp.array[wp.vec3f],
     world_active: wp.array[wp.bool],
     coefficient: wp.array[wp.float32],
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     # Outputs:
     box_input: wp.array[wp.float32],
     box_reaction: wp.array[wp.float32],
@@ -673,7 +674,7 @@ def _mix_anderson_reactions(
                 box_lower,
                 box_upper,
                 box_direction_image,
-                inverse_weight,
+                weights,
                 box_input,
                 box_reaction,
                 body_delta,
@@ -694,7 +695,7 @@ def _mix_anderson_reactions(
             angular_friction,
             contact_frame,
             angular_direction_image,
-            inverse_weight,
+            weights,
             contact_input,
             contact_reaction,
             angular_input,
@@ -790,7 +791,7 @@ class AndersonProjection:
         self,
         world_active: wp.array[wp.bool],
         world_failed: wp.array[wp.bool],
-        inverse_weight: wp.array[mat66f],
+        weights: ProjectionWeights,
         body_delta: wp.array[vec6f],
     ) -> None:
         """Form one secant, solve the scalar system, and accumulate the mixed image into ``body_delta``."""
@@ -896,7 +897,7 @@ class AndersonProjection:
                 self._angular_arrays("direction_image"),
                 world_active,
                 self._data.coefficient,
-                inverse_weight,
+                weights,
             ],
             outputs=[
                 self._data.box.map_input,

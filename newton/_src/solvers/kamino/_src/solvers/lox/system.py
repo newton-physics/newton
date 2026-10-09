@@ -21,11 +21,11 @@ from ...core.types import vec6f
 from ...linalg import DenseLinearOperatorData
 from .llt import DenseBlockInfo, HybridLLTBlockedSolver
 from .system_kernels import (
+    _add_body_weights_to_matrix,
     _assemble_body_inertial_systems,
     _assemble_dynamic_joint_rows,
     _assemble_structural_joint_rows,
     _build_candidate_right_hand_side,
-    _compute_body_weights_and_add,
 )
 from .types import DynamicRows, EffortRows, LOXSystemData, StructuralRows, capacity_offsets, segment_local_indices
 
@@ -158,8 +158,6 @@ class LOXSystem:
             dtype=wp.float32,
             device=self.device,
         )
-        self._mass: wp.array[wp.float32] | None = None
-        self._inertia_world: wp.array[wp.mat33f] | None = None
 
     ###
     # Properties
@@ -208,8 +206,6 @@ class LOXSystem:
     ) -> None:
         """Reset and assemble body inertia and explicit-force terms."""
         self._reset()
-        self._mass = mass
-        self._inertia_world = inertia_world
         wp.launch(
             _assemble_body_inertial_systems,
             dim=self.num_bodies,
@@ -322,39 +318,26 @@ class LOXSystem:
             device=self.device,
         )
 
-    def build_weighted_matrix(
-        self,
-        body_weight_enabled: wp.array[wp.int32],
-        *,
-        sigma: float,
-        beta: float,
-    ) -> None:
-        """Compute the splitting weights ``W`` of the enabled bodies and add them to the matrix ``A``.
+    def add_weights_to_matrix(self, scale: float = 1.0) -> None:
+        """Add the current splitting weights ``scale * W`` to the matrix ``A``.
 
         Args:
-            body_weight_enabled: Whether each body receives a splitting weight; other bodies get zero.
-            sigma: Relative lower scale of the inertia-normalized body-weight clamp.
-            beta: Normalized smooth-weight transition threshold of the body-weight heuristic.
+            scale: Factor of the weights added to the matrix.
         """
+        if self.num_bodies == 0:
+            return
         wp.launch(
-            _compute_body_weights_and_add,
+            _add_body_weights_to_matrix,
             dim=self.num_bodies,
             inputs=[
                 self._data.body_block,
                 self._data.body_local,
-                body_weight_enabled,
                 self._data.info.dim,
                 self._data.info.mio,
-                self._mass,
-                self._inertia_world,
-                sigma,
-                beta,
-            ],
-            outputs=[
                 self._data.weight,
-                self._data.inverse_weight,
-                self._data.matrix,
+                scale,
             ],
+            outputs=[self._data.matrix],
             device=self.device,
         )
 
@@ -369,12 +352,21 @@ class LOXSystem:
         dynamic_rows: DynamicRows,
         effort_rows: EffortRows,
         structural_rows: StructuralRows,
+        anchor_scale: float = 1.0,
     ) -> None:
         """Build the right-hand side of the candidate solve of one iteration.
 
-        Adds the splitting target ``W (p + u)`` and the current row impulses to the frozen
+        Adds the splitting target ``W (s p + u)`` and the current row impulses to the frozen
         right-hand side ``f``: the structural multiplier impulses ``h J_s^T lambda`` and the
         effort-limit counter-impulses ``J_d^T c``.
+
+        Args:
+            projected_twist: Anchor twist ``p`` of each body, or ``None`` for no anchor.
+            splitting_dual: Scaled splitting dual ``u`` of each body.
+            dynamic_rows: Dynamic rows, which hold the Jacobians of the effort rows.
+            effort_rows: Effort-limit rows and their counter-impulses.
+            structural_rows: Structural rows and their multiplier impulses.
+            anchor_scale: Factor ``s`` of the anchor twist.
         """
         wp.launch(
             _build_candidate_right_hand_side,
@@ -384,6 +376,7 @@ class LOXSystem:
                 self._data.right_hand_side,
                 self._data.weight,
                 projected_twist,
+                anchor_scale,
                 splitting_dual,
                 effort_rows.body_offset,
                 effort_rows.body_index,
