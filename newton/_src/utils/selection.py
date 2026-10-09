@@ -2328,6 +2328,7 @@ class _DeformableViewBase:
         self._ranges: dict[str, list[tuple[int, int]]] = {}
         self._starts: dict[str, wp.array[wp.int32]] = {}
         self._counts: dict[str, int | None] = {}
+        self._required_lengths: dict[str, int] = {}
         self._attribute_arrays: dict[tuple[str, int], tuple[wp.array[Any], Any]] = {}
         range_attributes = {
             "curve": {"body": "body", "joint": "joint"},
@@ -2342,6 +2343,7 @@ class _DeformableViewBase:
             sizes = {end - start for start, end in kind_ranges}
             self._counts[kind] = sizes.pop() if len(sizes) == 1 else None
             self._ranges[kind] = kind_ranges
+            self._required_lengths[kind] = max((end for _start, end in kind_ranges), default=0)
             self._starts[kind] = wp.array([start for start, _end in kind_ranges], dtype=wp.int32, device=self.device)
 
         if verbose:
@@ -2462,6 +2464,17 @@ class _DeformableViewBase:
             )
         return count
 
+    def _validate_state_array(self, kind: str, array: wp.array[Any], dtype: Any) -> None:
+        if not isinstance(array, wp.array) or array.ndim != 1:
+            raise ValueError("Expected a one-dimensional Warp state array")
+        if array.dtype is not dtype:
+            raise ValueError(f"Expected state array dtype {dtype.__name__}, got {array.dtype.__name__}")
+        if array.device != self.device:
+            raise ValueError(f"Expected state array on device {self.device}, got {array.device}")
+        required = self._required_lengths[kind]
+        if array.shape[0] < required:
+            raise ValueError(f"Expected state array with at least {required} {kind} elements, got {array.shape[0]}")
+
     def _get_attribute_array(self, kind: str, src: wp.array[Any]):
         cache_key = (kind, id(src))
         cached = self._attribute_arrays.get(cache_key)
@@ -2513,8 +2526,10 @@ class _DeformableViewBase:
         kind: str,
         src: wp.array[Any],
         kernel: Any,
+        dtype: Any,
     ) -> wp.array2d[Any]:
         count = self._element_count(kind)
+        self._validate_state_array(kind, src, dtype)
         attribute = self._get_attribute_array(kind, src)
         if not isinstance(attribute, wp.indexedarray):
             return attribute
@@ -2621,6 +2636,7 @@ class _DeformableViewBase:
         mask: Any = None,
     ) -> None:
         count = self._element_count(kind)
+        self._validate_state_array(kind, dst, dtype)
         if self.device.is_capturing and not isinstance(values, wp.array):
             raise RuntimeError("Create values as a Warp array on the view's device before CUDA capture")
         if values is None:
@@ -2685,9 +2701,10 @@ class _DeformableParticleView(_DeformableViewBase):
 
         Raises:
             AttributeError: If the selected deformable objects do not all record particles.
-            ValueError: If the selected deformable objects have different particle counts.
+            ValueError: If particle counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
         """
-        return self._gather("particle", source.particle_q, _gather_object_vec3_kernel)
+        return self._gather("particle", source.particle_q, _gather_object_vec3_kernel, wp.vec3)
 
     def set_particle_positions(
         self,
@@ -2714,8 +2731,8 @@ class _DeformableParticleView(_DeformableViewBase):
 
         Raises:
             AttributeError: If the selected objects do not record particles.
-            ValueError: If element counts, value shape/dtype/device, mask, or
-                non-overlap requirements are not satisfied.
+            ValueError: If element counts, array shapes/dtypes/devices, mask,
+                target capacity, or non-overlap requirements are not satisfied.
             RuntimeError: If host values or a host mask are passed during CUDA capture.
         """
         self._scatter("particle", values, _scatter_object_vec3_kernel, target.particle_q, wp.vec3, mask)
@@ -2734,9 +2751,10 @@ class _DeformableParticleView(_DeformableViewBase):
 
         Raises:
             AttributeError: If the selected deformable objects do not all record particles.
-            ValueError: If the selected deformable objects have different particle counts.
+            ValueError: If particle counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
         """
-        return self._gather("particle", source.particle_qd, _gather_object_vec3_kernel)
+        return self._gather("particle", source.particle_qd, _gather_object_vec3_kernel, wp.vec3)
 
     def set_particle_velocities(
         self,
@@ -2763,8 +2781,8 @@ class _DeformableParticleView(_DeformableViewBase):
 
         Raises:
             AttributeError: If the selected objects do not record particles.
-            ValueError: If element counts, value shape/dtype/device, mask, or
-                non-overlap requirements are not satisfied.
+            ValueError: If element counts, array shapes/dtypes/devices, mask,
+                target capacity, or non-overlap requirements are not satisfied.
             RuntimeError: If host values or a host mask are passed during CUDA capture.
         """
         self._scatter("particle", values, _scatter_object_vec3_kernel, target.particle_qd, wp.vec3, mask)
@@ -2795,9 +2813,10 @@ class _DeformableRigidBodyView(_DeformableViewBase):
 
         Raises:
             AttributeError: If the selected deformable objects do not all record bodies.
-            ValueError: If the selected deformable objects have different body counts.
+            ValueError: If body counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
         """
-        return self._gather("body", source.body_q, _gather_object_transform_kernel)
+        return self._gather("body", source.body_q, _gather_object_transform_kernel, wp.transform)
 
     def set_body_transforms(
         self,
@@ -2824,8 +2843,8 @@ class _DeformableRigidBodyView(_DeformableViewBase):
 
         Raises:
             AttributeError: If the selected objects do not record bodies.
-            ValueError: If element counts, value shape/dtype/device, mask, or
-                non-overlap requirements are not satisfied.
+            ValueError: If element counts, array shapes/dtypes/devices, mask,
+                target capacity, or non-overlap requirements are not satisfied.
             RuntimeError: If host values or a host mask are passed during CUDA capture.
         """
         self._scatter("body", values, _scatter_object_transform_kernel, target.body_q, wp.transform, mask)
@@ -2847,9 +2866,10 @@ class _DeformableRigidBodyView(_DeformableViewBase):
 
         Raises:
             AttributeError: If the selected deformable objects do not all record bodies.
-            ValueError: If the selected deformable objects have different body counts.
+            ValueError: If body counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
         """
-        return self._gather("body", source.body_qd, _gather_object_spatial_kernel)
+        return self._gather("body", source.body_qd, _gather_object_spatial_kernel, wp.spatial_vector)
 
     def set_body_velocities(
         self,
@@ -2876,8 +2896,8 @@ class _DeformableRigidBodyView(_DeformableViewBase):
 
         Raises:
             AttributeError: If the selected objects do not record bodies.
-            ValueError: If element counts, value shape/dtype/device, mask, or
-                non-overlap requirements are not satisfied.
+            ValueError: If element counts, array shapes/dtypes/devices, mask,
+                target capacity, or non-overlap requirements are not satisfied.
             RuntimeError: If host values or a host mask are passed during CUDA capture.
         """
         self._scatter("body", values, _scatter_object_spatial_kernel, target.body_qd, wp.spatial_vector, mask)

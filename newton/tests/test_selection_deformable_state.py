@@ -24,6 +24,20 @@ from newton.tests.unittest_utils import get_test_devices
 class TestDeformableStateReads(unittest.TestCase):
     """Read regular and irregular state layouts, including captured gathers."""
 
+    def test_irregular_getters_reject_short_state_arrays(self):
+        """Check capacity before gathering irregular ranges, including after a cached read."""
+        for device in get_test_devices():
+            model = _irregular_model(device=device)
+            for getter, _setter, attribute in _state_accessors(model, pattern="selected_*"):
+                with self.subTest(device=device, getter=getter.__name__):
+                    state = model.state()
+                    original = getattr(state, attribute)
+                    getter(state)
+                    # Keep the full allocation alive so a missing guard cannot read freed memory.
+                    setattr(state, attribute, original[:-1])
+                    with self.assertRaisesRegex(ValueError, "at least"):
+                        getter(state)
+
     def test_cloth_view_selects_and_batches_across_worlds(self):
         """A replicated cloth selects one deformable object per world with batched particle state."""
         model = _replicated_model(3)
@@ -143,9 +157,9 @@ class TestDeformableStateReads(unittest.TestCase):
                 np.testing.assert_allclose(result.numpy(), expected, atol=1.0e-6)
 
 
-def _state_accessors(model):
-    cloth = DeformableSurfaceView(model, "/World/Cloth")
-    cable = DeformableCurveView(model, "/World/Cable")
+def _state_accessors(model, *, pattern="/World/*"):
+    cloth = DeformableSurfaceView(model, pattern)
+    cable = DeformableCurveView(model, pattern)
     return (
         (cloth.get_particle_positions, cloth.set_particle_positions, "particle_q"),
         (cloth.get_particle_velocities, cloth.set_particle_velocities, "particle_qd"),
@@ -156,6 +170,93 @@ def _state_accessors(model):
 
 class TestDeformableStateWrites(unittest.TestCase):
     """Validate masked writes, capture, and gradients through public setters."""
+
+    def test_state_arrays_validate_before_access(self):
+        """Reject invalid arrays in getters and setters without accessing their memory."""
+        devices = get_test_devices()
+        for device in devices:
+            model = _replicated_model(3, device=device)
+            for getter, setter, attribute in _state_accessors(model):
+                state = model.state()
+                original = getattr(state, attribute)
+                values = wp.clone(getter(state))
+                before = original.numpy().copy()
+                invalid = [
+                    ("missing", None),
+                    ("not_warp", before),
+                    ("rank", original.reshape((1, original.size))),
+                    ("dtype", wp.zeros(original.size, dtype=wp.float32, device=device)),
+                    ("short", original[:-1]),
+                ]
+                invalid.extend(
+                    ("device", wp.zeros(original.size, dtype=original.dtype, device=other))
+                    for other in devices
+                    if other != device
+                )
+                for name, array in invalid:
+                    with self.subTest(device=device, attribute=attribute, array=name):
+                        setattr(state, attribute, array)
+                        # Inspect no returned alias: it may be unsafe without the guard.
+                        with self.assertRaisesRegex(ValueError, "state array"):
+                            getter(state)
+                        # An all-false mask keeps the regression safe without the guard.
+                        with self.assertRaisesRegex(ValueError, "state array"):
+                            setter(state, values, mask=[False] * 3)
+                        np.testing.assert_array_equal(original.numpy(), before)
+
+    def test_model_and_state_access_accepts_strided_storage(self):
+        """Read and write padded, strided storage without changing gaps or masked rows."""
+        for device in get_test_devices():
+            for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
+                model = make_model(device=device)
+                for getter, setter, attribute in _state_accessors(model, pattern=pattern):
+                    for use_model in (False, True):
+                        with self.subTest(device=device, getter=getter.__name__, pattern=pattern, model=use_model):
+                            state_untouched = model.state()
+                            untouched = getattr(state_untouched, attribute).numpy().copy()
+                            target = model if use_model else model.state()
+                            original = getattr(target, attribute)
+                            before = original.numpy().copy()
+                            batched = getter(target).numpy().copy()
+                            host = np.full((2 * (len(before) + 2), before.shape[-1]), -17.0, dtype=np.float32)
+                            host[: 2 * len(before) : 2] = before
+                            backing = wp.array(host, dtype=original.dtype, device=device)
+                            setattr(target, attribute, backing[::2])
+                            np.testing.assert_array_equal(getter(target).numpy(), batched)
+
+                            values = batched.copy()
+                            values[..., 0] += 1.0
+                            setter(
+                                target, wp.array(values, dtype=original.dtype, device=device), mask=[True, False, True]
+                            )
+                            expected = host.copy()
+                            view = getter.__self__
+                            kind = "particle" if attribute.startswith("particle") else "body"
+                            for row, (start, end) in enumerate(view.ranges(kind)):
+                                if row != 1:
+                                    expected[2 * start : 2 * end : 2] = values[row]
+                            np.testing.assert_array_equal(backing.numpy(), expected)
+                            np.testing.assert_array_equal(getattr(state_untouched, attribute).numpy(), untouched)
+                            setattr(target, attribute, original)
+
+    def test_state_capacity_only_covers_selected_ranges(self):
+        """Accept arrays smaller than the model when the selected elements still fit."""
+        for device in get_test_devices():
+            model = _irregular_model(device=device)
+            for getter, setter, attribute in _state_accessors(model, pattern="selected_*_0"):
+                with self.subTest(device=device, getter=getter.__name__):
+                    state = model.state()
+                    values = wp.clone(getter(state))
+                    values.fill_(2.0)
+                    original = getattr(state, attribute)
+                    before = original.numpy().copy()
+                    required = values.shape[1]
+                    setattr(state, attribute, original[:required])
+                    setter(state, values)
+                    np.testing.assert_array_equal(getter(state).numpy(), values.numpy())
+                    expected = before.copy()
+                    expected[:required] = 2.0
+                    np.testing.assert_array_equal(original.numpy(), expected)
 
     def test_missing_values_rejected_before_writing(self):
         """Reject missing values without changing any rows, regardless of the mask."""

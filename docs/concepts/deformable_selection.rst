@@ -117,6 +117,12 @@ Setters change only the supplied model or state. Applications with two alternati
 states must reset both when both should retain the reset. Model writes change
 initial arrays, not states that were already created.
 
+Getters and setters validate the state array's rank, dtype, device, and length
+before accessing it. It must cover every selected range, even with an all-false
+mask. Strided arrays and extra elements are allowed. These checks do not verify
+model ownership: the caller must ensure that the array uses the view's element
+numbering.
+
 For differently sized objects, use separate views for batched state access:
 
 .. code-block:: python
