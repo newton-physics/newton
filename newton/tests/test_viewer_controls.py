@@ -2,17 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import inspect
-import sys
 import unittest
 from collections import namedtuple
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import numpy as np
 
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_gui import ViewerGui
 from newton._src.viewer.viewer_null import ViewerNull
+from newton.tests.unittest_utils import patch_sys_module
 
 _Vec3 = namedtuple("_Vec3", ("x", "y", "z"))
 
@@ -71,7 +70,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
 
         key = SimpleNamespace(W=1, UP=2, S=3, DOWN=4, A=5, LEFT=6, D=7, RIGHT=8, Q=9, E=10)
         pyglet = SimpleNamespace(window=SimpleNamespace(key=key))
-        with patch.dict(sys.modules, {"pyglet": pyglet}):
+        with patch_sys_module("pyglet", pyglet):
             gui.update_camera_from_keys(0.1, lambda code: code == key.W)
 
         self.assertAlmostEqual(camera.pos.x, 0.2)
@@ -96,7 +95,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
 
         key = SimpleNamespace(W=1, UP=2, S=3, DOWN=4, A=5, LEFT=6, D=7, RIGHT=8, Q=9, E=10)
         pyglet = SimpleNamespace(window=SimpleNamespace(key=key))
-        with patch.dict(sys.modules, {"pyglet": pyglet}):
+        with patch_sys_module("pyglet", pyglet):
             gui.update_camera_from_keys(2.0 * gui._cam_damp_tau, lambda _: False)
 
         self.assertGreaterEqual(np.dot(camera.pos, velocity_init), 0.0)

@@ -18,6 +18,8 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
+from newton.tests.unittest_utils import patch_sys_module
+
 
 class _GLuintArray(list):
     """Stand-in for a ctypes ``GLuint * n`` array: integer-indexable."""
@@ -486,7 +488,7 @@ class TestViewerRTXLogImage(unittest.TestCase):
         # Neither OVRTX nor the window is created before the first rendered frame.
         with (
             wp.ScopedDevice("cpu"),
-            mock.patch.dict("sys.modules", {"ovrtx": types.SimpleNamespace(__version__="0.3.0")}),
+            patch_sys_module("ovrtx", types.SimpleNamespace(__version__="0.3.0")),
         ):
             viewer = ViewerRTX(headless=headless)
         self.addCleanup(viewer.close)

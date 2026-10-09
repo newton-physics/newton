@@ -58,3 +58,10 @@ repos:
         language: python
         types: [python]
         exclude: ^(scripts/check_warp_array_syntax\.py)
+      - id: no-patch-dict-sys-modules
+        name: use patch_sys_module instead of patch.dict(sys.modules)
+        # patch.dict also drops modules first imported inside it (e.g. Warp internals).
+        language: pygrep
+        entry: patch\.dict\(\s*["']?sys\.modules
+        args: [--multiline]
+        files: ^newton/tests/.*\.py$
