@@ -63,7 +63,7 @@ def _normalize_usd_camera(camera: UsdCameraInput) -> Any:
     return usd_camera
 
 
-def compute_camera_rays_usd_pinhole(
+def compute_camera_rays_pinhole_usd(
     width: int,
     height: int,
     camera: UsdCameraInput,
