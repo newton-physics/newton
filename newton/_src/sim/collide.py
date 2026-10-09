@@ -1694,10 +1694,9 @@ class CollisionPipeline:
                     if mesh_sdf_texture_only:
                         texture_sdf_data = model._texture_sdf_data.numpy()
                         scale_baked = texture_sdf_data["scale_baked"]
-                        shape_scale = model.shape_scale.numpy()
-                        identity_shape_scale = np.all(shape_scale == np.float32(1.0), axis=1)
+                        # Unit shape_scale does not qualify: it may change after construction.
                         mesh_sdf_identity_scale_only = all(
-                            bool(scale_baked[shape_sdf_index[shape_idx]]) or identity_shape_scale[shape_idx]
+                            bool(scale_baked[shape_sdf_index[shape_idx]])
                             for shape_idx in np.flatnonzero(mesh_sdf_shapes)
                         )
                 if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:

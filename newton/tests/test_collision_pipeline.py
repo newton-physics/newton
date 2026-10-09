@@ -3996,6 +3996,64 @@ def test_cylinder_scale_update_keeps_generic_stage(test, device):
     test.assertEqual(reused_count, int(rebuilt_contacts.rigid_contact_count.numpy()[0]))
 
 
+def test_mesh_scale_update_matches_rebuild(test, device):
+    """Match a rebuilt model's contacts after changing a mesh's shape_scale on non-planar terrain."""
+    initial_scales = ((1.0, 1.0, 1.0), (1.0, 1.0, 1.0))
+    updated_scales = ((2.0, 1.6, 1.8), (1.8, 2.0, 2.0))
+    n = 17
+    xs = np.linspace(-1.0, 1.0, n)
+    elevation = (0.5 + 0.5 * np.sin(3.0 * xs)[None, :] * np.cos(2.0 * xs)[:, None]).astype(np.float32)
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.2, 1.0)), 0.4)
+    cube = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
+    cube_with_sdf = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
+    if device.is_cuda:
+        cube_with_sdf.build_sdf(max_resolution=32, device=device)
+
+    def build(terrain, mesh, scales):
+        builder = newton.ModelBuilder()
+        if terrain == "heightfield":
+            builder.add_shape_heightfield(
+                heightfield=newton.Heightfield(data=elevation, nrow=n, ncol=n, hx=1.0, hy=1.0, min_z=0.0, max_z=0.04)
+            )
+        else:
+            slab = newton.Mesh.create_box(1.0, 1.0, 0.05, compute_inertia=False)
+            builder.add_shape_mesh(body=-1, mesh=slab, xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()))
+        for i, scale in enumerate(scales):
+            body = builder.add_body(xform=wp.transform((-0.4 + 0.5 * i, 0.1 * i, 0.07), rotation))
+            builder.add_shape_mesh(body=body, mesh=mesh, scale=scale)
+        return builder.finalize(device=device)
+
+    def collide(model, pipeline):
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        points = np.concatenate(
+            (contacts.rigid_contact_point0.numpy()[:count], contacts.rigid_contact_point1.numpy()[:count]), axis=1
+        )
+        return points[np.lexsort(points.T[::-1])]
+
+    meshes = {"no_sdf": cube, "texture_sdf": cube_with_sdf} if device.is_cuda else {"no_sdf": cube}
+    for terrain in ("heightfield", "mesh"):
+        for mesh_name, mesh in meshes.items():
+            with test.subTest(terrain=terrain, mesh=mesh_name):
+                model = build(terrain, mesh, initial_scales)
+                pipeline = newton.CollisionPipeline(model, deterministic=True)
+                rebuilt = build(terrain, mesh, updated_scales)
+                for name in (
+                    "shape_scale",
+                    "shape_collision_radius",
+                    "shape_collision_aabb_lower",
+                    "shape_collision_aabb_upper",
+                ):
+                    getattr(model, name).assign(getattr(rebuilt, name))
+
+                points = collide(model, pipeline)
+                expected = collide(rebuilt, newton.CollisionPipeline(rebuilt, deterministic=True))
+                test.assertGreater(len(expected), 0)
+                test.assertEqual(len(points), len(expected))
+                np.testing.assert_allclose(points, expected, atol=1.0e-5)
+
+
 add_function_test(
     TestDeterministicPipeline,
     "test_separated_analytic_pair_skips_gjk_queue",
@@ -4006,6 +4064,12 @@ add_function_test(
     TestDeterministicPipeline,
     "test_cylinder_scale_update_keeps_generic_stage",
     test_cylinder_scale_update_keeps_generic_stage,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestDeterministicPipeline,
+    "test_mesh_scale_update_matches_rebuild",
+    test_mesh_scale_update_matches_rebuild,
     devices=get_test_devices(),
 )
 add_function_test(

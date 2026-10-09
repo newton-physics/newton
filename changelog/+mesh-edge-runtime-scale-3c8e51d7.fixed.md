@@ -1,0 +1,1 @@
+Fix mesh contacts on heightfield, mesh, and SDF shapes ignoring `Model.shape_scale` changes made after `ModelBuilder.finalize()` or after `CollisionPipeline` construction. Precomputed collision edges now apply the current shape scale, and texture-SDF queries skip scale conversion only for SDFs built with a baked scale.

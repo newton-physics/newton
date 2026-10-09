@@ -824,11 +824,12 @@ class Model:
         self.mesh_edge_indices: wp.array[wp.vec2i] | None = None
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
         self.mesh_edge_centers: wp.array[wp.vec4] | None = None
-        """Packed shape-scaled collision-edge centers and radii, shape [total_edge_count, 4] [m]."""
+        """Packed collision-edge centers and radii in unscaled mesh coordinates, shape [total_edge_count, 4] [m]."""
         self.mesh_edge_halves: wp.array[wp.vec4] | None = None
         """Packed collision-edge half-vectors and corner ownership, shape [total_edge_count, 4].
 
-        Components ``xyz`` are shape-scaled half-vectors [m]. Component ``w``
+        Components ``xyz`` are half-vectors in unscaled mesh coordinates [m];
+        collision applies :attr:`shape_scale` when reading them. Component ``w``
         is a unitless internal endpoint-ownership code.
         """
         self.shape_edge_range: wp.array[wp.vec2i] | None = None
