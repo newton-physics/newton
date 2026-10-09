@@ -204,6 +204,23 @@ dynamics solve and transfers their forces and inertia to the reference joint.
 :class:`newton.solvers.SolverMuJoCo` applies the joint-owned mimic metadata
 directly through its joint equality constraints.
 
+A separate :func:`newton.eval_mimic` call is not needed for a solver to enforce
+its supported mimic relationships during a step.
+Featherstone updates follower joint coordinates during ``step()``; MuJoCo
+exports joint coordinates from its constrained solve. SemiImplicit, XPBD, and
+VBD advance body poses and velocities without refreshing ``state_out.joint_q``
+or ``state_out.joint_qd``. Those arrays can be stale for all joints, not only
+followers. To read joint coordinates from their updated body state, use
+:func:`newton.eval_ik`:
+
+.. code-block:: python
+
+  newton.eval_ik(model, state_out, state_out.joint_q, state_out.joint_qd)
+
+This reads the solved body configuration; it does not project the exact mimic
+formula onto it. Calling :func:`newton.eval_mimic` on the untouched joint
+arrays instead would use stale reference coordinates.
+
 When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
 
 .. testcode::
