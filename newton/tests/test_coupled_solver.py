@@ -1572,6 +1572,56 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(int(particle_only.soft_contact_particle.numpy()[0]), particles[0])
         self.assertFalse(particle_only._enable_rigid_soft_full_surface_contact)
 
+    def test_full_surface_mesh_contacts_survive_the_entry_filter(self):
+        """Filter mesh contacts appended past the candidate replay range."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+        builder.add_shape_mesh(body=body, mesh=newton.Mesh.create_box(0.5, 0.5, 0.1))
+        builder.add_cloth_grid(
+            pos=wp.vec3(-0.3, -0.3, 0.105),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=4,
+            dim_y=4,
+            cell_x=0.15,
+            cell_y=0.15,
+            mass=0.1,
+            particle_radius=0.01,
+        )
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(
+            model, broad_phase="nxn", soft_contact_gap=0.02, enable_rigid_soft_full_surface_contact=True
+        )
+        state = model.state()
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        count = int(contacts.soft_contact_count.numpy()[0])
+        self.assertGreater(count, contacts.soft_contact_tids.shape[0], "mesh contacts must exceed the replay range")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A",
+                    solver=_FullSurfaceControlRecordingSolver,
+                    bodies=[body],
+                    joints=[joint],
+                    particles=list(range(model.particle_count)),
+                )
+            ],
+        )
+        coupled.step(state, model.state(), None, contacts, dt=1.0 / 60.0)
+
+        # The coupled step keeps only canonical mesh pairs in the source before copying them.
+        kept = int(contacts.soft_contact_count.numpy()[0])
+        self.assertGreater(kept, contacts.soft_contact_tids.shape[0], "kept contacts must exceed the replay range")
+        self.assertLessEqual(kept, count)
+        filtered = coupled._entry_contact_buffers["A"]
+        self.assertEqual(int(filtered.soft_contact_count.numpy()[0]), kept)
+        np.testing.assert_array_equal(filtered.soft_contact_tids.numpy()[:kept], -1)
+
     def test_entry_control_arrays_are_mapped_to_local_dofs(self):
         """Entry solvers should receive control arrays in their local DOF namespace."""
         _ControlRecordingSolver.instances.clear()

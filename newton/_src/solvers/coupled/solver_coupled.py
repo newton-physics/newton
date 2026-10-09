@@ -16,6 +16,7 @@ import warp as wp
 
 from ...core.reset import reset_world_selected as _reset_world_selected
 from ...geometry import ParticleFlags, ShapeFlags
+from ...geometry.soft_contacts_mesh import filter_soft_mesh_contacts
 from ...sim import JointType, Model, ModelFlags, StateFlags
 from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
@@ -2344,6 +2345,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         """
         self.validate_observables(observables, contacts)
         self._distribute_state(state_in, dt=dt)
+        if contacts is not None:
+            # Entry buffers do not carry full-surface mesh feature records, so keep only the
+            # canonical mesh pairs before they are copied (see filter_soft_mesh_contacts).
+            filter_soft_mesh_contacts(self.model, state_in, contacts)
         self._active_observables = observables
         try:
             self._step_coupled(state_in, state_out, control, contacts, dt)
@@ -3971,7 +3976,13 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_pos[dst_id] = src_body_pos[contact_id]
     dst_body_vel[dst_id] = src_body_vel[contact_id]
     dst_normal[dst_id] = src_normal[contact_id]
-    dst_tids[dst_id] = src_tids[contact_id]
+    # soft_contact_tids is indexed by candidate thread, not by contact, and full-surface mesh
+    # contacts are appended past the candidate range, so the source array can be shorter than
+    # soft_contact_count.
+    if contact_id < src_tids.shape[0]:
+        dst_tids[dst_id] = src_tids[contact_id]
+    else:
+        dst_tids[dst_id] = -1
     # Carry the unified feature record too (the particle-only path writes (p, -1, -1) + (1, 0, 0)); VBD
     # reads these fields, so dropping them delivers the contact as (-1, -1, -1) and regresses coupled
     # VBD even with full-surface contact off (E7).

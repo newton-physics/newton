@@ -406,6 +406,16 @@ class Contacts:
             Particle contact ``(p, -1, -1)``, edge contact ``(v0, v1, -1)``, face contact
             ``(v0, v1, v2)``. Pair with :attr:`soft_contact_barycentric` to recover the contact
             point over the non-negative slots."""
+            # Mesh feature selection is discrete and immutable through backward replay. Its
+            # records use the final contact slots, never an intermediate candidate pool. The
+            # parameter holds a detection-time soft-edge parameter for penetration recovery.
+            # Detection reports every feature pair; solvers may filter them with
+            # ``filter_soft_mesh_contacts``, which uses the remaining fields.
+            self._soft_contact_mesh_features = None
+            self._soft_contact_mesh_params = None
+            self._soft_contact_mesh_state = None
+            self._soft_contact_mesh_scratch = None
+            self._soft_contact_mesh_data = None
             # Particle-only view kept for solvers that consume particle contacts exclusively (XPBD,
             # semi-implicit, Style3D). Holds the particle id for particle contacts; -1 for edge/face.
             self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)

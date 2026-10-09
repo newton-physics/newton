@@ -252,6 +252,77 @@ def sample_sdf_heightfield(
 
 
 @wp.func
+def heightfield_cell_range(a: wp.vec3, b: wp.vec3, c: wp.vec3, hfd: HeightfieldData, threshold: float):
+    """Return the conservative inclusive cell rectangle, or an empty rectangle."""
+    tri_lower = wp.min(a, wp.min(b, c)) - wp.vec3(threshold)
+    tri_upper = wp.max(a, wp.max(b, c)) + wp.vec3(threshold)
+    # Terrain is solid below its surface, so only the upper elevation provides a safe Z rejection;
+    # deeply penetrating triangles must still reach the exact feature tests.
+    if (
+        hfd.nrow <= 1
+        or hfd.ncol <= 1
+        or tri_upper[0] < -hfd.hx
+        or tri_lower[0] > hfd.hx
+        or tri_upper[1] < -hfd.hy
+        or tri_lower[1] > hfd.hy
+        or tri_lower[2] > hfd.max_z
+    ):
+        return wp.vec4i(0, -1, 0, -1)
+
+    dx = 2.0 * hfd.hx / wp.float32(hfd.ncol - 1)
+    dy = 2.0 * hfd.hy / wp.float32(hfd.nrow - 1)
+    col_begin = wp.max(wp.int32(wp.floor((tri_lower[0] + hfd.hx) / dx)), 0)
+    col_end = wp.min(wp.int32(wp.floor((tri_upper[0] + hfd.hx) / dx)), hfd.ncol - 2)
+    row_begin = wp.max(wp.int32(wp.floor((tri_lower[1] + hfd.hy) / dy)), 0)
+    row_end = wp.min(wp.int32(wp.floor((tri_upper[1] + hfd.hy) / dy)), hfd.nrow - 2)
+
+    return wp.vec4i(col_begin, col_end, row_begin, row_end)
+
+
+@wp.func
+def heightfield_point_below(hfd: HeightfieldData, elevation_data: wp.array[wp.float32], pos: wp.vec3) -> bool:
+    """Whether ``pos`` lies below the terrain surface at its own (x, y) inside the footprint.
+
+    Interpolates the surface height on the same triangle split as :func:`_heightfield_surface_query`.
+    """
+    if hfd.nrow <= 1 or hfd.ncol <= 1 or pos[2] >= hfd.max_z or wp.abs(pos[0]) > hfd.hx or wp.abs(pos[1]) > hfd.hy:
+        return False
+    col_f = (pos[0] + hfd.hx) * wp.float32(hfd.ncol - 1) / (2.0 * hfd.hx)
+    row_f = (pos[1] + hfd.hy) * wp.float32(hfd.nrow - 1) / (2.0 * hfd.hy)
+    col = wp.min(wp.int32(col_f), hfd.ncol - 2)
+    row = wp.min(wp.int32(row_f), hfd.nrow - 2)
+    fx = col_f - wp.float32(col)
+    fy = row_f - wp.float32(row)
+    base = hfd.data_offset + row * hfd.ncol + col
+    h00 = elevation_data[base]
+    h11 = elevation_data[base + hfd.ncol + 1]
+    height = float(0.0)
+    if fx >= fy:
+        height = h00 + fx * (elevation_data[base + 1] - h00) + fy * (h11 - elevation_data[base + 1])
+    else:
+        height = h00 + fy * (elevation_data[base + hfd.ncol] - h00) + fx * (h11 - elevation_data[base + hfd.ncol])
+    return pos[2] < hfd.min_z + height * (hfd.max_z - hfd.min_z)
+
+
+@wp.func
+def signed_heightfield_feature_distance(x: wp.vec3, y: wp.vec3, face_normal: wp.vec3, below: bool):
+    """Sign a soft/terrain feature pair by terrain height and orient its normal along the pair.
+
+    Only a soft point ``x`` below the terrain at its own (x, y) penetrates, as in the per-particle
+    path. The normal follows the closest-feature delta, so a cloth edge crossing a riser edge is
+    pushed across that edge instead of along the riser's nearly horizontal face normal.
+    """
+    delta = x - y
+    distance = wp.length(delta)
+    normal = face_normal
+    if distance > 0.0:
+        normal = delta / distance
+    if below:
+        return -distance, -normal
+    return distance, normal
+
+
+@wp.func
 def sample_sdf_grad_heightfield(
     hfd: HeightfieldData,
     elevation_data: wp.array[wp.float32],

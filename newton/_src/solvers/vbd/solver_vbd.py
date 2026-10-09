@@ -13,6 +13,7 @@ import warp as wp
 
 from ...core.types import override
 from ...geometry import ParticleFlags
+from ...geometry.soft_contacts_mesh import filter_soft_mesh_contacts
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
@@ -1276,6 +1277,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 rigid_body_particle_contact_buffer_size if model.shape_count > 0 and model.particle_count > 0 else 0
             )
             self.body_particle_contact_buffer_pre_alloc = bp_pre_alloc
+            # Large cloths need more lanes to accumulate their contacts onto each rigid body.
+            self._body_particle_contact_threads = (
+                128 if self.device.is_cuda and model.particle_count // max(model.body_count, 1) >= 4096 else 4
+            )
             self.body_particle_contact_counts = wp.zeros(model.body_count, dtype=wp.int32, device=self.device)
             self.body_particle_contact_indices = wp.zeros(
                 model.body_count * bp_pre_alloc, dtype=wp.int32, device=self.device
@@ -2589,6 +2594,11 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         if self._pre_initialization_detection(state_in, dt):
             update_rigid = True
+        if contacts is not None:
+            # Collision detection reports every full-surface mesh feature pair. Until force
+            # evaluation and penetration prevention consume them separately, keep only the
+            # canonical pairs. No-op once these contacts have been filtered.
+            filter_soft_mesh_contacts(self.model, state_in, contacts)
 
         if control is None:
             control = self.model.control(clone_variables=False)
@@ -2872,11 +2882,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 "(pass collision_pipeline=CollisionPipeline(...) to SolverVBD): the DAT reference poses "
                 "must be snapshotted at the exact detection instants the solver drives."
             )
-        has_rigid_soft_queries = (
-            self.collision_pipeline.soft_contact_pair_count > 0
-            or len(self.collision_pipeline.soft_edge_rigid_pairs) > 0
-            or len(self.collision_pipeline.soft_face_rigid_pairs) > 0
-        )
+        has_rigid_soft_queries = self.collision_pipeline._has_rigid_soft_queries
         if self.integrate_with_external_rigid_solver:
             raise ValueError("rigid_soft_enable_dat is not supported with an external rigid solver.")
 
@@ -3003,6 +3009,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         """Run selected collision detectors, then reset their DAT references."""
         if run_rigid_collision:
             self._run_rigid_collision(state, dt)
+            filter_soft_mesh_contacts(self.model, state, self._pipeline_contacts)
         if run_soft_self_collision:
             self._collision_detection_penetration_free(state, reset_reference=False)
 
@@ -4096,10 +4103,11 @@ class SolverVBD(SolverBase, CouplingInterface):
             if model.particle_count > 0 and contacts is not None:
                 wp.launch(
                     kernel=accumulate_body_particle_contacts_per_body,
-                    dim=color_group.size * _NUM_CONTACT_THREADS_PER_BODY,
+                    dim=color_group.size * self._body_particle_contact_threads,
                     inputs=[
                         dt,
                         color_group,
+                        self._body_particle_contact_threads,
                         state_in.particle_q,
                         self.particle_q_prev,
                         model.particle_radius,
