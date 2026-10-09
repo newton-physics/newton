@@ -91,6 +91,9 @@ class MaterialMixMode(IntEnum):
     MIN = 3
     """Pairwise property is the minimum of the two material properties."""
 
+    GEOMETRIC_AVERAGE = 4
+    """Pairwise property is the geometric average (square root of the product) of the two material properties."""
+
     @classmethod
     def from_string(cls, s: str) -> MaterialMixMode:
         """Converts a string to a MaterialMixMode enum value."""
@@ -389,6 +392,24 @@ def material_min(
     return wp.min(value1, value2)
 
 
+@wp.func
+def material_geometric_average(
+    value1: wp.float32,
+    value2: wp.float32,
+) -> wp.float32:
+    """
+    Computes the geometric average of two material property values.
+
+    Args:
+        value1: The first material property value.
+        value2: The second material property value.
+
+    Returns:
+        The geometric average of the two material property values.
+    """
+    return wp.sqrt(value1 * value2)
+
+
 def get_material_mixing_function(
     mixmode: MaterialMixMode = MaterialMixMode.AVERAGE,
 ) -> Callable[[wp.float32, wp.float32], wp.float32]:
@@ -405,6 +426,8 @@ def get_material_mixing_function(
             mix_func = material_max
         case MaterialMixMode.MIN:
             mix_func = material_min
+        case MaterialMixMode.GEOMETRIC_AVERAGE:
+            mix_func = material_geometric_average
         case _:
             raise ValueError(f"Unsupported material mixing mode: {mixmode}")
 

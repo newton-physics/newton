@@ -1266,13 +1266,13 @@ class MaterialManagerConfig(ConfigBase):
     A container to hold configurations for the internal material manager and material property mixing.
     """
 
-    friction_mix_mode: Literal["average", "multiply", "max", "min"] = "average"
+    friction_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "average"
     """
     The mixing mode to use for friction.\n
     Defaults to `average`.
     """
 
-    restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "min"
+    restitution_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "min"
     """
     The mixing mode to use for restitution.\n
     Defaults to `min`.
