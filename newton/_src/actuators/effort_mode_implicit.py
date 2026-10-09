@@ -599,16 +599,16 @@ class _EffortModeImplicit:
             if self._drive.custom_inputs:
                 prepare_kwargs["custom_inputs"] = custom_inputs
             self._drive.prepare_implicit(
-                positions,
-                velocities,
-                target_pos,
-                target_vel,
-                pos_indices,
-                vel_indices,
-                target_pos_indices,
-                target_vel_indices,
-                drive_state,
-                float(dt),
+                positions=positions,
+                velocities=velocities,
+                target_pos=target_pos,
+                target_vel=target_vel,
+                pos_indices=pos_indices,
+                vel_indices=vel_indices,
+                target_pos_indices=target_pos_indices,
+                target_vel_indices=target_vel_indices,
+                drive_state=drive_state,
+                dt=float(dt),
                 **prepare_kwargs,
             )
         inverse_blocks = self._response.inverse_blocks

@@ -3,6 +3,7 @@
 
 """Tests for the actuator drive API migration."""
 
+import inspect
 import types
 import typing
 import unittest
@@ -16,6 +17,22 @@ import newton.actuators as actuators
 
 class TestActuatorDriveAPI(unittest.TestCase):
     """Verify canonical actuator names and deprecated compatibility aliases."""
+
+    def test_drive_methods_reject_positional_operands(self):
+        """Require named operands across the base and built-in drive interfaces."""
+        for drive in (
+            actuators.DriveBase,
+            actuators.DrivePD,
+            actuators.DrivePID,
+            actuators.DriveNeuralMLP,
+            actuators.DriveNeuralLSTM,
+            actuators.DriveNeuralGRU,
+        ):
+            for name in ("compute", "prepare_implicit"):
+                with self.subTest(drive=drive.__name__, method=name):
+                    signature = inspect.signature(getattr(drive, name))
+                    with self.assertRaisesRegex(TypeError, "too many positional arguments"):
+                        signature.bind_partial(object(), object())
 
     def test_joint_space_response_public_method_type_hints(self):
         """Keep JointSpaceResponse's public methods fully annotated."""
@@ -128,11 +145,41 @@ class TestActuatorDriveAPI(unittest.TestCase):
         self.assertIsNone(drive.seen_custom_inputs["missing_control_input"])
 
     def test_explicit_drive_without_custom_inputs_keyword_remains_compatible(self):
-        """Keep drives using the previous compute signature working."""
+        """Call keyword-only overrides without forwarding undeclared custom inputs."""
 
         class _LegacyDrive(actuators.DrivePD):
-            def compute(self, *args, device=None):
-                return super().compute(*args, device=device)
+            def compute(
+                self,
+                *,
+                positions,
+                velocities,
+                target_pos,
+                target_vel,
+                feedforward,
+                pos_indices,
+                vel_indices,
+                target_pos_indices,
+                target_vel_indices,
+                forces,
+                state,
+                dt,
+                device=None,
+            ):
+                return super().compute(
+                    positions=positions,
+                    velocities=velocities,
+                    target_pos=target_pos,
+                    target_vel=target_vel,
+                    feedforward=feedforward,
+                    pos_indices=pos_indices,
+                    vel_indices=vel_indices,
+                    target_pos_indices=target_pos_indices,
+                    target_vel_indices=target_vel_indices,
+                    forces=forces,
+                    state=state,
+                    dt=dt,
+                    device=device,
+                )
 
         actuator = actuators.Actuator(
             indices=wp.array([0], dtype=wp.uint32),

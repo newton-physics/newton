@@ -372,6 +372,7 @@ class DriveNeuralMLP(DriveBase):
 
     def prepare_implicit(
         self,
+        *,
         positions: wp.array[float],
         velocities: wp.array[float],
         target_pos: wp.array[float],
@@ -384,7 +385,6 @@ class DriveNeuralMLP(DriveBase):
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
-        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Refresh the linearization of the network about the current state.
@@ -495,6 +495,7 @@ class DriveNeuralMLP(DriveBase):
 
     def compute(
         self,
+        *,
         positions: wp.array[float],
         velocities: wp.array[float],
         target_pos: wp.array[float],
@@ -508,7 +509,6 @@ class DriveNeuralMLP(DriveBase):
         state: DriveNeuralMLP.State,
         dt: float,
         device: wp.Device | None = None,
-        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         device = device or self._device
