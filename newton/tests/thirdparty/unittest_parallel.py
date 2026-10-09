@@ -212,6 +212,23 @@ def main(argv=None):
         help="Set the test parallelism level (default is 'class')",
     )
     group_parallel.add_argument(
+        "--shard-count",
+        metavar="COUNT",
+        type=int,
+        default=1,
+        help="Split the discovered test suites into COUNT deterministic shards (default is 1). "
+        "Shards are disjoint and complete only when every shard runs the same revision with the same "
+        "filters and discovery options (--start-directory, --pattern, -k, --level), dependencies, "
+        "and visible devices, which determine the device-specific tests that are registered",
+    )  # NVIDIA Modification
+    group_parallel.add_argument(
+        "--shard-index",
+        metavar="INDEX",
+        type=int,
+        default=0,
+        help="Run only shard INDEX, in [0, COUNT), of the --shard-count shards (default is 0)",
+    )  # NVIDIA Modification
+    group_parallel.add_argument(
         "--disable-process-pooling",
         action="store_true",
         default=False,
@@ -279,6 +296,10 @@ def main(argv=None):
     args = parser.parse_args(args=argv)
     if args.parallel_timeout <= 0:
         parser.error("--parallel-timeout must be greater than 0")
+    if args.shard_count <= 0:
+        parser.error("--shard-count must be greater than 0")
+    if not 0 <= args.shard_index < args.shard_count:
+        parser.error("--shard-index must be in the range [0, --shard-count)")
     if args.max_tasks_per_child is not None and args.max_tasks_per_child < 1:
         parser.error("--max-tasks-per-child must be at least 1")
     if args.max_tasks_per_child is not None and sys.version_info < (3, 11) and not args.disable_concurrent_futures:
@@ -340,6 +361,18 @@ def main(argv=None):
             test_suites = list(_iter_class_suites(discover_suite))
         else:  # args.level == 'module'
             test_suites = list(_iter_module_suites(discover_suite))
+
+        if args.shard_count > 1:  # NVIDIA Modification
+            total_suite_count = len(test_suites)
+            # Round-robin over the deterministic discovery order: shards are disjoint and complete.
+            test_suites = test_suites[args.shard_index :: args.shard_count]
+            # The serial fallback runs discover_suite directly, so restrict it to the shard too.
+            discover_suite = unittest.TestSuite(test_suites)
+            print(
+                f"Selected shard {args.shard_index} of {args.shard_count}: "
+                f"{len(test_suites)} of {total_suite_count} test suites",
+                file=sys.stderr,
+            )
 
         # Don't use more processes than test suites
         process_count = max(1, min(len(test_suites), process_count))
@@ -439,6 +472,8 @@ def main(argv=None):
         expected_failures = 0
         unexpected_successes = 0
         test_records = []  # NVIDIA Modification
+        cleanup_count = 0
+        cleanup_seconds = 0.0
         for result in results:
             tests_run += result[0]
             errors.extend(result[1])
@@ -447,6 +482,8 @@ def main(argv=None):
             expected_failures += result[4]
             unexpected_successes += result[5]
             test_records += result[6]  # NVIDIA Modification
+            cleanup_count += result[7]
+            cleanup_seconds += result[8]
         is_success = not (errors or failures or unexpected_successes)
 
         # Compute test info
@@ -475,10 +512,14 @@ def main(argv=None):
         # Test report
         print(unittest.TextTestResult.separator2, file=sys.stderr)
         print(f"Ran {tests_run} {'tests' if tests_run > 1 else 'test'} in {test_duration:.3f}s", file=sys.stderr)
+        print(
+            f"Allocation cleanup: {cleanup_count} collections, {cleanup_seconds:.3f}s total worker time",
+            file=sys.stderr,
+        )
         print(file=sys.stderr)
         print(f"{'OK' if is_success else 'FAILED'}{' (' + ', '.join(infos) + ')' if infos else ''}", file=sys.stderr)
 
-        if test_records and args.junit_report_xml:
+        if args.junit_report_xml:
             # NVIDIA modification to report results in Junit XML format
             write_junit_results(
                 args.junit_report_xml,
@@ -537,6 +578,8 @@ def _parallel_timeout_result(timeout_seconds):
         0,
         0,
         [("unittest_parallel", "parallel_timeout", float(timeout_seconds), "ERROR", message, details)],
+        0,
+        0.0,
     )
 
 
@@ -631,7 +674,7 @@ class ParallelTestManager:
         # Fail fast?
         try:
             if self.failfast.is_set():
-                return [0, [], [], 0, 0, 0, []]  # NVIDIA Modification
+                return [0, [], [], 0, 0, 0, [], 0, 0.0]  # NVIDIA Modification
         except self._PROXY_ERRORS as exc:
             print(
                 f"Warning: failfast proxy is_set() failed ({type(exc).__name__}), continuing test execution",
@@ -681,7 +724,6 @@ class ParallelTestManager:
                         file=sys.stderr,
                     )
 
-            # Return (test_count, errors, failures, skipped_count, expected_failure_count, unexpected_success_count)
             return (
                 result.testsRun,
                 [self._format_error(result, error) for error in result.errors],
@@ -690,6 +732,8 @@ class ParallelTestManager:
                 len(result.expectedFailures),
                 len(result.unexpectedSuccesses),
                 result.test_record,  # NVIDIA modification
+                result.cleanup_count,
+                result.cleanup_seconds,
             )
 
     @staticmethod

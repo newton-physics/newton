@@ -2421,7 +2421,8 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         )
 
         self.assertTrue(has_generic_convex_pairs)
-        self.assertEqual(estimate, _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD)
+        self.assertEqual(estimate, 27_776)
+        self.assertGreaterEqual(estimate, _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD)
 
     def test_explicit_generic_convex_work_estimate_uses_routed_pairs(self):
         """Count exact generic convex routes for explicit broad phase pairs."""

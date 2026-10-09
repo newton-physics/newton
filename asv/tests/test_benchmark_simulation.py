@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import warp as wp
+from asv_runner.benchmarks.time import TimeBenchmark
 
 ASV_DIR = Path(__file__).parents[1]
 ROOT = ASV_DIR.parent
@@ -165,7 +166,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Cover selector crossovers, duplicate-heavy hulls, and every convex type."""
         self.assertEqual(
             tuple(bench_contacts.FastConvexCollision.params[0]),
-            (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 191)),
+            (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 64), ("mixed", 153), ("mixed", 191)),
         )
         self.assertEqual(
             {shape for pair in bench_contacts.MIXED_CONVEX_PAIR_TYPES for shape in pair},
@@ -251,6 +252,52 @@ class TestSimulationBenchmarks(unittest.TestCase):
         self.assertEqual(example.benchmark_time, 0.25)
         self.assertEqual(example.sim_time, 0.01)
 
+    def test_mujoco_contact_observables_only_update_on_last_substep(self):
+        """Pass final-substep contact observables to the sensor without legacy exports."""
+        for substeps in (1, 2, 3):
+            with self.subTest(substeps=substeps):
+                example = MuJoCoExample.__new__(MuJoCoExample)
+                example.sim_substeps = substeps
+                example.sim_dt = 0.01
+                example.state_0, example.state_1 = Mock(), Mock()
+                example.control = Mock()
+                example.contacts = Mock()
+                example.solver = Mock()
+                example.sensor_contact = Mock()
+                example.solver_observables = Mock()
+
+                example.simulate()
+
+                self.assertEqual(example.solver.step.call_count, substeps)
+                for step_call in example.solver.step.call_args_list[:-1]:
+                    self.assertEqual(step_call.kwargs, {})
+                self.assertEqual(example.solver.step.call_args.kwargs, {"observables": example.solver_observables})
+                example.sensor_contact.update.assert_called_once_with(
+                    example.state_0, example.contacts, observables=example.solver_observables
+                )
+                example.solver.update_contacts.assert_not_called()
+
+    def test_mujoco_benchmark_supports_sensorless_steps(self):
+        """Keep sensorless workloads free of observable requests and contact exports."""
+        for substeps in (1, 2, 3):
+            with self.subTest(substeps=substeps):
+                example = MuJoCoExample.__new__(MuJoCoExample)
+                example.sim_substeps = substeps
+                example.sim_dt = 0.01
+                example.state_0, example.state_1 = Mock(), Mock()
+                example.control = Mock()
+                example.contacts = None
+                example.solver = Mock()
+                example.sensor_contact = None
+                example.solver_observables = None
+
+                example.simulate()
+
+                self.assertEqual(example.solver.step.call_count, example.sim_substeps)
+                for step_call in example.solver.step.call_args_list:
+                    self.assertEqual(step_call.kwargs, {})
+                example.solver.update_contacts.assert_not_called()
+
     def test_mujoco_kpi_requires_cuda_graph(self):
         """Reject KPI workloads that fail CUDA graph capture."""
         benchmark = bench_mujoco.FastCartpole()
@@ -329,6 +376,44 @@ class TestSimulationBenchmarks(unittest.TestCase):
 
         solver_cls.assert_called_once()
 
+    def test_g1_dvi_remains_available_outside_pr_gate(self):
+        """Keep small and large G1 batches outside the PR gate with bounded sampling."""
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        for pr_gate in (False, True):
+            inventory = self._discover_benchmarks(pr_gate=pr_gate)
+            benchmarks = [benchmark for benchmark in inventory if "G1DVI" in benchmark["name"]]
+            self.assertEqual(len(benchmarks), 1)
+            benchmark = benchmarks[0]
+            self.assertFalse(any(pattern.search(benchmark["name"]) for pattern in patterns))
+            self.assertEqual(benchmark["params"], [["4", "512"]])
+            self.assertEqual((benchmark["rounds"], benchmark["repeat"]), (1, 3))
+
+    def test_g1_dvi_builds_once_per_world_count(self):
+        """Avoid rebuilding and warming G1 for each ASV timing sample."""
+        workload = bench_kamino.G1DVI()
+        with (
+            patch("newton.examples.robot.example_robot_g1.Example") as example_cls,
+            patch.object(wp, "get_cuda_device_count", return_value=1),
+            patch.object(wp, "ScopedDevice"),
+            patch.object(wp, "synchronize_device"),
+        ):
+            benchmark = TimeBenchmark("time_simulate", workload.time_simulate, [workload])
+            benchmark.set_param_idx(0)
+            benchmark.do_setup()
+            result = benchmark.do_run()
+            benchmark.do_teardown()
+
+            self.assertEqual(len(result["samples"]), 3)
+            self.assertEqual(example_cls.call_count, 1)
+            self.assertEqual(example_cls.return_value.step.call_count, 100 + 3 * 200)
+            self.assertEqual(example_cls.return_value.test_final.call_count, 3)
+
+            workload.setup(512)
+            self.assertEqual(example_cls.call_count, 2)
+            with patch.object(wp, "get_cuda_device_count", return_value=0):
+                with self.assertRaises(NotImplementedError):
+                    workload.setup(512)
+
     def test_aws_benchmark_comparison_gates_only_runtime_metrics(self):
         """Gate discovered PR runtimes while retaining dashboard-only metrics."""
         workflow_path = ROOT / ".github" / "workflows" / "aws_gpu_benchmarks.yml"
@@ -338,6 +423,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         inventory = {benchmark["name"]: benchmark for benchmark in self._discover_benchmarks(pr_gate=False)}
 
         blocking_benchmarks = (
+            "simulation.bench_reset.FastPartialResetStepHumanoidMuJoCo.time_reset_and_first_step",
             "simulation.bench_mujoco.FastG1.track_simulate",
             "simulation.bench_mujoco.FastG1.track_p95_step_time",
             "simulation.bench_anymal.FastMetricsExampleAnymalPretrained.track_mean_world_step_time",
@@ -353,6 +439,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_inverse_dynamics.FastInverseDynamics.time_eval_inverse_dynamics_force",
         )
         dashboard_benchmarks = (
+            "simulation.bench_reset.FullResetHumanoidMuJoCo.time_reset",
             "simulation.bench_mujoco.FastG1.track_solver_niter_mean",
             "simulation.bench_mujoco.FastG1.track_solver_niter_max",
             "simulation.bench_mujoco.FastG1.track_simulation_steps_per_second",
