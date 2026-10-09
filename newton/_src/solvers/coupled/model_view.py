@@ -200,7 +200,7 @@ class ModelView:
         """Return the view-local count associated with a model attribute."""
         parent = object.__getattribute__(self, "_parent")
         spec = parent._attribute_spec(name)
-        if spec is None or spec.compaction_policy not in {"generic", "end"}:
+        if spec is None or spec.compaction_policy not in {"generic", "end", "range_start"}:
             return None
         try:
             count = self._attribute_frequency_count(spec.frequency)

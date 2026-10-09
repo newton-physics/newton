@@ -1182,6 +1182,8 @@ class ModelBuilder:
         Built-in entity types (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``,
               ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
+            - Experimental deformable object types: ``"curve"``, ``"surface"``, ``"volume"``.
+              An existing custom frequency with one of these names keeps its reference meaning.
 
         Special handling:
             - ``"world"``: Missing custom-frequency row values are initialized from
@@ -3766,6 +3768,8 @@ class ModelBuilder:
                 counts[key] = count
             elif frequency == Model.AttributeFrequency.CONSTRAINT_MIMIC:
                 counts[key] = len(builder.constraint_mimic_joint0)
+            elif key in cls._BUILDER_GROUP_REFERENCES:
+                counts[key] = len(getattr(builder, f"{key}_label"))
         return counts
 
     @staticmethod
@@ -4948,9 +4952,16 @@ class ModelBuilder:
                 if source_domain >= 0:
                     collision_mask_domain_remap.setdefault(source_domain, shape_offset + shape)
 
-        def get_offset(entity_or_key: str | None) -> int:
+        def get_offset(entity_or_key: str | None, *, reference: bool = False) -> int:
             if entity_or_key is None:
                 return 0
+            # Newly introduced built-in families must not shadow an existing custom frequency.
+            if (
+                reference
+                and entity_or_key in self._BUILDER_GROUP_REFERENCES
+                and entity_or_key in builder.custom_frequencies
+            ):
+                return custom_frequency_offsets.get(entity_or_key, 0)
             if entity_or_key in entity_offsets:
                 return entity_offsets[entity_or_key]
             if entity_or_key in custom_frequency_offsets:
@@ -4984,7 +4995,7 @@ class ModelBuilder:
                 index_offset = get_offset(attr.frequency.name.lower())
 
             use_current_world = attr.references == "world"
-            value_offset = 0 if use_current_world else get_offset(attr.references)
+            value_offset = 0 if use_current_world else get_offset(attr.references, reference=True)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
             is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
             needs_remap = (
@@ -7238,15 +7249,18 @@ class ModelBuilder:
         # every one of its simulation bodies and joints survived collapse; exposing a partial
         # range would misrepresent the original curve topology.
         curve_records = []
+        curve_remap = {}
         incomplete_curve_labels = []
-        for label, world, body_start, body_end, joint_start, joint_end in zip(
-            self.curve_label,
-            self.curve_world,
-            self._curve_body_start,
-            self._curve_body_end,
-            self._curve_joint_start,
-            self._curve_joint_end,
-            strict=True,
+        for curve_index, (label, world, body_start, body_end, joint_start, joint_end) in enumerate(
+            zip(
+                self.curve_label,
+                self.curve_world,
+                self._curve_body_start,
+                self._curve_body_end,
+                self._curve_joint_start,
+                self._curve_joint_end,
+                strict=True,
+            )
         ):
             old_bodies = list(range(body_start, body_end))
             old_joints = list(range(joint_start, joint_end))
@@ -7272,6 +7286,7 @@ class ModelBuilder:
                 new_boundary = bisect_left(retained_joints, joint_start, key=lambda joint: joint["original_id"])
                 remapped_joint_range = (new_boundary, new_boundary)
 
+            curve_remap[curve_index] = len(curve_records)
             curve_records.append((label, world, new_bodies[0], new_bodies[-1] + 1, *remapped_joint_range))
 
         self.curve_label = [record[0] for record in curve_records]
@@ -7281,39 +7296,47 @@ class ModelBuilder:
         self._curve_joint_start = [record[4] for record in curve_records]
         self._curve_joint_end = [record[5] for record in curve_records]
 
-        def remap_articulation_reference(value: Any) -> Any:
+        def remap_object_reference(value: Any, remap: dict[int, int]) -> Any:
             if isinstance(value, bool):
                 return value
             if isinstance(value, list):
-                return [remap_articulation_reference(v) for v in value]
+                return [remap_object_reference(v, remap) for v in value]
             if isinstance(value, tuple):
-                return tuple(remap_articulation_reference(v) for v in value)
+                return tuple(remap_object_reference(v, remap) for v in value)
             # Covers Python int as well as Warp scalar integer types (wp.int32 etc.),
             # whose default `dtype(0)` instances are not Python ints.
             try:
                 idx = int(value)
             except (TypeError, ValueError):
                 return value
-            return articulation_remap.get(idx, -1) if idx >= 0 else value
+            return remap.get(idx, -1) if idx >= 0 else value
 
-        # ARTICULATION-frequency attributes use dict storage by construction
+        # Built-in frequency attributes use dict storage by construction
         # (see CustomAttribute._create_empty_values_container).
-        for custom_attr in self.get_custom_attributes_by_frequency([Model.AttributeFrequency.ARTICULATION]):
-            custom_attr.values = {
-                new_idx: custom_attr.values[old_idx]
-                for old_idx, new_idx in articulation_remap.items()
-                if old_idx in custom_attr.values
-            }
+        for frequency, remap in (
+            (Model.AttributeFrequency.ARTICULATION, articulation_remap),
+            (Model.AttributeFrequency.CURVE, curve_remap),
+        ):
+            for custom_attr in self.get_custom_attributes_by_frequency([frequency]):
+                custom_attr.values = {
+                    new_idx: custom_attr.values[old_idx]
+                    for old_idx, new_idx in remap.items()
+                    if old_idx in custom_attr.values
+                }
 
+        object_remaps = {"articulation": articulation_remap}
+        if "curve" not in self.custom_frequencies:
+            object_remaps["curve"] = curve_remap
         for custom_attr in self.custom_attributes.values():
-            if custom_attr.references != "articulation" or custom_attr.values is None:
+            remap = object_remaps.get(custom_attr.references)
+            if remap is None or custom_attr.values is None:
                 continue
             if isinstance(custom_attr.values, dict):
                 custom_attr.values = {
-                    entity_idx: remap_articulation_reference(value) for entity_idx, value in custom_attr.values.items()
+                    entity_idx: remap_object_reference(value, remap) for entity_idx, value in custom_attr.values.items()
                 }
             else:
-                custom_attr.values = [remap_articulation_reference(value) for value in custom_attr.values]
+                custom_attr.values = [remap_object_reference(value, remap) for value in custom_attr.values]
 
         # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
@@ -14413,6 +14436,15 @@ class ModelBuilder:
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
+
+            # Snapshot identities so later builder edits cannot change model inspection.
+            for family, references in self._BUILDER_GROUP_REFERENCES.items():
+                labels = list(getattr(self, f"{family}_label"))
+                setattr(m, f"{family}_label", labels)
+                setattr(m, f"{family}_count", len(labels))
+                setattr(m, f"{family}_world", wp.array(getattr(self, f"{family}_world"), dtype=wp.int32))
+                for suffix in references:
+                    setattr(m, f"{family}_{suffix}", wp.array(getattr(self, f"_{family}_{suffix}"), dtype=wp.int32))
 
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
