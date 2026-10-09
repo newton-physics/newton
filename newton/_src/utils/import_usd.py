@@ -1090,6 +1090,13 @@ def parse_usd(
             prim, builder_custom_attr_body, context={"builder": builder}
         )
 
+        # Preserve authored native compensation; import the PhysX exclusion only
+        # when the target backend's existing custom attribute is registered.
+        if "mujoco:gravcomp" in builder.custom_attributes and "mujoco:gravcomp" not in body_custom_attrs:
+            gravcomp = R.get_value(prim, prim_type=PrimType.BODY, key="gravity_compensation")
+            if gravcomp is not None:
+                body_custom_attrs["mujoco:gravcomp"] = gravcomp
+
         b = builder.add_link(
             xform=xform,
             label=label,
