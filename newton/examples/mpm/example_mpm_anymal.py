@@ -167,8 +167,8 @@ class Example:
 
         policy_path = str(asset_path / "rl_policies" / "anymal_walking_policy_physx.onnx")
         self.policy = OnnxRuntime(policy_path, device=self.device)
-        self._policy_input_name = self.policy.input_names[0]
-        self._policy_output_name = self.policy.output_names[0]
+        self._policy_input_name = self.policy.inputs[0].name
+        self._policy_output_name = self.policy.outputs[0].name
         validate_policy_io_shapes(
             policy_path,
             self._policy_input_name,
@@ -185,6 +185,7 @@ class Example:
         self._command = wp.vec3(0.0, 0.0, 0.0)
         self._obs_wp = wp.zeros((1, 48), dtype=wp.float32, device=self.device)
         self._prev_act_wp = wp.zeros((1, 12), dtype=wp.float32, device=self.device)
+        self.policy.prepare({self._policy_input_name: self._obs_wp})
 
         self._auto_forward = True
 

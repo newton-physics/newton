@@ -37,7 +37,7 @@ from ..geometry.support_function import (
 )
 from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
 from ..geometry.types import GeoType
-from ..sim.contacts import Contacts
+from ..sim.contacts import GENERATION_SENTINEL, Contacts
 from ..sim.model import Model
 from ..sim.state import State
 
@@ -909,8 +909,11 @@ def _resolve_shape_pairs_max(model: Model, override: int | None) -> int:
 
 
 BROAD_PHASE_MODES = ("nxn", "sap", "explicit")
-_SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD = 27_776
-_SPLIT_GJK_MPR_FULL_PAIR_COUNT_THRESHOLD = 65_536
+# The fused kernel inlines overlap refinement for every pair, while split
+# kernels refine on a concurrent stream. Splitting pays off once the extra
+# launches amortize: from about 4k lean or 8k full-support pairs.
+_SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD = 4_096
+_SPLIT_GJK_MPR_FULL_PAIR_COUNT_THRESHOLD = 8_192
 
 
 def _compute_generic_convex_pair_stats(
@@ -1308,7 +1311,7 @@ class CollisionPipeline:
             rigid_contact_max: Maximum number of rigid contacts to allocate.
                 Resolution order:
                 - If provided, use this value.
-                - Else if ``model.rigid_contact_max > 0``, use the model value.
+                - Else if ``model.rigid_contact_max is not None``, use the model value (including zero).
                 - Else estimate automatically from model shape and pair metadata.
                 The automatic estimate is a conservative heuristic that generally
                 grows linearly with replicated worlds, but it is not a guaranteed
@@ -1478,8 +1481,8 @@ class CollisionPipeline:
 
         # Resolve rigid contact capacity with explicit > model > estimated precedence.
         if rigid_contact_max is None:
-            model_rigid_contact_max = int(getattr(model, "rigid_contact_max", 0) or 0)
-            if model_rigid_contact_max > 0:
+            model_rigid_contact_max = model.rigid_contact_max
+            if model_rigid_contact_max is not None:
                 rigid_contact_max = model_rigid_contact_max
             else:
                 rigid_contact_estimate = _estimate_rigid_contact_details(model)
@@ -1503,9 +1506,6 @@ class CollisionPipeline:
 
         if max_triangle_pairs <= 0:
             raise ValueError("max_triangle_pairs must be > 0")
-        # Keep model-level default in sync with the resolved pipeline capacity.
-        # This avoids divergence between model- and contacts-based users (e.g. VBD init).
-        model.rigid_contact_max = rigid_contact_max
         if requires_grad is None:
             requires_grad = model.requires_grad
 
@@ -1910,6 +1910,7 @@ class CollisionPipeline:
         self.soft_self_contact_gap = 0.0
         self.soft_self_contact_rest_shape_exclusion_radius = 0.0
         self._soft_contact_max = soft_contact_max
+        model._validate_contact_capacity(rigid_contact_max, soft_contact_max)
 
         self.requires_grad = requires_grad
         self.deterministic = deterministic
@@ -1953,6 +1954,12 @@ class CollisionPipeline:
         # the shared detector (re-pointed per Contacts buffer; see
         # _get_soft_self_contact_detector).
         self._soft_self_contact_detector: TriMeshCollisionDetector | None = None
+
+        # Publish only after all construction succeeds. Observables can now allocate
+        # from these capacities without needing a Contacts instance or a collide.
+        model.rigid_contact_max = rigid_contact_max
+        model.soft_contact_max = soft_contact_max
+        model._contact_capacity_initialized = True
 
     @property
     def rigid_contact_max(self) -> int:
@@ -2612,12 +2619,15 @@ class CollisionPipeline:
                 body_q=state.body_q,
                 shape_body=model.shape_body,
                 match_index_out=contacts.rigid_contact_match_index,
+                buffer_id=self._contact_matcher.buffer_id(contacts),
+                match_generation_out=contacts.rigid_contact_match_generation,
                 device=self.device,
             )
         elif contacts.rigid_contact_match_index is not None:
             # A buffer allocated for matching may be reused by a pipeline that
             # does not match; do not leave a previous producer's indices behind.
             contacts.rigid_contact_match_index.fill_(-1)
+            contacts.rigid_contact_match_generation.fill_(GENERATION_SENTINEL)
 
         # Sticky mode: overwrite matched rows with the saved previous-frame
         # contact geometry.  Must run after matching (so match_index points at
@@ -2709,6 +2719,8 @@ class CollisionPipeline:
                 sorted_normal=contacts.rigid_contact_normal,
                 body_q=state.body_q,
                 shape_body=model.shape_body,
+                buffer_id=self._contact_matcher.buffer_id(contacts),
+                contact_generation=contacts.contact_generation,
                 device=self.device,
                 **sticky_offsets,
             )

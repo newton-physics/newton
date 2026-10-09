@@ -197,7 +197,6 @@ def setup_sim(builder, params):
     solver = newton.solvers.SolverVBD(
         model=model,
         iterations=params["solver_iterations"],
-        rigid_compliant_alm=True,
         rigid_body_contact_buffer_size=params["rigid_body_contact_buffer_size"],
     )
 

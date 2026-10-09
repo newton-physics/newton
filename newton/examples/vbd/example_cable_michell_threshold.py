@@ -113,7 +113,6 @@ class Example:
                 twist_damping=0.0,
                 label=f"michell_threshold_{label}",
                 wrap_in_articulation=True,
-                body_frame_origin="com",
             )
             is_dynamic = factor > 1.0
             if not is_dynamic:
@@ -134,7 +133,7 @@ class Example:
 
         builder.color()
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
