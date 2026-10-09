@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "setup": {
+    "schema_version": 1,
+    "num_capsules": 8,
+    "capsule_length": 0.05,
+    "cable_radius": 0.007,
+    "cable_mass": 0.05,
+    "angle_parametrization": "exp_map",
+    "attachment_transform": [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+    "clamp_position": 0.0,
+    "cable_axis": null,
+    "stretch_stiffness": 1000.0
+  },
+  "loss": "chamfer",
+  "score_scale": 1.0,
+  "curvature_reg_weight": 0.0,
+  "opt_rest_config": true,
+  "opt_bend_stiffness": true,
+  "opt_bend_damping": false,
+  "twist_stiffness_mode": "coupled",
+  "twist_damping_mode": "coupled",
+  "init_angles": null,
+  "init_bend_stiffness": 5.0,
+  "init_twist_stiffness": null,
+  "init_bend_damping": 0.04,
+  "init_twist_damping": null,
+  "settle_mode": "dynamic",
+  "settle_frames": 500,
+  "sim_iterations": 20,
+  "optimizer": {
+    "kind": "cma",
+    "seed": 42,
+    "sigma0": 0.1,
+    "maxiter": 120,
+    "popsize": 24
+  },
+  "output": {
+    "directory": "synthetic-fit-output",
+    "trace_every": 40
+  }
+}
