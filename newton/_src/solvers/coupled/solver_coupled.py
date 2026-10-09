@@ -3134,6 +3134,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 self._refresh_body_inertial_view_overrides(entry)
                 entry.view.mark_proxy_bodies(entry.proxy_body_local_indices)
 
+            if flags & int(ModelFlags.MODEL_PROPERTIES):
+                if entry.particle_dynamics_disabled_local_indices.shape[0] > 0:
+                    entry.view.zero_particle_mass(entry.particle_dynamics_disabled_local_indices)
+                    entry.view.disable_particles(entry.particle_dynamics_disabled_local_indices)
+                entry.view.mark_proxy_particles(entry.proxy_particle_local_indices)
             if flags & int(
                 ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
             ):
@@ -3182,7 +3187,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if frequency == model_frequency.SHAPE or "pair_" in attribute.name:
                 return True
         if flags & int(ModelFlags.MODEL_PROPERTIES):
-            if frequency in (model_frequency.ONCE, model_frequency.WORLD):
+            if frequency in (model_frequency.ONCE, model_frequency.WORLD, model_frequency.PARTICLE):
                 return True
         if flags & int(ModelFlags.CONSTRAINT_PROPERTIES):
             if frequency in (model_frequency.CONSTRAINT_MIMIC, model_frequency.ATTACHMENT_PARTICLE_BODY):
