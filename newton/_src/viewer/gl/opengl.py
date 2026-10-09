@@ -1231,6 +1231,8 @@ class RendererGL:
         else:
             self.headless = headless
         self.app = pyglet.app
+        # Closing the last window leaves pyglet's shared event loop marked as exited.
+        self.app.event_loop.has_exit = False
 
         # making window current opengl rendering context
         self._make_current()
