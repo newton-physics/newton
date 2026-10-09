@@ -773,7 +773,15 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._config = config
 
         # Create a Kamino model from the Newton model
-        self._model_kamino = self._kamino.ModelKamino.from_newton(model)
+        collision_config = config.collision_detector
+        include_shape_contact_pairs = config.use_collision_detector and (
+            collision_config is None
+            or collision_config.pipeline == "primitive"
+            or collision_config.broadphase == "explicit"
+        )
+        self._model_kamino = self._kamino.ModelKamino.from_newton(
+            model, include_shape_contact_pairs=include_shape_contact_pairs
+        )
 
         # Store for which joints the limits are finite. This is used to validate that finiteness of limits is not changed at runtime.
         q_min = self._model_kamino.joints.q_j_min.numpy()

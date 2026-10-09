@@ -40,6 +40,7 @@ from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
 from ..geometry.types import GeoType
 from ..sim.contacts import GENERATION_SENTINEL, Contacts
 from ..sim.model import Model
+from ..sim.shape_contact_pairs import _shape_contact_pair_count_for_mask, _shape_contact_pair_counts
 from ..sim.state import State
 
 
@@ -791,27 +792,14 @@ def _estimate_rigid_contact_max_per_world(model: Model, rigid_contact_max: int) 
     if rigid_contact_max <= 0 or model.shape_contact_pair_count == 0:
         return 0
 
-    pairs = model.shape_contact_pairs.numpy().reshape((-1, 2))
-    types = model.shape_type.numpy()
-    mesh_types = (int(GeoType.MESH), int(GeoType.HFIELD))
-    mesh_pairs = np.isin(types[pairs], mesh_types).any(axis=1)
-    contacts_per_pair = np.where(
-        mesh_pairs,
-        _RIGID_CONTACTS_PER_MESH_PAIR,
-        _RIGID_CONTACTS_PER_PRIMITIVE_PAIR,
+    counts = _shape_contact_pair_counts(model)
+    is_mesh = np.isin(model.shape_type.numpy(), (int(GeoType.MESH), int(GeoType.HFIELD)))
+    primitive_counts = _shape_contact_pair_counts(model, shape_mask=~is_mesh) if is_mesh.any() else counts
+    contacts = (
+        primitive_counts * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR
+        + (counts - primitive_counts) * _RIGID_CONTACTS_PER_MESH_PAIR
     )
-
-    worlds = model.shape_world.numpy()
-    pair_worlds = np.maximum(worlds[pairs[:, 0]], worlds[pairs[:, 1]])
-    local_pairs = pair_worlds >= 0
-    contacts_by_world = np.bincount(
-        pair_worlds[local_pairs],
-        weights=contacts_per_pair[local_pairs],
-        minlength=model.world_count,
-    )
-    busiest_world_contacts = int(np.max(contacts_by_world, initial=0))
-    global_contacts = int(np.sum(contacts_per_pair[~local_pairs]))
-    return min(rigid_contact_max, busiest_world_contacts + global_contacts)
+    return min(rigid_contact_max, int(contacts[0] + np.max(contacts[1:], initial=0)))
 
 
 # Mesh-like pairs (mesh, heightfield, planar SDF) feed the triangle-pair buffer and the
@@ -1170,7 +1158,7 @@ def _compute_generic_convex_pair_stats(
     model: Model,
     *,
     broad_phase_mode: str,
-    shape_pairs_filtered: wp.array[wp.vec2i] | None,
+    shape_pairs_filtered: wp.array[wp.vec2i] | np.ndarray | None,
     candidate_pair_work_estimate: int,
     shape_pairs_host: np.ndarray | None = None,
 ) -> tuple[bool, int]:
@@ -1190,7 +1178,11 @@ def _compute_generic_convex_pair_stats(
         if shape_pairs_host is not None:
             explicit_pairs = shape_pairs_host
         else:
-            explicit_pairs = shape_pairs_filtered.numpy().reshape(-1, 2)
+            explicit_pairs = (
+                shape_pairs_filtered.numpy().reshape(-1, 2)
+                if isinstance(shape_pairs_filtered, wp.array)
+                else shape_pairs_filtered
+            )
         if len(explicit_pairs) == 0:
             return False, 0
         pair_types = shape_types[explicit_pairs]
@@ -1816,6 +1808,7 @@ class CollisionPipeline:
                 self.shape_pairs_max = len(shape_pairs_filtered)
                 self.shape_pairs_excluded = None
                 self.shape_pairs_excluded_count = 0
+                self.broad_phase._warn_large_pair_count(shape_pairs_filtered, shape_world, model.world_count)
             else:
                 self.shape_pairs_filtered = None
                 self.shape_pairs_max = _compute_per_world_shape_pairs_max(model)
@@ -1844,6 +1837,8 @@ class CollisionPipeline:
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
         else:
             self.broad_phase_mode = mode_from_broad_phase if mode_from_broad_phase is not None else "explicit"
+            # Host copy of the explicit pair list, read at most once during setup.
+            explicit_pairs_host = None
 
             if self.broad_phase_mode == "explicit":
                 if shape_pairs_filtered is None:
@@ -1858,6 +1853,8 @@ class CollisionPipeline:
                 self.shape_pairs_max = len(shape_pairs_filtered)
                 self.shape_pairs_excluded = None
                 self.shape_pairs_excluded_count = 0
+                explicit_pairs_host = shape_pairs_filtered.numpy().reshape(-1, 2)
+                self.broad_phase._warn_large_pair_count(explicit_pairs_host, shape_world, model.world_count)
             elif self.broad_phase_mode == "nxn":
                 if shape_world is None:
                     raise ValueError("model.shape_world is required for broad_phase=NXN")
@@ -1884,12 +1881,12 @@ class CollisionPipeline:
             if self._speculative_enabled:
                 shape_flags_np = model.shape_flags.numpy()
                 is_hydroelastic = (shape_flags_np & int(ShapeFlags.HYDROELASTIC)) != 0
-                if model.shape_contact_pairs is not None:
-                    shape_pairs_np = model.shape_contact_pairs.numpy().reshape(-1, 2)
-                    if np.any(is_hydroelastic[shape_pairs_np[:, 0]] & is_hydroelastic[shape_pairs_np[:, 1]]):
-                        raise NotImplementedError(
-                            "Speculative contact generation does not yet support hydroelastic SDF contacts"
-                        )
+                if np.count_nonzero(is_hydroelastic) > 1 and _shape_contact_pair_count_for_mask(
+                    model, is_hydroelastic, shape_pairs=self.shape_pairs_filtered
+                ):
+                    raise NotImplementedError(
+                        "Speculative contact generation does not yet support hydroelastic SDF contacts"
+                    )
 
             # Initialize SDF hydroelastic (returns None if no hydroelastic shape pairs in the model)
             hydroelastic_sdf = HydroelasticSDF._from_model(
@@ -1897,6 +1894,7 @@ class CollisionPipeline:
                 config=sdf_hydroelastic_config,
                 writer_func=contact_writer,
                 deterministic=deterministic,
+                shape_pairs_filtered=self.shape_pairs_filtered,
             )
 
             # Detect shape classes to optimize narrow-phase kernel launches.
@@ -1909,8 +1907,6 @@ class CollisionPipeline:
             mesh_sdf_identity_scale_only = False
             max_mesh_mesh_pairs = self.shape_pairs_max
             max_mesh_plane_pairs = self.shape_pairs_max
-            # Host copy of the explicit pair list, read at most once during setup.
-            explicit_pairs_host = None
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
                 route_mask = _shape_collide_mask(model, len(shape_types))
@@ -1919,7 +1915,6 @@ class CollisionPipeline:
                 # authoritative: every listed shape reaches the narrow phase, including
                 # one with shape collision disabled, and an unlisted shape never does.
                 if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
-                    explicit_pairs_host = self.shape_pairs_filtered.numpy().reshape(-1, 2)
                     route_mask = np.zeros(len(shape_types), dtype=bool)
                     pair_shapes = explicit_pairs_host.ravel()
                     route_mask[pair_shapes[(pair_shapes >= 0) & (pair_shapes < len(shape_types))]] = True
@@ -1976,9 +1971,8 @@ class CollisionPipeline:
                         max_mesh_mesh_pairs = 0
                         max_mesh_plane_pairs = 0
                     else:
-                        explicit_pairs = explicit_pairs_host
-                        shape_a = explicit_pairs[:, 0]
-                        shape_b = explicit_pairs[:, 1]
+                        shape_a = explicit_pairs_host[:, 0]
+                        shape_b = explicit_pairs_host[:, 1]
                         box_mask = route_mask & (shape_types == int(GeoType.BOX))
                         mesh_mesh_routes = (
                             (mesh_mask[shape_a] & mesh_mask[shape_b])

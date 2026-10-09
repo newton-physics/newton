@@ -63,6 +63,10 @@ class ModelView:
     "model" (e.g. with zeroed masses for non-owned bodies) without duplicating
     the full Model.
 
+    Default shape contact pairs and their summaries use the parent Model's
+    finalized collision topology. To change the view's pairs, assign both
+    ``shape_contact_pairs`` and ``shape_contact_pair_count`` on the view.
+
     A ``ModelView`` is intended to duck-type as a :class:`~newton.Model` for the
     purpose of constructing solvers (``SolverFoo(model=view)``).
 
@@ -104,17 +108,29 @@ class ModelView:
             setattr(self, spec.alias_of, value)
             return
 
-        if not hasattr(parent, name):
-            raise AttributeError(
-                f"ModelView {self.name!r} cannot override {name!r}: {type(parent).__name__} has no such attribute"
-            )
-        current = getattr(parent, name)
-        if current is not None and value is not None and not _types_compatible(current, value):
-            raise TypeError(
-                f"ModelView {self.name!r} override for {name!r}: expected "
-                f"{_type_summary(current)}, got {_type_summary(value)}"
-            )
-        if name.endswith("_count"):
+        if name == "shape_contact_pairs":
+            if value is not None and not (
+                isinstance(value, wp.array)
+                and value.dtype == wp.vec2i
+                and value.ndim == 1
+                and value.device == parent.device
+            ):
+                raise TypeError(
+                    f"ModelView {self.name!r} override for {name!r}: expected "
+                    f"wp.array[dtype={wp.vec2i}, ndim=1, device={parent.device}], got {_type_summary(value)}"
+                )
+        else:
+            if not hasattr(parent, name):
+                raise AttributeError(
+                    f"ModelView {self.name!r} cannot override {name!r}: {type(parent).__name__} has no such attribute"
+                )
+            current = getattr(parent, name)
+            if current is not None and value is not None and not _types_compatible(current, value):
+                raise TypeError(
+                    f"ModelView {self.name!r} override for {name!r}: expected "
+                    f"{_type_summary(current)}, got {_type_summary(value)}"
+                )
+        if name.endswith("_count") or name == "shape_contact_pairs":
             object.__getattribute__(self, "_cache").clear()
         object.__getattribute__(self, "_overrides")[name] = value
 

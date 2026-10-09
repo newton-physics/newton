@@ -13,7 +13,7 @@ import warp.examples
 
 import newton
 from newton import GeoType
-from newton._src.geometry import create_mesh_terrain
+from newton._src.geometry import broad_phase_nxn, create_mesh_terrain
 from newton._src.geometry.flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
 from newton._src.geometry.kernels import (
     create_soft_contacts,
@@ -52,7 +52,7 @@ from newton._src.sim.collide import (
 )
 from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
-from newton.geometry import BroadPhaseAllPairs, NarrowPhase
+from newton.geometry import BroadPhaseAllPairs, BroadPhaseExplicit, NarrowPhase
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
     add_function_test,
@@ -367,6 +367,48 @@ def test_expert_narrow_phase_empty_voxel_resolution(test, device):
 
 
 class TestCollisionPipeline(unittest.TestCase):
+    def test_explicit_performance_warning_setup(self):
+        """Reuse explicit setup's readback and warn about the configured list."""
+        builder = newton.ModelBuilder()
+        for _ in range(2):
+            builder.begin_world()
+            for _ in range(2):
+                builder.add_shape_sphere(builder.add_body(), radius=0.1)
+            builder.end_world()
+        for mode in ("explicit", "custom", "expert", "sap", "nxn"):
+            with self.subTest(mode=mode):
+                model = builder.finalize(device="cpu")
+                pairs = wp.array([[0, 1], [1, 0], [0, 1], [2, 3]], dtype=wp.vec2i, device="cpu")
+                kwargs = {}
+                if mode in ("custom", "expert"):
+                    kwargs["shape_pairs_filtered"] = pairs
+                if mode == "expert":
+                    kwargs["narrow_phase"] = NarrowPhase(
+                        max_candidate_pairs=len(pairs),
+                        device="cpu",
+                        has_meshes=False,
+                        shape_aabb_lower=wp.zeros(model.shape_count, dtype=wp.vec3, device="cpu"),
+                        shape_aabb_upper=wp.zeros(model.shape_count, dtype=wp.vec3, device="cpu"),
+                    )
+                    broad_phase = BroadPhaseExplicit()
+                else:
+                    broad_phase = "explicit" if mode == "custom" else mode
+                with (
+                    mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_TOTAL", 3),
+                    mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_PER_WORLD", 3),
+                    mock.patch.object(pairs, "numpy", wraps=pairs.numpy) as read_pairs,
+                    warnings.catch_warnings(record=True) as caught,
+                ):
+                    warnings.filterwarnings("always", message="Explicit broad phase tests", category=RuntimeWarning)
+                    newton.CollisionPipeline(model, broad_phase=broad_phase, **kwargs)
+                self.assertEqual(len(caught), int(mode in ("custom", "expert")))
+                self.assertEqual(read_pairs.call_count, int(mode in ("custom", "expert")))
+                if mode in ("sap", "nxn"):
+                    self.assertIsNone(model._shape_contact_pairs)
+                if caught:
+                    self.assertIn("4 shape pairs", str(caught[0].message))
+                    self.assertIn("3 in the busiest world", str(caught[0].message))
+
     def test_legacy_expert_components_ignore_unconfigured_extension_inputs(self):
         """Preserve the Newton 1.5 expert-component call contract by default."""
 

@@ -291,11 +291,13 @@ class TestModelBuilderReplicate(unittest.TestCase):
         builder.replicate(source, 4)
         self.assertEqual(len(builder._shape_collision_filter_pairs), 0)
 
-        with mock.patch.object(builder, "_test_group_pair", wraps=builder._test_group_pair) as test_group_pair:
-            model = builder.finalize(device="cpu")
-
+        model = builder.finalize(device="cpu")
         self.assertEqual(model.shape_contact_pair_count, 4 * 6)
-        self.assertEqual(test_group_pair.call_count, 6)
+        data = model._shape_contact_pair_data
+        with mock.patch.object(data, "_store_pairs", wraps=data._store_pairs) as store_pairs:
+            self.assertEqual(len(model.shape_contact_pairs), 4 * 6)
+        # Enumerate six pairs once; replay the other three worlds directly.
+        self.assertEqual(sum(len(call.args[1]) for call in store_pairs.call_args_list), 6)
 
     def test_add_world_uses_public_composition(self):
         class TrackingBuilder(ModelBuilder):
