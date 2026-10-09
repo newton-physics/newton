@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import warnings
 
 import warp as wp
@@ -186,6 +188,26 @@ def eval_mimic(
         raise ValueError("state_out must contain joint_q and joint_qd arrays")
 
     if model.joint_count == 0:
+        return
+
+    # Use the compact kernel for in-place updates and bulk CPU copies.
+    # Fuse CUDA output copying into the evaluation kernel below.
+    if mask is None and indices is None and (state_out is state_in or model.device.is_cpu):
+        if state_out is not state_in:
+            state_out.joint_q.assign(state_in.joint_q)
+            state_out.joint_qd.assign(state_in.joint_qd)
+        wp.launch(
+            kernel=eval_joint_mimic,
+            dim=model.joint_count,
+            inputs=[
+                model.joint_mimic_joint,
+                model.joint_mimic_coeffs,
+                model.joint_q_start,
+                model.joint_qd_start,
+            ],
+            outputs=[state_out.joint_q, state_out.joint_qd],
+            device=model.device,
+        )
         return
 
     # Keep the full-model path parallel over joints; selected launches visit
