@@ -224,7 +224,7 @@ class TestSelectionCacheLifetime(unittest.TestCase):
     def observable_reads_follow_replaced_arrays(self, device):
         """Read and write the current solver observable arrays, including replaced and unrequested ones."""
         model, view = self.make_view("dense", device=device)
-        flag = newton.solvers.SolverObservableFlags.BODY_PARENT_F
+        flag = newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F
         observables = newton.solvers.SolverFeatherstone(model).observables({flag})
         observables.body_parent_f.fill_(wp.spatial_vector(2.0, 2.0, 2.0, 2.0, 2.0, 2.0))
         forces = view.get_attribute("body_parent_f", observables)
@@ -247,7 +247,7 @@ class TestSelectionCacheLifetime(unittest.TestCase):
     def observable_cache_entries_release_with_observables(self, device):
         """Cache observable views per container and drop them with the container."""
         model, view = self.make_view("dense", device=device)
-        flag = newton.solvers.SolverObservableFlags.BODY_PARENT_F
+        flag = newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F
         observables = newton.solvers.SolverFeatherstone(model).observables({flag})
         selection = observables.select({flag})
         forces = view.get_attribute("body_parent_f", observables)

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import newton
-from newton.solvers import SolverObservableFlags, SolverXPBD
+from newton.solvers import SolverBase, SolverXPBD
 from newton.viewer import ViewerNull
 
 
@@ -50,7 +50,7 @@ class TestSolverObservableConsumers(unittest.TestCase):
         for domain in (frequency.CONTACT, frequency.CONTACT_RIGID, frequency.CONTACT_SOFT):
             with self.subTest(frequency=domain):
                 attribute = newton.ModelBuilder.CustomAttribute(name="pressure", frequency=domain, dtype=float)
-                with self.assertRaisesRegex(ValueError, "SolverObservables"):
+                with self.assertRaisesRegex(ValueError, "SolverBase.Observables"):
                     builder.add_custom_attribute(attribute)
                 self.assertNotIn("pressure", builder.custom_attributes)
 
@@ -61,12 +61,12 @@ class TestSolverObservableConsumers(unittest.TestCase):
         model = builder.finalize(device="cpu")
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=2, soft_contact_max=0)
         contacts = pipeline.contacts()
-        observables = SolverXPBD(model).observables({SolverObservableFlags.CONTACT_F})
+        observables = SolverXPBD(model).observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
         viewer = ViewerNull()
         viewer.set_model(model)
         viewer.show_contacts = False
         viewer.log_contacts(contacts, model.state(), observables=observables)
-        self.assertIsNone(observables.contacts)
+        self.assertIs(observables.contacts, contacts)
         viewer.show_contacts = True
         viewer.log_contacts(contacts, model.state(), observables=observables)
         self.assertIs(observables.contacts, contacts)
@@ -82,12 +82,12 @@ class TestSolverObservableConsumers(unittest.TestCase):
         builder.add_ground_plane()
         builder.end_world()
         model = builder.finalize(device="cpu")
-        newton.CollisionPipeline(model, rigid_contact_max=0, soft_contact_max=0)
+        contacts = newton.CollisionPipeline(model, rigid_contact_max=0, soft_contact_max=0).contacts()
         config = newton.solvers.SolverKamino.Config(use_collision_detector=True)
         solver = newton.solvers.SolverKamino(model, config=config)
         solver.step(model.state(), model.state(), model.control(), None, 0.001)
         with self.assertRaisesRegex(ValueError, "exceeds CollisionPipeline capacity"):
-            solver.observables({SolverObservableFlags.CONTACT_F})
+            solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
 
 
 if __name__ == "__main__":

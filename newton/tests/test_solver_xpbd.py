@@ -1511,7 +1511,7 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
     dt = 1.0 / 60.0
@@ -1661,7 +1661,7 @@ def test_xpbd_contact_force_zero_when_no_contact(test, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
     dt = 1.0 / 60.0
@@ -1697,7 +1697,7 @@ def test_xpbd_contact_force_zero_when_not_touching(test, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
     state_in.clear_forces()
@@ -1801,7 +1801,7 @@ def _run_single_body_steady_state(test, device, joint_kind: str, parent_kinemati
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverXPBD(model, iterations=8)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -1925,7 +1925,7 @@ def test_xpbd_parent_force_chain_weight_propagation(test, device):
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverXPBD(model, iterations=32)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -1983,7 +1983,7 @@ def test_xpbd_parent_force_not_allocated(test, device):
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverXPBD(model, iterations=2)
-    observables = solver.observables(set())
+    observables = solver.observables(kinds=set())
     state_in = model.state()
     state_out = model.state()
 
@@ -2010,7 +2010,7 @@ def test_xpbd_parent_force_zero_for_free_body(test, device):
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverXPBD(model, iterations=2)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -2076,7 +2076,7 @@ def test_xpbd_parent_f_centripetal_zero_g(test, device):
         angular_damping=0.0,
         enable_restitution=False,
     )
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
 
     state_in = model.state()
     state_out = model.state()
@@ -2170,7 +2170,7 @@ def test_xpbd_parent_f_consistent_across_solvers(test, device):
     ]:
         model = _build()
         solver = make_solver(model)
-        observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+        observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
         state_0, state_1 = model.state(), model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
         solver.step(state_0, state_1, None, None, dt, observables=observables)
@@ -2260,7 +2260,7 @@ def _newton_second_law_on_child(joint_kind, ic, *, dt, iters, device):
         angular_damping=0.0,
         enable_restitution=False,
     )
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)

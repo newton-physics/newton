@@ -5539,7 +5539,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
             "contact_generation",
         )
         snapshots = {field: getattr(contacts, field).numpy().copy() for field in fields}
-        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
         for _ in range(3):
             observables.contact_f.fill_(float("nan"))
             solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
@@ -5584,7 +5584,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
             model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
         )
         contacts = collision_pipeline.contacts()
-        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
         dt = 0.002
@@ -7651,8 +7651,8 @@ class TestMuJoCoOptions(unittest.TestCase):
     def test_disable_sensors_computes_rne_observables(self):
         """Compute each RNE observable without requesting legacy state arrays."""
         for flag in (
-            newton.solvers.SolverObservableFlags.BODY_QDD,
-            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
+            newton.solvers.SolverBase.ObservableKind.BODY_QDD,
+            newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F,
         ):
             with self.subTest(flag=flag):
                 self._check_disable_sensors_rne(observable_flag=flag)
@@ -7665,7 +7665,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         sensors-enabled reference.
         """
         results = {}
-        attributes = ("body_qdd", "body_parent_f") if legacy_state_attributes else (observable_flag.value,)
+        attributes = ("body_qdd", "body_parent_f") if legacy_state_attributes else (observable_flag,)
         for disable_sensors in (False, True):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
             if legacy_state_attributes:
@@ -7687,7 +7687,7 @@ class TestMuJoCoOptions(unittest.TestCase):
             newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
             observables = None
             if not legacy_state_attributes:
-                observables = solver.observables({observable_flag})
+                observables = solver.observables(kinds={observable_flag})
                 self.assertIsNone(state_out.body_qdd)
                 self.assertIsNone(state_out.body_parent_f)
             solver.step(state_in, state_out, None, None, 1.0e-3, observables=observables)
@@ -7710,9 +7710,9 @@ class TestMuJoCoOptions(unittest.TestCase):
         """Select a custom actuator field without requesting allocated body diagnostics."""
         model = self._create_multiworld_model(world_count=1)
         solver = SolverMuJoCo(model, disable_sensors=True)
-        flags = newton.solvers.SolverObservableFlags
-        actuator_flag = SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR
-        observables = solver.observables({flags.BODY_QDD, actuator_flag})
+        flags = solver.ObservableKind
+        actuator_flag = solver.ObservableKind.QFRC_ACTUATOR
+        observables = solver.observables(kinds={flags.BODY_QDD, actuator_flag})
         selected = observables.select({actuator_flag})
         self.assertIs(type(selected), SolverMuJoCo.Observables)
         self.assertIs(selected.qfrc_actuator, observables.qfrc_actuator)
@@ -7728,13 +7728,21 @@ class TestMuJoCoOptions(unittest.TestCase):
         """Reject unsupported body/contact exports while retaining native actuator forces."""
         model = self._create_multiworld_model(world_count=1)
         solver = SolverMuJoCo(model, use_mujoco_cpu=True)
-        for flag in newton.solvers.SolverObservableFlags:
+        for flag in (
+            solver.ObservableKind.BODY_QDD,
+            solver.ObservableKind.BODY_PARENT_F,
+            solver.ObservableKind.CONTACT_F,
+        ):
             with self.subTest(flag=flag):
-                self.assertNotIn(flag, solver.supported_observable_flags)
+                self.assertNotIn(flag, solver.supported_observables)
                 with self.assertRaisesRegex(ValueError, "does not support"):
-                    solver.observables({flag})
-        flag = SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR
-        observables = solver.observables({flag})
+                    solver.observables(kinds={flag})
+        flag = SolverMuJoCo.ObservableKind.QFRC_ACTUATOR
+        observables = solver.observables(solver.supported_observables)
+        self.assertEqual(observables.kinds, {flag})
+        self.assertIsNone(observables.body_qdd)
+        self.assertIsNone(observables.body_parent_f)
+        self.assertIsNone(observables.contact_f)
         observables.qfrc_actuator.fill_(float("nan"))
         solver.mjw_data.qfrc_actuator.fill_(1234.0)
         solver.step(model.state(), model.state(), model.control(), None, 0.01, observables=observables)
@@ -8588,7 +8596,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         builder.add_articulation([ball_j])
         model = builder.finalize()
         solver = SolverMuJoCo(model)
-        observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
+        observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
 
         q_start = int(model.joint_q_start.numpy()[ball_j])
         qd_start = int(model.joint_qd_start.numpy()[ball_j])
@@ -10635,7 +10643,7 @@ class TestMultiWorldQfrcActuatorCom(unittest.TestCase):
     def test_world1_uses_own_com(self):
         """World 1 angular qfrc must reflect its non-zero CoM, not world 0's."""
         state = self.model.state()
-        observables = self.solver.observables({self.solver.ObservableFlags.QFRC_ACTUATOR})
+        observables = self.solver.observables(kinds={self.solver.ObservableKind.QFRC_ACTUATOR})
         ctrl = self.model.control()
         ctrl.mujoco.ctrl = wp.array([10.0, 10.0], dtype=wp.float32)
         self.solver.step(state, state, ctrl, None, dt=0.01, observables=observables)
@@ -11391,7 +11399,11 @@ class TestContactObservablePointPositions(unittest.TestCase):
         control = model.control()
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
-        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        observables = solver.observables(solver.supported_observables, contacts=contacts)
+        self.assertEqual(observables.kinds, solver.supported_observables)
+        self.assertIsNotNone(observables.body_qdd)
+        self.assertIsNotNone(observables.body_parent_f)
+        self.assertIsNotNone(observables.qfrc_actuator)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
         dt = 1.0 / 200.0

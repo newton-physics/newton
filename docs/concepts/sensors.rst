@@ -18,7 +18,7 @@ Most Newton sensors follow a common pattern:
 
 .. note::
 
-   Solver-dependent sensors expose ``solver_observable_flags``. Combine these sets,
+   Solver-dependent sensors expose ``solver_observable_kinds``. Combine these sets,
    allocate :doc:`solver observables <solver_observables>` once, and pass the
    container to the solver and sensor updates.
 
@@ -44,7 +44,7 @@ Most Newton sensors follow a common pattern:
 
    # Create solver and state
    solver = newton.solvers.SolverMuJoCo(model)
-   observables = solver.observables(imu.solver_observable_flags)
+   observables = solver.observables(kinds=imu.solver_observable_kinds)
    state = model.state()
 
    # Simulation loop
@@ -177,19 +177,19 @@ they use an off-center pair so the sample pattern remains centered on the pixel.
 Solver Observables
 ------------------
 
-``SensorIMU`` requires ``SolverObservableFlags.BODY_QDD`` and ``SensorContact``
-requires ``SolverObservableFlags.CONTACT_F``. ``SensorContact`` uses only the
+``SensorIMU`` requires ``SolverBase.ObservableKind.BODY_QDD`` and ``SensorContact``
+requires ``SolverBase.ObservableKind.CONTACT_F``. ``SensorContact`` uses only the
 linear part of each ``CONTACT_F`` wrench (force [N]); the torque part is ignored.
-Each sensor's ``solver_observable_flags`` property provides its requirements
+Each sensor's ``solver_observable_kinds`` property provides its requirements
 without mutating the model. Union the sets when both sensors are present.
 Construct the collision pipeline before requesting contact-indexed observables,
-then pass its contacts buffer to the solver step and sensor. The first step binds
-the observable container to that storage:
+then pass its contacts buffer to the factory to bind the observable container.
+Reuse that same buffer for the solver step and sensor:
 
 .. code-block:: python
 
-   flags = imu.solver_observable_flags | contact_sensor.solver_observable_flags
-   observables = solver.observables(flags)
+   kinds = imu.solver_observable_kinds | contact_sensor.solver_observable_kinds
+   observables = solver.observables(kinds=kinds, contacts=contacts)
 
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
    imu.update(state_out, observables=observables)
@@ -213,7 +213,7 @@ every step -- this lets Newton pre-allocate output arrays and avoid per-frame
 overhead.
 
 Requested solver observables may add nontrivial cost to the solver step itself.
-Request only the flags consumed by the application and reuse the allocation.
+Request only the kinds consumed by the application and reuse the allocation.
 
 See Also
 --------

@@ -1056,7 +1056,7 @@ def apply_joint_forces(
         if id_p >= 0:
             wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total))
         # Record the contribution to the inbound joint wrench (used to populate
-        # ``SolverObservables.body_parent_f``).  For FREE joints this is a diagnostic only;
+        # ``SolverBase.Observables.body_parent_f``).  For FREE joints this is a diagnostic only;
         # for DISTANCE joints the constraint solver adds its own contribution.
         # Convention: positive = wrench transmitted parent->child at child COM.
         if joint_impulse:
@@ -1111,7 +1111,7 @@ def apply_joint_forces(
     wp.atomic_add(body_f, id_c, child_wrench_at_com)
 
     # Record the joint-f contribution to the inbound joint wrench (used to
-    # populate ``SolverObservables.body_parent_f``).  We accumulate the child-side spatial
+    # populate ``SolverBase.Observables.body_parent_f``).  We accumulate the child-side spatial
     # wrench (linear ``[N]``, torque ``[N·m]`` at the child COM, world frame)
     # multiplied by ``dt`` so that the same `impulse / dt` conversion applied
     # in :func:`convert_joint_impulse_to_parent_f` recovers the wrench.

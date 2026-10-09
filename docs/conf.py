@@ -257,7 +257,7 @@ autodoc_default_options = {
     "members": True,
     "member-order": "groupwise",
     "special-members": "__init__",
-    "undoc-members": False,
+    "undoc-members": True,
     "exclude-members": "__weakref__, State",
     "imported-members": True,
     "autosummary": True,
