@@ -702,6 +702,43 @@ class TestModelView(unittest.TestCase):
 class TestSolverCoupledContactsAndMPM(unittest.TestCase):
     """Test coupled contact preparation and implicit MPM integration."""
 
+    def test_model_properties_refreshes_mpm_particle_materials(self):
+        """Changed parent particle properties reach compact MPM arrays and derived material data."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        builder.begin_world()
+        for x in range(3):
+            builder.add_particle(pos=(float(x), 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05)
+        builder.end_world()
+        model = builder.finalize(device="cpu")
+        config = SolverImplicitMPM.Config(grid_type="fixed", grid_padding=1, max_iterations=1)
+        coupled = SolverCoupled(
+            model,
+            entries=[
+                SolverCoupled.Entry(name="other", solver=SolverXPBD, particles=[0]),
+                SolverCoupled.Entry(
+                    name="sand", solver=lambda view: SolverImplicitMPM(view, config), particles=[1, 2], in_place=True
+                ),
+            ],
+        )
+        mpm = coupled.solver("sand")
+        friction_ptr = mpm.model.mpm.friction.ptr
+        model.mpm.friction.assign([0.1, 0.7, 0.8])
+        model.mpm.young_modulus.assign([800.0, 2000.0, 3000.0])
+        model.mpm.viscosity.assign([0.0, 0.4, 0.0])
+        model.particle_mass.assign([1.0, 2.0, 3.0])
+        model.particle_inv_mass.assign([1.0, 0.5, 1.0 / 3.0])
+        model.particle_radius.assign([0.05, 0.05, 0.1])
+        coupled.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+        np.testing.assert_allclose(mpm.model.mpm.friction.numpy(), [0.1, 0.7, 0.8])
+        np.testing.assert_allclose(mpm.model.particle_inv_mass.numpy(), [0.0, 0.5, 1.0 / 3.0])
+        self.assertFalse(int(mpm.model.particle_flags.numpy()[0]) & int(ParticleFlags.ACTIVE))
+        self.assertEqual(mpm.model.mpm.friction.ptr, friction_ptr)
+        # These values control rheology specialization and particle-to-grid integration.
+        self.assertEqual(mpm._mpm_model.min_young_modulus, 2000.0)
+        self.assertTrue(mpm._mpm_model.has_viscosity)
+        np.testing.assert_allclose(mpm._mpm_model.particle_density.numpy(), [0.0, 2000.0, 375.0], rtol=1.0e-6)
+
     def test_graph_capture_setup_stays_solver_specific(self):
         """Verify coupled solvers do not expose a generic graph protocol."""
         for name in ("supports_graph_capture", "prepare_graph_capture", "check_status"):
@@ -3390,6 +3427,15 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         np.testing.assert_allclose(dst_view.particle_mass.numpy(), [1.0, 2.0])
         np.testing.assert_allclose(dst_view.particle_inv_mass.numpy(), [1.0, 0.5])
         np.testing.assert_allclose(self.model.particle_mass.numpy(), [2.0, 2.0])
+
+        self.model.particle_mass.assign([4.0, 6.0])
+        self.model.particle_inv_mass.assign([0.25, 1.0 / 6.0])
+        coupled.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+        np.testing.assert_allclose(src_view.particle_mass.numpy(), [4.0, 0.0])
+        np.testing.assert_allclose(dst_view.particle_mass.numpy(), [2.0, 6.0])
+        np.testing.assert_allclose(dst_view.particle_inv_mass.numpy(), [0.5, 1.0 / 6.0])
+        self.assertTrue(int(dst_view.particle_flags.numpy()[0]) & int(ParticleFlags.PROXY))
+        self.assertFalse(int(src_view.particle_flags.numpy()[1]) & int(ParticleFlags.ACTIVE))
 
     def test_particle_proxy_feedback_is_applied_on_next_step(self):
         _ParticleForceRecordingSolver.instances.clear()

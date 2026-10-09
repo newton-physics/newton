@@ -1312,6 +1312,8 @@ class SolverCoupledProxy(SolverCoupled):
         super().notify_model_changed(flags)
         if int(flags) & int(ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._apply_proxy_body_effective_masses()
+        if int(flags) & int(ModelFlags.MODEL_PROPERTIES):
+            self._apply_proxy_particle_effective_masses()
 
     def _step_coupled(
         self,
