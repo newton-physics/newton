@@ -4151,8 +4151,6 @@ class ModelBuilder:
         """
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
-        See :ref:`asset-migration-1-7` for migration from Newton 1.6.
-
         Args:
             source: The filename of the URDF file to parse, or the URDF XML string content.
             xform: The transform to apply to the root body. If None, the transform is set to identity.
@@ -4322,8 +4320,7 @@ class ModelBuilder:
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
-        See :ref:`usd_parsing` for more information and :ref:`asset-migration-1-7`
-        for migration from Newton 1.6.
+        See :ref:`usd_parsing` for more information.
 
         Args:
             source: The file path to the USD file, or an existing USD stage instance.

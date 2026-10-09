@@ -186,8 +186,7 @@ def parse_usd(
 
     The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
-    See :ref:`usd_parsing` for more information and :ref:`asset-migration-1-7`
-    for migration from Newton 1.6.
+    See :ref:`usd_parsing` for more information.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.

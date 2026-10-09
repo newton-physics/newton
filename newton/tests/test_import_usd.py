@@ -120,6 +120,7 @@ class TestImportUsdPhysics(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity(self):
+        """Keep rigid-body velocities unchanged by legacy joint-state units."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -141,13 +142,12 @@ class TestImportUsdPhysics(unittest.TestCase):
             (10.0, 20.0, 30.0),
             wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi),
         )
-        for bodies_follow_joint_ordering, legacy_units in ((False, False), (True, False), (False, True), (True, True)):
-            with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering, legacy_units=legacy_units):
+        for legacy_units in (False, True):
+            with self.subTest(legacy_units=legacy_units):
                 builder = newton.ModelBuilder()
                 result = builder.add_usd(
                     stage,
                     xform=scene_xform,
-                    bodies_follow_joint_ordering=bodies_follow_joint_ordering,
                     legacy_angular_velocity_units=legacy_units,
                 )
                 body_id = result["path_body_map"]["/World/Body"]
@@ -164,7 +164,7 @@ class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_physx_joint_state_velocity_units(self):
         """PhysX joint-state angular velocities are authored in deg/s and imported in rad/s."""
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -174,9 +174,7 @@ class TestImportUsdPhysics(unittest.TestCase):
             # Each joint attaches its own body to the world.
             body = UsdGeom.Xform.Define(stage, f"/World/{body_name}")
             UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-            mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
-            mass.CreateMassAttr(1.0)
-            mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
+            UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr().Set(1.0)
             joint.CreateBody1Rel().SetTargets([body.GetPath()])
             return joint.GetPrim()
 

@@ -17,7 +17,6 @@ Newton Physics
    Overview <guide/overview>
    guide/installation
    guide/compatibility
-   guide/asset_migration
    guide/visualization
    guide/tutorials
    Development <guide/development>
