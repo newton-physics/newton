@@ -477,7 +477,7 @@ fields. Declare the kinds the solver computes in ``SUPPORTED_OBSERVABLES``;
 
        @dataclass(eq=False)
        class Observables(newton.solvers.SolverBase.Observables):
-           contact_pressure: wp.array[float] | None = newton.solvers.SolverBase.Observables.field(
+           contact_pressure: "wp.array[float] | None" = newton.solvers.SolverBase.Observables.field(
                dtype=float,
                frequency=newton.Model.AttributeFrequency.CONTACT_RIGID,
            )
