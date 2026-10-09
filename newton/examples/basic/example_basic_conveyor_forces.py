@@ -802,7 +802,6 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=VBD_ITERATIONS,
-                rigid_compliant_alm=True,
                 rigid_joint_linear_ke=1.0e2,
                 rigid_joint_angular_ke=1.0e2,
                 rigid_body_contact_buffer_size=64,

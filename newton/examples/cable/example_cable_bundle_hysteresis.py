@@ -225,7 +225,6 @@ class Example:
                 bend_stiffness=bend_stiffness,
                 bend_damping=bend_damping,
                 label=f"bundle_cable_{i}",
-                body_frame_origin="com",
             )
             self.cable_body_ids.append(rod_bodies)
 
@@ -295,7 +294,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
         )
 
         # Initialize states and contacts

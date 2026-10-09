@@ -678,7 +678,6 @@ class Example:
             bend_damping=1.0e-2,
             wrap_in_articulation=False,
             label="xy_table_cable",
-            body_frame_origin="com",
         )
         filter_body_group_collisions(builder, self.cable_bodies)
 
@@ -743,7 +742,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=sim_iterations,
-            rigid_compliant_alm=True,
             rigid_contact_history=True,
             rigid_body_contact_buffer_size=256,
         )
