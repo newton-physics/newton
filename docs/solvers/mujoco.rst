@@ -512,14 +512,20 @@ are excluded from MuJoCo's ``nq`` / ``nv``.
 Tendons
 -------
 
-Newton's core API does not currently expose tendons (fixed or spatial)
-as first-class concepts. They are implemented through the MuJoCo
+MuJoCo's fixed and spatial tendons use the
 :ref:`custom-attribute namespace <mujoco-custom-attributes>`: populated
 on import from MJCF/USD and parsed into MuJoCo's tendon structures by
 ``SolverMuJoCo._init_tendons``. Spatial tendons support ``site``,
 ``geom``, and ``pulley`` wrap elements; any other wrap type and any
 degenerate tendon definition produces a warning and is skipped rather
 than raising.
+
+These provider tendons are separate from Newton's experimental
+:doc:`massless routed tendons </tendons>` used by XPBD and VBD. There is no
+automatic conversion between native ``Model.tendon_*`` routes and
+``model.mujoco.tendon_*`` data. USD ``MjcTendon`` import and tendon-actuator
+target resolution use the provider path; see
+:doc:`/concepts/usd_parsing` for supported path attributes.
 
 For force-based limit gains, set ``model.mujoco.tendon_limit_ke`` (stiffness
 [N/m]) and ``tendon_limit_kd`` (damping [N s/m]), select force-space authoring

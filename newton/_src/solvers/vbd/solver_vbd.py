@@ -28,6 +28,7 @@ from ...sim import (
     ModelFlags,
     State,
     StateFlags,
+    TendonGuideFlags,
 )
 from ...sim.collide import _count_soft_particle_rigid_contact_pairs
 from ...sim.joint_mimic import has_supported_joint_mimics
@@ -36,6 +37,8 @@ from ...utils.mesh import build_vertex_adjacency_with_warp
 from ..coupled.interface import CouplingInterface
 from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
+from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
+from ..tendon_state import TendonStateMixin
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
@@ -80,6 +83,7 @@ from .rigid_vbd_kernels import (
     compute_body_particle_contact_forces,
     compute_rigid_contact_forces,
     compute_rod_dahl_parameters,
+    create_solve_rigid_body,
     forward_step_rigid_bodies,
     init_body_body_contact_materials,
     init_body_body_contacts_alm,
@@ -89,7 +93,6 @@ from .rigid_vbd_kernels import (
     refresh_joint_material_params,
     reset_rigid_state,
     snapshot_body_body_contact_history,
-    solve_rigid_body,
     step_body_body_contact_C0_lambda,
     step_joint_C0_lambda_rho,
     update_body_velocity,
@@ -97,6 +100,11 @@ from .rigid_vbd_kernels import (
     update_duals_body_particle_contacts,
     update_duals_joint,
     update_rod_dahl_state,
+)
+from .tendon_kernels import (
+    TendonForceElementAdjacencyInfo,
+    snapshot_tendon_segment_length_reference,
+    update_tendon_segment_diagnostics,
 )
 from .vbd_coupling_kernels import (
     _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel,
@@ -165,7 +173,7 @@ def _rigid_lambda_retention(alpha: float, gamma: float, use_compliant_alm: bool)
     return gamma if use_compliant_alm else alpha * gamma
 
 
-class SolverVBD(SolverBase, CouplingInterface):
+class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
     .. experimental::
@@ -232,6 +240,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
+
+    Tendon limitations:
+        - Static routes and isolated dynamic ROLLER guides are supported. Zero
+          segment compliance is approximated as ``1.0e-8`` m/N.
+        - Call :meth:`newton.ModelBuilder.color` after adding tendons so that
+          segment endpoints receive different rigid-body colors.
 
     Body-particle attachment limitations:
         - Attachments are translational and constrain one particle to a body-local point.
@@ -397,6 +411,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_joint_angular_k_start: float | None = None,  # Legacy AVBD angular joint penalty ramp seed
         rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-rod linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-rod angular joint constraints
+        # Tendons
+        tendon_max_sweeps: int = 256,
+        tendon_settle_tol: float = 1.0e-3,
+        tendon_activation_tol: float = 2.0e-3,
         # Rigid body - penetration-free DAT truncation
         rigid_soft_enable_dat: bool = False,  # Truncate rigid pose updates against per-contact division planes
         rigid_soft_dat_use_interval_arithmetic: bool = False,  # Experimental interval verification of rigid trajectories
@@ -653,6 +671,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 are accumulated per contact record with atomics in
                 ``NOT_GUARANTEED`` mode and gathered per particle without
                 atomics in every other mode.
+            tendon_max_sweeps: Maximum capstan material-relaxation sweeps per VBD iteration.
+            tendon_settle_tol: Relative tension-change tolerance for stopping capstan material relaxation.
+            tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
 
             collision_pipeline: Optional :class:`~newton.CollisionPipeline`
                 owned by this solver. When given, the solver allocates its own
@@ -920,9 +941,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         )
 
         options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
+        self._solve_rigid_body_kernel = create_solve_rigid_body(model.tendon_count > 0)
         if integrates_rigid_bodies:
             rigid_modules = (
                 rigid_vbd_kernels,
+                self._solve_rigid_body_kernel.module,
                 accumulate_body_body_contacts_per_body.module,
                 compute_rigid_contact_forces.module,
                 update_duals_body_body_contacts.module,
@@ -941,6 +964,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.rigid_soft_contact_use_log_barrier = bool(rigid_soft_contact_use_log_barrier)
         self._joint_mode_deprecation_warned = False
 
+        self.tendon_max_sweeps = tendon_max_sweeps
+        self.tendon_settle_tol = tendon_settle_tol
+        self.tendon_activation_tol = tendon_activation_tol
         # Rigid integration mode: when True, rigid bodies are integrated by an external
         # solver (one-way coupling). SolverVBD will not move rigid bodies, but can still
         # participate in particle-rigid interaction on the particle side.
@@ -963,6 +989,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             particle_external_vertex_contact_filtering_map,
             particle_external_edge_contact_filtering_map,
         )
+
+        # Routed tendon geometry and material state are shared with XPBD; VBD
+        # evaluates their force and Hessian contributions natively.
+        self._init_tendon_state(model)
 
         # Initialize rigid body system and rigid-particle (body-particle) interaction state
         self._init_rigid_system(
@@ -1245,6 +1275,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
             # Adjacency and dimensions
             self.rigid_adjacency = self._compute_rigid_force_element_adjacency(model).to(self.device)
+            self.tendon_adjacency = self._compute_tendon_force_element_adjacency(model).to(self.device)
             (
                 self.body_particle_attachment_offsets,
                 self.body_particle_attachment_indices,
@@ -2382,6 +2413,59 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         return adjacency
 
+    def _compute_tendon_force_element_adjacency(self, model: Model) -> TendonForceElementAdjacencyInfo:
+        """Build CSR adjacency for authored and possible dynamic bypass segments."""
+        adjacency = TendonForceElementAdjacencyInfo()
+        body_segments = [set() for _ in range(model.body_count)]
+        body_colors = np.full(model.body_count, -1, dtype=np.int32)
+        for color, group in enumerate(model.body_color_groups):
+            body_colors[group.numpy()] = color
+
+        if model.tendon_segment_count > 0:
+            guide_bodies = model.tendon_guide_body.numpy()
+            guide_flags = model.tendon_guide_flags.numpy()
+            segment_left_guides = self.tendon_seg_guide_l.numpy()
+            guide_left_segments = self.tendon_guide_seg_left.numpy()
+            for segment, left_guide in enumerate(segment_left_guides):
+                body_l = int(guide_bodies[left_guide])
+                body_r = int(guide_bodies[left_guide + 1])
+                if body_l != body_r and len(model.body_color_groups) > 0 and body_colors[body_l] == body_colors[body_r]:
+                    raise ValueError(
+                        "model.body_color_groups does not separate tendon segment endpoints; "
+                        "call ModelBuilder.color() after adding tendons"
+                    )
+                body_segments[body_l].add(segment)
+                body_segments[body_r].add(segment)
+
+                right_guide = left_guide + 1
+                # Deactivation reuses the left authored segment for the bypass to the following guide.
+                if (guide_flags[right_guide] & int(TendonGuideFlags.DYNAMIC)) != 0 and guide_left_segments[
+                    right_guide
+                ] == segment:
+                    bypass_body = int(guide_bodies[right_guide + 1])
+                    if (
+                        bypass_body != body_l
+                        and len(model.body_color_groups) > 0
+                        and body_colors[bypass_body] == body_colors[body_l]
+                    ):
+                        raise ValueError(
+                            "model.body_color_groups does not separate dynamic tendon bypass endpoints; "
+                            "call ModelBuilder.color() after adding tendons"
+                        )
+                    body_segments[bypass_body].add(segment)
+
+        offsets = np.zeros(model.body_count + 1, dtype=np.int32)
+        for body, segments in enumerate(body_segments):
+            offsets[body + 1] = offsets[body] + len(segments)
+
+        flat_segments = np.asarray(
+            [segment for segments in body_segments for segment in sorted(segments)], dtype=np.int32
+        )
+        with wp.ScopedDevice("cpu"):
+            adjacency.body_adj_segments = wp.array(flat_segments, dtype=wp.int32)
+            adjacency.body_adj_segments_offsets = wp.array(offsets, dtype=wp.int32)
+        return adjacency
+
     def _compute_body_particle_attachment_adjacency(self, model: Model) -> tuple[wp.array, wp.array]:
         """Build CSR adjacency from rigid bodies to body-particle attachments."""
         if model.attachment_body_particle_count == 0:
@@ -2593,6 +2677,18 @@ class SolverVBD(SolverBase, CouplingInterface):
         if control is None:
             control = self.model.control(clone_variables=False)
 
+        # Must run BEFORE _initialize_rigid_bodies: the dynamic routing activation
+        # decision has to see the accepted pose, but the inertial predictor inside
+        # _initialize_rigid_bodies overwrites state_in.body_q in place.
+        if self.tendon_seg_lambda is not None and state_in.body_q is not None:
+            self._snapshot_tendon_step_state()
+            self._update_tendon_guide_active(self.model, state_in.body_q)
+            self._prepare_tendon_route(self.model, state_in.body_q, 1.0e-8)
+            self._rebaseline_tendon_geometry(state_in.body_q)
+            self.tendon_seg_material_tension.zero_()
+            if self.iterations == 0 or self.integrate_with_external_rigid_solver:
+                self.tendon_seg_lambda.zero_()
+
         self._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid)
         self._initialize_particles(state_in, state_out, contacts, dt)
 
@@ -2619,6 +2715,22 @@ class SolverVBD(SolverBase, CouplingInterface):
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt)
 
+        update_tendon_diagnostics = (
+            self.iterations > 0
+            and self.tendon_seg_lambda is not None
+            and state_in.body_q is not None
+            and not self.integrate_with_external_rigid_solver
+        )
+        if update_tendon_diagnostics:
+            # The final body update changes tendon geometry after the last
+            # in-iteration material solve. Accept its route state before
+            # reporting tension or carrying rest lengths into the next step.
+            # This accepted state is also where the unsupported-wrap
+            # diagnostic is meaningful (mid-iteration predictor overshoot is
+            # not), so report it here.
+            self._update_tendon_routing(state_in, dt, True)
+            self._snapshot_tendon_segment_length_reference(state_in.body_q, dt)
+
         # Opt-in contact force export: evaluate at the final iterate while the pose history the
         # iterations used is still intact (finalization advances it below).
         if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
@@ -2627,6 +2739,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Snapshot solved rigid contact state for next-frame warm-start.
         self._snapshot_rigid_contact_history(contacts)
         self._finalize_rigid_bodies(state_in, state_out, dt)
+        if update_tendon_diagnostics:
+            self._update_tendon_segment_diagnostics(state_out, dt)
         self._finalize_particles(state_out, dt)
 
     @override
@@ -2643,6 +2757,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         is zeroed immediately. Pose and enabled-rod friction history (curvature,
         stress, and increment) are rebaselined together from the next :meth:`step`
         input pose, after any intervening state edits or forward kinematics.
+        Mutable tendon material and routing state is restored to its initialized
+        values regardless of *flags*.
         REVOLUTE and one-axis-D6 winding re-anchors to the pose-equivalent angle
         nearest the authored rest coordinate; a pose alone cannot restore an
         independently intended multi-turn coordinate.
@@ -2772,6 +2888,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     outputs=[particle_q, particle_qd],
                     device=self.device,
                 )
+
+        self._reset_tendon_state(world_mask)
 
         if not self._integrates_rigid_bodies:
             return
@@ -4002,6 +4120,155 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         wp.copy(state_out.particle_q, state_in.particle_q)
 
+    def _update_tendon_routing(self, state_in: State, dt: float, report_unsupported_wrap: bool) -> None:
+        """Update VBD routed-tendon geometry and rolling rest transfer for this iteration."""
+        model = self.model
+        if model.tendon_segment_count == 0 or state_in.body_q is None:
+            return
+
+        wp.launch(
+            kernel=update_tendon_attachments,
+            dim=model.tendon_segment_count,
+            inputs=[
+                state_in.body_q,
+                model.tendon_start,
+                self.tendon_guide_tendon,
+                model.tendon_guide_body,
+                model.tendon_guide_type,
+                model.tendon_guide_flags,
+                model.tendon_guide_radius,
+                model.tendon_guide_orientation,
+                model.tendon_guide_offset,
+                model.tendon_guide_axis,
+                self.tendon_seg_active,
+                self.tendon_seg_active_guide_l,
+                self.tendon_seg_active_guide_r,
+                self.tendon_guide_active,
+                self.tendon_guide_active_step,
+                self.tendon_seg_attachment_l_local_step,
+                self.tendon_seg_attachment_r_local_step,
+                1,
+            ],
+            outputs=[
+                self.tendon_seg_attachment_l,
+                self.tendon_seg_attachment_r,
+                self.tendon_seg_attachment_l_local,
+                self.tendon_seg_attachment_r_local,
+                self.tendon_seg_rolling_delta_l,
+                self.tendon_seg_rolling_delta_r,
+                self.tendon_seg_length,
+            ],
+            device=self.device,
+        )
+
+        self._update_tendon_cone_rows(model, state_in.body_q, report_unsupported_wrap)
+
+        wp.launch(
+            kernel=solve_tendon_material,
+            dim=model.tendon_count,
+            inputs=[
+                state_in.body_q,
+                state_in.body_qd,
+                self.body_q_prev,
+                model.body_com,
+                model.tendon_start,
+                model.tendon_guide_body,
+                model.tendon_guide_type,
+                model.tendon_guide_radius,
+                model.tendon_guide_offset,
+                model.tendon_guide_axis,
+                self.tendon_seg_rest_length,
+                self.tendon_seg_rest_length_step,
+                self.tendon_seg_route_rest_length,
+                self.tendon_seg_stretch,
+                self.tendon_seg_damping_tension,
+                self.tendon_seg_active,
+                self.tendon_seg_active_guide_l,
+                self.tendon_seg_active_guide_r,
+                self.tendon_seg_active_compliance,
+                self.tendon_seg_active_damping,
+                self.tendon_guide_active,
+                self.tendon_guide_active_step,
+                self.tendon_guide_route_rest_length,
+                self.tendon_seg_attachment_l,
+                self.tendon_seg_attachment_r,
+                self.tendon_seg_length,
+                self.tendon_seg_attachment_l_local,
+                self.tendon_seg_attachment_r_local,
+                self.tendon_seg_rolling_delta_l,
+                self.tendon_seg_rolling_delta_r,
+                self.tendon_guide_cone_seg_l,
+                self.tendon_guide_cone_seg_r,
+                self.tendon_guide_cap_ratio,
+                self.tendon_cone_sweep_count,
+                1,
+                dt,
+                1,
+                1,
+                1,
+                self.tendon_max_sweeps,
+                self.tendon_settle_tol,
+            ],
+            device=self.device,
+        )
+
+    def _snapshot_tendon_segment_length_reference(self, body_q: wp.array[wp.transform], dt: float) -> None:
+        """Preserve previous-pose segment lengths through rigid finalization."""
+        model = self.model
+        # Native VBD does not accumulate XPBD delta lambdas, so this existing
+        # per-segment scratch can hold the damping reference until finalization.
+        wp.launch(
+            kernel=snapshot_tendon_segment_length_reference,
+            dim=model.tendon_segment_count,
+            inputs=[
+                dt,
+                body_q,
+                self.body_q_prev,
+                model.body_com,
+                model.tendon_guide_body,
+                model.tendon_guide_type,
+                model.tendon_guide_offset,
+                model.tendon_guide_axis,
+                self.tendon_seg_attachment_l_local,
+                self.tendon_seg_attachment_r_local,
+                self.tendon_seg_active,
+                self.tendon_seg_active_guide_l,
+                self.tendon_seg_active_guide_r,
+            ],
+            outputs=[self.tendon_seg_delta_lambda],
+            device=self.device,
+        )
+
+    def _update_tendon_segment_diagnostics(self, state_out: State, dt: float) -> None:
+        """Update tendon geometry and damping from the accepted rigid pose."""
+        model = self.model
+        wp.launch(
+            kernel=update_tendon_segment_diagnostics,
+            dim=model.tendon_segment_count,
+            inputs=[
+                dt,
+                state_out.body_q,
+                model.tendon_guide_body,
+                self.tendon_seg_attachment_l_local,
+                self.tendon_seg_attachment_r_local,
+                self.tendon_seg_rest_length,
+                self.tendon_seg_active_compliance,
+                self.tendon_seg_active_damping,
+                self.tendon_seg_active,
+                self.tendon_seg_active_guide_l,
+                self.tendon_seg_active_guide_r,
+                self.tendon_seg_delta_lambda,
+            ],
+            outputs=[
+                self.tendon_seg_attachment_l,
+                self.tendon_seg_attachment_r,
+                self.tendon_seg_material_tension,
+                self.tendon_seg_damping_tension,
+                self.tendon_seg_lambda,
+            ],
+            device=self.device,
+        )
+
     def _solve_rigid_body_iteration(
         self,
         state_in: State,
@@ -4054,6 +4321,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_hessian_aa.zero_()
         self.body_hessian_al.zero_()
         self.body_hessian_ll.zero_()
+
+        self._update_tendon_routing(state_in, dt, False)
 
         body_color_groups = model.body_color_groups
 
@@ -4188,7 +4457,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 )
 
             wp.launch(
-                kernel=solve_rigid_body,
+                kernel=self._solve_rigid_body_kernel,
                 inputs=[
                     dt,
                     color_group,
@@ -4245,6 +4514,23 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_hessian_ll,
                     self.body_hessian_al,
                     self.body_hessian_aa,
+                    self.tendon_adjacency,
+                    model.tendon_guide_body,
+                    model.tendon_guide_type,
+                    model.tendon_guide_radius,
+                    model.tendon_guide_mu,
+                    model.tendon_guide_offset,
+                    model.tendon_guide_axis,
+                    self.tendon_guide_cone_seg_l,
+                    self.tendon_guide_cone_seg_r,
+                    self.tendon_seg_rest_length,
+                    self.tendon_seg_attachment_l_local,
+                    self.tendon_seg_attachment_r_local,
+                    self.tendon_seg_active_compliance,
+                    self.tendon_seg_active_damping,
+                    self.tendon_seg_active,
+                    self.tendon_seg_active_guide_l,
+                    self.tendon_seg_active_guide_r,
                 ],
                 outputs=[
                     state_in.body_q,
