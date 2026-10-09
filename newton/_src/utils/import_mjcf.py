@@ -224,6 +224,46 @@ def _load_and_expand_mjcf(
 AttributeFrequency = Model.AttributeFrequency
 
 
+def _add_weld_group_filters(
+    builder: ModelBuilder, joint_indices: list[int], start_shape: int, end_shape: int, filter_parent: bool
+) -> None:
+    """Filter contacts the way MuJoCo does between bodies joined by fixed joints.
+
+    MuJoCo treats bodies attached through fixed joints as one weld body: their geoms never collide with
+    each other, and with ``filterparent`` a weld body does not collide with its parent weld body unless
+    that parent is the world. The builder only filters a joint's direct parent and child, which misses
+    fixed-joint chains such as finger pads hanging below a slide joint.
+    """
+    parent_of: dict[int, int] = {}
+    fixed: dict[int, bool] = {}
+    for joint in joint_indices:
+        child = builder.joint_child[joint]
+        parent_of[child] = builder.joint_parent[joint]
+        fixed[child] = builder.joint_type[joint] == JointType.FIXED
+
+    def weld_of(body: int) -> int:
+        while body in parent_of and fixed[body]:
+            body = parent_of[body]
+        return body
+
+    groups: dict[int, list[int]] = {}
+    for shape in range(start_shape, end_shape):
+        if builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES:
+            groups.setdefault(weld_of(builder.shape_body[shape]), []).append(shape)
+    for root, shapes in groups.items():
+        if root == -1:
+            continue  # shapes welded to the world are static; static pairs are never tested
+        for a, shape_a in enumerate(shapes):
+            for shape_b in shapes[a + 1 :]:
+                if builder.shape_body[shape_a] != builder.shape_body[shape_b]:
+                    builder.add_shape_collision_filter_pair(shape_a, shape_b)
+        if filter_parent and root in parent_of:
+            parent_root = weld_of(parent_of[root])
+            for shape_b in groups.get(parent_root, []) if parent_root != -1 else []:
+                for shape_a in shapes:
+                    builder.add_shape_collision_filter_pair(shape_a, shape_b)
+
+
 def parse_mjcf(
     builder: ModelBuilder,
     source: str,
@@ -3591,6 +3631,13 @@ def parse_mjcf(
             builder.shape_flags[shape_idx] |= ShapeFlags.VISIBLE
 
     end_shape_count = len(builder.shape_type)
+
+    filter_parent = all(
+        flag.attrib.get("filterparent", "enable") != "disable"
+        for option_elem in root.findall("option")
+        for flag in option_elem.findall("flag")
+    )
+    _add_weld_group_filters(builder, joint_indices, start_shape_count, end_shape_count, filter_parent)
 
     if not enable_self_collisions:
         # The broad phase only ever tests colliding shapes, so visual-only shapes need no filter pairs.
