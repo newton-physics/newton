@@ -25,7 +25,7 @@ from newton._src.geometry.sdf_hydroelastic import (
     unpack_hydro_voxel_coords,
     vec8f,
 )
-from newton._src.geometry.sdf_mc import get_triangle_fraction
+from newton._src.geometry.sdf_mc import _get_marching_cubes_class, get_triangle_fraction
 from newton._src.geometry.utils import _scan_scratch_size, scan_with_total
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
@@ -202,7 +202,7 @@ def test_mc_corner_offsets_match_canonical(test, device):
     """Verify canonical marching-cubes corner offsets."""
     offsets = wp.empty(8, dtype=wp.vec3i, device=device)
     wp.launch(_test_mc_corner_offsets, dim=8, inputs=[offsets], device=device)
-    expected = np.asarray(wp.MarchingCubes.CUBE_CORNER_OFFSETS, dtype=np.int32)
+    expected = np.asarray(_get_marching_cubes_class().CUBE_CORNER_OFFSETS, dtype=np.int32)
     np.testing.assert_array_equal(offsets.numpy(), expected)
 
 

@@ -3,14 +3,18 @@
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 import warnings
+import xml.etree.ElementTree as ET
 from unittest import mock
 
 import newton.tests.unittest_utils as unittest_utils
-from newton.tests.thirdparty.unittest_parallel import ParallelTextTestResult, _enable_strict_warnings
+from newton.tests.thirdparty.unittest_parallel import _enable_strict_warnings
+from newton.tests.thirdparty.unittest_parallel import main as unittest_parallel_main
 
 NewtonTestCase = unittest_utils.NewtonTestCase
 
@@ -386,65 +390,61 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertFalse(output_capture.active)
 
 
-class TestSkippedTestCleanup(unittest.TestCase):
-    def _gc_calls(self, resultclass, test_case, *, cuda_devices=()):
-        suite = unittest.defaultTestLoader.loadTestsFromTestCase(test_case)
-        with (
-            mock.patch("gc.collect") as collect,
-            mock.patch.object(unittest_utils.wp, "get_cuda_devices", return_value=list(cuda_devices)),
-            mock.patch.object(unittest_utils.wp, "is_mempool_enabled", return_value=False),
-        ):
-            result = unittest.TextTestRunner(
-                stream=io.StringIO(),
-                resultclass=resultclass,
-            ).run(suite)
-        self.assertTrue(result.wasSuccessful())
-        return collect.call_count
+class TestShardSelection(unittest.TestCase):
+    def test_invalid_shard_arguments_are_usage_errors(self):
+        """Reject a non-positive shard count and an out-of-range shard index."""
+        cases = (
+            (["--shard-count", "0"], "--shard-count must be greater than 0"),
+            (["--shard-count", "2", "--shard-index", "2"], "--shard-index must be in the range"),
+            (["--shard-count", "2", "--shard-index", "-1"], "--shard-index must be in the range"),
+        )
+        for argv, message in cases:
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as context:
+                    unittest_parallel_main(argv)
+                self.assertEqual(context.exception.code, 2)
+                self.assertIn(message, stderr.getvalue())
 
-    def test_static_skips_avoid_cleanup(self):
-        class MethodSkip(unittest.TestCase):
-            @unittest.skip("static method skip")
-            def test_skip(self):
-                pass
+    def test_runner_runs_only_the_selected_shard(self):
+        """Run only the selected shard in parallel and serial-fallback modes."""
+        fixture = "import unittest\n" + "".join(
+            f"\n\nclass TestShardFixture{i}(unittest.TestCase):\n    def test_case(self):\n        pass\n"
+            for i in range(3)
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with open(os.path.join(temp_dir, "test_shard_fixture.py"), "w", encoding="utf-8") as f:
+                f.write(fixture)
 
-        @unittest.skip("static class skip")
-        class ClassSkip(unittest.TestCase):
-            def test_skip(self):
-                pass
+            def run_shard(shard_count, shard_index, *extra_args):
+                report_path = os.path.join(temp_dir, f"shard{shard_index}.xml")
+                command = [
+                    sys.executable,
+                    "-m",
+                    "newton.tests",
+                    "--start-directory",
+                    temp_dir,
+                    "--pattern",
+                    "test_shard_fixture.py",
+                    "--maxjobs",
+                    "1",
+                    "--no-cache-clear",
+                    "--junit-report-xml",
+                    report_path,
+                    "--shard-count",
+                    str(shard_count),
+                    "--shard-index",
+                    str(shard_index),
+                    *extra_args,
+                ]
+                result = subprocess.run(command, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, msg=f"{result.stdout}\n{result.stderr}")
+                root = ET.parse(report_path).getroot()
+                return int(root.get("tests")), {case.get("classname") for case in root.iter("testcase")}
 
-        resultclasses = (unittest_utils.ParallelJunitTestResult, ParallelTextTestResult)
-        for resultclass in resultclasses:
-            with self.subTest(resultclass=resultclass.__name__, skip="method"):
-                self.assertEqual(self._gc_calls(resultclass, MethodSkip), 0)
-            with self.subTest(resultclass=resultclass.__name__, skip="class"):
-                self.assertEqual(self._gc_calls(resultclass, ClassSkip), 0)
-
-    def test_runtime_skip_and_executed_test_keep_cleanup(self):
-        class RuntimeSkip(unittest.TestCase):
-            def test_skip(self):
-                self.skipTest("runtime skip")
-
-        class Executed(unittest.TestCase):
-            def test_pass(self):
-                pass
-
-        resultclasses = (unittest_utils.ParallelJunitTestResult, ParallelTextTestResult)
-        for resultclass in resultclasses:
-            with self.subTest(resultclass=resultclass.__name__, outcome="runtime skip"):
-                self.assertEqual(self._gc_calls(resultclass, RuntimeSkip), 1)
-            with self.subTest(resultclass=resultclass.__name__, outcome="executed"):
-                self.assertEqual(self._gc_calls(resultclass, Executed), 1)
-
-    def test_cpu_batches_cleanup_but_cuda_cleans_each_test(self):
-        methods = {f"test_{i}": lambda self: None for i in range(17)}
-        ManyExecuted = type("ManyExecuted", (unittest.TestCase,), methods)
-
-        resultclasses = (unittest_utils.ParallelJunitTestResult, ParallelTextTestResult)
-        for resultclass in resultclasses:
-            with self.subTest(resultclass=resultclass.__name__, device="cpu"):
-                self.assertEqual(self._gc_calls(resultclass, ManyExecuted), 3)
-            with self.subTest(resultclass=resultclass.__name__, device="cuda"):
-                self.assertEqual(self._gc_calls(resultclass, ManyExecuted, cuda_devices=("cuda:0",)), 17)
+            self.assertEqual(run_shard(2, 1), (1, {"TestShardFixture1"}))
+            # The serial fallback runs the discovered suite directly, and an empty shard still writes a report.
+            self.assertEqual(run_shard(4, 3, "--serial-fallback"), (0, set()))
 
 
 if __name__ == "__main__":

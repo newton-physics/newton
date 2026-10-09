@@ -593,6 +593,8 @@ def parse_urdf(
             joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
             joint_data["limit_upper"] = float(el_limit.get("upper", default_joint_limit_upper))
             joint_data["limit_effort"] = float(el_limit.get("effort", default_joint_limit_effort))
+            if (velocity := el_limit.get("velocity")) is not None:
+                joint_data["limit_velocity"] = float(velocity)
         el_mimic = joint.find("mimic")
         if el_mimic is not None:
             joint_data["mimic_joint"] = el_mimic.get("joint")
@@ -783,6 +785,7 @@ def parse_urdf(
         lower = joint.get("limit_lower", None)
         upper = joint.get("limit_upper", None)
         effort_limit = joint.get("limit_effort", None)
+        velocity_limit = joint.get("limit_velocity")
         joint_damping = joint["damping"]
         joint_friction = joint["friction"]
 
@@ -812,6 +815,7 @@ def parse_urdf(
                 limit_lower=lower,
                 limit_upper=upper,
                 effort_limit=effort_limit,
+                velocity_limit=velocity_limit,
                 **joint_params,
             )
         elif joint["type"] == "prismatic":
@@ -823,6 +827,7 @@ def parse_urdf(
                 limit_lower=lower * scale,
                 limit_upper=upper * scale,
                 effort_limit=effort_limit,
+                velocity_limit=velocity_limit * scale if velocity_limit is not None else None,
                 **joint_params,
             )
         elif joint["type"] == "fixed":

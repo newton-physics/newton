@@ -1457,18 +1457,8 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                 device=self._device,
             )
 
-        self._active_rows = wp.array(
-            dtype=wp.int32,
-            shape=(self._model.size.num_worlds,),
-            ptr=self._data.info.num_total_cts.ptr,
-            copy=False,
-        )
-        self._active_cols = wp.array(
-            dtype=wp.int32,
-            shape=(self._model.size.num_worlds,),
-            ptr=self._data.info.num_total_cts.ptr,
-            copy=False,
-        )
+        self._active_rows = self._data.info.num_total_cts
+        self._active_cols = self._data.info.num_total_cts
 
         # Initialize temporary memory
         self._vec_temp_body_space = wp.empty(

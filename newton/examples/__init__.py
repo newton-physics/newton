@@ -354,9 +354,6 @@ class _ExampleBrowser:
         # what Reset restores.
         self._initial_args = copy.deepcopy(args) if args is not None else None
 
-        if not hasattr(viewer, "register_ui_callback"):
-            return
-
         examples = get_examples()
         tree: dict[str, list[tuple[str, str]]] = defaultdict(list)
         for name, module_path in examples.items():
@@ -364,6 +361,18 @@ class _ExampleBrowser:
             category = parts[2] if len(parts) > 2 else "other"
             tree[category].append((name, module_path))
         self._tree = dict(sorted(tree.items()))
+
+        if hasattr(viewer, "_configure_example_browser"):
+            viewer._configure_example_browser(
+                self._tree,
+                lambda module_path: setattr(self, "switch_target", module_path),
+            )
+            if hasattr(viewer, "set_reset_callback"):
+                viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
+            return
+
+        if not hasattr(viewer, "register_ui_callback"):
+            return
 
         def _browser_ui(imgui):
             imgui.set_next_item_open(False, imgui.Cond_.appearing)
@@ -406,6 +415,8 @@ class _ExampleBrowser:
             self.viewer.clear_all_layers()
         else:
             self.viewer.clear_model()
+        # Each example starts with picking enabled and may opt out in its constructor.
+        self.viewer.picking_enabled = True
 
     def switch(self, example_class):
         """Switch to the selected example. Returns (new_example, new_class) or (None, example_class)."""
@@ -528,7 +539,10 @@ def run(example, args):
 
     perform_test = args is not None and args.test
     test_post_step = perform_test and hasattr(example, "test_post_step")
-    test_final = perform_test and hasattr(example, "test_final")
+    test_final = perform_test and callable(getattr(example, "test_final", None))
+
+    if perform_test and not test_final:
+        raise NotImplementedError("Examples must implement test_final() to run in test mode")
 
     browser = _ExampleBrowser(viewer, args) if not perform_test else None
 
@@ -570,10 +584,7 @@ def run(example, args):
         _throttle_render_fps(frame_start_time, render_fps)
 
     if perform_test:
-        if test_final:
-            example.test_final()
-        elif not (test_post_step or test_final):
-            raise NotImplementedError("Example does not have a test_final or test_post_step method")
+        example.test_final()
 
     viewer.close()
 
@@ -926,7 +937,7 @@ def init(parser=None):
             benchmark_timeout=args.benchmark or None,
         )
     elif args.viewer == "viser":
-        viewer = newton.viewer.ViewerViser()
+        viewer = newton.viewer.ViewerViser(paused=args.paused)
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
 

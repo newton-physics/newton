@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -82,6 +83,29 @@ def _deprecation_warning_output_regexes(stderr: str, message_prefix: str):
 
 # Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
 warp_config_overrides: list[str] = []
+
+
+def _restore_warning_filters(saved: list) -> None:
+    warnings.filters[:] = saved
+
+
+def ignore_sensor_tiled_camera_deprecation() -> None:
+    """Silence the whole-class ``SensorTiledCamera`` deprecation warning.
+
+    ``SensorTiledCamera`` is deprecated in favor of ``newton.sensors.SensorCamera``.
+    The tests that still exercise it call this from ``setUpModule`` so its
+    construction warning does not escalate to an error under ``--strict-warnings``.
+
+    The suppression is scoped to the calling module: the previous global filter
+    state is restored after ``tearDownModule`` so it does not leak into later
+    test modules.
+    """
+    unittest.addModuleCleanup(_restore_warning_filters, warnings.filters[:])
+    warnings.filterwarnings(
+        "ignore",
+        message="SensorTiledCamera is deprecated",
+        category=DeprecationWarning,
+    )
 
 
 @contextlib.contextmanager
@@ -760,28 +784,46 @@ def cleanup_test_allocations():
             wp.set_mempool_release_threshold(device_name, 0)
 
 
-class AllocationCleanupTestResultMixin:
-    """Bound cleanup overhead while retaining per-test CUDA memory release."""
+@dataclasses.dataclass
+class _AllocationCleanupState:
+    tests_since_cleanup: int = 0
 
-    _CPU_CLEANUP_INTERVAL = 8
+
+class AllocationCleanupTestResultMixin:
+    """Batch allocation cleanup across suites in a worker process."""
+
+    _CLEANUP_INTERVAL = 8
+    _worker_cleanup_state: _AllocationCleanupState | None = None
+
+    @classmethod
+    def _start_worker(cls):
+        cls._worker_cleanup_state = _AllocationCleanupState()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._tests_since_cleanup = 0
+        self._cleanup_state = self._worker_cleanup_state or _AllocationCleanupState()
+        self.cleanup_count = 0
+        self.cleanup_seconds = 0.0
+
+    def _cleanup_allocations(self):
+        start = time.perf_counter()
+        cleanup_test_allocations()
+        self.cleanup_seconds += time.perf_counter() - start
+        self.cleanup_count += 1
+        self._cleanup_state.tests_since_cleanup = 0
 
     def stopTest(self, test):
         super().stopTest(test)
         if is_statically_skipped_test(test):
             return
-        self._tests_since_cleanup += 1
-        if wp.get_cuda_devices() or self._tests_since_cleanup >= self._CPU_CLEANUP_INTERVAL:
-            cleanup_test_allocations()
-            self._tests_since_cleanup = 0
+        self._cleanup_state.tests_since_cleanup += 1
+        if self._cleanup_state.tests_since_cleanup >= self._CLEANUP_INTERVAL:
+            self._cleanup_allocations()
 
     def stopTestRun(self):
-        if self._tests_since_cleanup:
-            cleanup_test_allocations()
-            self._tests_since_cleanup = 0
+        # Worker exit releases remaining allocations; standalone runs must flush.
+        if self._cleanup_state is not self._worker_cleanup_state and self._cleanup_state.tests_since_cleanup:
+            self._cleanup_allocations()
         super().stopTestRun()
 
 

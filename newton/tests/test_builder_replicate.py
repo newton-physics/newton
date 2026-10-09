@@ -103,9 +103,9 @@ class TestModelBuilderReplicate(unittest.TestCase):
         # Uneven group sizes exercise the balancing in the merge combine.
         builder.set_coloring([[0], [1, 2, 3]])
 
-        builder._record_cable_group("cable", (root, child + 1), (root_joint, child_joint + 1))
-        builder._record_cloth_group("cloth", (0, 3), (0, 1), (0, 1))
-        builder._record_soft_group("soft", (0, 4), (0, 1))
+        builder._record_curve_deformable_object("cable", (root, child + 1), (root_joint, child_joint + 1))
+        builder._record_surface_deformable_object("cloth", (0, 3), (0, 1), (0, 1))
+        builder._record_volume_deformable_object("soft", (0, 4), (0, 1))
         return builder
 
     @staticmethod
@@ -181,6 +181,58 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
                         self.assert_builder_merge_state_equal(expected, actual)
 
+    def test_copy_rotation_rotates_world_velocities(self):
+        """Verify that yaw rotates world-frame position and twist and that a pure translation leaves velocity unchanged."""
+
+        def make_source() -> ModelBuilder:
+            builder = ModelBuilder()
+            root = builder.add_link(xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity()), label="root")
+            builder.body_qd[root] = wp.spatial_vector(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+            free = builder.add_joint_free(child=root, label="free")
+            qd_start = builder.joint_qd_start[free]
+            builder.joint_qd[qd_start : qd_start + 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+            child = builder.add_link(xform=wp.transform((2.0, 0.0, 0.0), wp.quat_identity()), label="child")
+            hinge = builder.add_joint_revolute(parent=root, child=child, axis=(0.0, 0.0, 1.0), label="hinge")
+            builder.joint_qd[builder.joint_qd_start[hinge]] = 0.5
+            builder.body_qd[child] = wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 1.0, 0.0)
+            return builder
+
+        yaw = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2.0)
+        yaw_xform = wp.transform((0.0, 0.0, 0.0), yaw)
+        for merge in ("add_world", "replicate"):
+            with self.subTest(merge=merge):
+                scene = ModelBuilder()
+                if merge == "add_world":
+                    scene.add_world(make_source(), yaw_xform)
+                else:
+                    scene.replicate(make_source(), 1, xforms=[yaw_xform])
+
+                body_q = np.asarray(scene.body_q, dtype=np.float32)
+                body_qd = np.asarray(scene.body_qd, dtype=np.float32)
+                np.testing.assert_allclose(body_q[0, :3], [0.0, 1.0, 0.0], atol=1e-5)
+                np.testing.assert_allclose(body_q[1, :3], [0.0, 2.0, 0.0], atol=1e-5)
+                expected_yaw = np.broadcast_to(np.asarray(yaw, dtype=np.float32), (2, 4))
+                np.testing.assert_allclose(body_q[:, 3:], expected_yaw, atol=1e-5)
+                np.testing.assert_allclose(body_qd[0], [0.0, 1.0, 0.0, 0.0, 1.0, 0.0], atol=1e-5)
+                np.testing.assert_allclose(body_qd[1], [0.0, 0.0, 1.0, -1.0, 0.0, 0.0], atol=1e-5)
+                joint_qd = np.asarray(scene.joint_qd, dtype=np.float32)
+                np.testing.assert_allclose(joint_qd[:6], [0.0, 1.0, 0.0, 0.0, 1.0, 0.0], atol=1e-5)
+                np.testing.assert_allclose(joint_qd[6], 0.5, atol=1e-6)
+                free_q = np.asarray(scene.joint_q[:7], dtype=np.float32)
+                np.testing.assert_allclose(free_q[:3], [0.0, 1.0, 0.0], atol=1e-5)
+
+        source = make_source()
+        translated = ModelBuilder()
+        translated.add_world(source, wp.transform((5.0, -2.0, 3.0), wp.quat_identity()))
+        np.testing.assert_array_equal(np.asarray(translated.body_qd), np.asarray(source.body_qd))
+        np.testing.assert_array_equal(np.asarray(translated.joint_qd), np.asarray(source.joint_qd))
+        np.testing.assert_allclose(np.asarray(translated.body_q[0])[:3], [6.0, -2.0, 3.0], atol=1e-6)
+
+        replicated = ModelBuilder()
+        replicated.replicate(source, 1, xforms=[wp.transform((5.0, -2.0, 3.0), wp.quat_identity())])
+        np.testing.assert_array_equal(np.asarray(replicated.body_qd), np.asarray(source.body_qd))
+        np.testing.assert_array_equal(np.asarray(replicated.joint_qd), np.asarray(source.joint_qd))
+
     def test_replicate_matches_add_world_loop_with_explicit_transforms(self):
         source = self._make_source()
         xforms = [
@@ -205,7 +257,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         reference = source.add_joint_revolute(-1, body0)
         follower = source.add_joint_revolute(body0, body1)
         source.add_articulation([reference, follower])
-        source.set_joint_mimic(follower, reference, (0.25, -2.0))
+        source.set_joint_mimic(follower, reference, coeffs=(0.25, -2.0))
 
         builder = ModelBuilder()
         builder.replicate(source, 3)

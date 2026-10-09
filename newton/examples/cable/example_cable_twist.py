@@ -185,7 +185,6 @@ class Example:
                 bend_damping=1.0e-2 * angular_stiffness,
                 twist_damping=1.0e-2 * angular_stiffness,
                 label=f"cable_{i}",
-                body_frame_origin="com",
             )
 
             # Fix the first body to make it kinematic
@@ -216,7 +215,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
         )
 
         self.state_0 = self.model.state()

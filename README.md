@@ -19,7 +19,9 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 
 - **Python** 3.10+
 - **OS:** Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-- **GPU:** NVIDIA GPU (Maxwell or newer), driver 545 or newer (CUDA 12). No local CUDA Toolkit installation required. macOS runs on CPU.
+- **GPU:** Fresh installs currently select Warp 1.18, which requires an NVIDIA Turing GPU (compute capability 7.5+) and driver R580+ for CUDA acceleration.
+  On an R545–R579 driver or an older supported GPU, install with `warp-lang==1.17.0` (see the installation guide).
+  No local CUDA Toolkit is required; macOS runs on CPU.
 
 For detailed system requirements, see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html). For tested configurations and Newton's versioning and deprecation policies, see the [compatibility guide](https://newton-physics.github.io/newton/latest/guide/compatibility.html).
 
@@ -605,8 +607,8 @@ If you run the examples from a source checkout with uv, use
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_tiled_camera.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_tiled_camera.jpg" alt="Sensor Tiled Camera">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_camera.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_camera.jpg" alt="Sensor Camera">
       </a>
     </td>
     <td align="center" width="33%">
@@ -620,7 +622,7 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples sensor_contact</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples sensor_tiled_camera</code>
+      <code>python -m newton.examples sensor_camera</code>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples sensor_imu</code>
