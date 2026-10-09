@@ -14,21 +14,24 @@ from __future__ import annotations
 from typing import Any
 
 import warp as wp
-from warp.fem.linalg import symmetric_eigenvalues_qr
 
 from ...core.math import compute_gyroscopic_torque
-from ...core.types import mat66f, vec6f
+from ...core.types import mat36f, mat66f, vec6f
 
 ###
 # Module interface
 ###
 
 __all__ = [
+    "ProjectionWeights",
+    "_add_body_weights_to_matrix",
     "_assemble_body_inertial_systems",
     "_assemble_dynamic_joint_rows",
     "_assemble_structural_joint_rows",
     "_build_candidate_right_hand_side",
-    "_compute_body_weights_and_add",
+    "_compute_free_body_blocks",
+    "_compute_patch_schur_weights",
+    "_compute_patch_schur_weights_subtraction",
     "apply_body_weight",
     "compute_body_explicit_wrench",
     "compute_structural_correction",
@@ -48,9 +51,6 @@ wp.set_module_options({"enable_backward": False})
 # Constants
 ###
 
-
-_EIGENVALUE_TOLERANCE = 1.0e-7
-"""Relative off-diagonal tolerance of the QR eigenvalues of the normalized body blocks."""
 
 _EIGENVALUE_FLUSH_FRACTION = 1.0e-10
 """Magnitude, relative to the largest entry, at or below which symmetric matrices flush their entries to zero
@@ -82,33 +82,30 @@ class _PrimalRowContribution:
 ###
 
 
+@wp.struct
+class ProjectionWeights:
+    """Body weights of the unilateral projection and the twist responses of the rows prepared from them."""
+
+    inverse_weight: wp.array[mat66f]
+    """Inverse body weight ``W^-1`` of each body."""
+    box_response: wp.array2d[vec6f]
+    """Twist response ``W^-1 J^T`` of each box row on its bodies A and B."""
+    contact_response: wp.array2d[mat36f]
+    """Transposed twist response ``J W^-1`` of each contact on its bodies A and B."""
+
+
 @wp.func
 def apply_body_weight(weight: mat66f, value: vec6f) -> vec6f:
-    """Return ``weight @ value`` for a body weight or its inverse, reading only its nonzero blocks.
-
-    Body weights are block diagonal, with a diagonal linear block and a full angular block
-    (see :func:`_compute_body_weight_mass_proportional`).
-    """
-    angular_block = wp.mat33f(
-        weight[3, 3],
-        weight[3, 4],
-        weight[3, 5],
-        weight[4, 3],
-        weight[4, 4],
-        weight[4, 5],
-        weight[5, 3],
-        weight[5, 4],
-        weight[5, 5],
-    )
-    angular = angular_block @ wp.vec3f(value[3], value[4], value[5])
-    return vec6f(
-        weight[0, 0] * value[0],
-        weight[1, 1] * value[1],
-        weight[2, 2] * value[2],
-        angular[0],
-        angular[1],
-        angular[2],
-    )
+    """Return ``weight @ value`` for a symmetric body weight or its inverse, reading its upper triangle."""
+    result = vec6f(0.0)
+    for row in range(6):
+        diagonal = weight[row, row]
+        result[row] += diagonal * value[row]
+        for col in range(row + 1, 6):
+            entry = weight[row, col]
+            result[row] += entry * value[col]
+            result[col] += entry * value[row]
+    return result
 
 
 @wp.func
@@ -132,16 +129,6 @@ def compute_structural_correction(
     The part of the residual beyond ``dead_zone`` is corrected, by at most ``max_correction``.
     """
     return wp.sign(residual) * wp.clamp(wp.abs(residual) - dead_zone, 0.0, max_correction)
-
-
-@wp.func
-def _symmetrize_mat33(value: wp.mat33f) -> wp.mat33f:
-    return 0.5 * (value + wp.transpose(value))
-
-
-@wp.func
-def _symmetrize_mat66(value: mat66f) -> mat66f:
-    return 0.5 * (value + wp.transpose(value))
 
 
 @wp.func
@@ -170,111 +157,6 @@ def normalize_symmetric_matrix(matrix: Any, size: wp.int32):
             if wp.abs(normalized[row, col]) <= _EIGENVALUE_FLUSH_FRACTION:
                 normalized[row, col] = 0.0
     return normalized, scale
-
-
-@wp.func
-def _compute_body_weight_mass_proportional(
-    smooth_diagonal: mat66f,
-    mass: wp.float32,
-    inertia_world: wp.mat33f,
-    sigma: wp.float32,
-    beta: wp.float32,
-    mass_floor: wp.float32 = 1.0e-8,
-    inertia_floor: wp.float32 = 1.0e-10,
-    eta_floor: wp.float32 = 1.0e-6,
-) -> tuple[mat66f, mat66f]:
-    """Compute a mass-proportional rigid-body weight and its inverse.
-
-    The implementation forms the symmetric normalization
-    ``M^-1/2 smooth_diagonal M^-1/2``. The world-space inertia square root
-    comes from a symmetric ``3 x 3`` eigendecomposition, and the normalized
-    minimum eigenvalue from the bounded QR algorithm of :mod:`warp.fem.linalg`.
-    This device work is suitable for CUDA graph capture.
-
-    Finite asymmetric matrices are symmetrized. Positive mass below
-    ``mass_floor``, inertia eigenvalues below ``inertia_floor``, and normalized
-    smooth eigenvalues below ``eta_floor`` are clamped. Non-finite input,
-    or nonpositive mass return zero matrices.
-
-    Args:
-        smooth_diagonal: Symmetric ``6 x 6`` body block ``A_ii`` in
-            linear-first twist order.
-        mass: Positive body mass [kg].
-        inertia_world: Symmetric body inertia about its center of mass in
-            world axes [kg m^2].
-        sigma: Lower spectral fraction in the weight clamp.
-        beta: Nominal weight transition threshold. The ``sigma`` floor may
-            exceed it for sufficiently stiff modes.
-        mass_floor: Minimum accepted positive mass [kg].
-        inertia_floor: Minimum principal moment [kg m^2].
-        eta_floor: Minimum dimensionless normalized smooth eigenvalue.
-
-    Returns:
-        The weight ``W = alpha M`` and its inverse.
-    """
-    if not wp.isfinite(mass) or not wp.isfinite(inertia_world) or not wp.isfinite(smooth_diagonal) or mass <= 0.0:
-        return mat66f(0.0), mat66f(0.0)
-
-    regularized_mass = mass
-    if regularized_mass < mass_floor:
-        regularized_mass = mass_floor
-
-    symmetric_inertia = _symmetrize_mat33(inertia_world)
-    symmetric_smooth = _symmetrize_mat66(smooth_diagonal)
-
-    inertia_axes, inertia_eigenvalues = wp.eig3(symmetric_inertia)
-    if not wp.isfinite(inertia_eigenvalues) or not wp.isfinite(inertia_axes):
-        return mat66f(0.0), mat66f(0.0)
-    regularized_inertia_eigenvalues = wp.max(inertia_eigenvalues, wp.vec3f(inertia_floor))
-    inverse_inertia_eigenvalues = wp.vec3f(0.0)
-    inverse_sqrt_inertia_eigenvalues = wp.vec3f(0.0)
-    for index in range(3):
-        inverse_inertia_eigenvalues[index] = 1.0 / regularized_inertia_eigenvalues[index]
-        inverse_sqrt_inertia_eigenvalues[index] = 1.0 / wp.sqrt(regularized_inertia_eigenvalues[index])
-
-    regularized_inertia = wp.mat33f(0.0)
-    inverse_inertia = wp.mat33f(0.0)
-    inverse_sqrt_inertia = wp.mat33f(0.0)
-    for row in range(3):
-        for col in range(3):
-            for index in range(3):
-                axis_product = inertia_axes[row, index] * inertia_axes[col, index]
-                regularized_inertia[row, col] += axis_product * regularized_inertia_eigenvalues[index]
-                inverse_inertia[row, col] += axis_product * inverse_inertia_eigenvalues[index]
-                inverse_sqrt_inertia[row, col] += axis_product * inverse_sqrt_inertia_eigenvalues[index]
-
-    inverse_sqrt_mass = 1.0 / wp.sqrt(regularized_mass)
-    inverse_sqrt_spatial_mass = mat66f(0.0)
-    for index in range(3):
-        inverse_sqrt_spatial_mass[index, index] = inverse_sqrt_mass
-    for row in range(3):
-        for col in range(3):
-            inverse_sqrt_spatial_mass[row + 3, col + 3] = inverse_sqrt_inertia[row, col]
-
-    normalized_smooth = inverse_sqrt_spatial_mass @ symmetric_smooth @ inverse_sqrt_spatial_mass
-    normalized_smooth, smooth_scale = normalize_symmetric_matrix(_symmetrize_mat66(normalized_smooth), 6)
-    eigenvalues, _eigenvectors = symmetric_eigenvalues_qr(normalized_smooth, _EIGENVALUE_TOLERANCE)
-    eta = smooth_scale * wp.min(eigenvalues)
-    if not wp.isfinite(eta):
-        return mat66f(0.0), mat66f(0.0)
-    if eta < eta_floor:
-        eta = eta_floor
-
-    alpha = wp.max(sigma * eta, wp.min(beta, eta))
-    if not wp.isfinite(alpha) or alpha <= 0.0:
-        return mat66f(0.0), mat66f(0.0)
-
-    weight = mat66f(0.0)
-    inverse_weight = mat66f(0.0)
-    for index in range(3):
-        weight[index, index] = alpha * regularized_mass
-        inverse_weight[index, index] = 1.0 / (alpha * regularized_mass)
-    for row in range(3):
-        for col in range(3):
-            weight[row + 3, col + 3] = alpha * regularized_inertia[row, col]
-            inverse_weight[row + 3, col + 3] = inverse_inertia[row, col] / alpha
-
-    return weight, inverse_weight
 
 
 @wp.func
@@ -641,22 +523,25 @@ def _assemble_structural_joint_rows(
     """Assemble the frozen penalty terms of each structural row, or a zero penalty for rows left out."""
     joint_row = wp.tid()
     wid = row_world[joint_row]
-    if wid < 0 or wid >= joint_penalty_scale.shape[0]:
+    if wid < 0:
         penalty[joint_row] = 0.0
         return
     dt = model_time_dt[wid]
     bid_a = body_a[joint_row]
     bid_b = body_b[joint_row]
     body_count = body_block.shape[0]
-    world_penalty_scale = joint_penalty_scale[wid]
     if (
         dt <= 0.0
-        or world_penalty_scale <= 0.0
         or effective_mass[joint_row] <= 0.0
         or (bid_a < 0 and bid_b < 0)
         or bid_a >= body_count
         or bid_b >= body_count
     ):
+        penalty[joint_row] = 0.0
+        return
+    # Both bodies of a joint share the scale of their component
+    world_penalty_scale = joint_penalty_scale[wp.where(bid_a >= 0, bid_a, bid_b)]
+    if world_penalty_scale <= 0.0:
         penalty[joint_row] = 0.0
         return
 
@@ -717,52 +602,384 @@ def _assemble_structural_joint_rows(
         )
 
 
+@wp.func
+def _read_body_block(
+    matrix: wp.array[wp.float32], offset: wp.int32, dimension: wp.int32, row_body: wp.int32, col_body: wp.int32
+) -> mat66f:
+    """Read the ``6 x 6`` block of two local bodies from a dense block matrix."""
+    block = mat66f(0.0)
+    for row in range(6):
+        for col in range(6):
+            block[row, col] = matrix[_matrix_index(offset, dimension, 6 * row_body + row, 6 * col_body + col)]
+    return block
+
+
+@wp.func
+def _joint_row_side_block(
+    kind: wp.int32,
+    row: wp.int32,
+    side: wp.int32,
+    structural_jacobian_a: wp.array[vec6f],
+    structural_jacobian_b: wp.array[vec6f],
+    structural_penalty: wp.array[wp.float32],
+    structural_world: wp.array[wp.int32],
+    dynamic_jacobian_a: wp.array[vec6f],
+    dynamic_jacobian_b: wp.array[vec6f],
+    dynamic_effective_inertia: wp.array[wp.float32],
+    model_time_dt: wp.array[wp.float32],
+) -> mat66f:
+    """Return the diagonal-block term ``c J^T J`` of one joint row on one of its bodies."""
+    if kind == 0:
+        dt = model_time_dt[structural_world[row]]
+        jacobian = wp.where(side == 0, structural_jacobian_a[row], structural_jacobian_b[row])
+        return (dt * dt * structural_penalty[row]) * wp.outer(jacobian, jacobian)
+    jacobian = wp.where(side == 0, dynamic_jacobian_a[row], dynamic_jacobian_b[row])
+    return dynamic_effective_inertia[row] * wp.outer(jacobian, jacobian)
+
+
+@wp.func
+def _cholesky_mat66(matrix: mat66f) -> tuple[mat66f, wp.bool]:
+    """Return the lower Cholesky factor of a symmetric ``6 x 6`` matrix and whether it is positive definite."""
+    lower = mat66f(0.0)
+    for col in range(6):
+        diagonal = matrix[col, col]
+        for inner in range(col):
+            diagonal -= lower[col, inner] * lower[col, inner]
+        if not (diagonal > 0.0) or not wp.isfinite(diagonal):
+            return lower, False
+        root = wp.sqrt(diagonal)
+        lower[col, col] = root
+        inverse_root = 1.0 / root
+        for row in range(col + 1, 6):
+            value = matrix[row, col]
+            for inner in range(col):
+                value -= lower[row, inner] * lower[col, inner]
+            lower[row, col] = value * inverse_root
+    return lower, True
+
+
 @wp.kernel
-def _compute_body_weights_and_add(
+def _compute_free_body_blocks(
     # Inputs:
     body_block: wp.array[wp.int32],
     body_local: wp.array[wp.int32],
-    body_weight_enabled: wp.array[wp.int32],
     dimensions: wp.array[wp.int32],
     matrix_offsets: wp.array[wp.int32],
-    model_bodies_m_i: wp.array[wp.float32],
-    data_bodies_I_i: wp.array[wp.mat33f],
-    sigma: wp.float32,
-    beta: wp.float32,
-    # Outputs:
-    weight: wp.array[mat66f],
-    inverse_weight: wp.array[mat66f],
     matrix: wp.array[wp.float32],
+    incidence_offset: wp.array[wp.int32],
+    incidence_kind: wp.array[wp.int32],
+    incidence_row: wp.array[wp.int32],
+    incidence_side: wp.array[wp.int32],
+    structural_jacobian_a: wp.array[vec6f],
+    structural_jacobian_b: wp.array[vec6f],
+    structural_penalty: wp.array[wp.float32],
+    structural_world: wp.array[wp.int32],
+    dynamic_jacobian_a: wp.array[vec6f],
+    dynamic_jacobian_b: wp.array[vec6f],
+    dynamic_effective_inertia: wp.array[wp.float32],
+    model_time_dt: wp.array[wp.float32],
+    # Outputs:
+    free_block: wp.array[mat66f],
+    free_lower: wp.array[mat66f],
 ):
-    """Compute the splitting weight of each enabled body from its diagonal block of ``A`` and add it in place.
+    """Return the diagonal block of each body without its joint rows to other dynamic bodies, and its Cholesky factor.
 
-    Each body owns its diagonal block, which one thread updates in place.
+    The incidence lists only hold these rows; the rows to static bodies stay in the block. The factor is zero
+    when the block is not positive definite, e.g. for a massless body.
     """
     bid = wp.tid()
     block = body_block[bid]
-    if block < 0 or body_weight_enabled[bid] == 0:
+    if block < 0:
+        return
+    result = _read_body_block(matrix, matrix_offsets[block], dimensions[block], body_local[bid], body_local[bid])
+    for incident in range(incidence_offset[bid], incidence_offset[bid + 1]):
+        result -= _joint_row_side_block(
+            incidence_kind[incident],
+            incidence_row[incident],
+            incidence_side[incident],
+            structural_jacobian_a,
+            structural_jacobian_b,
+            structural_penalty,
+            structural_world,
+            dynamic_jacobian_a,
+            dynamic_jacobian_b,
+            dynamic_effective_inertia,
+            model_time_dt,
+        )
+    free_block[bid] = result
+    lower, valid = _cholesky_mat66(0.5 * (result + wp.transpose(result)))
+    if valid:
+        free_lower[bid] = lower
+    else:
+        free_lower[bid] = mat66f(0.0)
+
+
+@wp.func
+def _joint_row(
+    kind: wp.int32,
+    row: wp.int32,
+    structural_jacobian_a: wp.array[vec6f],
+    structural_jacobian_b: wp.array[vec6f],
+    structural_penalty: wp.array[wp.float32],
+    structural_world: wp.array[wp.int32],
+    dynamic_jacobian_a: wp.array[vec6f],
+    dynamic_jacobian_b: wp.array[vec6f],
+    dynamic_effective_inertia: wp.array[wp.float32],
+    model_time_dt: wp.array[wp.float32],
+) -> tuple[wp.float32, vec6f, vec6f]:
+    """Return the matrix coefficient and the Jacobians on both bodies of one structural or dynamic joint row."""
+    if kind == 0:
+        dt = model_time_dt[structural_world[row]]
+        return dt * dt * structural_penalty[row], structural_jacobian_a[row], structural_jacobian_b[row]
+    return dynamic_effective_inertia[row], dynamic_jacobian_a[row], dynamic_jacobian_b[row]
+
+
+@wp.func
+def _finish_body_weight(bid: wp.int32, schur: mat66f, weight: wp.array[mat66f], inverse_weight: wp.array[mat66f]):
+    """Store the symmetrized weight and its inverse, or zero when it is not positive definite."""
+    symmetric = 0.5 * (schur + wp.transpose(schur))
+    inverse, ok = _invert_spd_mat66(symmetric)
+    if not ok:
         weight[bid] = mat66f(0.0)
         inverse_weight[bid] = mat66f(0.0)
         return
-    local_body = body_local[bid]
-    dimension = dimensions[block]
-    matrix_offset = matrix_offsets[block]
-    body_offset = 6 * local_body
-    smooth_diagonal = mat66f(0.0)
+    weight[bid] = symmetric
+    inverse_weight[bid] = 0.5 * (inverse + wp.transpose(inverse))
+
+
+@wp.kernel
+def _compute_patch_schur_weights(
+    # Inputs:
+    body_block: wp.array[wp.int32],
+    body_weight_enabled: wp.array[wp.int32],
+    free_block: wp.array[mat66f],
+    free_lower: wp.array[mat66f],
+    neighbor_offset: wp.array[wp.int32],
+    neighbor_body: wp.array[wp.int32],
+    neighbor_row_offset: wp.array[wp.int32],
+    neighbor_row_kind: wp.array[wp.int32],
+    neighbor_row: wp.array[wp.int32],
+    neighbor_row_side: wp.array[wp.int32],
+    structural_jacobian_a: wp.array[vec6f],
+    structural_jacobian_b: wp.array[vec6f],
+    structural_penalty: wp.array[wp.float32],
+    structural_world: wp.array[wp.int32],
+    dynamic_jacobian_a: wp.array[vec6f],
+    dynamic_jacobian_b: wp.array[vec6f],
+    dynamic_effective_inertia: wp.array[wp.float32],
+    model_time_dt: wp.array[wp.float32],
+    # Outputs:
+    weight: wp.array[mat66f],
+    inverse_weight: wp.array[mat66f],
+):
+    """Set ``W_i`` to the Schur complement of body ``i`` in the matrix of ``i`` and its joint neighbors ``j``.
+
+    Each neighbor keeps only its joint to ``i``: with ``F_j`` the block of ``j`` without its joint rows to
+    dynamic bodies, and the at most six rows of the joint ``J_e = [J_ei, J_ej]`` with coefficients ``C``,
+
+        ``W_i = F_i + sum_e J_ei^T (C^-1 + J_ej F_j^-1 J_ej^T)^-1 J_ei``,
+
+    a sum of positive semi-definite terms that remains accurate for stiff joints and tends to the composite
+    inertia of the patch. A neighbor whose ``F_j`` is not positive definite, e.g. a massless body, adds
+    nothing. The result bounds ``[(A^-1)_ii]^-1``.
+    """
+    bid = wp.tid()
+    if body_block[bid] < 0 or body_weight_enabled[bid] == 0:
+        weight[bid] = mat66f(0.0)
+        inverse_weight[bid] = mat66f(0.0)
+        return
+    schur = free_block[bid]
+    for entry in range(neighbor_offset[bid], neighbor_offset[bid + 1]):
+        lower = free_lower[neighbor_body[entry]]
+        if not (lower[0, 0] > 0.0):
+            continue
+        # Joint rows on the body and rows of L_j^-1 J_ej^T in fixed slots; an unused slot is a zero row with a
+        # unit diagonal in K = C^-1 + J_ej F_j^-1 J_ej^T
+        row_begin = neighbor_row_offset[entry]
+        row_count = neighbor_row_offset[entry + 1] - row_begin
+        body_rows = mat66f(0.0)
+        forward_rows = mat66f(0.0)
+        joint_matrix = mat66f(0.0)
+        for slot in range(6):
+            joint_matrix[slot, slot] = 1.0
+            if slot < row_count:
+                row_entry = row_begin + slot
+                coefficient, jacobian_a, jacobian_b = _joint_row(
+                    neighbor_row_kind[row_entry],
+                    neighbor_row[row_entry],
+                    structural_jacobian_a,
+                    structural_jacobian_b,
+                    structural_penalty,
+                    structural_world,
+                    dynamic_jacobian_a,
+                    dynamic_jacobian_b,
+                    dynamic_effective_inertia,
+                    model_time_dt,
+                )
+                if coefficient > 0.0:
+                    neighbor_side = neighbor_row_side[row_entry]
+                    neighbor_jacobian = wp.where(neighbor_side == 0, jacobian_a, jacobian_b)
+                    body_jacobian = wp.where(neighbor_side == 0, jacobian_b, jacobian_a)
+                    forward = vec6f(0.0)
+                    for axis in range(6):
+                        value = neighbor_jacobian[axis]
+                        for inner in range(axis):
+                            value -= lower[axis, inner] * forward[inner]
+                        forward[axis] = value / lower[axis, axis]
+                    for axis in range(6):
+                        forward_rows[slot, axis] = forward[axis]
+                        body_rows[slot, axis] = body_jacobian[axis]
+                    joint_matrix[slot, slot] = 1.0 / coefficient
+        joint_matrix += forward_rows @ wp.transpose(forward_rows)
+        joint_lower, joint_valid = _cholesky_mat66(joint_matrix)
+        if not joint_valid:
+            continue
+        # Z = P^-1 J_ei with K = P P^T, then J_ei^T K^-1 J_ei = Z^T Z
+        solved = mat66f(0.0)
+        for axis in range(6):
+            for col in range(6):
+                value = body_rows[axis, col]
+                for inner in range(axis):
+                    value -= joint_lower[axis, inner] * solved[inner, col]
+                solved[axis, col] = value / joint_lower[axis, axis]
+        schur += wp.transpose(solved) @ solved
+    _finish_body_weight(bid, schur, weight, inverse_weight)
+
+
+@wp.kernel
+def _compute_patch_schur_weights_subtraction(
+    # Inputs:
+    body_block: wp.array[wp.int32],
+    body_weight_enabled: wp.array[wp.int32],
+    free_block: wp.array[mat66f],
+    free_lower: wp.array[mat66f],
+    neighbor_offset: wp.array[wp.int32],
+    neighbor_body: wp.array[wp.int32],
+    neighbor_row_offset: wp.array[wp.int32],
+    neighbor_row_kind: wp.array[wp.int32],
+    neighbor_row: wp.array[wp.int32],
+    neighbor_row_side: wp.array[wp.int32],
+    structural_jacobian_a: wp.array[vec6f],
+    structural_jacobian_b: wp.array[vec6f],
+    structural_penalty: wp.array[wp.float32],
+    structural_world: wp.array[wp.int32],
+    dynamic_jacobian_a: wp.array[vec6f],
+    dynamic_jacobian_b: wp.array[vec6f],
+    dynamic_effective_inertia: wp.array[wp.float32],
+    model_time_dt: wp.array[wp.float32],
+    # Outputs:
+    weight: wp.array[mat66f],
+    inverse_weight: wp.array[mat66f],
+):
+    """Set ``W_i = F_i + sum_e (R_ei - A_ij (F_j + R_ej)^-1 A_ji)``, the patch Schur complement of each body.
+
+    Equivalent to :func:`_compute_patch_schur_weights` for joints with more than six rows between two bodies.
+    """
+    bid = wp.tid()
+    if body_block[bid] < 0 or body_weight_enabled[bid] == 0:
+        weight[bid] = mat66f(0.0)
+        inverse_weight[bid] = mat66f(0.0)
+        return
+    schur = free_block[bid]
+    for entry in range(neighbor_offset[bid], neighbor_offset[bid + 1]):
+        neighbor_matrix = free_block[neighbor_body[entry]]
+        coupling = mat66f(0.0)
+        for row_entry in range(neighbor_row_offset[entry], neighbor_row_offset[entry + 1]):
+            coefficient, jacobian_a, jacobian_b = _joint_row(
+                neighbor_row_kind[row_entry],
+                neighbor_row[row_entry],
+                structural_jacobian_a,
+                structural_jacobian_b,
+                structural_penalty,
+                structural_world,
+                dynamic_jacobian_a,
+                dynamic_jacobian_b,
+                dynamic_effective_inertia,
+                model_time_dt,
+            )
+            neighbor_side = neighbor_row_side[row_entry]
+            neighbor_jacobian = wp.where(neighbor_side == 0, jacobian_a, jacobian_b)
+            body_jacobian = wp.where(neighbor_side == 0, jacobian_b, jacobian_a)
+            scaled = coefficient * neighbor_jacobian
+            neighbor_matrix += wp.outer(scaled, neighbor_jacobian)
+            coupling += wp.outer(scaled, body_jacobian)
+            schur += wp.outer(coefficient * body_jacobian, body_jacobian)
+        lower, valid = _cholesky_mat66(neighbor_matrix)
+        if not valid:
+            continue
+        solved = mat66f(0.0)
+        for axis in range(6):
+            for col in range(6):
+                value = coupling[axis, col]
+                for inner in range(axis):
+                    value -= lower[axis, inner] * solved[inner, col]
+                solved[axis, col] = value / lower[axis, axis]
+        schur -= wp.transpose(solved) @ solved
+    _finish_body_weight(bid, schur, weight, inverse_weight)
+
+
+@wp.func
+def _invert_spd_mat66(matrix: mat66f) -> tuple[mat66f, wp.bool]:
+    """Invert a symmetric positive-definite ``6 x 6`` matrix by Cholesky factorization."""
+    lower = mat66f(0.0)
+    valid = wp.bool(True)
     for row in range(6):
         for col in range(6):
-            index = _matrix_index(matrix_offset, dimension, body_offset + row, body_offset + col)
-            smooth_diagonal[row, col] = matrix[index]
+            if col <= row:
+                value = 0.5 * (matrix[row, col] + matrix[col, row])
+                for inner in range(6):
+                    if inner < col:
+                        value -= lower[row, inner] * lower[col, inner]
+                if row == col:
+                    if not wp.isfinite(value) or value <= 0.0:
+                        valid = False
+                    elif valid:
+                        lower[row, col] = wp.sqrt(value)
+                elif valid:
+                    lower[row, col] = value / lower[col, col]
+    inverse = mat66f(0.0)
+    if not valid:
+        return inverse, valid
+    for axis in range(6):
+        # Forward substitution L y = e_axis, then backward substitution L^T x = y
+        y = vec6f(0.0)
+        for row in range(6):
+            value = wp.where(row == axis, 1.0, 0.0)
+            for inner in range(6):
+                if inner < row:
+                    value -= lower[row, inner] * y[inner]
+            y[row] = value / lower[row, row]
+        for reverse in range(6):
+            row = 5 - reverse
+            value = y[row]
+            for inner in range(6):
+                if inner > row:
+                    value -= lower[inner, row] * inverse[inner, axis]
+            inverse[row, axis] = value / lower[row, row]
+    return inverse, valid
 
-    body_weight, body_inverse_weight = _compute_body_weight_mass_proportional(
-        smooth_diagonal,
-        model_bodies_m_i[bid],
-        data_bodies_I_i[bid],
-        sigma,
-        beta,
-    )
-    weight[bid] = body_weight
-    inverse_weight[bid] = body_inverse_weight
+
+@wp.kernel
+def _add_body_weights_to_matrix(
+    # Inputs:
+    body_block: wp.array[wp.int32],
+    body_local: wp.array[wp.int32],
+    dimensions: wp.array[wp.int32],
+    matrix_offsets: wp.array[wp.int32],
+    weight: wp.array[mat66f],
+    scale: wp.float32,
+    # Outputs:
+    matrix: wp.array[wp.float32],
+):
+    """Add the scaled splitting weight of each body to its diagonal block of the matrix."""
+    bid = wp.tid()
+    block = body_block[bid]
+    if block < 0:
+        return
+    dimension = dimensions[block]
+    matrix_offset = matrix_offsets[block]
+    body_offset = 6 * body_local[bid]
+    body_weight = scale * weight[bid]
     for row in range(6):
         for col in range(6):
             index = _matrix_index(matrix_offset, dimension, body_offset + row, body_offset + col)
@@ -776,6 +993,7 @@ def _build_candidate_right_hand_side(
     smooth_right_hand_side: wp.array[wp.float32],
     weight: wp.array[mat66f],
     projected_twist: wp.array[vec6f],
+    anchor_scale: wp.float32,
     splitting_dual: wp.array[vec6f],
     body_effort_offset: wp.array[wp.int32],
     body_effort_index: wp.array[wp.int32],
@@ -793,7 +1011,10 @@ def _build_candidate_right_hand_side(
     body_offset = body_vector_index[bid]
     if body_offset < 0:
         return
-    target = apply_body_weight(weight[bid], projected_twist[bid] + splitting_dual[bid])
+    anchor = vec6f(0.0)
+    if projected_twist:
+        anchor = anchor_scale * projected_twist[bid]
+    target = apply_body_weight(weight[bid], anchor + splitting_dual[bid])
     # Structural multiplier impulses h J^T lambda of the rows in the smooth system
     target += structural_impulse[bid]
     # Effort-limit counter-impulses J^T c

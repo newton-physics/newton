@@ -487,10 +487,9 @@ class TestSolverKaminoConfig(unittest.TestCase):
             {"position_tolerance": 0.0},
             {"rotation_tolerance": 0.0},
             {"velocity_tolerance": 0.0},
-            {"weight_sigma": 0.0},
-            {"weight_sigma": 1.1},
-            {"weight_beta": 0.0},
-            {"weight_beta": 0.5},
+            {"consensus_fraction": -0.1},
+            {"consensus_fraction": 1.1},
+            {"joint_penalty_condition": 1.0},
             {"selective_weights": 1},
             {"joint_penalty_scale": 0.0},
             {"projected_twist_fraction": -0.1},
@@ -499,7 +498,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
             {"joint_warmstart_factor": 1.1},
             {"position_tolerance": float("nan")},
             {"velocity_tolerance": float("nan")},
-            {"weight_beta": float("inf")},
+            {"consensus_fraction": float("nan")},
             {"projected_twist_fraction": float("nan")},
             {"joint_warmstart_factor": float("nan")},
         )
@@ -1109,7 +1108,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
             )
 
     def test_lox_joint_penalty_scale_seed(self):
-        """Seed each world's LOX joint penalty from its structural spectrum."""
+        """Seed the LOX joint penalty of each joint-connected component from its structural spectrum."""
         builder = newton.ModelBuilder()
         builder.add_world(build_box_on_plane(ground=False))
         builder.add_world(build_boxes_hinged(ground=False))
@@ -1123,12 +1122,14 @@ class TestSolverKaminoImpl(unittest.TestCase):
         with self.assertRaises(ValueError):
             SolverKamino(model).lox_joint_penalty_scale_seed(0.001)
 
-        # A world without joints keeps the configured scale
+        # The free box keeps the configured scale, and the two hinged boxes share the seed of their component
         seed = solver.lox_joint_penalty_scale_seed(0.001).numpy()
-        self.assertEqual(len(seed), 2)
+        self.assertEqual(len(seed), model.body_count)
+        self.assertEqual(len(seed), 3)
         self.assertTrue(np.all(np.isfinite(seed)))
         self.assertTrue(np.all(seed > 0.0))
         self.assertAlmostEqual(seed[0], 123.0)
+        self.assertEqual(seed[1], seed[2])
         self.assertNotAlmostEqual(seed[1], seed[0])
         self.assertEqual(config.lox.joint_penalty_scale, 123.0)
         solver.step(model.state(), model.state(), control=None, contacts=None, dt=0.001)

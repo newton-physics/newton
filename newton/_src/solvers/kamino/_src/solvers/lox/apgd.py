@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ...core.types import mat36f, mat66f, vec6f
+from ...core.types import mat36f, vec6f
 from ..padmm.math import project_to_coulomb_cone
 from .contact import (
     angular_contact_reaction,
@@ -29,6 +29,7 @@ from .contact import (
     spatial_friction_scaling,
 )
 from .projection_kernels import is_active_row, scatter_box_impulse, scatter_contact_impulse
+from .system_kernels import ProjectionWeights
 
 if TYPE_CHECKING:
     from .types import APGDData, LOXProblemData
@@ -189,7 +190,7 @@ def extrapolate_box_apgd_row(
     box_body_b: wp.array[wp.int32],
     box_jacobian_a: wp.array[vec6f],
     box_jacobian_b: wp.array[vec6f],
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     box_reaction: wp.array[wp.float32],
     box_trial: wp.array[wp.float32],
     box_previous: wp.array[wp.float32],
@@ -208,7 +209,7 @@ def extrapolate_box_apgd_row(
         box_jacobian_a,
         box_jacobian_b,
         extrapolated - current,
-        inverse_weight,
+        weights,
         twist_delta,
     )
 
@@ -222,7 +223,7 @@ def extrapolate_contact_apgd_row(
     contact_jacobian_a: wp.array[mat36f],
     contact_jacobian_b: wp.array[mat36f],
     contact_frame: wp.array[wp.mat33f],
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     contact_reaction: wp.array[wp.vec3f],
     contact_trial: wp.array[wp.vec3f],
     contact_previous: wp.array[wp.vec3f],
@@ -252,7 +253,7 @@ def extrapolate_contact_apgd_row(
             contact_jacobian_b,
             contact_frame,
             pack_contact_reaction(extrapolated - current, angular_extrapolated - angular),
-            inverse_weight,
+            weights,
             twist_delta,
         )
         return
@@ -263,7 +264,7 @@ def extrapolate_contact_apgd_row(
         contact_jacobian_a,
         contact_jacobian_b,
         extrapolated - current,
-        inverse_weight,
+        weights,
         twist_delta,
     )
 
@@ -441,7 +442,7 @@ def _extrapolate_reactions(
     world_active: wp.array[wp.bool],
     world_failed: wp.array[wp.bool],
     beta: wp.array[wp.float32],
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     # Outputs:
     box_reaction: wp.array[wp.float32],
     box_trial: wp.array[wp.float32],
@@ -467,7 +468,7 @@ def _extrapolate_reactions(
                 box_body_b,
                 box_jacobian_a,
                 box_jacobian_b,
-                inverse_weight,
+                weights,
                 box_reaction,
                 box_trial,
                 box_previous,
@@ -485,7 +486,7 @@ def _extrapolate_reactions(
             contact_jacobian_a,
             contact_jacobian_b,
             contact_frame,
-            inverse_weight,
+            weights,
             contact_reaction,
             contact_trial,
             contact_previous,
@@ -570,7 +571,7 @@ class APGDAcceleration:
         self,
         world_active: wp.array[wp.bool],
         world_failed: wp.array[wp.bool],
-        inverse_weight: wp.array[mat66f],
+        weights: ProjectionWeights,
         twist_delta: wp.array[vec6f],
     ) -> None:
         """Update the momentum and accumulate the extrapolation into ``twist_delta``."""
@@ -637,7 +638,7 @@ class APGDAcceleration:
                 world_active,
                 world_failed,
                 self._data.beta,
-                inverse_weight,
+                weights,
             ],
             outputs=[
                 p.box_rows.reaction,

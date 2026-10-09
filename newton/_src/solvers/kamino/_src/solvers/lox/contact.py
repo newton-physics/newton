@@ -27,7 +27,7 @@ from warp.fem.linalg import symmetric_eigenvalues_qr
 
 from ...core.types import mat36f, mat66f, vec6f
 from ..padmm.math import project_to_coulomb_cone
-from .system_kernels import apply_body_weight, normalize_symmetric_matrix
+from .system_kernels import ProjectionWeights, apply_body_weight, normalize_symmetric_matrix
 
 ###
 # Module interface
@@ -841,7 +841,7 @@ def scatter_spatial_impulse(
     jacobian_b: wp.array[mat36f],
     frame: wp.array[wp.mat33f],
     impulse: vec6f,
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     twist_delta: wp.array[vec6f],
 ):
     """Accumulate the twist change ``W^-1 J^T impulse`` of one normal-first spatial impulse."""
@@ -852,10 +852,10 @@ def scatter_spatial_impulse(
     contact_frame = frame[cid]
     if bid_a >= 0:
         wrench = spatial_body_wrench(jacobian_a[cid], contact_frame, -1.0, impulse)
-        wp.atomic_add(twist_delta, bid_a, apply_body_weight(inverse_weight[bid_a], wrench))
+        wp.atomic_add(twist_delta, bid_a, apply_body_weight(weights.inverse_weight[bid_a], wrench))
     if bid_b >= 0:
         wrench = spatial_body_wrench(jacobian_b[cid], contact_frame, 1.0, impulse)
-        wp.atomic_add(twist_delta, bid_b, apply_body_weight(inverse_weight[bid_b], wrench))
+        wp.atomic_add(twist_delta, bid_b, apply_body_weight(weights.inverse_weight[bid_b], wrench))
 
 
 @wp.func

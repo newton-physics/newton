@@ -26,7 +26,9 @@ from .apgd import APGDAcceleration
 from .coloring import RowColoring
 from .projection_kernels import (
     _apply_twist_delta,
+    _prepare_box_responses,
     _prepare_box_rows,
+    _prepare_contact_responses,
     _prepare_contacts,
     _prepare_physical_box_rows,
     _prepare_physical_contacts,
@@ -37,6 +39,7 @@ from .projection_kernels import (
     _warmstart_spatial_contacts,
     make_sweep_kernel,
 )
+from .system_kernels import ProjectionWeights
 from .types import ProjectionAcceleration, ProjectionData
 from .world_projection_kernels import NoAccelerationState, can_project_by_world, make_project_by_world_kernel
 
@@ -156,6 +159,7 @@ class ProjectionSchedule:
             world_failed: Failure flag of each world, set for worlds with an invalid local block.
         """
         p = self.problem_data
+        self._weights = self._prepare_weights(inverse_weight)
         if self.coloring is not None:
             self.coloring.build()
             self._prepare_blocks(
@@ -200,10 +204,9 @@ class ProjectionSchedule:
         world_active: wp.array[wp.bool],
         world_failed: wp.array[wp.bool],
         body_world: wp.array[wp.int32],
-        inverse_weight: wp.array[mat66f],
         projected_twist: wp.array[vec6f],
     ) -> None:
-        """Warm start with the current reactions and run the projection sweeps.
+        """Warm start with the current reactions and run the projection sweeps with the weights of :meth:`prepare`.
 
         Worlds that already failed are skipped, and any failed local update marks
         its world in ``world_failed``.
@@ -214,34 +217,33 @@ class ProjectionSchedule:
             world_active: Worlds to project.
             world_failed: Failure flag of each world.
             body_world: World of each body.
-            inverse_weight: Inverse body weight ``W^-1`` of each body.
             projected_twist: Projected body twists, updated in place.
         """
         self._begin_outer_iteration(world_active, recycle=recycle)
         if self._by_world:
-            self._project_by_world(iterations, world_active, inverse_weight, projected_twist, world_failed)
+            self._project_by_world(iterations, world_active, self._weights, projected_twist, world_failed)
             return
 
         if self.apgd is not None:
             self.apgd.begin(world_active)
-        self._warmstart(world_active, inverse_weight, world_failed)
+        self._warmstart(world_active, self._weights, world_failed)
         self._apply(body_world, world_active, world_failed, projected_twist)
 
         if self.anderson is not None:
             self.anderson.begin_map(world_active, world_failed)
         for iteration in range(iterations):
             for color in range(self.color_count):
-                self._sweep(color, world_active, inverse_weight, projected_twist, world_failed)
+                self._sweep(color, world_active, self._weights, projected_twist, world_failed)
                 self._apply(body_world, world_active, world_failed, projected_twist)
             if self.anderson is not None:
-                self.anderson.finish_map(world_active, world_failed, inverse_weight, self._data.twist_delta)
+                self.anderson.finish_map(world_active, world_failed, self._weights, self._data.twist_delta)
                 self._apply(body_world, world_active, world_failed, projected_twist)
             if self.apgd is not None and iteration + 1 < iterations:
-                self.apgd.extrapolate(world_active, world_failed, inverse_weight, self._data.twist_delta)
+                self.apgd.extrapolate(world_active, world_failed, self._weights, self._data.twist_delta)
                 self._apply(body_world, world_active, world_failed, projected_twist)
         if self.coloring is not None:
             # An order-independent Jacobi sweep restores the symmetry lost to the color ordering.
-            self._sweep(0, world_active, inverse_weight, projected_twist, world_failed, smoothing=True)
+            self._sweep(0, world_active, self._weights, projected_twist, world_failed, smoothing=True)
             self._apply(body_world, world_active, world_failed, projected_twist)
 
     ###
@@ -314,6 +316,50 @@ class ProjectionSchedule:
         """Restart the Anderson samples of a new splitting iteration."""
         if self.anderson is not None:
             self.anderson.begin_outer_iteration(world_active, recycle=recycle)
+
+    def _prepare_weights(self, inverse_weight: wp.array[mat66f]) -> ProjectionWeights:
+        """Prepare the twist responses of the rows and return the weights of the projection kernels."""
+        p = self.problem_data
+        if p.box_rows.capacity > 0:
+            wp.launch(
+                _prepare_box_responses,
+                dim=p.box_rows.capacity,
+                inputs=[
+                    p.box_rows.world,
+                    p.box_rows.local,
+                    p.box_rows.world_count,
+                    p.box_rows.body_a,
+                    p.box_rows.body_b,
+                    p.box_rows.jacobian_a,
+                    p.box_rows.jacobian_b,
+                    inverse_weight,
+                ],
+                outputs=[p.box_rows.response],
+                device=self.device,
+            )
+        # Spatial contacts apply the inverse weights directly
+        if p.contact_rows.capacity > 0 and self._data.spatial_blocks is None:
+            wp.launch(
+                _prepare_contact_responses,
+                dim=p.contact_rows.capacity,
+                inputs=[
+                    p.contact_rows.world,
+                    p.contact_rows.local,
+                    p.contact_rows.world_count,
+                    p.contact_rows.body_a,
+                    p.contact_rows.body_b,
+                    p.contact_rows.jacobian_a,
+                    p.contact_rows.jacobian_b,
+                    inverse_weight,
+                ],
+                outputs=[p.contact_rows.response],
+                device=self.device,
+            )
+        weights = ProjectionWeights()
+        weights.inverse_weight = inverse_weight
+        weights.box_response = p.box_rows.response
+        weights.contact_response = p.contact_rows.response
+        return weights
 
     def _prepare_blocks(
         self,
@@ -398,7 +444,7 @@ class ProjectionSchedule:
                 device=self.device,
             )
 
-    def _warmstart(self, world_active, inverse_weight, world_failed) -> None:
+    def _warmstart(self, world_active, weights, world_failed) -> None:
         p = self.problem_data
         if p.box_rows.capacity > 0:
             wp.launch(
@@ -415,7 +461,7 @@ class ProjectionSchedule:
                     p.box_rows.reaction,
                     world_active,
                     world_failed,
-                    inverse_weight,
+                    weights,
                 ],
                 outputs=[self._data.twist_delta],
                 device=self.device,
@@ -440,7 +486,7 @@ class ProjectionSchedule:
                     rows.angular_friction,
                     world_active,
                     world_failed,
-                    inverse_weight,
+                    weights,
                 ],
                 outputs=[rows.reaction, rows.angular_reaction, self._data.twist_delta],
                 device=self.device,
@@ -460,13 +506,13 @@ class ProjectionSchedule:
                     p.contact_rows.reaction,
                     world_active,
                     world_failed,
-                    inverse_weight,
+                    weights,
                 ],
                 outputs=[self._data.twist_delta],
                 device=self.device,
             )
 
-    def _sweep(self, color, world_active, inverse_weight, projected_twist, world_failed, smoothing=False) -> None:
+    def _sweep(self, color, world_active, weights, projected_twist, world_failed, smoothing=False) -> None:
         p = self.problem_data
         if self._worker_count == 0:
             return
@@ -515,7 +561,7 @@ class ProjectionSchedule:
                 spatial.eigenvectors if spatial is not None else None,
                 spatial.eigenvalues if spatial is not None else None,
                 world_active,
-                inverse_weight,
+                weights,
                 self._data.coloring.occupancy if colored else p.body_incidence,
                 projected_twist,
             ],
@@ -539,7 +585,7 @@ class ProjectionSchedule:
             device=self.device,
         )
 
-    def _project_by_world(self, iterations, world_active, inverse_weight, projected_twist, world_failed) -> None:
+    def _project_by_world(self, iterations, world_active, weights, projected_twist, world_failed) -> None:
         p = self.problem_data
         coloring = self._data.coloring
         spatial = self._data.spatial_blocks
@@ -596,7 +642,7 @@ class ProjectionSchedule:
                 coloring.occupancy if coloring is not None else None,
                 p.body_incidence,
                 world_active,
-                inverse_weight,
+                weights,
             ],
             outputs=[
                 p.box_rows.reaction,

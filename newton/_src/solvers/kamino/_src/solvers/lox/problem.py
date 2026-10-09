@@ -24,7 +24,7 @@ from ...core.bodies import update_body_inertias
 from ...core.data import DataKamino
 from ...core.joints import DofActuationPath, JointActuationType, JointCorrectionMode
 from ...core.model import ModelKamino
-from ...core.types import to_warp_int32_array, vec6f
+from ...core.types import mat66f, to_warp_int32_array, vec6f
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.constraints import update_constraints_info
 from ...kinematics.jacobians import SparseSystemJacobians
@@ -56,6 +56,11 @@ from .problem_kernels import (
     make_update_structural_multipliers_kernel,
 )
 from .system import LOXSystem
+from .system_kernels import (
+    _compute_free_body_blocks,
+    _compute_patch_schur_weights,
+    _compute_patch_schur_weights_subtraction,
+)
 from .types import (
     BoxRows,
     ContactRows,
@@ -83,22 +88,8 @@ wp.set_module_options({"enable_backward": False})
 
 
 ###
-# Constants
-###
-
-
-_LOW_MODE_PERCENTILE = 0.02
-"""Discrete percentile of the positive structural eigenvalues used as the low mode."""
-
-
-###
 # Functions
 ###
-
-
-def _low_mode_eigenvalue(eigenvalues: np.ndarray) -> float:
-    """Return the discrete low-mode percentile of sorted positive eigenvalues."""
-    return float(eigenvalues[int(_LOW_MODE_PERCENTILE * eigenvalues.size)])
 
 
 def _connected_component_labels(
@@ -295,27 +286,29 @@ class LOXProblem:
             reset_to_zero=True,
         )
 
-    def estimate_joint_penalty_scale(self, default_scale: np.ndarray) -> np.ndarray:
-        """Return the per-world reciprocal of the low-mode structural eigenvalue.
+    def estimate_joint_penalty_scale(self, default_scale: np.ndarray, condition: float) -> np.ndarray:
+        """Return the penalty scale of each body from the structural spectrum of its joint-connected component.
 
         For each body component, the structural Delassus ``D = J A^+ J^T`` uses
         the pseudo-inverse of the assembled smooth matrix ``A`` and is normalized by
         the structural effective masses as ``M^1/2 D M^1/2``. Massless bodies leave
         directions without inertia in ``A``, which the pseudo-inverse excludes from
-        the estimate. The positive eigenvalues of all
-        components of a world are pooled, and the discrete second-percentile value
-        gives the world's scale; worlds without structural rows keep
-        ``default_scale``.
+        the estimate. Each component takes the scale of its positive eigenvalues ``mu``:
+        the reciprocal of the smallest eigenvalue, capped by ``(condition - 1) / mu_max``. The spectrum of
+        the penalized matrix relative to ``A`` is ``1 + s mu``, so the cap bounds the
+        conditioning added by the penalty by ``condition``. Bodies of components without
+        structural rows keep ``default_scale``.
 
         The smooth system and the structural rows must be assembled, e.g. after
         :meth:`prepare_joint_penalty_scale_seed` and :meth:`build_smooth_system`. This
         is a one-time initialization, so the Delassus blocks are computed on the host.
 
         Args:
-            default_scale: Scale of each world without structural rows.
+            default_scale: Current scale of each body, kept for the components without structural rows.
+            condition: Largest conditioning added by the structural penalty, greater than one.
 
         Returns:
-            The float32 penalty scale of each world.
+            The float32 penalty scale of each body.
         """
         system = self.system
         structural_rows = self._data.structural_rows
@@ -338,7 +331,7 @@ class LOXProblem:
         # The Delassus is evaluated in float64, but its eigenvalues are only as
         # resolved as the float32 system.
         epsilon = np.finfo(np.float32).eps
-        positive_by_world: list[list[np.ndarray]] = [[] for _ in range(len(default_scale))]
+        scales = np.asarray(default_scale, dtype=np.float64).copy()
         for block in np.unique(row_block[row_block >= 0]):
             rows = np.flatnonzero(row_block == block)
             dimension = 6 * system.block_body_counts[block]
@@ -368,17 +361,13 @@ class LOXProblem:
                 raise RuntimeError(
                     f"World {world} component {block} structural Delassus has no resolvable positive eigenvalue."
                 )
-            positive_by_world[world].append(positive)
-
-        scales = np.asarray(default_scale, dtype=np.float64).copy()
-        for world, component_eigenvalues in enumerate(positive_by_world):
-            if not component_eigenvalues:
-                continue
-            positive = np.sort(np.concatenate(component_eigenvalues))
-            scale = 1.0 / _low_mode_eigenvalue(positive)
+            positive = np.sort(positive)
+            scale = min(1.0 / float(positive[0]), (condition - 1.0) / float(positive[-1]))
             if not math.isfinite(scale) or scale > np.finfo(np.float32).max:
-                raise RuntimeError(f"World {world} structural ALM penalty seed is not representable in float32.")
-            scales[world] = scale
+                raise RuntimeError(
+                    f"World {world} component {block} structural ALM penalty seed is not representable in float32."
+                )
+            scales[body_block == block] = scale
         return scales.astype(np.float32)
 
     def begin_time_step(
@@ -449,7 +438,7 @@ class LOXProblem:
 
         Args:
             time_step: Time step of each world [s].
-            joint_penalty_scale: Dimensionless structural ALM penalty scale of each world, or ``None``
+            joint_penalty_scale: Dimensionless structural ALM penalty scale of each body, or ``None``
                 to leave the structural rows out of the smooth system.
         """
         data = self.kamino_data
@@ -569,14 +558,131 @@ class LOXProblem:
                 device=self.device,
             )
 
-    def build_consensus_weights(self, sigma: float, beta: float) -> None:
-        """Compute the frozen consensus weights ``W`` of the time step and assemble the weighted matrix ``A + W``.
+    def prepare_patch_schur(self) -> None:
+        """Build the joint neighbors and joint rows of each body for the patch Schur weights.
 
-        Args:
-            sigma: Relative lower scale of the inertia-normalized body-weight clamp.
-            beta: Normalized smooth-weight transition threshold of the body-weight heuristic.
+        For each dynamic body, list its joint rows to other dynamic bodies of its factor block and, for
+        each joint neighbor, the joint rows between the two bodies with the side of the neighbor.
         """
-        self.system.build_weighted_matrix(self._data.body_weight_enabled, sigma=sigma, beta=beta)
+        system = self.system
+        body_count = system.num_bodies
+        body_block = np.asarray(system.body_block_host, dtype=np.int32)
+        incident: list[list[tuple[int, int, int]]] = [[] for _ in range(body_count)]
+        pair_rows: list[dict[int, list[tuple[int, int, int]]]] = [{} for _ in range(body_count)]
+        for kind, rows in ((0, self._data.structural_rows), (1, self._data.dynamic_rows)):
+            if rows is None or rows.count == 0:
+                continue
+            body_a = rows.body_a.numpy()
+            body_b = rows.body_b.numpy()
+            for row in range(rows.count):
+                a, b = int(body_a[row]), int(body_b[row])
+                if a < 0 or b < 0 or a == b or body_block[a] < 0 or body_block[a] != body_block[b]:
+                    continue
+                incident[a].append((kind, row, 0))
+                incident[b].append((kind, row, 1))
+                # Rows between the two bodies, on the side of the neighbor
+                pair_rows[a].setdefault(b, []).append((kind, row, 1))
+                pair_rows[b].setdefault(a, []).append((kind, row, 0))
+
+        incidence = [entry for body in range(body_count) for entry in incident[body]]
+        incidence_offset = np.zeros(body_count + 1, dtype=np.int32)
+        incidence_offset[1:] = np.cumsum([len(entries) for entries in incident])
+        neighbor_offset = [0]
+        neighbor_body: list[int] = []
+        neighbor_row_offset = [0]
+        neighbor_rows: list[tuple[int, int, int]] = []
+        pair_rows_flat = [rows for pairs in pair_rows for rows in pairs.values()]
+        for body in range(body_count):
+            for neighbor in sorted(pair_rows[body]):
+                neighbor_body.append(neighbor)
+                neighbor_rows.extend(pair_rows[body][neighbor])
+                neighbor_row_offset.append(len(neighbor_rows))
+            neighbor_offset.append(len(neighbor_body))
+
+        device = self.device
+
+        def int_array(values, fill=0):
+            return wp.array(values if len(values) else [fill], dtype=wp.int32, device=device)
+
+        self._incidence_offset = wp.array(incidence_offset, dtype=wp.int32, device=device)
+        self._incidence_kind = int_array([entry[0] for entry in incidence])
+        self._incidence_row = int_array([entry[1] for entry in incidence])
+        self._incidence_side = int_array([entry[2] for entry in incidence])
+        self._neighbor_offset = int_array(neighbor_offset)
+        self._neighbor_body = int_array(neighbor_body)
+        self._neighbor_row_offset = int_array(neighbor_row_offset)
+        self._neighbor_row_kind = int_array([entry[0] for entry in neighbor_rows])
+        self._neighbor_row = int_array([entry[1] for entry in neighbor_rows])
+        self._neighbor_row_side = int_array([entry[2] for entry in neighbor_rows])
+        self._free_block = wp.zeros(max(body_count, 1), dtype=mat66f, device=device)
+        self._free_lower = wp.zeros(max(body_count, 1), dtype=mat66f, device=device)
+        # The Woodbury form handles up to six joint rows between two bodies
+        self._patch_schur_kernel = (
+            _compute_patch_schur_weights
+            if max((len(rows) for rows in pair_rows_flat), default=0) <= 6
+            else _compute_patch_schur_weights_subtraction
+        )
+
+    def compute_patch_schur_weights(self) -> None:
+        """Set the body weights to the Schur complements of each body and its joint neighbors in ``A``."""
+        system = self.system
+        if system.num_bodies == 0:
+            return
+        structural = self._data.structural_rows
+        dynamic = self._data.dynamic_rows
+        has_structural = structural is not None and structural.count > 0
+        has_dynamic = dynamic is not None and dynamic.count > 0
+        empty_vec6 = wp.zeros(1, dtype=vec6f, device=self.device)
+        empty_float = wp.zeros(1, dtype=wp.float32, device=self.device)
+        empty_int = wp.zeros(1, dtype=wp.int32, device=self.device)
+        rows = [
+            structural.jacobian_a if has_structural else empty_vec6,
+            structural.jacobian_b if has_structural else empty_vec6,
+            structural.penalty if has_structural else empty_float,
+            structural.world if has_structural else empty_int,
+            dynamic.jacobian_a if has_dynamic else empty_vec6,
+            dynamic.jacobian_b if has_dynamic else empty_vec6,
+            dynamic.effective_inertia if has_dynamic else empty_float,
+            self.model.time.dt,
+        ]
+        data = system.data
+        wp.launch(
+            _compute_free_body_blocks,
+            dim=system.num_bodies,
+            inputs=[
+                data.body_block,
+                data.body_local,
+                data.info.dim,
+                data.info.mio,
+                data.matrix,
+                self._incidence_offset,
+                self._incidence_kind,
+                self._incidence_row,
+                self._incidence_side,
+                *rows,
+            ],
+            outputs=[self._free_block, self._free_lower],
+            device=self.device,
+        )
+        wp.launch(
+            self._patch_schur_kernel,
+            dim=system.num_bodies,
+            inputs=[
+                data.body_block,
+                self._data.body_weight_enabled,
+                self._free_block,
+                self._free_lower,
+                self._neighbor_offset,
+                self._neighbor_body,
+                self._neighbor_row_offset,
+                self._neighbor_row_kind,
+                self._neighbor_row,
+                self._neighbor_row_side,
+                *rows,
+            ],
+            outputs=[data.weight, data.inverse_weight],
+            device=self.device,
+        )
 
     def update_structural_multipliers_from_twist(
         self,

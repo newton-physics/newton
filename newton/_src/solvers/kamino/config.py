@@ -1110,7 +1110,7 @@ class LOXSolverConfig:
         only; cable and deformable extensions are not supported.
     """
 
-    max_iterations: int = 25
+    max_iterations: int = 16
     """Maximum LOX splitting iterations per forward-dynamics solve."""
 
     use_graph_conditionals: bool = True
@@ -1219,16 +1219,6 @@ class LOXSolverConfig:
     natural-map residuals mapped back to velocity by their Delassus scale.
     """
 
-    weight_sigma: float = 1.0e-3
-    """Relative lower scale used by the inertia-normalized body-weight clamp."""
-
-    weight_beta: float = 4.0
-    """Normalized smooth-weight transition threshold used by the body-weight heuristic.
-
-    The conditioning floor set by :attr:`weight_sigma` may dominate this
-    threshold for sufficiently stiff modes.
-    """
-
     selective_weights: bool = True
     """Whether to restrict proximal weights to unilateral-constraint incidence.
 
@@ -1238,6 +1228,14 @@ class LOXSolverConfig:
 
     joint_penalty_scale: float = 100.0
     """Dimensionless scale for effective-mass structural penalties and consensus weights."""
+
+    joint_penalty_condition: float = 1.0e4
+    """Largest conditioning added to the smooth system by the seeded structural penalty.
+
+    :meth:`SolverKamino.lox_joint_penalty_scale_seed` sets the penalty scale of each joint-connected
+    component to ``min(1 / mu_min, (joint_penalty_condition - 1) / mu_max)``, with ``mu_min`` and
+    ``mu_max`` the extreme eigenvalues of the effective-mass-normalized structural Delassus.
+    """
 
     projected_twist_fraction: float = 0.0
     """Fraction of the projected twist in the structural updates and in the accepted twist, in [0, 1].
@@ -1296,6 +1294,20 @@ class LOXSolverConfig:
     its allocated
     unilateral capacity, retaining one inert internal color for an empty
     system. It finishes with one global Jacobi smoothing sweep.
+    """
+
+    consensus_fraction: float = 0.5
+    """Fraction ``alpha`` of the consensus penalty that the smooth solve takes implicitly, in [0, 1].
+
+    Each iteration solves ``(A + alpha W) v = f + W (u + alpha p)``, projects ``p = Pi_W(v - u)``,
+    and updates the splitting dual ``u <- u + p - v``. The dual ``u`` equals ``W^-1 J^T r``, the
+    unilateral impulses in velocity units, so every fraction shares the fixed point
+    ``A v = f + J^T r``. Zero gives a staggered solve, which keeps ``W`` as the projection metric
+    only, and one gives ADMM.
+
+    ``W`` takes for each body the full ``6 x 6`` Schur complement of the body in the matrix of the
+    body and its joint neighbors, each neighbor keeping only its joint to the body. It bounds
+    ``[(A^-1)_ii]^-1``, so the projection metric majorizes the Delassus of each body.
     """
 
     @override
@@ -1364,6 +1376,12 @@ class LOXSolverConfig:
                 f"Invalid gauss_seidel_max_colors: {self.gauss_seidel_max_colors}. "
                 "Must be an integer greater than or equal to one."
             )
+        if not np.isfinite(self.consensus_fraction) or not (0.0 <= self.consensus_fraction <= 1.0):
+            raise ValueError(f"Invalid consensus_fraction: {self.consensus_fraction}. Must be in range [0, 1].")
+        if not np.isfinite(self.joint_penalty_condition) or self.joint_penalty_condition <= 1.0:
+            raise ValueError(
+                f"Invalid joint_penalty_condition: {self.joint_penalty_condition}. Must be greater than one."
+            )
         if self.projection_acceleration not in ("none", "apgd", "anderson"):
             raise ValueError(
                 f"Invalid projection_acceleration: {self.projection_acceleration}. "
@@ -1390,10 +1408,6 @@ class LOXSolverConfig:
             raise ValueError(f"Invalid rotation_tolerance: {self.rotation_tolerance}. Must be greater than zero.")
         if not np.isfinite(self.velocity_tolerance) or self.velocity_tolerance <= 0.0:
             raise ValueError(f"Invalid velocity_tolerance: {self.velocity_tolerance}. Must be greater than zero.")
-        if not np.isfinite(self.weight_sigma) or self.weight_sigma <= 0.0 or self.weight_sigma > 1.0:
-            raise ValueError(f"Invalid weight_sigma: {self.weight_sigma}. Must be in range (0, 1].")
-        if not np.isfinite(self.weight_beta) or self.weight_beta < 1.0:
-            raise ValueError(f"Invalid weight_beta: {self.weight_beta}. Must be at least one.")
         if not isinstance(self.selective_weights, bool):
             raise ValueError(f"Invalid selective_weights: {self.selective_weights}. Must be a boolean.")
         if not np.isfinite(self.joint_penalty_scale) or self.joint_penalty_scale <= 0.0:

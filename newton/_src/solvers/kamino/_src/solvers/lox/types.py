@@ -231,6 +231,8 @@ class BoxRows:
         """Constraint velocity ``J v`` of each row, without bias."""
         self.physical_delassus = wp.zeros(self.capacity, dtype=wp.float32, device=device)
         """Unsplit Delassus coefficient ``J W^-1 J^T`` of each row, which scales its residual."""
+        self.response = wp.zeros((self.capacity, 2), dtype=vec6f, device=device)
+        """Twist response ``W^-1 J^T`` of each row on its bodies A and B, prepared with the body weights."""
         self.world_residual_max = wp.zeros(world_count, dtype=wp.float32, device=device)
         """Largest row residual of each world."""
 
@@ -316,6 +318,8 @@ class ContactRows:
         """Normal-last impulse of each contact."""
         self.velocity = wp.zeros(self.capacity, dtype=wp.vec3f, device=device)
         """Contact velocity ``J v`` of each contact, without bias."""
+        self.response = wp.zeros((self.capacity, 2), dtype=mat36f, device=device)
+        """Transposed twist response ``J W^-1`` of each contact on its bodies A and B, prepared with the body weights."""
         self.world_residual_max = wp.zeros(world_count, dtype=wp.float32, device=device)
         """Largest contact residual of each world."""
 
@@ -908,8 +912,8 @@ class LOXSystemData:
         self.info = info
         """Dense layout of the factor blocks."""
         self.matrix = wp.zeros(info.total_mat_size, dtype=wp.float32, device=device)
-        """Dense matrix of each factor block: the smooth matrix ``A`` once assembled, then ``A + W``
-        once the splitting weights are added."""
+        """Dense matrix of each factor block: the smooth matrix ``A`` once assembled, then ``A + alpha W``
+        once the consensus fraction ``alpha`` of the splitting weights is added."""
         self.right_hand_side = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
         """Smooth right-hand side ``f``, frozen during the iterations."""
         self.candidate_right_hand_side = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
@@ -972,7 +976,7 @@ class LOXData:
     Args:
         body_counts: Number of bodies of each world.
         solution: Dual solution container for the solution metrics, or ``None`` without them.
-        joint_penalty_scale: Initial dimensionless structural ALM penalty scale of every world.
+        joint_penalty_scale: Initial dimensionless structural ALM penalty scale of every body.
         device: Device of the arrays.
     """
 
@@ -990,8 +994,8 @@ class LOXData:
         """Per-world residuals of the splitting iterations."""
         self.status = wp.empty(num_worlds, dtype=LOXStatus, device=device)
         """Terminal status of each world."""
-        self.joint_penalty_scale = wp.full(num_worlds, joint_penalty_scale, dtype=wp.float32, device=device)
-        """Dimensionless structural ALM penalty scale of each world."""
+        self.joint_penalty_scale = wp.full(sum(body_counts), joint_penalty_scale, dtype=wp.float32, device=device)
+        """Dimensionless structural ALM penalty scale of each body, shared by the bodies of a joint-connected component."""
         self.dual_wrench = wp.zeros(sum(body_counts), dtype=vec6f, device=device)
         """Splitting dual of each body as the generalized wrench ``W u / dt`` [N, N·m], kept across time steps.
 

@@ -985,7 +985,8 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         Returns:
             The applied dimensionless structural ALM penalty scale for each
-            world, shape ``(world_count,)``.
+            body, shared by the bodies of a joint-connected component, shape
+            ``(body_count,)``.
 
         Raises:
             ValueError: If this solver does not use the LOX dynamics backend.

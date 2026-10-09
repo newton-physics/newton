@@ -52,7 +52,7 @@ from .contact import (
     vec5f,
 )
 from .solver_kernels import atomic_max_nonnegative
-from .system_kernels import apply_body_weight
+from .system_kernels import ProjectionWeights, apply_body_weight
 
 ###
 # Module interface
@@ -340,7 +340,7 @@ def _project_box_row(
     upper: wp.array[wp.float32],
     delassus: wp.array[wp.float32],
     reaction: wp.array[wp.float32],
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     occupancy: wp.array2d[wp.int32],
     projected_twist: wp.array[vec6f],
     twist_delta: wp.array[vec6f],
@@ -372,10 +372,10 @@ def _project_box_row(
     if delta == 0.0:
         return
     if bid_a >= 0:
-        correction = apply_body_weight(inverse_weight[bid_a], row_jacobian_a * delta)
+        correction = weights.box_response[row, 0] * delta
         _accumulate_body_delta(bid_a, color, correction, occupancy, twist_delta)
     if bid_b >= 0:
-        correction = apply_body_weight(inverse_weight[bid_b], row_jacobian_b * delta)
+        correction = weights.box_response[row, 1] * delta
         _accumulate_body_delta(bid_b, color, correction, occupancy, twist_delta)
 
 
@@ -398,7 +398,7 @@ def _project_contact_row(
     normal_compliance: wp.array[wp.float32],
     restitution: wp.array[wp.vec4f],
     reaction: wp.array[wp.vec3f],
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     occupancy: wp.array2d[wp.int32],
     projected_twist: wp.array[vec6f],
     twist_delta: wp.array[vec6f],
@@ -437,10 +437,10 @@ def _project_contact_row(
     if _is_zero_vec3(delta):
         return
     if bid_a >= 0:
-        correction = apply_body_weight(inverse_weight[bid_a], wp.transpose(contact_jacobian_a) @ delta)
+        correction = wp.transpose(weights.contact_response[cid, 0]) @ delta
         _accumulate_body_delta(bid_a, color, correction, occupancy, twist_delta)
     if bid_b >= 0:
-        correction = apply_body_weight(inverse_weight[bid_b], wp.transpose(contact_jacobian_b) @ delta)
+        correction = wp.transpose(weights.contact_response[cid, 1]) @ delta
         _accumulate_body_delta(bid_b, color, correction, occupancy, twist_delta)
 
 
@@ -475,7 +475,7 @@ def _project_spatial_contact_row(
     eigenvectors: wp.array[mat55f],
     eigenvalues: wp.array[vec5f],
     angular_reaction: wp.array[wp.vec3f],
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     occupancy: wp.array2d[wp.int32],
     projected_twist: wp.array[vec6f],
     twist_delta: wp.array[vec6f],
@@ -522,10 +522,14 @@ def _project_spatial_contact_row(
         return
     if bid_a >= 0:
         wrench = spatial_body_wrench(contact_jacobian_a, contact_frame, -1.0, delta)
-        _accumulate_body_delta(bid_a, color, apply_body_weight(inverse_weight[bid_a], wrench), occupancy, twist_delta)
+        _accumulate_body_delta(
+            bid_a, color, apply_body_weight(weights.inverse_weight[bid_a], wrench), occupancy, twist_delta
+        )
     if bid_b >= 0:
         wrench = spatial_body_wrench(contact_jacobian_b, contact_frame, 1.0, delta)
-        _accumulate_body_delta(bid_b, color, apply_body_weight(inverse_weight[bid_b], wrench), occupancy, twist_delta)
+        _accumulate_body_delta(
+            bid_b, color, apply_body_weight(weights.inverse_weight[bid_b], wrench), occupancy, twist_delta
+        )
 
 
 @wp.func
@@ -555,18 +559,18 @@ def scatter_box_impulse(
     jacobian_a: wp.array[vec6f],
     jacobian_b: wp.array[vec6f],
     impulse: wp.float32,
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     twist_delta: wp.array[vec6f],
 ):
-    """Accumulate the twist change ``W^-1 J^T impulse`` of one box row."""
+    """Accumulate the twist change ``W^-1 J^T impulse`` of one box row from its prepared response."""
     if impulse == 0.0:
         return
     bid_a = body_a[row]
     bid_b = body_b[row]
     if bid_a >= 0:
-        wp.atomic_add(twist_delta, bid_a, apply_body_weight(inverse_weight[bid_a], jacobian_a[row] * impulse))
+        wp.atomic_add(twist_delta, bid_a, weights.box_response[row, 0] * impulse)
     if bid_b >= 0:
-        wp.atomic_add(twist_delta, bid_b, apply_body_weight(inverse_weight[bid_b], jacobian_b[row] * impulse))
+        wp.atomic_add(twist_delta, bid_b, weights.box_response[row, 1] * impulse)
 
 
 @wp.func
@@ -577,27 +581,84 @@ def scatter_contact_impulse(
     jacobian_a: wp.array[mat36f],
     jacobian_b: wp.array[mat36f],
     impulse: wp.vec3f,
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     twist_delta: wp.array[vec6f],
 ):
-    """Accumulate the twist change ``W^-1 J^T impulse`` of one contact."""
+    """Accumulate the twist change ``W^-1 J^T impulse`` of one contact from its prepared response."""
     if _is_zero_vec3(impulse):
         return
     bid_a = body_a[cid]
     bid_b = body_b[cid]
     if bid_a >= 0:
-        wp.atomic_add(
-            twist_delta, bid_a, apply_body_weight(inverse_weight[bid_a], wp.transpose(jacobian_a[cid]) @ impulse)
-        )
+        wp.atomic_add(twist_delta, bid_a, wp.transpose(weights.contact_response[cid, 0]) @ impulse)
     if bid_b >= 0:
-        wp.atomic_add(
-            twist_delta, bid_b, apply_body_weight(inverse_weight[bid_b], wp.transpose(jacobian_b[cid]) @ impulse)
-        )
+        wp.atomic_add(twist_delta, bid_b, wp.transpose(weights.contact_response[cid, 1]) @ impulse)
 
 
 ###
 # Kernels
 ###
+
+
+@wp.kernel
+def _prepare_box_responses(
+    # Inputs:
+    box_world: wp.array[wp.int32],
+    box_local: wp.array[wp.int32],
+    world_box_count: wp.array[wp.int32],
+    box_body_a: wp.array[wp.int32],
+    box_body_b: wp.array[wp.int32],
+    box_jacobian_a: wp.array[vec6f],
+    box_jacobian_b: wp.array[vec6f],
+    inverse_weight: wp.array[mat66f],
+    # Outputs:
+    box_response: wp.array2d[vec6f],
+):
+    """Prepare the twist response ``W^-1 J^T`` of each box row on its two bodies, zero for a missing body."""
+    row = wp.tid()
+    if box_local[row] >= world_box_count[box_world[row]]:
+        return
+    bid_a = box_body_a[row]
+    bid_b = box_body_b[row]
+    response_a = vec6f(0.0)
+    response_b = vec6f(0.0)
+    if bid_a >= 0:
+        response_a = apply_body_weight(inverse_weight[bid_a], box_jacobian_a[row])
+    if bid_b >= 0:
+        response_b = apply_body_weight(inverse_weight[bid_b], box_jacobian_b[row])
+    box_response[row, 0] = response_a
+    box_response[row, 1] = response_b
+
+
+@wp.kernel
+def _prepare_contact_responses(
+    # Inputs:
+    contact_world: wp.array[wp.int32],
+    contact_local: wp.array[wp.int32],
+    world_contact_count: wp.array[wp.int32],
+    contact_body_a: wp.array[wp.int32],
+    contact_body_b: wp.array[wp.int32],
+    contact_jacobian_a: wp.array[mat36f],
+    contact_jacobian_b: wp.array[mat36f],
+    inverse_weight: wp.array[mat66f],
+    # Outputs:
+    contact_response: wp.array2d[mat36f],
+):
+    """Prepare the transposed twist response ``J W^-1`` of each contact on its two bodies, zero for a missing body."""
+    cid = wp.tid()
+    if contact_local[cid] >= world_contact_count[contact_world[cid]]:
+        return
+    bid_a = contact_body_a[cid]
+    bid_b = contact_body_b[cid]
+    response_a = mat36f(0.0)
+    response_b = mat36f(0.0)
+    for row in range(3):
+        if bid_a >= 0:
+            response_a[row] = apply_body_weight(inverse_weight[bid_a], contact_jacobian_a[cid][row])
+        if bid_b >= 0:
+            response_b[row] = apply_body_weight(inverse_weight[bid_b], contact_jacobian_b[cid][row])
+    contact_response[cid, 0] = response_a
+    contact_response[cid, 1] = response_b
 
 
 @wp.kernel
@@ -859,7 +920,7 @@ def _warmstart_box_rows(
     box_reaction: wp.array[wp.float32],
     world_active: wp.array[wp.bool],
     world_failed: wp.array[wp.bool],
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     # Outputs:
     twist_delta: wp.array[vec6f],
 ):
@@ -874,7 +935,7 @@ def _warmstart_box_rows(
         box_jacobian_a,
         box_jacobian_b,
         box_reaction[row],
-        inverse_weight,
+        weights,
         twist_delta,
     )
 
@@ -892,7 +953,7 @@ def _warmstart_contacts(
     contact_reaction: wp.array[wp.vec3f],
     world_active: wp.array[wp.bool],
     world_failed: wp.array[wp.bool],
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     # Outputs:
     twist_delta: wp.array[vec6f],
 ):
@@ -910,7 +971,7 @@ def _warmstart_contacts(
         contact_jacobian_a,
         contact_jacobian_b,
         impulse,
-        inverse_weight,
+        weights,
         twist_delta,
     )
 
@@ -930,7 +991,7 @@ def _warmstart_spatial_contacts(
     angular_friction: wp.array[wp.vec2f],
     world_active: wp.array[wp.bool],
     world_failed: wp.array[wp.bool],
-    inverse_weight: wp.array[mat66f],
+    weights: ProjectionWeights,
     # Outputs:
     contact_reaction: wp.array[wp.vec3f],
     angular_reaction: wp.array[wp.vec3f],
@@ -955,7 +1016,7 @@ def _warmstart_spatial_contacts(
         contact_jacobian_b,
         frame,
         reaction,
-        inverse_weight,
+        weights,
         twist_delta,
     )
 
@@ -1023,7 +1084,7 @@ def make_sweep_kernel(spatial: bool):
         spatial_eigenvalues: wp.array[vec5f],
         # Common:
         world_active: wp.array[wp.bool],
-        inverse_weight: wp.array[mat66f],
+        weights: ProjectionWeights,
         occupancy: wp.array2d[wp.int32],
         projected_twist: wp.array[vec6f],
         # Outputs:
@@ -1062,7 +1123,7 @@ def make_sweep_kernel(spatial: bool):
                 box_upper,
                 box_delassus,
                 box_reaction,
-                inverse_weight,
+                weights,
                 occupancy,
                 projected_twist,
                 twist_delta,
@@ -1102,7 +1163,7 @@ def make_sweep_kernel(spatial: bool):
                     spatial_eigenvectors,
                     spatial_eigenvalues,
                     angular_reaction,
-                    inverse_weight,
+                    weights,
                     occupancy,
                     projected_twist,
                     twist_delta,
@@ -1122,7 +1183,7 @@ def make_sweep_kernel(spatial: bool):
                     contact_compliance,
                     contact_restitution,
                     contact_reaction,
-                    inverse_weight,
+                    weights,
                     occupancy,
                     projected_twist,
                     twist_delta,

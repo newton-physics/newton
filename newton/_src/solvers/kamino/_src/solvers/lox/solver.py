@@ -233,6 +233,7 @@ class LOXSolver:
             contact_restitution=config.contact_restitution,
             contact_spatial_friction=config.contact_spatial_friction,
         )
+        self._problem.prepare_patch_schur()
         self._data = LOXData(
             model.info.num_bodies.numpy().tolist(),
             DualSolution(model, config) if compute_solution_metrics else None,
@@ -294,13 +295,10 @@ class LOXSolver:
     def joint_penalty_scale_seed(self, time_step: float) -> wp.array[wp.float32]:
         """Estimate and apply a timestep-aware structural ALM scale.
 
-        The estimate is the reciprocal of the discrete second-percentile
-        positive eigenvalue of the effective-mass-normalized structural
-        Delassus. Both the percentile and the resulting scale are evaluated
-        independently for each world. Systems with fewer than 50 positive
-        modes therefore retain the minimum-eigenvalue estimate. The smooth
-        operator excludes the body contact-consensus metric, which is a
-        separate splitting concern.
+        The estimate is the reciprocal of the smallest positive eigenvalue of the
+        effective-mass-normalized structural Delassus, independently for each joint-connected component,
+        capped so that the penalty adds at most :attr:`LOXSolverConfig.joint_penalty_condition` to the
+        conditioning. The smooth operator excludes the body splitting weights.
 
         This operation prepares the LOX problem from the initial rigid state and
         performs a one-time dense structural assembly and host eigensolve, so
@@ -312,7 +310,8 @@ class LOXSolver:
 
         Returns:
             The applied dimensionless structural ALM penalty scale for each
-            world, shape ``(num_worlds,)``. This is the solver's own array.
+            body, shared by the bodies of a joint-connected component, shape
+            ``(num_bodies,)``. This is the solver's own array.
         """
         problem = self._problem
         model_time = problem.model.time
@@ -327,7 +326,10 @@ class LOXSolver:
                 self._begin_time_step()
                 try:
                     problem.build_smooth_system(model_time.dt, joint_penalty_scale=None)
-                    scales = problem.estimate_joint_penalty_scale(self._data.joint_penalty_scale.numpy())
+                    # Converge every structural mode within a conditioning bound
+                    scales = problem.estimate_joint_penalty_scale(
+                        self._data.joint_penalty_scale.numpy(), self._config.joint_penalty_condition
+                    )
                     self._data.joint_penalty_scale.assign(scales)
                 finally:
                     self.reset()
@@ -406,6 +408,7 @@ class LOXSolver:
     def _rebuild_rigid_topology(self) -> None:
         """Rebuild rigid allocations after dynamic-body classification changes."""
         self._problem.rebuild_dynamic_body_topology()
+        self._problem.prepare_patch_schur()
         self._build_projection_schedule()
         self.reset()
 
@@ -512,8 +515,11 @@ class LOXSolver:
             self._model.time.dt,
             joint_penalty_scale=self._data.joint_penalty_scale,
         )
-        problem.build_consensus_weights(sigma=self._config.weight_sigma, beta=self._config.weight_beta)
         system = problem.system
+        # The patch Schur complements of A, of which the matrix A + alpha W takes the fraction alpha
+        problem.compute_patch_schur_weights()
+        if self._config.consensus_fraction > 0.0:
+            system.add_weights_to_matrix(self._config.consensus_fraction)
         system.factorize()
         if system.dynamic_bodies:
             self._projection.prepare(system.data.inverse_weight, self._data.state.world_failed)
@@ -558,12 +564,16 @@ class LOXSolver:
         problem = self._problem
         system = self._problem.system
         splitting = self._data.state
+        # The splitting dual u = W^-1 J^T r carries the unilateral impulses, and the consensus fraction
+        # alpha anchors the solve (A + alpha W) v = f + W (u + alpha p) to the projected twist p
+        consensus_fraction = self._config.consensus_fraction
         system.build_candidate_right_hand_side(
-            splitting.projected_twist,
+            splitting.projected_twist if consensus_fraction > 0.0 else None,
             splitting.splitting_dual,
             problem.data.dynamic_rows,
             problem.data.effort_rows,
             problem.data.structural_rows,
+            anchor_scale=consensus_fraction,
         )
         system.solve_candidate()
         wp.launch(
@@ -596,7 +606,6 @@ class LOXSolver:
             self._data.state.world_active,
             self._data.state.world_failed,
             self._model.bodies.wid,
-            self._problem.system.data.inverse_weight,
             self._data.state.projected_twist,
         )
 
