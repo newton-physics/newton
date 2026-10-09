@@ -13523,10 +13523,9 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         from newton._src.utils.import_usd import resolve_usd_from_url  # noqa: PLC0415
 
         with (
-            mock.patch.dict(
-                "sys.modules",
-                {"requests": mock_requests, "pxr": mock_pxr, "pxr.Usd": mock_usd},
-            ),
+            patch_sys_module("requests", mock_requests),
+            patch_sys_module("pxr", mock_pxr),
+            patch_sys_module("pxr.Usd", mock_usd),
             mock.patch("builtins.open", tracking_open),
         ):
             result = resolve_usd_from_url(base_url, target_folder_name=tmpdir)
