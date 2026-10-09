@@ -8,7 +8,10 @@ description: Run Newton examples for visual QA of a release wheel or requested c
 Produce a reproducible local visual QA report with commands, observations, and
 image evidence. Preserve the requested artifact and scope: a wheel test must
 import the installed wheel, not this checkout. Do not modify examples to make
-them pass or infer acceptance from a clean exit.
+them pass or infer acceptance from a clean exit. QA does not authorize changes
+to simulation or example implementation code. Record failures and proposed CI
+checks as text for follow-up work. Evidence-backed example-spec corrections are
+allowed when within the user's scope; keep the tested artifact unchanged.
 
 ## Establish the run
 
@@ -30,6 +33,20 @@ them pass or infer acceptance from a clean exit.
    path is the native GL viewer on Linux X11, screenshots inspected by the agent,
    and real mouse/keyboard events. If using another environment/backend, verify
    its equivalent interactions and record the difference.
+
+## Coordinate a full campaign
+
+Use subagents for independent examples when delegation and isolated visual
+sessions are available. Start with up to three workers, adjusting concurrency
+to CPU/GPU memory and capture cadence. Read [parallel.md](references/parallel.md)
+for display isolation, ownership, handoffs, and coordinator review. If isolation
+or delegation is unavailable, record the limitation and continue sequentially.
+
+The coordinator owns the complete checklist. Wait for workers, review their
+actual evidence, then assign the next untested examples; spawning workers is not
+a stopping point. Continue until every requested example and variant has an
+honest assessed status, honoring user stop instructions and reporting unresolved
+coverage. A completed assessment may contain failures or blocked criteria.
 
 ## Execute and inspect
 
