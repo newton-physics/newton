@@ -4157,7 +4157,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
             builder.add_shape_sphere(body=body, radius=0.5)
         return builder.finalize()
 
-    def setUp(self):
+    def _setup_sphere_on_plane(self):
         """Set up a simple model with a sphere and a plane."""
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
@@ -4172,16 +4172,14 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         )
 
         self.model = builder.finalize()
-        self.state_in = self.model.state()
-        self.state_out = self.model.state()
-        self.control = self.model.control()
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.collision_pipeline.contacts()
-        self.collision_pipeline.collide(self.state_in, self.contacts)
         self.sphere_body_idx = sphere_body_idx
 
     def test_sphere_on_plane_with_newton_contacts(self):
         """Test that a sphere correctly collides with a plane using Newton contacts."""
+        self._setup_sphere_on_plane()
+        self.state_in = self.model.state()
+        self.state_out = self.model.state()
+        self.control = self.model.control()
         try:
             solver = SolverMuJoCo(self.model, use_mujoco_contacts=False)
         except ImportError as e:
@@ -4214,6 +4212,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
 
     def test_initial_forward_skips_mujoco_contacts(self):
         """Verify Newton-contact initialization skips transient MuJoCo collision detection."""
+        self._setup_sphere_on_plane()
         try:
             mujoco, _ = SolverMuJoCo.import_mujoco()
             original_forward = mujoco.mj_forward
@@ -4703,7 +4702,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
 
     def test_recapture_after_discarded_capture(self):
         """Replay a replacement graph after discarding the first capture without replay."""
-        device = self.model.device
+        device = wp.get_device()
         if not device.is_cuda or not wp.is_mempool_enabled(device):
             self.skipTest("CUDA graph capture requires a CUDA device with the memory pool enabled.")
 

@@ -847,6 +847,70 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
         self.assertGreater(model._texture_sdf_data.shape[0], sdf_idx)
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
+    def test_particle_only_mesh_retains_prebuilt_sdf(self):
+        """Retain a particle-only mesh's prebuilt texture even when force_sdf is set."""
+        mesh = create_box_mesh(self.half_extents)
+        mesh.build_sdf(max_resolution=32)
+        for force_sdf in (False, True):
+            with self.subTest(force_sdf=force_sdf):
+                builder = newton.ModelBuilder()
+                cfg = newton.ModelBuilder.ShapeConfig(
+                    has_shape_collision=False, has_particle_collision=True, force_sdf=force_sdf
+                )
+                builder.add_shape_mesh(body=-1, mesh=mesh, cfg=cfg)
+                model = builder.finalize(device="cuda:0")
+                sdf_idx = int(model._shape_sdf_index.numpy()[0])
+                self.assertGreaterEqual(sdf_idx, 0)
+                self.assertGreater(model._texture_sdf_data.shape[0], sdf_idx)
+                self.assertIs(model._texture_sdf_coarse_textures[sdf_idx], mesh.sdf._coarse_texture)
+                self.assertIsNotNone(model._texture_sdf_coarse_textures[sdf_idx])
+
+    @unittest.skipUnless(_cuda_available, "Requires CUDA device to build the SDF")
+    def test_prebuilt_mesh_sdf_respects_collision_flags_on_cpu(self):
+        """Reject particle-only texture SDFs on CPU and ignore noncolliding meshes."""
+        mesh = create_box_mesh(self.half_extents)
+        mesh.build_sdf(max_resolution=32)
+        for has_particle_collision in (False, True):
+            with self.subTest(has_particle_collision=has_particle_collision):
+                builder = newton.ModelBuilder()
+                cfg = newton.ModelBuilder.ShapeConfig(
+                    has_shape_collision=False, has_particle_collision=has_particle_collision
+                )
+                builder.add_shape_mesh(body=-1, mesh=mesh, cfg=cfg)
+                if has_particle_collision:
+                    with self.assertRaisesRegex(ValueError, "requires a CUDA-capable GPU"):
+                        builder.finalize(device="cpu")
+                else:
+                    for device in ("cpu", "cuda:0"):
+                        model = builder.finalize(device=device)
+                        self.assertEqual(int(model._shape_sdf_index.numpy()[0]), -1)
+                        self.assertEqual(model._texture_sdf_data.shape[0], 0)
+
+    @unittest.skipUnless(_cuda_available, "Requires CUDA device")
+    def test_particle_only_force_sdf_rebuilds_volume_only_sdf(self):
+        """Build a usable texture for full-surface contact when only a volume SDF is supplied."""
+        coords = np.linspace(-0.75, 0.75, 7, dtype=np.float32)
+        points = np.stack(np.meshgrid(coords, coords, coords, indexing="ij"), axis=-1)
+        q = np.abs(points) - 0.5
+        distances = np.linalg.norm(np.maximum(q, 0.0), axis=-1) + np.minimum(np.max(q, axis=-1), 0.0)
+        volume = wp.Volume.load_from_numpy(distances, min_world=(-0.75, -0.75, -0.75), voxel_size=0.25, device="cuda:0")
+        mesh = create_box_mesh(self.half_extents)
+        supplied_sdf = newton.SDF.create_from_data(sparse_volume=volume, half_extents=self.half_extents)
+        mesh.sdf = supplied_sdf
+        builder = newton.ModelBuilder()
+        cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True, force_sdf=True)
+        for scale in ((1.0, 1.0, 1.0), (1.0, 1.0, 2.0)):
+            builder.add_shape_mesh(body=-1, mesh=mesh, scale=scale, cfg=cfg)
+        model = builder.finalize(device="cuda:0")
+        newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+        indices = model._shape_sdf_index.numpy()
+        self.assertGreaterEqual(int(indices[0]), 0)
+        self.assertEqual(int(indices[0]), int(indices[1]))
+        self.assertEqual(model._texture_sdf_data.shape[0], 1)
+        self.assertIsNotNone(model._texture_sdf_coarse_textures[int(indices[0])])
+        self.assertIs(mesh.sdf, supplied_sdf)
+
+    @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_mesh_build_sdf_guard_and_clear(self):
         """build_sdf() should guard overwrite until clear_sdf() is called."""
         mesh = create_box_mesh((0.2, 0.2, 0.2))
@@ -910,6 +974,47 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
 
 class TestSDFPublicApi(unittest.TestCase):
     """Test public API shape for SDF creators."""
+
+    @unittest.skipUnless(_cuda_available, "Requires CUDA device")
+    def test_particle_only_box_generates_requested_sdf(self):
+        """Build the requested texture SDF when a box only collides with particles."""
+        for sdf_options in ({"sdf_max_resolution": 32}, {"sdf_target_voxel_size": 0.05}):
+            with self.subTest(**sdf_options):
+                builder = newton.ModelBuilder()
+                cfg = newton.ModelBuilder.ShapeConfig(
+                    has_shape_collision=False, has_particle_collision=True, **sdf_options
+                )
+                builder.add_shape_box(body=-1, hx=0.5, hy=0.4, hz=0.3, cfg=cfg)
+                model = builder.finalize(device="cuda:0")
+                sdf_idx = int(model._shape_sdf_index.numpy()[0])
+                self.assertGreaterEqual(sdf_idx, 0)
+                self.assertGreater(model._texture_sdf_data.shape[0], sdf_idx)
+                self.assertIsNotNone(model._texture_sdf_coarse_textures[sdf_idx])
+
+    def test_noncolliding_box_skips_requested_sdf(self):
+        """Skip requested texture SDFs when both collision flags are disabled."""
+        for device in ["cpu", "cuda:0"] if _cuda_available else ["cpu"]:
+            with self.subTest(device=device):
+                builder = newton.ModelBuilder()
+                cfg = newton.ModelBuilder.ShapeConfig(
+                    has_shape_collision=False, has_particle_collision=False, sdf_max_resolution=32
+                )
+                builder.add_shape_box(body=-1, hx=0.5, hy=0.4, hz=0.3, cfg=cfg)
+                model = builder.finalize(device=device)
+                self.assertEqual(int(model._shape_sdf_index.numpy()[0]), -1)
+                self.assertEqual(model._texture_sdf_data.shape[0], 0)
+
+    def test_particle_only_box_sdf_requires_cuda(self):
+        """Reject explicit particle-only box texture SDF requests on CPU."""
+        for sdf_options in ({"sdf_max_resolution": 32}, {"sdf_target_voxel_size": 0.05}):
+            with self.subTest(**sdf_options):
+                builder = newton.ModelBuilder()
+                cfg = newton.ModelBuilder.ShapeConfig(
+                    has_shape_collision=False, has_particle_collision=True, **sdf_options
+                )
+                builder.add_shape_box(body=-1, hx=0.5, hy=0.4, hz=0.3, cfg=cfg)
+                with self.assertRaisesRegex(ValueError, "requires a CUDA-capable GPU"):
+                    builder.finalize(device="cpu")
 
     def test_top_level_sdf_exported(self):
         """Top-level package should expose SDF as newton.SDF."""

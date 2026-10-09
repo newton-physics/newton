@@ -141,6 +141,7 @@ def _make_rcm_batch_kernels(dtype):
         A: wp.array[dtype],  # type: ignore[valid-type]
         dims: wp.array[wp.int32],  # type: ignore[valid-type]
         mio: wp.array[wp.int32],  # type: ignore[valid-type]
+        ld: wp.array[wp.int32],  # type: ignore[valid-type]
         vio: wp.array[wp.int32],  # type: ignore[valid-type]
         degree: wp.array[wp.int32],  # type: ignore[valid-type]
         level: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -172,7 +173,7 @@ def _make_rcm_batch_kernels(dtype):
 
         # Degree row scan.
         d = int(0)
-        base = mb + i * n_b
+        base = mb + i * ld[b]
         for j in range(n_b):
             if j == i:
                 continue
@@ -227,6 +228,7 @@ def _make_rcm_batch_kernels(dtype):
         A: wp.array[dtype],  # type: ignore[valid-type]
         dims: wp.array[wp.int32],  # type: ignore[valid-type]
         mio: wp.array[wp.int32],  # type: ignore[valid-type]
+        ld: wp.array[wp.int32],  # type: ignore[valid-type]
         vio: wp.array[wp.int32],  # type: ignore[valid-type]
         level: wp.array[wp.int32],  # type: ignore[valid-type]
         order_buf: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -256,7 +258,7 @@ def _make_rcm_batch_kernels(dtype):
         if level[vb + i] != cur:
             return
 
-        base = mb + i * n_b
+        base = mb + i * ld[b]
         next_lvl = cur + int(1)
         for j in range(n_b):
             if j == i:
@@ -320,6 +322,7 @@ def _make_rcm_batch_kernels(dtype):
         A: wp.array[dtype],  # type: ignore[valid-type]
         dims: wp.array[wp.int32],
         mio: wp.array[wp.int32],
+        ld: wp.array[wp.int32],  # type: ignore[valid-type]
         vio: wp.array[wp.int32],
         degree: wp.array[wp.int32],
         level: wp.array[wp.int32],
@@ -360,7 +363,7 @@ def _make_rcm_batch_kernels(dtype):
             pos = frontier_begin
             while pos < frontier_end:
                 source = order_buf[vb + pos]
-                base = mb + source * n_b
+                base = mb + source * ld[b]
                 j = lane
                 while j < n_b:
                     if j != source and wp.abs(A[base + j]) > tol:
@@ -485,6 +488,7 @@ def create_rcm_batch_launch(
     scratch: dict,
     num_blocks: int,
     max_dim: int,
+    ld: wp.array[wp.int32] | None = None,
     tol: float = 0.0,
     max_bfs_iters: int | None = None,
     use_cuda_graph: bool = True,
@@ -500,6 +504,8 @@ def create_rcm_batch_launch(
         Flat buffers for the concatenated block matrices and output permutations.
     dims, mio, vio:
         ``wp.int32`` arrays describing the per-block sizes and flat offsets.
+    ld:
+        Optional per-block matrix row strides; defaults to ``dims``.
     scratch:
         Caller-owned scratch buffers from :func:`allocate_rcm_batch_scratch`.
         The caller must keep this dict alive for the lifetime of the returned
@@ -526,6 +532,8 @@ def create_rcm_batch_launch(
         max_bfs_iters = min(max(0, max_bfs_iters), max_dim)
 
     K = _make_rcm_batch_kernels(dtype)
+    if ld is None:
+        ld = dims
 
     prepare_reorder_launch = wp.launch(
         K["prepare_reorder"],
@@ -550,6 +558,7 @@ def create_rcm_batch_launch(
             A_flat,
             dims,
             mio,
+            ld,
             vio,
             scratch["degree"],
             scratch["level"],
@@ -588,6 +597,7 @@ def create_rcm_batch_launch(
             A_flat,
             dims,
             mio,
+            ld,
             vio,
             scratch["level"],
             scratch["order_buf"],
@@ -631,6 +641,7 @@ def create_rcm_batch_launch(
                 A_flat,
                 dims,
                 mio,
+                ld,
                 vio,
                 scratch["degree"],
                 scratch["level"],
