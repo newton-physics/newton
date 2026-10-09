@@ -4079,6 +4079,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
         use_mujoco_contacts: bool = True,
+        use_hydroelastic_force_response: bool = False,
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
         deterministic: wp.DeterministicMode | None = None,
@@ -4129,6 +4130,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
+            use_hydroelastic_force_response: Experimental opt-in force-space response
+                for penetrating Newton hydroelastic contacts. Interpret per-contact
+                stiffness as N/m and damping as N s/m, including zero damping.
+                Map fixed normal springs to a backward-Euler update using explicit
+                physical contact support in MuJoCo Warp. Defaults to the legacy reference-dynamics policy.
+                Requires the MuJoCo Warp backend and ``use_mujoco_contacts=False``.
+                See :ref:`mujoco-hydroelastic-force-response` for friction and
+                discretization limits.
             include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
@@ -4136,9 +4145,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ``wp.config.deterministic``.
         """
         super().__init__(model)
+        if use_hydroelastic_force_response and (use_mujoco_contacts or use_mujoco_cpu):
+            raise ValueError("Hydroelastic force response requires MuJoCo Warp with Newton contacts.")
+        self._use_hydroelastic_force_response = use_hydroelastic_force_response
 
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
+        if use_hydroelastic_force_response and not all(
+            hasattr(self._mujoco_warp, name)
+            for name in (
+                "enable_contact_force_params",
+                "check_contact_force_params",
+                "launch_contact_force_graph",
+                "reset_contact_force_params",
+            )
+        ):
+            raise ImportError("Hydroelastic force response requires MuJoCo Warp physical-contact support.")
+
         mujoco_attrs = getattr(model, "mujoco", None)
         if enable_sleeping is None:
             if mujoco_attrs is not None and hasattr(mujoco_attrs, "enable_sleeping"):
@@ -4490,6 +4513,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 include_sites=include_sites,
                 skip_visual_only_geoms=skip_visual_only_geoms,
             )
+        if use_hydroelastic_force_response and self.mj_model.opt.integrator == mujoco.mjtIntegrator.mjINT_RK4:
+            raise ValueError("Hydroelastic force response does not support RK4.")
         if not use_mujoco_cpu and not use_mujoco_contacts:
             # Persistent mappings must be initialized outside step(), which may
             # first run inside a CUDA graph that is discarded without replay.
@@ -4501,6 +4526,41 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
+            if use_hydroelastic_force_response:
+                self._mujoco_warp.enable_contact_force_params(self.mjw_model, self.mjw_data)
+
+    def check_hydroelastic_force_response(self) -> None:
+        """Check recorded experimental physical-contact errors after low-level graph replay.
+
+        Ordinary eager steps validate automatically. Raw graph outputs are
+        provisional until this check returns on the producing stream. Errors
+        remain set until :meth:`reset` clears the affected worlds. This checks
+        errors recorded by constraint assembly, not newly written coefficients,
+        numerical accuracy, or solver convergence.
+        """
+        if self._use_hydroelastic_force_response:
+            self._mujoco_warp.check_contact_force_params(self.mjw_data)
+
+    def launch_hydroelastic_force_response_graph(self, graph: wp.Graph, *, stream: wp.Stream | None = None) -> None:
+        """Replay and validate an experimental hydroelastic force-response graph.
+
+        The graph must assemble contacts using this solver and its buffers;
+        it must not reset or clear recorded errors before validation.
+        Call outside capture, on the producing stream or after establishing its
+        dependency. All outputs remain provisional until this synchronizing
+        method returns successfully. On error, discard outputs and reset the
+        affected worlds before resuming. No state rollback is performed. Do not
+        consume output arrays concurrently with replay and validation. Raw Warp
+        graph launches bypass this wrapper and require explicit validation.
+        Validation checks the coefficient contract, not numerical accuracy.
+
+        Args:
+            graph: CUDA graph captured using this solver.
+            stream: Optional CUDA stream for replay and validation.
+        """
+        if not self._use_hydroelastic_force_response:
+            raise ValueError("Checked force-response replay requires use_hydroelastic_force_response=True.")
+        self._mujoco_warp.launch_contact_force_graph(self.mjw_data, graph, stream=stream)
 
     @contextmanager
     def _scoped_deterministic_config(self):
@@ -4543,6 +4603,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         *,
         observables: SolverObservables | None = None,
     ) -> None:
+        if self._use_hydroelastic_force_response and (not math.isfinite(dt) or dt <= 0.0):
+            raise ValueError("Hydroelastic force response requires a finite positive timestep.")
         self.validate_observables(observables, contacts)
         if self.use_mujoco_cpu:
             self._apply_mjc_control(self.model, state_in, control, self.mj_data)
@@ -4694,6 +4756,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             return
 
         buffers = (d.qacc_warmstart, d.qfrc_applied, d.ctrl, d.act, d.xfrc_applied)
+        if self._use_hydroelastic_force_response:
+            self._mujoco_warp.reset_contact_force_params(d, None if world_mask is None else world_mask[: d.nworld])
         buffer_dim = max(buffer.shape[1] for buffer in buffers)
         wp.launch(
             reset_world_buffers_kernel,
@@ -5059,6 +5123,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 model.shape_material_kf,
                 self.mjw_model.opt.impratio_invsqrt,
                 self.mjw_model.opt.cone == self._mujoco.mjtCone.mjCONE_ELLIPTIC,
+                model.shape_flags,
+                self._use_hydroelastic_force_response,
                 bodies_per_world,
                 self.newton_shape_to_mjc_geom,
                 # Mujoco warp contacts
@@ -5076,6 +5142,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_data.contact.geom,
                 self.mjw_data.contact.efc_address,
                 self.mjw_data.contact.worldid,
+                getattr(self.mjw_data.contact, "force_params", None),
                 # Data to clear
                 self.mjw_data.nworld,
                 self.mjw_data.ncollision,

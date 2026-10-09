@@ -10,6 +10,7 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
+from ...geometry import ShapeFlags
 from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
@@ -420,6 +421,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
     shape_material_kf: wp.array[float],
     opt_impratio_invsqrt: wp.array[float],
     use_kf_mapping: bool,
+    shape_flags: wp.array[int],
+    use_hydroelastic_force_response: bool,
     bodies_per_world: int,
     newton_shape_to_mjc_geom: wp.array[wp.int32],
     # Mujoco warp contacts
@@ -437,6 +440,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
+    contact_force_params_out: wp.array[wp.vec2],
     # Values to clear - see _zero_collision_arrays kernel from mujoco_warp
     nworld_in: int,
     ncollision_out: wp.array[int],
@@ -462,7 +466,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     gen = contact_generation[0]
     last_gen = last_contact_generation[0]
-    needs_full = gen != last_gen
+    # The force response depends on timestep and activation, even for reused contacts.
+    needs_full = gen != last_gen or use_hydroelastic_force_response
 
     if needs_full:
         # ── FULL PATH ────────────────────────────────────────────────────
@@ -627,13 +632,27 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     friction[4],
                 )
 
+        hydro_force_response = (
+            use_hydroelastic_force_response
+            and rigid_contact_stiffness
+            and (rigid_contact_stiffness[tid] != 0.0 or rigid_contact_damping[tid] != 0.0)
+            and (shape_flags[shape_a] & ShapeFlags.HYDROELASTIC) != 0
+            and (shape_flags[shape_b] & ShapeFlags.HYDROELASTIC) != 0
+            and dist < margin
+        )
+        physical_params = wp.vec2(0.0)
+        if hydro_force_response:
+            # The backend validates device-generated coefficients and reports
+            # unsupported values through a sticky per-world error buffer.
+            physical_params = wp.vec2(rigid_contact_stiffness[tid], rigid_contact_damping[tid])
+
         # Match Newton's force-space friction slope using MuJoCo's inverse-weight
         # approximation; positive solref lets refsafe limit overly stiff damping.
         if shape_material_kf and use_kf_mapping:
             kf1 = shape_material_kf[shape_a]
             kf2 = shape_material_kf[shape_b]
             kf = mix * kf1 + (1.0 - mix) * kf2
-            if kf > 0.0:
+            if kf > 0.0 and not hydro_force_response:
                 invw = body_invweight0[worldid, mj_body_a][0] + body_invweight0[worldid, mj_body_b][0]
                 ir = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
                 imp = solimp[1]
@@ -653,6 +672,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
             return
 
         tid_to_cid[tid] = cid
+        if use_hydroelastic_force_response:
+            contact_force_params_out[cid] = physical_params
 
         write_contact(
             dist_in=dist,
