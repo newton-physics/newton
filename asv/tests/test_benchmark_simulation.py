@@ -340,31 +340,43 @@ class TestSimulationBenchmarks(unittest.TestCase):
         self.assertEqual(metrics.solver_niter_mean, 3.0)
         self.assertEqual(metrics.solver_niter_max, 5.0)
 
-    def test_initialize_kpis_discard_a_one_world_sample(self):
-        """Track startup phases of every initialize KPI robot after a discarded one-world sample."""
+    def test_initialize_kpis_discard_a_matching_warmup_sample(self):
+        """Warm each measured configuration and exclude its first sample from the phase averages."""
         cases = []
 
         def create_example(**kwargs):
             self.assertFalse(kwargs["randomize"])
-            cases.append((kwargs["robot"], kwargs["world_count"]))
-            kwargs["startup_phase_times"].update(model=4.0, replication=1.0, finalize=2.0, solver=3.0)
+            case = (kwargs["robot"], kwargs["world_count"])
+            scale = 100.0 if case not in cases else 1.0
+            cases.append(case)
+            kwargs["startup_phase_times"].update(
+                model=4.0 * scale, replication=1.0 * scale, finalize=2.0 * scale, solver=3.0 * scale
+            )
             return SimpleNamespace(graph=object(), step=Mock())
 
         model = bench_model.KpiInitializeModel()
+        robots = ("humanoid", "g1", "cartpole", "ant")
+        world_counts = (256, 8192)
         with (
+            patch.object(bench_model._KpiInitialize, "params", (robots, world_counts)),
             patch.object(bench_model.wp, "get_cuda_device_count", return_value=1),
             patch.object(bench_model, "Example", side_effect=create_example),
             patch("benchmark_metrics.wp.synchronize_device"),
         ):
             metrics = model.setup_cache()
 
-        robots = ("humanoid", "g1", "cartpole", "ant")
-        self.assertEqual(cases, [(robot, count) for robot in robots for count in [1] + [8192] * model.samples])
-        self.assertEqual(model.track_initialize_model(metrics, "g1", 8192), 4.0)
-        self.assertEqual(model.track_mean_replication_time(metrics, "g1", 8192), 1.0)
-        self.assertEqual(model.track_mean_finalize_time(metrics, "g1", 8192), 2.0)
-        self.assertGreater(model.track_mean_startup_time(metrics, "g1", 8192), 0.0)
-        self.assertEqual(bench_model.KpiInitializeSolver().track_initialize_solver(metrics, "ant", 8192), 3.0)
+        self.assertEqual(
+            cases,
+            [(robot, count) for robot in robots for count in world_counts for _ in range(model.samples + 1)],
+        )
+        self.assertEqual(set(metrics), {(robot, count) for robot in robots for count in world_counts})
+        for robot, count in metrics:
+            with self.subTest(robot=robot, world_count=count):
+                self.assertEqual(model.track_initialize_model(metrics, robot, count), 4.0)
+                self.assertEqual(model.track_mean_replication_time(metrics, robot, count), 1.0)
+                self.assertEqual(model.track_mean_finalize_time(metrics, robot, count), 2.0)
+                self.assertGreater(model.track_mean_startup_time(metrics, robot, count), 0.0)
+                self.assertEqual(bench_model.KpiInitializeSolver().track_initialize_solver(metrics, robot, count), 3.0)
 
     def test_initialize_kpis_share_one_cache(self):
         """Collect the model and solver KPIs once, since ASV shares an inherited ``setup_cache``."""

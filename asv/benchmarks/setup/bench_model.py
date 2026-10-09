@@ -64,9 +64,9 @@ class _KpiInitialize:
         robots, world_counts = _KpiInitialize.params
         metrics = {}
         for robot in robots:
-            # Discard a one-world sample that resolves downloads, lazy imports, and Warp modules.
-            collect_startup_metrics(partial(self._create_workload, robot, 1), samples=1)
             for world_count in world_counts:
+                # Warm the measured configuration: multi-world workloads can use different kernels.
+                collect_startup_metrics(partial(self._create_workload, robot, world_count), samples=1)
                 metrics[robot, world_count] = collect_startup_metrics(
                     partial(self._create_workload, robot, world_count), self.samples
                 )
