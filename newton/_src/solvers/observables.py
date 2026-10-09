@@ -60,8 +60,13 @@ class _ObservableField:
 class SolverObservables:
     """Arrays populated by a solver in addition to the simulation state.
 
-    Instances are allocated by :meth:`SolverBase.observables` and may be reused
-    across steps. Solver implementations can derive from this class to add
+    Allocate a container once with :meth:`SolverBase.observables`, then pass
+    that same container as ``observables=`` to the allocating solver's
+    :meth:`SolverBase.step` on each step that needs diagnostics. The solver
+    writes requested results into the existing arrays during each such call;
+    allocation alone does not register them for automatic updates.
+
+    Solver implementations can derive from this class to add
     solver-specific arrays while retaining the standard Newton observables.
     Decorate derived containers with ``@dataclass(eq=False)`` and declare
     arrays with :meth:`field`. Identity equality keeps containers usable as
