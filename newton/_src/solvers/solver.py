@@ -715,8 +715,8 @@ class SolverBase:
 
     def observables(
         self,
+        kinds: Iterable[str],
         *,
-        kinds: Iterable[str] | None = None,
         contacts: Contacts | None = None,
         requires_grad: bool | None = None,
     ) -> SolverBase.Observables:
@@ -738,9 +738,9 @@ class SolverBase:
         capture and pass the same :class:`~newton.Contacts` to :meth:`step` and consumers.
 
         Args:
-            kinds: Set or other iterable of observable names. Entries from
+            kinds: Required set or other iterable of observable names. Entries from
                 :class:`ObservableKind` and literal strings are interchangeable.
-                If omitted or ``None``, allocate all :attr:`supported_observables`
+                Pass :attr:`supported_observables` to allocate all observables
                 for this instance. An empty collection allocates no arrays.
             contacts: Contact storage to bind to contact-indexed observables.
                 Required when any requested field has contact frequency, including
@@ -774,15 +774,14 @@ class SolverBase:
     @contextmanager
     def _create_observables(
         self,
-        kinds: Iterable[str] | None,
+        kinds: Iterable[str],
         *,
         contacts: Contacts | None = None,
         requires_grad: bool | None = None,
     ) -> Iterator[SolverBase.Observables]:
         """Share built-in factory allocation, freezing capacities only after setup succeeds."""
-        supported = self.supported_observables
-        requested = _normalize_observable_kinds(supported if kinds is None else kinds)
-        unsupported = requested.difference(supported)
+        requested = _normalize_observable_kinds(kinds)
+        unsupported = requested.difference(self.supported_observables)
         if unsupported:
             names = ", ".join(repr(kind) for kind in sorted(unsupported))
             raise ValueError(f"{type(self).__name__} does not support solver observable(s): {names}.")

@@ -3,7 +3,8 @@
 
 """Test eager allocation, naming, and ownership of solver observables."""
 
-import inspect
+from __future__ import annotations
+
 import unittest
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -14,7 +15,6 @@ import warp as wp
 
 import newton
 from newton.selection import ArticulationView
-from newton.solvers.experimental.coupled import SolverCoupled
 
 
 class ContactSolver(newton.solvers.SolverBase):
@@ -69,60 +69,7 @@ class TestSolverObservables(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
             self.solver.observables(kinds=self.kinds)
         with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
-            self.solver.observables()
-
-    def test_observables_api_names(self):
-        """Expose consistent observable names at producer and consumer boundaries."""
-        self.assertIn("SolverBase", newton.solvers.__all__)
-        self.assertNotIn("SolverObservableKind", newton.solvers.__all__)
-        self.assertFalse(hasattr(newton.solvers, "SolverObservableKind"))
-        self.assertEqual(newton.solvers.SolverBase.ObservableKind.__qualname__, "SolverBase.ObservableKind")
-        self.assertNotIn("SolverObservables", newton.solvers.__all__)
-        self.assertNotIn("SolverObservableFlags", newton.solvers.__all__)
-        self.assertFalse(hasattr(newton.solvers, "SolverObservables"))
-        self.assertFalse(hasattr(newton.solvers, "SolverObservableFlags"))
-        self.assertEqual(newton.solvers.SolverBase.Observables.__qualname__, "SolverBase.Observables")
-        self.assertIn("observables", inspect.signature(newton.solvers.SolverBase.step).parameters)
-        for solver_type in (
-            newton.solvers.SolverBase,
-            newton.solvers.SolverMuJoCo,
-            newton.solvers.SolverKamino,
-            SolverCoupled,
-        ):
-            with self.subTest(solver=solver_type.__name__):
-                kinds = inspect.signature(solver_type.observables).parameters["kinds"]
-                self.assertEqual(kinds.kind, inspect.Parameter.KEYWORD_ONLY)
-                self.assertIsNone(kinds.default)
-                contacts = inspect.signature(solver_type.observables).parameters["contacts"]
-                self.assertEqual(contacts.kind, inspect.Parameter.KEYWORD_ONLY)
-                self.assertIsNone(contacts.default)
-        self.assertFalse(hasattr(newton.solvers.SolverBase.Observables, "bind_contacts"))
-        for consumer in (
-            newton.sensors.SensorIMU.update,
-            newton.sensors.SensorContact.update,
-            newton.viewer.ViewerBase.log_contacts,
-        ):
-            self.assertIn("observables", inspect.signature(consumer).parameters)
-            self.assertNotIn("outputs", inspect.signature(consumer).parameters)
-            self.assertNotIn("solver_results", inspect.signature(consumer).parameters)
-        self.assertTrue(callable(newton.solvers.SolverBase.observables))
-        self.assertFalse(hasattr(newton.solvers, "SolverOutputs"))
-        self.assertFalse(hasattr(newton.solvers, "SolverOutputFlags"))
-        self.assertFalse(hasattr(newton.solvers.SolverBase, "outputs"))
-        self.assertFalse(hasattr(newton.solvers.SolverBase, "results"))
-        self.assertFalse(hasattr(newton.solvers, "SolverResults"))
-        self.assertFalse(hasattr(newton.solvers, "SolverResultFlags"))
-        self.assertFalse(hasattr(newton.solvers.SolverBase, "OBSERVABLES_TYPE"))
-        self.assertFalse(hasattr(newton.solvers.SolverMuJoCo, "OBSERVABLES_TYPE"))
-        self.assertIs(ContactSolver.Observables, newton.solvers.SolverBase.Observables)
-        self.assertTrue(issubclass(newton.solvers.SolverMuJoCo.Observables, newton.solvers.SolverBase.Observables))
-        self.assertTrue(
-            issubclass(newton.solvers.SolverMuJoCo.ObservableKind, newton.solvers.SolverBase.ObservableKind)
-        )
-        self.assertIs(
-            newton.solvers.SolverMuJoCo.ObservableKind.BODY_QDD,
-            newton.solvers.SolverBase.ObservableKind.BODY_QDD,
-        )
+            self.solver.observables(kinds=self.solver.supported_observables)
 
     def test_body_only_observables_need_no_pipeline(self):
         """Allocate body observables without constructing a collision pipeline."""

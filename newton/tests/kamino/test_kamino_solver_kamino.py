@@ -487,10 +487,10 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
         flags = {newton.solvers.SolverBase.ObservableKind.CONTACT_F}
         with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
-            solver.observables()
+            solver.observables(solver.supported_observables)
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
-        observables = solver.observables(contacts=contacts)
+        observables = solver.observables(solver.supported_observables, contacts=contacts)
         self.assertEqual(observables.kinds, solver.supported_observables)
         self.assertEqual(observables.body_qdd.shape, (model.body_count,))
         self.assertEqual(observables.contact_f.shape, (pipeline.rigid_contact_max + pipeline.soft_contact_max,))

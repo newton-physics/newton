@@ -24,7 +24,7 @@ an application needs by composing entries from ``solver.ObservableKind`` in a se
 
    solver = SolverMuJoCo(model)
    observables = solver.observables(
-       kinds={
+       {
            solver.ObservableKind.BODY_QDD,
            solver.ObservableKind.BODY_PARENT_F,
        }
@@ -34,12 +34,13 @@ an application needs by composing entries from ``solver.ObservableKind`` in a se
    acceleration = observables.body_qdd
    parent_wrench = observables.body_parent_f
 
-The ``kinds`` argument is optional and keyword-only. Calling ``solver.observables()``
-or ``solver.observables(kinds=None)`` allocates every observable supported by the
-configured solver, including its solver-specific entries. Pass ``kinds={...}``
-to request a subset, or ``kinds=set()`` to allocate an empty container. Supply
-``contacts=contacts`` whenever the requested set includes contact-indexed fields,
-including when ``kinds`` is omitted.
+The required ``kinds`` argument accepts a collection, passed positionally or by
+keyword. Use ``solver.observables(set())`` to allocate an empty container, or
+``solver.observables(solver.supported_observables)`` to explicitly request every
+observable supported by the configured solver. ``contacts`` and ``requires_grad``
+are keyword-only. Prefer selecting only the outputs you need:
+the supported set varies by backend and can grow as solvers gain capabilities.
+Supply ``contacts=contacts`` whenever the requested set includes contact-indexed fields.
 
 Allocate an observable container once and reuse it across steps. The container is
 owned by the solver instance that allocated it. For contact-indexed observables,
@@ -67,8 +68,6 @@ Contact-indexed requests require contacts even when their capacity is zero.
 Body- and joint-only observables need neither a pipeline nor contacts; if contacts
 are supplied for such requests or an empty request, they are ignored and
 ``observables.contacts`` is ``None``.
-The same setup requirement applies when omitting ``kinds`` if the solver's
-supported observables include contact arrays.
 
 The live contact counts do not determine allocation sizes. ``contact_f`` has
 ``model.rigid_contact_max + model.soft_contact_max`` entries, with rigid slots
@@ -190,9 +189,8 @@ The constants are strings, so literal names work too:
 
 Pass a collection even for one kind, such as ``{"body_qdd"}``. Bare strings and
 unknown names are rejected. ``ObservableKind`` is not iterable; query
-``solver.supported_observables`` for the names accepted by the configured backend,
-or call ``solver.observables()`` to allocate all of them. An inherited name does
-not imply support for that observable.
+``solver.supported_observables`` for the names accepted by the configured backend.
+An inherited name does not imply support for that observable.
 
 Selection
 ---------
@@ -469,6 +467,8 @@ fields. Declare the kinds the solver computes in ``SUPPORTED_OBSERVABLES``;
 
 .. code-block:: python
 
+   from __future__ import annotations
+
    from dataclasses import dataclass
 
    import warp as wp
@@ -507,7 +507,7 @@ The dataclass defaults declared arrays to ``None`` and excludes them from
 constructor arguments. ``eq=False`` preserves identity and hashing for
 articulation-view caches.
 
-``solver.observables()`` allocates requested arrays in declaration order on the
+``solver.observables(kinds=...)`` allocates requested arrays in declaration order on the
 model's device, using the requested gradient setting. Derived containers inherit
 fields and may redeclare a field's dtype or frequency without changing their
 parents or siblings. Missing declarations, duplicate kinds, and missing
@@ -545,9 +545,9 @@ Customizing the factory and selection
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Most custom fields need only their declarations. For additional initialization,
-override ``observables(*, kinds=None, contacts=None, requires_grad=None)`` and delegate
-to ``super().observables(kinds=kinds, contacts=contacts, requires_grad=requires_grad)``.
-Preserve these defaults. Perform backend preflight checks before delegating and finish auxiliary
+override ``observables(kinds, *, contacts=None, requires_grad=None)`` and delegate
+to ``super().observables(kinds, contacts=contacts, requires_grad=requires_grad)``.
+Preserve this signature. Perform backend preflight checks before delegating and finish auxiliary
 allocation before returning the container. All factory allocations must finish
 before graph capture; neither ``step()`` nor ``select()`` calls the factory.
 

@@ -1137,7 +1137,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
             newton.solvers.SolverBase.ObservableKind.BODY_QDD,
             newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F,
         }
-        observables = coupled.observables()
+        observables = coupled.observables(coupled.supported_observables)
         self.assertEqual(observables.kinds, flags)
         state_in, state_out = self.model.state(), self.model.state()
 

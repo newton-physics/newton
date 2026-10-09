@@ -602,13 +602,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return kinds
 
     def observables(
-        self, *, kinds: Iterable[str] | None = None, contacts: Contacts | None = None, requires_grad: bool | None = None
+        self, kinds: Iterable[str], *, contacts: Contacts | None = None, requires_grad: bool | None = None
     ) -> SolverMuJoCo.Observables:
         """Allocate solver observables with a compatible native contact export budget.
 
-        If ``kinds`` is omitted or ``None``, allocate all :attr:`supported_observables`
-        for the configured backend. An empty collection allocates no arrays.
-        ``requires_grad=None`` uses the model's gradient setting.
         Supply ``contacts`` when requesting contact-indexed fields; the factory
         validates and binds that storage for subsequent steps and consumers.
 

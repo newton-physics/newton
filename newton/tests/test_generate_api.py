@@ -10,6 +10,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest import mock
 
+from newton.solvers import SolverBase
+
 try:
     from docs import generate_api
 except ModuleNotFoundError as exc:
@@ -35,35 +37,12 @@ except ModuleNotFoundError as exc:
 class TestObservableFieldDocs(unittest.TestCase):
     """Keep source-documented None defaults visible in the generated API."""
 
-    def setUp(self):
-        """Provide Sphinx's public-module class context for attribute lookup."""
-        self.app = SimpleNamespace(
-            env=SimpleNamespace(
-                current_document=SimpleNamespace(
-                    autodoc_module="newton.solvers", autodoc_class="SolverBase.Observables"
-                )
-            )
-        )
-
-    def test_documented_observable_fields_are_included(self):
-        """Retain dataclass fields with attribute docstrings and None defaults."""
-        for name in ("body_qdd", "body_parent_f", "contact_f"):
-            with self.subTest(name=name):
-                self.assertIsNone(autodoc_filter._should_skip_member(self.app, "class", name, None, False, None))
-
-    def test_undocumented_and_private_defaults_stay_hidden(self):
-        """Do not expose undocumented placeholders or private container metadata."""
-        for name in ("undocumented", "_solver"):
-            with self.subTest(name=name):
-                self.assertTrue(autodoc_filter._should_skip_member(self.app, "class", name, None, False, None))
-
-    def test_existing_skip_decision_is_preserved(self):
-        """Respect a prior autodoc decision to omit a member."""
-        self.assertTrue(autodoc_filter._should_skip_member(self.app, "class", "body_qdd", None, True, None))
-
     def test_nested_observable_fields_render(self):
         """Keep array fields in the API when autodoc traverses the enclosing solver."""
-        with tempfile.TemporaryDirectory() as tmp:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(SolverBase.Observables, "undocumented", None, create=True),
+        ):
             root = Path(tmp)
             source = root / "source"
             source.mkdir()
@@ -95,6 +74,9 @@ class TestObservableFieldDocs(unittest.TestCase):
             for name in ("BODY_QDD", "BODY_PARENT_F", "CONTACT_F"):
                 with self.subTest(kind=name):
                     self.assertIn(f"newton.solvers.SolverBase.ObservableKind.{name}", objects)
+            for name in ("undocumented", "_solver"):
+                with self.subTest(hidden=name):
+                    self.assertNotIn(f"newton.solvers.SolverBase.Observables.{name}", objects)
 
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")

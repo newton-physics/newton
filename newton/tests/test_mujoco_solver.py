@@ -7739,7 +7739,7 @@ class TestMuJoCoOptions(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "does not support"):
                     solver.observables(kinds={flag})
         flag = SolverMuJoCo.ObservableKind.QFRC_ACTUATOR
-        observables = solver.observables()
+        observables = solver.observables(solver.supported_observables)
         self.assertEqual(observables.kinds, {flag})
         self.assertIsNone(observables.body_qdd)
         self.assertIsNone(observables.body_parent_f)
@@ -11400,7 +11400,7 @@ class TestContactObservablePointPositions(unittest.TestCase):
         control = model.control()
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
-        observables = solver.observables(contacts=contacts)
+        observables = solver.observables(solver.supported_observables, contacts=contacts)
         self.assertEqual(observables.kinds, solver.supported_observables)
         self.assertIsNotNone(observables.body_qdd)
         self.assertIsNotNone(observables.body_parent_f)

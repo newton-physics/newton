@@ -7,18 +7,11 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
-from enum import IntEnum
 
 import numpy as np
 import warp as wp
 
 import newton
-
-
-class IntegerObservableKind(IntEnum):
-    """Invalid value-like enum used to verify collision prevention."""
-
-    BODY_TEMPERATURE = 0
 
 
 class DummySolver(newton.solvers.SolverBase):
@@ -190,25 +183,18 @@ class TestCustomSolver(unittest.TestCase):
         self.assertEqual(observables.body_temperature.shape, (model.body_count,))
         self.assertIsNone(observables.body_parent_f)
 
-    def test_observables_reject_unsupported_flags(self):
-        """Reject standard observables not implemented by a solver."""
+    def test_observables_reject_invalid_requests(self):
+        """Reject unsupported names, bare strings, and invalid collection entries."""
         model = self._build_model()
         solver = DummySolver(model)
-
-        with self.assertRaisesRegex(ValueError, "body_parent_f"):
-            solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
-
-    def test_observables_reject_invalid_names(self):
-        """Reject empty names, bare strings, and non-string request entries."""
-        model = self._build_model()
-        solver = DummySolver(model)
-
-        with self.assertRaisesRegex(TypeError, "nonempty strings"):
-            solver.observables(kinds={""})
-        with self.assertRaisesRegex(TypeError, "nonempty strings"):
-            solver.observables(kinds={IntegerObservableKind.BODY_TEMPERATURE})
-        with self.assertRaisesRegex(TypeError, "collection of strings"):
-            solver.observables(kinds="body_qdd")
+        for kinds, error, message in (
+            ({solver.ObservableKind.BODY_PARENT_F}, ValueError, "body_parent_f"),
+            ({""}, TypeError, "nonempty strings"),
+            ({0}, TypeError, "nonempty strings"),
+            ("body_qdd", TypeError, "collection of strings"),
+        ):
+            with self.subTest(kinds=kinds), self.assertRaisesRegex(error, message):
+                solver.observables(kinds)
 
     def test_extended_attribute_requests_are_deprecated(self):
         """Keep legacy allocation requests while directing callers to solver observables."""
