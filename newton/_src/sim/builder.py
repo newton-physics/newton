@@ -4461,7 +4461,7 @@ class ModelBuilder:
                     The ``use_registered_schema_fallbacks`` argument may change without
                     prior notice.
 
-                .. deprecated:: 1.7
+                .. deprecated:: 1.8
                     Passing False selects deprecated legacy fallback precedence. Pass
                     True to adopt registered schema fallback precedence.
             audit_registered_schema_fallbacks: If True, retain legacy precedence while
