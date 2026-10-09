@@ -730,7 +730,7 @@ class RigidBodySim:
             self.viewer._wp_pbo = None
             self._frame_buffer = None
 
-        frame = self.viewer.get_frame(target_image=self._frame_buffer)
+        frame = self.viewer.get_frame(output=self._frame_buffer)
         if self._frame_buffer is None:
             self._frame_buffer = frame
 
