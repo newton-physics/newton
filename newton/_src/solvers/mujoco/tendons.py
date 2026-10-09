@@ -49,6 +49,12 @@ def _validate_shape(builder: ModelBuilder, shape: int, *, site: bool, name: str)
     if is_site != site:
         expected = "site" if site else "non-site shape"
         raise ValueError(f"{name} index {shape} does not identify a Newton {expected}.")
+    shape_world = int(builder.shape_world[shape])
+    if shape_world not in (-1, builder.current_world):
+        raise ValueError(
+            f"{name} index {shape} belongs to world {shape_world}, "
+            f"but the tendon is added to world {builder.current_world}."
+        )
 
 
 def _tendon_values(
@@ -119,8 +125,8 @@ def add_tendon_fixed(
 
     Args:
         builder: Model builder receiving the tendon.
-        joints: Ordered ``(joint_index, coefficient)`` entries. D6 and fixed
-            joints are unsupported because they have no single MuJoCo joint mapping.
+        joints: Ordered ``(joint_index, coefficient)`` entries for revolute or
+            prismatic joints in the current world or the global world (``-1``).
         label: Optional tendon label.
         stiffness: Tendon stiffness [N/m].
         damping: Tendon damping [N·s/m].
@@ -147,8 +153,14 @@ def add_tendon_fixed(
     for joint, _ in entries:
         if joint < 0 or joint >= joint_count:
             raise IndexError(f"joint index {joint} is outside [0, {joint_count}).")
-        if builder.joint_type[joint] in (JointType.D6, JointType.FIXED):
-            raise ValueError(f"Joint {joint} cannot be used in a fixed tendon: no single MuJoCo joint mapping.")
+        if builder.joint_type[joint] not in (JointType.REVOLUTE, JointType.PRISMATIC):
+            raise ValueError(f"Joint {joint} cannot be used in a fixed tendon: expected a revolute or prismatic joint.")
+        joint_world = int(builder.joint_world[joint])
+        if joint_world not in (-1, builder.current_world):
+            raise ValueError(
+                f"joint index {joint} belongs to world {joint_world}, "
+                f"but the tendon is added to world {builder.current_world}."
+            )
 
     joint_start = builder._custom_frequency_counts.get("mujoco:tendon_joint", 0)
     values = _tendon_values(
@@ -202,7 +214,8 @@ def add_tendon_spatial(
 
     Args:
         builder: Model builder receiving the tendon.
-        path: Ordered spatial tendon path entries.
+        path: Ordered spatial tendon path entries. All sites, geoms, and sidesites
+            must belong to the current world or the global world (``-1``).
         label: Optional tendon label.
         stiffness: Tendon stiffness [N/m].
         damping: Tendon damping [N·s/m].

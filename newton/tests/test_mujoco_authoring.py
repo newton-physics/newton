@@ -310,9 +310,71 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         np.testing.assert_array_equal(model.mujoco.tendon_wrap_sidesite.numpy(), [-1, site1, -1])
         np.testing.assert_allclose(model.mujoco.tendon_wrap_prm.numpy(), [0.0, 0.0, 2.0])
 
-    def test_reject_fixed_tendon_joint_without_mujoco_mapping(self):
-        """Reject tendon joints that the solver would silently drop on export."""
-        for joint_type in ("d6", "fixed"):
+    def test_reject_fixed_tendon_across_worlds(self):
+        """Reject foreign joints before appending any tendon or child rows."""
+        builder = newton.ModelBuilder()
+        _, global_joint = _add_revolute(builder, "global")
+        builder.begin_world()
+        _, joint0 = _add_revolute(builder, "world0")
+        builder.end_world()
+        builder.begin_world()
+        _, joint1 = _add_revolute(builder, "world1")
+
+        with self.assertRaisesRegex(ValueError, "belongs to world 0"):
+            mujoco.add_tendon_fixed(builder, [(joint1, 1.0), (joint0, -1.0)])
+        self.assertEqual(builder._custom_frequency_counts.get("mujoco:tendon", 0), 0)
+        self.assertEqual(builder._custom_frequency_counts.get("mujoco:tendon_joint", 0), 0)
+
+        tendon = mujoco.add_tendon_fixed(builder, [(joint1, 1.0), (global_joint, -1.0)])
+        self.assertEqual(tendon, 0)
+        self.assertEqual(builder.custom_attributes["mujoco:tendon_joint"].values, [joint1, global_joint])
+        builder.end_world()
+        with self.assertRaisesRegex(ValueError, "belongs to world 1"):
+            mujoco.add_tendon_fixed(builder, [(joint1, 1.0)])
+
+    def test_reject_spatial_tendon_across_worlds(self):
+        """Check every site, geom, and sidesite while allowing global shapes."""
+        builder = newton.ModelBuilder()
+        global_site = builder.add_site(-1)
+        global_geom = builder.add_shape_sphere(-1, radius=0.1)
+        builder.begin_world()
+        site0 = builder.add_site(-1)
+        geom0 = builder.add_shape_sphere(-1, radius=0.1)
+        builder.end_world()
+        builder.begin_world()
+        site1 = builder.add_site(-1)
+        geom1 = builder.add_shape_sphere(-1, radius=0.1)
+
+        entries = (
+            mujoco.TendonWrapSite(site0),
+            mujoco.TendonWrapGeom(geom0),
+            mujoco.TendonWrapGeom(geom1, sidesite=site0),
+        )
+        for entry in entries:
+            with self.subTest(entry=entry), self.assertRaisesRegex(ValueError, "belongs to world 0"):
+                mujoco.add_tendon_spatial(builder, [mujoco.TendonWrapSite(site1), entry])
+        self.assertEqual(builder._custom_frequency_counts.get("mujoco:tendon", 0), 0)
+        self.assertEqual(builder._custom_frequency_counts.get("mujoco:tendon_wrap", 0), 0)
+
+        tendon = mujoco.add_tendon_spatial(
+            builder,
+            [
+                mujoco.TendonWrapSite(site1),
+                mujoco.TendonWrapGeom(geom1, sidesite=global_site),
+                mujoco.TendonWrapSite(global_site),
+                mujoco.TendonWrapGeom(global_geom, sidesite=site1),
+                mujoco.TendonWrapSite(site1),
+            ],
+        )
+        self.assertEqual(tendon, 0)
+        self.assertEqual(builder._custom_frequency_counts["mujoco:tendon_wrap"], 5)
+        builder.end_world()
+        with self.assertRaisesRegex(ValueError, "belongs to world 1"):
+            mujoco.add_tendon_spatial(builder, [mujoco.TendonWrapSite(site1)])
+
+    def test_reject_unsupported_fixed_tendon_joints(self):
+        """Require a scalar joint with a single MuJoCo joint mapping."""
+        for joint_type in ("d6", "fixed", "ball", "free"):
             with self.subTest(joint_type=joint_type):
                 builder = newton.ModelBuilder()
                 body = builder.add_link(mass=1.0)

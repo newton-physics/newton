@@ -1270,12 +1270,34 @@ class ModelBuilder:
         """Batch transformer for entity references copied by :meth:`ModelBuilder.add_builder`.
 
         Use this instead of :attr:`references` when the referenced entity type depends on
-        other values in the same row. The callback is invoked once per copied builder with the
-        list of the source builder's authored values for this attribute (``None`` for unset
-        rows, which must be returned unchanged) and a context with ``builder`` (the source
-        builder), ``destination_builder``, ``entity_offsets``, ``custom_frequency_offsets``,
-        ``row_indices`` (source row index of each value), ``world``, and ``label_prefix``. It
-        must return a list of the same length.
+        other values in the same row. For each copied builder, the callback is invoked once
+        for this attribute if its value container is nonempty. It receives a list of the
+        source builder's authored values and a context dictionary with these keys:
+
+        - ``"builder"`` (:class:`ModelBuilder`): Source builder. Companion attribute values
+          can be read using ``row_indices``.
+        - ``"destination_builder"`` (:class:`ModelBuilder`): Builder receiving the copy.
+          It is partway through merging; callbacks must not depend on which other custom
+          attributes have already been copied.
+        - ``"entity_offsets"`` (``dict[str, int]``): Index offsets for this copy's built-in
+          entities. Keys are ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``,
+          ``"joint_coord"``, ``"joint_constraint"``, ``"articulation"``, ``"particle"``,
+          ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
+          ``"constraint_mimic"``, and ``"attachment_particle_body"``.
+        - ``"custom_frequency_offsets"`` (``dict[str, int]``): Destination row counts
+          before this copy's custom attributes are merged, keyed by full frequency name
+          (for example, ``"mujoco:tendon"``). Missing keys have offset zero.
+        - ``"row_indices"`` (``Sequence[int]``): Source index corresponding to each input
+          value. Custom-frequency lists use consecutive indices; sparse enum-frequency
+          attributes use their authored dictionary keys, which need not be sorted.
+        - ``"world"`` (``int``): Destination world for this copy, or ``-1`` for global
+          entities. Use this value for world references instead of adding an offset.
+        - ``"label_prefix"`` (``str | None``): Optional label prefix for this copy.
+
+        The callback must return a list in the same order and of the same length, preserving
+        ``None`` entries for unset rows. Treat the supplied builders, mappings, and source
+        values as read-only; create replacement values instead of mutating source objects.
+        Replication invokes the callback separately for each copy with its own offsets.
 
         Mutually exclusive with :attr:`references`; the callback owns reference remapping.
         """

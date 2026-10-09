@@ -401,7 +401,9 @@ def add_actuator_general(
         dynprm: Activation dynamics parameters, padded to ten values.
         gainprm: Gain parameters, padded to ten values.
         biasprm: Bias parameters, padded to ten values.
-        gear: Transmission gear, padded to six values.
+        gear: Transmission gear, padded to six values. For ball/free joint targets,
+            a single value applies to the selected DOF axis; longer vectors use
+            MuJoCo's native gear layout.
         ctrlrange: Optional control range.
         ctrllimited: Control-limit tri-state (false, true, or auto).
         forcerange: Optional actuator force range [N or N·m].
@@ -468,7 +470,9 @@ def add_actuator_motor(
     Args:
         builder: Model builder receiving the actuator.
         target: Typed actuator transmission target.
-        gear: Transmission gear, padded to six values.
+        gear: Transmission gear, padded to six values. For ball/free joint targets,
+            a single value applies to the selected DOF axis; longer vectors use
+            MuJoCo's native gear layout.
         ctrlrange: Optional control range.
         ctrllimited: Control-limit tri-state (false, true, or auto).
         forcerange: Optional actuator force range [N or N·m].
@@ -526,7 +530,9 @@ def add_actuator_position(
         kp: Position feedback gain.
         kv: Velocity feedback gain.
         dampratio: Damping ratio used when ``kv`` is zero.
-        gear: Transmission gear, padded to six values.
+        gear: Transmission gear, padded to six values. For ball/free joint targets,
+            a single value applies to the selected DOF axis; longer vectors use
+            MuJoCo's native gear layout.
         ctrlrange: Optional control range.
         ctrllimited: Control-limit tri-state (false, true, or auto).
         forcerange: Optional actuator force range [N or N·m].
@@ -590,7 +596,9 @@ def add_actuator_velocity(
         builder: Model builder receiving the actuator.
         target: Typed actuator transmission target.
         kv: Velocity feedback gain.
-        gear: Transmission gear, padded to six values.
+        gear: Transmission gear, padded to six values. For ball/free joint targets,
+            a single value applies to the selected DOF axis; longer vectors use
+            MuJoCo's native gear layout.
         ctrlrange: Optional control range.
         ctrllimited: Control-limit tri-state (false, true, or auto).
         forcerange: Optional actuator force range [N or N·m].
