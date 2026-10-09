@@ -942,7 +942,7 @@ def _make_cwise_inverse_kernel_2d(dtype: FloatType):
         if mat_id >= mask.shape[0] or not mask[mat_id] or coeff_id >= dim[mat_id]:
             return
 
-        x[mat_id, coeff_id] = 1.0 / (x[mat_id, coeff_id] + offset)
+        x[mat_id, coeff_id] = dtype(1.0) / (x[mat_id, coeff_id] + dtype(offset))
 
     return cwise_inverse_kernel
 
