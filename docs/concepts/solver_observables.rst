@@ -467,8 +467,6 @@ fields. Declare the kinds the solver computes in ``SUPPORTED_OBSERVABLES``;
 
 .. code-block:: python
 
-   from __future__ import annotations
-
    from dataclasses import dataclass
 
    import warp as wp
