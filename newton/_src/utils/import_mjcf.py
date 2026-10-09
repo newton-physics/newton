@@ -28,7 +28,7 @@ from ..solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from ..solvers.mujoco.enums import EqType
+from ..solvers.mujoco.enums import EqType, _ActuatorGainType
 from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
@@ -554,12 +554,19 @@ def parse_mjcf(
     for default in root.findall("default"):
         parse_default(default, None)
 
-    def merge_attrib(default_attrib: dict, incoming_attrib: dict) -> dict:
+    def merge_attrib(default_attrib: dict, incoming_attrib: dict, *, tag: str | None = None) -> dict:
         attrib = default_attrib.copy()
         for key, value in incoming_attrib.items():
             if key in attrib:
                 if isinstance(attrib[key], dict):
-                    attrib[key] = merge_attrib(attrib[key], value)
+                    attrib[key] = merge_attrib(attrib[key], value, tag=key)
+                elif (tag == "dcmotor" and key == "controller") or (
+                    tag in {"general", "motor", "position", "velocity", "intvelocity", "damper", "dcmotor"}
+                    and key == "damping"
+                ):
+                    # MuJoCo overrides only the supplied prefix of these vectors.
+                    values = value.split()
+                    attrib[key] = " ".join(values + attrib[key].split()[len(values) :])
                 else:
                     attrib[key] = value
             else:
@@ -589,7 +596,7 @@ def parse_mjcf(
         if ambient_defaults is None:
             ambient_defaults = class_defaults["__all__"]
         defaults = resolve_class_defaults(element.get("class"), ambient_defaults)
-        return merge_attrib(defaults.get(tag, {}), element.attrib)
+        return merge_attrib(defaults.get(tag, {}), element.attrib, tag=tag)
 
     explicit_pair_geom_names: set[str] = set()
     for contact in contact_sections:
@@ -3499,19 +3506,19 @@ def parse_mjcf(
                 parsing_mode="mjcf",
                 context={"actuator_name": act_name},
             )
-            if actuator_type == "dcmotor":
-                # MuJoCo 3.12 stores the input signature separately from the
-                # compiled gain parameters. Keep both the high-level value and
-                # its generic compiled-model representation.
-                input_key = "mujoco:actuator_dcmotor_input"
-                parsed_attrs["mujoco:actuator_ctrlspec"] = parsed_attrs.get(
-                    input_key,
-                    builder.custom_attributes[input_key].default,
+            is_dcmotor = actuator_type == "dcmotor" or (
+                actuator_type == "general" and parsed_attrs.get("mujoco:actuator_gaintype") == _ActuatorGainType.DCMOTOR
+            )
+            if is_dcmotor:
+                # MuJoCo writes compiled DC motors as <general input="...">.
+                # Preserve their signature without allocating high-level parameters.
+                parsed_attrs["mujoco:actuator_ctrlspec"] = SolverMuJoCo._parse_dcmotor_input(
+                    merged_attrib.get("input", "voltage")
                 )
             if (
                 (
                     actuator_type in {"position", "velocity", "intvelocity"}
-                    or (actuator_type == "dcmotor" and parsed_attrs["mujoco:actuator_ctrlspec"] in (1, 2))
+                    or (is_dcmotor and parsed_attrs["mujoco:actuator_ctrlspec"] in (1, 2))
                 )
                 and target_joint_name in mjcf_slide_joint_names
                 and not ctrlrange_is_derived

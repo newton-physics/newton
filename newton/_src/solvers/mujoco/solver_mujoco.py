@@ -948,29 +948,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     """
 
     @classmethod
+    def _parse_dcmotor_input(cls, value: Any, _context: dict[str, Any] | None = None) -> int:
+        """Parse a supported single-input DC-motor control signature."""
+        control_signatures = {
+            "pos": 1,
+            "position": 1,
+            "vel": 2,
+            "velocity": 2,
+            "voltage": 8,
+        }
+        try:
+            control_signature = cls._parse_named_int(value, control_signatures)
+        except ValueError:
+            control_signature = -1
+        if control_signature not in control_signatures.values():
+            raise NotImplementedError(
+                "SolverMuJoCo supports one DC-motor control input per actuator row: "
+                "'voltage', 'pos', or 'vel'. MuJoCo 'ff', 'none', and combined input "
+                "signatures are not supported by Newton's one-control-per-actuator mapping."
+            )
+        return control_signature
+
+    @classmethod
     def _register_dcmotor_custom_attributes(cls, builder: ModelBuilder) -> None:
         """Declare high-level MJCF DC-motor parameters when a source uses them."""
-
-        def parse_dcmotor_input(value: Any, _context: dict[str, Any] | None = None) -> int:
-            control_signatures = {
-                "pos": 1,
-                "position": 1,
-                "vel": 2,
-                "velocity": 2,
-                "voltage": 8,
-            }
-            try:
-                control_signature = cls._parse_named_int(value, control_signatures)
-            except ValueError:
-                control_signature = -1
-            if control_signature not in control_signatures.values():
-                raise NotImplementedError(
-                    "SolverMuJoCo supports one DC-motor control input per actuator row: "
-                    "'voltage', 'pos', or 'vel'. MuJoCo 'ff', 'none', and combined input "
-                    "signatures are not supported by Newton's one-control-per-actuator mapping."
-                )
-            return control_signature
-
         dcmotor_vec6 = wp.types.vector(length=6, dtype=wp.float32)
         attributes = (
             ModelBuilder.CustomAttribute(
@@ -1062,7 +1063,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 default=8,
                 namespace="mujoco",
                 mjcf_attribute_name="input",
-                mjcf_value_transformer=parse_dcmotor_input,
+                mjcf_value_transformer=cls._parse_dcmotor_input,
             ),
         )
         for attribute in attributes:
