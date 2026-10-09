@@ -885,7 +885,7 @@ class TestHeightfield(unittest.TestCase):
 
         pipeline = newton.CollisionPipeline(model)
         self.assertTrue(pipeline.narrow_phase.mesh_sdf_texture_only)
-        self.assertTrue(pipeline.narrow_phase.mesh_sdf_identity_scale_only)
+        self.assertFalse(pipeline.narrow_phase.mesh_sdf_identity_scale_only)
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
 
@@ -898,7 +898,7 @@ class TestHeightfield(unittest.TestCase):
 
     @unittest.skipUnless(_cuda_available, "build_sdf requires CUDA")
     def test_scaled_mesh_sdf_identity_scale_specialization(self):
-        """Select identity SDF scaling only for unit-scale or scale-baked meshes."""
+        """Select identity SDF scaling only for scale-baked meshes."""
         mesh = self._create_non_convex_mesh()
         mesh.build_sdf(max_resolution=16)
 
