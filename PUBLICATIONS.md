@@ -4,7 +4,8 @@
 # Publications using Newton
 
 A curated list of research using the [Newton physics engine](https://github.com/newton-physics/newton).
-Preprints and peer-reviewed publications are welcome.
+Entries must be research publications or preprints. Code and project websites
+may support an entry, but do not qualify on their own.
 
 ## Inclusion criteria
 
@@ -13,18 +14,20 @@ or data generation; develops and uses a Newton component; or studies Newton itse
 Public API use qualifies, including through another framework when its Newton
 backend was actually used.
 
-A background mention, citation alone, or use of Warp, MuJoCo Warp, or Isaac Lab
-without confirmed Newton use is insufficient. Papers underlying algorithms later
-implemented in Newton do not qualify unless they used Newton.
+A background mention or citation alone is insufficient. Papers underlying
+algorithms later implemented in Newton do not qualify unless they used Newton.
 Put papers using Newton solely as a comparison baseline in
-[Evaluations of Newton](#evaluations-of-newton).
+[Newton used solely as a comparison baseline](#newton-used-solely-as-a-comparison-baseline).
+Studies of Newton and work proposing improvements belong in the research section.
 
 ## Contributing
 
 Open a PR adding a citation and BibTeX entry in the format below. Explain how the
-work uses Newton and link supporting material in the **PR description**; these
-details do not need to appear in the list. Maintainers review additions and may
-correct or remove entries. Use [CITATION.cff](CITATION.cff) to cite Newton itself.
+work uses Newton and link material accessible to reviewers in the **PR description**.
+For paywalled papers, provide an accessible author version, code, or supplementary
+documentation demonstrating Newton use. These details do not need to appear in
+the list. Maintainers review additions and may correct or remove entries.
+Use [CITATION.cff](CITATION.cff) to cite Newton itself.
 
 Keep one entry per work, combining preprint and published versions. Prefer the
 published citation when available and retain an accessible preprint link.
@@ -39,10 +42,12 @@ published citation when available and retain an accessible preprint link.
 - Use `@article`, `@inproceedings`, or `@misc` as appropriate, with verified
   `title`, `author`, `year`, `url`, and available venue/DOI or arXiv fields.
   Use `Family, Given` names separated by `and`; protect title acronyms with braces.
-- Use unique keys such as `tsounis2026kamino` and preserve them when updating entries.
+- Use first-author surname and year as the key, such as `tsounis2026`, adding
+  letters only for collisions (`tsounis2026a`, `tsounis2026b`). Preserve existing
+  keys when adding or updating entries.
   Keep Markdown and BibTeX metadata consistent; move entries if the cited year changes.
 
-## Publications
+## Research using or developing Newton
 
 ### 2026
 
@@ -52,7 +57,7 @@ published citation when available and retain an accessible preprint link.
 <summary>BibTeX</summary>
 
 ```bibtex
-@misc{tsounis2026kamino,
+@misc{tsounis2026,
   title         = {{Kamino}: {GPU}-based Massively Parallel Simulation of Multi-Body Systems with Challenging Topologies},
   author        = {Tsounis, Vassilios and Maloisel, Guirec and Schumacher, Christian and Grandia, Ruben and Serifi, Agon and Müller, David and Amevor, Chris and Widmer, Tobias and Bächer, Moritz},
   year          = {2026},
@@ -72,7 +77,7 @@ published citation when available and retain an accessible preprint link.
 <summary>BibTeX</summary>
 
 ```bibtex
-@misc{zhou2026sim1,
+@misc{zhou2026,
   title         = {{SIM1}: Physics-Aligned Simulator as Zero-Shot Data Scaler in Deformable Worlds},
   author        = {Zhou, Yunsong and Liu, Hangxu and Jiang, Xuekun and Shen, Xing and Zhou, Yuanzhen and Wang, Hui and Fang, Baole and Tian, Yang and Yu, Mulin and Yu, Qiaojun and Ma, Li and Li, Hengjie and Wang, Hanqing and Zeng, Jia and Pang, Jiangmiao},
   year          = {2026},
@@ -86,6 +91,6 @@ published citation when available and retain an accessible preprint link.
 
 </details>
 
-## Evaluations of Newton
+## Newton used solely as a comparison baseline
 
 No entries yet. Use the same format and sorting rules.

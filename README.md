@@ -999,7 +999,7 @@ python -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 
 ## Research using Newton
 
-See [PUBLICATIONS.md](PUBLICATIONS.md) for research using Newton, inclusion criteria, and instructions for adding your publication. Each entry includes a reusable BibTeX citation.
+See [PUBLICATIONS.md](https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md) for research using Newton, inclusion criteria, and instructions for adding your publication. Each entry includes a reusable BibTeX citation.
 
 ## Contributing and Development
 
