@@ -24,6 +24,7 @@ from ..geometry.collision_core import (
     post_process_minkowski_only,
 )
 from ..geometry.collision_primitive import (
+    _collide_capsule_cylinder_barrel,
     _collide_plane_capsule_contacts,
     collide_capsule_capsule,
     collide_plane_box,
@@ -660,7 +661,7 @@ def create_narrow_phase_primitive_kernel(
             if (
                 type_a >= GeoType.ELLIPSOID
                 or type_b == GeoType.CONE
-                or (type_a == GeoType.CAPSULE and type_b > GeoType.CAPSULE)
+                or (type_a == GeoType.CAPSULE and type_b > GeoType.CAPSULE and type_b != GeoType.CYLINDER)
             ):
                 if wp.static(sparse_gjk_pairs):
                     wp.atomic_add(gjk_candidate_pairs_count, 0, 1)
@@ -869,6 +870,26 @@ def create_narrow_phase_primitive_kernel(
                 contact_dist_0, contact_pos_0, contact_normal = collide_sphere_cylinder(
                     pos_a, sphere_radius, pos_b, cylinder_axis, cylinder_radius, cylinder_half_height
                 )
+
+            # -----------------------------------------------------------------
+            # Capsule-Cylinder collision: only exterior barrel witnesses.
+            # Unsupported cases leave contact_dist_0 unset and reach MPR/GJK.
+            # -----------------------------------------------------------------
+            elif is_capsule_a and is_cylinder_b and scale_b[2] == 0.0:
+                barrel_handled, barrel_dist, barrel_pos, barrel_normal = _collide_capsule_cylinder_barrel(
+                    pos_a,
+                    wp.quat_rotate(quat_a, wp.vec3(0.0, 0.0, 1.0)),
+                    scale_a[0],
+                    scale_a[1],
+                    pos_b,
+                    wp.quat_rotate(quat_b, wp.vec3(0.0, 0.0, 1.0)),
+                    scale_b[0],
+                    scale_b[1],
+                )
+                if barrel_handled:
+                    contact_dist_0 = barrel_dist
+                    contact_pos_0 = barrel_pos
+                    contact_normal = barrel_normal
 
             # -----------------------------------------------------------------
             # Sphere-Box collision (type_a=SPHERE=2, type_b=BOX=6)
