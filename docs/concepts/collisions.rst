@@ -443,7 +443,7 @@ Newton supports the following geometry types via :class:`~GeoType`:
    * - ``ELLIPSOID``
      - Ellipsoid
    * - ``MESH``
-     - Triangle mesh (arbitrary, including non-convex)
+     - Triangle mesh (arbitrary, including non-convex; :class:`~newton.solvers.SolverMuJoCo` collides its convex hull, see :doc:`/solvers/mujoco`)
    * - ``CONVEX_MESH``
      - Convex hull mesh
 
@@ -1021,6 +1021,13 @@ worlds, but it is not a guaranteed worst-case bound. When the estimate implies a
 and the inputs that produced it. Pass an explicit ``rigid_contact_max`` to select the
 memory budget and silence the warning. Optional collision features and solvers may
 allocate additional per-contact memory.
+
+Pipeline construction publishes the resolved rigid and soft capacities as
+``model.rigid_contact_max`` and ``model.soft_contact_max``. Before collision
+setup these are ``None``; zero is a valid empty capacity. Contact-indexed
+:ref:`solver_observables` use these capacities for eager allocation and freeze them
+once allocated. Construct the pipeline before calling ``solver.observables()`` for
+contact diagnostics; the live contact counts are not needed during allocation.
 
 .. _Mesh Collisions:
 
@@ -1604,6 +1611,10 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
      - Per-contact frame-to-frame match result (int32). Only allocated when
        ``contact_matching`` is not ``"disabled"``.
        See :ref:`Contact Matching`.
+   * - ``rigid_contact_match_generation``
+     - Contact generation of this buffer that the match indices refer to, or ``-1``
+       (int32, one element). Allocated with ``rigid_contact_match_index``.
+       See :ref:`Contact Matching`.
    * - ``rigid_contact_new_indices``, ``rigid_contact_new_count``
      - Compact index list of new contacts in the current sorted buffer. Only
        allocated when ``contact_report=True``.
@@ -1636,33 +1647,34 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - ``soft_contact_normal``
      - Contact normal.
 
-**Extended contact attributes** (see :ref:`extended_contact_attributes`):
+**Contact-force solver observable** (see :ref:`solver_observables`):
 
 .. list-table::
    :header-rows: 1
    :widths: 22 78
 
-   * - Attribute
+   * - Observable
      - Description
-   * - :attr:`~Contacts.force`
+   * - ``SolverObservableFlags.CONTACT_F`` / ``SolverObservables.contact_f``
      - Contact spatial forces (used by :class:`~sensors.SensorContact`).
-       Populated by :meth:`~solvers.SolverBase.update_contacts`.
+       Bind the observable allocation to the contacts buffer and pass it to the
+       solver step.
 
 .. note::
 
    :class:`~solvers.SolverXPBD` with ``rigid_contact_con_weighting`` enabled
    (the default) does not conserve momentum at contacts.  The per-contact
-   forces written by :meth:`~solvers.SolverXPBD.update_contacts` are
+   forces written to ``SolverObservables.contact_f`` are
    approximate -- see that method's documentation for details.
 
 .. note::
 
    :class:`~solvers.SolverVBD` populates the rigid-contact rows of
-   :attr:`~Contacts.force` when it integrates the rigid bodies, and the
+   :attr:`~solvers.SolverObservables.contact_f` when it integrates the rigid bodies, and the
    soft-contact rows (row ``rigid_contact_max + i`` for soft contact ``i``) for
-   rigid-soft particle, edge, and face records. With an external rigid solver the
-   rigid rows are left to that solver. See
-   :meth:`~solvers.SolverVBD.update_contacts` for the sign and torque convention.
+   rigid-soft particle, edge, and face records. With an external rigid solver, VBD's
+   rigid rows are zero; consume that solver's forces from its own observables.
+   See :ref:`vbd_contact_forces` for the sign and torque convention.
 
 Example usage:
 
@@ -2264,6 +2276,15 @@ previous frame's sorted keys, then verifies candidates against a world-space
 distance threshold and a normal dot-product threshold.  The sort key encodes
 ``(shape_a, shape_b, sub_key)`` so only contacts between the same shape pair
 are compared.
+
+The previous frame is the pipeline's last collision pass, whichever
+:class:`~newton.Contacts` buffer it wrote.
+:attr:`Contacts.rigid_contact_match_generation` holds the
+:attr:`~newton.Contacts.contact_generation` of the buffer's contact set that the
+match indices refer to, or ``-1`` when the previous pass wrote another buffer
+(or none).  Code that carries per-contact state across frames can compare it
+with the generation it saved, so indices into another buffer's contacts are not
+mistaken for its own.
 
 The distance metric is the world-space **contact midpoint**
 ``0.5 * (world(point0) + world(point1))`` — symmetric in shape 0 and shape 1

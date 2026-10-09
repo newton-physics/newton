@@ -145,7 +145,7 @@ class TestSensorCamera(unittest.TestCase):
         """Verify camera ray helpers live on SensorCamera."""
         sensor_helper_names = (
             "compute_camera_rays_pinhole",
-            "compute_camera_rays_usd_pinhole",
+            "compute_camera_rays_pinhole_usd",
             "compute_camera_rays_pinhole_opencv",
             "compute_camera_rays_fisheye_opencv",
             "compute_camera_rays_fisheye_ftheta",
@@ -161,13 +161,13 @@ class TestSensorCamera(unittest.TestCase):
         self.assertFalse(hasattr(Utils, "assign_checkerboard_material_to_all_shapes"))
         for helper_name in (
             "_create_image_output",
-            "create_color_image_output",
-            "create_depth_image_output",
-            "create_forward_depth_image_output",
-            "create_shape_index_image_output",
-            "create_normal_image_output",
-            "create_albedo_image_output",
-            "create_hdr_color_image_output",
+            "allocate_image_color",
+            "allocate_image_depth",
+            "allocate_image_depth_forward",
+            "allocate_image_shape_index",
+            "allocate_image_normal",
+            "allocate_image_albedo",
+            "allocate_image_color_hdr",
         ):
             self.assertFalse(hasattr(Utils, helper_name))
 
@@ -372,16 +372,16 @@ class TestSensorCamera(unittest.TestCase):
         multisample_values[:, :, 0] = ray_values[:, :, 0]
         multisample_rays = wp.array(multisample_values, dtype=wp.vec3f, device="cpu")
 
-        single_color = camera.create_color_image_output(1, 1, 1)
-        multisample_color = camera.create_color_image_output(1, 1, 1)
-        single_depth = camera.create_depth_image_output(1, 1, 1)
-        multisample_depth = camera.create_depth_image_output(1, 1, 1)
-        single_forward_depth = camera.create_forward_depth_image_output(1, 1, 1)
-        multisample_forward_depth = camera.create_forward_depth_image_output(1, 1, 1)
-        single_normal = camera.create_normal_image_output(1, 1, 1)
-        multisample_normal = camera.create_normal_image_output(1, 1, 1)
-        single_shape_index = camera.create_shape_index_image_output(1, 1, 1)
-        multisample_shape_index = camera.create_shape_index_image_output(1, 1, 1)
+        single_color = camera.allocate_image_color(1, 1, 1)
+        multisample_color = camera.allocate_image_color(1, 1, 1)
+        single_depth = camera.allocate_image_depth(1, 1, 1)
+        multisample_depth = camera.allocate_image_depth(1, 1, 1)
+        single_forward_depth = camera.allocate_image_depth_forward(1, 1, 1)
+        multisample_forward_depth = camera.allocate_image_depth_forward(1, 1, 1)
+        single_normal = camera.allocate_image_normal(1, 1, 1)
+        multisample_normal = camera.allocate_image_normal(1, 1, 1)
+        single_shape_index = camera.allocate_image_shape_index(1, 1, 1)
+        multisample_shape_index = camera.allocate_image_shape_index(1, 1, 1)
         camera.update(
             state,
             transforms,
@@ -421,7 +421,7 @@ class TestSensorCamera(unittest.TestCase):
     def test_update_rejects_invalid_anti_aliasing(self) -> None:
         """Reject an unknown resolve mode before rendering the output."""
         model, camera = self._build_sphere_scene()
-        color = camera.create_color_image_output(1, 1, 1)
+        color = camera.allocate_image_color(1, 1, 1)
         with self.assertRaisesRegex(ValueError, "Invalid anti_aliasing mode"):
             camera.update(
                 model.state(),
@@ -464,10 +464,10 @@ class TestSensorCamera(unittest.TestCase):
         bundle_values[0, 0, 1, 1] = dir_blue
         bundle_rays = wp.array(bundle_values, dtype=wp.vec3f, device="cpu")
 
-        red_color = camera.create_color_image_output(1, 1, 1)
-        blue_color = camera.create_color_image_output(1, 1, 1)
-        msaa_color = camera.create_color_image_output(1, 1, 1)
-        ssaa_color = camera.create_color_image_output(1, 1, 1)
+        red_color = camera.allocate_image_color(1, 1, 1)
+        blue_color = camera.allocate_image_color(1, 1, 1)
+        msaa_color = camera.allocate_image_color(1, 1, 1)
+        ssaa_color = camera.allocate_image_color(1, 1, 1)
         camera.update(state, transforms, _single_ray(dir_red), color_image=red_color)
         camera.update(state, transforms, _single_ray(dir_blue), color_image=blue_color)
         camera.update(
@@ -509,7 +509,7 @@ class TestSensorCamera(unittest.TestCase):
         state = model.state()
         transforms = self._identity_transforms(1)
         center_rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device="cpu")
-        center_hdr = camera.create_hdr_color_image_output(1, 1, 1)
+        center_hdr = camera.allocate_image_color_hdr(1, 1, 1)
         camera.update(state, transforms, center_rays, hdr_color_image=center_hdr)
 
         for sample_count in (3, 4, 8):
@@ -517,7 +517,7 @@ class TestSensorCamera(unittest.TestCase):
                 rays = SensorCamera.compute_camera_rays_pinhole(
                     1, 1, camera_fov=0.8, sample_count=sample_count, device="cpu"
                 )
-                msaa_hdr = camera.create_hdr_color_image_output(1, 1, 1)
+                msaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
                 camera.update(
                     state,
                     transforms,
@@ -541,8 +541,8 @@ class TestSensorCamera(unittest.TestCase):
             ray_values[0, 0, sample_index, 1] = direction / np.linalg.norm(direction)
         rays = wp.array(ray_values, dtype=wp.vec3f, device="cpu")
         transforms = self._identity_transforms(1)
-        ssaa_hdr = camera.create_hdr_color_image_output(1, 1, 1)
-        msaa_hdr = camera.create_hdr_color_image_output(1, 1, 1)
+        ssaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
+        msaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
 
         camera.update(
             model.state(),
@@ -571,8 +571,8 @@ class TestSensorCamera(unittest.TestCase):
         transforms = self._identity_transforms(1)
         rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, sample_count=3, device="cpu")
         first_rays = wp.array(rays.numpy()[:, :, 0:1].copy(), dtype=wp.vec3f, device="cpu")
-        first_hdr = camera.create_hdr_color_image_output(1, 1, 1)
-        msaa_hdr = camera.create_hdr_color_image_output(1, 1, 1)
+        first_hdr = camera.allocate_image_color_hdr(1, 1, 1)
+        msaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
 
         camera.update(model.state(), transforms, first_rays, hdr_color_image=first_hdr)
         camera.update(
@@ -619,8 +619,8 @@ class TestSensorCamera(unittest.TestCase):
             direction = np.array(target, dtype=np.float32)
             ray_values[0, 0, sample_index, 1] = direction / np.linalg.norm(direction)
         rays = wp.array(ray_values, dtype=wp.vec3f, device="cpu")
-        msaa_hdr = camera.create_hdr_color_image_output(1, 1, 1)
-        single_hdr = camera.create_hdr_color_image_output(1, 1, 1)
+        msaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
+        single_hdr = camera.allocate_image_color_hdr(1, 1, 1)
         single_colors = []
         for sample_index in range(3):
             single_ray = wp.array(ray_values[:, :, sample_index : sample_index + 1], dtype=wp.vec3f, device="cpu")
@@ -642,7 +642,7 @@ class TestSensorCamera(unittest.TestCase):
         """Reject multisampled rays when the resolve mode is left at NONE."""
         model, camera = self._build_sphere_scene()
         rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=1.0, sample_count=4, device="cpu")
-        color = camera.create_color_image_output(1, 1, 1)
+        color = camera.allocate_image_color(1, 1, 1)
 
         with self.assertRaisesRegex(ValueError, "anti_aliasing"):
             camera.update(model.state(), self._identity_transforms(1), rays, color_image=color)
@@ -687,21 +687,21 @@ class TestSensorCamera(unittest.TestCase):
         self.assertFalse(hasattr(camera, "_model_ref"))
 
         output_specs = (
-            (camera.create_image_output(view_count, width, height, wp.float32), wp.float32),
-            (camera.create_color_image_output(view_count, width, height), wp.uint32),
-            (camera.create_depth_image_output(view_count, width, height), wp.float32),
-            (camera.create_forward_depth_image_output(view_count, width, height), wp.float32),
-            (camera.create_shape_index_image_output(view_count, width, height), wp.uint32),
-            (camera.create_normal_image_output(view_count, width, height), wp.vec3f),
-            (camera.create_albedo_image_output(view_count, width, height), wp.uint32),
-            (camera.create_hdr_color_image_output(view_count, width, height), wp.vec3f),
+            (camera.allocate_image(view_count, width, height, wp.float32), wp.float32),
+            (camera.allocate_image_color(view_count, width, height), wp.uint32),
+            (camera.allocate_image_depth(view_count, width, height), wp.float32),
+            (camera.allocate_image_depth_forward(view_count, width, height), wp.float32),
+            (camera.allocate_image_shape_index(view_count, width, height), wp.uint32),
+            (camera.allocate_image_normal(view_count, width, height), wp.vec3f),
+            (camera.allocate_image_albedo(view_count, width, height), wp.uint32),
+            (camera.allocate_image_color_hdr(view_count, width, height), wp.vec3f),
         )
         for output, dtype in output_specs:
             with self.subTest(dtype=dtype):
                 self.assertEqual(output.shape, (view_count, height, width))
                 self.assertEqual(output.dtype, dtype)
                 self.assertEqual(output.device, model.device)
-        color_rgba = SensorCamera.Utils.to_rgba_from_color(camera.create_color_image_output(view_count, width, height))
+        color_rgba = SensorCamera.Utils.to_rgba_from_color(camera.allocate_image_color(view_count, width, height))
         self.assertEqual(color_rgba.shape, (view_count, height, width, 4))
         # Scene configuration is surfaced on the camera; the render context is private.
         camera.create_default_light(enable_shadows=True)
@@ -773,8 +773,8 @@ class TestSensorCamera(unittest.TestCase):
             camera = SensorCamera(model)
             # Camera 2 m above the origin looking down -Z at the box's top face (z = 0.1 m).
             above = np.array([[0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
-            depth = camera.create_depth_image_output(1, width, height)
-            normal = camera.create_normal_image_output(1, width, height)
+            depth = camera.allocate_image_depth(1, width, height)
+            normal = camera.allocate_image_normal(1, width, height)
             camera.update(
                 model.state(),
                 wp.array(above, dtype=wp.transformf, device="cpu"),
@@ -929,7 +929,7 @@ class TestSensorCamera(unittest.TestCase):
         camera_transforms = wp.array(transforms, dtype=wp.transformf, device="cpu")
         world_indices = wp.array(np.zeros(3, dtype=np.int32), dtype=wp.int32, device="cpu")
 
-        depth = camera.create_depth_image_output(3, width, height)
+        depth = camera.allocate_image_depth(3, width, height)
         self.assertEqual(depth.shape, (3, height, width))
         camera.update(state, camera_transforms, rays, depth_image=depth, world_indices=world_indices)
 
@@ -1003,7 +1003,7 @@ class TestSensorCamera(unittest.TestCase):
         for device in get_test_devices():
             model, camera, rays, poses, worlds, expected_srgb = self._cloth_color_scene(device)
             state = model.state()
-            albedo = camera.create_albedo_image_output(4, 2, 1)
+            albedo = camera.allocate_image_albedo(4, 2, 1)
             for color_space in (newton.utils.ColorSpace.SRGB, newton.utils.ColorSpace.LINEAR):
                 expected = expected_srgb
                 if color_space == newton.utils.ColorSpace.LINEAR:
@@ -1029,11 +1029,11 @@ class TestSensorCamera(unittest.TestCase):
         for device in get_test_devices():
             model, camera, rays, poses, worlds, expected = self._cloth_color_scene(device)
             state = model.state()
-            depth = camera.create_depth_image_output(4, 2, 1)
-            albedo = camera.create_albedo_image_output(4, 2, 1)
-            normal = camera.create_normal_image_output(4, 2, 1)
-            color = camera.create_color_image_output(4, 2, 1)
-            hdr = camera.create_hdr_color_image_output(4, 2, 1)
+            depth = camera.allocate_image_depth(4, 2, 1)
+            albedo = camera.allocate_image_albedo(4, 2, 1)
+            normal = camera.allocate_image_normal(4, 2, 1)
+            color = camera.allocate_image_color(4, 2, 1)
+            hdr = camera.allocate_image_color_hdr(4, 2, 1)
             with self.subTest(device=device, output="depth-only"):
                 camera.update(
                     state,
@@ -1079,8 +1079,8 @@ class TestSensorCamera(unittest.TestCase):
         for device in get_test_devices():
             model, camera, rays, poses, worlds, _ = self._cloth_color_scene(device)
             state = model.state()
-            depth = camera.create_depth_image_output(4, 2, 1)
-            normal = camera.create_normal_image_output(4, 2, 1)
+            depth = camera.allocate_image_depth(4, 2, 1)
+            normal = camera.allocate_image_normal(4, 2, 1)
             for render_normals in (False, True):
                 for culling in (None, False, True):
                     with self.subTest(device=device, render_normals=render_normals, culling=culling):
@@ -1118,7 +1118,7 @@ class TestSensorCamera(unittest.TestCase):
             camera.assign_checkerboard_material(shape_indices=[sphere])
             state = model.state()
             rays = self._rays(width, height, math.radians(60.0))
-            albedo = camera.create_albedo_image_output(model.world_count, width, height)
+            albedo = camera.allocate_image_albedo(model.world_count, width, height)
             camera.update(state, self._identity_transforms(model.world_count), rays, albedo_image=albedo)
             return albedo.numpy()
 
@@ -1130,6 +1130,37 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(len(np.unique(triplanar)), 1)
         # The two projection modes produce distinct results on a curved surface.
         self.assertFalse(np.array_equal(cubic, triplanar))
+
+    def test_in_memory_rgb_and_grayscale_textures(self) -> None:
+        """Verify meshes with in-memory RGB ``(H, W, 3)`` or grayscale ``(H, W)`` textures render opaque."""
+        width, height = 8, 8
+        for name, texture, expected in (
+            ("rgb", np.tile(np.array([200, 40, 10], dtype=np.uint8), (4, 4, 1)), (200, 40, 10)),
+            ("gray", np.full((4, 4), 90, dtype=np.uint8), (90, 90, 90)),
+        ):
+            with self.subTest(texture=name):
+                mesh = newton.Mesh(
+                    np.array([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]], dtype=np.float32),
+                    np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
+                    uvs=np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32),
+                    compute_inertia=False,
+                    texture=texture,
+                )
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                builder.add_shape_mesh(-1, mesh=mesh, color=(1.0, 1.0, 1.0))
+                model = builder.finalize(device="cpu")
+                camera = SensorCamera(model, default_render_config=SensorCamera.RenderConfig(enable_textures=True))
+                above = np.array([[0.0, 0.0, 1.8, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+                albedo = camera.allocate_image_albedo(1, width, height)
+                camera.update(
+                    model.state(),
+                    wp.array(above, dtype=wp.transformf, device="cpu"),
+                    self._rays(width, height, math.radians(60.0)),
+                    albedo_image=albedo,
+                )
+                packed = int(albedo.numpy()[0, height // 2, width // 2])
+                rgb = np.array([packed & 0xFF, (packed >> 8) & 0xFF, (packed >> 16) & 0xFF])
+                np.testing.assert_allclose(rgb, expected, atol=2)
 
     def test_mesh_texture_transform_maps_uvs(self) -> None:
         """Verify ``Mesh.texture_transform`` is applied to mesh UVs, as in the viewers."""
@@ -1155,7 +1186,7 @@ class TestSensorCamera(unittest.TestCase):
             camera = SensorCamera(model, default_render_config=SensorCamera.RenderConfig(enable_textures=True))
             # The quad fills the view of a camera 1.8 m above it; pixel column 4 sees u = 0.25.
             above = np.array([[0.0, 0.0, 1.8, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
-            albedo = camera.create_albedo_image_output(1, width, height)
+            albedo = camera.allocate_image_albedo(1, width, height)
             camera.update(
                 model.state(),
                 wp.array(above, dtype=wp.transformf, device="cpu"),
@@ -1306,8 +1337,8 @@ class TestSensorCamera(unittest.TestCase):
         state = model.state()
         rays = self._rays(width, height)
         view_count = model.world_count
-        color = camera.create_color_image_output(view_count, width, height)
-        hdr = camera.create_hdr_color_image_output(view_count, width, height)
+        color = camera.allocate_image_color(view_count, width, height)
+        hdr = camera.allocate_image_color_hdr(view_count, width, height)
         camera.update(state, self._identity_transforms(view_count), rays, color_image=color, hdr_color_image=hdr)
         return np.asarray(color.numpy(), dtype=np.uint32), np.asarray(hdr.numpy(), dtype=np.float32)
 
@@ -1345,7 +1376,7 @@ class TestSensorCamera(unittest.TestCase):
             camera.default_render_config = SensorCamera.RenderConfig(output_color_space=space)
             state = model.state()
             rays = self._rays(width, height)
-            albedo = camera.create_albedo_image_output(model.world_count, width, height)
+            albedo = camera.allocate_image_albedo(model.world_count, width, height)
             camera.update(state, self._identity_transforms(model.world_count), rays, albedo_image=albedo)
             return albedo.numpy()
 
@@ -1380,10 +1411,10 @@ class TestSensorCamera(unittest.TestCase):
         state = model.state()
         rays = self._rays(width, height)
         view_count = model.world_count
-        color = camera.create_color_image_output(view_count, width, height)
-        depth = camera.create_depth_image_output(view_count, width, height)
-        normal = camera.create_normal_image_output(view_count, width, height)
-        shape_index = camera.create_shape_index_image_output(view_count, width, height)
+        color = camera.allocate_image_color(view_count, width, height)
+        depth = camera.allocate_image_depth(view_count, width, height)
+        normal = camera.allocate_image_normal(view_count, width, height)
+        shape_index = camera.allocate_image_shape_index(view_count, width, height)
         camera.update(
             state,
             self._identity_transforms(view_count),
@@ -1411,9 +1442,9 @@ class TestSensorCamera(unittest.TestCase):
         rays = self._rays(width, height)
         view_count = model.world_count
         camera_transforms = self._identity_transforms(view_count)
-        depth = camera.create_depth_image_output(view_count, width, height)
-        normal = camera.create_normal_image_output(view_count, width, height)
-        shape_index = camera.create_shape_index_image_output(view_count, width, height)
+        depth = camera.allocate_image_depth(view_count, width, height)
+        normal = camera.allocate_image_normal(view_count, width, height)
+        shape_index = camera.allocate_image_shape_index(view_count, width, height)
         camera.update(
             state, camera_transforms, rays, depth_image=depth, normal_image=normal, shape_index_image=shape_index
         )
@@ -1441,11 +1472,61 @@ class TestSensorCamera(unittest.TestCase):
         colored = SensorCamera.Utils.to_rgba_from_shape_index(shape_index, colors=palette)
         self.assertEqual(colored.shape, (view_count, height, width, 4))
 
-        # to_rgba_from_depth: on-device auto range (depth_range=None) and the near<far guard.
+        # Exercise automatic ranges and host-side validation using the same CPU image.
         auto = SensorCamera.Utils.to_rgba_from_depth(depth)
         self.assertEqual(auto.shape, (view_count, height, width, 4))
-        with self.assertRaisesRegex(ValueError, "near < far"):
-            SensorCamera.Utils.to_rgba_from_depth(depth, depth_range=(5.0, 1.0))
+        invalid_ranges = [
+            ((1.0,), "exactly two"),
+            ((1.0, 1.0), "near < far"),
+            ((0.0, math.inf), "finite"),
+            (wp.zeros((1, 2), dtype=wp.float32, device="cpu"), "shape"),
+            (wp.array([0.0, 2.0], dtype=wp.float64, device="cpu"), "dtype"),
+        ]
+        cuda_device = next((d for d in get_test_devices() if d.is_cuda), None)
+        if cuda_device is not None:
+            invalid_ranges.append((wp.array([0.0, 2.0], dtype=wp.float32, device=cuda_device), "device"))
+        for helper in (SensorCamera.Utils.to_rgba_from_depth, SensorCamera.Utils.flatten_depth_image_to_rgba):
+            for depth_range, message in invalid_ranges:
+                with self.subTest(helper=helper.__name__, message=message):
+                    with self.assertRaisesRegex(ValueError, message):
+                        helper(depth, depth_range=depth_range)
+
+    def test_utils_depth_helpers_clamp_ranges(self) -> None:
+        """Match tuple and array ranges, endpoint clamping, and miss colors across layouts."""
+        values = np.array([[[0.0, 0.5, 1.0], [2.0, 3.0, 4.0]], [[4.0, 3.0, 2.0], [1.0, 0.5, 0.0]]], dtype=np.float32)
+        gray = np.array([[[0, 255, 255], [152, 50, 50]], [[50, 50, 152], [255, 255, 0]]], dtype=np.uint8)
+        expected = np.full((*values.shape, 4), 255, dtype=np.uint8)
+        expected[..., :3] = gray[..., None]
+        expected_tiled = np.concatenate(list(expected), axis=1)
+        for device in get_test_devices():
+            depth = wp.array(values, dtype=wp.float32, device=device)
+            for depth_range in ((1.0, 3.0), wp.array([1.0, 3.0], dtype=wp.float32, device=device)):
+                with self.subTest(device=device, range_type=type(depth_range).__name__):
+                    rgba = SensorCamera.Utils.to_rgba_from_depth(depth, depth_range=depth_range)
+                    tiled = SensorCamera.Utils.flatten_depth_image_to_rgba(
+                        depth, depth_range=depth_range, views_per_row=2
+                    )
+                    np.testing.assert_array_equal(rgba.numpy(), expected)
+                    np.testing.assert_array_equal(tiled.numpy(), expected_tiled)
+
+    def test_utils_depth_helpers_capture_array_ranges(self) -> None:
+        """Reuse device-resident ranges and output buffers during CUDA graph replay."""
+        devices = [d for d in get_test_devices() if wp.get_device(d).is_cuda]
+        if not devices:
+            self.skipTest("Requires CUDA graph capture")
+        for device in devices:
+            depth = wp.array([[[1.0, 2.0]]], dtype=wp.float32, device=device)
+            depth_range = wp.array([0.0, 4.0], dtype=wp.float32, device=device)
+            rgba = SensorCamera.Utils.to_rgba_from_depth(depth, depth_range=depth_range)
+            tiled = SensorCamera.Utils.flatten_depth_image_to_rgba(depth, depth_range=depth_range)
+            with wp.ScopedCapture(device=device) as capture:
+                SensorCamera.Utils.to_rgba_from_depth(depth, depth_range=depth_range, out_buffer=rgba)
+                SensorCamera.Utils.flatten_depth_image_to_rgba(depth, depth_range=depth_range, out_buffer=tiled)
+            depth_range.assign([0.0, 8.0])
+            wp.capture_launch(capture.graph)
+            expected = np.array([[[[229, 229, 229, 255], [203, 203, 203, 255]]]], dtype=np.uint8)
+            np.testing.assert_array_equal(rgba.numpy(), expected)
+            np.testing.assert_array_equal(tiled.numpy(), expected[0])
 
     def test_utils_shape_index_hash_colors_differ_by_index(self) -> None:
         """Verify the shape-index hash palette maps two distinct valid indices to distinct colors."""
@@ -1463,7 +1544,7 @@ class TestSensorCamera(unittest.TestCase):
         state = model.state()
         rays = self._rays(width, height)
         view_count = model.world_count
-        color = camera.create_color_image_output(view_count, width, height)
+        color = camera.allocate_image_color(view_count, width, height)
         camera.update(state, self._identity_transforms(view_count), rays, color_image=color)
         with self.assertRaisesRegex(ValueError, "views_per_row"):
             SensorCamera.Utils.flatten_color_image_to_rgba(color, views_per_row=0)

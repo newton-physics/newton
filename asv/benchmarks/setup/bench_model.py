@@ -4,6 +4,7 @@
 import gc
 import os
 import sys
+from functools import partial
 
 # Force headless mode for CI environments before any pyglet imports
 os.environ["PYGLET_HEADLESS"] = "1"
@@ -20,6 +21,7 @@ sys.path.append(parent_dir)
 sys.path.append(os.path.join(parent_dir, "simulation"))
 
 from bench_sensor_tiled_camera import SCENES as TILED_CAMERA_SCENES
+from benchmark_metrics import collect_startup_metrics
 from benchmark_mujoco import Example
 
 import newton
@@ -27,58 +29,86 @@ from newton.sensors import SensorTiledCamera
 from newton.viewer import ViewerGL
 
 
-class KpiInitializeModel:
-    params = (["humanoid", "g1", "cartpole"], [8192])
-    param_names = ["robot", "world_count"]
+class _KpiInitialize:
+    """Cache warm startup times of MuJoCo KPI workloads through their first completed simulation frame.
 
-    rounds = 1
-    repeat = 3
-    number = 1
-    min_run_count = 1
-    timeout = 3600
+    Besides the model, replication, finalize, and solver phases, the startup time
+    covers state setup, graph capture, and the first completed frame, which instantiates the graph.
+    """
 
-    def setup(self, robot, world_count):
-        # Finalize a small model first so the asset download and one-time kernel
-        # compilation stay out of the timed build. Use the default (benchmark)
-        # device so the kernels warmed here are the ones the timed call reuses.
-        builder = Example.create_model_builder(robot, 1, randomize=False, seed=123)
-        _model = builder.finalize()
-        wp.synchronize_device()
-
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_initialize_model(self, robot, world_count):
-        builder = Example.create_model_builder(robot, world_count, randomize=True, seed=123)
-
-        # finalize model
-        _model = builder.finalize()
-        wp.synchronize_device()
-
-
-class KpiInitializeSolver:
     params = (["humanoid", "g1", "cartpole", "ant"], [8192])
     param_names = ["robot", "world_count"]
-
-    rounds = 1
-    repeat = 3
-    number = 1
-    min_run_count = 1
+    samples = 3
     timeout = 3600
 
-    def setup(self, robot, world_count):
-        wp.init()
-        builder = Example.create_model_builder(robot, world_count, randomize=True, seed=123)
+    @staticmethod
+    def _create_workload(robot, world_count, startup_phase_times):
+        workload = Example(
+            robot=robot,
+            world_count=world_count,
+            randomize=False,
+            headless=True,
+            actuation="random",
+            startup_phase_times=startup_phase_times,
+        )
+        if workload.graph is None:
+            raise RuntimeError("KPI benchmark requires CUDA graph capture (is the CUDA mempool allocator enabled?)")
+        return workload
 
-        # finalize model
-        self._model = builder.finalize()
+    def setup_cache(self):
+        if wp.get_cuda_device_count() == 0:
+            return None
+
+        # ASV runs an inherited setup_cache once and shares its result, so collect
+        # the base parameters rather than those of the class that triggers it.
+        robots, world_counts = _KpiInitialize.params
+        metrics = {}
+        for robot in robots:
+            for world_count in world_counts:
+                # Warm the measured configuration: multi-world workloads can use different kernels.
+                collect_startup_metrics(partial(self._create_workload, robot, world_count), samples=1)
+                metrics[robot, world_count] = collect_startup_metrics(
+                    partial(self._create_workload, robot, world_count), self.samples
+                )
+        return metrics
+
+    setup_cache.timeout = 3600
+
+
+class KpiInitializeModel(_KpiInitialize):
+    params = (["humanoid", "g1", "cartpole"], [8192])
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_initialize_solver(self, robot, world_count):
-        self._solver = Example.create_solver(self._model, robot, use_mujoco_cpu=False)
-        wp.synchronize_device()
+    def track_initialize_model(self, metrics, robot, world_count):
+        return metrics[robot, world_count].model_time
 
-    def teardown(self, robot, world_count):
-        del self._solver
-        del self._model
+    track_initialize_model.unit = "s"
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_mean_replication_time(self, metrics, robot, world_count):
+        return metrics[robot, world_count].replication_time
+
+    track_mean_replication_time.unit = "s"
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_mean_finalize_time(self, metrics, robot, world_count):
+        return metrics[robot, world_count].finalize_time
+
+    track_mean_finalize_time.unit = "s"
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_mean_startup_time(self, metrics, robot, world_count):
+        return metrics[robot, world_count].total_time
+
+    track_mean_startup_time.unit = "s"
+
+
+class KpiInitializeSolver(_KpiInitialize):
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_initialize_solver(self, metrics, robot, world_count):
+        return metrics[robot, world_count].solver_time
+
+    track_initialize_solver.unit = "s"
 
 
 class KpiInitializeViewerGL:

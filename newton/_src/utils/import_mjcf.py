@@ -55,6 +55,48 @@ from .mesh import load_meshes_from_file
 _MIN_EXPLICIT_MASS_REFERENCE_MASS = 1.0e-12
 
 
+def _parse_mesh_ref_pose(mesh_attrib: dict[str, str], label: str) -> tuple[np.ndarray, np.ndarray]:
+    """Parse and validate an MJCF mesh reference pose."""
+    try:
+        refpos = np.array(mesh_attrib.get("refpos", "0 0 0").split(), dtype=np.float32)
+    except ValueError as exc:
+        raise ValueError(f"{label} has invalid refpos data.") from exc
+    try:
+        refquat = np.array(mesh_attrib.get("refquat", "1 0 0 0").split(), dtype=np.float32)
+    except ValueError as exc:
+        raise ValueError(f"{label} has invalid refquat data.") from exc
+    if refpos.shape != (3,):
+        raise ValueError(f"{label} refpos must have 3 values.")
+    if refquat.shape != (4,):
+        raise ValueError(f"{label} refquat must have 4 values.")
+    refquat_norm = np.linalg.norm(refquat)
+    if not np.isfinite(refquat_norm) or refquat_norm == 0.0:
+        raise ValueError(f"{label} refquat must be finite and nonzero.")
+    if not np.all(np.isfinite(refpos)):
+        raise ValueError(f"{label} refpos must contain only finite values.")
+    return refpos, refquat / refquat_norm
+
+
+def _apply_mesh_ref_pose(
+    vertices: np.ndarray,
+    normals: np.ndarray | None,
+    refpos: np.ndarray,
+    refquat: np.ndarray,
+    scaling: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Subtract the reference position, rotate by inverse quaternion, then scale."""
+    rotation = np.asarray(
+        wp.quat_to_matrix(wp.quat(refquat[1], refquat[2], refquat[3], refquat[0])),
+        dtype=np.float32,
+    ).reshape(3, 3)
+    vertices = ((vertices - refpos) @ rotation) * scaling
+    if normals is not None:
+        normals = (normals @ rotation) / scaling
+        lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+        normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 0.0)
+    return vertices, normals
+
+
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
     """Default path resolver - joins base_dir with file_path.
 
@@ -572,7 +614,14 @@ def parse_mjcf(
                 if not os.path.isabs(fname):
                     fname = os.path.abspath(os.path.join(mjcf_dirname, fname))
                 name = mesh_name or ".".join(os.path.basename(fname).split(".")[:-1])
-                mesh_assets[name] = {"file": fname, "scale": mesh_scale, "maxhullvert": maxhullvert}
+                refpos, refquat = _parse_mesh_ref_pose(mesh_attrib, f"MJCF mesh {name!r}")
+                mesh_assets[name] = {
+                    "file": fname,
+                    "scale": mesh_scale,
+                    "refpos": refpos,
+                    "refquat": refquat,
+                    "maxhullvert": maxhullvert,
+                }
             elif "vertex" in mesh_attrib:
                 name = mesh_name
                 if not name:
@@ -631,24 +680,7 @@ def parse_mjcf(
                         )
                     texcoords = texcoords.reshape(-1, 2)
 
-                try:
-                    refpos = np.array(mesh_attrib.get("refpos", "0 0 0").split(), dtype=np.float32)
-                except ValueError as exc:
-                    raise ValueError(f"Inline MJCF mesh {name!r} has invalid refpos data.") from exc
-                try:
-                    refquat = np.array(mesh_attrib.get("refquat", "1 0 0 0").split(), dtype=np.float32)
-                except ValueError as exc:
-                    raise ValueError(f"Inline MJCF mesh {name!r} has invalid refquat data.") from exc
-                if refpos.shape != (3,):
-                    raise ValueError(f"Inline MJCF mesh {name!r} refpos must have 3 values.")
-                if refquat.shape != (4,):
-                    raise ValueError(f"Inline MJCF mesh {name!r} refquat must have 4 values.")
-                refquat_norm = np.linalg.norm(refquat)
-                if not np.isfinite(refquat_norm) or refquat_norm == 0.0:
-                    raise ValueError(f"Inline MJCF mesh {name!r} refquat must be finite and nonzero.")
-                if not np.all(np.isfinite(refpos)):
-                    raise ValueError(f"Inline MJCF mesh {name!r} refpos must contain only finite values.")
-                refquat /= refquat_norm
+                refpos, refquat = _parse_mesh_ref_pose(mesh_attrib, f"Inline MJCF mesh {name!r}")
 
                 mesh_assets[name] = {
                     "vertices": vertices,
@@ -663,6 +695,16 @@ def parse_mjcf(
         for texture in asset.findall("texture"):
             tex_name = texture.attrib.get("name")
             tex_file = texture.attrib.get("file")
+            builtin = texture.attrib.get("builtin", "none")
+            if tex_name and not tex_file and builtin != "none":
+                # Procedural MuJoCo textures (checker, gradient, flat) have no image; keep their
+                # mean color so textured geoms such as floors keep their authored tone.
+                rgb1 = np.array(texture.attrib.get("rgb1", "0.8 0.8 0.8").split(), dtype=np.float32)[:3]
+                rgb2 = np.array(texture.attrib.get("rgb2", "0.5 0.5 0.5").split(), dtype=np.float32)[:3]
+                # Flat textures fill everything but the bottom face of cube textures with rgb1.
+                mean = rgb1 if builtin == "flat" else 0.5 * (rgb1 + rgb2)
+                texture_assets[tex_name] = {"builtin_color": tuple(float(v) for v in mean)}
+                continue
             if not tex_name or not tex_file:
                 continue
             tex_path = os.path.join(texture_dir, tex_file)
@@ -725,27 +767,44 @@ def parse_mjcf(
     ) -> list[Mesh]:
         mesh_asset = mesh_assets[mesh_name]
         if "file" in mesh_asset:
-            return load_meshes_from_file(
+            refpos = mesh_asset["refpos"]
+            refquat = mesh_asset["refquat"]
+            has_ref_pose = not (np.all(refpos == 0.0) and np.array_equal(refquat, (1.0, 0.0, 0.0, 0.0)))
+            meshes = load_meshes_from_file(
                 mesh_asset["file"],
-                scale=scaling,
+                scale=(1.0, 1.0, 1.0) if has_ref_pose else scaling,
                 maxhullvert=maxhullvert,
                 override_color=override_color,
                 override_texture=override_texture,
             )
+            if not has_ref_pose:
+                return meshes
 
-        refquat = mesh_asset["refquat"]
-        rotation = np.asarray(
-            wp.quat_to_matrix(wp.quat(refquat[1], refquat[2], refquat[3], refquat[0])),
-            dtype=np.float32,
-        ).reshape(3, 3)
-        vertices = ((mesh_asset["vertices"] - mesh_asset["refpos"]) @ rotation) * scaling
+            transformed_meshes = []
+            for mesh in meshes:
+                vertices, normals = _apply_mesh_ref_pose(mesh.vertices, mesh.normals, refpos, refquat, scaling)
+                transformed_meshes.append(
+                    Mesh(
+                        vertices=vertices,
+                        indices=mesh.indices,
+                        normals=normals,
+                        uvs=mesh.uvs,
+                        compute_inertia=mesh.has_inertia,
+                        is_solid=mesh.is_solid,
+                        maxhullvert=mesh.maxhullvert,
+                        color=mesh.color,
+                        roughness=mesh.roughness,
+                        metallic=mesh.metallic,
+                        texture=mesh.texture,
+                    )
+                )
+            return transformed_meshes
+
+        vertices, normals = _apply_mesh_ref_pose(
+            mesh_asset["vertices"], mesh_asset["normals"], mesh_asset["refpos"], mesh_asset["refquat"], scaling
+        )
         faces = mesh_asset["faces"]
-        normals = mesh_asset["normals"]
         texcoords = mesh_asset["texcoords"]
-        if normals is not None:
-            normals = (normals @ rotation) / scaling
-            lengths = np.linalg.norm(normals, axis=1, keepdims=True)
-            normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 0.0)
 
         if faces is None:
             hull_vertices, faces = remesh_convex_hull(vertices, maxhullvert=maxhullvert)
@@ -913,11 +972,18 @@ def parse_mjcf(
             return wp.quat_from_matrix(wp.mat33(rot_matrix))
         if "zaxis" in attrib:
             zaxis = np.array(attrib["zaxis"].split(), dtype=float)
-            zaxis = wp.normalize(wp.vec3(*zaxis))
-            xaxis = wp.normalize(wp.cross(wp.vec3(0, 0, 1), zaxis))
-            yaxis = wp.normalize(wp.cross(zaxis, xaxis))
-            rot_matrix = np.array([xaxis, yaxis, zaxis]).T
-            return wp.quat_from_matrix(wp.mat33(rot_matrix))
+            zaxis /= np.linalg.norm(zaxis)
+            axis = np.array([-zaxis[1], zaxis[0], 0.0])
+            axis_norm_sq = np.dot(axis, axis)
+            # Match MuJoCo's mjuu_z2quat, including mjuu_normvec's mjEPS cutoff.
+            if axis_norm_sq < 1e-14:
+                axis = np.array([1.0, 0.0, 0.0])
+                axis_norm = 0.0
+            else:
+                axis_norm = np.sqrt(axis_norm_sq)
+                axis /= axis_norm
+            half_angle = 0.5 * np.arctan2(axis_norm, zaxis[2])
+            return wp.quat(*(axis * np.sin(half_angle)), np.cos(half_angle))
         return wp.quat_identity()
 
     def parse_fromto_transform(
@@ -1106,6 +1172,12 @@ def parse_mjcf(
             material_info = material_assets.get(material_name, {})
             rgba = geom_attrib.get("rgba", material_info.get("rgba"))
             material_color = None
+            builtin_color = texture_assets.get(material_info.get("texture"), {}).get("builtin_color")
+            if builtin_color is not None and "rgba" not in geom_attrib:
+                # MuJoCo multiplies the material rgba (default white) with the texture color.
+                tint = np.array((rgba or "1 1 1 1").split(), dtype=np.float32)
+                tint = np.pad(tint, (0, max(0, 4 - tint.size)), constant_values=1.0)
+                rgba = " ".join(str(v) for v in (*(np.array(builtin_color) * tint[:3]), tint[3]))
             if rgba is not None:
                 rgba_values = np.array(rgba.split(), dtype=np.float32)
                 if len(rgba_values) >= 3:
@@ -1138,11 +1210,7 @@ def parse_mjcf(
                         print(f"Warning: mesh asset for fitting not found for {geom_name}, skipping geom")
                     continue
                 else:
-                    if "mesh" in geom_defaults:
-                        mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[mesh_name]["scale"])
-                    else:
-                        mesh_scale = mesh_assets[mesh_name]["scale"]
-                    scaling = np.array(mesh_scale) * scale
+                    scaling = np.asarray(mesh_assets[mesh_name]["scale"]) * scale
                     maxhullvert = mesh_assets[mesh_name].get("maxhullvert", mesh_maxhullvert)
 
                     m_meshes = load_mesh_asset(mesh_name, scaling, maxhullvert)

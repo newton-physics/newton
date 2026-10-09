@@ -24,40 +24,41 @@ def _build_revolute(
     *,
     target_ke: float = 0.0,
     target_kd: float = 0.0,
-    armature: float = 0.0,
+    armatures: tuple[float, ...] = (0.0,),
 ) -> newton.Model:
-    """Build a single world-to-body revolute model."""
+    """Build one independent revolute joint per world."""
     builder = newton.ModelBuilder()
     SolverKamino.register_custom_attributes(builder)
-    builder.begin_world()
-    body = builder.add_link(
-        mass=_BODY_MASS,
-        inertia=[
-            _BODY_INERTIA,
-            0.0,
-            0.0,
-            0.0,
-            _BODY_INERTIA,
-            0.0,
-            0.0,
-            0.0,
-            _BODY_INERTIA,
-        ],
-        com=wp.vec3f(_BODY_COM_X, 0.0, 0.0),
-        lock_inertia=True,
-    )
-    joint = builder.add_joint_revolute(
-        -1,
-        body,
-        axis=newton.Axis.Y,
-        effort_limit=effort_limit,
-        target_ke=target_ke,
-        target_kd=target_kd,
-        armature=armature,
-        actuator_mode=newton.JointTargetMode.POSITION if target_ke > 0.0 else newton.JointTargetMode.NONE,
-    )
-    builder.add_articulation([joint])
-    builder.end_world()
+    for armature in armatures:
+        builder.begin_world()
+        body = builder.add_link(
+            mass=_BODY_MASS,
+            inertia=[
+                _BODY_INERTIA,
+                0.0,
+                0.0,
+                0.0,
+                _BODY_INERTIA,
+                0.0,
+                0.0,
+                0.0,
+                _BODY_INERTIA,
+            ],
+            com=wp.vec3f(_BODY_COM_X, 0.0, 0.0),
+            lock_inertia=True,
+        )
+        joint = builder.add_joint_revolute(
+            -1,
+            body,
+            axis=newton.Axis.Y,
+            effort_limit=effort_limit,
+            target_ke=target_ke,
+            target_kd=target_kd,
+            armature=armature,
+            actuator_mode=newton.JointTargetMode.POSITION if target_ke > 0.0 else newton.JointTargetMode.NONE,
+        )
+        builder.add_articulation([joint])
+        builder.end_world()
     model = builder.finalize()
     model.set_gravity((0.0, 0.0, 0.0))
     return model
@@ -92,32 +93,29 @@ class TestSolverKaminoJointEffortLimit(unittest.TestCase):
         """Clamp explicit effort with the expected signed joint acceleration."""
         effort_limit = 1.0
         requested_effort = 10.0
+        directions = (-1.0, 1.0)
         for config_name, config_factory in KAMINO_CONFIGS:
             use_acceleration_options = (True, False) if config_name in PADMM_CONFIG_NAMES else (False,)
             for use_acceleration in use_acceleration_options:
                 config = config_factory()
                 if config.padmm is not None:
                     config.padmm.use_acceleration = use_acceleration
-                for direction in (-1.0, 1.0):
+                model = _build_revolute(effort_limit, armatures=(0.0, 0.0))
+                solver = SolverKamino(model, config)
+                control = model.control()
+                control.joint_f.assign([direction * requested_effort for direction in directions])
+                state_out = _step(solver, model, control)
+                velocities = state_out.joint_qd.numpy()
+
+                for world, direction in enumerate(directions):
                     with self.subTest(
                         config=config_name,
                         use_acceleration=use_acceleration,
                         direction=direction,
                     ):
-                        model = _build_revolute(effort_limit)
-                        solver = SolverKamino(model, config)
-                        control = model.control()
-                        control.joint_f.assign([direction * requested_effort])
-
-                        state_out = _step(solver, model, control)
-
                         expected_effort = direction * effort_limit
                         expected_velocity = DT * expected_effort / _EFFECTIVE_JOINT_INERTIA
-                        self.assertAlmostEqual(
-                            float(state_out.joint_qd.numpy()[0]),
-                            expected_velocity,
-                            delta=3.0e-4,
-                        )
+                        self.assertAlmostEqual(float(velocities[world]), expected_velocity, delta=3.0e-4)
 
 
 class TestSolverKaminoJointEffortLimitImplicitPd(unittest.TestCase):
@@ -130,46 +128,38 @@ class TestSolverKaminoJointEffortLimitImplicitPd(unittest.TestCase):
         """Apply and report saturated implicit-PD effort with the commanded sign."""
         effort_limit = 1.0
         target_ke = 100.0
+        cases = [(armature, direction) for armature in (0.0, 1.0) for direction in (-1.0, 1.0)]
         for config_name, config_factory in KAMINO_CONFIGS:
             use_acceleration_options = (True, False) if config_name in PADMM_CONFIG_NAMES else (False,)
             for use_acceleration in use_acceleration_options:
                 config = config_factory()
                 if config.padmm is not None:
                     config.padmm.use_acceleration = use_acceleration
-                for armature in (0.0, 1.0):
-                    for direction in (-1.0, 1.0):
-                        with self.subTest(
-                            config=config_name,
-                            use_acceleration=use_acceleration,
-                            armature=armature,
-                            direction=direction,
-                        ):
-                            model = _build_revolute(effort_limit, target_ke=target_ke, armature=armature)
-                            solver = SolverKamino(model, config)
-                            control = model.control()
-                            control.joint_target_q.assign([direction])
+                model = _build_revolute(
+                    effort_limit, target_ke=target_ke, armatures=tuple(armature for armature, _ in cases)
+                )
+                solver = SolverKamino(model, config)
+                control = model.control()
+                control.joint_target_q.assign([direction for _, direction in cases])
+                state_out = _step(solver, model, control)
+                actual_efforts = solver._solver_kamino.data.joints.lambda_tau_j.numpy()
+                reported_efforts = state_out.joint_lambdas_tau.numpy()
+                body_efforts = solver._solver_kamino.data.bodies.w_a_i.numpy()
+                velocities = state_out.joint_qd.numpy()
 
-                            state_out = _step(solver, model, control)
-
-                            expected_effort = direction * effort_limit
-                            expected_velocity = DT * expected_effort / (_EFFECTIVE_JOINT_INERTIA + armature)
-                            actual_effort = float(solver._solver_kamino.data.joints.lambda_tau_j.numpy()[0])
-                            self.assertAlmostEqual(actual_effort, expected_effort, delta=3.0e-4)
-                            self.assertAlmostEqual(
-                                float(state_out.joint_lambdas_tau.numpy()[0]),
-                                expected_effort,
-                                delta=3.0e-4,
-                            )
-                            self.assertAlmostEqual(
-                                float(solver._solver_kamino.data.bodies.w_a_i.numpy()[0, 4]),
-                                expected_effort,
-                                delta=3.0e-4,
-                            )
-                            self.assertAlmostEqual(
-                                float(state_out.joint_qd.numpy()[0]),
-                                expected_velocity,
-                                delta=3.0e-4,
-                            )
+                for world, (armature, direction) in enumerate(cases):
+                    with self.subTest(
+                        config=config_name,
+                        use_acceleration=use_acceleration,
+                        armature=armature,
+                        direction=direction,
+                    ):
+                        expected_effort = direction * effort_limit
+                        expected_velocity = DT * expected_effort / (_EFFECTIVE_JOINT_INERTIA + armature)
+                        self.assertAlmostEqual(float(actual_efforts[world]), expected_effort, delta=3.0e-4)
+                        self.assertAlmostEqual(float(reported_efforts[world]), expected_effort, delta=3.0e-4)
+                        self.assertAlmostEqual(float(body_efforts[world, 4]), expected_effort, delta=3.0e-4)
+                        self.assertAlmostEqual(float(velocities[world]), expected_velocity, delta=3.0e-4)
 
 
 class TestSolverKaminoJointEffortLimitWarmstart(unittest.TestCase):
@@ -194,7 +184,7 @@ class TestSolverKaminoJointEffortLimitWarmstart(unittest.TestCase):
                         use_acceleration=use_acceleration,
                         direction=direction,
                     ):
-                        model = _build_revolute(effort_limit, target_ke=target_ke, armature=1.0)
+                        model = _build_revolute(effort_limit, target_ke=target_ke, armatures=(1.0,))
                         solver = SolverKamino(model, config)
                         control = model.control()
                         control.joint_target_q.assign([direction])

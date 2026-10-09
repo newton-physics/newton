@@ -656,136 +656,105 @@ def test_torque_free_precession(test, device, solver_fn):
 # Test 9a: Restitution
 # Verify bounce height h_rebound = e^2 * h_drop for different restitution coefficients.
 # ---------------------------------------------------------------------------
+@wp.kernel
+def _record_body_heights(body_q: wp.array[wp.transform], step: int, heights: wp.array2d[float]):
+    body = wp.tid()
+    heights[step, body] = wp.transform_get_translation(body_q[body])[1]
+
+
 def test_restitution(
     test,
     device,
     solver_fn,
     restitution_values=(0.5, 0.8),
-    shape="sphere",
+    shapes=("sphere",),
     simulation_dts=(1e-3,),
     contact_gaps=(0.0,),
     rebound_rtol=None,
 ):
     """Verify rebound height across coefficients, shapes, time steps, and contact gaps."""
-    # Test parameters: gravity, initial height, sphere radius, restitution values
     g = -10.0
     h_drop = 1.0
     radius = 0.05
+    margin = 0.001
+    cases = [(shape, gap, e) for shape in shapes for gap in contact_gaps for e in restitution_values]
 
     for sim_dt in simulation_dts:
-        for contact_gap in contact_gaps:
-            rebound_heights = {}
-            for e in restitution_values:
-                with test.subTest(shape=shape, restitution=e, dt=sim_dt, gap=contact_gap):
-                    _test_restitution_case(
-                        test,
-                        device,
-                        solver_fn,
-                        shape,
-                        e,
-                        sim_dt,
-                        contact_gap,
-                        g,
-                        h_drop,
-                        radius,
-                        rebound_heights,
-                        rebound_rtol,
-                    )
+        builder = newton.ModelBuilder(gravity=(0.0, g, 0.0), up_axis=newton.Axis.Y)
+        for case, (shape, contact_gap, e) in enumerate(cases):
+            cfg = newton.ModelBuilder.ShapeConfig(
+                mu=0.0, restitution=e, ke=1e4, kd=100.0, kf=0.0, margin=margin, gap=contact_gap
+            )
+            # Each world needs a matching ground material to preserve the pair's restitution and gap.
+            builder.begin_world()
+            builder.add_ground_plane(cfg=cfg, label=f"ground_{case}")
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, radius + h_drop, 0.0), wp.quat_identity()))
+            if shape == "sphere":
+                builder.add_shape_sphere(body, radius=radius, cfg=cfg)
+            else:
+                builder.add_shape_box(body, hx=radius, hy=radius, hz=radius, cfg=cfg)
+            builder.end_world()
+        model = builder.finalize(device=device)
+        solver = solver_fn(model)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        state_0 = model.state()
+        state_1 = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-            # Cross-check ratio between restitution values.
-            if 0.5 in rebound_heights and 0.8 in rebound_heights:
-                ratio = rebound_heights[0.8] / max(rebound_heights[0.5], 1e-10)
-                expected_ratio = (0.8**2) / (0.5**2)  # = 2.56
-                ratio_rtol = 0.01 if rebound_rtol is None else rebound_rtol
+        total_time = 3.0 * np.sqrt(2.0 * h_drop / abs(g))
+        num_steps = int(total_time / sim_dt)
+        heights = wp.empty((num_steps, model.body_count), dtype=float, device=device)
+        for step in range(num_steps):
+            state_0.clear_forces()
+            collision_pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, None, contacts, sim_dt)
+            state_0, state_1 = state_1, state_0
+            wp.launch(_record_body_heights, dim=model.body_count, inputs=[state_0.body_q, step, heights], device=device)
+        trajectories = heights.numpy().astype(np.float64)
+
+        rebound_heights = {}
+        for body, (shape, contact_gap, e) in enumerate(cases):
+            with test.subTest(shape=shape, restitution=e, dt=sim_dt, gap=contact_gap):
+                y_arr = trajectories[:, body]
+                test.assertGreater(np.min(y_arr), -0.01, f"Ground penetration detected for e={e}")
+                impact_height = radius + 2.0 * margin + 0.5 * abs(g) * sim_dt * sim_dt + 1e-6
+                impact_idx = next((i for i, y in enumerate(y_arr) if y <= impact_height), None)
+                test.assertIsNotNone(impact_idx, f"No impact detected for e={e}")
+
+                h_rebound = np.max(y_arr[impact_idx:]) - radius
+                h_expected = e * e * h_drop
+                rebound_heights[shape, contact_gap, e] = h_rebound
+                # Keep e=0 strict; nonzero restitution permits timestep-quantized impact error.
+                if rebound_rtol is not None:
+                    tolerance = rebound_rtol * h_expected
+                else:
+                    tolerance = 0.005 if e == 0.0 else 0.02 * h_expected + 5.0 * sim_dt
                 test.assertAlmostEqual(
-                    ratio,
-                    expected_ratio,
-                    delta=ratio_rtol * expected_ratio,
-                    msg=f"Rebound ratio: got {ratio:.3f}, expected {expected_ratio:.3f}",
+                    h_rebound,
+                    h_expected,
+                    delta=tolerance,
+                    msg=(
+                        f"Rebound height for {shape}, e={e}, dt={sim_dt}, gap={contact_gap}: "
+                        f"got {h_rebound:.4f}, expected {h_expected:.4f}"
+                    ),
                 )
 
-
-def _test_restitution_case(
-    test,
-    device,
-    solver_fn,
-    shape,
-    e,
-    sim_dt,
-    contact_gap,
-    g,
-    h_drop,
-    radius,
-    rebound_heights,
-    rebound_rtol,
-):
-    # Shape config
-    cfg = newton.ModelBuilder.ShapeConfig()
-    cfg.mu = 0.0
-    cfg.restitution = e
-    cfg.ke = 1e4
-    cfg.kd = 100.0
-    cfg.kf = 0.0
-    cfg.margin = 0.001
-    cfg.gap = contact_gap
-
-    builder = newton.ModelBuilder(gravity=(0.0, g, 0.0), up_axis=newton.Axis.Y)
-    builder.add_ground_plane(cfg=cfg)
-    b = builder.add_body(xform=wp.transform(wp.vec3(0.0, radius + h_drop, 0.0), wp.quat_identity()))
-    if shape == "sphere":
-        builder.add_shape_sphere(b, radius=radius, cfg=cfg)
-    else:
-        # 4-corner contact manifold (radius = half-height keeps the drop height identical)
-        builder.add_shape_box(b, hx=radius, hy=radius, hz=radius, cfg=cfg)
-    model = builder.finalize(device=device)
-
-    solver = solver_fn(model)
-    collision_pipeline = newton.CollisionPipeline(model)
-    contacts = collision_pipeline.contacts()
-    state_0 = model.state()
-    state_1 = model.state()
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-    # drop time ~ sqrt(2*h/g), run 3x to capture bounce
-    total_time = 3.0 * np.sqrt(2.0 * h_drop / abs(g))
-    num_steps = int(total_time / sim_dt)
-    y_positions = []
-    for _ in range(num_steps):
-        state_0.clear_forces()
-        collision_pipeline.collide(state_0, contacts)
-        solver.step(state_0, state_1, None, contacts, sim_dt)
-        state_0, state_1 = state_1, state_0
-        y_positions.append(float(state_0.body_q.numpy()[0, 1]))
-
-    y_arr = np.array(y_positions)
-
-    # Rebound height: first near-ground sample = impact, max after that = peak.
-    # This also identifies a fully inelastic contact, which has no local minimum.
-    test.assertGreater(np.min(y_arr), -0.01, f"Ground penetration detected for e={e}")
-    impact_height = radius + 2.0 * cfg.margin + 0.5 * abs(g) * sim_dt * sim_dt + 1e-6
-    impact_idx = next((i for i, y in enumerate(y_arr) if y <= impact_height), None)
-    test.assertIsNotNone(impact_idx, f"No impact detected for e={e}")
-
-    h_rebound = np.max(y_arr[impact_idx:]) - radius
-    h_expected = e * e * h_drop
-    rebound_heights[e] = h_rebound
-
-    # The impact time is quantized to a step, so coarse trajectories carry
-    # an O(v*dt) offset independent of the coefficient. Keep e=0 strict:
-    # its only height offset should be the configured contact margin.
-    if rebound_rtol is not None:
-        tolerance = rebound_rtol * h_expected
-    else:
-        tolerance = 0.005 if e == 0.0 else 0.02 * h_expected + 5.0 * sim_dt
-    test.assertAlmostEqual(
-        h_rebound,
-        h_expected,
-        delta=tolerance,
-        msg=(
-            f"Rebound height for {shape}, e={e}, dt={sim_dt}, gap={contact_gap}: "
-            f"got {h_rebound:.4f}, expected {h_expected:.4f}"
-        ),
-    )
+        for shape in shapes:
+            for contact_gap in contact_gaps:
+                if (shape, contact_gap, 0.5) in rebound_heights and (shape, contact_gap, 0.8) in rebound_heights:
+                    with test.subTest(shape=shape, dt=sim_dt, gap=contact_gap):
+                        ratio = rebound_heights[shape, contact_gap, 0.8] / max(
+                            rebound_heights[shape, contact_gap, 0.5], 1e-10
+                        )
+                        expected_ratio = (0.8**2) / (0.5**2)
+                        ratio_rtol = 0.01 if rebound_rtol is None else rebound_rtol
+                        test.assertAlmostEqual(
+                            ratio,
+                            expected_ratio,
+                            delta=ratio_rtol * expected_ratio,
+                            msg=f"Rebound ratio: got {ratio:.3f}, expected {expected_ratio:.3f}",
+                        )
 
 
 # ---------------------------------------------------------------------------
@@ -1745,28 +1714,14 @@ for device in devices:
     # coarse and fine timesteps, and late (gap=0) and predictive contacts.
     add_function_test(
         TestPhysicsVerification,
-        "test_restitution_sweep_sphere_xpbd",
+        "test_restitution_sweep_xpbd",
         test_restitution,
         devices=[device],
         solver_fn=lambda model: newton.solvers.SolverXPBD(
             model, iterations=10, angular_damping=0.0, enable_restitution=True
         ),
+        shapes=("sphere", "box"),
         restitution_values=(0.0, 0.25, 0.5, 0.75, 1.0),
-        simulation_dts=(1e-2, 1e-3),
-        contact_gaps=(0.0, 0.01),
-    )
-
-    # Same sweep on a 4-corner cube manifold.
-    add_function_test(
-        TestPhysicsVerification,
-        "test_restitution_sweep_box_xpbd",
-        test_restitution,
-        devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverXPBD(
-            model, iterations=10, angular_damping=0.0, enable_restitution=True
-        ),
-        restitution_values=(0.0, 0.25, 0.5, 0.75, 1.0),
-        shape="box",
         simulation_dts=(1e-2, 1e-3),
         contact_gaps=(0.0, 0.01),
     )

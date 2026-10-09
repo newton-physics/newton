@@ -7,6 +7,7 @@ import ctypes
 import enum
 import re
 import time
+import warnings
 from collections.abc import Callable, Sequence
 from importlib import metadata
 from typing import Any, Literal
@@ -17,8 +18,10 @@ import warp as wp
 import newton as nt
 
 from ..core.types import Axis, override
+from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
+from .gl.frame_cache import FrameCache
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .image_logger import ImageLogger
 from .picking import Picking
@@ -259,10 +262,10 @@ class ViewerGL(ViewerBase):
             paused: Start the viewer in paused mode.
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
-            num_frames: Number of frames to render in headless mode before
+            num_frames: Number of viewer-loop frames in headless mode before
                 :meth:`is_running` returns False. If None, headless rendering
-                is unbounded; if 0, no frames are rendered. Ignored in
-                windowed mode.
+                is unbounded; if 0, no frames are rendered. Includes
+                rendering-paused frames. Ignored in windowed mode.
             enable_cuda_interop: Render-geometry categories that use CUDA-OpenGL
                 interoperability. Combine :class:`CudaInterop` flags with ``|``.
                 Defaults to :attr:`CudaInterop.DYNAMIC_MESH`.
@@ -282,6 +285,8 @@ class ViewerGL(ViewerBase):
         # Initialized below once self.device is available; declared here so
         # close() can safely run if __init__ raises before that point.
         self._image_logger: ImageLogger | None = None
+        self._displayed_frame = FrameCache()
+        self._has_rendered_frame = False
 
         super().__init__()
 
@@ -477,14 +482,16 @@ class ViewerGL(ViewerBase):
 
         Args:
             name: Unique gizmo path/name.
-            transform: Gizmo world transform.
+            transform: Gizmo world transform with translation [m] and a
+                unitless rotation quaternion.
             translate: Axes on which the translation handles are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all translation handles.
             rotate: Axes on which the rotation rings are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
-            snap_to: Optional world transform to snap to when this gizmo is
+            snap_to: Optional world transform with translation [m] and a
+                unitless rotation quaternion to apply when this gizmo is
                 released by the user.
         """
         axis_order = (Axis.X, Axis.Y, Axis.Z)
@@ -517,6 +524,9 @@ class ViewerGL(ViewerBase):
         the currently active layer are destroyed so other layers' models
         keep rendering.
         """
+        self._displayed_frame.clear()
+        self._has_rendered_frame = False
+
         # Only destroy backend objects owned by the active layer so other
         # live layers retain their meshes / instancers / lines / wireframes.
         owns = self._is_layer_owned_path
@@ -2033,18 +2043,56 @@ class ViewerGL(ViewerBase):
         if self.renderer.has_exit():
             return
 
-        if fullscreen_name is not None:
+        if self.gui:
+            self.gui.prepare_frame()
+        if self.renderer.has_exit():
+            return
+
+        if self.is_rendering_paused():
+            frame = self._displayed_frame
+            self.renderer.render_texture(frame.texture, frame.width, frame.height, flip_y=False)
+        elif fullscreen_name is not None:
             texture = self._image_logger.get_texture(fullscreen_name, fullscreen=True)
             self.renderer.render_texture(*(texture or (None, 0, 0)))
+            self._has_rendered_frame = texture is not None
         else:
             self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
+            self._has_rendered_frame = True
+
+        if not self.is_rendering_paused():
+            if self._has_rendered_frame:
+                self._displayed_frame.store(
+                    self.renderer._frame_texture, self.renderer._screen_width, self.renderer._screen_height
+                )
+            else:
+                self._displayed_frame.clear()
 
         if self.gui:
-            self.gui.render_frame(update_fps=True)
+            self.gui.render_prepared_frame()
 
         self.renderer.present()
 
-    def get_frame(self, target_image: wp.array | None = None, render_ui: bool = False) -> wp.array:
+    @override
+    def set_rendering_paused(self, paused: bool) -> None:
+        """See :meth:`newton.viewer.ViewerBase.set_rendering_paused`."""
+        if bool(paused) == self.is_rendering_paused():
+            return
+        self._rendering_paused = bool(paused)
+        if paused:
+            if self.picking is not None:
+                self.picking.release()
+            if self.gui is not None:
+                self.gui.on_rendering_paused()
+
+    @override
+    @deprecate_nonkeyword_arguments
+    def get_frame(
+        self,
+        *,
+        output: wp.array3d[wp.uint8] | None = None,
+        render_ui: bool = False,
+        target_image: wp.array3d[wp.uint8] | None = None,
+    ) -> wp.array3d[wp.uint8]:
         """
         Retrieve the last rendered frame.
 
@@ -2052,17 +2100,39 @@ class ViewerGL(ViewerBase):
         CUDA-OpenGL interoperability, while CPU viewers read the PBO into host
         memory.
 
+        .. deprecated:: 1.7
+            ``target_image`` and passing optional arguments positionally are
+            deprecated. Use ``get_frame(output=..., render_ui=...)`` instead.
+
         Args:
-            target_image:
+            output:
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
             render_ui: Whether to render the UI.
+            target_image: Deprecated alias for ``output``.
 
         Returns:
             wp.array: RGB image data on the viewer device with shape
                 `(height, width, 3)` and dtype `wp.uint8`. Origin is top-left
                 (OpenGL's bottom-left is flipped).
+                If supplied, returns ``output``.
+
+        Raises:
+            TypeError: Both ``output`` and ``target_image`` are supplied.
+            RuntimeError: Rendering is paused before an image has been displayed.
         """
+        if target_image is not None:
+            if output is not None:
+                raise TypeError("Specify only one of `output` and `target_image`")
+            warnings.warn(
+                "ViewerGL.get_frame(target_image=...) is deprecated as of Newton 1.7; use output=... instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            output = target_image
+
+        if self.is_rendering_paused() and not self._has_rendered_frame:
+            raise RuntimeError("Frame capture requires at least one displayed frame")
 
         gl = RendererGL.gl
         w, h = self.renderer._screen_width, self.renderer._screen_height
@@ -2119,22 +2189,22 @@ class ViewerGL(ViewerBase):
             assert self._pbo_host_buffer is not None
             buf = self._pbo_host_buffer
 
-        if target_image is None:
-            target_image = wp.empty(
+        if output is None:
+            output = wp.empty(
                 shape=(h, w, 3),
                 dtype=wp.uint8,  # pyright: ignore[reportArgumentType]
                 device=self.device,
             )
 
-        if target_image.shape != (h, w, 3):
-            raise ValueError(f"Shape of `target_image` must be ({h}, {w}, 3), got {target_image.shape}")
+        if output.shape != (h, w, 3):
+            raise ValueError(f"Shape of `output` must be ({h}, {w}, 3), got {output.shape}")
 
         # Launch the RGB kernel.
         wp.launch(
             copy_rgb_frame_uint8,
             dim=(w, h),
             inputs=[buf, w, h],
-            outputs=[target_image],
+            outputs=[output],
             device=self.device,
         )
 
@@ -2142,7 +2212,7 @@ class ViewerGL(ViewerBase):
             assert self._wp_pbo is not None
             self._wp_pbo.unmap()
 
-        return target_image
+        return output
 
     @override
     def is_running(self) -> bool:
@@ -2201,6 +2271,7 @@ class ViewerGL(ViewerBase):
         Close the viewer and clean up resources.
         """
         self._plot_logger.clear()
+        self._displayed_frame.clear()
         self._invalidate_pbo()
         if self._image_logger is not None:
             self._image_logger.clear()

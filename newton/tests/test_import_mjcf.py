@@ -141,6 +141,31 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertTrue(forced_collision_flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(forced_collision_flags & ShapeFlags.VISIBLE)
 
+    def test_builtin_texture_sets_mean_color(self):
+        """Procedural textures color their geoms with their mean color, tinted by the material rgba."""
+        mjcf = """
+<mujoco model="builtin_texture">
+    <asset>
+        <texture type="2d" name="grid" builtin="checker" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" width="8" height="8"/>
+        <texture type="2d" name="plain" builtin="flat" rgb1="0.6 0.4 0.2" width="8" height="8"/>
+        <material name="grid" texture="grid" rgba="1 1 0.5 1"/>
+        <material name="plain" texture="plain"/>
+    </asset>
+    <worldbody>
+        <geom name="floor" type="plane" size="0 0 0.05" material="grid"/>
+        <geom name="wall" type="box" size="0.1 0.1 0.1" material="plain"/>
+        <geom name="override" type="box" size="0.1 0.1 0.1" material="grid" rgba="0 1 0 1"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        colors = dict(zip(builder.shape_label, builder.shape_color, strict=True))
+        np.testing.assert_allclose(colors["builtin_texture/worldbody/floor"], (0.15, 0.25, 0.175), atol=1e-6)
+        np.testing.assert_allclose(colors["builtin_texture/worldbody/wall"], (0.6, 0.4, 0.2), atol=1e-6)
+        # An explicit geom rgba takes precedence, as without a texture.
+        np.testing.assert_allclose(colors["builtin_texture/worldbody/override"], (0.0, 1.0, 0.0), atol=1e-6)
+
     def test_collision_only_import_keeps_colliders_visible(self):
         """Collision-only MJCF assets must remain visible by default."""
         mjcf = """
@@ -680,6 +705,25 @@ class TestImportMjcfBasic(unittest.TestCase):
 
         # Sanity: at least the default-style sequences must have run.
         self.assertGreater(compared, 0, "no eulerseq combinations actually compared")
+
+    def test_zaxis_matches_mujoco(self):
+        """Match MuJoCo's zaxis rotation, including its near-antiparallel cutoff."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        # The last two straddle MuJoCo's |axis|^2 < 1e-14 fallback to a +X rotation axis.
+        directions = ("1 0 0", "1 2 3", "-2 3 -4", "0 0 1", "9.99e-8 0 -1", "1.001e-7 0 -1")
+        bodies = "".join(f'<body zaxis="{d}"><geom size="0.1"/></body>' for d in directions)
+        mjcf = f"<mujoco><worldbody>{bodies}</worldbody></mujoco>"
+
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        for i, direction in enumerate(directions):
+            with self.subTest(zaxis=direction):
+                expected = np.empty(9)
+                mujoco.mju_quat2Mat(expected, native.body_quat[i + 1])
+                actual = wp.quat_to_matrix(wp.transform_get_rotation(builder.body_q[i]))
+                np.testing.assert_allclose(np.array(actual).reshape(9), expected, atol=1e-6)
 
     def test_compiler_merge_across_includes(self):
         """``<compiler>`` attributes merge globally across ``<include>``-expanded
@@ -1664,6 +1708,55 @@ class TestImportMjcfMeshScale(unittest.TestCase):
   </worldbody>
 </mujoco>""")
         self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
+
+    def test_mesh_reference_pose_precedes_asset_scale(self):
+        """Apply a mesh reference pose before nonuniform asset scaling."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="referenced">
+      <mesh refpos="1 2 3" refquat="0.7071067811865476 0 0 0.7071067811865476"/>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" class="referenced" file="mesh.obj" scale="2 3 4"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        vertices = np.asarray(builder.shape_source[0].vertices)
+        expected = np.array(
+            [
+                [-4.0, 3.0, -12.0],
+                [-4.0, 0.0, -12.0],
+                [-2.0, 3.0, -12.0],
+            ]
+        )
+        np.testing.assert_allclose(
+            vertices,
+            expected,
+            atol=1e-5,
+        )
+
+    def test_mesh_reference_pose_rejects_nonfinite_values(self):
+        """Reject non-finite mesh reference positions and quaternions."""
+        for attribute in ('refpos="nan 0 0"', 'refquat="nan 0 0 1"'):
+            with self.subTest(attribute=attribute):
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    self._build(f"""\
+<mujoco>
+  <asset>
+    <mesh name="m" file="mesh.obj" {attribute}/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
 
 
 class TestImportMjcfInlineMesh(unittest.TestCase):
@@ -3690,6 +3783,63 @@ f 4 5 8
             # shape_scale stores (hx, hy, hz)
             s = builder.shape_scale[0]
             np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
+
+    def test_fit_box_applies_mesh_reference_pose(self):
+        """Apply a mesh reference pose before fitting a primitive."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset>
+        <mesh name="box" file="box.stl"
+              refpos="3 0 0" refquat="0.7071067811865476 0 0 0.7071067811865476"/>
+    </asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+
+        scale = builder.shape_scale[0]
+        np.testing.assert_allclose([scale[0], scale[1], scale[2]], [0.5, 1.0, 2.0], atol=1e-4)
+        transform = builder.shape_transform[0]
+        np.testing.assert_allclose([transform.p[0], transform.p[1], transform.p[2]], [0.0, 3.0, 0.0], atol=1e-4)
+
+    def test_fit_box_uses_resolved_asset_scale(self):
+        """Fit a primitive using its mesh asset scale rather than geom defaults."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <default>
+        <default class="geom_defaults">
+            <mesh scale="0.5 0.5 0.5"/>
+            <geom type="box"/>
+        </default>
+    </default>
+    <asset>
+        <mesh name="box" file="box.stl" scale="2 2 2"/>
+    </asset>
+    <worldbody>
+        <body name="b" childclass="geom_defaults">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+
+        scale = builder.shape_scale[0]
+        np.testing.assert_allclose([scale[0], scale[1], scale[2]], [2.0, 1.0, 4.0], atol=1e-4)
 
     def test_fit_sphere_to_mesh_aabb(self):
         """type='sphere' mesh='...' with fitaabb='true' uses max half-extent as radius."""

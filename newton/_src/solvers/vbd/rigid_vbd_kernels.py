@@ -235,6 +235,39 @@ class RigidContactHistory:
     normal: wp.array[wp.vec3]
 
 
+CONTACT_HISTORY_NO_BUFFER = wp.constant(wp.int32(0))
+"""Contact history buffer id of a history that holds no contact set."""
+
+
+@wp.func
+def _contact_history_slot(
+    i: int,
+    match_index: wp.array[wp.int32],
+    match_generation: wp.array[wp.int32],
+    contact_generation: wp.array[wp.int32],
+    contact_buffer_id: int,
+    history_frame: wp.array[wp.int32],
+):
+    """Return the history row of contact ``i``, or -1 when it has none.
+
+    ``history_frame`` holds ``[buffer id, contact generation]`` of the contact set
+    the history was snapshotted from. The same contact set (same buffer, unchanged
+    generation) restores each row from itself. Otherwise ``match_index`` applies only
+    when the buffer's last collision pass matched against that snapshotted set, as
+    :attr:`~newton.Contacts.rigid_contact_match_generation` reports; the indices of
+    any other pass refer to contacts this history never stored.
+    """
+    # Buffer ids are positive, so an empty history (CONTACT_HISTORY_NO_BUFFER) never matches.
+    if history_frame[0] != contact_buffer_id:
+        return -1
+    saved_generation = history_frame[1]
+    if contact_generation[0] == saved_generation:
+        return i
+    if match_generation[0] == saved_generation:
+        return match_index[i]
+    return -1
+
+
 @wp.func
 def _world_selected(world: int, mask: wp.array[wp.bool]):
     """Query an internal world mask whose final entry selects global entities."""
@@ -1561,6 +1594,22 @@ def evaluate_rod_bend_twist_force_hessian_z(
 
 
 @wp.func
+def _point_force_to_body_torque_and_hessian(r: wp.vec3, force: wp.vec3, H_linear: wp.mat33):
+    """Convert a linear force/Hessian applied at body-relative offset ``r`` into body torque and angular Hessian blocks.
+
+    Shared by joint linear constraints, particle-body attachments, and body-particle contacts:
+    any force applied at a point offset by ``r`` from the body's center of mass produces a torque
+    ``r x force`` and rotates the linear Hessian block into angular-linear/angular-angular blocks
+    via the skew matrix of ``r``.
+    """
+    rx = wp.skew(r)
+    torque = wp.cross(r, force)
+    H_al = rx * H_linear
+    H_aa = wp.transpose(rx) * H_linear * rx
+    return torque, H_al, H_aa
+
+
+@wp.func
 def evaluate_linear_constraint_force_hessian(
     X_wp: wp.transform,
     X_wc: wp.transform,
@@ -1634,15 +1683,38 @@ def evaluate_linear_constraint_force_hessian(
         f_attachment = f_attachment + damping * dC_dt_perp
         K_eff = K_eff + (damping * inv_dt) * P
 
-    rx = wp.skew(r)
     H_ll = K_eff
-    H_al = rx * K_eff
-    H_aa = wp.transpose(rx) * K_eff * rx
-
     force = f_attachment if is_parent else -f_attachment
-    torque = wp.cross(r, force)
+    torque, H_al, H_aa = _point_force_to_body_torque_and_hessian(r, force, K_eff)
 
     return force, torque, H_ll, H_al, H_aa
+
+
+@wp.func
+def evaluate_body_particle_attachment_particle_force_hessian(
+    particle_pos: wp.vec3,
+    particle_pos_prev: wp.vec3,
+    body_pose: wp.transform,
+    body_pose_prev: wp.transform,
+    body_point: wp.vec3,
+    stiffness: float,
+    damping: float,
+    dt: float,
+):
+    """Evaluate the particle-side force and Hessian of a compliant attachment."""
+    anchor = wp.transform_point(body_pose, body_point)
+    anchor_prev = wp.transform_point(body_pose_prev, body_point)
+
+    C = particle_pos - anchor
+    C_prev = particle_pos_prev - anchor_prev
+    force_body = stiffness * C
+    hessian = stiffness * wp.identity(3, float)
+    if damping > 0.0:
+        inv_dt = 1.0 / dt
+        force_body = force_body + damping * (C - C_prev) * inv_dt
+        hessian = hessian + (damping * inv_dt) * wp.identity(3, float)
+
+    return -force_body, hessian
 
 
 @wp.func
@@ -4691,7 +4763,11 @@ def init_body_body_contacts_alm(
     restore_compliant_tangent_warmstart: int,
     # Pipeline-owned correspondence and VBD-owned cross-step state
     match_index: wp.array[wp.int32],
+    match_generation: wp.array[wp.int32],
+    contact_generation: wp.array[wp.int32],
+    contact_buffer_id: int,
     history: RigidContactHistory,
+    history_frame: wp.array[wp.int32],
     # Optional reset context; a null pending array disables masked invalidation.
     contact_history_reset_pending: wp.array[wp.int32],
     contact_history_reset_mask: wp.array[wp.bool],
@@ -4707,7 +4783,11 @@ def init_body_body_contacts_alm(
     contact_material_mu: wp.array[float],
     contact_material_ke: wp.array[float],
 ):
-    """Warm-start body-body contact state from match indices.
+    """Warm-start body-body contact state from the snapshotted contact set.
+
+    Each row restores from the history row :func:`_contact_history_slot` names (its
+    own row on the same contact set, else its match index when the indices refer to
+    the snapshotted set) and starts cold otherwise.
 
     ALM: always restore matched ``lambda_n``; with ``latest`` matching also
     restore cone-clamped ``lambda_t``. Sticky matching keeps tangent memory in
@@ -4739,7 +4819,7 @@ def init_body_body_contacts_alm(
     contact_material_mu[i] = avg_mu
 
     k_floor = _contact_penalty_floor(avg_ke, k_start)
-    slot = match_index[i]
+    slot = _contact_history_slot(i, match_index, match_generation, contact_generation, contact_buffer_id, history_frame)
     # Drop the saved match for reset-selected worlds so they cold-start instead
     # of warm-starting from pre-reset history.
     if slot >= 0 and contact_history_reset_pending:
@@ -4779,17 +4859,24 @@ def snapshot_body_body_contact_history(
     rigid_contact_normal: wp.array[wp.vec3],
     contact_lambda: wp.array[wp.vec3],
     contact_penalty_k: wp.array[float],
+    contact_generation: wp.array[wp.int32],
+    contact_buffer_id: int,
     # Persistent outputs, in RigidContactHistory order
     prev_lambda: wp.array[wp.vec3],
     prev_penalty_k: wp.array[float],
     prev_normal: wp.array[wp.vec3],
+    history_frame: wp.array[wp.int32],
 ):
     """Snapshot post-iteration contact state by contact row.
 
-    The next match_index refers to the rows written here, so VBD history is
-    stored directly by contact row index.
+    Also records ``[buffer id, contact generation]`` of the contact set in
+    ``history_frame`` on the device, so captured graphs replay it; restoring checks
+    that the match indices refer to this set (:func:`_contact_history_slot`).
     """
     i = wp.tid()
+    if i == 0:
+        history_frame[0] = contact_buffer_id
+        history_frame[1] = contact_generation[0]
     if i >= rigid_contact_count[0]:
         return
 
@@ -5724,6 +5811,107 @@ accumulate_body_body_contacts_per_body = create_accumulate_body_body_contacts_pe
 
 
 @wp.kernel
+def _count_body_particle_attachments_per_body(
+    attachment_body: wp.array[wp.int32], body_attachment_counts: wp.array[wp.int32]
+):
+    num_attachments = attachment_body.shape[0]
+    for attachment_id in range(num_attachments):
+        body_id = attachment_body[attachment_id]
+        body_attachment_counts[body_id] = body_attachment_counts[body_id] + 1
+
+
+@wp.kernel
+def _fill_body_particle_attachments_per_body(
+    attachment_body: wp.array[wp.int32],
+    body_attachment_offsets: wp.array[wp.int32],
+    body_attachment_fill_count: wp.array[wp.int32],
+    body_attachment_indices: wp.array[wp.int32],
+):
+    num_attachments = attachment_body.shape[0]
+    for attachment_id in range(num_attachments):
+        body_id = attachment_body[attachment_id]
+        fill_count = body_attachment_fill_count[body_id]
+        offset = body_attachment_offsets[body_id]
+        body_attachment_indices[offset + fill_count] = attachment_id
+        body_attachment_fill_count[body_id] = fill_count + 1
+
+
+@wp.kernel
+def accumulate_body_particle_attachments_per_body(
+    dt: float,
+    color_group: wp.array[int],
+    particle_q: wp.array[wp.vec3],
+    particle_q_prev: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_inv_mass: wp.array[float],
+    attachment_particle: wp.array[int],
+    attachment_body_point: wp.array[wp.vec3],
+    attachment_stiffness: wp.array[float],
+    attachment_damping: wp.array[float],
+    attachment_enabled: wp.array[bool],
+    body_attachment_offsets: wp.array[int],
+    body_attachment_indices: wp.array[int],
+    body_forces: wp.array[wp.vec3],
+    body_torques: wp.array[wp.vec3],
+    body_hessian_ll: wp.array[wp.mat33],
+    body_hessian_al: wp.array[wp.mat33],
+    body_hessian_aa: wp.array[wp.mat33],
+):
+    """Accumulate particle-body attachment forces and Hessians on each rigid body."""
+    body_idx_in_group = wp.tid()
+    body_id = color_group[body_idx_in_group]
+    if body_inv_mass[body_id] <= 0.0:
+        return
+
+    force_acc = wp.vec3(0.0)
+    torque_acc = wp.vec3(0.0)
+    h_ll_acc = wp.mat33(0.0)
+    h_al_acc = wp.mat33(0.0)
+    h_aa_acc = wp.mat33(0.0)
+
+    start = body_attachment_offsets[body_id]
+    end = body_attachment_offsets[body_id + 1]
+    for i in range(start, end):
+        attachment = body_attachment_indices[i]
+        if not attachment_enabled[attachment]:
+            continue
+
+        particle = attachment_particle[attachment]
+        body_point = attachment_body_point[attachment]
+        force_particle, h_ll = evaluate_body_particle_attachment_particle_force_hessian(
+            particle_q[particle],
+            particle_q_prev[particle],
+            body_q[body_id],
+            body_q_prev[body_id],
+            body_point,
+            attachment_stiffness[attachment],
+            attachment_damping[attachment],
+            dt,
+        )
+        force_body = -force_particle
+        anchor = wp.transform_point(body_q[body_id], body_point)
+        com_world = wp.transform_point(body_q[body_id], body_com[body_id])
+        r = anchor - com_world
+        torque_body, h_al, h_aa = _point_force_to_body_torque_and_hessian(r, force_body, h_ll)
+
+        force_acc += force_body
+        torque_acc += torque_body
+        h_ll_acc += h_ll
+        h_al_acc += h_al
+        h_aa_acc += h_aa
+
+    # One thread per body_id in this launch (unlike the contact kernels below, which run
+    # several threads per body), so a plain read-add-write cannot race within this kernel.
+    body_forces[body_id] = body_forces[body_id] + force_acc
+    body_torques[body_id] = body_torques[body_id] + torque_acc
+    body_hessian_ll[body_id] = body_hessian_ll[body_id] + h_ll_acc
+    body_hessian_al[body_id] = body_hessian_al[body_id] + h_al_acc
+    body_hessian_aa[body_id] = body_hessian_aa[body_id] + h_aa_acc
+
+
+@wp.kernel
 def accumulate_body_particle_contacts_per_body(
     dt: float,
     color_group: wp.array[wp.int32],
@@ -5889,15 +6077,13 @@ def accumulate_body_particle_contacts_per_body(
         # Equal-and-opposite reaction on the body at the rigid contact point (shared by both kinds).
         f_body = -f_soft
         r = cp_world - com_world
-        tau_body = wp.cross(r, f_body)
-        r_skew = wp.skew(r)
-        r_skew_T_K = wp.transpose(r_skew) * h_soft
+        tau_body, h_al, h_aa = _point_force_to_body_torque_and_hessian(r, f_body, h_soft)
 
         force_acc += f_body
         torque_acc += tau_body
         h_ll_acc += h_soft
-        h_al_acc += -r_skew_T_K
-        h_aa_acc += r_skew_T_K * r_skew
+        h_al_acc += h_al
+        h_aa_acc += h_aa
 
     wp.atomic_add(body_forces, body_id, force_acc)
     wp.atomic_add(body_torques, body_id, torque_acc)

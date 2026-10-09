@@ -28,7 +28,8 @@ Example::
    Because ``newton.solvers`` is a module rather than a package, use
    ``from newton.solvers import mujoco`` instead of ``import newton.solvers.mujoco``.
 
-.. currentmodule:: newton._src.solvers.mujoco
+.. py:module:: newton.solvers.mujoco
+.. currentmodule:: newton.solvers.mujoco
 
 .. rubric:: Classes
 
