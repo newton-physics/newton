@@ -1,0 +1,68 @@
+---
+name: example-testing
+description: Run Newton examples for visual QA of a release wheel or requested checkout, exercising viewer controls and checking motion, picking, and end-of-run settling against example-specific criteria. Use for example testing and release QA, not as a substitute for unit tests or release approval.
+---
+
+# Newton Example Testing
+
+Produce a reproducible local visual QA report with commands, observations, and
+image evidence. Preserve the requested artifact and scope: a wheel test must
+import the installed wheel, not this checkout. Do not modify examples to make
+them pass or infer acceptance from a clean exit.
+
+## Establish the run
+
+1. Use the version/wheel, examples, device, and criteria supplied by the user.
+   If the release artifact is unspecified, ask for it; do not silently test main
+   or a moving latest release. Prepare the environment while resolving inputs.
+2. Read [setup.md](references/setup.md) for isolated uv installation, provenance,
+   device/display checks, and launch commands. Inventory examples from the
+   installed artifact. For a requested full suite, retain every inventory entry
+   in the report, including blocked and untested examples and requested variants.
+3. Read [criteria.md](references/criteria.md). Apply maintained example criteria
+   and explicit user overrides, recording their source. This initial skill has
+   **no example-specific acceptance criteria**. Without criteria, execute useful
+   setup/interaction smoke checks within the requested scope, report coverage
+   as incomplete, and request the missing expected behaviors. Never invent a
+   release pass or carry a previous run's observations forward as current results.
+4. Establish a working capture/input path before a large campaign. The proven
+   path is the native GL viewer on Linux X11, screenshots inspected by the agent,
+   and real mouse/keyboard events. If using another environment/backend, verify
+   its equivalent interactions and record the difference.
+
+## Execute and inspect
+
+- Read [interaction.md](references/interaction.md) for capture, pan, pick,
+  stepping, and cleanup commands. Use the bundled `scripts/desktop.py` helper
+  for screenshots and smooth drags on X11. Launch one example per process,
+  initially paused where supported; retain logs and a fresh initial screenshot.
+- Exercise the requested scenario and inspect actual images after each action.
+  An input command returning success is not proof the GUI responded. Preserve
+  action order, camera views, and simulation time/steps when known.
+- For smoothness, jitter, or settling criteria, read
+  [jitter.md](references/jitter.md). Observe consecutive late-run frames with
+  physics advancing and a fixed camera; a paused final image is not evidence
+  of stability. Distinguish wall time, simulation time, and render cadence.
+- Reproduce suspected defects from reset or a fresh process. Separate physics
+  defects, rendering/capture artifacts, missing assets/dependencies, and unmet
+  hardware requirements. Do not silently substitute CPU for requested CUDA.
+- Close the viewer and confirm process termination before the next example.
+  Release held buttons/modifiers even after failed input or capture. Continue
+  independent cases when one is blocked; honor a user's stop/checkpoint scope.
+
+## Report and hand off
+
+Write the report and evidence outside the checkout unless the user specifies
+otherwise. Record artifact version, wheel origin/hash or source commit, resolved
+dependencies, Python/Warp versions, device/driver, renderer, display, and command
+lines. Include a row for each requested example/variant with criteria source,
+expected/observed behavior, status, and relative log/image/sequence paths.
+
+Use **pass** only for criteria actually evaluated and satisfied; **fail** for an
+observed criterion violation; **blocked** for an environment/input obstacle;
+**not tested** for remaining coverage or undefined criteria. Report smoke-check
+success separately from acceptance. Give coverage totals, sampling limitations,
+reproduction steps for failures, and the next work needed. Resume from this
+record without treating evidence from another artifact as a pass for this one.
+The report supports QA/release decisions; invoking this skill does not publish
+results, file issues, or approve a release.
