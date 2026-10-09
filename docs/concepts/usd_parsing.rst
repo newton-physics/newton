@@ -525,6 +525,17 @@ The table below shows PhysX attribute remapping examples:
      - ``self_collision_enabled`` (per articulation)
      - Direct mapping
 
+For mesh colliders with ``physics:approximation = "convexDecomposition"`` and
+``PhysxConvexDecompositionCollisionAPI`` applied, enabling
+:class:`newton.usd.SchemaResolverPhysx` also imports
+``physxConvexDecompositionCollision:maxConvexHulls`` (default 32) and
+``physxConvexDecompositionCollision:hullVertexLimit`` (default 64). These map
+to CoACD's hull-count and per-hull vertex limits with merging and decimation
+enabled. The hull-count limit applies across all connected components of each
+mesh. A limit smaller than the number of components merges nearby hulls with
+a warning and can bridge gaps in the collision geometry. Increase the limits
+to retain finer geometry. The resulting hulls need not match PhysX cooking.
+
 **Newton articulation remapping:**
 
 On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArticulationRootAPI``), the following is resolved:
