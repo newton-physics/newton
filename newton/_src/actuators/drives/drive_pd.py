@@ -135,6 +135,7 @@ class DrivePD(DriveBase):
 
     def compute(
         self,
+        *,
         positions: wp.array[float],
         velocities: wp.array[float],
         target_pos: wp.array[float],
@@ -148,7 +149,6 @@ class DrivePD(DriveBase):
         state: DriveBase.State | None,
         dt: float,
         device: wp.Device | None = None,
-        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         wp.launch(

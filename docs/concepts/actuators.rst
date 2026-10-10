@@ -539,16 +539,23 @@ For example, a custom drive needs to implement
        def is_graphable(self):
            return True
 
-       def compute(self, positions, velocities, target_pos, target_vel,
+       def compute(self, *, positions, velocities, target_pos, target_vel,
                    feedforward, pos_indices, vel_indices,
                    target_pos_indices, target_vel_indices,
-                   forces, state, dt, device=None, *, custom_inputs=None):
+                   forces, state, dt, device=None, custom_inputs=None):
            # Launch a Warp kernel that writes effort into `forces`
            ...
 
 ``resolve_arguments`` maps user-provided keyword arguments (from
 :meth:`~newton.ModelBuilder.add_actuator` or USD schemas) to constructor
 parameters, filling in defaults where needed.
+
+All operands of :meth:`~DriveBase.compute` and
+:meth:`~DriveBase.prepare_implicit` are keyword-only. The actuator passes them
+by keyword, so custom overrides can retain the base parameter names or accept
+and forward ``**kwargs`` without listing every operand.
+When calling these methods directly, pass arrays, index mappings, state, and
+the timestep by name, for example ``positions=q`` and ``dt=0.01``.
 
 A stateful custom drive also defines a dataclass subclass of
 :class:`DriveBase.State` and implements :meth:`~DriveBase.State.reset`. The

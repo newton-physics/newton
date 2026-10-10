@@ -152,6 +152,16 @@ def eval_mimic(
     copied and updated; unselected coordinates in ``state_out`` retain their
     existing values. With neither selector, all joints are processed.
 
+    Solvers with mimic support enforce the relationship during ``step()``;
+    this helper is not a required post-step call. Whether ``step()`` refreshes
+    joint coordinates in ``state_out`` is solver-defined. If a solver advances
+    body coordinates without refreshing joint coordinates, use
+    :func:`~newton.eval_ik` to derive current joint values from the output body
+    state; calling this function on stale joint arrays would use stale
+    reference values. Call this helper before
+    :func:`~newton.eval_fk` when initializing body poses from joint values
+    that need mimic projection.
+
     Args:
         model: Model containing the joint mimic metadata.
         state_in: State providing the input joint coordinates.

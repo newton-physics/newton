@@ -50,18 +50,18 @@ class _EffortModeExplicit:
         if self._drive.custom_inputs:
             compute_kwargs["custom_inputs"] = custom_inputs
         self._drive.compute(
-            positions,
-            velocities,
-            target_pos,
-            target_vel,
-            feedforward,
-            pos_indices,
-            vel_indices,
-            target_pos_indices,
-            target_vel_indices,
-            computed_forces,
-            drive_state,
-            dt,
+            positions=positions,
+            velocities=velocities,
+            target_pos=target_pos,
+            target_vel=target_vel,
+            feedforward=feedforward,
+            pos_indices=pos_indices,
+            vel_indices=vel_indices,
+            target_pos_indices=target_pos_indices,
+            target_vel_indices=target_vel_indices,
+            forces=computed_forces,
+            state=drive_state,
+            dt=dt,
             **compute_kwargs,
         )
         forces = computed_forces

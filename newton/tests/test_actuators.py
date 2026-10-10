@@ -833,19 +833,19 @@ class TestDriveNeuralGRU(unittest.TestCase):
         elif not isinstance(target_vel_indices, wp.array):
             target_vel_indices = wp.array(target_vel_indices, dtype=wp.uint32, device=self.device)
         case.actuator.drive.compute(
-            case.state.joint_q,
-            case.state.joint_qd,
-            case.control.joint_target_q,
-            case.control.joint_target_qd,
-            feedforward,
-            case.actuator.pos_indices,
-            case.actuator.indices,
-            case.actuator.target_pos_indices,
-            target_vel_indices,
-            forces,
-            state,
-            dt,
-            self.device,
+            positions=case.state.joint_q,
+            velocities=case.state.joint_qd,
+            target_pos=case.control.joint_target_q,
+            target_vel=case.control.joint_target_qd,
+            feedforward=feedforward,
+            pos_indices=case.actuator.pos_indices,
+            vel_indices=case.actuator.indices,
+            target_pos_indices=case.actuator.target_pos_indices,
+            target_vel_indices=target_vel_indices,
+            forces=forces,
+            state=state,
+            dt=dt,
+            device=self.device,
             custom_inputs=custom_inputs,
         )
         return forces
@@ -1331,14 +1331,14 @@ class TestDriveNeuralGRU(unittest.TestCase):
         self.assertIsNone(_RecordingDrive.seen["bias_force"])
 
     def test_implicit_drive_without_custom_inputs_keyword_remains_compatible(self):
-        """Keep drives using the previous prepare_implicit signature working."""
+        """Call keyword-only preparation without forwarding undeclared custom inputs."""
 
-        class _LegacyDrive(DrivePD):
-            prepared = False
+        class _RecordingDrive(DrivePD):
+            prepared_kwargs = None
 
-            def prepare_implicit(self, *args, inv_mass=None, device=None):
-                type(self).prepared = True
-                return super().prepare_implicit(*args, inv_mass=inv_mass, device=device)
+            def prepare_implicit(self, **kwargs):
+                type(self).prepared_kwargs = kwargs
+                return super().prepare_implicit(**kwargs)
 
         device = self.device
         model = _build_pendulum(device)
@@ -1346,7 +1346,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         response = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array([0], dtype=wp.uint32, device=device),
-            drive=_LegacyDrive(
+            drive=_RecordingDrive(
                 kp=wp.array([100.0], dtype=wp.float32, device=device),
                 kd=wp.array([10.0], dtype=wp.float32, device=device),
             ),
@@ -1356,7 +1356,8 @@ class TestDriveNeuralGRU(unittest.TestCase):
         response.refresh(state)
         actuator.step(state, control, dt=0.01)
 
-        self.assertTrue(_LegacyDrive.prepared)
+        self.assertIsNotNone(_RecordingDrive.prepared_kwargs)
+        self.assertNotIn("custom_inputs", _RecordingDrive.prepared_kwargs)
 
     def test_custom_input_name_comes_from_metadata(self):
         """Take the caller-supplied column's name from custom_inputs metadata."""
@@ -1650,19 +1651,19 @@ class TestDriveNeuralMLP(unittest.TestCase):
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
 
         ctrl.compute(
-            positions,
-            velocities,
-            target_pos,
-            target_vel,
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
+            positions=positions,
+            velocities=velocities,
+            target_pos=target_pos,
+            target_vel=target_vel,
+            feedforward=None,
+            pos_indices=indices,
+            vel_indices=indices,
+            target_pos_indices=indices,
+            target_vel_indices=indices,
+            forces=forces,
+            state=state_a,
+            dt=0.01,
+            device=self.device,
         )
         self.assertAlmostEqual(forces.numpy()[0], 42.0, places=3)
 
@@ -1692,19 +1693,19 @@ class TestDriveNeuralMLP(unittest.TestCase):
         indices = wp.array([0], dtype=wp.uint32, device=self.device)
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
         ctrl.compute(
-            wp.array([q], dtype=wp.float32, device=self.device),
-            wp.array([qd], dtype=wp.float32, device=self.device),
-            wp.array([target_q], dtype=wp.float32, device=self.device),
-            wp.array([target_qd], dtype=wp.float32, device=self.device),
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
+            positions=wp.array([q], dtype=wp.float32, device=self.device),
+            velocities=wp.array([qd], dtype=wp.float32, device=self.device),
+            target_pos=wp.array([target_q], dtype=wp.float32, device=self.device),
+            target_vel=wp.array([target_qd], dtype=wp.float32, device=self.device),
+            feedforward=None,
+            pos_indices=indices,
+            vel_indices=indices,
+            target_pos_indices=indices,
+            target_vel_indices=indices,
+            forces=forces,
+            state=state_a,
+            dt=0.01,
+            device=self.device,
         )
         self.assertAlmostEqual(forces.numpy()[0], expected, places=3, msg="input must be joint velocity, not vel error")
 
@@ -1731,19 +1732,19 @@ class TestDriveNeuralMLP(unittest.TestCase):
         indices = wp.array([0], dtype=wp.uint32, device=self.device)
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
         ctrl.compute(
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.array([1.0], dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
+            positions=wp.zeros(n, dtype=wp.float32, device=self.device),
+            velocities=wp.zeros(n, dtype=wp.float32, device=self.device),
+            target_pos=wp.array([1.0], dtype=wp.float32, device=self.device),
+            target_vel=wp.zeros(n, dtype=wp.float32, device=self.device),
+            feedforward=None,
+            pos_indices=indices,
+            vel_indices=indices,
+            target_pos_indices=indices,
+            target_vel_indices=indices,
+            forces=forces,
+            state=state_a,
+            dt=0.01,
+            device=self.device,
         )
         self.assertAlmostEqual(forces.numpy()[0], 30.0, places=3, msg="bias=10 * effort_scale=3 -> 30")
 
@@ -1805,19 +1806,21 @@ class TestDriveNeuralMLP(unittest.TestCase):
                     indices = wp.array(np.arange(n, dtype=np.uint32), dtype=wp.uint32, device=self.device)
                     forces = wp.zeros(n, dtype=wp.float32, device=self.device)
                     ctrl.compute(
-                        wp.zeros(n, dtype=wp.float32, device=self.device),
-                        wp.zeros(n, dtype=wp.float32, device=self.device),
-                        wp.array(np.arange(1, n + 1, dtype=np.float32), dtype=wp.float32, device=self.device),
-                        wp.zeros(n, dtype=wp.float32, device=self.device),
-                        None,
-                        indices,
-                        indices,
-                        indices,
-                        indices,
-                        forces,
-                        ctrl.state(n, self.device),
-                        0.01,
-                        self.device,
+                        positions=wp.zeros(n, dtype=wp.float32, device=self.device),
+                        velocities=wp.zeros(n, dtype=wp.float32, device=self.device),
+                        target_pos=wp.array(
+                            np.arange(1, n + 1, dtype=np.float32), dtype=wp.float32, device=self.device
+                        ),
+                        target_vel=wp.zeros(n, dtype=wp.float32, device=self.device),
+                        feedforward=None,
+                        pos_indices=indices,
+                        vel_indices=indices,
+                        target_pos_indices=indices,
+                        target_vel_indices=indices,
+                        forces=forces,
+                        state=ctrl.state(n, self.device),
+                        dt=0.01,
+                        device=self.device,
                     )
                     np.testing.assert_allclose(
                         forces.numpy(), 2.0 * np.arange(1, n + 1, dtype=np.float32) + 1.0, rtol=1e-5
@@ -2133,19 +2136,19 @@ class TestDriveNeuralLSTM(unittest.TestCase):
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
 
         ctrl.compute(
-            positions,
-            velocities,
-            target_pos,
-            target_vel,
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
+            positions=positions,
+            velocities=velocities,
+            target_pos=target_pos,
+            target_vel=target_vel,
+            feedforward=None,
+            pos_indices=indices,
+            vel_indices=indices,
+            target_pos_indices=indices,
+            target_vel_indices=indices,
+            forces=forces,
+            state=state_a,
+            dt=0.01,
+            device=self.device,
         )
         ctrl.update_state(state_a, state_b)
 
@@ -2306,19 +2309,19 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         indices = wp.array([0], dtype=wp.uint32, device=self.device)
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
         ctrl.compute(
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.array([1.0], dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
+            positions=wp.zeros(n, dtype=wp.float32, device=self.device),
+            velocities=wp.zeros(n, dtype=wp.float32, device=self.device),
+            target_pos=wp.array([1.0], dtype=wp.float32, device=self.device),
+            target_vel=wp.zeros(n, dtype=wp.float32, device=self.device),
+            feedforward=None,
+            pos_indices=indices,
+            vel_indices=indices,
+            target_pos_indices=indices,
+            target_vel_indices=indices,
+            forces=forces,
+            state=state_a,
+            dt=0.01,
+            device=self.device,
         )
         self.assertAlmostEqual(forces.numpy()[0], 14.0, places=3, msg="bias=7 * effort_scale=2 -> 14")
 
@@ -2359,19 +2362,19 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
 
         ctrl.compute(
-            positions,
-            velocities,
-            target_pos,
-            target_vel,
-            None,
-            pos_indices,
-            vel_indices,
-            target_pos_indices,
-            target_pos_indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
+            positions=positions,
+            velocities=velocities,
+            target_pos=target_pos,
+            target_vel=target_vel,
+            feedforward=None,
+            pos_indices=pos_indices,
+            vel_indices=vel_indices,
+            target_pos_indices=target_pos_indices,
+            target_vel_indices=target_pos_indices,
+            forces=forces,
+            state=state_a,
+            dt=0.01,
+            device=self.device,
         )
 
         pos_error = self.torch.tensor([0.7, 2.2], device=self._torch_dev)  # target_pos[[6, 7]] - positions[[7, 8]]
@@ -2416,19 +2419,19 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
 
         ctrl.compute(
-            positions,
-            velocities,
-            target_pos,
-            target_vel,
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
+            positions=positions,
+            velocities=velocities,
+            target_pos=target_pos,
+            target_vel=target_vel,
+            feedforward=None,
+            pos_indices=indices,
+            vel_indices=indices,
+            target_pos_indices=indices,
+            target_vel_indices=indices,
+            forces=forces,
+            state=state_a,
+            dt=0.01,
+            device=self.device,
         )
         ctrl.update_state(state_a, state_b)
 
@@ -2515,19 +2518,19 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
 
         ctrl.compute(
-            positions,
-            velocities,
-            target_pos,
-            target_vel,
-            None,
-            pos_indices,
-            vel_indices,
-            target_pos_indices,
-            target_pos_indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
+            positions=positions,
+            velocities=velocities,
+            target_pos=target_pos,
+            target_vel=target_vel,
+            feedforward=None,
+            pos_indices=pos_indices,
+            vel_indices=vel_indices,
+            target_pos_indices=target_pos_indices,
+            target_vel_indices=target_pos_indices,
+            forces=forces,
+            state=state_a,
+            dt=0.01,
+            device=self.device,
         )
 
         pos_error = self.torch.tensor([0.7, 2.2], device=self._torch_dev)  # target_pos[[6, 7]] - positions[[7, 8]]
@@ -2565,19 +2568,19 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
 
         ctrl.compute(
-            positions,
-            velocities,
-            target_pos,
-            target_vel,
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
+            positions=positions,
+            velocities=velocities,
+            target_pos=target_pos,
+            target_vel=target_vel,
+            feedforward=None,
+            pos_indices=indices,
+            vel_indices=indices,
+            target_pos_indices=indices,
+            target_vel_indices=indices,
+            forces=forces,
+            state=state_a,
+            dt=0.01,
+            device=self.device,
         )
         ctrl.update_state(state_a, state_b)
         self.assertTrue(state_b.hidden.is_inference(), "precondition: hidden must be a network output")

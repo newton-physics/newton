@@ -479,7 +479,7 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
 
 
 class DriveNeuralGRU(DriveBase):
-    """Stateful GRU actuator drive using Warp-NN.
+    """Stateful gated recurrent unit (GRU) actuator drive using Warp-NN.
 
     The network and its weights are read from an ONNX checkpoint and evaluated
     with Warp-NN. Hidden state is kept across timesteps through the
@@ -757,6 +757,7 @@ class DriveNeuralGRU(DriveBase):
 
     def compute(
         self,
+        *,
         positions: wp.array[float],
         velocities: wp.array[float],
         target_pos: wp.array[float],
@@ -770,7 +771,6 @@ class DriveNeuralGRU(DriveBase):
         state: DriveNeuralGRU.State,
         dt: float,
         device: wp.Device | None = None,
-        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Evaluate one GRU sample and write physical effort."""

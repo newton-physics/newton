@@ -128,15 +128,18 @@ class TestActuatorDriveAPI(unittest.TestCase):
         self.assertIsNone(drive.seen_custom_inputs["missing_control_input"])
 
     def test_explicit_drive_without_custom_inputs_keyword_remains_compatible(self):
-        """Keep drives using the previous compute signature working."""
+        """Call keyword-only overrides without forwarding undeclared custom inputs."""
 
-        class _LegacyDrive(actuators.DrivePD):
-            def compute(self, *args, device=None):
-                return super().compute(*args, device=device)
+        class _RecordingDrive(actuators.DrivePD):
+            seen_kwargs = None
+
+            def compute(self, **kwargs):
+                type(self).seen_kwargs = kwargs
+                return super().compute(**kwargs)
 
         actuator = actuators.Actuator(
             indices=wp.array([0], dtype=wp.uint32),
-            drive=_LegacyDrive(
+            drive=_RecordingDrive(
                 kp=wp.array([1.0], dtype=wp.float32),
                 kd=wp.array([0.0], dtype=wp.float32),
             ),
@@ -155,6 +158,8 @@ class TestActuatorDriveAPI(unittest.TestCase):
         actuator.step(state, control, dt=0.01)
 
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), 1.0)
+        self.assertIsNotNone(_RecordingDrive.seen_kwargs)
+        self.assertNotIn("custom_inputs", _RecordingDrive.seen_kwargs)
 
     def test_actuator_registers_drive_inputs_only(self):
         """Ignore undeclared input conventions on delay and clamping components."""
