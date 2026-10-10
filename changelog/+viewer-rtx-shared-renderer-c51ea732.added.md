@@ -1,0 +1,1 @@
+Add `ViewerRTX(renderer=..., ovstage=...)` with `prepare_render()` and `end_frame(render_products=...)` so applications can render sensors and the viewer in one OVRTX submission while retaining ownership of the renderer and stage.

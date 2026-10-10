@@ -572,6 +572,37 @@ and lets ``label_prefixes`` root each world's labels at its own environment:
     viewer.log_state(state)
     viewer.end_frame()
 
+Sharing an existing renderer
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When an application already renders sensors with OVRTX, pass both ``ovstage=stage`` and ``renderer=renderer``
+to reuse that instance. The renderer must already be attached to the supplied stage. The viewer adds its camera,
+render product, and debug geometry; the application owns render submission, scene synchronization, and renderer
+lifetime. The viewer never attaches, detaches, resets, or destroys the borrowed renderer.
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerRTX(ovstage=stage, renderer=renderer)
+
+    # Finish previous renders and scene writes before updating the viewer.
+    viewer.begin_frame(sim_time)
+    # Log markers here; omit log_state() if the application already updates body transforms.
+    request = viewer.prepare_render()
+    if request is not None:
+        product, ordinal = request
+        products = renderer.step(sensor_products | {product}, delta_time=dt, ordinal=ordinal)
+        viewer.end_frame(render_products=products)
+    else:
+        viewer.end_frame()  # Keep presenting while rendering is paused.
+
+:meth:`~newton.viewer.ViewerRTX.prepare_render` publishes viewer updates and returns its product path and committed
+stage ordinal. If the application writes more stage updates afterward, it must use a higher ordinal and submit that
+ordinal instead. Only the viewer's product is displayed; sensor outputs remain with the caller. The application may
+use ``step_async(...).wait().fetch()`` instead of ``step()``; the viewer's ``async_rendering`` option has no effect here.
+Finish outstanding renders before ``set_model()``, ``clear_model()``, or ``close()``. These operations remove only
+viewer-owned prims, so the application can continue rendering its sensors. Use one viewer per borrowed stage because
+its prims occupy ``/__newton_viewer``. Resizing the window scales the displayed image without resizing render products.
+
 Recording and Offline Viewers
 -----------------------------
 
