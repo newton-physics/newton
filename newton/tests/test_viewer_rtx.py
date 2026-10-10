@@ -80,10 +80,13 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
             ViewerRTX(headless=True)
 
     @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
-    def test_borrowed_stage_requires_ovstage_0_2(self):
-        """Reject a borrowed stage on OVStage 0.1, whose GPU hierarchy computation misplaces prims."""
+    def test_borrowing_requires_supported_stage(self):
+        """Require a stage with OVStage 0.2 or newer when borrowing a renderer or stage."""
         import ovrtx
         import ovstage
+
+        with self.assertRaisesRegex(ValueError, "stage already attached"):
+            ViewerRTX(headless=True, renderer=object())
 
         with (
             mock.patch.object(ovrtx, "__version__", "0.4.1"),
@@ -406,6 +409,7 @@ def Xform "World"
         """Finish the previous async stage read before publishing the next frame."""
         events = []
         self.viewer._phase = self.viewer._PHASE_RENDER
+        self.viewer._render_product_path = "/Render/Product"
         self.viewer._should_close = False
         self.viewer.gui = None
         self.viewer._rtx = mock.Mock()
@@ -556,6 +560,7 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
         pixels = mock.Mock()
         pixels.device.stream.cuda_stream = 17
         frame = mock.Mock(render_vars={"/Render/Vars/LdrColor": render_var})
+        viewer._render_product_path = "product"
         products = {"product": mock.Mock(frames=[frame])}
 
         with (
@@ -781,6 +786,75 @@ def Xform "World"
         builder = newton.ModelBuilder()
         builder.add_usd(path, **add_usd_kwargs)
         return stage, builder.finalize()
+
+    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
+    def test_borrowed_renderer_keeps_submission_and_lifetime_with_owner(self):
+        """Render viewer and sensor products together without taking ownership of the renderer."""
+        import ovrtx
+
+        stage, _ = self._open_borrowed_stage(
+            self._BORROWED_USDA.format(up_axis="Z")
+            + """
+def DomeLight "Light" {
+    float inputs:intensity = 500
+}
+def Camera "SensorCamera" {
+    double3 xformOp:translate = (1, 2, 6)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+def RenderVar "Color" {
+    string sourceName = "LdrColor"
+}
+def RenderProduct "Sensor" {
+    rel camera = </SensorCamera>
+    rel orderedVars = [</Color>]
+    int2 resolution = (20, 16)
+    int omni:rtx:quality = 0
+}
+"""
+        )
+        renderer = ovrtx.Renderer()
+        self.addCleanup(renderer.destroy)
+        renderer.attach_ovstage(stage)
+        self.enterContext(mock.patch.object(ovrtx, "Renderer", side_effect=AssertionError("duplicate renderer")))
+        submit = renderer.step_async
+        for method in ("attach_ovstage", "detach_ovstage", "reset", "destroy", "step_async"):
+            self.enterContext(mock.patch.object(renderer, method, side_effect=AssertionError(method)))
+        viewer = ViewerRTX(width=48, height=32, headless=True, ovstage=stage, renderer=renderer)
+        self.addCleanup(viewer.close)
+        for generation in range(2):
+            viewer.set_model(None)
+            viewer.set_camera(wp.vec3(1.0, 2.0, 6.0), pitch=-90.0, yaw=0.0)
+            for frame in range(2):
+                viewer.begin_frame((generation * 2 + frame) / 60.0)
+                viewer.log_points("markers", wp.array([[1.0, 2.0, 4.0]] * (frame + 1), dtype=wp.vec3), radii=0.1)
+                product, ordinal = viewer.prepare_render()
+                products = submit({"/Sensor", product}, delta_time=1.0 / 60.0, ordinal=ordinal).wait().fetch()
+                viewer.end_frame(render_products={"/Sensor": products["/Sensor"], product: products[product]})
+                image = viewer.get_frame().numpy()
+                self.assertEqual(image.shape, (32, 48, 3))
+                self.assertGreater(np.ptp(image), 0)
+
+        # A later sensor render must not replace the viewer's retained image.
+        submit({"/Sensor"}, delta_time=1.0 / 60.0, ordinal=ordinal).wait().fetch()
+        np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
+        viewer.set_rendering_paused(True)
+        self.assertIsNone(viewer.prepare_render())
+        viewer.end_frame(render_products=products)
+        np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
+        viewer.close()
+
+        # Removing the viewer's camera and markers must leave the sensor usable.
+        query = stage.get_attribute_write_floor()
+        ordinal = int(stage.fetch_ordinal(query))
+        stage.release_ordinal_query(query).wait()
+        products = submit({"/Sensor"}, delta_time=1.0 / 60.0, ordinal=ordinal).wait().fetch()
+        render_vars = products["/Sensor"].frames[0].render_vars
+        self.assertEqual(len(render_vars), 1)
+        with next(iter(render_vars.values())).map(device=ovrtx.Device.CPU) as mapping:
+            image = np.from_dlpack(mapping)
+            self.assertEqual(image.shape, (16, 20, 4))
+            self.assertGreater(np.ptp(image[:, :, :3]), 0)
 
     @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
     def test_borrowed_stage_writes_above_caller_advanced_floor(self):

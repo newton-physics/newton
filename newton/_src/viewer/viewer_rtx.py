@@ -40,6 +40,7 @@ except ImportError:
     Gf = UsdGeom = None
 
 if TYPE_CHECKING:
+    import ovrtx
     import ovstage
 
 from .camera import Camera
@@ -173,6 +174,7 @@ class ViewerRTX(ViewerUSD):
     ENVIRONMENTS = ("default", "studio", "none")
 
     _borrowed_stage = None
+    _owns_renderer = True
     _borrowed_reference = None
     _stage_from_model = None
     _borrowed_reset_pending = False
@@ -210,6 +212,7 @@ class ViewerRTX(ViewerUSD):
         *,
         plot_history_size: int = 250,
         ovstage: ovstage.Stage | None = None,
+        renderer: ovrtx.Renderer | None = None,
         render_settings: dict[str, tuple[str, Any]] | None = None,
     ):
         """Initialize the OVRTX-backed real-time ray-tracing viewer.
@@ -256,6 +259,10 @@ class ViewerRTX(ViewerUSD):
                 pose after the viewer releases the stage. Requires OVRTX 0.4
                 and OVStage 0.2 or newer, and a stage created with GPU
                 hierarchy computation.
+            renderer: Renderer already attached to ``ovstage``. The caller owns
+                submission and lifetime: call :meth:`prepare_render`, render its
+                product alongside any sensors, then pass the outputs to :meth:`end_frame`.
+                ``async_rendering`` is ignored. Finish renders before updating or closing.
             render_settings: ``omni:rtx:*`` attributes to author on the
                 viewer's render product as ``{name: (usd_type_name, value)}``,
                 e.g. ``{"omni:rtx:pt:samplesPerPixel": ("uint", 4)}``. The type
@@ -264,6 +271,8 @@ class ViewerRTX(ViewerUSD):
         """
         # Captured before ``import ovstage`` below rebinds the name.
         self._borrowed_stage = ovstage
+        if renderer is not None and ovstage is None:
+            raise ValueError("ViewerRTX(renderer=...) requires the stage already attached to that renderer")
         self._plot_logger = PlotLogger(plot_history_size, get_window=lambda: self._window)
 
         # FIXME: Disable USD checks in OVRTX that refuse to load the library if `usd-core` is present.
@@ -320,7 +329,8 @@ class ViewerRTX(ViewerUSD):
         self._reset_callback: Callable[[], None] | None = None
 
         # OVRTX
-        self._rtx = None
+        self._rtx = renderer
+        self._owns_renderer = renderer is None
         self._async = async_rendering
         self._render_result = None
         self._discard_render_result = False
@@ -881,7 +891,7 @@ void main() {
     # ------------------------------------------------------------- OVRTX init
 
     def _init_ovrtx(self):
-        """Serialise the USD stage, create the OVRTX renderer and load the scene."""
+        """Publish the viewer scene and initialize its renderer and window."""
 
         self._add_camera_lights_and_render_product()
         self._apply_ground_material()
@@ -896,9 +906,10 @@ void main() {
         try:
             import ovrtx
 
-            config = ovrtx.RendererConfig()
-            config.log_level = "error"
-            self._rtx = ovrtx.Renderer(config=config)
+            if self._owns_renderer:
+                config = ovrtx.RendererConfig()
+                config.log_level = "error"
+                self._rtx = ovrtx.Renderer(config=config)
             if self._borrowed_stage is not None:
                 self._attach_borrowed_stage()
             elif self._use_ovstage:
@@ -1095,8 +1106,9 @@ void main() {
         self._freeze_time_samples(stage)
 
         self._ovstage = self._borrowed_stage
-        self._rtx.attach_ovstage(self._ovstage)
-        self._ovstage_attached = True
+        if self._owns_renderer:
+            self._rtx.attach_ovstage(self._ovstage)
+            self._ovstage_attached = True
         self._ovstage_paths = ovstage.PathDictionary(self._ovstage)
         self._next_ovstage_ordinal()
         self._borrowed_reference = ovstage.population.add_usd_reference_from_string(
@@ -1790,20 +1802,23 @@ void main() {
                     self.wind.update(dt)
             self._last_perf_time = now
 
-    @override
-    def end_frame(self) -> None:
-        """Finish rendering the current frame.
+    def prepare_render(self) -> tuple[str, int | None] | None:
+        """Publish camera and scene updates before rendering.
 
-        On the first call, the RTX renderer is initialized from the USD stage
-        built up during the build phase; subsequent calls update transforms
-        and dispatch the next ray-traced render.
+        Finish outstanding renders and stage writes before calling. Subsequent stage
+        writes must use a higher ordinal. Omit :meth:`log_state` if the owner updates
+        body transforms. :meth:`end_frame` calls this automatically for an owned renderer.
+
+        Returns:
+            Viewer render product path and committed stage ordinal (``None`` for
+            legacy OVRTX), or ``None`` while rendering is paused or the viewer is closed.
         """
         if self._should_close:
             return
         if self._phase == self._PHASE_BUILD:
             self._init_ovrtx()
 
-        with wp.ScopedTimer("ViewerRTX::end_frame", active=PROFILE_ENABLED, use_nvtx=True):
+        with wp.ScopedTimer("ViewerRTX::prepare_render", active=PROFILE_ENABLED, use_nvtx=True):
             if self.gui:
                 self.gui.prepare_frame()
             if self._rtx is not None and not self._should_close and not self.is_rendering_paused():
@@ -1819,7 +1834,21 @@ void main() {
                 self._update_scene()
                 if products is not None:
                     self._accept_render(products)
-            self._render_and_display()
+                return self._render_product_path, self._ovstage_ordinal if self._use_ovstage else None
+
+    @override
+    def end_frame(self, *, render_products: ovrtx.RenderProductSetOutputs | None = None) -> None:
+        """Present the frame, rendering it first when the viewer owns the renderer.
+
+        Args:
+            render_products: Borrowed-renderer outputs submitted after :meth:`prepare_render`.
+                Displays only the viewer's product; ``None`` keeps the previous image.
+        """
+        if self._owns_renderer:
+            if render_products is not None:
+                raise ValueError("render_products requires a borrowed renderer")
+            self.prepare_render()
+        self._render_and_display(render_products)
 
     def _update_scene(self) -> None:
         """Apply retained scene updates before submitting the next render."""
@@ -1839,7 +1868,8 @@ void main() {
             self._apply_ovstage_population_changes()
             self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
         if self._runtime_scene_changed:
-            self._rtx.reset(time=self._frame_index / self.fps)
+            if self._owns_renderer:
+                self._rtx.reset(time=self._frame_index / self.fps)
             self._runtime_scene_changed = False
         self._pending_xforms.clear()
         self._pending_instance_visibility.clear()
@@ -2359,8 +2389,8 @@ void main() {
         self._runtime_transform_bindings = {}
 
     def _destroy_ovrtx(self) -> None:
-        """Destroy the renderer when supported and clear its reference."""
-        if self._rtx is None:
+        """Destroy an owned renderer; preserve a borrowed renderer across model resets."""
+        if self._rtx is None or not self._owns_renderer:
             return
         destroy = getattr(self._rtx, "destroy", None)
         if destroy is not None:
@@ -2666,29 +2696,28 @@ void main() {
 
     def _accept_render(self, products) -> None:
         """Retain completed render products and an independently owned image."""
-        self._render_products = products
+        self._render_products = products if self._owns_renderer else None
         if not self._headless and (self._window is None or self._window.context is None):
             return
 
         from ovrtx import Device
 
-        for product in products.values():
-            for frame in product.frames:
-                render_var = self._get_ldr_color_render_var(frame)
-                if render_var is None:
-                    continue
-                with render_var.map(device=Device.CUDA) as mapping:
-                    pixels = wp.from_dlpack(mapping, dtype=wp.vec4ub)
-                    if self._headless:
-                        if self._displayed_pixels is None or self._displayed_pixels.shape != pixels.shape:
-                            self._displayed_pixels = wp.empty_like(pixels)
-                        wp.copy(self._displayed_pixels, pixels)
-                    else:
-                        self._blit_to_window(pixels)
-                    mapping.unmap(stream=pixels.device.stream.cuda_stream)
-                return
+        for frame in products[self._render_product_path].frames:
+            render_var = self._get_ldr_color_render_var(frame)
+            if render_var is None:
+                continue
+            with render_var.map(device=Device.CUDA) as mapping:
+                pixels = wp.from_dlpack(mapping, dtype=wp.vec4ub)
+                if self._headless:
+                    if self._displayed_pixels is None or self._displayed_pixels.shape != pixels.shape:
+                        self._displayed_pixels = wp.empty_like(pixels)
+                    wp.copy(self._displayed_pixels, pixels)
+                else:
+                    self._blit_to_window(pixels)
+                mapping.unmap(stream=pixels.device.stream.cuda_stream)
+            return
 
-    def _render_and_display(self):
+    def _render_and_display(self, render_products=None):
         fullscreen_name = self._image_logger.pop_fullscreen()
         if self._should_close:
             return
@@ -2704,7 +2733,10 @@ void main() {
                 else:
                     self._displayed_frame.clear()
                 self._last_frame_is_fullscreen = True
-            elif self._rtx is not None:
+            elif render_products is not None:
+                self._last_frame_is_fullscreen = False
+                self._accept_render(render_products)
+            elif self._rtx is not None and self._owns_renderer:
                 self._last_frame_is_fullscreen = False
                 step_kwargs = {
                     "render_products": {self._render_product_path},
@@ -2845,7 +2877,7 @@ void main() {
         return output
 
     def _capture_screenshot_pixels(self) -> np.ndarray:
-        if self.is_rendering_paused():
+        if self.is_rendering_paused() or not self._owns_renderer:
             if self._headless:
                 if self._displayed_pixels is None:
                     raise RuntimeError("Frame capture requires at least one displayed frame")
@@ -3096,7 +3128,8 @@ void main() {
 
     def _ui_populate_rendering_panel(self, imgui):
         """Render RTX-specific items inside the Rendering Options panel section."""
-        _changed, self._async = imgui.checkbox("Asynchronous Rendering", self._async)
+        if self._owns_renderer:
+            _changed, self._async = imgui.checkbox("Asynchronous Rendering", self._async)
 
     def register_ui_callback(
         self,
@@ -3209,8 +3242,9 @@ void main() {
     def close(self) -> None:
         """Close the viewer and release rendering resources.
 
-        Waits for any in-flight asynchronous render, releases the runtime
-        scene and OVRTX renderer, and closes the underlying pyglet window.
+        Waits for the viewer's in-flight asynchronous render, releases its runtime
+        scene and owned renderer, and closes the pyglet window. When borrowing a
+        renderer, the caller must finish outstanding renders before calling this.
         """
         # Drain the one outstanding frame before releasing its renderer.
         if self._render_result is not None:

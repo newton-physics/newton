@@ -572,6 +572,33 @@ and lets ``label_prefixes`` root each world's labels at its own environment:
     viewer.log_state(state)
     viewer.end_frame()
 
+Sharing an existing renderer
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Pass ``renderer=`` with ``ovstage=`` to share an application-owned renderer already attached to that stage.
+The viewer adds its camera, render product, and markers. The application owns scene synchronization, render
+submission, and renderer lifetime; the viewer never attaches, detaches, resets, steps, or destroys that renderer.
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerRTX(ovstage=stage, renderer=renderer)
+
+    # Finish previous renders and scene writes before updating the viewer.
+    viewer.begin_frame(sim_time)
+    # Log markers here; omit log_state() if the application already updates body transforms.
+    request = viewer.prepare_render()
+    products = None
+    if request is not None:
+        product, ordinal = request
+        products = renderer.step(sensor_products | {product}, delta_time=dt, ordinal=ordinal)
+    viewer.end_frame(render_products=products)
+
+``prepare_render()`` returns the product path and committed stage ordinal, or ``None`` while paused. Any later
+stage writes must use a higher ordinal, also passed to the renderer. Only the viewer's product is displayed.
+The application may use ``step_async(...).wait().fetch()``; the viewer's ``async_rendering`` option is ignored.
+Finish renders before resetting or closing the viewer, which removes only its own prims. Use one viewer per stage
+because its prims occupy ``/__newton_viewer``. Window resizing scales the image without resizing render products.
+
 Recording and Offline Viewers
 -----------------------------
 
