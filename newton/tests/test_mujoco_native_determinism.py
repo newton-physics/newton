@@ -112,8 +112,6 @@ def test_native_rollout(test, device):
                 iterations=20,
                 ls_iterations=50,
             )
-            # Deterministic scratch allocations require fixed-iteration graph capture.
-            solver.mjw_model.opt.graph_conditional = False
             state0, state1 = model.state(), model.state()
             control = model.control()
             newton.eval_fk(model, state0.joint_q, state0.joint_qd, state0)
