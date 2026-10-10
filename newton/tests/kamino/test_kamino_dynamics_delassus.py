@@ -4,13 +4,15 @@
 """Unit tests for the DelassusOperator class"""
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
 
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.data import DataKamino
-from newton._src.solvers.kamino._src.core.model import ModelKamino
+from newton._src.solvers.kamino._src.core.model import ModelKamino, ModelKaminoInfo
+from newton._src.solvers.kamino._src.core.size import SizeKamino
 from newton._src.solvers.kamino._src.dynamics.delassus import BlockSparseMatrixFreeDelassusOperator, DelassusOperator
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.constraints import get_max_constraints_per_world
@@ -94,6 +96,66 @@ def print_delassus_info(delassus: DelassusOperator) -> None:
 ###
 # Tests
 ###
+
+
+class TestDelassusSizing(unittest.TestCase):
+    def test_accept_dense_delassus_at_int32_limit(self):
+        """Allow a dense buffer at the int32 limit to reach allocation without reserving its memory."""
+        model = ModelKamino(
+            _device="cpu",
+            size=SizeKamino(num_worlds=4),
+            info=ModelKaminoInfo(
+                num_worlds=4,
+                num_joint_bilateral_cts=wp.array([32767, 32767, 362, 5], dtype=wp.int32, device="cpu"),
+                num_joint_bounded_cts=wp.array([0, 0, 0, 0], dtype=wp.int32, device="cpu"),
+            ),
+        )
+        delassus = DelassusOperator()
+        with patch.object(wp, "zeros", side_effect=MemoryError("Reached dense buffer allocation")):
+            with self.assertRaisesRegex(MemoryError, "Reached dense buffer allocation"):
+                delassus.finalize(model=model, data=DataKamino())
+        self.assertEqual(delassus.num_maxsize, 2147483647)
+
+    def test_constraint_counts_use_python_integers(self):
+        """Keep constraint-count addition and subsequent squaring from overflowing int32."""
+        model = ModelKamino(
+            info=ModelKaminoInfo(
+                num_worlds=2,
+                num_joint_bilateral_cts=wp.array([487, 2**31 - 1], dtype=wp.int32, device="cpu"),
+                num_joint_bounded_cts=wp.array([0, 1], dtype=wp.int32, device="cpu"),
+            ),
+        )
+        counts = get_max_constraints_per_world(model, limits=None, contacts=None)
+        self.assertEqual(counts, [487, 2147483648])
+        self.assertIsInstance(counts[0], int)
+        self.assertEqual(counts[0] ** 2, 237169)
+
+    def test_reject_oversized_dense_delassus_before_allocation(self):
+        """Reject both negative and positive int32 wraparound before allocating a dense buffer."""
+        cases = (
+            (16384, 487, 3885776896),
+            (20000, 487, 4743380000),
+            (1, 46341, 2147488281),
+        )
+        for num_worlds, num_constraints, expected_size in cases:
+            with self.subTest(num_worlds=num_worlds, num_constraints=num_constraints):
+                model = ModelKamino(
+                    _device="cpu",
+                    size=SizeKamino(num_worlds=num_worlds),
+                    info=ModelKaminoInfo(
+                        num_worlds=num_worlds,
+                        num_joint_bilateral_cts=wp.array([num_constraints] * num_worlds, dtype=wp.int32, device="cpu"),
+                        num_joint_bounded_cts=wp.array([0] * num_worlds, dtype=wp.int32, device="cpu"),
+                    ),
+                )
+                delassus = DelassusOperator()
+                # Prevent multi-gigabyte allocations if the size check regresses.
+                with patch.object(wp, "zeros", side_effect=AssertionError("Dense buffer allocation attempted")):
+                    with self.assertRaisesRegex(ValueError, "Kamino.*dense Delassus") as error:
+                        delassus.finalize(model=model, data=DataKamino())
+                self.assertEqual(delassus.num_maxsize, expected_size)
+                for guidance in ("2147483647", "worlds", "max_contacts_per_world", "sparse_dynamics=True", "iterative"):
+                    self.assertIn(guidance, str(error.exception))
 
 
 class TestDelassusOperator(unittest.TestCase):
