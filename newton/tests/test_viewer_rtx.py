@@ -560,6 +560,7 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
         pixels = mock.Mock()
         pixels.device.stream.cuda_stream = 17
         frame = mock.Mock(render_vars={"/Render/Vars/LdrColor": render_var})
+        viewer._render_product_path = "product"
         products = {"product": mock.Mock(frames=[frame])}
 
         with (
@@ -815,57 +816,39 @@ def RenderProduct "Sensor" {
         renderer = ovrtx.Renderer()
         self.addCleanup(renderer.destroy)
         renderer.attach_ovstage(stage)
-        with (
-            mock.patch.object(ovrtx, "Renderer", side_effect=AssertionError("duplicate renderer")),
-            mock.patch.object(renderer, "attach_ovstage", side_effect=AssertionError("reattached owner stage")),
-            mock.patch.object(renderer, "detach_ovstage", side_effect=AssertionError("detached owner stage")),
-            mock.patch.object(renderer, "reset", side_effect=AssertionError("reset owner renderer")),
-            mock.patch.object(renderer, "destroy", side_effect=AssertionError("destroyed owner renderer")),
-        ):
-            viewer = ViewerRTX(width=48, height=32, headless=True, ovstage=stage, renderer=renderer)
-            try:
-                for generation in range(2):
-                    viewer.set_model(None)
-                    viewer.set_camera(wp.vec3(1.0, 2.0, 6.0), pitch=-90.0, yaw=0.0)
-                    for frame in range(2):
-                        viewer.begin_frame((generation * 2 + frame) / 60.0)
-                        viewer.log_points(
-                            "markers", wp.array([[1.0, 2.0, 4.0]] * (frame + 1), dtype=wp.vec3), radii=0.1
-                        )
-                        with mock.patch.object(
-                            renderer, "step_async", side_effect=AssertionError("viewer submitted render")
-                        ):
-                            product, ordinal = viewer.prepare_render()
-                        if generation:
-                            products = renderer.step_async({"/Sensor", product}, delta_time=1.0 / 60.0, ordinal=ordinal)
-                            products = products.wait().fetch()
-                        else:
-                            products = renderer.step({"/Sensor", product}, delta_time=1.0 / 60.0, ordinal=ordinal)
-                        with mock.patch.object(
-                            renderer, "step_async", side_effect=AssertionError("viewer submitted render")
-                        ):
-                            viewer.end_frame(
-                                render_products={"/Sensor": products["/Sensor"], product: products[product]}
-                            )
-                        image = viewer.get_frame().numpy()
-                        self.assertEqual(image.shape, (32, 48, 3))
-                        self.assertGreater(np.ptp(image), 0)
-                    # A later sensor render must not replace the viewer's retained image.
-                    renderer.step({"/Sensor"}, delta_time=1.0 / 60.0, ordinal=ordinal)
-                    np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
-                    viewer.set_rendering_paused(True)
-                    self.assertIsNone(viewer.prepare_render())
-                    viewer.end_frame()
-                    np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
-                    viewer.set_rendering_paused(False)
-            finally:
-                viewer.close()
+        self.enterContext(mock.patch.object(ovrtx, "Renderer", side_effect=AssertionError("duplicate renderer")))
+        submit = renderer.step_async
+        for method in ("attach_ovstage", "detach_ovstage", "reset", "destroy", "step_async"):
+            self.enterContext(mock.patch.object(renderer, method, side_effect=AssertionError(method)))
+        viewer = ViewerRTX(width=48, height=32, headless=True, ovstage=stage, renderer=renderer)
+        self.addCleanup(viewer.close)
+        for generation in range(2):
+            viewer.set_model(None)
+            viewer.set_camera(wp.vec3(1.0, 2.0, 6.0), pitch=-90.0, yaw=0.0)
+            for frame in range(2):
+                viewer.begin_frame((generation * 2 + frame) / 60.0)
+                viewer.log_points("markers", wp.array([[1.0, 2.0, 4.0]] * (frame + 1), dtype=wp.vec3), radii=0.1)
+                product, ordinal = viewer.prepare_render()
+                products = submit({"/Sensor", product}, delta_time=1.0 / 60.0, ordinal=ordinal).wait().fetch()
+                viewer.end_frame(render_products={"/Sensor": products["/Sensor"], product: products[product]})
+                image = viewer.get_frame().numpy()
+                self.assertEqual(image.shape, (32, 48, 3))
+                self.assertGreater(np.ptp(image), 0)
+
+        # A later sensor render must not replace the viewer's retained image.
+        submit({"/Sensor"}, delta_time=1.0 / 60.0, ordinal=ordinal).wait().fetch()
+        np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
+        viewer.set_rendering_paused(True)
+        self.assertIsNone(viewer.prepare_render())
+        viewer.end_frame(render_products=products)
+        np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
+        viewer.close()
 
         # Removing the viewer's camera and markers must leave the sensor usable.
         query = stage.get_attribute_write_floor()
         ordinal = int(stage.fetch_ordinal(query))
         stage.release_ordinal_query(query).wait()
-        products = renderer.step({"/Sensor"}, delta_time=1.0 / 60.0, ordinal=ordinal)
+        products = submit({"/Sensor"}, delta_time=1.0 / 60.0, ordinal=ordinal).wait().fetch()
         render_vars = products["/Sensor"].frames[0].render_vars
         self.assertEqual(len(render_vars), 1)
         with next(iter(render_vars.values())).map(device=ovrtx.Device.CPU) as mapping:
