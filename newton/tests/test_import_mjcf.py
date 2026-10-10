@@ -11223,5 +11223,157 @@ class TestImportMjcfHeightfieldOrientation(unittest.TestCase):
             np.testing.assert_allclose(imported_grid(png, {"terrain.png": png_payload}), flipped)
 
 
+class TestImportMjcfSensors(unittest.TestCase):
+    XML = """<mujoco model="imu"><worldbody>
+        <site name="world_site" pos="1 2 3"/>
+        <body name="base"><freejoint/><geom size="0.1"/>
+            <body name="mount" pos="0 0 1"><site name="imu_site" quat="0.70710678 0 0 0.70710678"/></body>
+        </body></worldbody><sensor>
+        <gyro name="angular" site="imu_site" noise="0.01" cutoff="20" user="1 2"/>
+        <accelerometer name="linear" site="imu_site"/>
+        <gyro site="world_site"/>
+        </sensor></mujoco>"""
+
+    def test_opt_in_and_metadata(self):
+        """Preserve ordered sensor declarations only when explicitly requested."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.XML)
+        self.assertEqual(builder._custom_frequency_counts.get("mujoco:sensor", 0), 0)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.XML, parse_sensors=True)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.mujoco.sensor_label, ["imu/angular", "imu/linear", "imu/gyro_2"])
+        self.assertEqual(model.mujoco.sensor_type, ["gyro", "accelerometer", "gyro"])
+        sites = model.mujoco.sensor_site.numpy()
+        self.assertEqual(sites[0], sites[1])
+        self.assertEqual(model.shape_body.numpy()[sites[2]], -1)
+        expected_noise, expected_cutoff = [0.01, 0, 0], [20, 0, 0]
+        if importlib.util.find_spec("mujoco"):
+            import mujoco
+
+            native = mujoco.MjModel.from_xml_string(self.XML)
+            expected_noise, expected_cutoff = native.sensor_noise, native.sensor_cutoff
+            for row, site in enumerate(sites):
+                np.testing.assert_allclose(
+                    model.shape_transform.numpy()[site, :3], native.site_pos[native.sensor_objid[row]]
+                )
+        np.testing.assert_allclose(model.mujoco.sensor_noise.numpy(), expected_noise)
+        np.testing.assert_allclose(model.mujoco.sensor_cutoff.numpy(), expected_cutoff)
+        self.assertEqual(model.mujoco.sensor_user, ["1 2", "", ""])
+        np.testing.assert_allclose(model.mujoco.sensor_world.numpy(), [-1, -1, -1])
+        np.testing.assert_allclose(model.shape_transform.numpy()[sites[0], 3:], [0, 0, 0.70710678, 0.70710678])
+
+    def test_merge_and_replication(self):
+        """Remap sensor sites, worlds, and labels through builder composition."""
+        source = newton.ModelBuilder()
+        source.add_mjcf(self.XML, parse_sensors=True, collapse_fixed_joints=True)
+        for method in ("add_builder", "add_world", "replicate"):
+            with self.subTest(method=method):
+                target = newton.ModelBuilder()
+                if method == "replicate":
+                    target.replicate(source, 2, label_prefixes=["left", "right"])
+                else:
+                    getattr(target, method)(source, label_prefix="left")
+                    getattr(target, method)(source, label_prefix="right")
+                model = target.finalize(device="cpu")
+                sites = model.mujoco.sensor_site.numpy()
+                np.testing.assert_array_equal(sites[3:], sites[:3] + source.shape_count)
+                self.assertEqual(model.mujoco.sensor_label[0], "left/imu/angular")
+                self.assertEqual(model.mujoco.sensor_label[3], "right/imu/angular")
+                expected = [-1] * 6 if method == "add_builder" else [0] * 3 + [1] * 3
+                np.testing.assert_array_equal(model.mujoco.sensor_world.numpy(), expected)
+
+    def test_repeated_import(self):
+        """Resolve each import against its own sites."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.XML, parse_sensors=True)
+        count = builder.shape_count
+        builder.add_mjcf(self.XML.replace('model="imu"', 'model="other"'), parse_sensors=True)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_array_equal(
+            model.mujoco.sensor_site.numpy()[3:], model.mujoco.sensor_site.numpy()[:3] + count
+        )
+        self.assertEqual(model.mujoco.sensor_label[3], "other/angular")
+
+    def test_unnamed_sensors_avoid_authored_name_collisions(self):
+        """Keep unnamed sensors without overwriting or rejecting authored names."""
+        cases = (
+            ('<gyro site="s"/><gyro name="gyro_0" site="s"/>', ["gyro_0_1", "gyro_0"]),
+            ('<gyro name="gyro_1" site="s"/><gyro site="s"/>', ["gyro_1", "gyro_1_1"]),
+            (
+                '<gyro site="s"/><gyro name="gyro_0" site="s"/><gyro name="gyro_0_1" site="s"/>',
+                ["gyro_0_2", "gyro_0", "gyro_0_1"],
+            ),
+        )
+        for declarations, expected_labels in cases:
+            with self.subTest(declarations=declarations):
+                xml = f'<mujoco><worldbody><site name="s"/></worldbody><sensor>{declarations}</sensor></mujoco>'
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(xml, parse_sensors=True)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.mujoco.sensor_label, expected_labels)
+                self.assertEqual(model.mujoco.sensor_type, ["gyro"] * len(expected_labels))
+                np.testing.assert_array_equal(model.mujoco.sensor_site.numpy(), [0] * len(expected_labels))
+
+    def test_invalid_references_and_names(self):
+        """Reject ambiguous names and invalid site references."""
+        for xml, message in (
+            (self.XML.replace('site="imu_site"', 'site="missing"'), "Unknown sensor site"),
+            (self.XML.replace('name="linear"', 'name="angular"'), "Duplicate sensor name"),
+            (self.XML.replace('name="imu_site"', 'name="world_site"'), "Duplicate site name"),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    newton.ModelBuilder().add_mjcf(xml, parse_sensors=True)
+
+    def test_skipped_sites_and_unsupported_types(self):
+        """Diagnose skipped sites and unsupported sensor declarations."""
+        for options in ({"parse_sites": False}, {"ignore_names": ["imu_site"]}):
+            with self.subTest(options=options), warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(self.XML, parse_sensors=True, **options)
+                self.assertTrue(any("Skipping sensor" in str(item.message) for item in caught))
+                expected = 0 if not options.get("parse_sites", True) else 1
+                self.assertEqual(builder._custom_frequency_counts.get("mujoco:sensor", 0), expected)
+        with self.assertWarnsRegex(UserWarning, "Unsupported MJCF sensor"):
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(self.XML.replace("<gyro name=", "<magnetometer name="), parse_sensors=True)
+        self.assertEqual(builder._custom_frequency_counts["mujoco:sensor"], 2)
+
+    def test_site_defaults_and_ignored_classes(self):
+        """Resolve inherited site transforms and diagnose excluded site classes."""
+        xml = self.XML.replace(
+            "<worldbody>", '<default><default class="imu"><site pos="0.1 0.2 0.3"/></default></default><worldbody>'
+        )
+        xml = xml.replace('name="imu_site"', 'name="imu_site" class="imu"')
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml, parse_sensors=True, collapse_fixed_joints=True)
+        model = builder.finalize(device="cpu")
+        site = model.mujoco.sensor_site.numpy()[0]
+        np.testing.assert_allclose(model.shape_transform.numpy()[site, :3], [0.1, 0.2, 1.3])
+        with self.assertWarnsRegex(UserWarning, "Skipping sensor"):
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(xml, parse_sensors=True, ignore_classes=["imu"])
+        self.assertEqual(builder._custom_frequency_counts["mujoco:sensor"], 1)
+
+    def test_optional_field_validation(self):
+        """Reject invalid numeric metadata and report unhandled authored fields."""
+        for field in ('noise="-1"', 'cutoff="nan"', 'user="nan"'):
+            xml = self.XML.replace('noise="0.01" cutoff="20" user="1 2"', field)
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                newton.ModelBuilder().add_mjcf(xml, parse_sensors=True)
+        with self.assertWarnsRegex(UserWarning, "Unsupported attributes"):
+            newton.ModelBuilder().add_mjcf(self.XML.replace('noise="0.01"', 'future="1"'), parse_sensors=True)
+
+    def test_multiple_worldbody_sections(self):
+        """Resolve sites from all worldbody sections, as produced by MJCF includes."""
+        xml = '<mujoco><worldbody><site name="a"/></worldbody><worldbody><site name="b"/></worldbody><sensor><gyro site="b"/></sensor><sensor><accelerometer site="a"/></sensor></mujoco>'
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml, parse_sensors=True)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.mujoco.sensor_site.numpy().tolist(), [1, 0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

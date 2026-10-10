@@ -905,10 +905,11 @@ other direction, MuJoCo has several modeling concepts that are not
 imported when loading an MJCF or USD asset into Newton, and that
 :class:`~newton.solvers.SolverMuJoCo` does not reconstruct during conversion:
 
-- **Sensors** (``<sensor>`` — force/torque, IMU, gyro, accelerometer,
-  rangefinder, touch, camera-based, …). Newton has its own sensor
-  pipeline (:doc:`/concepts/sensors`) that is independent of the MuJoCo
-  solver.
+- **Runtime sensor computation** (``<sensor>`` — force/torque, IMU, gyro,
+  accelerometer, rangefinder, touch, camera-based, …). Gyro and accelerometer
+  declarations can be imported as opt-in :ref:`mujoco-sensor-metadata`, but
+  this does not enable MuJoCo sensor computation. Newton has its own sensor
+  pipeline (:doc:`/concepts/sensors`) that is independent of the MuJoCo solver.
 - **Cameras and lights** declared in MJCF/USD. Newton uses its own viewer
   and lighting pipeline; camera/light primitives in the source asset are
   ignored.
@@ -1115,3 +1116,68 @@ API and subject to change.
 - :class:`~newton.usd.SchemaResolverMjc`
   (:github:`newton/_src/usd/schemas.py`) — USD ``mjc:*`` attribute →
   Newton built-in property mapping.
+
+
+.. _mujoco-sensor-metadata:
+
+MJCF sensor metadata
+--------------------
+
+.. experimental::
+
+   The ``parse_sensors`` parameter and ``model.mujoco.sensor_*`` attributes may
+   change without the normal deprecation period.
+
+The ``ModelBuilder.add_mjcf(parse_sensors=True)`` option preserves
+``gyro`` and ``accelerometer`` declarations in the ``mujoco:sensor`` custom
+frequency. This parameter and the ``model.mujoco.sensor_*`` attributes are
+experimental and may change without the normal deprecation period.
+Parsing is disabled by default and requires imported sites (``parse_sites=True``).
+It does not enable MuJoCo sensor computation or construct Newton runtime sensors.
+
+Each supported declaration contributes one row, in source order:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Attribute
+     - Meaning
+   * - ``sensor_label``
+     - Model-prefixed name; unnamed sensors use ``<tag>_<source index>``
+       with a numeric suffix when needed to avoid name collisions.
+   * - ``sensor_type``
+     - Original MJCF tag (``gyro`` or ``accelerometer``).
+   * - ``sensor_site``
+     - Newton shape index of the referenced site.
+   * - ``sensor_world``
+     - World index, or -1 for global entities.
+   * - ``sensor_noise``, ``sensor_cutoff``
+     - Authored numeric configuration, defaulting to zero; no noise or filtering is applied.
+   * - ``sensor_user``
+     - Authored whitespace-separated numeric user data, or an empty string.
+
+Sites retain their imported transforms, including orientation and fixed-body
+collapse. Shape/world references and label prefixes follow builder composition
+and replication. Duplicate sensor/site names and nonexistent sites raise
+``ValueError``. Unsupported sensor types/attributes and intentionally excluded
+sites produce warnings; excluded sites omit their sensor rows.
+
+Runtime construction remains explicit. For example, select the distinct body
+sites needed by an application and pass them to :class:`newton.sensors.SensorIMU`::
+
+    import newton
+    import newton.sensors
+
+    builder = newton.ModelBuilder()
+    builder.add_mjcf("robot.xml", parse_sensors=True)
+    model = builder.finalize()
+    sites = model.mujoco.sensor_site.numpy()
+    body_indices = model.shape_body.numpy()
+    imu_sites = sorted({int(site) for site in sites if body_indices[site] >= 0})
+    imu = newton.sensors.SensorIMU(model, imu_sites)
+
+Configure the solver diagnostics required by ``SensorIMU`` and call its update
+method separately (see :class:`newton.sensors.SensorIMU`). This explicit construction
+does not reproduce authored MuJoCo noise, filtering, or all sensor semantics.
+These fields currently preserve MJCF source declarations only; USD sensor
+schema import/export and automatic runtime mappings are outside this option.

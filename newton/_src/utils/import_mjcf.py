@@ -238,6 +238,7 @@ def parse_mjcf(
     parse_visuals_as_colliders: bool = False,
     parse_meshes: bool = True,
     parse_sites: bool = True,
+    parse_sensors: bool = False,
     parse_visuals: bool = True,
     parse_mujoco_options: bool = True,
     up_axis: AxisType = Axis.Z,
@@ -347,6 +348,9 @@ def parse_mjcf(
         parse_visuals_as_colliders: If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
         parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
         parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+        parse_sensors: Experimental opt-in import of gyro and accelerometer declarations as
+            ``model.mujoco.sensor_*`` metadata. Requires ``parse_sites=True`` and does not
+            create runtime sensor outputs. Default is False.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -3712,3 +3716,74 @@ def parse_mjcf(
         builder.collapse_fixed_joints()
     elif collapse_massless_fixed_root:
         collapse_massless_fixed_root_joints(builder, joint_indices)
+
+    if parse_sensors:
+        sensor_sections = root.findall("sensor")
+        if sensor_sections:
+            declared_sites = [
+                sanitize_name(site.attrib["name"])
+                for worldbody in root.findall("worldbody")
+                for site in worldbody.iter("site")
+                if "name" in site.attrib
+            ]
+            if len(declared_sites) != len(set(declared_sites)):
+                raise ValueError("Duplicate site name in MJCF sensor source")
+            declared_site_keys = set(declared_sites)
+            sensors = [sensor for section in sensor_sections for sensor in section]
+            sensor_names = set()
+            for sensor in sensors:
+                name = sensor.attrib.get("name")
+                if name:
+                    if name in sensor_names:
+                        raise ValueError(f"Duplicate sensor name '{name}'")
+                    sensor_names.add(name)
+            for sensor_index, sensor in enumerate(sensors):
+                name = sensor.attrib.get("name")
+                if not name:
+                    # Reserve authored names before selecting names for anonymous declarations.
+                    base_name = f"{sensor.tag}_{sensor_index}"
+                    name = base_name
+                    suffix = 1
+                    while name in sensor_names:
+                        name = f"{base_name}_{suffix}"
+                        suffix += 1
+                    sensor_names.add(name)
+                if sensor.tag not in ("gyro", "accelerometer"):
+                    warnings.warn(f"Unsupported MJCF sensor '{sensor.tag}'; skipping '{name}'", stacklevel=2)
+                    continue
+                site_name = sensor.attrib.get("site", "")
+                site_key = sanitize_name(site_name)
+                if site_key not in declared_site_keys:
+                    raise ValueError(f"Unknown sensor site '{site_name}' for sensor '{name}'")
+                if not parse_sites or site_key not in site_name_to_idx:
+                    warnings.warn(
+                        f"Skipping sensor '{name}': site '{site_name}' was not imported; "
+                        "enable parse_sites and check ignore_names/ignore_classes",
+                        stacklevel=2,
+                    )
+                    continue
+                unknown = set(sensor.attrib) - {"name", "site", "noise", "cutoff", "user"}
+                if unknown:
+                    warnings.warn(
+                        f"Unsupported attributes {sorted(unknown)} on MJCF sensor '{name}' are ignored",
+                        stacklevel=2,
+                    )
+                noise = float(sensor.attrib.get("noise", "0"))
+                cutoff = float(sensor.attrib.get("cutoff", "0"))
+                if not np.isfinite(noise) or not np.isfinite(cutoff) or noise < 0 or cutoff < 0:
+                    raise ValueError(f"Sensor '{name}' noise and cutoff must be finite and nonnegative")
+                user = sensor.attrib.get("user", "")
+                if user and not np.all(np.isfinite(np.asarray(user.split(), dtype=float))):
+                    raise ValueError(f"Sensor '{name}' user values must be finite")
+                label = f"{articulation_label}/{name}" if articulation_label else name
+                builder.add_custom_values(
+                    **{
+                        "mujoco:sensor_label": label,
+                        "mujoco:sensor_type": sensor.tag,
+                        "mujoco:sensor_site": site_name_to_idx[site_key],
+                        "mujoco:sensor_world": builder.current_world,
+                        "mujoco:sensor_noise": noise,
+                        "mujoco:sensor_cutoff": cutoff,
+                        "mujoco:sensor_user": user,
+                    }
+                )

@@ -1314,7 +1314,32 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 articulation_owner_resolver=cls._resolve_mujoco_tendon_wrap_owners,
             )
         )
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(name="sensor", namespace="mujoco", label_attribute="mujoco:sensor_label")
+        )
         # endregion custom frequencies
+
+        # MJCF sensor declarations are metadata only; no solver outputs are allocated.
+        for name, dtype, default, references in (
+            ("sensor_label", str, "", None),
+            ("sensor_type", str, "", None),
+            ("sensor_site", wp.int32, -1, "shape"),
+            ("sensor_world", wp.int32, -1, "world"),
+            ("sensor_noise", wp.float32, 0.0, None),
+            ("sensor_cutoff", wp.float32, 0.0, None),
+            ("sensor_user", str, "", None),
+        ):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=name,
+                    frequency="mujoco:sensor",
+                    assignment=AttributeAssignment.MODEL,
+                    dtype=dtype,
+                    default=default,
+                    namespace="mujoco",
+                    references=references,
+                )
+            )
 
         # region geom attributes
         builder.add_custom_attribute(
