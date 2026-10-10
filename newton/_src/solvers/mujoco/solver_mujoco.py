@@ -4146,6 +4146,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 Older backends retain the legacy Warp module configuration path.
                 Guarantees and supported execution modes depend on the backend;
                 this does not promise bitwise equality across devices or batch sizes.
+                Native backends reject modes stronger than ``RUN_TO_RUN``.
         """
         super().__init__(model)
 
@@ -4204,6 +4205,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._deterministic = deterministic if deterministic is not None else wp.config.deterministic
         self._deterministic_max_records = 0
         self._native_mujoco_determinism = hasattr(self._mujoco_warp, "DeterminismType")
+        if self._native_mujoco_determinism and not use_mujoco_cpu and self._deterministic not in (
+            wp.DeterministicMode.NOT_GUARANTEED,
+            wp.DeterministicMode.RUN_TO_RUN,
+        ):
+            raise ValueError("Native MuJoCo Warp determinism supports only NOT_GUARANTEED and RUN_TO_RUN")
         if not use_mujoco_cpu:
             # MJWarp's step pipeline spans several modules (forward dynamics,
             # smooth dynamics, constraints, solver, and optional collision).

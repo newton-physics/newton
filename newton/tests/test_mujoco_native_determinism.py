@@ -86,6 +86,8 @@ def test_native_configuration(test, device):
         )
         test.assertEqual(other.mjw_model.opt.deterministic, int(mjw.DeterminismType.NONE))
         test.assertEqual(solver.mjw_model.opt.deterministic, int(mjw.DeterminismType.ALL))
+        with test.assertRaisesRegex(ValueError, "supports only NOT_GUARANTEED and RUN_TO_RUN"):
+            SolverMuJoCo(model, deterministic=wp.DeterministicMode.GPU_TO_GPU)
         solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
         test.assertEqual(solver.mjw_model.opt.deterministic, int(mjw.DeterminismType.ALL))
     test.assertEqual(wp.config.deterministic, global_mode)
