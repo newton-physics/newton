@@ -1387,6 +1387,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mjcf_attribute_name="group",
             )
         )
+        # MJCF stores this on the hfield asset, not the geom. Keep it per shape
+        # so builder copies preserve the authored collision volume.
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="hfield_base",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=-1.0,
+                namespace="mujoco",
+            )
+        )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="geom_priority",
@@ -6363,6 +6375,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_mjc_collision_mask_domain = get_custom_attribute("collision_mask_domain")
         shape_condim = get_custom_attribute("condim")
         shape_geom_group = get_custom_attribute("geom_group")
+        shape_hfield_base = get_custom_attribute("hfield_base")
         shape_priority = get_custom_attribute("geom_priority")
         shape_geom_solimp = get_custom_attribute("geom_solimp")
         shape_geom_solmix = get_custom_attribute("geom_solmix")
@@ -6849,13 +6862,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     # Convert Newton heightfield to MuJoCo format
                     # MuJoCo size: (size_x, size_y, size_z, size_base) — all must be positive
                     # Our data is normalized [0,1], height range = max_z - min_z
-                    # We set size_base to eps (MuJoCo requires positive) and shift the
-                    # geom origin by min_z so the lowest point is at the right Z. The
+                    # Preserve an authored base; native fields keep the legacy epsilon.
+                    # Shift the geom origin by min_z so the lowest point is at the right Z. The
                     # shape's scale applies to hx, hy, min_z, and max_z alike.
                     eps = 1e-4
                     hfield_scale = shape_size[shape]
                     mj_size_z = max((hfield_src.max_z - hfield_src.min_z) * hfield_scale[2], eps)
-                    mj_size = (hfield_src.hx * hfield_scale[0], hfield_src.hy * hfield_scale[1], mj_size_z, eps)
+                    mj_size_base = eps
+                    if shape_hfield_base is not None and shape_hfield_base[shape] >= 0.0:
+                        mj_size_base = float(shape_hfield_base[shape]) * hfield_scale[2]
+                    mj_size = (
+                        hfield_src.hx * hfield_scale[0],
+                        hfield_src.hy * hfield_scale[1],
+                        mj_size_z,
+                        mj_size_base,
+                    )
                     elevation_data = hfield_src.data.flatten()
 
                     hfield_name = f"{model.shape_label[shape].replace('/', '_')}_{shape}"

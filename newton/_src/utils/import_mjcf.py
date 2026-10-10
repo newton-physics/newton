@@ -1456,8 +1456,10 @@ def parse_mjcf(
 
                 # Convert MuJoCo size (size_x, size_y, size_z, size_base) to Newton format.
                 # In MuJoCo, the heightfield's lowest point (data=0) is at the geom origin,
-                # so min_z=0 and max_z=size_z. size_base (depth below origin) is ignored.
-                mj_size_x, mj_size_y, mj_size_z, _mj_size_base = hfield_asset["size"]
+                # so min_z=0 and max_z=size_z. Preserve the base separately for MuJoCo.
+                mj_size_x, mj_size_y, mj_size_z, mj_size_base = hfield_asset["size"]
+                if shape_builder is builder:
+                    custom_attributes["mujoco:hfield_base"] = mj_size_base * scale
                 heightfield = Heightfield(
                     data=elevation,
                     nrow=nrow,
