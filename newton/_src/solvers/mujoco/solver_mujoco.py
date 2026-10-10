@@ -4205,9 +4205,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._deterministic = deterministic if deterministic is not None else wp.config.deterministic
         self._deterministic_max_records = 0
         self._native_mujoco_determinism = hasattr(self._mujoco_warp, "DeterminismType")
-        if self._native_mujoco_determinism and not use_mujoco_cpu and self._deterministic not in (
-            wp.DeterministicMode.NOT_GUARANTEED,
-            wp.DeterministicMode.RUN_TO_RUN,
+        if (
+            self._native_mujoco_determinism
+            and not use_mujoco_cpu
+            and self._deterministic
+            not in (
+                wp.DeterministicMode.NOT_GUARANTEED,
+                wp.DeterministicMode.RUN_TO_RUN,
+            )
         ):
             raise ValueError("Native MuJoCo Warp determinism supports only NOT_GUARANTEED and RUN_TO_RUN")
         if not use_mujoco_cpu:
