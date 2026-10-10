@@ -101,8 +101,9 @@ class TestMuJoCoHeightfieldBase(unittest.TestCase):
         np.testing.assert_allclose(solver.mjw_model.hfield_size.numpy()[0], source.hfield_size[0], rtol=1.0e-6)
         ground = int(np.flatnonzero(solver.mj_model.geom_type == int(mujoco.mjtGeom.mjGEOM_HFIELD))[0])
         bounds = solver.mjw_model.geom_aabb.numpy().reshape(-1, solver.mj_model.ngeom, 2, 3)[:, ground]
+        expected_bounds = source.geom_aabb[source.geom("ground").id].reshape(2, 3)
         for actual in bounds:
-            np.testing.assert_allclose(actual, source.geom_aabb[source.geom("ground").id], rtol=1.0e-6, atol=1.0e-7)
+            np.testing.assert_allclose(actual, expected_bounds, rtol=1.0e-6, atol=1.0e-7)
 
 
 if __name__ == "__main__":
