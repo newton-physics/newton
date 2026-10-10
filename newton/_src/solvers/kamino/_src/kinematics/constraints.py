@@ -74,10 +74,10 @@ def get_max_constraints_per_world(
 
     # Compute the maximum number of constraints per world
     nw = model.info.num_worlds
-    njc = model.info.num_joint_bilateral_cts.numpy()
+    njc = model.info.num_joint_bilateral_cts.numpy().tolist()
     maxnl = limits.world_max_limits_host if limits and limits.model_max_limits_host > 0 else [0] * nw
     maxnc = contacts.world_max_contacts_host if contacts and contacts.model_max_contacts_host > 0 else [0] * nw
-    nbc = model.info.num_joint_bounded_cts.numpy()
+    nbc = model.info.num_joint_bounded_cts.numpy().tolist()
     maxncts = [njc[i] + nbc[i] + maxnl[i] + 3 * maxnc[i] for i in range(nw)]
     return maxncts
 
