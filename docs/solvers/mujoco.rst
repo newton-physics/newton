@@ -150,7 +150,9 @@ Geometry types
        below the lowest elevation; it does not change the height samples.
        An absent or negative value (the default) retains the legacy
        ``1e-4`` m MuJoCo base. This attribute affects only the MuJoCo solver;
-       recreate the solver after changing it.
+       recreate the solver after changing it. It is runtime metadata for
+       preserving an MJCF asset property, with no USD authoring or schema
+       mapping; USD import behavior is unchanged.
    * - :attr:`~newton.GeoType.MESH` / :attr:`~newton.GeoType.CONVEX_MESH`
      - ``mjGEOM_MESH``
      - MuJoCo only supports **convex** collision meshes. Non-convex
