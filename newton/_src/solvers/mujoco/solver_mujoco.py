@@ -718,6 +718,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     def _prepare_generated_kernels(self) -> None:
         """Invalidate MJWarp's generated kernels when determinism changes."""
+        if getattr(self, "_native_mujoco_determinism", False):
+            # Native factories include the per-model determinism flag in their cache keys.
+            return
         options = (self._deterministic, self._deterministic_max_records)
         if SolverMuJoCo._generated_kernel_deterministic_options == options:
             return
@@ -730,13 +733,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         SolverMuJoCo._generated_kernel_deterministic_options = options
 
     def _set_mujoco_warp_module_options(self) -> None:
-        """Configure loaded shared modules without overriding code-generated bounds."""
+        """Keep native backend policy separate from Newton conversion kernels."""
+        native = getattr(self, "_native_mujoco_determinism", False)
         for module in [*_mujoco_warp_deterministic_modules(), kernels]:
+            backend_native = native and module is not kernels
             max_records = (
-                self._deterministic_max_records if module.__name__ in _MUJOCO_WARP_DYNAMIC_RECORD_MODULES else 0
+                self._deterministic_max_records
+                if not backend_native and module.__name__ in _MUJOCO_WARP_DYNAMIC_RECORD_MODULES
+                else 0
             )
             options = {
-                "deterministic": self._deterministic,
+                "deterministic": wp.DeterministicMode.NOT_GUARANTEED if backend_native else self._deterministic,
                 "deterministic_max_records": max_records,
             }
             self._set_module_options(options, module=module)
@@ -4133,7 +4140,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
                 :class:`warp.DeterministicMode`, or ``None`` to inherit
-                ``wp.config.deterministic``.
+                ``wp.config.deterministic``. Backends exposing a native determinism
+                option use it before model-constant initialization, enabling their
+                contact ordering, constraint ordering, and supported reductions.
+                Older backends retain the legacy Warp module configuration path.
+                Guarantees and supported execution modes depend on the backend;
+                this does not promise bitwise equality across devices or batch sizes.
         """
         super().__init__(model)
 
@@ -4191,6 +4203,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._initial_model_sync = True
         self._deterministic = deterministic if deterministic is not None else wp.config.deterministic
         self._deterministic_max_records = 0
+        self._native_mujoco_determinism = hasattr(self._mujoco_warp, "DeterminismType")
         if not use_mujoco_cpu:
             # MJWarp's step pipeline spans several modules (forward dynamics,
             # smooth dynamics, constraints, solver, and optional collision).
@@ -4512,8 +4525,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # stepping. Those generated modules do not inherit options from the
             # source Python modules above, so keep the solver options active
             # while the step path compiles/captures its kernels.
-            wp.config.deterministic = self._deterministic
-            wp.config.deterministic_max_records = self._deterministic_max_records
+            if getattr(self, "_native_mujoco_determinism", False):
+                # Native factories explicitly select supported RUN_TO_RUN kernels.
+                # Do not blanket-rewrite unrelated contact/sensor kernels or override bounds.
+                wp.config.deterministic = wp.DeterministicMode.NOT_GUARANTEED
+                wp.config.deterministic_max_records = 0
+            else:
+                wp.config.deterministic = self._deterministic
+                wp.config.deterministic_max_records = self._deterministic_max_records
             yield
         finally:
             wp.config.deterministic = original_mode
@@ -8058,6 +8077,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             batch_sizes = dict.fromkeys(_MJW_BATCHED_MODEL_FIELDS, nworld) if nworld > 1 else None
             try:
                 self.mjw_model = mujoco_warp.put_model(self.mj_model, batch_sizes=batch_sizes)
+                if self._native_mujoco_determinism:
+                    # Constants computed by notify_model_changed also reduce floats.
+                    # Enabling the option after construction is already too late.
+                    flags = mujoco_warp.DeterminismType
+                    self.mjw_model.opt.deterministic = (
+                        flags.NONE if self._deterministic == wp.DeterministicMode.NOT_GUARANTEED else flags.ALL
+                    )
             finally:
                 # MuJoCo Warp consumes only the compiled runtime policy. Keep
                 # the authoring policy on the CPU model for inspection and MJCF export.
@@ -8428,7 +8454,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
 
             if not self.use_mujoco_cpu:
-                if self._deterministic != wp.DeterministicMode.NOT_GUARANTEED:
+                if not self._native_mujoco_determinism and self._deterministic != wp.DeterministicMode.NOT_GUARANTEED:
                     self._deterministic_max_records = _mujoco_warp_deterministic_max_records(
                         self.mj_model, self.mjw_data
                     )
