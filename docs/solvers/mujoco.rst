@@ -144,7 +144,17 @@ Geometry types
      - Heightfield data is stored normalized to ``[0, 1]`` on the Newton
        :class:`~newton.Heightfield` source and forwarded as-is. The geom
        origin is shifted by ``min_z`` so the lowest point is at the
-       correct world height.
+       correct world height. MJCF's base depth is preserved in the per-shape
+       ``mujoco:hfield_base`` custom attribute [m], after import scaling, and
+       multiplied by the shape's Z scale on conversion. This depth extends
+       below the lowest elevation; it does not change the height samples.
+       MJCF import requires exactly four positive ``size`` values, matching
+       MuJoCo; missing, zero, or negative sizes are rejected.
+       For native Newton fields, an absent or negative value (the default) retains the legacy
+       ``1e-4`` m MuJoCo base. This attribute affects only the MuJoCo solver;
+       recreate the solver after changing it. It is runtime metadata for
+       preserving an MJCF asset property, with no USD authoring or schema
+       mapping; USD import behavior is unchanged.
    * - :attr:`~newton.GeoType.MESH` / :attr:`~newton.GeoType.CONVEX_MESH`
      - ``mjGEOM_MESH``
      - MuJoCo only supports **convex** collision meshes. Non-convex

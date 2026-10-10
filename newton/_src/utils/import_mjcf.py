@@ -726,11 +726,15 @@ def parse_mjcf(
             # Parse attributes
             nrow = int(hfield.attrib.get("nrow", "100"))
             ncol = int(hfield.attrib.get("ncol", "100"))
-            size_str = hfield.attrib.get("size", "1 1 1 0")
+            # MJCF requires all four sizes; do not turn an invalid base into
+            # the solver's sentinel for native fields without MJCF metadata.
+            size_str = hfield.attrib.get("size", "")
             size_arr = np.array(size_str.split(), dtype=np.float32)
-            if size_arr.size < 4:
-                size_arr = np.pad(size_arr, (0, 4 - size_arr.size), constant_values=0.0)
-            size = tuple(size_arr[:4])
+            if size_arr.size != 4:
+                raise ValueError(f"MJCF heightfield {hfield_name!r} size must contain exactly four values")
+            if not np.all(np.isfinite(size_arr)) or np.any(size_arr <= 0.0):
+                raise ValueError(f"MJCF heightfield {hfield_name!r} size values must be finite and positive")
+            size = tuple(size_arr)
             # Parse optional file path
             file_attr = hfield.attrib.get("file")
             file_path = None
@@ -1456,8 +1460,10 @@ def parse_mjcf(
 
                 # Convert MuJoCo size (size_x, size_y, size_z, size_base) to Newton format.
                 # In MuJoCo, the heightfield's lowest point (data=0) is at the geom origin,
-                # so min_z=0 and max_z=size_z. size_base (depth below origin) is ignored.
-                mj_size_x, mj_size_y, mj_size_z, _mj_size_base = hfield_asset["size"]
+                # so min_z=0 and max_z=size_z. Preserve the base separately for MuJoCo.
+                mj_size_x, mj_size_y, mj_size_z, mj_size_base = hfield_asset["size"]
+                if shape_builder is builder:
+                    custom_attributes["mujoco:hfield_base"] = mj_size_base * scale
                 heightfield = Heightfield(
                     data=elevation,
                     nrow=nrow,
