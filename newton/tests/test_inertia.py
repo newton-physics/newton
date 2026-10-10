@@ -451,6 +451,22 @@ class TestInertia(unittest.TestCase):
         assert_np_equal(np.array(com), np.array(com_ref), tol=1e-6)
         assert_np_equal(np.array(I), np.array(I_ref), tol=1e-6)
 
+    def test_mesh_inertia_non_uniform_scale(self):
+        """Cached mesh inertia must match the recomputed inertia under non-uniform scale."""
+        density = 5.0
+        scale = wp.vec3(2.0, 3.0, 4.0)
+        cached = newton.Mesh.create_box(1.0, 2.0, 3.0)
+        recomputed = newton.Mesh.create_box(1.0, 2.0, 3.0, compute_inertia=False)
+
+        m, com, I = compute_inertia_shape(GeoType.MESH, scale, cached, density)
+        m_ref, com_ref, I_ref = compute_inertia_shape(GeoType.MESH, scale, recomputed, density)
+        _, _, I_box = compute_inertia_box(density, 2.0, 6.0, 12.0)
+
+        self.assertAlmostEqual(m, m_ref, delta=1e-3)
+        assert_np_equal(np.array(com), np.array(com_ref), tol=1e-6)
+        assert_np_equal(np.array(I), np.array(I_ref), tol=1e-2)
+        assert_np_equal(np.array(I), np.array(I_box), tol=1e-2)
+
     def test_hollow_primitive_thickness_must_fit_inside_shape(self):
         cases = [
             (GeoType.SPHERE, (0.5, 0.0, 0.0), 0.5, "sphere radius"),
