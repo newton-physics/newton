@@ -453,7 +453,12 @@ def _resolve_shape_contact(
         if _r.name == "newton":
             break
     has_solref = mjc_has_priority and usd.get_attribute(prim, "mjc:solref") is not None
-    shape_contact = {}
+    shape_contact = {
+        "mu": material.dynamicFriction,
+        "restitution": material.restitution,
+        "mu_torsional": material.torsionalFriction,
+        "mu_rolling": material.rollingFriction,
+    }
     for _ck in ("ke", "kd", "kf", "ka"):
         per_shape_val = resolver.get_value(prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose)
         has_shape = per_shape_val is not None and math.isfinite(float(per_shape_val))

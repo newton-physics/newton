@@ -187,26 +187,84 @@ class TestSelectionCacheLifetime(unittest.TestCase):
         self.assertEqual(gradient.ptr, model.joint_q.grad.ptr)
         assert_np_equal(gradient.numpy(), np.full(gradient.shape, 3.0))
 
-    def unweakrefable_sources_and_native_slices(self, device):
-        """Serve sources that cannot be weakly referenced, and native slices, from the current arrays."""
+    def getters_follow_arrays_replaced_by_xpbd(self, device):
+        """Read and write the arrays XPBD assigns to a differentiable output state."""
+        model, view = self.make_view("dense", requires_grad=True, device=device)
+        state_in, state_out = model.state(), model.state()
+        view.get_link_transforms(state_out)
+        view.get_link_velocities(state_out)
+        old_q, old_qd = state_out.body_q, state_out.body_qd
 
-        class SlottedSource:
-            __slots__ = ("joint_q",)
+        newton.solvers.SolverXPBD(model).step(state_in, state_out, model.control(), None, 1e-3)
+        self.assertIsNot(state_out.body_q, old_q)
+        self.assertIsNot(state_out.body_qd, old_qd)
+        # stale reads would return these values
+        old_q.fill_(wp.transform((7.0, 7.0, 7.0), wp.quat_identity()))
+        old_qd.fill_(wp.spatial_vector(7.0, 7.0, 7.0, 7.0, 7.0, 7.0))
+        old_q_values = old_q.numpy()
+        transforms = view.get_link_transforms(state_out)
+        velocities = view.get_link_velocities(state_out)
+        assert_np_equal(transforms.numpy().reshape(-1, 7), state_out.body_q.numpy())
+        assert_np_equal(velocities.numpy().reshape(-1, 6), state_out.body_qd.numpy())
 
+        target = wp.transform((1.0, 2.0, 3.0), wp.quat_identity())
+        view.set_attribute("body_q", state_out, wp.full(transforms.shape, target, dtype=wp.transform, device=device))
+        assert_np_equal(state_out.body_q.numpy(), np.tile(np.array(target, dtype=np.float32), (model.body_count, 1)))
+        assert_np_equal(old_q.numpy(), old_q_values)
+
+    def native_slices_reuse_cached_arrays(self, device):
+        """Cache arrays selected by native slices, which are unhashable before Python 3.12."""
         model, view = self.make_view("dense", device=device)
-        source = SlottedSource()
-        source.joint_q = wp.full(model.joint_coord_count, 5.0, dtype=float, device=device)
-        positions = view.get_dof_positions(source)
-        assert_np_equal(positions.numpy(), np.full(positions.shape, 5.0))
-        source.joint_q = wp.full(model.joint_coord_count, 6.0, dtype=float, device=device)
-        assert_np_equal(view.get_dof_positions(source).numpy(), np.full(positions.shape, 6.0))
-
         model.joint_q.fill_(2.0)
-        # native slices are unhashable before Python 3.12
         values = view._get_attribute_values("joint_q", model, _slice=slice(0, 3))
         self.assertEqual(values.shape, (view.world_count, view.count_per_world, 3))
         assert_np_equal(values.numpy(), np.full(values.shape, 2.0))
         self.assertIs(view._get_attribute_array("joint_q", model, _slice=slice(0, 3)), values)
+
+    def observable_reads_follow_replaced_arrays(self, device):
+        """Read and write the current solver observable arrays, including replaced and unrequested ones."""
+        model, view = self.make_view("dense", device=device)
+        flag = newton.solvers.SolverObservableFlags.BODY_PARENT_F
+        observables = newton.solvers.SolverFeatherstone(model).observables({flag})
+        observables.body_parent_f.fill_(wp.spatial_vector(2.0, 2.0, 2.0, 2.0, 2.0, 2.0))
+        forces = view.get_attribute("body_parent_f", observables)
+        assert_np_equal(forces.numpy(), np.full((*forces.shape, 6), 2.0))
+        self.assertIs(view.get_attribute("body_parent_f", observables), forces)
+
+        old_forces = observables.body_parent_f
+        observables.body_parent_f = wp.full_like(old_forces, wp.spatial_vector(4.0, 4.0, 4.0, 4.0, 4.0, 4.0))
+        forces = view.get_attribute("body_parent_f", observables)
+        assert_np_equal(forces.numpy(), np.full((*forces.shape, 6), 4.0))
+        target = wp.spatial_vector(5.0, 5.0, 5.0, 5.0, 5.0, 5.0)
+        view.set_attribute("body_parent_f", observables, wp.full(forces.shape, target, device=device))
+        assert_np_equal(observables.body_parent_f.numpy(), np.full((model.body_count, 6), 5.0))
+        assert_np_equal(old_forces.numpy(), np.full((model.body_count, 6), 2.0))
+
+        observables.body_parent_f = None
+        with self.assertRaisesRegex(ValueError, "not requested"):
+            view.get_attribute("body_parent_f", observables)
+
+    def observable_cache_entries_release_with_observables(self, device):
+        """Cache observable views per container and drop them with the container."""
+        model, view = self.make_view("dense", device=device)
+        flag = newton.solvers.SolverObservableFlags.BODY_PARENT_F
+        observables = newton.solvers.SolverFeatherstone(model).observables({flag})
+        selection = observables.select({flag})
+        forces = view.get_attribute("body_parent_f", observables)
+        selected_forces = view.get_attribute("body_parent_f", selection)
+        self.assertIsNot(selected_forces, forces)
+        self.assertIs(view.get_attribute("body_parent_f", observables), forces)
+        self.assertIs(view.get_attribute("body_parent_f", selection), selected_forces)
+        self.assertEqual(len(view._attribute_array_cache), 2)
+
+        refs = {"observables": weakref.ref(observables), "selection": weakref.ref(selection)}
+        del observables, selection, forces, selected_forces
+        gc.collect()
+
+        for name, ref in refs.items():
+            with self.subTest(source=name):
+                self.assertIsNone(ref(), f"{name} retained by a live view")
+        self.assertEqual(len(view._attribute_array_cache), 0)
 
     @staticmethod
     def make_view(layout, requires_grad=False, device="cpu"):
@@ -288,8 +346,26 @@ add_function_test(
 )
 add_function_test(
     TestSelectionCacheLifetime,
-    "test_unweakrefable_sources_and_native_slices",
-    TestSelectionCacheLifetime.unweakrefable_sources_and_native_slices,
+    "test_getters_follow_arrays_replaced_by_xpbd",
+    TestSelectionCacheLifetime.getters_follow_arrays_replaced_by_xpbd,
+    devices=devices,
+)
+add_function_test(
+    TestSelectionCacheLifetime,
+    "test_native_slices_reuse_cached_arrays",
+    TestSelectionCacheLifetime.native_slices_reuse_cached_arrays,
+    devices=devices,
+)
+add_function_test(
+    TestSelectionCacheLifetime,
+    "test_observable_reads_follow_replaced_arrays",
+    TestSelectionCacheLifetime.observable_reads_follow_replaced_arrays,
+    devices=devices,
+)
+add_function_test(
+    TestSelectionCacheLifetime,
+    "test_observable_cache_entries_release_with_observables",
+    TestSelectionCacheLifetime.observable_cache_entries_release_with_observables,
     devices=devices,
 )
 

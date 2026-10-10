@@ -12,7 +12,6 @@ import warp as wp
 from ..utils import (
     _looks_like_torch_checkpoint,
     _parse_metadata_scale,
-    _runtime_shape,
     load_checkpoint,
     load_metadata,
 )
@@ -256,7 +255,6 @@ class DriveNeuralLSTM(DriveBase):
         runtime, _ = load_checkpoint(
             self.model_path,
             device=device,
-            batch_size=num_actuators,
             input_batch_axes={
                 self._input_name: 1,
                 self._hidden_in_name: 1,
@@ -267,22 +265,6 @@ class DriveNeuralLSTM(DriveBase):
         self._network = runtime
         self.network = runtime
 
-        out_shape = _runtime_shape(runtime, self._output_name)
-        if out_shape != (num_actuators, 1):
-            raise ValueError(
-                f"DriveNeuralLSTM: ONNX output '{self._output_name}' has shape {out_shape}, "
-                f"expected {(num_actuators, 1)} (one scalar effort per actuator)"
-            )
-
-        for name in (self._hidden_out_name, self._cell_out_name):
-            state_shape = _runtime_shape(runtime, name)
-            expected_state_shape = (self._num_layers, num_actuators, self._hidden_size)
-            if tuple(state_shape) != expected_state_shape:
-                raise ValueError(
-                    f"DriveNeuralLSTM: ONNX output '{name}' has shape {tuple(state_shape)}, "
-                    f"expected {expected_state_shape} (num_layers, num_actuators, hidden_size)"
-                )
-
         self._net_input = wp.zeros((1, num_actuators, 2), dtype=wp.float32, device=device)
         self._net_input.requires_grad = True
         self._grad_seed = wp.full((num_actuators, 1), 1.0, dtype=wp.float32, device=device)
@@ -292,6 +274,29 @@ class DriveNeuralLSTM(DriveBase):
         self._next_cell = wp.zeros(
             (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
         )
+
+        outputs = runtime(
+            {
+                self._input_name: self._net_input,
+                self._hidden_in_name: self._next_hidden,
+                self._cell_in_name: self._next_cell,
+            }
+        )
+        out_shape = outputs[self._output_name].shape
+        if out_shape != (num_actuators, 1):
+            raise ValueError(
+                f"DriveNeuralLSTM: ONNX output '{self._output_name}' has shape {out_shape}, "
+                f"expected {(num_actuators, 1)} (one scalar effort per actuator)"
+            )
+
+        for name in (self._hidden_out_name, self._cell_out_name):
+            state_shape = outputs[name].shape
+            expected_state_shape = (self._num_layers, num_actuators, self._hidden_size)
+            if tuple(state_shape) != expected_state_shape:
+                raise ValueError(
+                    f"DriveNeuralLSTM: ONNX output '{name}' has shape {tuple(state_shape)}, "
+                    f"expected {expected_state_shape} (num_layers, num_actuators, hidden_size)"
+                )
 
         # Implicit path: per-step linearization packed as [tau0, a, b, q0, qd0] and the
         # per-slot scratch it is assembled from (see prepare_implicit).
@@ -339,6 +344,8 @@ class DriveNeuralLSTM(DriveBase):
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
+        *,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Refresh the linearization of the network about the current state.
 
@@ -460,6 +467,8 @@ class DriveNeuralLSTM(DriveBase):
         state: DriveNeuralLSTM.State,
         dt: float,
         device: wp.Device | None = None,
+        *,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         device = device or self._device
         n = self._num_actuators

@@ -33,6 +33,7 @@ from unittest.mock import call, create_autospec, patch
 import numpy as np
 import warp as wp
 
+import newton.examples
 import newton.tests.unittest_utils
 from newton.examples.robot.example_robot_cartpole import Example as RobotCartpoleExample
 from newton.tests.unittest_utils import (
@@ -113,6 +114,7 @@ _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
 ]
 _OutputRegexSpec = str | tuple[str, str]
+_registered_examples: set[str] = set()
 
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
@@ -162,6 +164,8 @@ def add_example_test(
     _examples_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
     if not os.path.exists(os.path.join(_examples_dir, f"{name.replace('.', '/')}.py")):
         raise ValueError(f"Example {name} does not exist")
+
+    _registered_examples.add(name)
 
     if test_options is None:
         test_options = {}
@@ -1268,7 +1272,7 @@ add_example_test(
 
 add_example_test(
     TestSensorExamples,
-    name="sensors.example_sensor_tiled_camera",
+    name="sensors.example_sensor_camera",
     devices=cuda_test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
     use_viewer=True,
@@ -1787,6 +1791,47 @@ add_example_test(
     test_options={"usd_required": True, "num-frames": 100},
     use_viewer=True,
 )
+
+
+class TestUSDDependentExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestUSDDependentExamples,
+    name="softbody.example_softbody_franka",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True},
+    use_viewer=True,
+)
+for example_name in (
+    "contacts.example_contacts_rj45_plug",
+    "vbd.example_vbd_rigid_rigid_contact",
+    "vbd.example_vbd_soft_rigid_contact",
+    "vbd.example_vbd_soft_rigid_mix_contact",
+):
+    add_example_test(
+        TestUSDDependentExamples,
+        name=example_name,
+        devices=cuda_test_devices,
+        test_options={"usd_required": True},
+        use_viewer=True,
+    )
+
+
+class TestAutoDiscoveredExamples(unittest.TestCase):
+    pass
+
+
+for example_module in newton.examples.get_examples().values():
+    example_name = example_module.removeprefix("newton.examples.")
+    if example_name not in _registered_examples:
+        add_example_test(
+            TestAutoDiscoveredExamples,
+            name=example_name,
+            devices=cuda_test_devices,
+            use_viewer=True,
+        )
 
 
 if __name__ == "__main__":

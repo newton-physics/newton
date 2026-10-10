@@ -244,7 +244,7 @@ def _step_with_newton_cd(builder, device, num_steps=200, dt=0.005):
     state_n = model.state(device=device)
     control = model.control(device=device)
 
-    per_world = max(1024, newton_model.rigid_contact_max // max(newton_model.world_count, 1))
+    per_world = max(1024, (newton_model.rigid_contact_max or 0) // max(newton_model.world_count, 1))
     contacts = ContactsKamino(capacity=[per_world], device=device)
 
     solver = SolverKaminoImpl(model=model, contacts=contacts)

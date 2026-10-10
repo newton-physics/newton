@@ -33,7 +33,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.26"
+          version: "0.12.23"
 
       - name: Update warp-lang in lock file
         run: uv lock -P warp-lang --prerelease allow
@@ -56,7 +56,7 @@ jobs:
     needs: [check-warp-update]
     if: ${{ !cancelled() && github.repository == 'newton-physics/newton' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 180  # Budget for sequential dispatch+poll of all sub-workflows (typical total ~90 min)
+    timeout-minutes: 180  # Budget for sequential dispatch+poll of all sub-workflows (typical total ~125 min)
     permissions:
       actions: write
       contents: read
@@ -83,14 +83,14 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.26"
+          version: "0.12.23"
 
       - name: Set up Python
         run: uv python install
 
       - name: Dispatch and wait for GPU tests
         id: gpu-tests
-        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_tests.yml -f "inputs[instance-type]=g7e.12xlarge" -f "inputs[trigger-category]=scheduled-nightly"
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_tests.yml -f "inputs[instance-type]=g7e.12xlarge" -f "inputs[fallback-instance-type]=g6e.12xlarge" -f "inputs[trigger-category]=scheduled-nightly"
 
       - name: Dispatch and wait for Minimum Deps tests
         id: minimum-deps-tests
@@ -100,6 +100,15 @@ jobs:
         id: warp-nightly-tests
         if: needs.check-warp-update.result == 'success' && needs.check-warp-update.outputs.warp-updated == 'true'
         run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py warp_nightly_tests.yml -f "inputs[trigger-category]=scheduled-nightly"
+
+      # One fill per GPU architecture that PR benchmarks may land on. Fill
+      # failures are not reported: the cache stays a day older and the next
+      # night retries.
+      - name: Dispatch and wait for g7e benchmark kernel cache fill
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_benchmarks.yml -f "inputs[instance-type]=g7e.2xlarge" -f "inputs[trigger-category]=scheduled-nightly"
+
+      - name: Dispatch and wait for g6e benchmark kernel cache fill
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_benchmarks.yml -f "inputs[instance-type]=g6e.2xlarge" -f "inputs[trigger-category]=scheduled-nightly"
 
   notify-on-failure:
     name: Notify on failure

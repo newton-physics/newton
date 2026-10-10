@@ -1,0 +1,1 @@
+Fix `SensorCamera` rendering cloth and other deformable triangle meshes white by using `Model.tri_color`, and orient their normals toward the camera when `RenderConfig.enable_backface_culling=False` enables rendering both sides.

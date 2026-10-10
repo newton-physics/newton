@@ -241,7 +241,6 @@ class Example:
         latch_mesh, lc = _load_mesh(stage, "/World/Latch")
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        SolverVBD.register_custom_attributes(builder)
         builder.rigid_gap = 0.005
 
         builder.add_ground_plane()
@@ -294,7 +293,6 @@ class Example:
             angular_axes=None,
             parent_xform=wp.transform(plug_pos, wp.quat_identity()),
             child_xform=wp.transform_identity(),
-            custom_attributes={"vbd:joint_is_hard": 0},
         )
 
         # Revolute joint: plug -> latch (hinge along -X axis)
@@ -310,7 +308,6 @@ class Example:
             limit_upper=LATCH_LIMIT_UPPER,
             limit_kd=LATCH_LIMIT_KD,
             collision_filter_parent=True,
-            custom_attributes={"vbd:joint_is_hard": 0},
         )
 
         builder.add_articulation([d6_joint, rev_joint])
@@ -331,7 +328,6 @@ class Example:
             bend_stiffness=bend_stiffness,
             bend_damping=1.0e0,
             label="cable",
-            body_frame_origin="com",
         )
 
         # Collision-filter cable segments that overlap the plug at rest.
@@ -399,7 +395,6 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=12,
-            rigid_compliant_alm=True,
             rigid_body_contact_buffer_size=256,
         )
 

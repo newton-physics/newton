@@ -149,7 +149,6 @@ class Example:
             twist_damping=self.TWIST_DAMPING,
             label="torsion_material_mapping",
             wrap_in_articulation=True,
-            body_frame_origin="com",
         )
 
         self.bodies = list(map(int, bodies))
@@ -164,7 +163,7 @@ class Example:
 
         builder.color()
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -270,7 +269,7 @@ class Example:
             formula_twist = shear_modulus * polar_inertia / dual_rest_length
 
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-            _bodies, joints = builder.add_rod(rod=rod, body_frame_origin="com")
+            _bodies, joints = builder.add_rod(rod=rod)
             dof_start = builder.joint_qd_start[joints[0]]
             twist = builder.joint_target_ke[dof_start + 3]
 
