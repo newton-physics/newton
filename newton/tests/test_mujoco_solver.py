@@ -7762,6 +7762,56 @@ class TestMuJoCoOptions(unittest.TestCase):
 
 
 class TestMuJoCoArticulationConversion(unittest.TestCase):
+    def test_orphan_world_roots_track_articulated_body_state(self):
+        """Standalone roots report the same motion as equivalent articulated roots."""
+        for use_mujoco_cpu in (True, False):
+            for joint_type in ("free", "revolute", "prismatic", "ball", "d6"):
+                with self.subTest(use_mujoco_cpu=use_mujoco_cpu, joint_type=joint_type):
+                    template = newton.ModelBuilder()
+                    for articulated in (False, True):
+                        body = template.add_link(
+                            xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()),
+                            mass=1.0,
+                            com=wp.vec3(0.2, 0.1, 0.0),
+                            inertia=wp.mat33(np.eye(3)),
+                        )
+                        if joint_type == "free":
+                            joint = template.add_joint_free(child=body)
+                        else:
+                            kwargs = {
+                                "parent": -1,
+                                "child": body,
+                                "parent_xform": wp.transform((0.0, 0.0, 2.0), wp.quat_identity()),
+                                "child_xform": wp.transform((0.1, 0.0, 0.0), wp.quat_identity()),
+                            }
+                            if joint_type == "d6":
+                                axis = newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X)
+                                joint = template.add_joint_d6(**kwargs, linear_axes=[axis], angular_axes=[axis])
+                            else:
+                                joint = getattr(template, f"add_joint_{joint_type}")(**kwargs)
+                        if articulated:
+                            template.add_articulation([joint])
+                    template.joint_qd[:] = [0.5] * len(template.joint_qd)
+                    builder = newton.ModelBuilder()
+                    world_count = 1 if use_mujoco_cpu else 3
+                    builder.replicate(template, world_count, spacing=(3.0, 0.0, 0.0))
+                    model = builder.finalize()
+                    with self.assertWarnsRegex(UserWarning, "standalone world roots"):
+                        solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                    state_in, state_out = model.state(), model.state()
+                    control = model.control()
+                    for _ in range(10):
+                        solver.step(state_in, state_out, control, None, 0.01)
+                        state_in, state_out = state_out, state_in
+                        joint_q = state_in.joint_q.numpy().reshape(world_count, 2, -1)
+                        joint_qd = state_in.joint_qd.numpy().reshape(world_count, 2, -1)
+                        body_q = state_in.body_q.numpy().reshape(world_count, 2, 7)
+                        body_qd = state_in.body_qd.numpy().reshape(world_count, 2, 6)
+                        np.testing.assert_allclose(joint_q[:, 0], joint_q[:, 1], atol=1e-5)
+                        np.testing.assert_allclose(joint_qd[:, 0], joint_qd[:, 1], atol=1e-5)
+                        np.testing.assert_allclose(body_q[:, 0], body_q[:, 1], atol=1e-5)
+                        np.testing.assert_allclose(body_qd[:, 0], body_qd[:, 1], atol=1e-5)
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rootless_usd_mechanism_is_rejected(self):
         """A rootless mechanism without a standalone root for each body is unsupported."""
