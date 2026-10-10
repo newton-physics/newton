@@ -148,7 +148,9 @@ Geometry types
        ``mujoco:hfield_base`` custom attribute [m], after import scaling, and
        multiplied by the shape's Z scale on conversion. This depth extends
        below the lowest elevation; it does not change the height samples.
-       An absent or negative value (the default) retains the legacy
+       MJCF import requires exactly four positive ``size`` values, matching
+       MuJoCo; missing, zero, or negative sizes are rejected.
+       For native Newton fields, an absent or negative value (the default) retains the legacy
        ``1e-4`` m MuJoCo base. This attribute affects only the MuJoCo solver;
        recreate the solver after changing it. It is runtime metadata for
        preserving an MJCF asset property, with no USD authoring or schema

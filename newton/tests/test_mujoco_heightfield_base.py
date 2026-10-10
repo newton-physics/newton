@@ -31,6 +31,31 @@ def _scene(base: float) -> str:
     </mujoco>"""
 
 
+class TestMJCFHeightfieldSize(unittest.TestCase):
+    def test_reject_invalid_mjcf_size(self):
+        """Reject missing, malformed, and nonpositive authored heightfield sizes."""
+        sizes = (
+            None,
+            "",
+            "1 2 0.5",
+            "1 2 0.5 0.1 2",
+            "1 2 0.5 0",
+            "1 2 0.5 -0.1",
+            "0 2 0.5 0.1",
+            "1 -2 0.5 0.1",
+            "1 2 0 0.1",
+        )
+        for size in sizes:
+            with self.subTest(size=size):
+                attribute = "" if size is None else f'size="{size}"'
+                xml = _scene(0.1).replace('size="1 2 0.5 0.1"', attribute)
+                if mujoco is not None:
+                    with self.assertRaises(ValueError):
+                        mujoco.MjModel.from_xml_string(xml)
+                with self.assertRaisesRegex(ValueError, "heightfield.*terrain.*size"):
+                    newton.ModelBuilder().add_mjcf(xml)
+
+
 @unittest.skipIf(mujoco is None, "MuJoCo is not installed")
 class TestMuJoCoHeightfieldBase(unittest.TestCase):
     @classmethod
