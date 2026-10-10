@@ -55,6 +55,17 @@ class TestMJCFHeightfieldSize(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "heightfield.*terrain.*size"):
                     newton.ModelBuilder().add_mjcf(xml)
 
+    def test_reject_nonfinite_mjcf_size(self):
+        """Reject NaN and infinity in every authored heightfield size component."""
+        for value in ("nan", "inf", "-inf"):
+            for component in range(4):
+                with self.subTest(value=value, component=component):
+                    size = ["1", "2", "0.5", "0.1"]
+                    size[component] = value
+                    xml = _scene(0.1).replace('size="1 2 0.5 0.1"', f'size="{" ".join(size)}"')
+                    with self.assertRaisesRegex(ValueError, "heightfield.*terrain.*size"):
+                        newton.ModelBuilder().add_mjcf(xml)
+
 
 @unittest.skipIf(mujoco is None, "MuJoCo is not installed")
 class TestMuJoCoHeightfieldBase(unittest.TestCase):

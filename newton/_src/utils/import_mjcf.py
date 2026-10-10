@@ -732,8 +732,8 @@ def parse_mjcf(
             size_arr = np.array(size_str.split(), dtype=np.float32)
             if size_arr.size != 4:
                 raise ValueError(f"MJCF heightfield {hfield_name!r} size must contain exactly four values")
-            if np.any(size_arr <= 0.0):
-                raise ValueError(f"MJCF heightfield {hfield_name!r} size values must be positive")
+            if not np.all(np.isfinite(size_arr)) or np.any(size_arr <= 0.0):
+                raise ValueError(f"MJCF heightfield {hfield_name!r} size values must be finite and positive")
             size = tuple(size_arr)
             # Parse optional file path
             file_attr = hfield.attrib.get("file")
