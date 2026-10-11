@@ -1446,7 +1446,12 @@ class ViewerViser(ViewerBase):
 
     def _browser_host(self) -> str:
         """Return the host to address in browser URLs for the configured bind address."""
-        return "localhost" if self._host in self._WILDCARD_HOSTS else self._host
+        if self._host in self._WILDCARD_HOSTS:
+            return "localhost"
+        if ":" in self._host and not self._host.startswith("["):
+            # A bare IPv6 literal needs brackets before the port or the URL will not parse.
+            return f"[{self._host}]"
+        return self._host
 
     @property
     def url(self) -> str:
@@ -1456,7 +1461,8 @@ class ViewerViser(ViewerBase):
             str: Browser URL for the running viser server.
         """
         if self.is_jupyter_notebook:
-            return self._build_browser_url(self._port)
+            # Only the non-proxy fallback uses local_host; a proxy route ignores it.
+            return self._build_browser_url(self._port, local_host=self._browser_host())
         return f"http://{self._browser_host()}:{self._port}"
 
     @staticmethod

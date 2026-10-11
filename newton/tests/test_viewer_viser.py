@@ -13,6 +13,7 @@ import time
 import unittest
 import warnings
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -706,10 +707,37 @@ class TestViewerViserBindHost(unittest.TestCase):
             with self.subTest(host=host):
                 viewer._host = host
                 self.assertEqual(viewer._browser_host(), "localhost")
-        for host in ("127.0.0.1", "192.168.1.10", "::1", "gpu-node-7.local"):
+        for host in ("127.0.0.1", "192.168.1.10", "gpu-node-7.local"):
             with self.subTest(host=host):
                 viewer._host = host
                 self.assertEqual(viewer._browser_host(), host)
+
+    def test_ipv6_literals_are_bracketed(self):
+        """Bracket a bare IPv6 literal so the port does not corrupt the URL."""
+        viewer = self._viewer()
+        for host, expected in (("::1", "[::1]"), ("fe80::1%eth0", "[fe80::1%eth0]"), ("[::1]", "[::1]")):
+            with self.subTest(host=host):
+                viewer._host = host
+                self.assertEqual(viewer._browser_host(), expected)
+
+    def test_url_parses_for_every_supported_host(self):
+        """Keep the reported URL parseable, so the port stays readable for any bind host."""
+        from urllib.parse import urlparse  # noqa: PLC0415
+
+        viewer = self._viewer()
+        for host in ("0.0.0.0", "127.0.0.1", "::1", "fe80::1%eth0", "gpu-node-7.local"):
+            with self.subTest(host=host):
+                viewer._host = host
+                parsed = urlparse(viewer.url)
+                self.assertEqual(parsed.port, viewer._server.get_port())
+
+    def test_notebook_fallback_uses_the_bound_host(self):
+        """Use the bound host when a notebook has no Jupyter proxy route to offer."""
+        viewer = self._viewer(host="127.0.0.1")
+        viewer.is_jupyter_notebook = True
+        with mock.patch.object(ViewerViser, "_get_jupyter_proxy_base_url", return_value=None):
+            url = viewer.url
+        self.assertTrue(url.startswith(f"http://127.0.0.1:{viewer._server.get_port()}"), url)
 
     def test_host_must_be_a_nonempty_string(self):
         """Reject an unusable bind address before Viser tries to bind it."""
