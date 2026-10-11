@@ -11223,5 +11223,103 @@ class TestImportMjcfHeightfieldOrientation(unittest.TestCase):
             np.testing.assert_allclose(imported_grid(png, {"terrain.png": png_payload}), flipped)
 
 
+class TestSpatialTendonWrapNameSanitizing(unittest.TestCase):
+    """Spatial tendon wrap elements must resolve names that sanitize to underscores.
+
+    ``sanitize_name`` maps "-" to "_" for USD path compatibility, but ``shape_label``
+    keeps the name exactly as authored, so a wrap element naming a site or geom with
+    a hyphen used to miss every lookup and silently drop the tendon.
+    """
+
+    PREFIX = "spatial_tendon_wraps/worldbody"
+
+    MJCF = """
+<mujoco model="spatial_tendon_wraps">
+    <worldbody>
+        <body name="upper">
+            <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03"/>
+            <geom name="g-origin" type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03"/>
+            <geom name="g-insertion" type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03"/>
+            <site name="m-origin" pos="0.02 0 -0.05"/>
+            <site name="m-underscore" pos="0.04 0 -0.05"/>
+            <site name="dup-site" pos="0.06 0 -0.05"/>
+            <site name="dup_site" pos="0.08 0 -0.05"/>
+            <body name="lower" pos="0 0 -0.3">
+                <joint name="elbow" axis="0 1 0"/>
+                <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"/>
+                <site name="m-insertion" pos="0.02 0 -0.05"/>
+            </body>
+        </body>
+    </worldbody>
+    <tendon>
+        <spatial name="flexor">
+{0}
+        </spatial>
+    </tendon>
+</mujoco>
+"""
+
+    def _import_tendon(self, *wrap_elements):
+        builder = newton.ModelBuilder()
+        wraps = "\n".join(f"            {element}" for element in wrap_elements)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_mjcf(self.MJCF.format(wraps))
+        self.assertEqual([str(w.message) for w in caught], [])
+        return builder
+
+    def _wrapped_labels(self, builder, key="mujoco:tendon_wrap_shape"):
+        return [builder.shape_label[i] for i in builder.custom_attributes[key].values]
+
+    def test_site_wrap_with_hyphenated_name(self):
+        """A <site> wrap naming a site with a hyphen must resolve."""
+        builder = self._import_tendon('<site site="m-origin"/>', '<site site="m-insertion"/>')
+        attrs = builder.custom_attributes
+        self.assertEqual(list(attrs["mujoco:tendon_label"].values), ["flexor"])
+        self.assertEqual(list(attrs["mujoco:tendon_wrap_num"].values), [2])
+        self.assertEqual(list(attrs["mujoco:tendon_wrap_type"].values), [0, 0])
+        self.assertEqual(
+            self._wrapped_labels(builder),
+            [f"{self.PREFIX}/upper/m-origin", f"{self.PREFIX}/upper/lower/m-insertion"],
+        )
+
+    def test_hyphenated_and_underscore_names_agree(self):
+        """Hyphenated and underscored spellings must resolve to the same wrap path."""
+        hyphenated = self._import_tendon('<site site="m-origin"/>', '<site site="m-insertion"/>')
+        underscored = self._import_tendon('<site site="m_underscore"/>', '<site site="m_insertion"/>')
+        for key in ("mujoco:tendon_wrap_num", "mujoco:tendon_wrap_type"):
+            self.assertEqual(
+                list(hyphenated.custom_attributes[key].values),
+                list(underscored.custom_attributes[key].values),
+            )
+
+    def test_geom_wrap_with_hyphenated_name(self):
+        """A <geom> wrap naming a geom with a hyphen must resolve."""
+        builder = self._import_tendon('<geom geom="g-origin"/>', '<geom geom="g-insertion"/>')
+        attrs = builder.custom_attributes
+        self.assertEqual(list(attrs["mujoco:tendon_wrap_type"].values), [1, 1])
+        self.assertEqual(
+            self._wrapped_labels(builder),
+            [f"{self.PREFIX}/upper/g-origin", f"{self.PREFIX}/upper/g-insertion"],
+        )
+
+    def test_sidesite_with_hyphenated_name(self):
+        """A sidesite naming a site with a hyphen must resolve."""
+        builder = self._import_tendon('<geom geom="g-origin" sidesite="m-insertion"/>')
+        sidesite = builder.custom_attributes["mujoco:tendon_wrap_sidesite"].values[0]
+        self.assertGreaterEqual(sidesite, 0)
+        self.assertEqual(builder.shape_label[sidesite], f"{self.PREFIX}/upper/lower/m-insertion")
+
+    def test_exact_name_wins_over_sanitized_name(self):
+        """An exact label match must be preferred over a sanitized fallback match."""
+        builder = self._import_tendon('<site site="dup_site"/>')
+        self.assertEqual(self._wrapped_labels(builder), [f"{self.PREFIX}/upper/dup_site"])
+
+    def test_exact_name_wins_for_hyphenated_lookup(self):
+        """A hyphenated lookup must not be captured by an underscored label."""
+        builder = self._import_tendon('<site site="dup-site"/>')
+        self.assertEqual(self._wrapped_labels(builder), [f"{self.PREFIX}/upper/dup-site"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -3098,14 +3098,27 @@ def parse_mjcf(
             Newton stores both as shapes in shape_label, so we need to pick the right one
             based on whether we're looking for a site or a geom.
 
+            shape_label keeps names exactly as authored, so an exact match is preferred and
+            a sanitize_name match ("-" becomes "_", for USD path compatibility) is used as
+            a fallback. Without the fallback a wrap element naming a site like "m-origin"
+            would miss every shape and silently drop the tendon.
+
             Returns -1 if no shape with the matching name and type is found.
             """
+            sanitized_name = sanitize_name(name)
+            exact = -1
+            fallback = -1
             for i, label in enumerate(builder.shape_label):
+                if bool(builder.shape_flags[i] & ShapeFlags.SITE) != want_site:
+                    continue
                 if label == name or label.endswith(f"/{name}"):
-                    is_site = bool(builder.shape_flags[i] & ShapeFlags.SITE)
-                    if is_site == want_site:
-                        return i
-            return -1
+                    exact = i
+                    break
+                if fallback < 0:
+                    cleaned = sanitize_name(label)
+                    if cleaned == sanitized_name or cleaned.endswith(f"/{sanitized_name}"):
+                        fallback = i
+            return exact if exact >= 0 else fallback
 
         for spatial in tendon_section.findall("spatial"):
             # Apply default class inheritance for spatial tendon attributes.
@@ -3119,8 +3132,6 @@ def parse_mjcf(
             for child in spatial:
                 if child.tag == "site":
                     site_name = child.attrib.get("site", "")
-                    if site_name:
-                        site_name = sanitize_name(site_name)
                     site_idx = find_shape_by_name(site_name, want_site=True) if site_name else -1
                     if site_idx < 0:
                         warnings.warn(
@@ -3132,8 +3143,6 @@ def parse_mjcf(
 
                 elif child.tag == "geom":
                     geom_name = child.attrib.get("geom", "")
-                    if geom_name:
-                        geom_name = sanitize_name(geom_name)
                     geom_idx = find_shape_by_name(geom_name, want_site=False) if geom_name else -1
                     if geom_idx < 0:
                         warnings.warn(
@@ -3145,7 +3154,6 @@ def parse_mjcf(
                     sidesite_name = child.attrib.get("sidesite", "")
                     sidesite_idx = -1
                     if sidesite_name:
-                        sidesite_name = sanitize_name(sidesite_name)
                         sidesite_idx = find_shape_by_name(sidesite_name, want_site=True)
                         if sidesite_idx < 0:
                             warnings.warn(
