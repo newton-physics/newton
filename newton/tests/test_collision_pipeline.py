@@ -1,8 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import unittest
 import warnings
+import weakref
 from collections import Counter
 from enum import IntFlag, auto
 from unittest import mock
@@ -146,10 +148,7 @@ class CollisionSetup:
         self.viewer.set_model(self.model)
 
         self.graph = None
-        if wp.get_device(device).is_cuda:
-            with wp.ScopedCapture(device=device) as capture:
-                self.simulate()
-            self.graph = capture.graph
+        self.capture()
 
     def add_shape(self, shape_type: GeoType, body: int, sdf_max_resolution: int | None = None):
         if shape_type == GeoType.BOX:
@@ -188,9 +187,16 @@ class CollisionSetup:
 
     def capture(self):
         if wp.get_device(self._device).is_cuda:
-            with wp.ScopedCapture(device=self._device) as capture:
-                self.simulate()
-            self.graph = capture.graph
+            # Cyclic GC can destroy an earlier scene's SDF textures, which CUDA forbids during capture.
+            gc_was_enabled = gc.isenabled()
+            gc.disable()
+            try:
+                with wp.ScopedCapture(device=self._device) as capture:
+                    self.simulate()
+                self.graph = capture.graph
+            finally:
+                if gc_was_enabled:
+                    gc.enable()
         else:
             self.graph = None
 
@@ -702,6 +708,77 @@ def test_mesh_mesh_bvh_vs_bvh(_test, device, broad_phase: str):
     test_mesh_mesh_sdf_modes(
         _test, device, sdf_max_resolution_a=None, sdf_max_resolution_b=None, broad_phase=broad_phase
     )
+
+
+def test_collision_capture_defers_sdf_texture_cleanup(test, device):
+    """Defer unreachable SDF texture cleanup until CUDA capture finishes."""
+    gc_was_enabled = gc.isenabled()
+    thresholds = gc.get_threshold()
+    gc.collect()
+    gc.enable()
+    gc.set_threshold(0)
+    try:
+        mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+        mesh.build_sdf(max_resolution=16, device=device)
+        texture_ref = weakref.ref(mesh.sdf._coarse_texture)
+        # Keep a discarded scene pending cyclic collection regardless of Warp version.
+        discarded_scene = {"mesh": mesh}
+        discarded_scene["cycle"] = discarded_scene
+        del mesh, discarded_scene
+
+        simulate = CollisionSetup.simulate
+
+        def simulate_with_gc_pressure(setup):
+            gc.set_threshold(gc.get_count()[0] + 1, 1000000, 1000000)
+            allocations = [[] for _ in range(32)]
+            simulate(setup)
+            del allocations
+
+        with mock.patch.object(CollisionSetup, "simulate", simulate_with_gc_pressure):
+            setup = CollisionSetup(
+                viewer=newton.viewer.ViewerNull(),
+                device=device,
+                solver_fn=newton.solvers.SolverXPBD,
+                sim_substeps=2,
+                shape_type_a=GeoType.MESH,
+                shape_type_b=GeoType.MESH,
+                sdf_max_resolution_a=16,
+            )
+            setup.capture()
+
+        test.assertTrue(gc.isenabled())
+        setup.step()
+        test.assertTrue(np.isfinite(setup.state_0.body_q.numpy()).all())
+        gc.collect()
+        test.assertIsNone(texture_ref())
+
+        for gc_enabled in (False, True):
+            if gc_enabled:
+                gc.enable()
+            else:
+                gc.disable()
+            setup.capture()
+            test.assertEqual(gc.isenabled(), gc_enabled)
+            with mock.patch.object(setup, "simulate", side_effect=RuntimeError("capture interrupted")):
+                with test.assertRaisesRegex(RuntimeError, "capture interrupted"):
+                    setup.capture()
+            test.assertEqual(gc.isenabled(), gc_enabled)
+    finally:
+        gc.set_threshold(*thresholds)
+        gc.collect()
+        if gc_was_enabled:
+            gc.enable()
+        else:
+            gc.disable()
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_collision_capture_defers_sdf_texture_cleanup",
+    test_collision_capture_defers_sdf_texture_cleanup,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
 
 
 # Add mesh-mesh SDF mode tests for all broad phase modes
