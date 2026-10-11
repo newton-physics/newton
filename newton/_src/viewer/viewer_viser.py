@@ -73,6 +73,10 @@ class ViewerViser(ViewerBase):
     _viser_module = None
     _IMAGE_JPEG_QUALITY = 90
     _SH_C0 = 0.28209479177387814
+    # Bind addresses that accept connections on any interface. A browser on the
+    # same machine reaches such a server through "localhost"; a server bound to a
+    # specific address refuses connections anywhere else, including on localhost.
+    _WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0"})
 
     class _ImmediateGuiAdapter:
         """Translate the examples' immediate-mode controls to native Viser GUI handles."""
@@ -396,6 +400,7 @@ class ViewerViser(ViewerBase):
     def __init__(
         self,
         *,
+        host: str = "0.0.0.0",
         port: int = 8080,
         paused: bool = False,
         label: str | None = None,
@@ -411,6 +416,8 @@ class ViewerViser(ViewerBase):
         It launches a web server that serves an interactive 3D visualization.
 
         Args:
+            host: Address the web server binds to. Defaults to "0.0.0.0", every
+                interface. Pass "127.0.0.1" to keep the viewer local to this machine.
             port: Port number for the web server. Defaults to 8080.
             paused: Whether simulation stepping starts paused.
             label: Optional label for the viser server window title.
@@ -421,6 +428,10 @@ class ViewerViser(ViewerBase):
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
         """
+        if not isinstance(host, str):
+            raise TypeError("host must be a string")
+        if not host.strip():
+            raise ValueError("host must not be empty")
         if not isinstance(plot_history_size, int) or isinstance(plot_history_size, bool):
             raise TypeError("plot_history_size must be an integer")
         if plot_history_size <= 0:
@@ -494,7 +505,7 @@ class ViewerViser(ViewerBase):
         self._line_versions = {}
 
         # Initialize viser server
-        self._server = viser.ViserServer(port=port, label=label or "Newton Viewer", verbose=verbose)
+        self._server = viser.ViserServer(host=host, port=port, label=label or "Newton Viewer", verbose=verbose)
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self._camera_fov_radians: float | None = None
         self._camera_up_axis = 2
@@ -505,6 +516,7 @@ class ViewerViser(ViewerBase):
         self._reset_camera_to_default(self._camera_up_axis)
 
         # Store configuration before any URL generation.
+        self._host = host
         self._port = self._server.get_port()
         self.is_jupyter_notebook = is_jupyter_notebook()
 
@@ -1432,6 +1444,10 @@ class ViewerViser(ViewerBase):
                 if self._example_switch_callback is not None:
                     self._example_switch_callback(event[1])
 
+    def _browser_host(self) -> str:
+        """Return the host to address in browser URLs for the configured bind address."""
+        return "localhost" if self._host in self._WILDCARD_HOSTS else self._host
+
     @property
     def url(self) -> str:
         """Get the browser URL of the viser server.
@@ -1441,7 +1457,7 @@ class ViewerViser(ViewerBase):
         """
         if self.is_jupyter_notebook:
             return self._build_browser_url(self._port)
-        return f"http://localhost:{self._port}"
+        return f"http://{self._browser_host()}:{self._port}"
 
     @staticmethod
     def _normalize_jupyter_base_url(base_url: str) -> str:

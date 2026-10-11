@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import io
 import json
@@ -659,6 +660,63 @@ class TestViewerViserTextures(unittest.TestCase):
         """Keep textured meshes nonmetallic after glTF applies material defaults."""
         material = self._roundtrip_textured_mesh(3)
         self.assertEqual(material.metallicFactor, 0.0)
+
+
+@unittest.skipUnless(importlib.util.find_spec("viser"), "Requires viser")
+class TestViewerViserBindHost(unittest.TestCase):
+    """``host`` controls the bind address and has to be reflected in the browser URL."""
+
+    def _viewer(self, **kwargs):
+        kwargs.setdefault("verbose", False)
+        viewer = ViewerViser(port=0, **kwargs)
+        self.addCleanup(viewer.close)
+        return viewer
+
+    def test_default_host_url_uses_localhost(self):
+        """The default wildcard bind keeps reporting localhost."""
+        viewer = self._viewer()
+        self.assertEqual(viewer.url, f"http://localhost:{viewer._server.get_port()}")
+
+    def test_loopback_host_url_uses_loopback(self):
+        """A specific bind address must appear in the URL verbatim."""
+        viewer = self._viewer(host="127.0.0.1")
+        self.assertEqual(viewer.url, f"http://127.0.0.1:{viewer._server.get_port()}")
+
+    def test_loopback_host_is_reachable_at_the_reported_url(self):
+        """The reported URL has to address a socket that actually accepts connections."""
+        from urllib.parse import urlparse  # noqa: PLC0415
+        from urllib.request import urlopen  # noqa: PLC0415
+
+        viewer = self._viewer(host="127.0.0.1")
+        parsed = urlparse(viewer.url)
+        with urlopen(f"http://{parsed.hostname}:{parsed.port}/", timeout=10) as response:
+            self.assertLess(response.status, 400)
+
+    def test_verbose_line_uses_the_bound_host(self):
+        """The startup line must point at the host the server actually bound."""
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            viewer = self._viewer(host="127.0.0.1", verbose=True)
+        self.assertIn(f"http://127.0.0.1:{viewer._server.get_port()}", buffer.getvalue())
+
+    def test_wildcard_hosts_map_to_localhost(self):
+        """Every wildcard spelling resolves to localhost, any other host is verbatim."""
+        viewer = self._viewer()
+        for host in ("0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", ""):
+            with self.subTest(host=host):
+                viewer._host = host
+                self.assertEqual(viewer._browser_host(), "localhost")
+        for host in ("127.0.0.1", "192.168.1.10", "::1", "gpu-node-7.local"):
+            with self.subTest(host=host):
+                viewer._host = host
+                self.assertEqual(viewer._browser_host(), host)
+
+    def test_host_must_be_a_nonempty_string(self):
+        """Reject an unusable bind address before Viser tries to bind it."""
+        with self.assertRaises(TypeError):
+            self._viewer(host=None)
+        with self.assertRaises(ValueError):
+            self._viewer(host="   ")
 
 
 if __name__ == "__main__":
