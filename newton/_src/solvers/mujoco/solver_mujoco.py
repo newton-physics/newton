@@ -64,6 +64,7 @@ from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
 from .kernels import (
     _snapshot_nacon_count,
+    apply_hydroelastic_compliance_kernel,
     apply_mjc_body_f_kernel,
     apply_mjc_control_kernel,
     apply_mjc_free_joint_f_to_body_f_kernel,
@@ -4079,6 +4080,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
         use_mujoco_contacts: bool = True,
+        hydroelastic_force_space: bool = False,
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
         deterministic: wp.DeterministicMode | None = None,
@@ -4129,6 +4131,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
+            hydroelastic_force_space: Opt into experimental physical hydroelastic stiffness
+                instead of the legacy acceleration-space response. Defaults to False
+                to preserve existing tuning. Requires Newton contacts on MuJoCo-Warp
+                with Euler, implicit, or implicitfast integration; RK4 is unsupported.
+                Set at construction only.
             include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
@@ -4136,6 +4143,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ``wp.config.deterministic``.
         """
         super().__init__(model)
+
+        if not isinstance(hydroelastic_force_space, bool | np.bool_):
+            raise TypeError("hydroelastic_force_space must be a bool.")
+        self._hydroelastic_force_space = bool(hydroelastic_force_space)
+        if self._hydroelastic_force_space and (use_mujoco_cpu or use_mujoco_contacts):
+            raise ValueError(
+                "hydroelastic_force_space=True requires use_mujoco_cpu=False and use_mujoco_contacts=False."
+            )
 
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
@@ -4406,6 +4421,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self._last_contact_timestep = (
+            wp.zeros(1, dtype=float, device=self.device) if self._hydroelastic_force_space else None
+        )
+        self._hydroelastic_contacts: Contacts | None = None
+        self._pressure_contact: wp.array[bool] | None = None
+        self._pressure_contact_generation = (
+            wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
+            if self._hydroelastic_force_space
+            else None
+        )
         # Track the Contacts instance and its capacity.  Any change to these
         # invariants invalidates the cached tid_to_cid mapping because the
         # cached tid values would refer to a different input buffer.
@@ -4495,6 +4520,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # first run inside a CUDA graph that is discarded without replay.
             self._create_inverse_shape_mapping()
             self._contact_tid_to_cid = wp.full(self.mjw_data.naconmax, -1, dtype=wp.int32, device=self.device)
+            if self._hydroelastic_force_space:
+                self._pressure_contact = wp.zeros(self.mjw_data.naconmax, dtype=bool, device=self.device)
+                if self.mjw_model.opt.integrator == self._mujoco_warp.IntegratorType.RK4:
+                    raise ValueError("hydroelastic_force_space=True does not support RK4; use implicitfast or Euler.")
         self._initial_model_sync = False
         self.update_data_interval = update_data_interval
         self._step = 0
@@ -4529,7 +4558,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     @event_scope
     def _mujoco_warp_step(self):
-        self._mujoco_warp.step(self.mjw_model, self.mjw_data)
+        if self._hydroelastic_force_space:
+            # The public split-step API leaves constraints editable before solving.
+            # step2 falls back to Euler for RK4, so reject it rather than changing
+            # the requested integrator (including direct backend option changes).
+            if self.mjw_model.opt.integrator == self._mujoco_warp.IntegratorType.RK4:
+                raise ValueError("hydroelastic_force_space=True does not support RK4; use implicitfast or Euler.")
+            self._mujoco_warp.step1(self.mjw_model, self.mjw_data)
+            self._apply_hydroelastic_compliance(self.mjw_model, self.mjw_data)
+            self._mujoco_warp.step2(self.mjw_model, self.mjw_data)
+        else:
+            self._mujoco_warp.step(self.mjw_model, self.mjw_data)
 
     @event_scope
     @override
@@ -4988,7 +5027,48 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
+    def _apply_hydroelastic_compliance(self, model: MjWarpModel, data: MjWarpData) -> None:
+        """Apply physical hydroelastic compliance before the backend constraint solve."""
+        disabled = self._mujoco_warp.DisableBit.CONSTRAINT | self._mujoco_warp.DisableBit.CONTACT
+        contacts = self._hydroelastic_contacts
+        if model.opt.disableflags & disabled or contacts is None or contacts.rigid_contact_stiffness is None:
+            return
+        wp.launch(
+            apply_hydroelastic_compliance_kernel,
+            dim=min(contacts.rigid_contact_max, data.naconmax),
+            inputs=[
+                contacts.rigid_contact_count,
+                self._pressure_contact,
+                contacts.rigid_contact_shape0,
+                contacts.rigid_contact_shape1,
+                self.model.shape_flags,
+                contacts.rigid_contact_stiffness,
+                contacts.rigid_contact_damping,
+                self._contact_tid_to_cid,
+                data.nacon,
+                model.opt.timestep,
+                model.opt.cone == self._mujoco_warp.ConeType.ELLIPTIC,
+                data.contact.dim,
+                data.contact.worldid,
+                data.contact.efc_address,
+                data.contact.dist,
+                data.contact.includemargin,
+                data.contact.adhesion,
+                model.flg_adhesion,
+                not (model.opt.disableflags & self._mujoco_warp.DisableBit.REFSAFE),
+                data.contact.geom,
+                model.geom_bodyid,
+                model.body_invweight0,
+                data.nefc,
+                data.efc.vel,
+            ],
+            outputs=[data.efc.D, data.efc.aref],
+            device=self.device,
+        )
+
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
+        if self._hydroelastic_force_space:
+            self._hydroelastic_contacts = contacts
         # The kernel only produces valid output for tid < naconmax (the full
         # path clamps count and rejects cid >= naconmax).  Launching more
         # threads than naconmax wastes GPU resources, so cap the grid size.
@@ -5008,6 +5088,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         contacts_id = id(contacts.contact_generation)
         if self._last_contacts_id != contacts_id or self._last_rigid_contact_max != contacts.rigid_contact_max:
             self._invalidate_contact_fast_path()
+            if self._pressure_contact_generation is not None:
+                self._pressure_contact_generation.fill_(_GENERATION_SENTINEL)
             self._last_contacts_id = contacts_id
             self._last_rigid_contact_max = contacts.rigid_contact_max
 
@@ -5024,11 +5106,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 state_in.body_q,
                 model.shape_body,
+                model.shape_flags,
                 model.body_flags,
                 self.mjw_model.geom_bodyid,
                 self.mjw_model.body_weldid,
                 self.mjw_model.body_dofnum,
                 self.mjw_model.body_invweight0,
+                self.mjw_model.opt.timestep,
                 self.mjw_model.geom_condim,
                 self.mjw_model.geom_priority,
                 self.mjw_model.geom_solmix,
@@ -5084,6 +5168,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
                 self._last_nacon_count,
+                self._last_contact_timestep,
+                self._pressure_contact,
+                self._pressure_contact_generation,
+                self._hydroelastic_force_space,
             ],
             device=model.device,
         )
@@ -5103,6 +5191,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._last_nacon_count,
                 contacts.contact_generation,
                 self._last_contact_generation,
+                self.mjw_model.opt.timestep,
+                self._last_contact_timestep,
+                self._pressure_contact_generation,
             ],
             device=model.device,
         )

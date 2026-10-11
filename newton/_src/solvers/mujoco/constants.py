@@ -20,6 +20,12 @@ HINGE_CONNECT_AXIS_OFFSET = 0.1
 KINEMATIC_ARMATURE = 1.0e10
 """Large MuJoCo armature value used to make kinematic-body DOFs effectively immovable."""
 
+MJ_MINIMP = 0.0001
+"""MuJoCo's minimum constraint impedance."""
+
+MJ_MAXIMP = 0.9999
+"""MuJoCo's maximum constraint impedance."""
+
 MJ_MINMU = 1.0e-5
 """MuJoCo's minimum friction coefficient clamp."""
 
