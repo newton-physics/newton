@@ -673,17 +673,17 @@ class TestViewerViserBindHost(unittest.TestCase):
         return viewer
 
     def test_default_host_url_uses_localhost(self):
-        """The default wildcard bind keeps reporting localhost."""
+        """Report localhost for the default wildcard bind."""
         viewer = self._viewer()
         self.assertEqual(viewer.url, f"http://localhost:{viewer._server.get_port()}")
 
     def test_loopback_host_url_uses_loopback(self):
-        """A specific bind address must appear in the URL verbatim."""
+        """Report a specific bind address verbatim in the URL."""
         viewer = self._viewer(host="127.0.0.1")
         self.assertEqual(viewer.url, f"http://127.0.0.1:{viewer._server.get_port()}")
 
     def test_loopback_host_is_reachable_at_the_reported_url(self):
-        """The reported URL has to address a socket that actually accepts connections."""
+        """Accept connections at the URL reported for a loopback bind."""
         from urllib.parse import urlparse  # noqa: PLC0415
         from urllib.request import urlopen  # noqa: PLC0415
 
@@ -693,14 +693,14 @@ class TestViewerViserBindHost(unittest.TestCase):
             self.assertLess(response.status, 400)
 
     def test_verbose_line_uses_the_bound_host(self):
-        """The startup line must point at the host the server actually bound."""
+        """Print the bound host in the verbose startup line."""
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             viewer = self._viewer(host="127.0.0.1", verbose=True)
         self.assertIn(f"http://127.0.0.1:{viewer._server.get_port()}", buffer.getvalue())
 
     def test_wildcard_hosts_map_to_localhost(self):
-        """Every wildcard spelling resolves to localhost, any other host is verbatim."""
+        """Map every wildcard spelling to localhost and keep specific hosts verbatim."""
         viewer = self._viewer()
         for host in ("0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", ""):
             with self.subTest(host=host):
