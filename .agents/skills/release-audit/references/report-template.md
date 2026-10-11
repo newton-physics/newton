@@ -15,7 +15,7 @@ Generated: {{REPORT_DATE}}
      Pre-release: "Pre-release audit of unreleased work on main"
      RC: "Release candidate readiness review (release branch cut)"
      Retrospective: "Retrospective audit of shipped release v<version>; calibration
-                     pass cross-references Claude's flags against post-target history" -->
+                     pass cross-references the audit's flags against post-target history" -->
 
 ## Document Version Control
 
@@ -67,7 +67,7 @@ Generated: {{REPORT_DATE}}
 
 {{HEADLINE_SUMMARY}}
 
-<!-- Claude's qualitative synthesis of what would land in the official release
+<!-- The audit's qualitative synthesis of what would land in the official release
      notes. Drafted in Phase 7a. NOT release notes: a reviewer's preview so the
      release manager can see at a glance whether the real release notes will
      match expectations and spot items that need a keep/defer decision.
@@ -291,7 +291,7 @@ what the user will see, any dependencies like MuJoCo assets).
 
 <!-- Flat list. Do NOT group under "Author-labeled" / "Unlabeled" / "Semantic"
      subheadings. Every entry is simply a confirmed breaking change, regardless
-     of how it was identified. Claude collects entries from four sources:
+     of how it was identified. The audit collects entries from four sources:
      (1) CHANGELOG Changed entries whose prose describes a rename / parameter
          reorder / signature shift (Newton does not use a **Breaking:** marker;
          recognition is prose-based),
@@ -300,7 +300,7 @@ what the user will see, any dependencies like MuJoCo assets).
          the base ref is found),
      (3) public-surface AST diffs between base and HEAD that aren't covered by
          a CHANGELOG Changed / Removed entry,
-     (4) solver / integrator / math / geometry commits whose diff Claude reads
+     (4) solver / integrator / math / geometry commits whose diff the audit reads
          as clearly semantic-shifting (a numerical-output shift that a user
          would observe). Ambiguous candidates go to "Semantic-Change Review
          Candidates" in the review notes, NOT here.
@@ -545,7 +545,7 @@ access), deprecates the old names, and adjusts default Gaussian sorting modes.
      | Flag subject | Outcome | Evidence |
      |---|---|---|
      | `Model.foo` | Validated | No prior Deprecated entry or matching runtime warning at the base ref; symbol stayed removed through 1.1.2. |
-     | `Model.bar` | Invalidated | Deprecated in 1.0.0 under `### Deprecated` — Claude's search missed it (lowercase `model.bar` in the entry). |
+     | `Model.bar` | Invalidated | Deprecated in 1.0.0 under `### Deprecated` — the audit's search missed it (lowercase `model.bar` in the entry). |
 
      ### 🕵️ Private-only
 

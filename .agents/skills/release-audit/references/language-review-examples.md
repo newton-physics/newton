@@ -117,7 +117,7 @@ Before flagging, cross-check against existing sibling symbols in the same module
 
 **Err on "mention, don't block"**: flagging should raise a question for human review, not gate the report. The audit appendix shows flagged entries and a one-line reason; a human decides.
 
-**Don't auto-rewrite**: Claude flags the entry, never modifies it. Before the
+**Don't auto-rewrite**: The audit flags the entry, never modifies it. Before the
 Towncrier build, the release manager updates pending fragments during changelog
 maintenance; after release, corrections to dated history require explicit
 maintainer approval.

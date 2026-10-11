@@ -135,31 +135,32 @@ class _SolverLayer:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-        if native_contacts:
-            self.collision_pipeline = None
-            self.contacts = newton.Contacts(
-                self.model.rigid_contact_max,
-                0,
-                device=self.model.device,
-                requested_attributes=self.model.get_requested_contact_attributes(),
-            )
-        else:
-            self.collision_pipeline = newton.CollisionPipeline(self.model)
-            self.contacts = self.collision_pipeline.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = (
+            self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F}) if native_contacts else None
+        )
 
         self._viewer = viewer
         self._sim_substeps = sim_substeps
         self._sim_dt = sim_dt
-        self.graph: wp.Graph | None = self._capture()
+        self.graph: wp.Graph | None = None
 
     def _simulate(self) -> None:
-        contacts = None if self.native_contacts else self.contacts
-        for _ in range(self._sim_substeps):
+        self._viewer.activate(self.layer_id)
+        for substep in range(self._sim_substeps):
             self.state_0.clear_forces()
             self._viewer.apply_forces(self.state_0)
-            if self.collision_pipeline is not None:
+            if not self.native_contacts:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, contacts, self._sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self._sim_dt,
+                observables=self.solver_observables if substep == self._sim_substeps - 1 else None,
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def _capture(self) -> wp.Graph | None:
@@ -196,7 +197,7 @@ class Example:
 
         # The colors make it easy to tell the solvers apart when toggling layers in the
         # "Layers" group of the viewer sidebar. Each layer captures its own
-        # CUDA graph on construction (where supported).
+        # CUDA graph after binding its model to the viewer (where supported).
         specs = [
             ("XPBD", (0.95, 0.45, 0.10), newton.solvers.SolverXPBD, None, False),
             ("Featherstone", (0.20, 0.70, 0.95), newton.solvers.SolverFeatherstone, None, False),
@@ -241,6 +242,9 @@ class Example:
                 layer.layer_id,
                 wp.transform(wp.vec3(shift, 0.0, 0.0), wp.quat_identity()),
             )
+            # Capture after binding the model so viewer-force kernels use
+            # this layer's picking state, including picks made after capture.
+            layer.graph = layer._capture()
 
     def step(self):
         for layer in self.layers:
@@ -267,9 +271,7 @@ class Example:
             self.viewer.activate(layer.layer_id)
             self.viewer.log_state(layer.state_0)
             if layer.contacts is not None:
-                if layer.native_contacts and self.viewer.show_contacts:
-                    layer.solver.update_contacts(layer.contacts, layer.state_0)
-                self.viewer.log_contacts(layer.contacts, layer.state_0)
+                self.viewer.log_contacts(layer.contacts, layer.state_1, observables=layer.solver_observables)
         self.viewer.end_frame()
 
 

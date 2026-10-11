@@ -11,6 +11,7 @@ import warp as wp
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
+from newton._src.solvers.kamino._src.solvers.dvi.sparse import group_bilateral_pairs
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
     _build_sparse_bilateral_block,
     _set_sparse_bilateral_diagonal,
@@ -173,16 +174,19 @@ class TestKaminoSparseAssemblyQuality(unittest.TestCase):
         coordinates = [
             (row, int(body)) for row in range(n) for body in np.flatnonzero(np.any(jacobian[row] != 0, axis=1))
         ]
-        pairs = np.asarray(
-            [
-                (0, row, col, body, i, j)
-                for i, (row, body) in enumerate(coordinates)
-                for j, (col, other) in enumerate(coordinates)
-                if row < col and body == other
-            ],
-            dtype=np.int32,
-        ).T
+        pairs, entry_starts = group_bilateral_pairs(
+            np.asarray(
+                [
+                    (0, row, col, body, i, j)
+                    for i, (row, body) in enumerate(coordinates)
+                    for j, (col, other) in enumerate(coordinates)
+                    if row < col and body == other
+                ],
+                dtype=np.int32,
+            ).T
+        )
         pair_arrays = [wp.array(values, dtype=wp.int32, device=device) for values in pairs]
+        entry_starts = wp.array(entry_starts, dtype=wp.int32, device=device)
         info = DenseSquareMultiLinearInfo()
         info.finalize(dimensions=[n], dtype=wp.float32, device=device)
         control_matrix = wp.zeros(n * n, dtype=wp.float32, device=device)
@@ -220,6 +224,7 @@ class TestKaminoSparseAssemblyQuality(unittest.TestCase):
                     info.dim,
                     info.vio,
                     info.mio,
+                    info.maxdim,
                     info.vio,
                     diagonal,
                     matrix,
@@ -231,14 +236,15 @@ class TestKaminoSparseAssemblyQuality(unittest.TestCase):
             )
             wp.launch(
                 _build_sparse_bilateral_block,
-                dim=pairs.shape[1],
+                dim=entry_starts.size - 1,
                 inputs=[
                     inv_mass,
                     inv_inertia,
+                    entry_starts,
                     *pair_arrays,
                     values,
-                    info.dim,
                     info.mio,
+                    info.maxdim,
                     info.vio,
                     scale,
                     matrix,
@@ -276,7 +282,10 @@ class TestKaminoSparseAssemblyQuality(unittest.TestCase):
                 wp.capture_launch(capture.graph)
                 matrix_np = control_matrix.numpy().reshape(n, n)
                 np.testing.assert_allclose(
-                    observed.numpy().reshape(n, n), matrix_np[np.ix_(order, order)], rtol=3.0e-6, atol=3.0e-7
+                    np.tril(observed.numpy().reshape(n, n)),
+                    np.tril(matrix_np[np.ix_(order, order)]),
+                    rtol=3.0e-6,
+                    atol=3.0e-7,
                 )
                 scaling = np.sqrt(1.0 / (diag_np.astype(np.float64) + np.finfo(np.float32).eps))
                 oracle = scaling[:, None] * unscaled * scaling[None, :] + np.eye(n) * 7.0e-7

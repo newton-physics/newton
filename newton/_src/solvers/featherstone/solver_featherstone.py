@@ -6,8 +6,9 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
-from ...sim.joint_mimic import eval_mimic_joints, has_supported_joint_mimics
+from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
+from ..observables import SolverObservableFlags, SolverObservables
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
@@ -104,10 +105,11 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
-    Extended state attributes:
-        :attr:`~newton.State.body_parent_f` is populated when requested via
-        :meth:`~newton.ModelBuilder.request_state_attributes`. The reported
-        wrench is the per-body net spatial force from the RNEA backward pass
+    Solver observables:
+        :attr:`~newton.solvers.SolverObservables.body_parent_f` is populated when
+        :attr:`~newton.solvers.SolverObservableFlags.BODY_PARENT_F` is requested
+        from :meth:`~newton.solvers.SolverBase.observables`. The reported wrench is
+        the per-body net spatial force from the RNEA backward pass
         translated to the body's COM (linear ``[N]`` first, torque ``[N·m]``
         in world frame at the COM), matching the wrench-transmitted-through-
         the-inbound-joint convention used by :class:`~newton.solvers.SolverMuJoCo`'s
@@ -135,6 +137,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             state_in, state_out = state_out, state_in
 
     """
+
+    SUPPORTED_OBSERVABLE_FLAGS = frozenset({SolverObservableFlags.BODY_PARENT_F})
 
     def __init__(
         self,
@@ -481,8 +485,11 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         control: Control,
         contacts: Contacts,
         dt: float,
+        *,
+        observables: SolverObservables | None = None,
     ) -> None:
         self._apply_module_options()
+        self.validate_observables(observables)
         requires_grad = state_in.requires_grad
         step_in_place = state_in is state_out
 
@@ -493,6 +500,13 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             state_aug = self
 
         model = self.model
+        body_parent_f = (
+            observables.body_parent_f
+            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F)
+            else None
+        )
+        if body_parent_f is None:
+            body_parent_f = state_out.body_parent_f
         descendant_body_q_prev = state_in.body_q
 
         if not getattr(state_aug, "_featherstone_augmented", False):
@@ -504,7 +518,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             if model.joint_count:
                 if self._has_joint_mimics:
                     wp.launch(
-                        kernel=eval_mimic_joints,
+                        kernel=eval_joint_mimic,
                         dim=model.joint_count,
                         inputs=[
                             model.joint_mimic_joint,
@@ -723,8 +737,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 # bodies that are not the child of any joint (or models
                 # without articulations) report a deterministic zero rather
                 # than stale buffer contents.
-                if state_out.body_parent_f is not None:
-                    state_out.body_parent_f.zero_()
+                if body_parent_f is not None:
+                    body_parent_f.zero_()
 
                 if model.articulation_count:
                     # evaluate joint torques
@@ -768,11 +782,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         device=model.device,
                     )
 
-                    # Optionally populate ``state_out.body_parent_f`` (incoming
+                    # Optionally populate ``body_parent_f`` (incoming
                     # joint wrench per body in world frame at COM) from the
-                    # RNEA backward-pass spatial forces. Only runs when the
-                    # extended state attribute has been requested.
-                    if state_out.body_parent_f is not None:
+                    # RNEA backward-pass spatial forces.
+                    if body_parent_f is not None:
                         wp.launch(
                             compute_body_parent_f,
                             dim=model.body_count,
@@ -783,10 +796,9 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                 state_aug.body_ft_s,
                                 body_f,
                             ],
-                            outputs=[state_out.body_parent_f],
+                            outputs=[body_parent_f],
                             device=model.device,
                         )
-
                     # print("joint_tau:")
                     # print(state_aug.joint_tau.numpy())
                     # print("body_q:")
@@ -1028,6 +1040,13 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     # print(state_aug.joint_qdd.numpy())
                     # print("\n\n")
 
+            if (
+                body_parent_f is not None
+                and state_out.body_parent_f is not None
+                and state_out.body_parent_f.ptr != body_parent_f.ptr
+            ):
+                state_out.body_parent_f.assign(body_parent_f)
+
             # -------------------------------------
             # integrate bodies
 
@@ -1071,7 +1090,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
                 if self._has_joint_mimics:
                     wp.launch(
-                        kernel=eval_mimic_joints,
+                        kernel=eval_joint_mimic,
                         dim=model.joint_count,
                         inputs=[
                             model.joint_mimic_joint,

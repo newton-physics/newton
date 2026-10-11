@@ -2022,6 +2022,10 @@ def parse_usd(
             elif not has_effective_mass:
                 i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
                 principal_axes = cmp_principal_axes
+            elif builder.body_mass[body_id] == 0.0 and np.all(np.isfinite(cmp_i_diag)) and min(cmp_i_diag) > 0.0:
+                # No collider mass: use OpenUSD's small-sphere inertia, as PhysX does; its principal axes are undefined.
+                i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
+                principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
             else:
                 # Mass authored, inertia not: keep accumulated inertia and scale
                 # to match authored mass in the mass block below.

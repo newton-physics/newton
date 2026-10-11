@@ -147,7 +147,7 @@ def _gather_task_error_kernel(
 # path to get wrong for a heterogeneous fleet mixing DOF counts. This only
 # breaks down at exactly λ = 0 (DifferentialIKMethod.PSEUDO_INVERSE): JJᵀ is then
 # rank-deficient whenever dof_count is below the robot's own task dimension,
-# and while the Cholesky pivot floor in _invert_spd_block_kernel keeps that
+# and while the Cholesky pivot floor in _make_invert_spd_block_kernel keeps that
 # from producing NaN, it does not produce a meaningful pseudo-inverse in
 # that regime, so DifferentialIKMethod.PSEUDO_INVERSE requires every robot to have at
 # least as many controlled DOFs as its own task dimension.
@@ -191,7 +191,7 @@ def _damped_pinv_singular_value(sigma: float, lam: float):
     corresponding singular values of its (damped) pseudo-inverse -- with
     ``λ = 0`` this would be exactly ``1/sigma`` (a zero-guard keeps it
     finite at ``sigma = 0``, since the eigenvalue analog of that pivot floor
-    is ``_invert_spd_block_kernel``'s Cholesky pivot floor elsewhere in this
+    is ``_make_invert_spd_block_kernel``'s Cholesky pivot floor elsewhere in this
     codebase); damping shifts it smoothly toward ``0`` as ``sigma`` shrinks
     instead of blowing up near a singularity. The same formula, with a
     different ``λ`` each time, is every matrix-inverting

@@ -1,0 +1,1 @@
+Fix whole-step CUDA graph capture of `SolverImplicitMPM` with `B2` and `B3` velocity bases on sparse grids with a positive `max_active_cell_count`, which failed with `RuntimeError: Failed to create volume`.

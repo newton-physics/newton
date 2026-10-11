@@ -7121,6 +7121,49 @@ def Xform "Articulation" (
         np.testing.assert_allclose(inertia @ inv_inertia, np.eye(3), atol=1e-5, rtol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_authored_mass_without_colliders_uses_small_sphere_inertia(self):
+        """Authored mass without inertia or colliders gets OpenUSD's small-sphere inertia.
+
+        Bodies with colliders keep the collider inertia scaled to the authored mass.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        for name, mass, geometry, diagonal_inertia in (
+            ("Bare", 2.0, None, None),
+            ("VisualOnly", 1.0, "visual", None),
+            ("Cube", 1.0, "collider", None),
+            ("Authored", 1.0, None, Gf.Vec3f(1.0, 2.0, 3.0)),
+        ):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass_api.CreateMassAttr().Set(mass)
+            if diagonal_inertia is not None:
+                mass_api.CreateDiagonalInertiaAttr().Set(diagonal_inertia)
+            if geometry is not None:
+                cube = UsdGeom.Cube.Define(stage, f"/World/{name}/Geom")
+                cube.CreateSizeAttr().Set(2.0)
+                if geometry == "collider":
+                    UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        def inertia(name):
+            return np.array(builder.body_inertia[result["path_body_map"][f"/World/{name}"]]).reshape(3, 3)
+
+        # Solid sphere of radius 0.1 m: I = 0.4 * m * r**2.
+        np.testing.assert_allclose(inertia("Bare"), np.eye(3) * 0.4 * 2.0 * 0.1**2, rtol=1e-6)
+        np.testing.assert_allclose(inertia("VisualOnly"), np.eye(3) * 0.4 * 1.0 * 0.1**2, rtol=1e-6)
+        # Solid cube of unit mass and edge 2: I = m * s**2 / 6.
+        np.testing.assert_allclose(inertia("Cube"), np.eye(3) * 2.0**2 / 6.0, rtol=1e-5)
+        np.testing.assert_allclose(np.diag(inertia("Authored")), [1.0, 2.0, 3.0], rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):
         """Authored mass without inertia should produce inertia consistent with a uniform-density body.
 
@@ -8865,6 +8908,16 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
                 namespace="test",
             )
         )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_world",
+                frequency="test:item",
+                dtype=wp.int32,
+                default=99,
+                namespace="test",
+                references="world",
+            )
+        )
 
         # Parse one subtree - this should find the 2 prims under RobotA and increment count
         builder.add_usd(stage, root_path="/World/RobotA")
@@ -8883,6 +8936,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(len(item_values), 2)
         self.assertAlmostEqual(item_values[0], default_value, places=5)
         self.assertAlmostEqual(item_values[1], default_value, places=5)
+        np.testing.assert_array_equal(model.test.item_world.numpy(), [-1, -1])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_custom_frequency_honors_ignore_paths(self):

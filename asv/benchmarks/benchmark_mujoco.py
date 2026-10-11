@@ -11,6 +11,8 @@
 
 
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import numpy as np
 import warp as wp
@@ -31,6 +33,18 @@ else:
 _NEW_LAYOUT_AVAILABLE = hasattr(newton, "use_coord_layout_targets")
 _MAX_BODY_LINEAR_SPEED = 100.0
 _MAX_BODY_ANGULAR_SPEED = 500.0
+
+
+@contextmanager
+def _startup_phase(phase_times: dict[str, float] | None, phase: str) -> Iterator[None]:
+    """Record a phase's duration in seconds, including its device work, if ``phase_times`` is given."""
+    if phase_times is None:
+        yield
+        return
+    start_time = time.perf_counter()
+    yield
+    wp.synchronize_device()
+    phase_times[phase] = time.perf_counter() - start_time
 
 
 def _target_q(owner):
@@ -377,6 +391,8 @@ class Example:
         cone=None,
         fps=600,
         sim_substeps=10,
+        *,
+        startup_phase_times: dict[str, float] | None = None,
     ):
         if _NEW_LAYOUT_AVAILABLE:
             newton.use_coord_layout_targets = True
@@ -398,25 +414,35 @@ class Example:
         if not stage_path:
             stage_path = "example_" + robot + ".usd"
 
-        if builder is None:
-            builder = Example.create_model_builder(robot, world_count, environment, randomize, self.seed)
+        with _startup_phase(startup_phase_times, "model"):
+            if builder is None:
+                builder = Example.create_model_builder(
+                    robot,
+                    world_count,
+                    environment,
+                    randomize,
+                    self.seed,
+                    startup_phase_times=startup_phase_times,
+                )
 
-        # finalize model
-        self.model = builder.finalize()
+            # finalize model
+            with _startup_phase(startup_phase_times, "finalize"):
+                self.model = builder.finalize()
 
-        self.solver = Example.create_solver(
-            self.model,
-            robot,
-            use_mujoco_cpu=use_mujoco_cpu,
-            environment=environment,
-            solver=solver,
-            integrator=integrator,
-            solver_iteration=solver_iteration,
-            ls_iteration=ls_iteration,
-            njmax=njmax,
-            nconmax=nconmax,
-            cone=cone,
-        )
+        with _startup_phase(startup_phase_times, "solver"):
+            self.solver = Example.create_solver(
+                self.model,
+                robot,
+                use_mujoco_cpu=use_mujoco_cpu,
+                environment=environment,
+                solver=solver,
+                integrator=integrator,
+                solver_iteration=solver_iteration,
+                ls_iteration=ls_iteration,
+                njmax=njmax,
+                nconmax=nconmax,
+                cone=cone,
+            )
 
         if stage_path and not headless:
             self.renderer = newton.viewer.ViewerGL()
@@ -433,15 +459,17 @@ class Example:
             self.init_waypoint_control()
 
         self.sensor_contact = None
+        self.solver_observables = None
         sensing_bodies = ROBOT_CONFIGS.get(robot, {}).get("sensing_bodies", None)
         if sensing_bodies is not None:
-            self.sensor_contact = SensorContact(self.model, sensing_bodies=sensing_bodies, counterpart_bodies="*")
-            self.contacts = newton.Contacts(
-                self.solver.get_max_contact_count(),
-                0,
-                device=self.model.device,
-                requested_attributes=self.model.get_requested_contact_attributes(),
+            self.sensor_contact = SensorContact(
+                self.model, request_contact_attributes=False, sensing_bodies=sensing_bodies, counterpart_bodies="*"
             )
+            self.collision_pipeline = newton.CollisionPipeline(
+                self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+            )
+            self.contacts = self.collision_pipeline.contacts()
+            self.solver_observables = self.solver.observables(self.sensor_contact.solver_observable_flags)
 
         self.graph = None
         if self.use_cuda_graph:
@@ -455,13 +483,23 @@ class Example:
                 self.graph = capture.graph
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            # The contact sensor consumes only the final substep's forces.
+            if self.solver_observables is not None and substep == self.sim_substeps - 1:
+                self.solver.step(
+                    self.state_0,
+                    self.state_1,
+                    self.control,
+                    self.contacts,
+                    self.sim_dt,
+                    observables=self.solver_observables,
+                )
+            else:
+                self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
         if self.sensor_contact is not None:
-            self.solver.update_contacts(self.contacts, self.state_0)
-            self.sensor_contact.update(self.state_0, self.contacts)
+            self.sensor_contact.update(self.state_0, self.contacts, observables=self.solver_observables)
 
     def init_waypoint_control(self):
         lo, hi = _target_bounds(self.model)
@@ -503,6 +541,17 @@ class Example:
         self.benchmark_time += end_time - start_time
         self.sim_time += self.frame_dt
 
+    def reset(self):
+        """Restore the initial simulation state in place, keeping the captured graph valid."""
+        # The graph alternates both state buffers, so reset each one.
+        for state in (self.state_0, self.state_1):
+            self.solver.reset(state)
+            newton.eval_fk(self.model, state.joint_q, state.joint_qd, state)
+        _target_q(self.control).assign(_target_q(self.model))
+        if self.actuation == "random":
+            self._target_frame.zero_()
+        self.sim_time = 0.0
+
     def test_final(self):
         validate_simulation_state(
             self.state_0,
@@ -519,7 +568,15 @@ class Example:
         self.renderer.end_frame()
 
     @staticmethod
-    def create_model_builder(robot, world_count, environment="None", randomize=False, seed=123) -> newton.ModelBuilder:
+    def create_model_builder(
+        robot,
+        world_count,
+        environment="None",
+        randomize=False,
+        seed=123,
+        *,
+        startup_phase_times: dict[str, float] | None = None,
+    ) -> newton.ModelBuilder:
         rng = np.random.default_rng(seed)
 
         articulation_builder = newton.ModelBuilder()
@@ -549,7 +606,14 @@ class Example:
 
         builder = newton.ModelBuilder()
         builder.rigid_gap = articulation_builder.rigid_gap
-        builder.replicate(articulation_builder, world_count)
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
+        if robot != "cartpole":
+            # Disable all collisions for the cartpole benchmark
+            builder.add_ground_plane()
+
+        with _startup_phase(startup_phase_times, "replication"):
+            builder.replicate(articulation_builder, world_count)
         if randomize:
             njoint = len(articulation_builder.joint_q)
             for i in range(world_count):
@@ -557,11 +621,6 @@ class Example:
                 builder.joint_q[istart + root_dofs : istart + njoint] = rng.uniform(
                     -1.0, 1.0, size=(njoint - root_dofs)
                 ).tolist()
-        builder.default_shape_cfg.ke = 1.0e3
-        builder.default_shape_cfg.kd = 1.0e2
-        if robot != "cartpole":
-            # Disable all collisions for the cartpole benchmark
-            builder.add_ground_plane()
         return builder
 
     @staticmethod

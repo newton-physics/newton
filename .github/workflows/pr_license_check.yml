@@ -10,10 +10,10 @@ on:
       - main
       - "release-*"
 
-# Cancels in-progress runs of this workflow for the same pull request,
-# but allows parallel runs for pushes to the main branch.
+# Cancel superseded runs for the same pull request or merge queue ref,
+# while keeping distinct queue entries in separate groups.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
