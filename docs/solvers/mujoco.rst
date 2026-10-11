@@ -375,6 +375,139 @@ torsional and rolling rows share the same per-contact ``solreffriction`` and
 MuJoCo scales their regularization by the corresponding friction-coefficient
 ratios, so their effective damping deviates from ``kf`` accordingly.
 
+.. _mujoco-hydroelastic-force-response:
+
+Experimental hydroelastic force response
+----------------------------------------
+
+.. experimental::
+
+    ``SolverMuJoCo(use_hydroelastic_force_response=True)`` and its paired
+    MuJoCo Warp physical-contact interface are experimental and may change.
+
+The option interprets penetrating hydroelastic contact stiffness as N/m and
+its damping as N·s/m. It requires the paired physical-contact backend extension;
+an unmodified backend without that interface raises ``ImportError``. The default
+is ``False``. The paired source revisions and dependency versions must be pinned
+together; backend capability detection does not certify release compatibility.
+The required backend functions are ``enable_contact_force_params``,
+``check_contact_force_params``, ``launch_contact_force_graph``, and
+``reset_contact_force_params``. All four must be present. The supported
+``sim`` dependency constraint is unchanged; evaluating a paired source revision
+does not establish compatibility with a released backend lacking these APIs.
+
+.. code-block:: python
+
+    solver = SolverMuJoCo(model, use_mujoco_contacts=False,
+                         use_hydroelastic_force_response=True, integrator="euler")
+    solver.step(state_in, state_out, control, contacts, dt)
+
+Ordinary eager steps automatically synchronize sticky device error flags before
+integration and publication of the output state. Invalid coefficients raise an
+exception; they never silently select a different material law. This check
+certifies coefficient validity, not numerical accuracy or solver convergence.
+The host checker reads errors recorded during constraint assembly; it does not
+independently validate coefficients written after that assembly.
+
+CUDA capture defers validation to a host boundary. Replay a graph captured using
+this solver through ``solver.launch_hydroelastic_force_response_graph(graph)``.
+All graph outputs are provisional until that synchronizing call returns
+successfully. On failure, discard those outputs and reset the affected worlds;
+there is no rollback of work performed inside the graph. A supplied ``stream``
+is used for both replay and validation. Raw ``wp.capture_launch`` remains a
+low-level interface and requires ``solver.check_hydroelastic_force_response()``
+on the producing stream before any result is consumed. Neither checking method
+may itself be captured. Callers must not read or consume potentially invalid
+output arrays concurrently with replay and validation. Graphs must assemble
+contacts using this solver's buffers and must not reset or clear errors between
+the simulated work and its validation.
+
+``solver.reset(state, world_mask)`` clears errors and all physical records for
+the selected worlds, including inactive contact-buffer slots. Contact reuse,
+an empty contact set, and coefficient correction alone never clear an error.
+Resetting coefficient errors does not certify the numerical state; restore
+appropriate initial conditions before continuing after a rejected result.
+
+The mode requires external rigid contacts and a dense Jacobian. Native MuJoCo
+CPU, native collision generation, RK4, DISCRETE, sparse Jacobians, flex, adhesion and
+sleeping are rejected. MuJoCo Warp execution on CPU and CUDA is supported.
+Euler and implicit integrators retain their treatment of other forces; the
+contact equivalence assumes fixed mass and Jacobian over a step and compatible
+integration of other forces.
+
+The mode applies to negative margin-relative separation between two
+hydroelastic shapes. Exactly ``(k,c)=(0,0)`` retains legacy behavior, including
+friction. Otherwise finite ``k>0,c>=0`` is required. Zero damping means zero
+material damping. Purely viscous ``k=0,c>0`` is unsupported. Timestep must be
+finite and strictly positive, including for worlds with no active contacts.
+Zero damping replaces the legacy critical-reference policy only in this
+mode. Shape ``kd`` is not silently copied into each face. Ordinary/non-hydro
+contacts retain their existing conversion.
+
+For separating velocity ``v=J u``, signed gap ``r`` and timestep ``h``, the
+fixed-geometry normal force law is
+
+.. math::
+
+   f_{n+1}=-k(r_n+hJ u_{n+1})-cJ u_{n+1},
+   \qquad M(u_{n+1}-u_n)=h(F_{\mathrm{ext}}+J^T f_{n+1}).
+
+The existing coupled solver retains full mass/Jacobian coupling and removes
+tensile normal force. Define ``L=h(c+h k)``. The backend supplies
+``D=R^-1=L`` and ``aref=-k*r/L-v/h`` directly. This avoids the legacy impedance
+floor's extra numerical inertia without changing global ``solimp`` or
+``refsafe`` behavior. Physical rows use the stated implicit material law.
+
+Every implied cone row must have finite ``1e-30 <= D_i <= 1/MJ_MINVAL`` and
+finite reference acceleration. The upper bound preserves the existing minimum
+regularization safeguard. Unsupported values set sticky errors; independent
+row clamps would violate the cone metric. This representability check does not
+certify convergence: applications must still check force/momentum residuals,
+conditioning and time/space resolution. Invalid rows are neutralized; any
+error invalidates the entire world's result.
+
+FP32 cancellation in ``f=D*(aref-J*a)`` remains at high dimensionless
+stiffness. An accurate velocity does not guarantee an accurate force: even
+rounding the exact acceleration to FP32 can exceed a requested force tolerance.
+Compensated summation does not correct this subtraction. Stiff cases need
+independent force and momentum checks; unrestricted stiffness accuracy is
+not supported by this experimental implementation.
+
+Elliptic rows retain MuJoCo's complete metric: normal regularization is ``1/L``;
+tangential rows scale by ``impratio`` and friction-coefficient ratios. Pyramidal
+edges use ``2*(condim-1)/L``. Identical positive area partitions preserve this
+regularized cone problem. Cone boundaries couple normal and tangential forces;
+an independent scalar normal-spring law during sliding is not claimed.
+Positive shape ``kf`` supplies no separate friction-reference override on
+physical rows, whose tangential velocity gain is ``1/h``. This changes friction
+policy and is not an independently prescribed viscosity. A resolved ``kf=0``
+still disables elliptic friction.
+
+Dense generalized forces use compensated summation on CPU and CUDA in worlds
+containing valid physical contact rows. This preserves the summed force and
+moment of many small rows. Local line-search row sums additionally use
+compensated summation on CPU, where those reductions run serially. CUDA retains
+its existing line-search reduction policy. Worlds with only legacy contacts
+retain their original accumulation; mixed worlds compensate all their rows.
+The backend refreshes this derived activity state each assembly, including
+empty contact sets. Sparse physical-contact accumulation is unsupported.
+
+The Newton converter refreshes coefficients each substep, including reused
+buffers and activation changes; the backend uses the current timestep and
+actual row velocity. Hydro extraction still supplies each area's geometry and
+spring. ``kh`` remains Pa/m; no contact-count multiplier, mass change, selected
+time constant or reduction is introduced. Speculative contacts retain the
+existing activation policy and require collision refresh to obtain the current
+pressure-field spring. Reduced contacts retain the exporter's approximation.
+
+This is an intentionally runtime-only solver policy, with no USD schema or
+MJCF serialization. Materials retain their existing authored schemas; physical
+coefficients are generated contacts, not a new authored asset field.
+It does not supply pressure-gradient
+tangents, preserve arbitrary reduced stiffness tensors, resolve sub-timestep
+impacts, or provide continuous collision detection. Small penetration alone
+is not validation of the physical model.
+
 Actuators
 ---------
 
