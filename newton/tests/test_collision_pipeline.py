@@ -2559,10 +2559,11 @@ class TestTrianglePairCapacityEstimator(unittest.TestCase):
         expected = self._capacity(model)
         # Per world: 2 or 3 pairs with the global mesh, plus 2 with a local mesh; global mesh-box once.
         self.assertEqual(expected, (2 * 5 + 2 * 2 + 1) * _TRIANGLE_PAIRS_PER_MESH_PAIR)
-        model.shape_contact_pairs = None
         for broad_phase in ("nxn", "sap"):
             with self.subTest(broad_phase=broad_phase):
+                model = builder.finalize(device="cpu")
                 self.assertEqual(self._capacity(model, broad_phase=broad_phase), expected)
+                self.assertIsNone(model._shape_contact_pairs)
 
     def test_counts_without_stored_pairs_ignore_filters(self):
         """Overcount, never undercount, when filtered pairs cannot be seen without a pair list."""
@@ -2572,10 +2573,13 @@ class TestTrianglePairCapacityEstimator(unittest.TestCase):
         builder.add_shape_collision_filter_pair(mesh, builder.shape_count - 1)
         model = builder.finalize(device="cpu")
 
-        with_pairs = self._capacity(model, broad_phase="nxn")
-        model.shape_contact_pairs = None
+        with_pairs = self._capacity(model)
         self.assertEqual(with_pairs, 2 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
-        self.assertEqual(self._capacity(model, broad_phase="nxn"), 3 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+        for broad_phase in ("nxn", "sap"):
+            with self.subTest(broad_phase=broad_phase):
+                model = builder.finalize(device="cpu")
+                self.assertEqual(self._capacity(model, broad_phase=broad_phase), 3 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+                self.assertIsNone(model._shape_contact_pairs)
 
     def test_large_automatic_estimate_warns(self):
         """Warn when the automatic estimate needs large buffers, and stay silent for explicit values."""

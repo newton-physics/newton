@@ -844,7 +844,7 @@ def _estimate_triangle_pair_details(
     pairs count once.
 
     With ``shape_pairs`` the routed pairs are counted exactly. Without them
-    (NXN/SAP on a model with no stored pair list) they are counted per world from
+    (NXN/SAP) they are counted per world from
     shape-type counts, skipping static-static pairs; this ignores group,
     filter-pair, kinematic, and hydroelastic culling and so can only overcount.
 
@@ -856,8 +856,8 @@ def _estimate_triangle_pair_details(
 
     Args:
         model: The simulation model.
-        shape_pairs: ``(N, 2)`` candidate shape pairs (the explicit list or the
-            builder's ``shape_contact_pairs``), or ``None`` to count from masks.
+        shape_pairs: ``(N, 2)`` candidate shape pairs from the configured explicit
+            list, or ``None`` to count from masks.
         collide_mask: Shapes the broad phase pairs; used only without ``shape_pairs``.
         mesh_like_mask: Routed mesh and heightfield shapes.
         planar_sdf_mask: Routed shapes with SDF edge data.
@@ -2012,16 +2012,10 @@ class CollisionPipeline:
                 use_lean_gjk_mpr = not bool(lean_unsupported & set(route_shape_types.tolist()))
 
                 if max_triangle_pairs is None:
-                    if explicit_pairs_host is not None:
-                        estimate_pairs = explicit_pairs_host
-                    elif model.shape_contact_pairs is not None:
-                        estimate_pairs = model.shape_contact_pairs.numpy().reshape(-1, 2)
-                    else:
-                        # NXN/SAP on a model without a stored pair list: count from shape masks.
-                        estimate_pairs = None
+                    # NXN/SAP count from shape masks without materializing the model's lazy pair table.
                     triangle_pair_estimate = _estimate_triangle_pair_details(
                         model,
-                        estimate_pairs,
+                        explicit_pairs_host,
                         route_mask,
                         mesh_mask | heightfield_mask,
                         planar_sdf_mask,
