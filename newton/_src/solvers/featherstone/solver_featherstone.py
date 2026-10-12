@@ -6,7 +6,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
-from ...sim.joint_mimic import eval_mimic_joints, has_supported_joint_mimics
+from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..observables import SolverObservableFlags, SolverObservables
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
@@ -518,7 +518,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             if model.joint_count:
                 if self._has_joint_mimics:
                     wp.launch(
-                        kernel=eval_mimic_joints,
+                        kernel=eval_joint_mimic,
                         dim=model.joint_count,
                         inputs=[
                             model.joint_mimic_joint,
@@ -1090,7 +1090,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
                 if self._has_joint_mimics:
                     wp.launch(
-                        kernel=eval_mimic_joints,
+                        kernel=eval_joint_mimic,
                         dim=model.joint_count,
                         inputs=[
                             model.joint_mimic_joint,

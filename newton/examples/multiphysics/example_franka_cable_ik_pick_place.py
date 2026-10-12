@@ -251,7 +251,6 @@ class Example:
         bend_stiffness = 4.0e-4
         builder.add_rod(
             rod=rod,
-            body_frame_origin="com",
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=1.0e-1,
@@ -315,7 +314,6 @@ class Example:
                     solver=lambda v: SolverVBD(
                         model=v,
                         iterations=int(args.vbd_iterations),
-                        rigid_compliant_alm=True,
                         rigid_contact_history=False,
                     ),
                     bodies=self.payload_bodies,

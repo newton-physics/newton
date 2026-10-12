@@ -165,17 +165,16 @@ repository examples spend tuning effort, not a shared solver API.
        ``particle_edge_parallel_epsilon``, ``particle_enable_tile_solve``,
        ``particle_topological_contact_filter_threshold``,
        ``particle_rest_shape_contact_exclusion_radius``.
-     - ``rigid_compliant_alm=True`` enables the recommended unified
+     - ``rigid_compliant_alm`` (default ``True``) selects the recommended unified
        finite-material compliant ALM formulation for rigid contacts, structural
        joints, drives, and limits. Authored stiffness determines physical
        compliance; :class:`~newton.solvers.SolverVBD` selects the numerical ALM
-       conditioning parameters internally. Omitting the option is deprecated
-       because its default will change to ``True``. Pass ``False`` to retain the
-       legacy AVBD path during the migration window. ``rigid_contact_hard``
-       selects contact behavior only on that legacy path.
+       conditioning parameters internally. Pass ``False`` to retain the
+       deprecated legacy AVBD path during its migration window.
+       ``rigid_contact_hard`` selects contact behavior only on that legacy path.
 
-       ``rigid_avbd_beta`` and ``*_k_start`` apply only to the legacy path.
-       Simulations relying on those controls or on legacy hard constraints may
+       Deprecated penalty-ramping controls do not affect compliant-ALM rigid constraints.
+       Rigid simulations relying on those controls or on legacy hard constraints may
        require stiffness retuning when enabling compliant ALM. Alpha remains an
        advanced stabilization override.
 
@@ -198,8 +197,7 @@ repository examples spend tuning effort, not a shared solver API.
        contact buffers and filters, ``collision_frequency`` / ``collision_frequency_type``,
        ``particle_enable_tile_solve``, ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``, and
-       ``rigid_contact_history``. On the legacy path, examples also tune
-       ``rigid_contact_hard``. ``rigid_avbd_contact_alpha`` remains available
+       ``rigid_contact_history``. ``rigid_avbd_contact_alpha`` remains available
        under compliant ALM as an advanced stabilization override.
 
        ``rigid_soft_enable_dat=True`` requires a solver-owned

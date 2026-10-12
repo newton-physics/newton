@@ -466,7 +466,7 @@ Construct it with ``request_contact_attributes=False`` and pass the container as
 
    pipeline = newton.CollisionPipeline(model)
    contacts = pipeline.contacts()
-   solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+   solver = newton.solvers.SolverVBD(model)
    observables = solver.observables({SolverObservableFlags.CONTACT_F})
    state_in, state_out = model.state(), model.state()
 

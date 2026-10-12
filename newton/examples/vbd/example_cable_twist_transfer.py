@@ -105,7 +105,6 @@ class Example:
                 twist_damping=self.TWIST_DAMPING,
                 label=f"twist_transfer_{label}",
                 wrap_in_articulation=False,
-                body_frame_origin="com",
             )
             root_body = int(bodies[0])
             tip_body = int(bodies[-1])
@@ -126,7 +125,7 @@ class Example:
 
         builder.color()
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

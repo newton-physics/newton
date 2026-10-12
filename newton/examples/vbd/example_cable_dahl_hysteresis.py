@@ -124,7 +124,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
         self._configure_dahl_attributes()
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -208,7 +208,6 @@ class Example:
             twist_stiffness=self.TWIST_STIFFNESS,
             twist_damping=self.TWIST_DAMPING,
             label=f"dahl_{name}",
-            body_frame_origin="com",
         )
         joint_count_after = builder.joint_count
 

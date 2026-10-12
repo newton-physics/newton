@@ -1,8 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import unittest
 import warnings
+import weakref
 from collections import Counter
 from enum import IntFlag, auto
 from unittest import mock
@@ -36,6 +38,9 @@ from newton._src.geometry.soft_contacts_sdf import (
 from newton._src.sim.collide import (
     _GENERIC_CONVEX_PAIR_LOOKUP,
     _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD,
+    _TRIANGLE_PAIR_NEIGHBORS_PER_SHAPE,
+    _TRIANGLE_PAIRS_MIN_CAPACITY,
+    _TRIANGLE_PAIRS_PER_MESH_PAIR,
     CollisionPipeline,
     _build_soft_edge_rigid_contact_pairs,
     _build_soft_face_rigid_contact_pairs,
@@ -51,6 +56,7 @@ from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
 from newton.geometry import BroadPhaseAllPairs, NarrowPhase
 from newton.tests.unittest_utils import (
+    USD_AVAILABLE,
     add_function_test,
     configure_sdf_for_collision_shapes,
     get_cuda_test_devices,
@@ -142,10 +148,7 @@ class CollisionSetup:
         self.viewer.set_model(self.model)
 
         self.graph = None
-        if wp.get_device(device).is_cuda:
-            with wp.ScopedCapture(device=device) as capture:
-                self.simulate()
-            self.graph = capture.graph
+        self.capture()
 
     def add_shape(self, shape_type: GeoType, body: int, sdf_max_resolution: int | None = None):
         if shape_type == GeoType.BOX:
@@ -184,9 +187,16 @@ class CollisionSetup:
 
     def capture(self):
         if wp.get_device(self._device).is_cuda:
-            with wp.ScopedCapture(device=self._device) as capture:
-                self.simulate()
-            self.graph = capture.graph
+            # Cyclic GC can destroy an earlier scene's SDF textures, which CUDA forbids during capture.
+            gc_was_enabled = gc.isenabled()
+            gc.disable()
+            try:
+                with wp.ScopedCapture(device=self._device) as capture:
+                    self.simulate()
+                self.graph = capture.graph
+            finally:
+                if gc_was_enabled:
+                    gc.enable()
         else:
             self.graph = None
 
@@ -698,6 +708,77 @@ def test_mesh_mesh_bvh_vs_bvh(_test, device, broad_phase: str):
     test_mesh_mesh_sdf_modes(
         _test, device, sdf_max_resolution_a=None, sdf_max_resolution_b=None, broad_phase=broad_phase
     )
+
+
+def test_collision_capture_defers_sdf_texture_cleanup(test, device):
+    """Defer unreachable SDF texture cleanup until CUDA capture finishes."""
+    gc_was_enabled = gc.isenabled()
+    thresholds = gc.get_threshold()
+    gc.collect()
+    gc.enable()
+    gc.set_threshold(0)
+    try:
+        mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+        mesh.build_sdf(max_resolution=16, device=device)
+        texture_ref = weakref.ref(mesh.sdf._coarse_texture)
+        # Keep a discarded scene pending cyclic collection regardless of Warp version.
+        discarded_scene = {"mesh": mesh}
+        discarded_scene["cycle"] = discarded_scene
+        del mesh, discarded_scene
+
+        simulate = CollisionSetup.simulate
+
+        def simulate_with_gc_pressure(setup):
+            gc.set_threshold(gc.get_count()[0] + 1, 1000000, 1000000)
+            allocations = [[] for _ in range(32)]
+            simulate(setup)
+            del allocations
+
+        with mock.patch.object(CollisionSetup, "simulate", simulate_with_gc_pressure):
+            setup = CollisionSetup(
+                viewer=newton.viewer.ViewerNull(),
+                device=device,
+                solver_fn=newton.solvers.SolverXPBD,
+                sim_substeps=2,
+                shape_type_a=GeoType.MESH,
+                shape_type_b=GeoType.MESH,
+                sdf_max_resolution_a=16,
+            )
+            setup.capture()
+
+        test.assertTrue(gc.isenabled())
+        setup.step()
+        test.assertTrue(np.isfinite(setup.state_0.body_q.numpy()).all())
+        gc.collect()
+        test.assertIsNone(texture_ref())
+
+        for gc_enabled in (False, True):
+            if gc_enabled:
+                gc.enable()
+            else:
+                gc.disable()
+            setup.capture()
+            test.assertEqual(gc.isenabled(), gc_enabled)
+            with mock.patch.object(setup, "simulate", side_effect=RuntimeError("capture interrupted")):
+                with test.assertRaisesRegex(RuntimeError, "capture interrupted"):
+                    setup.capture()
+            test.assertEqual(gc.isenabled(), gc_enabled)
+    finally:
+        gc.set_threshold(*thresholds)
+        gc.collect()
+        if gc_was_enabled:
+            gc.enable()
+        else:
+            gc.disable()
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_collision_capture_defers_sdf_texture_cleanup",
+    test_collision_capture_defers_sdf_texture_cleanup,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
 
 
 # Add mesh-mesh SDF mode tests for all broad phase modes
@@ -2307,6 +2388,171 @@ class TestContactCountEstimator(unittest.TestCase):
         self.assertEqual(estimate, 1500)
 
 
+def _flat_mesh(cells: int = 2) -> newton.Mesh:
+    xs, ys = np.meshgrid(np.linspace(-1.0, 1.0, cells + 1), np.linspace(-1.0, 1.0, cells + 1))
+    vertices = np.stack([xs.ravel(), ys.ravel(), np.zeros(xs.size)], axis=1).astype(np.float32)
+    indices = []
+    for i in range(cells):
+        for j in range(cells):
+            a = i * (cells + 1) + j
+            indices += [a, a + 1, a + cells + 2, a, a + cells + 2, a + cells + 1]
+    return newton.Mesh(vertices, np.array(indices, dtype=np.int32), compute_inertia=False)
+
+
+class TestTrianglePairCapacityEstimator(unittest.TestCase):
+    """Size the triangle-pair and contact-reducer capacity from the model's mesh pairs."""
+
+    @staticmethod
+    def _capacity(model, **kwargs):
+        # Remove the legacy floor so small scenes expose the per-world budget.
+        with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_MIN_CAPACITY", 1):
+            return CollisionPipeline(model, **kwargs).narrow_phase.max_triangle_pairs
+
+    @staticmethod
+    def _boxes(builder, count, z=0.1):
+        for k in range(count):
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.3 * k, 0.0, z), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+
+    def test_heterogeneous_worlds_sum_per_world_pairs(self):
+        """Budget only the worlds that contain meshes, not world_count times the busiest world."""
+        builder = newton.ModelBuilder()
+        for world in range(4):
+            sub = newton.ModelBuilder()
+            if world == 0:
+                sub.add_shape_mesh(-1, mesh=_flat_mesh())
+            else:
+                sub.add_shape_box(-1, hx=1.0, hy=1.0, hz=0.01)
+            self._boxes(sub, 3)
+            builder.add_world(sub)
+        model = builder.finalize(device="cpu")
+
+        # World 0 has three mesh-box pairs; the box-only worlds add nothing.
+        self.assertEqual(self._capacity(model), 3 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+
+    def test_world_count_scales_capacity(self):
+        """Grow the default with the number of worlds that contain mesh pairs."""
+        sub = newton.ModelBuilder()
+        sub.add_shape_mesh(-1, mesh=_flat_mesh())
+        self._boxes(sub, 3)
+        for world_count in (1, 8):
+            with self.subTest(world_count=world_count):
+                builder = newton.ModelBuilder()
+                builder.replicate(sub, world_count)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(self._capacity(model), world_count * 3 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+
+    def test_global_mesh_counts_once_per_world(self):
+        """Count a global mesh's pairs in each world and global-global pairs once."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=_flat_mesh())
+        self._boxes(builder, 1)
+        for _ in range(3):
+            sub = newton.ModelBuilder()
+            self._boxes(sub, 2)
+            builder.add_world(sub)
+        model = builder.finalize(device="cpu")
+
+        # 3 worlds x 2 mesh-box pairs, plus the global mesh-box pair; global box-box pairs are not mesh pairs.
+        self.assertEqual(self._capacity(model), 7 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+
+    def test_filtered_and_non_colliding_shapes_are_excluded(self):
+        """Skip filtered pairs and shapes that do not collide with shapes."""
+        builder = newton.ModelBuilder()
+        mesh = builder.add_shape_mesh(-1, mesh=_flat_mesh())
+        visual = newton.ModelBuilder.ShapeConfig(has_shape_collision=False)
+        builder.add_shape_mesh(-1, mesh=_flat_mesh(), cfg=visual)
+        self._boxes(builder, 3)
+        builder.add_shape_collision_filter_pair(mesh, builder.shape_count - 1)
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(self._capacity(model), 2 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+
+    def test_neighbor_budget_caps_dense_mesh_worlds(self):
+        """Cap all-pairs mesh counts at a fixed number of neighbors per participating shape."""
+        builder = newton.ModelBuilder()
+        for k in range(20):
+            body = builder.add_body(xform=wp.transform(wp.vec3(3.0 * k, 0.0, 0.0), wp.quat_identity()))
+            builder.add_shape_mesh(body, mesh=_flat_mesh())
+        model = builder.finalize(device="cpu")
+
+        # 190 mesh-mesh pairs, budgeted in aggregate as 20 * 6 / 2 = 60 (a heuristic, not a contact bound).
+        self.assertEqual(model.shape_contact_pair_count, 190)
+        expected_pairs = 20 * _TRIANGLE_PAIR_NEIGHBORS_PER_SHAPE // 2
+        self.assertEqual(self._capacity(model), expected_pairs * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+
+    def test_explicit_capacity_and_floor(self):
+        """Keep explicit capacities, the legacy floor, and the deterministic packing limit."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=_flat_mesh())
+        self._boxes(builder, 3)
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(CollisionPipeline(model, max_triangle_pairs=4096).narrow_phase.max_triangle_pairs, 4096)
+        self.assertEqual(CollisionPipeline(model).narrow_phase.max_triangle_pairs, _TRIANGLE_PAIRS_MIN_CAPACITY)
+        with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_PER_MESH_PAIR", 1 << 20):
+            with self.assertWarnsRegex(RuntimeWarning, "deterministic contact reduction"):
+                pipeline = CollisionPipeline(model, deterministic=True)
+            self.assertEqual(pipeline.narrow_phase.max_triangle_pairs, (1 << 20) - 1)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                unreduced = CollisionPipeline(model, deterministic=True, reduce_contacts=False)
+            self.assertEqual(unreduced.narrow_phase.max_triangle_pairs, 3 << 20)
+        with self.assertRaises(ValueError):
+            CollisionPipeline(model, max_triangle_pairs=0)
+
+    def test_counts_without_stored_pairs_match_pair_list(self):
+        """Count NXN/SAP mesh pairs from shape types when the model has no stored pair list."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=_flat_mesh())
+        self._boxes(builder, 1)
+        for world in range(4):
+            sub = newton.ModelBuilder()
+            if world % 2 == 0:
+                sub.add_shape_mesh(-1, mesh=_flat_mesh())
+            self._boxes(sub, 2)
+            builder.add_world(sub)
+        model = builder.finalize(device="cpu")
+
+        expected = self._capacity(model)
+        # Per world: 2 or 3 pairs with the global mesh, plus 2 with a local mesh; global mesh-box once.
+        self.assertEqual(expected, (2 * 5 + 2 * 2 + 1) * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+        model.shape_contact_pairs = None
+        for broad_phase in ("nxn", "sap"):
+            with self.subTest(broad_phase=broad_phase):
+                self.assertEqual(self._capacity(model, broad_phase=broad_phase), expected)
+
+    def test_counts_without_stored_pairs_ignore_filters(self):
+        """Overcount, never undercount, when filtered pairs cannot be seen without a pair list."""
+        builder = newton.ModelBuilder()
+        mesh = builder.add_shape_mesh(-1, mesh=_flat_mesh())
+        self._boxes(builder, 3)
+        builder.add_shape_collision_filter_pair(mesh, builder.shape_count - 1)
+        model = builder.finalize(device="cpu")
+
+        with_pairs = self._capacity(model, broad_phase="nxn")
+        model.shape_contact_pairs = None
+        self.assertEqual(with_pairs, 2 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+        self.assertEqual(self._capacity(model, broad_phase="nxn"), 3 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+
+    def test_large_automatic_estimate_warns(self):
+        """Warn when the automatic estimate needs large buffers, and stay silent for explicit values."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=_flat_mesh())
+        self._boxes(builder, 3)
+        model = builder.finalize(device="cpu")
+
+        with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_LARGE_BUFFER_BYTES", 1):
+            with self.assertWarnsRegex(
+                RuntimeWarning, r"max_triangle_pairs=1,000,000.*MiB.*3 budgeted of 3 mesh-routed pairs from shape pairs"
+            ):
+                CollisionPipeline(model)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                CollisionPipeline(model, max_triangle_pairs=4096)
+        self.assertEqual([w for w in caught if "max_triangle_pairs" in str(w.message)], [])
+
+
 class TestShapePairsMaxScaling(unittest.TestCase):
     """Verify that shape_pairs_max scales linearly with world count, not quadratically."""
 
@@ -2421,7 +2667,8 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         )
 
         self.assertTrue(has_generic_convex_pairs)
-        self.assertEqual(estimate, _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD)
+        self.assertEqual(estimate, 27_776)
+        self.assertGreaterEqual(estimate, _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD)
 
     def test_explicit_generic_convex_work_estimate_uses_routed_pairs(self):
         """Count exact generic convex routes for explicit broad phase pairs."""
@@ -4891,6 +5138,174 @@ def test_force_sdf_provisions_collision_meshes(test, device):
     # configure_sdf still rejects both resolution knobs at once.
     with test.assertRaises(ValueError):
         newton.ModelBuilder.ShapeConfig().configure_sdf(max_resolution=64, target_voxel_size=0.01)
+
+
+def test_particle_only_mesh_sdf_emits_full_surface_contacts(test, device):
+    """Preserve prebuilt SDFs and emit accurate edge/face contacts for particle-only meshes."""
+    for provisioning in ("prebuilt", "deferred", "force_sdf"):
+        with test.subTest(provisioning=provisioning):
+            mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+            if provisioning == "prebuilt":
+                mesh.build_sdf(max_resolution=32, device=device)
+            builder = newton.ModelBuilder()
+            cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+            cfg.configure_sdf(force_sdf=provisioning != "deferred")
+            shape = builder.add_shape_mesh(body=-1, mesh=mesh, scale=(1.0, 1.0, 2.0), cfg=cfg)
+            if provisioning == "deferred":
+                # Exercise retained internal provisioning; ShapeConfig rejects mesh resolution settings.
+                builder.shape_sdf_max_resolution[shape] = 32
+            builder.add_cloth_grid(
+                pos=wp.vec3(-0.2, -0.2, 1.03),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0),
+                dim_x=2,
+                dim_y=2,
+                cell_x=0.2,
+                cell_y=0.2,
+                mass=0.1,
+            )
+            model = builder.finalize(device=device)
+            sdf_idx = int(model._shape_sdf_index.numpy()[shape])
+            test.assertGreaterEqual(sdf_idx, 0)
+            test.assertIsNotNone(model._texture_sdf_coarse_textures[sdf_idx])
+            if provisioning == "prebuilt":
+                test.assertIs(model._texture_sdf_coarse_textures[sdf_idx], mesh.sdf._coarse_texture)
+            else:
+                test.assertIsNone(mesh.sdf)
+
+            pipeline = newton.CollisionPipeline(
+                model, broad_phase="nxn", soft_contact_gap=0.06, enable_rigid_soft_full_surface_contact=True
+            )
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            total = int(contacts.soft_contact_count.numpy()[0])
+            indices = contacts.soft_contact_indices.numpy()[:total]
+            edge_contacts = (indices[:, 1] >= 0) & (indices[:, 2] < 0)
+            face_contacts = indices[:, 2] >= 0
+            test.assertTrue(np.any(edge_contacts))
+            test.assertTrue(np.any(face_contacts))
+            surface_z = contacts.soft_contact_body_pos.numpy()[:total, 2][edge_contacts | face_contacts]
+            np.testing.assert_allclose(surface_z, 1.0, atol=5.0e-3)
+
+
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+def test_particle_only_usd_mesh_sdf_near_surface_contacts(test, device):
+    """Keep imported mesh contact normals unit length and contact points on the surface."""
+    from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+    mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    prim = UsdGeom.Mesh.Define(stage, "/Collider")
+    prim.CreatePointsAttr(mesh.vertices.tolist())
+    prim.CreateFaceVertexCountsAttr([3] * (len(mesh.indices) // 3))
+    prim.CreateFaceVertexIndicesAttr(mesh.indices.tolist())
+    prim.AddScaleOp().Set((1.0, 1.0, 2.0))
+    UsdPhysics.CollisionAPI.Apply(prim.GetPrim())
+    resolution_attr = prim.GetPrim().CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int)
+
+    for resolution in (32, 64, 128):
+        with test.subTest(resolution=resolution):
+            resolution_attr.Set(resolution)
+            builder = newton.ModelBuilder()
+            imported = builder.add_usd(stage, load_visual_shapes=False)
+            shape = imported["path_shape_map"]["/Collider"]
+            test.assertEqual(builder.shape_sdf_max_resolution[shape], resolution)
+            builder.shape_flags[shape] &= ~ShapeFlags.COLLIDE_SHAPES
+            builder.add_cloth_grid(
+                pos=wp.vec3(-0.2, -0.2, 0.9995),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0),
+                dim_x=2,
+                dim_y=2,
+                cell_x=0.2,
+                cell_y=0.2,
+                mass=0.1,
+            )
+            model = builder.finalize(device=device)
+            pipeline = newton.CollisionPipeline(
+                model, broad_phase="nxn", soft_contact_gap=0.01, enable_rigid_soft_full_surface_contact=True
+            )
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            count = int(contacts.soft_contact_count.numpy()[0])
+            indices = contacts.soft_contact_indices.numpy()[:count]
+            test.assertTrue(np.any((indices[:, 1] >= 0) & (indices[:, 2] < 0)))
+            test.assertTrue(np.any(indices[:, 2] >= 0))
+            full_surface = indices[:, 1] >= 0
+            normals = contacts.soft_contact_normal.numpy()[:count][full_surface]
+            np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1.0e-5)
+            positions = contacts.soft_contact_body_pos.numpy()[:count][full_surface]
+            np.testing.assert_allclose(positions[:, 2], 1.0, atol=5.0e-5)
+
+
+def test_particle_only_convex_sdf_preserves_voxel_size(test, device):
+    """Preserve deferred SDF resolution and distances for a scaled particle-only convex mesh."""
+    mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=True, compute_inertia=False)
+    scale = np.array([1.0, 1.0, 2.0], dtype=np.float32)
+    target_voxel_size = 0.05
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+    shape = builder.add_shape_convex_hull(body=-1, mesh=mesh, scale=tuple(scale), cfg=cfg)
+    # Exercise retained internal provisioning; ShapeConfig rejects mesh resolution settings.
+    builder.shape_sdf_target_voxel_size[shape] = target_voxel_size
+    model = builder.finalize(device=device)
+
+    convex_mesh = model._mesh_keep_alive[0]
+    test.assertEqual(convex_mesh.points.shape[0], 8)
+    test.assertLess(int(convex_mesh.indices.numpy().max()), 8)
+    test.assertIsNone(mesh.sdf)
+    sdf_idx = int(model._shape_sdf_index.numpy()[shape])
+    test.assertGreaterEqual(sdf_idx, 0)
+    sdf = model._texture_sdf_data.numpy()[sdf_idx]
+    # The requested voxel size is in meters, including the shape's nonuniform scale.
+    physical_voxel_size = sdf["voxel_size"] * (1.0 if sdf["scale_baked"] else scale)
+    test.assertLessEqual(float(np.max(physical_voxel_size)), target_voxel_size + 1.0e-6)
+
+    out_phi = wp.zeros(1, dtype=float, device=device)
+    out_grad = wp.zeros(1, dtype=wp.vec3, device=device)
+    for distance in (-0.03, 0.03):
+        with test.subTest(distance=distance):
+            wp.launch(
+                _eval_shape_sdf_kernel,
+                dim=1,
+                inputs=[
+                    int(GeoType.CONVEX_MESH),
+                    wp.vec3(*scale),
+                    wp.vec3(0.0, 0.0, 1.0 + distance),
+                    sdf_idx,
+                    model._texture_sdf_data,
+                ],
+                outputs=[out_phi, out_grad],
+                device=device,
+            )
+            test.assertAlmostEqual(float(out_phi.numpy()[0]), distance, delta=5.0e-3)
+            np.testing.assert_allclose(out_grad.numpy()[0], [0.0, 0.0, 1.0], atol=5.0e-3)
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_particle_only_mesh_sdf_emits_full_surface_contacts",
+    test_particle_only_mesh_sdf_emits_full_surface_contacts,
+    devices=get_cuda_test_devices(),
+)
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_particle_only_usd_mesh_sdf_near_surface_contacts",
+    test_particle_only_usd_mesh_sdf_near_surface_contacts,
+    devices=get_cuda_test_devices(),
+)
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_particle_only_convex_sdf_preserves_voxel_size",
+    test_particle_only_convex_sdf_preserves_voxel_size,
+    devices=get_cuda_test_devices(),
+)
 
 
 add_function_test(

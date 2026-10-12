@@ -132,7 +132,7 @@ jobs:
 
       - name: Resolve and install minimum dependency versions
         run: |
-          uv sync --extra dev --resolution lowest-direct
+          uv sync --extra dev --extra rtx --resolution lowest-direct
           echo "Resolved dependency versions:"
           uv tree --depth 1 --frozen
 
