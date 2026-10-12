@@ -1836,7 +1836,7 @@ def _articulation_rows(model, articulation_ids, joint_names=None):
 
 
 def test_sparse_world_view_layouts(test, device):
-    """Views compact the worlds that hold the selected articulation and report how rows are addressed."""
+    """Compact the worlds that hold the selected articulation and report how rows are addressed."""
     for layout, sparse, explicit, world_ids in (
         ("regular", True, False, [0, 2, 4]),
         ("irregular", True, True, [0, 2, 5]),
@@ -1881,7 +1881,7 @@ def test_sparse_world_view_layouts(test, device):
 
 
 def test_sparse_world_view_rejections(test, device):
-    """Different articulations in one view and different match counts per world remain unsupported."""
+    """Reject views that mix articulations or match different counts per world."""
     model = _make_sparse_robot_model("irregular", device)
     with test.assertRaisesRegex(ValueError, "layout is unavailable"):
         ArticulationView(model, "robot_*", verbose=False)
@@ -1899,7 +1899,7 @@ def test_sparse_world_view_rejections(test, device):
 
 
 def test_sparse_world_gather_scatter_values(test, device):
-    """Getters return the selected articulations' rows and masked setters write only those rows.
+    """Gather the selected articulations' rows and scatter masked values only to those rows.
 
     Covers the regular-stride sparse layout (strided views) and the irregular one (explicit model
     indices), with a full selection of robot_a and an indexed joint selection of robot_b.
@@ -1967,7 +1967,7 @@ def test_sparse_world_gather_scatter_values(test, device):
 
 
 def test_sparse_world_root_transforms_and_velocities(test, device):
-    """Root access through sparse views gathers and scatters the selected roots."""
+    """Gather and scatter the selected roots' transforms and velocities through sparse views."""
     for layout in ("regular", "irregular"):
         with test.subTest(layout=layout, base="floating"):
             model = _make_sparse_robot_model(layout, device)
@@ -2026,7 +2026,7 @@ def _sum_selected_values(values: wp.array3d[float], loss: wp.array[float]):
 
 
 def test_sparse_world_gradients(test, device):
-    """Gradients of gathered values reach the selected source rows only."""
+    """Propagate gradients of gathered values to the selected source rows only."""
     for layout in ("regular", "irregular"):
         with test.subTest(layout=layout):
             model = _make_sparse_robot_model(layout, device, requires_grad=True)
@@ -2044,7 +2044,7 @@ def test_sparse_world_gradients(test, device):
 
 
 def test_sparse_world_custom_frequency(test, device):
-    """Custom-frequency rows of irregularly spaced worlds are gathered and scattered by model index."""
+    """Gather and scatter custom-frequency rows of irregularly spaced worlds by model index."""
     tendon_robot = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     tendon_robot.add_mjcf(TestSelectionFixedTendons.TENDON_MJCF)
     scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -2067,7 +2067,7 @@ def test_sparse_world_custom_frequency(test, device):
 
 
 def test_sparse_world_getters_capture_cold(test, device):
-    """Built-in getters and setters of sparse views capture on first use and replay correctly."""
+    """Capture built-in getters and setters of sparse views on first use and replay them correctly."""
     if not wp.is_mempool_enabled(device):
         test.skipTest("CUDA graph capture of allocations requires the mempool")
     for layout in ("regular", "irregular"):
@@ -2173,12 +2173,12 @@ def _check_actuator_rows(test, device, layouts):
 
 
 def test_sparse_world_actuator_parameters_use_selected_rows(test, device):
-    """Actuator gather/scatter through sparse views addresses the selected articulations' rows."""
+    """Address the selected articulations' actuator rows when gathering and scattering through sparse views."""
     _check_actuator_rows(test, device, ("regular", "irregular"))
 
 
 def test_dense_view_reversed_actuator_order(test, device):
-    """A dense view reads the right rows when the actuator lists them in reverse global DOF order.
+    """Read the right rows through a dense view when the actuator lists them in reverse global DOF order.
 
     The view is not sparse, but the actuator does not own an equal, consecutive block of rows per
     world in world order, so replicating the first world's pattern would address the wrong rows.
@@ -2187,7 +2187,7 @@ def test_dense_view_reversed_actuator_order(test, device):
 
 
 def test_sparse_world_partial_actuator_parameters(test, device):
-    """DOFs without an actuator read as zero and are never written through a sparse view."""
+    """Read DOFs without an actuator as zero and never write them through a sparse view."""
     for layout in ("regular", "irregular"):
         with test.subTest(layout=layout):
             model = _make_sparse_robot_model(layout, device)
@@ -2218,7 +2218,7 @@ def test_sparse_world_partial_actuator_parameters(test, device):
 
 
 def test_actuator_mapping_built_once_and_cached(test, device):
-    """The first actuator-parameter access builds the DOF mapping; later gets and sets reuse it."""
+    """Build the DOF mapping on the first actuator-parameter access and reuse it for later gets and sets."""
     for layout in ("regular", "irregular", "dense"):
         with test.subTest(layout=layout):
             model = _make_sparse_robot_model(layout, device)
@@ -2370,7 +2370,7 @@ def test_actuator_access_after_capture_before_replay(test, device):
 
 
 def test_actuator_capture_without_mempool_raises(test, device):
-    """Without the memory pool, a cold access inside capture raises a clear error and caches nothing."""
+    """Raise a clear error and cache nothing for a cold access inside capture without the memory pool."""
     model = _make_sparse_robot_model("dense", device)
     view = ArticulationView(model, "robot_a", verbose=False)
     actuator, kp, _row_of_dof = _world_major_actuator(model, device)
@@ -2421,7 +2421,7 @@ class _BorrowedActuatorView:
 
 
 def test_borrowed_view_with_device_alias(test, device):
-    """Borrowed actuator-parameter methods accept a view whose ``device`` is an alias string.
+    """Accept a view whose ``device`` is an alias string in borrowed actuator-parameter methods.
 
     Covers eager get/set and, on CUDA, cold and warmed capture with replay.
     """
