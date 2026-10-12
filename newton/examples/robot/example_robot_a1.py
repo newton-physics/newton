@@ -32,6 +32,7 @@ A1_ASSET_PATHS = {
 
 class Example:
     def __init__(self, viewer, args):
+        """Initialize the selected A1 model, solver, state, and viewer."""
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 4
@@ -77,12 +78,14 @@ class Example:
         self.capture()
 
     def capture(self):
+        """Capture one simulation step as a Warp graph when supported."""
         self.graph = None
         with wp.ScopedCapture() as capture:
             self.simulate()
         self.graph = capture.graph
 
     def simulate(self):
+        """Advance the A1 simulation by one frame using fixed substeps."""
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
@@ -90,6 +93,7 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
+        """Advance the simulation and update the elapsed simulation time."""
         if self.graph:
             wp.capture_launch(self.graph)
         else:
@@ -97,6 +101,7 @@ class Example:
         self.sim_time += self.frame_dt
 
     def render(self):
+        """Render the current A1 state in the configured viewer."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
@@ -110,6 +115,7 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create the command-line parser for selecting the A1 configuration."""
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         parser.add_argument("--model", choices=A1_ASSET_PATHS, default="bimanual")
