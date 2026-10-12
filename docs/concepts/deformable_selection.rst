@@ -341,10 +341,12 @@ roots. They are not the rod-joint lists returned by
 :meth:`~newton.ModelBuilder.add_rod` or USD's ``path_cable_map``. See
 :ref:`deformable-objects` for shared graphs and later attachments.
 
-Recording labels does not prevent fixed-joint collapse. A deformable curve is omitted
-with a warning if collapse removes one of its bodies or joints. Preserve required
-joints using :meth:`~newton.ModelBuilder.collapse_fixed_joints` with
-``joints_to_keep`` when complete curve access is needed.
+Recording labels does not prevent fixed-joint collapse. The curve view then exposes
+the surviving segment bodies and joints, not every original segment. A curve is
+omitted with a warning only when no segment bodies remain. Use
+:meth:`~newton.ModelBuilder.collapse_fixed_joints` with ``joints_to_keep`` to
+preserve the original segment layout. If selected rods have different remaining
+body counts, inspect their raw ranges or use separate views for batched reads.
 
 Comparison with ArticulationView
 --------------------------------

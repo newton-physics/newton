@@ -310,31 +310,30 @@ class TestDeformableBuilderObjects(unittest.TestCase):
         self.assertEqual(view.labels, ["surface_0"])
         self.assertEqual(view.ranges("particle"), [(0, 4)])
 
-    def test_fixed_joint_collapse_drops_incomplete_curve_object(self):
-        """A label does not prevent collapse; an incomplete curve is not selectable."""
+    def test_fixed_joint_collapse_retains_remaining_curve_bodies(self):
+        """Select the surviving segment after a rod's fixed anchor collapses."""
         builder = newton.ModelBuilder()
         _add_test_anchored_cable(builder)
 
-        with self.assertWarnsRegex(UserWarning, "anchored_curve.*joints_to_keep"):
-            builder.collapse_fixed_joints()
+        builder.collapse_fixed_joints()
 
         self.assertEqual((builder.body_count, builder.joint_count), (1, 1))
         model = builder.finalize()
 
-        with self.assertRaisesRegex(KeyError, "anchored_curve"):
-            DeformableCurveView(model, "anchored_curve")
+        view = DeformableCurveView(model, "anchored_curve")
+        self.assertEqual(view.ranges("body"), [(0, 1)])
+        self.assertEqual(view.ranges("joint"), [(0, 1)])
+        self.assertEqual(view.get_body_transforms(model.state()).shape, (1, 1))
 
     def test_fixed_joint_collapse_is_label_neutral(self):
         """Otherwise identical labeled and unlabeled rods collapse identically."""
 
         unlabeled = newton.ModelBuilder()
         _add_test_anchored_cable(unlabeled, label=None)
-        with self.assertWarnsRegex(UserWarning, "curve_0.*joints_to_keep"):
-            unlabeled.collapse_fixed_joints()
+        unlabeled.collapse_fixed_joints()
         labeled = newton.ModelBuilder()
         _add_test_anchored_cable(labeled)
-        with self.assertWarnsRegex(UserWarning, "anchored_curve.*joints_to_keep"):
-            labeled.collapse_fixed_joints()
+        labeled.collapse_fixed_joints()
 
         self.assertEqual((labeled.body_count, labeled.joint_count), (unlabeled.body_count, unlabeled.joint_count))
         self.assertEqual(labeled.joint_type, unlabeled.joint_type)
@@ -521,20 +520,19 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         np.testing.assert_array_equal(soft.deformable_object_boundaries.numpy(), [0, 0, 1, 1])
         np.testing.assert_array_equal(cable.deformable_object_boundaries.numpy(), [0, 0, 0, 1])
 
-    def test_rigid_view_survives_dropped_curve_object(self):
-        """Dropping an incomplete curve leaves an unrelated rigid view valid."""
+    def test_rigid_view_coexists_with_reduced_curve_object(self):
+        """Keep an unrelated rigid view valid alongside a partially collapsed rod."""
         builder = newton.ModelBuilder()
         _add_test_articulation(builder)
         _add_test_anchored_cable(builder)
 
-        with self.assertWarnsRegex(UserWarning, "anchored_curve.*joints_to_keep"):
-            builder.collapse_fixed_joints()
+        builder.collapse_fixed_joints()
         model = builder.finalize()
 
         rigid = ArticulationView(model, "robot")
         self.assertEqual(rigid.get_root_transforms(model).shape, (1, 1))
-        with self.assertRaisesRegex(KeyError, "anchored_curve"):
-            DeformableCurveView(model, "anchored_curve")
+        cable = DeformableCurveView(model, "anchored_curve")
+        self.assertEqual(cable.ranges("body"), [(1, 2)])
 
 
 if __name__ == "__main__":

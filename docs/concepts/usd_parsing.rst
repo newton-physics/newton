@@ -361,11 +361,11 @@ first call and can be replayed in a CUDA graph. The view also exposes raw per-de
 and for consumers that need slices of the flat model arrays. The ranges stay valid through
 :meth:`~newton.ModelBuilder.finalize`,
 :meth:`~newton.ModelBuilder.replicate` (each copy is tagged with its world index and selected as
-one deformable object per world), and ``collapse_fixed_joints`` when all of a cable's bodies and joints
-survive (its ranges follow their new indices). Deformable labels do not change which fixed
-joints collapse. If collapse removes one of a cable's simulation elements, the incomplete
-deformable object record is omitted with a warning; pass the relevant joint through
-``collapse_fixed_joints(joints_to_keep=...)`` when complete post-collapse selection is required.
+one deformable object per world). After ``collapse_fixed_joints``, cable records keep
+their labels and describe the surviving segment bodies and joints. A record is omitted
+with a warning only when no segment bodies survive. Deformable labels do not change
+which fixed joints collapse. Use ``collapse_fixed_joints(joints_to_keep=...)`` to
+preserve the original segment layout.
 See :ref:`deformable-selection` for the shared contract, including when to copy getter results.
 
 Imported deformables also populate the experimental builder identity lists

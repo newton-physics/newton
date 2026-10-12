@@ -175,15 +175,18 @@ A welded USD graph is one deformable object with all of the graph's joints.
 The curve view exposes this complete range through ``ranges("joint")``.
 The per-curve import maps are separate; see :ref:`deformable-objects-welded-usd-graphs`.
 
-Labels do not affect :meth:`~newton.ModelBuilder.collapse_fixed_joints`. Complete
-curve records follow the remapped indices. If collapse removes part of a curve,
-Newton warns and omits its incomplete record. Use ``joints_to_keep`` to preserve
-required joints. Particle, triangle, and tetrahedron ranges are not affected by
-fixed-joint collapse.
+Labels do not affect :meth:`~newton.ModelBuilder.collapse_fixed_joints`. Curve
+records retain their labels and describe the surviving segment bodies and joints.
+A curve with a remaining body is retained even if its joint range is empty.
+Newton warns and omits a curve only when none of its segment bodies survive.
+Use ``joints_to_keep`` to preserve the original segment layout. Particle,
+triangle, and tetrahedron ranges are not affected by fixed-joint collapse.
 
 Compact coupled-solver models retain only deformable objects whose recorded
 elements are all present. Their ranges refer to the compact model's arrays,
-not the parent model's arrays. A partial curve is omitted. Particle-based
+not the parent model's arrays. If a solver partition excludes part of a curve's
+current recorded ranges, that curve is omitted from the compact model. This is
+separate from reducing the ranges during builder collapse. Particle-based
 deformables follow the coupled solver's existing particle layout.
 
 .. _deformable-objects-welded-usd-graphs:

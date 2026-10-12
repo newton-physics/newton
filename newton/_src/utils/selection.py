@@ -2972,9 +2972,10 @@ class DeformableCurveView(_DeformableRodView):
     describes geometry, not a solver: particle-based curves are not supported yet.
     Matching surfaces and volumes are excluded from the selection.
 
-    Fixed-joint collapse can remove an incomplete deformable curve. Preserve required
-    joints with :meth:`~newton.ModelBuilder.collapse_fixed_joints` using
-    ``joints_to_keep`` when complete curve access is needed.
+    After fixed-joint collapse, the view describes the curve's surviving segment
+    bodies and joints. Curves with no remaining bodies are omitted. Use
+    :meth:`~newton.ModelBuilder.collapse_fixed_joints` with ``joints_to_keep``
+    to preserve the original segment layout.
 
     See :ref:`deformable-selection` for world layout, getter-result lifetime,
     masked writes, and CUDA graph capture.

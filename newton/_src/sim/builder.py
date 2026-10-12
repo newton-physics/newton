@@ -6826,9 +6826,9 @@ class ModelBuilder:
 
         Note:
             Deformable labels do not change which fixed joints are collapsed. A curve's
-            record is retained only if all of its segment bodies and joints survive.
-            Otherwise the incomplete record is omitted with a warning. Pass the relevant
-            fixed joint through ``joints_to_keep`` to preserve the complete curve.
+            record describes its surviving segment bodies and joints. It is omitted with
+            a warning only when no segment bodies remain. Pass the relevant fixed joints
+            through ``joints_to_keep`` to preserve the original segment layout.
             Curve-removal warnings are emitted after collapse completes.
         """
         joints_to_keep = set(joints_to_keep or ())
@@ -7276,12 +7276,11 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
-        # Rebuild deformable curve ranges after reindexing. Retain a deformable object record only when
-        # every one of its simulation bodies and joints survived collapse; exposing a partial
-        # range would misrepresent the original curve topology.
+        # Records describe the surviving simulation bodies, not the original segments.
+        # Retained bodies and joints preserve their order, so each range stays contiguous.
         curve_records = []
         curve_remap = {}
-        incomplete_curve_labels = []
+        removed_curve_labels = []
         for curve_index, (label, world, body_start, body_end, joint_start, joint_end) in enumerate(
             zip(
                 self.curve_label,
@@ -7298,14 +7297,8 @@ class ModelBuilder:
             new_bodies = [body_remap[body] for body in old_bodies if body in body_remap]
             new_joints = [joint_remap[joint] for joint in old_joints if joint in joint_remap]
 
-            bodies_complete = len(new_bodies) == len(old_bodies) and all(
-                body == new_bodies[0] + offset for offset, body in enumerate(new_bodies)
-            )
-            joints_complete = len(new_joints) == len(old_joints) and (
-                not new_joints or all(joint == new_joints[0] + offset for offset, joint in enumerate(new_joints))
-            )
-            if not old_bodies or not bodies_complete or not joints_complete:
-                incomplete_curve_labels.append(label)
+            if not new_bodies:
+                removed_curve_labels.append(label)
                 continue
 
             if new_joints:
@@ -7674,10 +7667,10 @@ class ModelBuilder:
                 self.joint_children[p].append((c, i))
 
         # Warning filters may raise, so finish rebuilding all references before emitting these.
-        for label in incomplete_curve_labels:
+        for label in removed_curve_labels:
             warnings.warn(
-                f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because one or more "
-                "of its segment bodies or joints were removed; pass the relevant fixed joint through "
+                f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because all "
+                "of its segment bodies were removed; pass the relevant fixed joint through "
                 "joints_to_keep to preserve the complete deformable object.",
                 UserWarning,
                 stacklevel=2,

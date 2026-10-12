@@ -66,7 +66,7 @@ class TestModelDeformableObjects(unittest.TestCase):
             np.testing.assert_array_equal(getattr(state, f"{family}_enabled").numpy(), [1, 1])
 
     def test_curve_attributes_follow_fixed_joint_collapse(self):
-        """Keep per-curve values and references aligned when an incomplete curve is dropped."""
+        """Keep per-curve values and references when a rod loses its anchored segment."""
         builder = newton.ModelBuilder()
         bodies, joints = builder.add_rod(
             rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
@@ -91,14 +91,13 @@ class TestModelDeformableObjects(unittest.TestCase):
                 values={0: 1},
             )
         )
-        with self.assertWarnsRegex(UserWarning, "joints_to_keep"):
-            builder.collapse_fixed_joints()
+        builder.collapse_fixed_joints()
         model = builder.finalize(device="cpu")
-        self.assertEqual(model.curve_label, ["retained"])
-        np.testing.assert_array_equal(model.curve_body_start.numpy(), [1])
-        np.testing.assert_array_equal(model.curve_body_end.numpy(), [4])
-        np.testing.assert_array_equal(model.asset_tag.numpy(), [20])
-        np.testing.assert_array_equal(model.selected_curve.numpy(), [0])
+        self.assertEqual(model.curve_label, ["anchored", "retained"])
+        np.testing.assert_array_equal(model.curve_body_start.numpy(), [0, 1])
+        np.testing.assert_array_equal(model.curve_body_end.numpy(), [1, 4])
+        np.testing.assert_array_equal(model.asset_tag.numpy(), [10, 20])
+        np.testing.assert_array_equal(model.selected_curve.numpy(), [1])
 
     def test_empty_model_has_empty_public_deformable_arrays(self):
         """Inspect an empty model without placeholder objects or missing arrays."""
