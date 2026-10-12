@@ -280,7 +280,15 @@ active mapping. On the force-space Newton-contacts path,
 pair by ``1 - dmax`` and the sum of the bodies' translational
 ``body_invweight0[..., 0]`` values before writing per-contact ``solref``. Here
 ``dmax = solimp[1]``. This inverse-weight scaling is Newton's implemented
-force-space contract, but it is not the full scalar contact effective mass
+force-space contract. For pyramidal contacts with ``condim > 1``, the factor
+also includes ``mu**2 * (1 + mu**2) / (impratio * (condim - 1))`` to account
+for the summed pyramid-edge normal response. Here ``mu`` is the final sliding
+friction after contact overrides. Elliptic and frictionless contacts retain
+the inverse-weight factor alone. The same mapping applies to positive
+per-contact stiffness and damping overrides; zero per-contact damping retains
+the critical-damping fallback.
+
+This resting-contact approximation is not the full scalar contact effective mass
 :math:`(J M^{-1} J^T)^{-1}` for arbitrary articulated or off-center contacts.
 
 ``model.mujoco.solref_mode`` (per shape) records how
