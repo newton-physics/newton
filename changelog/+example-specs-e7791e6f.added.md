@@ -1,1 +1,0 @@
-Add extractable descriptions, run variants, and success criteria for every example, with Markdown and versioned JSON output. Add an example-testing agent skill covering visual QA, interaction, exploratory testing, and end-of-run jitter inspection.
