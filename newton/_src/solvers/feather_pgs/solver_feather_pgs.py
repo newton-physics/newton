@@ -1155,7 +1155,9 @@ class SolverFeatherPGS(SolverBase):
       world. The closure rows read :attr:`~newton.Model.joint_enabled` and the
       translations of :attr:`~newton.Model.joint_X_p` / :attr:`~newton.Model.joint_X_c`
       every step, so a closure is released, engaged or re-anchored by editing those
-      arrays, also from a kernel between CUDA graph replays. With
+      arrays in place, also from a kernel between CUDA graph replays. An eager step reads
+      a replaced array; a captured graph keeps the arrays it was captured with, so
+      recapture after replacing one. With
       ``enable_bilateral_preelimination`` the mimic and connect rows are eliminated
       before the sweep through a regularized Schur complement; this is not exact
       elimination, see the option.
@@ -7106,14 +7108,16 @@ class SolverFeatherPGS(SolverBase):
         """Raise if any world, or the global entry, lost contacts or constraint rows since its last reset.
 
         Also raises if a step saw a joint of an articulation tree disabled in
-        :attr:`~newton.Model.joint_enabled`; only loop-closing joints can be disabled. Re-enable
-        the joint and :meth:`reset` the affected worlds. With ``contact_torsion_device``, also
-        raises if contact torsion rejected its input since the last :meth:`reset`; that step
-        published its input state unchanged.
+        :attr:`~newton.Model.joint_enabled`; only loop-closing joints can be disabled. That
+        error is not a capacity loss: the flagged steps ignored the disabled joint, so discard
+        their output, re-enable the joint and :meth:`reset` the affected worlds. A check that
+        passes after the reset does not validate the earlier output. With
+        ``contact_torsion_device``, also raises if contact torsion rejected its input since
+        the last :meth:`reset`; that step published its input state unchanged.
 
-        Reads :attr:`constraint_overflow` on the host, so call it outside CUDA graph capture,
-        for example at an observation boundary. Kernels can read :attr:`constraint_overflow`
-        directly without host synchronization. Recovering from a capacity loss requires larger
+        Reads the status on the host, so call it outside CUDA graph capture, for example at
+        an observation boundary. Kernels can read :attr:`constraint_overflow` directly without
+        host synchronization; it holds only the capacity flags. Recovering from a capacity loss requires larger
         capacities, a new solver (and newly captured graphs) and a :meth:`reset` of the affected
         worlds. Contacts that couple a dynamic global body, or a kinematic global articulation
         with joints, with another world are flagged too; no capacity can solve them.

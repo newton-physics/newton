@@ -284,7 +284,10 @@ repository examples spend tuning effort, not a shared solver API.
        are dropped and flagged in ``constraint_overflow`` (one entry per world
        and a final entry for global articulations); call
        ``check_constraint_capacity()`` at an observation boundary, and raise the
-       capacity and reset the world when it reports a world. Contacts of a
+       capacity and reset the world when it reports a world. The same check
+       reports a tree joint disabled through ``Model.joint_enabled`` after
+       construction, which no capacity fixes: discard those steps' output,
+       re-enable the joint and reset the world. Contacts of a
        dynamic global body, or a kinematic global articulation with joints,
        with another world's bodies cannot be solved and are flagged the same
        way; the constructor warns when a model allows them. Per-body angular
