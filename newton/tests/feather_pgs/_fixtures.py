@@ -1130,7 +1130,7 @@ def _reset_state(model, state, vertical_velocity):
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
 
-# A manipulation profile without contact torsion; the torsion variant is in test_feather_pgs_sleeping_torsion.
+# A manipulation profile without contact torsion; the torsion variant is in test_sleeping.
 PROFILE = {
     "iterations": 32,
     "contact_regularization": 0.01,
