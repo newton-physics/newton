@@ -123,9 +123,7 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
         self.assertNotIn("tile_threads", parameters)
         self.assertNotIn("serial_kernel_block_dim", parameters)
         self.assertNotIn("nvtx", parameters)
-        for option, default in (("pgs_debug", False),):
-            with self.subTest(option=option):
-                self.assertEqual(parameters[option].default, default)
+        self.assertNotIn("pgs_debug", parameters)
 
     def test_solver_reads_no_environment_variables(self):
         """Configure the solver only through its constructor; the environment only enables profiling ranges."""

@@ -1,1 +1,1 @@
-Add the experimental, advanced `pgs_debug` option to `newton.solvers.SolverFeatherPGS`, which records per-iteration convergence and contact-residual logs (`pgs_convergence_log`, `pgs_ncp_residual_log`) at the cost of a host synchronization per iteration and without CUDA graph capture. With `NEWTON_PROFILE` set, the stages of `step()` are annotated with NVTX ranges.
+Annotate the stages of `newton.solvers.SolverFeatherPGS.step()` with NVTX ranges when `NEWTON_PROFILE` is set.

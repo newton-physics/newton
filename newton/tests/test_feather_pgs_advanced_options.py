@@ -11,11 +11,9 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-import newton
 from newton._src.solvers.feather_pgs import solver_feather_pgs
 from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_contact_compliance import run_fixture as run_compliance_fixture
 from newton.tests.test_feather_pgs_fused_crba import _trajectory, _tree
 from newton.tests.test_feather_pgs_global_options import _build_contact_scene, _run, _set_box_velocities
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
@@ -134,99 +132,6 @@ def test_kernel_overrides_validate_their_values(test, device):
                     SolverFeatherPGS(model, pgs_mode="split", **options)
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# pgs_debug
-
-
-def test_debug_logs_matrix_free_convergence_and_residuals(test, device):
-    """Log one row per iteration and per-world contact residuals for every matrix-free step."""
-    iterations = 6
-    run = {"init": _set_box_velocities, "steps": 5, "pgs_iterations": iterations}
-    for label, options in (
-        ("immediate", {}),
-        ("propagation", {"articulated_contact_response": "propagation"}),
-        ("propagation-fused", {"articulated_contact_response": "propagation-fused"}),
-    ):
-        with test.subTest(solve=label):
-            model = _build_contact_scene(device)
-            debug = _run(model, pgs_debug=True, **options, **run)
-            solver = debug[0]
-            test.assertEqual(len(solver.pgs_convergence_log), 5)
-            test.assertEqual(len(solver.pgs_ncp_residual_log), 5)
-            test.assertIs(solver.pgs_convergence_log, solver._pgs_convergence_log)
-            for convergence, residuals in zip(solver.pgs_convergence_log, solver.pgs_ncp_residual_log, strict=True):
-                test.assertEqual(convergence.shape, (iterations, 4))
-                test.assertEqual(residuals.shape, (iterations, model.world_count, 6))
-                test.assertTrue(np.all(np.isfinite(convergence)))
-                test.assertTrue(np.all(np.isfinite(residuals)))
-                test.assertTrue(np.all(residuals >= 0.0))
-                test.assertGreater(convergence[0, 0], 0.0)
-                test.assertLessEqual(convergence[-1, 0], convergence[0, 0])
-            plain = _run(_build_contact_scene(device), **options, **run)
-            np.testing.assert_allclose(debug[1], plain[1], rtol=0.0, atol=1.0e-5)
-            np.testing.assert_allclose(debug[2], plain[2], rtol=0.0, atol=1.0e-3)
-
-
-def test_debug_iterations_reproduce_the_whole_solve(test, device):
-    """Reach bitwise the same state one iteration per launch, with friction starting at the right iteration."""
-    run = {"init": _set_box_velocities, "steps": 5, "pgs_iterations": 6, "contact_friction_position_iterations": 3}
-    solves = [("split", {"pgs_mode": "split"})]
-    if device.is_cuda:
-        solves += [
-            ("physx_grasp", {"pgs_schedule": "physx_grasp"}),
-            ("propagation", {"articulated_contact_response": "propagation"}),
-            ("propagation-colored", {"articulated_contact_response": "propagation-colored"}),
-        ]
-    for label, options in solves:
-        with test.subTest(solve=label):
-            debug = _run(_build_contact_scene(device), pgs_debug=True, **options, **run)
-            _assert_bitwise(test, debug, _run(_build_contact_scene(device), **options, **run), label)
-            test.assertEqual(debug[0].pgs_convergence_log[-1].shape, (6, 4))
-
-
-def test_debug_logs_split_impulse_changes(test, device):
-    """Log the largest impulse change of each split iteration, with zero matrix-free metrics."""
-    solver = _run(_build_contact_scene(device), init=_set_box_velocities, steps=3, pgs_mode="split", pgs_debug=True)[0]
-    test.assertEqual(len(solver.pgs_convergence_log), 3)
-    test.assertEqual(solver.pgs_ncp_residual_log, [])
-    for convergence in solver.pgs_convergence_log:
-        test.assertEqual(convergence.shape, (solver.pgs_iterations, 4))
-        test.assertGreater(convergence[0, 0], 0.0)
-        np.testing.assert_array_equal(convergence[:, 1:], 0.0)
-
-
-def test_debug_logs_split_free_body_rows(test, device):
-    """Log the free-body rows of a split solve that has no dense rows, without changing the step."""
-    template = newton.ModelBuilder()
-    template.add_ground_plane()
-    body = template.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.099), wp.quat_identity()))
-    template.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-    builder = newton.ModelBuilder()
-    builder.replicate(template, 1)
-    model = builder.finalize(device=device)
-    results = []
-    for debug in (False, True):
-        solver = SolverFeatherPGS(model, pgs_mode="split", pgs_iterations=6, pgs_debug=debug)
-        state, out = model.state(), model.state()
-        state.joint_qd.assign(np.array([1.0, 0.0, -1.0, 0.0, 0.0, 0.0], dtype=np.float32))
-        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=False)
-        contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)
-        solver.step(state, out, model.control(), contacts, 1.0 / 240.0)
-        results.append((solver, out.joint_qd.numpy()))
-    solver = results[1][0]
-    test.assertFalse(solver._has_mixed_contacts)
-    test.assertEqual(int(solver.constraint_count.numpy()[0]), 0)
-    test.assertGreater(int(solver.mf_constraint_count.numpy()[0]), 0)
-    np.testing.assert_array_equal(results[0][1], results[1][1])
-    log = solver.pgs_convergence_log[0]
-    test.assertEqual(log.shape, (6, 4))
-    # The first sweep moves every impulse from zero, so its change is the largest first-sweep impulse.
-    test.assertGreater(log[0, 0], 1.0)
-    test.assertLessEqual(log[-1, 0], log[0, 0])
-
-
 def test_cpu_ignores_contact_only_kernels(test, device):
     """Run the scalar loop on CPU for every split kernel override, including rows the contact-only kernels reject."""
     model = _build_contact_scene(device)
@@ -236,21 +141,6 @@ def test_cpu_ignores_contact_only_kernels(test, device):
                 with kernel_overrides({"pgs_kernel": kernel}):
                     solver = SolverFeatherPGS(model, pgs_mode="split", **options)
                 test.assertEqual(solver.pgs_kernel, "loop")
-
-
-def test_debug_rejects_unsupported_combinations(test, device):
-    """Reject graph capture, compliance, torsion and the contact-first schedule with pgs_debug."""
-    model = _build_contact_scene(device)
-    with test.assertRaisesRegex(ValueError, "contact_then_internal"):
-        SolverFeatherPGS(model, pgs_debug=True, pgs_schedule="contact_then_internal")
-    with test.assertRaisesRegex(ValueError, "pgs_debug"):
-        SolverFeatherPGS(model, pgs_debug=True, contact_torsion_radius=0.01)
-    with test.assertRaisesRegex(ValueError, "pgs_debug"):
-        run_compliance_fixture(
-            device=device, articulated=True, enabled=True, steps=1, solver_options={"pgs_debug": True}
-        )
-    with test.assertRaisesRegex(RuntimeError, "graph capture"):
-        _run(model, init=_set_box_velocities, steps=2, capture=True, pgs_debug=True)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -322,9 +212,6 @@ for _fn in (
     test_default_launch_settings,
     test_kernel_overrides_are_scoped_to_construction,
     test_kernel_overrides_validate_their_values,
-    test_debug_iterations_reproduce_the_whole_solve,
-    test_debug_logs_split_impulse_changes,
-    test_debug_logs_split_free_body_rows,
     test_profile_annotates_every_stage_without_changing_results,
     test_profile_closes_the_open_range_when_a_stage_raises,
 ):
@@ -334,8 +221,6 @@ for _fn in (
     test_split_kernels_agree_with_the_loop_kernel,
     test_serial_block_dim_and_matrix_free_kernel_choice_are_bitwise,
     test_tile_threads_keep_fused_assembly_correct_above_the_block_width,
-    test_debug_logs_matrix_free_convergence_and_residuals,
-    test_debug_rejects_unsupported_combinations,
 ):
     add_function_test(TestFeatherPGSAdvancedOptions, _fn.__name__, _fn, devices=get_cuda_test_devices())
 
