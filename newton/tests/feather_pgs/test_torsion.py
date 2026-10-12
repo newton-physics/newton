@@ -1689,8 +1689,9 @@ for _fn in (
     add_function_test(TestDeviceTorsionPreparation, _fn.__name__, _fn, devices=get_cuda_test_devices())
 
 
-def _check_budget(test, result, solver):
+def _check_budget(test, result, solver, groups=None):
     """Bound final shared impulses and account for their entire velocity response."""
+    groups = solver._torsion_stats["groups"] if groups is None else groups
     count = int(result["count"][0])
     impulses = result["impulses"][0, :count]
     # Compare full velocities in float64 rather than subtracting two large
@@ -1703,8 +1704,8 @@ def _check_budget(test, result, solver):
         rtol=8 * np.finfo(np.float32).eps,
         atol=2e-5,
     )
-    test.assertTrue(solver._torsion_stats["groups"])
-    for group in solver._torsion_stats["groups"]:
+    test.assertTrue(groups)
+    for group in groups:
         load = sum(max(float(impulses[n]), 0.0) for n in group["normal_rows"])
         sliding = sum(float(np.linalg.norm(impulses[n + 1 : n + 3])) for n in group["anchor_rows"])
         spin = abs(float(impulses[group["row"]])) / group["effective_radius_m"]
@@ -1742,21 +1743,19 @@ def test_final_load_budget_across_iterations(test, device):
     """Correct stale sliding and spin when distributed normal loads shrink."""
     for regularization in (0.01, 0.02, 0.5):
         for iterations in (1, 2, 4, 16, 64):
-            for spin, sliding in ((0.0, 1.0), (10.0, 1.0), (100.0, 0.0)):
+            worlds, solver = _solve_initial_states(
+                _BUDGET_STATES,
+                device=device,
+                iterations=iterations,
+                contact_regularization=regularization,
+                **PATCH_OPTIONS,
+            )
+            for (spin, _), (result, groups) in zip(_BUDGET_STATES, worlds, strict=True):
                 with test.subTest(reg=regularization, iterations=iterations, spin=spin):
-                    result, solver, *_ = fixture(
-                        0.0075,
-                        device=device,
-                        iterations=iterations,
-                        contact_regularization=regularization,
-                        spin=spin,
-                        sliding=sliding,
-                        **PATCH_OPTIONS,
-                    )
-                    _check_budget(test, result, solver)
+                    _check_budget(test, result, solver, groups)
                     count = int(result["count"][0])
                     types = result["row_type"][0, :count]
-                    weights = solver._row_w.numpy()[0, :count]
+                    weights = result["row_w"][0, :count]
                     normal_rows = types == 0
                     test.assertTrue(np.any(normal_rows))
                     np.testing.assert_allclose(weights[normal_rows], 1 / (1 + regularization), atol=1e-7)
@@ -1807,6 +1806,73 @@ def test_substep_force_export_and_release(test, device):
         contacts.rigid_contact_count.zero_()
         solver.step(initial, model.state(), model.control(), contacts, dt)
         test.assertEqual(solver._torsion_stats["rows"], 0)
+
+
+# (spin [rad/s], sliding [m/s]) initial states of the final-load budget cases, one world each.
+_BUDGET_STATES = ((0.0, 1.0), (10.0, 1.0), (100.0, 0.0))
+
+
+def _solve_initial_states(states, *, device, radius=0.0075, closing=0.1, dt=0.0025, **solver_overrides):
+    """Step ``fixture``'s pad pair once per ``(spin, sliding)`` state, each pair in its own world of one model.
+
+    Returns one ``(result, torsion groups)`` per world, ``result`` laid out like a one-world ``fixture`` result.
+    """
+    pads = newton.ModelBuilder(gravity=(0, 0, 0))
+    for side in (-1, 1):
+        pose = wp.transform(wp.vec3(0, 0, side * 0.025), wp.quat_identity())
+        body = pads.add_link(
+            xform=pose, mass=0.3, inertia=wp.mat33(np.diag([0.00012, 0.00012, 0.00008]).astype(np.float32))
+        )
+        axes = [newton.ModelBuilder.JointDofConfig(axis=wp.vec3(*a)) for a in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+        joint = pads.add_joint_d6(-1, body, parent_xform=pose, linear_axes=axes, angular_axes=axes)
+        pads.add_articulation([joint])
+        pads.add_shape_box(body, hx=0.02, hy=0.015, hz=0.025, cfg=newton.ModelBuilder.ShapeConfig(density=0, mu=0.5))
+    builder = newton.ModelBuilder(gravity=(0, 0, 0))
+    builder.replicate(pads, len(states), spacing=(1.0, 0.0, 0.0))
+    model = builder.finalize(device=device)
+    set_torsion_radius(model, radius)
+    a, z = model.state(), model.state()
+    a.joint_qd.assign(
+        np.array(
+            [[sliding, 0, closing, 0, 0, spin, -sliding, 0, -closing, 0, 0, -spin] for spin, sliding in states],
+            np.float32,
+        ).ravel()
+    )
+    newton.eval_fk(model, a.joint_q, a.joint_qd, a)
+    pipeline = newton.CollisionPipeline(
+        model, contact_matching="latest", reduce_contacts=False, broad_phase="nxn", rigid_contact_max=64 * len(states)
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(a, contacts)
+    # fixture's solver settings; the row capacities stay per world.
+    options = {
+        "friction_anchor_beta": 0.0,
+        "iterations": 128,
+        "velocity_iterations": 0,
+        "baumgarte": 0.05,
+        "cfm": 0,
+        "contact_regularization": 0,
+        "enable_joint_velocity_limits": True,
+        "contact_warmstart": False,
+        "articulation_constraint_max": 64,
+        "free_body_constraint_max": 16,
+        **solver_overrides,
+    }
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", **options)
+    solver._rigid_body_angular_damping.zero_()
+    observables = solver.observables({SolverObservableFlags.CONTACT_F})
+    solver.step(a, z, model.control(), contacts, dt, observables=observables)
+    test_arrays = {name: getattr(solver, f"_{name}").numpy() for name in ("impulses", "row_type", "row_w", "Y_world")}
+    count = solver._constraint_count.numpy()
+    velocities = {name: getattr(solver, f"_{name}").numpy().reshape(len(states), -1) for name in ("v_hat", "v_out")}
+    worlds = []
+    for world in range(len(states)):
+        result = {name: values[world : world + 1] for name, values in test_arrays.items()}
+        result.update({name: values[world] for name, values in velocities.items()})
+        result["count"] = count[world : world + 1]
+        groups = [group for group in solver._torsion_stats["groups"] if group["world"] == world]
+        worlds.append((result, groups))
+    return worlds, solver
 
 
 class TestTorsionRegularization(unittest.TestCase):
@@ -2060,24 +2126,17 @@ for _fn in (
 def test_final_budget_and_velocity_response(test, device):
     """Bound final traction plus spin and apply every correction to velocity."""
     for iterations in (1, 2, 4, 8, 64):
-        for spin, sliding in ((0.0, 1.0), (10.0, 1.0), (100.0, 0.0)):
+        worlds, _ = _solve_initial_states(
+            _BUDGET_STATES, device=device, friction_anchor_beta=0.2, iterations=iterations
+        )
+        for (spin, sliding), (result, groups) in zip(_BUDGET_STATES, worlds, strict=True):
             with test.subTest(iterations=iterations, spin=spin, sliding=sliding):
-                result, solver, *_ = fixture(
-                    0.0075,
-                    device=device,
-                    friction_anchor_beta=0.2,
-                    iterations=iterations,
-                    closing=0.1,
-                    spin=spin,
-                    sliding=sliding,
-                )
                 count = int(result["count"][0])
                 response = result["Y_world"][0, :count].T @ result["impulses"][0, :count]
                 np.testing.assert_allclose(result["v_out"] - result["v_hat"], response, atol=2e-5)
-                groups = solver._torsion_stats["groups"]
                 test.assertTrue(groups, "The regression must exercise coupled patch/torsion rows")
+                impulse = result["impulses"][0]
                 for group in groups:
-                    impulse = result["impulses"][group["world"]]
                     normal = sum(max(float(impulse[n]), 0.0) for n in group["normal_rows"])
                     traction = sum(float(np.linalg.norm(impulse[n + 1 : n + 3])) for n in group["anchor_rows"])
                     spin_used = abs(float(impulse[group["row"]])) / group["effective_radius_m"]
