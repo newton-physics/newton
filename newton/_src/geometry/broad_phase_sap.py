@@ -126,7 +126,7 @@ def _create_tile_sort_kernel(tile_size: int):
         A Warp kernel that performs segmented tile-based sorting
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def tile_sort_kernel(
         sap_projection_lower: wp.array[float],
         sap_sort_index: wp.array[int],

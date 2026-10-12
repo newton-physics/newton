@@ -958,7 +958,7 @@ def make_eval_joint_constraints_kernel(has_universal_joints: bool):
     or not (these joints need a separate handling)
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _eval_joint_constraints(
         # Inputs
         num_joints: wp.array[wp.int32],
@@ -1160,7 +1160,7 @@ def make_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
     or not (these joints need a separate handling)
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _eval_joint_constraints_jacobian(
         # Inputs
         num_joints: wp.array[wp.int32],
@@ -1295,7 +1295,7 @@ def make_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: boo
     (these joints need a separate handling)
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _eval_joint_constraints_sparse_jacobian(
         # Inputs
         num_joints: wp.array[wp.int32],
@@ -1444,7 +1444,7 @@ def make_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32)
     """
 
     # Create separate warp module for compiling kernels in this factory
-    module = wp.get_module(__name__ + "_tile_2d")
+    module = wp.get_module(f"{__name__}_tile_2d_{TILE_SIZE_CTS}_{TILE_SIZE_VRS}")
     module.options.update({"enable_backward": False, "default_grid_stride": False})
 
     @wp.func
@@ -1616,7 +1616,7 @@ def make_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32,
     """
 
     # Create separate warp module for compiling kernels in this factory
-    module = wp.get_module(__name__ + "_tile_1d")
+    module = wp.get_module(f"{__name__}_tile_1d_{TILE_SIZE_CTS}_{TILE_SIZE_VRS}_{int(use_regularization)}")
     module.options.update({"enable_backward": False, "default_grid_stride": False})
 
     @wp.func

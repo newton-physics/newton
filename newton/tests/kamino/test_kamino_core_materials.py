@@ -36,7 +36,7 @@ def tril_index(i: int, j: int) -> int:
 def make_mix_kernel(mixmode: MaterialMixMode):
     mix_func = make_get_mixed_material_pair_property(mixmode)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def _mix_kernel(
         values_0: wp.array[wp.float32],
         values_1: wp.array[wp.float32],

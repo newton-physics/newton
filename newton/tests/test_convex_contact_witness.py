@@ -70,7 +70,7 @@ def _create_witness_kernel(distance_query=None):
     else:
         solve = create_solve_mpr(support_map_lean).core
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def kernel(
         mesh_a: wp.uint64,
         mesh_b: wp.uint64,

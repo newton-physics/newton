@@ -184,7 +184,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
             ff = wp.float64(feedforward[target_vel_indices[si]])
         return clamp_chain(evaluate_force(q_i, qd_i, tq, tqd, ff, params, si), q_i, qd_i, clamp_params, si)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def solve(
         group_size: wp.array[wp.int32],
         group_art: wp.array[wp.int32],

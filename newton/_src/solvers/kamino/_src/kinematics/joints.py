@@ -1074,7 +1074,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
     Generates the kernel to compute the joint states based on the current body states.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _compute_joints_data(
         # Inputs:
         model_time_dt: wp.array[wp.float32],

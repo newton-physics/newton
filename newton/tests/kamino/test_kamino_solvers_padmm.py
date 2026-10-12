@@ -1046,7 +1046,7 @@ class TestPADMMSolver(unittest.TestCase):
         """Assert one primal or dual Coulomb cone projection."""
         is_primal = cone == "primal"
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def project(x: wp.array[wp.vec3f], mu: wp.array[wp.float32], y: wp.array[wp.vec3f]):
             if wp.static(is_primal):
                 y[0] = project_to_coulomb_cone(x[0], mu[0])

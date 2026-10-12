@@ -1472,7 +1472,7 @@ def create_count_iso_voxels_block_kernel(pressure_func: Any, integer_center: boo
     sample_sdf = _texture_sample_sdf_zfiltered if paired_samples else _texture_sample_sdf_scalar
     sample_sdf_at_voxel = _texture_sample_sdf_at_voxel_paired if paired_samples else _texture_sample_sdf_at_voxel_scalar
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def count_iso_voxels_block(
         grid_size: int,
         in_buffer_collide_count: wp.array[int],
@@ -1590,7 +1590,7 @@ def create_count_iso_voxel_children_kernel(pressure_func: Any, integer_center: b
     sample_sdf = _texture_sample_sdf_zfiltered if paired_samples else _texture_sample_sdf_scalar
     sample_sdf_at_voxel = _texture_sample_sdf_at_voxel_paired if paired_samples else _texture_sample_sdf_at_voxel_scalar
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def count_iso_voxel_children(
         grid_size: int,
         in_buffer_collide_count: wp.array[int],
@@ -1833,7 +1833,7 @@ def get_decode_contacts_kernel(
         A warp kernel that can be launched to decode all contacts.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def decode_contacts_kernel(
         grid_size: int,
         contact_count: wp.array[int],
@@ -1994,7 +1994,7 @@ def get_generate_contacts_kernel(
     edge_clamp_min = float(mc_edge_clamp_min)
     edge_clamp_max = float(1.0 - mc_edge_clamp_min)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def generate_contacts_kernel(
         grid_size: int,
         iso_voxel_count: wp.array[wp.int32],
