@@ -381,11 +381,13 @@ def _build_carried_load(*, enabled: bool = True, world_parent: bool = False):
     return b, carrier, load, joints
 
 
-def _anchor_gaps(model, state, joints, solver):
-    """World-space parent/child anchor distances [m] using the solver's live anchors."""
+def _anchor_gaps(model, state, joints):
+    """World-space parent/child anchor distances [m] of the model's loop joint frames."""
     bq = state.body_q.numpy().astype(np.float64)
     jp = model.joint_parent.numpy()
     jc = model.joint_child.numpy()
+    xp = model.joint_X_p.numpy()
+    xc = model.joint_X_c.numpy()
 
     def anchor(body, local):
         if body < 0:
@@ -394,11 +396,14 @@ def _anchor_gaps(model, state, joints, solver):
         w = wp.transform_point(t, wp.vec3(*local))
         return np.array([w[0], w[1], w[2]])
 
-    gaps = []
-    for j in joints:
-        anchor_p, anchor_c = solver.loop_joint_anchors(j)
-        gaps.append(float(np.linalg.norm(anchor(int(jp[j]), anchor_p) - anchor(int(jc[j]), anchor_c))))
-    return gaps
+    return [float(np.linalg.norm(anchor(int(jp[j]), xp[j][:3]) - anchor(int(jc[j]), xc[j][:3]))) for j in joints]
+
+
+def _set_joint_enabled(model, joints, enabled):
+    """Write ``Model.joint_enabled`` in place, without a notification."""
+    flags = model.joint_enabled.numpy()
+    flags[np.asarray(joints, dtype=np.int64)] = enabled
+    model.joint_enabled.assign(flags)
 
 
 def _prescribe_carrier(model, state, articulation, t, v, omega):
@@ -445,7 +450,7 @@ def test_kinematic_parent_closure_carries_load(test, device):
     expected = wp.transform_point(carrier_t, wp.vec3(*_REL_P))
     error = np.linalg.norm(bq[load, :3] - np.array([expected[0], expected[1], expected[2]]))
     test.assertLess(error, 3.0e-3, f"load lagged the carrier by {error:.4f} m")
-    for gap in _anchor_gaps(model, state_0, joints, solver):
+    for gap in _anchor_gaps(model, state_0, joints):
         test.assertLess(gap, 3.0e-3)
     # The carrier actually moved, so the closure tracked a nonzero target velocity.
     test.assertGreater(np.linalg.norm(bq[carrier, :3] - np.array([0.0, 0.0, 1.0])), 0.25)
@@ -465,12 +470,12 @@ def test_world_parent_closure_holds_hanging_load(test, device):
     bq = state_0.body_q.numpy().astype(np.float64)
     test.assertTrue(np.isfinite(bq).all())
     test.assertLess(np.linalg.norm(bq[load, :3] - (np.array([0.0, 0.0, 1.0]) + _REL_P)), 3.0e-3)
-    for gap in _anchor_gaps(model, state_0, joints, solver):
+    for gap in _anchor_gaps(model, state_0, joints):
         test.assertLess(gap, 3.0e-3)
 
 
-def test_runtime_enable_and_anchor_update(test, device):
-    """Release closures, re-anchor them at the measured pose and engage them again."""
+def test_model_edits_release_and_reanchor_closures(test, device):
+    """Release closures through Model.joint_enabled, re-anchor them through joint_X_p and engage them again."""
     b, carrier, load, joints = _build_carried_load()
     model = b.finalize(device=device)
     solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
@@ -485,8 +490,7 @@ def test_runtime_enable_and_anchor_update(test, device):
             solver.step(state_0, state_1, control, None, dt)
             state_0, state_1 = state_1, state_0
 
-    for j in joints:
-        solver.set_loop_joint_enabled(j, False)
+    _set_joint_enabled(model, joints, False)
     z0 = float(state_0.body_q.numpy()[load, 2])
     run(48)
     bq = state_0.body_q.numpy().astype(np.float64)
@@ -495,26 +499,28 @@ def test_runtime_enable_and_anchor_update(test, device):
     carrier_t = wp.transform(wp.vec3(*bq[carrier, :3]), wp.quat(*bq[carrier, 3:]))
     load_t = wp.transform(wp.vec3(*bq[load, :3]), wp.quat(*bq[load, 3:]))
     rel = wp.transform_multiply(wp.transform_inverse(carrier_t), load_t)
+    joint_X_p = model.joint_X_p.numpy()
     for j, c in zip(joints, _CHILD_ANCHORS, strict=True):
         p = wp.transform_point(rel, wp.vec3(*c))
-        solver.set_loop_joint_anchors(j, (p[0], p[1], p[2]), c)
-        solver.set_loop_joint_enabled(j, True)
+        joint_X_p[j][:3] = (p[0], p[1], p[2])
+    model.joint_X_p.assign(joint_X_p)
+    _set_joint_enabled(model, joints, True)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
     held_z = float(bq[load, 2])
     run(120)
     bq = state_0.body_q.numpy().astype(np.float64)
     test.assertTrue(np.isfinite(bq).all())
     test.assertLess(abs(float(bq[load, 2]) - held_z), 3.0e-3, "re-engaged closure should hold the load")
-    for gap in _anchor_gaps(model, state_0, joints, solver):
+    for gap in _anchor_gaps(model, state_0, joints):
         test.assertLess(gap, 3.0e-3)
 
-    for j in joints:
-        solver.set_loop_joint_enabled(j, False)
+    _set_joint_enabled(model, joints, False)
     run(48)
     test.assertGreater(held_z - float(state_0.body_q.numpy()[load, 2]), 0.1, "released again: must fall")
 
 
 def test_disabled_loop_joint_starts_released(test, device):
-    """Start a loop joint disabled in Model.joint_enabled released, and engage it later."""
+    """Start a loop joint disabled in Model.joint_enabled released, and engage it by enabling it."""
     b, _, load, joints = _build_carried_load(enabled=False, world_parent=True)
     model = b.finalize(device=device)
     solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
@@ -526,18 +532,9 @@ def test_disabled_loop_joint_starts_released(test, device):
     test.assertGreater(z0 - float(state_0.body_q.numpy()[load, 2]), 0.15)
     test.assertEqual(solver.connect_slot.numpy().tolist(), [-1, -1, -1])
 
-    for j in joints:
-        solver.set_loop_joint_enabled(j, True)
+    _set_joint_enabled(model, joints, True)
     solver.step(state_0, state_1, model.control(), None, 1.0 / 240.0)
     test.assertTrue(np.all(solver.connect_slot.numpy() >= 0))
-
-
-def test_unknown_joint_is_rejected(test, device):
-    """Reject runtime closure edits for a joint that is not an enforced loop joint."""
-    b, _, _, joints = _build_carried_load()
-    solver = SolverFeatherPGS(b.finalize(device=device), pgs_mode="matrix_free")
-    with test.assertRaises(ValueError):
-        solver.set_loop_joint_enabled(joints[0] + 100, False)
 
 
 def test_kinematic_parent_turning_dynamic_is_rejected(test, device):
@@ -619,6 +616,261 @@ def test_imported_connect_equality_is_enforced(test, device):
         test.assertLess(abs(float(state_0.joint_q.numpy()[0])), 1.0e-2)
 
 
+# ---------------------------------------------------------------------------
+# Closure state read from the model every step
+# ---------------------------------------------------------------------------
+
+_LOOP_JOINT = 3  # The four-bar's BALL loop joint.
+
+
+def _four_bar_setup(device, world_count=1, **solver_kwargs):
+    """Return a driven four-bar model (``world_count`` worlds), its solver, states and control."""
+    four_bar = _build_four_bar()
+    if world_count == 1:
+        builder = four_bar
+    else:
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.replicate(four_bar, world_count)
+    model = builder.finalize(device=device)
+    options = {"pgs_mode": "matrix_free", "pgs_iterations": 16, "pgs_beta": 0.1, **solver_kwargs}
+    solver = SolverFeatherPGS(model, **options)
+    control = model.control()
+    targets = model.joint_target_q.numpy().reshape(world_count, -1)
+    targets[:, 0] = 0.6
+    control.joint_target_q.assign(targets.reshape(-1))
+    return model, solver, model.state(), model.state(), control
+
+
+def _step_four_bar(solver, state_0, state_1, control, steps):
+    for _ in range(steps):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, None, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+    return state_0, state_1
+
+
+def _four_bar_gaps(model, state, world_count):
+    """Loop anchor gap of every world's four-bar [m]."""
+    joints_per_world = model.joint_count // world_count
+    return np.array(_anchor_gaps(model, state, [w * joints_per_world + _LOOP_JOINT for w in range(world_count)]))
+
+
+def check_in_place_release(test, device, **solver_kwargs):
+    """Close the four-bar, then release its closure through an in-place Model.joint_enabled edit."""
+    model, solver, state_0, state_1, control = _four_bar_setup(device, **solver_kwargs)
+    state_0, state_1 = _step_four_bar(solver, state_0, state_1, control, 240)
+    test.assertLess(_four_bar_gaps(model, state_0, 1)[0], 2.0e-3)
+    _set_joint_enabled(model, [_LOOP_JOINT], False)
+    state_0, state_1 = _step_four_bar(solver, state_0, state_1, control, 120)
+    test.assertEqual(int(solver.connect_slot.numpy()[0]), -1)
+    test.assertGreater(_four_bar_gaps(model, state_0, 1)[0], 1.0e-2, "released closure still enforced")
+    _set_joint_enabled(model, [_LOOP_JOINT], True)
+    state_0, state_1 = _step_four_bar(solver, state_0, state_1, control, 480)
+    test.assertTrue(np.isfinite(state_0.body_q.numpy()).all())
+    test.assertLess(_four_bar_gaps(model, state_0, 1)[0], 2.0e-3, "re-enabled closure did not close")
+
+
+def test_in_place_release(test, device):
+    """Release and re-engage a four-bar closure by editing Model.joint_enabled in place."""
+    check_in_place_release(test, device)
+
+
+def test_in_place_release_with_preelimination(test, device):
+    """Release and re-engage a pre-eliminated four-bar closure through Model.joint_enabled."""
+    check_in_place_release(test, device, enable_bilateral_preelimination=True)
+
+
+def test_world_parent_release(test, device):
+    """Drop a load hung from world anchors once its closures are disabled in the model."""
+    b, _, load, joints = _build_carried_load(world_parent=True)
+    model = b.finalize(device=device)
+    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
+    state_0, state_1 = model.state(), model.state()
+    state_0, state_1 = _step_four_bar(solver, state_0, state_1, model.control(), 60)
+    z_held = float(state_0.body_q.numpy()[load, 2])
+    _set_joint_enabled(model, joints, False)
+    state_0, state_1 = _step_four_bar(solver, state_0, state_1, model.control(), 48)
+    test.assertGreater(z_held - float(state_0.body_q.numpy()[load, 2]), 0.15)
+
+
+def test_reanchor_world_parent_closure(test, device):
+    """Move a world-parent closure's anchors through joint_X_p and notify_model_changed."""
+    b, _, load, joints = _build_carried_load(world_parent=True)
+    model = b.finalize(device=device)
+    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
+    state_0, state_1 = model.state(), model.state()
+    shift = np.array([0.05, 0.0, 0.0])
+    joint_X_p = model.joint_X_p.numpy()
+    joint_X_p[joints, :3] += shift
+    model.joint_X_p.assign(joint_X_p)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+    state_0, state_1 = _step_four_bar(solver, state_0, state_1, model.control(), 360)
+    expected = np.array([0.0, 0.0, 1.0]) + _REL_P + shift
+    test.assertLess(np.linalg.norm(state_0.body_q.numpy()[load, :3] - expected), 3.0e-3)
+    for gap in _anchor_gaps(model, state_0, joints):
+        test.assertLess(gap, 3.0e-3)
+
+
+@wp.kernel
+def _release_even_worlds(loop_joint: int, joints_per_world: int, joint_enabled: wp.array[bool]):
+    world = wp.tid()
+    joint_enabled[world * joints_per_world + loop_joint] = world % 2 != 0
+
+
+def test_captured_device_release(test, device):
+    """Release half of 64 worlds' closures from a kernel between replays of one captured graph."""
+    world_count = 64
+    model, solver, state_0, state_1, control = _four_bar_setup(device, world_count=world_count)
+    state_0, state_1 = _step_four_bar(solver, state_0, state_1, control, 2)
+    with wp.ScopedCapture(device=device) as capture:
+        _step_four_bar(solver, state_0, state_1, control, 2)
+    for _ in range(120):
+        wp.capture_launch(capture.graph)
+    test.assertLess(float(_four_bar_gaps(model, state_0, world_count).max()), 2.0e-3)
+    wp.launch(
+        _release_even_worlds,
+        dim=world_count,
+        inputs=[_LOOP_JOINT, model.joint_count // world_count],
+        outputs=[model.joint_enabled],
+        device=device,
+    )
+    for _ in range(60):
+        wp.capture_launch(capture.graph)
+    gaps = _four_bar_gaps(model, state_0, world_count)
+    test.assertGreater(float(gaps[0::2].min()), 1.0e-2, "released worlds stayed closed")
+    test.assertLess(float(gaps[1::2].max()), 2.0e-3, "enforced worlds opened")
+    slots = solver.connect_slot.numpy()
+    test.assertTrue(np.all(slots[0::2] == -1))
+    test.assertTrue(np.all(slots[1::2] >= 0))
+
+
+def test_replaced_joint_enabled_array(test, device):
+    """Read a replaced Model.joint_enabled array eagerly, and after recapturing a graph."""
+    model, solver, state_0, state_1, control = _four_bar_setup(device)
+    state_0, state_1 = _step_four_bar(solver, state_0, state_1, control, 240)
+    released = model.joint_enabled.numpy()
+    released[_LOOP_JOINT] = False
+    model.joint_enabled = wp.array(released, dtype=bool, device=device)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+    state_0, state_1 = _step_four_bar(solver, state_0, state_1, control, 120)
+    test.assertGreater(_four_bar_gaps(model, state_0, 1)[0], 1.0e-2)
+
+    # A graph records the array it was captured with; recapture after replacing it.
+    model.joint_enabled = wp.array(np.ones(model.joint_count, dtype=bool), dtype=bool, device=device)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+    with wp.ScopedCapture(device=device) as capture:
+        _step_four_bar(solver, state_0, state_1, control, 2)
+    for _ in range(240):
+        wp.capture_launch(capture.graph)
+    test.assertLess(_four_bar_gaps(model, state_0, 1)[0], 2.0e-3)
+
+
+def test_release_matches_xpbd(test, device):
+    """Release world-anchored closures like SolverXPBD: both hold the load, then let it fall alike."""
+    dt = 1.0 / 240.0
+    trajectories = {}
+    for name in ("feather_pgs", "xpbd"):
+        b, _, load, joints = _build_carried_load(world_parent=True)
+        model = b.finalize(device=device)
+        if name == "feather_pgs":
+            solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
+        else:
+            solver = newton.solvers.SolverXPBD(model, iterations=8)
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        state_0, state_1 = _step_four_bar(solver, state_0, state_1, control, 60)
+        z = [float(state_0.body_q.numpy()[load, 2])]
+        _set_joint_enabled(model, joints, False)
+        for _ in range(24):
+            solver.step(state_0, state_1, control, None, dt)
+            state_0, state_1 = state_1, state_0
+            z.append(float(state_0.body_q.numpy()[load, 2]))
+        trajectories[name] = np.asarray(z)
+    held = 1.0 + _REL_P[2]
+    for name, z in trajectories.items():
+        test.assertAlmostEqual(z[0], held, delta=3.0e-3, msg=name)
+        test.assertGreater(z[0] - z[-1], 0.02, f"{name}: released load did not fall")
+    np.testing.assert_allclose(trajectories["feather_pgs"], trajectories["xpbd"], atol=3.0e-3)
+
+
+def test_closure_owner_stays_awake_and_releases(test, device):
+    """Keep a closure's articulation awake under sleeping, so a released closure takes effect."""
+    b = _build_four_bar()
+    b.add_ground_plane()
+    box = b.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.1), wp.quat_identity()))
+    b.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1)
+    model = b.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
+    contacts = pipeline.contacts()
+    solver = SolverFeatherPGS(
+        model,
+        pgs_mode="matrix_free",
+        pgs_iterations=16,
+        pgs_beta=0.1,
+        enable_sleeping=True,
+        sleep_quiet_time=0.05,
+        friction_anchor_beta=0.0,
+    )
+    control = model.control()
+    targets = model.joint_target_q.numpy()
+    targets[0] = 0.6
+    control.joint_target_q.assign(targets)
+    states = [model.state(), model.state()]
+
+    def advance(steps):
+        for _ in range(steps):
+            states[0].clear_forces()
+            pipeline.collide(states[0], contacts)
+            solver.step(states[0], states[1], control, contacts, 1.0 / 240.0)
+            states.reverse()
+
+    advance(480)
+    # The box sleeps; the four-bar owns closure rows and stays awake.
+    test.assertEqual(solver.sleeping.art_awake.numpy().tolist(), [1, 0])
+    test.assertLess(_four_bar_gaps(model, states[0], 1)[0], 2.0e-3)
+    _set_joint_enabled(model, [_LOOP_JOINT], False)
+    advance(120)
+    test.assertGreater(_four_bar_gaps(model, states[0], 1)[0], 1.0e-2)
+
+
+def test_propagation_rejects_closures(test, device):
+    """Reject loop closures with propagation contact responses, enabled or released."""
+    for enabled in (True, False):
+        model = _build_four_bar().finalize(device=device)
+        _set_joint_enabled(model, [_LOOP_JOINT], enabled)
+        with test.assertRaisesRegex(NotImplementedError, "Loop-closing joints are not supported"):
+            SolverFeatherPGS(model, pgs_mode="matrix_free", articulated_contact_response="propagation")
+
+
+def test_disabled_tree_joint_is_reported(test, device):
+    """Report a tree joint disabled after construction, eagerly and under capture, until reset."""
+    world_count = 4
+    model, solver, state_0, state_1, control = _four_bar_setup(device, world_count=world_count)
+    joints_per_world = model.joint_count // world_count
+    state_0, state_1 = _step_four_bar(solver, state_0, state_1, control, 2)
+    solver.check_constraint_capacity()
+    _set_joint_enabled(model, [2 * joints_per_world + 1], False)
+    state_0, state_1 = _step_four_bar(solver, state_0, state_1, control, 1)
+    with test.assertRaisesRegex(RuntimeError, r"tree joint in worlds \[2\]"):
+        solver.check_constraint_capacity()
+    _set_joint_enabled(model, [2 * joints_per_world + 1], True)
+    mask = wp.array([False, False, True, False, False], dtype=wp.bool, device=device)
+    solver.reset(state_0, world_mask=mask)
+    solver.check_constraint_capacity()
+
+    with wp.ScopedCapture(device=device) as capture:
+        _step_four_bar(solver, state_0, state_1, control, 2)
+    wp.capture_launch(capture.graph)
+    solver.check_constraint_capacity()
+    _set_joint_enabled(model, [joints_per_world], False)
+    wp.capture_launch(capture.graph)
+    with test.assertRaisesRegex(RuntimeError, r"tree joint in worlds \[1\]"):
+        solver.check_constraint_capacity()
+
+    with test.assertRaisesRegex(NotImplementedError, "disabled joints in an articulation tree"):
+        SolverFeatherPGS(model, pgs_mode="matrix_free")
+
+
 def _expect_one_warning(test, category, pattern, call):
     """Return ``call()``, requiring it to emit exactly one warning, of ``category`` and matching ``pattern``."""
     with warnings.catch_warnings(record=True) as caught:
@@ -642,6 +894,10 @@ class TestFeatherPGSConnectPropagation(unittest.TestCase):
     pass
 
 
+class TestFeatherPGSConnectModelEdits(unittest.TestCase):
+    pass
+
+
 cuda_devices = get_cuda_test_devices()
 for _name in (
     "test_loop_joint_presence_is_stable",
@@ -659,12 +915,24 @@ for _name in (
 for _name in (
     "test_kinematic_parent_closure_carries_load",
     "test_world_parent_closure_holds_hanging_load",
-    "test_runtime_enable_and_anchor_update",
+    "test_model_edits_release_and_reanchor_closures",
     "test_disabled_loop_joint_starts_released",
-    "test_unknown_joint_is_rejected",
     "test_kinematic_parent_turning_dynamic_is_rejected",
 ):
     add_function_test(TestFeatherPGSPrescribedParentConnect, _name, globals()[_name], devices=cuda_devices)
+for _name in (
+    "test_in_place_release",
+    "test_in_place_release_with_preelimination",
+    "test_world_parent_release",
+    "test_reanchor_world_parent_closure",
+    "test_captured_device_release",
+    "test_replaced_joint_enabled_array",
+    "test_release_matches_xpbd",
+    "test_closure_owner_stays_awake_and_releases",
+    "test_propagation_rejects_closures",
+    "test_disabled_tree_joint_is_reported",
+):
+    add_function_test(TestFeatherPGSConnectModelEdits, _name, globals()[_name], devices=cuda_devices)
 add_function_test(
     TestFeatherPGSConnectPropagation,
     "test_propagation_standalone_world_root_is_not_loop_joint",

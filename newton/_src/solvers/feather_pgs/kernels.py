@@ -2581,7 +2581,8 @@ def populate_mimic_J_for_size(
 
 @wp.kernel
 def allocate_connect_slots(
-    connect_enabled: wp.array[int],
+    connect_joint: wp.array[int],
+    joint_enabled: wp.array[bool],
     connect_world: wp.array[int],
     max_constraints: int,
     # outputs
@@ -2590,14 +2591,14 @@ def allocate_connect_slots(
     first_rejected_slot: wp.array[int],
     dropped_rows: wp.array[int],
 ):
-    """Allocate three consecutive dense rows per enabled loop closure.
+    """Allocate three consecutive dense rows per loop closure enabled in ``Model.joint_enabled``.
 
     A closure that does not fit is dropped whole (``connect_slot = -1``) rather than
     enforced along some axes only.
     """
     k = wp.tid()
     connect_slot[k] = -1
-    if connect_enabled[k] == 0:
+    if not joint_enabled[connect_joint[k]]:
         return
     connect_slot[k] = _reserve_bilateral_rows(
         connect_world[k], 3, max_constraints, world_slot_counter, first_rejected_slot, dropped_rows
@@ -2612,10 +2613,11 @@ def populate_connect_J_for_size(
     n_dofs: int,
     connect_slot: wp.array[int],
     connect_art: wp.array[int],
+    connect_joint: wp.array[int],
     connect_body_p: wp.array[int],
     connect_body_c: wp.array[int],
-    connect_anchor_p: wp.array[wp.vec3],
-    connect_anchor_c: wp.array[wp.vec3],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
     connect_parent_prescribed: wp.array[int],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -2638,7 +2640,8 @@ def populate_connect_J_for_size(
     One thread per articulation of the group scans the closure table and writes three
     rows per owned closure: for world axis ``e``, ``phi = e . (p_A - p_B)`` and
     ``J = e . (J_point(parent, p_A) - J_point(child, p_B))``, built with the ancestor
-    walk of the contact rows. Shared ancestors cancel.
+    walk of the contact rows. Shared ancestors cancel. The anchors are the translations of
+    the closure joint's ``joint_X_p`` / ``joint_X_c``, read every step.
 
     A prescribed parent (a kinematic body outside the child's articulation, or the world
     when ``connect_body_p[k] < 0``) contributes no DOFs; its anchor velocity enters the
@@ -2666,16 +2669,18 @@ def populate_connect_J_for_size(
         body_p = connect_body_p[k]
         body_c = connect_body_c[k]
         prescribed = connect_parent_prescribed[k] != 0
-        p_a = connect_anchor_p[k]
+        joint = connect_joint[k]
+        anchor_p = wp.transform_get_translation(joint_X_p[joint])
+        p_a = anchor_p
         v_a = wp.vec3(0.0, 0.0, 0.0)
         if body_p >= 0:
-            p_a = wp.transform_point(body_q[body_p], connect_anchor_p[k])
+            p_a = wp.transform_point(body_q[body_p], anchor_p)
             if prescribed:
                 # The anchor velocity of a prescribed parent comes from its body twist.
                 twist = body_qd[body_p]
                 x_com = wp.transform_point(body_q[body_p], body_com[body_p])
                 v_a = wp.spatial_top(twist) + wp.cross(wp.spatial_bottom(twist), p_a - x_com)
-        p_b = wp.transform_point(body_q[body_c], connect_anchor_c[k])
+        p_b = wp.transform_point(body_q[body_c], wp.transform_get_translation(joint_X_c[joint]))
         origin = articulation_origin[art]
         rel_a = p_a - origin
         rel_b = p_b - origin

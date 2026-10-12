@@ -626,9 +626,6 @@ class TestFeatherPGSSparseSelectionGuard(unittest.TestCase):
         )
 
     @unittest.skipUnless(wp.is_cuda_available(), "Sparse integrated solve requires CUDA")
-    @unittest.skipUnless(
-        hasattr(SolverFeatherPGS, "set_loop_joint_enabled"), "requires the FeatherPGS mimic and connect rows"
-    )
     def test_bilateral_rows_keep_dense_factors(self):
         """Keep dense factors, and their response storage, when the solver builds bilateral rows."""
         for label, kwargs in (
