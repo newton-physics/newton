@@ -318,7 +318,7 @@ arbitrary contact mass. The force-space path applies the implemented
 describes the scaled numerical ``solref``, not an exact Jacobian-derived contact
 response. See the implementation in
 :github:`newton/_src/solvers/mujoco/kernels.py` and its force-space contact tests
-in :github:`newton/tests/test_mujoco_solver.py`.
+in :github:`newton/tests/test_solver_mujoco_solref.py`.
 
 With MuJoCo's default ``refsafe`` guard enabled, MuJoCo-Warp evaluates positive
 ``solref`` using ``max(timeconst, 2 * dt)`` for the active constraint without
