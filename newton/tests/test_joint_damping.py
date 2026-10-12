@@ -199,6 +199,8 @@ def test_featherstone_ball_joint_damping_decays_velocity(test: TestJointDamping,
 
 
 def test_feather_pgs_ball_joint_damping_matches_featherstone(test: TestJointDamping, device):
+    """Decay FeatherPGS ball-joint speed with joint damping, as SolverFeatherstone does."""
+
     def solver_fn(model):
         return newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free" if model.device.is_cuda else "split")
 

@@ -798,9 +798,9 @@ def test_hydro_contact_input_is_rejected(test, device):
 
 
 def test_patch_spanning_shape_pairs_takes_the_largest_radius(test, device):
-    """Give a patch over two shape pairs the larger radius in either contact order, on host and device."""
+    """Give a patch over two shape pairs the larger radius in either contact order, for every preparation."""
     results = {}
-    for device_preparation, reverse in itertools.product((False, True), (False, True)):
+    for preparation, reverse in itertools.product(("host", "patch_segments", "world_scan"), (False, True)):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
         pose = wp.transform(wp.vec3(0.0, 0.0, 0.0199), wp.quat_identity())
@@ -823,13 +823,16 @@ def test_patch_spanning_shape_pairs_takes_the_largest_radius(test, device):
         set_torsion_radius(model, np.array([0.0, 0.001, 0.04], dtype=np.float32))
         solver = SolverFeatherPGS(
             model,
-            contact_torsion_device=device_preparation,
+            contact_torsion_device=preparation != "host",
             iterations=128,
             friction_anchor_beta=0.2,
             cfm=0.0,
             articulation_constraint_max=128,
         )
         solver._rigid_body_angular_damping.zero_()
+        if preparation == "world_scan":
+            solver._device_torsion = DeviceTorsionPreparation(solver, patch_segments=False)
+            solver._device_torsion.allocate_snapshots(model)
         state, output = model.state(), model.state()
         state.joint_qd.assign(np.array([0.0, 0.0, -0.1, 0.0, 0.0, 100.0], dtype=np.float32))
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -850,13 +853,13 @@ def test_patch_spanning_shape_pairs_takes_the_largest_radius(test, device):
         test.assertEqual(sorted(set(contacts.rigid_contact_shape1.numpy()[:count].tolist())), [1, 2])
         solver.step(state, output, model.control(), contacts, 0.0025)
         solver.check_constraint_capacity()
-        stats = solver._device_torsion.read_stats() if device_preparation else solver._torsion_stats
+        stats = solver._torsion_stats if preparation == "host" else solver._device_torsion.read_stats()
         test.assertEqual(stats["rows"], 1)
         test.assertAlmostEqual(stats["groups"][0]["effective_radius_m"], 0.04, places=6)
-        results[device_preparation, reverse] = output.joint_qd.numpy()
+        results[preparation, reverse] = output.joint_qd.numpy()
     for key, joint_qd in results.items():
-        with test.subTest(device_preparation=key[0], reverse=key[1]):
-            np.testing.assert_allclose(joint_qd, results[False, False], rtol=0.0, atol=1.0e-4)
+        with test.subTest(preparation=key[0], reverse=key[1]):
+            np.testing.assert_allclose(joint_qd, results["host", False], rtol=0.0, atol=1.0e-4)
 
 
 class TestContactTorsionRegressions(unittest.TestCase):
@@ -1269,13 +1272,14 @@ def test_ring_and_capacity_errors_are_latched(test, device):
 
 
 def test_patch_segments_match_world_scan(test, device):
-    """Match the per-world patch scan exactly under selection, rejection and negative owners."""
+    """Match the per-world patch scan exactly under selection, rejection, negative owners and unequal radii."""
     for seed in range(8):
         results = []
         for patch_segments in (False, True):
             solver, state, augmented, contacts = synthetic_fixture(worlds=4, witnesses=12, seed=seed, device=device)
             rng = np.random.default_rng(seed)
-            radii = np.where(rng.random(solver.model.shape_count) < 0.6, 0.01, 0.0).astype(np.float32)
+            positive = rng.choice((0.01, 0.03), solver.model.shape_count)
+            radii = np.where(rng.random(solver.model.shape_count) < 0.6, positive, 0.0).astype(np.float32)
             solver._contact_torsion_shape_radius = wp.array(radii, dtype=float, device=device)
             anchors = solver._contact_slots_needed.numpy()
             anchors[rng.random(anchors.size) < 0.3] = 1
@@ -1294,7 +1298,9 @@ def test_patch_segments_match_world_scan(test, device):
             except RuntimeError as exc:
                 error = str(exc)
             names = ("_constraint_count", "_row_type", "_row_parent", "_row_mu", "_target_velocity")
-            arrays = [getattr(solver, name).numpy() for name in (*names, "_contact_torsion_group")]
+            arrays = [
+                getattr(solver, name).numpy() for name in (*names, "_contact_torsion_group", "_torsion_row_radius")
+            ]
             arrays += [preparer.work.status.numpy(), preparer.work.spin_row.numpy()]
             results.append((error, arrays))
         with test.subTest(device=device, seed=seed):
