@@ -55,7 +55,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.support_function import _CONVEX_HULL_VALID
 from ..geometry.types import Heightfield
-from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
+from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
@@ -8707,7 +8707,8 @@ class ModelBuilder:
             The ``coacd`` and ``vhacd`` methods require additional dependencies (``coacd`` or ``trimesh`` and ``vhacdx`` respectively) to be installed.
             The convex hull approximation requires ``scipy`` to be installed.
             For ``coacd`` and ``vhacd``, each geometrically connected component
-            is decomposed separately and may produce one or more convex shapes.
+            is decomposed separately and may produce one or more convex shapes,
+            each limited to the source mesh's ``maxhullvert`` vertices.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -8854,9 +8855,9 @@ class ModelBuilder:
                 for shape in shape_indices:
                     mesh: Mesh = self.shape_source[shape]
                     scale = self.shape_scale[shape]
-                    hash_m = hash(mesh)
-                    if hash_m in decompositions:
-                        decomposition = decompositions[hash_m]
+                    cache_key = (hash(mesh), mesh.maxhullvert)
+                    if cache_key in decompositions:
+                        decomposition = decompositions[cache_key]
                     else:
                         decomposition = []
                         # Decomposition backends may merge disconnected convex parts into one hull.
@@ -8869,10 +8870,15 @@ class ModelBuilder:
                                     "mcts_iterations": 5,
                                     "mcts_max_depth": 1,
                                     "merge": False,
-                                    "max_convex_hull": mesh.maxhullvert,
                                 }
                                 coacd_settings.update(remeshing_kwargs)
-                                decomposition.extend(coacd.run_coacd(cmesh, **coacd_settings))
+                                # Cap with Qhull rather than CoACD's decimation, which is orders of magnitude slower.
+                                decomposition.extend(
+                                    remesh_convex_hull(v, maxhullvert=mesh.maxhullvert)
+                                    if 0 < mesh.maxhullvert < len(v)
+                                    else (v, f)
+                                    for v, f in coacd.run_coacd(cmesh, **coacd_settings)
+                                )
                             else:
                                 tmesh = trimesh.Trimesh(component_vertices, component_faces)
                                 vhacd_settings = {
@@ -8883,7 +8889,7 @@ class ModelBuilder:
                                     tmesh, **vhacd_settings
                                 )
                                 decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
-                        decompositions[hash_m] = decomposition
+                        decompositions[cache_key] = decomposition
                     if len(decomposition) == 0:
                         if raise_on_failure:
                             empty_decomposition_shape = shape
@@ -8940,7 +8946,7 @@ class ModelBuilder:
                             extra_shape = self.add_shape_convex_hull(
                                 body=body,
                                 xform=xform,
-                                mesh=Mesh(decomposition[i][0], decomposition[i][1]),
+                                mesh=Mesh(decomposition[i][0], decomposition[i][1], maxhullvert=mesh.maxhullvert),
                                 scale=scale,
                                 cfg=cfg,
                                 color=color,
