@@ -282,6 +282,45 @@ Tests and repository conventions
 - In SPDX copyright lines, use the year the file was first created. Do not use
   date ranges or update the year when modifying an existing file.
 
+.. _test-organization-and-runtime:
+
+Test organization and runtime
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Treat CI runtime and test setup/teardown overhead as part of the cost of every
+change. Preserve meaningful coverage while avoiding redundant test execution.
+
+- **Inspect existing coverage first.** Before adding a test, contributors must
+  search for tests that exercise the same behavior, feature, or solver. Identify
+  the coverage gap and the most appropriate existing method, class, and module
+  to extend.
+- **Prefer updating over adding.** Extend an existing test when new checks
+  exercise the same scenario and can reuse its setup or simulation results.
+  Use additional assertions or clearly labeled ``subTest`` cases where
+  appropriate. Add a separate test method only when the behavior needs a
+  distinct scenario or independent execution. Keep failures easy to diagnose
+  and retain existing coverage; do not combine unrelated checks merely to
+  reduce the test count.
+- **Group tests by responsibility.** Solver-specific tests must live under
+  ``newton/tests/<solver>/``. Group other tests by the feature or subsystem they
+  exercise. Logically related tests with compatible fixtures should share a
+  test class and module rather than being scattered across small files or
+  assigned a new class for each regression. Create a new class or module only
+  when a distinct responsibility or fixture lifecycle warrants it. Keep shared
+  and cross-solver tests in an appropriate common location. New test packages
+  must remain discoverable by the existing test runner.
+- **Reuse expensive setup safely.** The test runner defaults to class-level
+  parallelism. Reuse compatible fixtures and share expensive initialization at
+  class scope where safe to reduce repeated setup and teardown. Grouping tests
+  alone does not eliminate per-test setup costs. Reset mutable state as needed
+  so tests remain independent and do not depend on execution order.
+- **Keep each scenario economical.** Use the smallest model, fewest simulation
+  steps, and narrowest set of parameter combinations that reliably verify the
+  behavior. Avoid repeating equivalent coverage through multiple expensive
+  simulations. When substantial runtime is added, contributors must measure it
+  and explain why the additional coverage justifies the cost in the pull
+  request.
+
 Public API review checklist
 ---------------------------
 

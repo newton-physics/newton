@@ -162,6 +162,15 @@ Apply the :ref:`source-code-guidelines` to every code and public-API change.
 They are authoritative for public exports, namespaces, naming, signatures,
 types, documentation, testing, compatibility, and repository conventions.
 
+For test changes, explicitly assess :ref:`test-organization-and-runtime`.
+Inspect related existing coverage and check whether new assertions or scenarios
+could extend it, whether solver-specific tests are placed correctly, and
+whether related tests reuse an appropriate class, module, and fixture. Assess
+redundant simulation work and added CI cost; substantial runtime increases need
+measurements and justification. Ground concerns in the specific duplicated
+coverage, avoidable setup, or misplaced tests. Preserve meaningful coverage,
+failure diagnosis, and test independence when recommending consolidation.
+
 For public API changes, check the canonical public path, stability status,
 signature and defaults, behavior and return contract, documentation, and
 generated API reference. Enforce the deprecation policy and migration guidance
