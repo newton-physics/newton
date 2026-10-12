@@ -154,10 +154,10 @@ def _analytic_H_and_X(model, state):
     return H, X
 
 
-def test_scissor_scene_produces_same_articulation_contact(test, device, pgs_mode="matrix_free"):
+def test_scissor_scene_produces_same_articulation_contact(test, device, solve_mode="matrix_free"):
     """Route a contact between two links of one articulation to the dense articulated rows."""
     model = _build_scissor_model(device)
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, pgs_iterations=0, pgs_cfm=PGS_CFM)
+    solver = SolverFeatherPGS(model, solve_mode=solve_mode, iterations=0, cfm=PGS_CFM)
     _, contact_count = _step_once(model, solver)
     test.assertGreater(contact_count, 0, "scissor scene produced no link-link contact")
     paths = solver.contact_path.numpy()[:contact_count]
@@ -167,10 +167,10 @@ def test_scissor_scene_produces_same_articulation_contact(test, device, pgs_mode
     test.assertEqual(int(solver.mf_constraint_count.numpy()[0]), 0)
 
 
-def test_scissor_dense_diagonal_matches_reference(test, device, pgs_mode="matrix_free"):
+def test_scissor_dense_diagonal_matches_reference(test, device, solve_mode="matrix_free"):
     """Match each dense row's effective mass to ``J H^-1 J^T`` from an analytic joint-space inertia."""
     model = _build_scissor_model(device)
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, pgs_iterations=0, pgs_cfm=PGS_CFM)
+    solver = SolverFeatherPGS(model, solve_mode=solve_mode, iterations=0, cfm=PGS_CFM)
     state, _ = _step_once(model, solver)
     H, _ = _analytic_H_and_X(model, state)
     count = int(solver.constraint_count.numpy()[0])
@@ -194,7 +194,7 @@ def _routed_slots(solver, contact_count, path):
 def test_default_routing_keeps_same_articulation_rows_dense(test, device):
     """Keep same-articulation contacts on the dense rows under the default propagation response."""
     model = _build_scissor_model(device)
-    solver = SolverFeatherPGS(model, pgs_iterations=0, pgs_cfm=PGS_CFM, articulated_contact_response="propagation")
+    solver = SolverFeatherPGS(model, iterations=0, cfm=PGS_CFM, articulated_contact_response="propagation")
     _, contact_count = _step_once(model, solver)
     test.assertGreater(len(_routed_slots(solver, contact_count, DENSE_PATH)), 0)
     test.assertEqual(int(solver.propagation_constraint_count.numpy()[0]), 0)
@@ -203,7 +203,7 @@ def test_default_routing_keeps_same_articulation_rows_dense(test, device):
 def test_flag_requires_propagation_mode(test, device):
     """Reject same-articulation propagation rows without the response that solves them."""
     model = _build_scissor_model(device)
-    for response in ("immediate", "propagation-fused", "propagation-colored"):
+    for response in ("immediate", "propagation_fused", "propagation_colored"):
         with test.subTest(response=response):
             with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
                 SolverFeatherPGS(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
@@ -217,15 +217,15 @@ def test_cross_response_effective_mass_matches_reference_operator(test, device):
     alone would miss the cross term between the two links.
     """
     model = _build_scissor_model(device)
-    reference = SolverFeatherPGS(model, pgs_iterations=0, pgs_cfm=PGS_CFM)
+    reference = SolverFeatherPGS(model, iterations=0, cfm=PGS_CFM)
     _, contact_count = _step_once(model, reference)
     dense_slots = _routed_slots(reference, contact_count, DENSE_PATH)
     test.assertGreater(len(dense_slots), 0)
 
     solver = SolverFeatherPGS(
         model,
-        pgs_iterations=0,
-        pgs_cfm=PGS_CFM,
+        iterations=0,
+        cfm=PGS_CFM,
         articulated_contact_response="propagation",
         propagation_same_articulation_rows=True,
     )
@@ -292,7 +292,7 @@ for _name in (
         f"{_name}_split",
         globals()[_name],
         devices=get_test_devices(),
-        pgs_mode="split",
+        solve_mode="split",
     )
 
 

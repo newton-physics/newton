@@ -114,17 +114,17 @@ def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=Fa
 def _make_solver(model, sparse, **overrides):
     """Change only the representation selection between comparison solvers."""
     options = {
-        "pgs_iterations": 32,
+        "iterations": 32,
         "enable_joint_limits": True,
         "enable_joint_velocity_limits": False,
-        "dense_max_constraints": 32,
+        "articulation_constraint_max": 32,
         "update_mass_matrix_interval": 4,
         # Sparse factors solve point friction; persistent friction patches keep dense factors.
         "friction_anchor_beta": 0.0,
     }
     options.update(overrides)
     with kernel_overrides({"sparse_mass_matrix": sparse}):
-        return SolverFeatherPGS(model, pgs_mode="matrix_free", **options)
+        return SolverFeatherPGS(model, solve_mode="matrix_free", **options)
 
 
 def _case(sparse, *, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False):
@@ -140,7 +140,7 @@ def _case(sparse, *, free_count=0, free_first=False, robot_count=1, prescribed=F
         model,
         sparse,
         **(
-            {"dense_max_constraints": 96 if robot_count > 1 else 64, "mf_max_constraints": 64}
+            {"articulation_constraint_max": 96 if robot_count > 1 else 64, "free_body_constraint_max": 64}
             if free_count or robot_count > 1
             else {}
         ),
@@ -250,7 +250,7 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
         v_hat, v_out = solver.v_hat.numpy(), solver.v_out.numpy()
         for world in range(solver.world_count):
             count = int(counts[world])
-            self.assertLessEqual(count, solver.dense_max_constraints)
+            self.assertLessEqual(count, solver.articulation_constraint_max)
             self.assertTrue(np.isfinite(impulses[world, :count]).all())
             kinds = solver.row_type.numpy()[world, :count]
             unilateral = (kinds == PGS_CONSTRAINT_TYPE_CONTACT) | (kinds == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
@@ -512,15 +512,15 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
 
     def test_default_selects_sparse_factors_for_branched_articulations(self):
         """Select sparse factors for branched trees with point friction and keep dense factors for chains."""
-        point = {"pgs_mode": "matrix_free", "friction_anchor_beta": 0.0}
+        point = {"solve_mode": "matrix_free", "friction_anchor_beta": 0.0}
         self.assertEqual(SolverFeatherPGS(_build_model(), **point)._sparse_mass_matrix_size, 9)
         self.assertEqual(SolverFeatherPGS(_build_model(free_count=1), **point)._sparse_mass_matrix_size, 9)
         self.assertIsNone(SolverFeatherPGS(_build_chain("cuda:0"), **point)._sparse_mass_matrix_size)
         # The sparse kernels do not implement friction patches, the default friction.
-        self.assertIsNone(SolverFeatherPGS(_build_model(), pgs_mode="matrix_free")._sparse_mass_matrix_size)
+        self.assertIsNone(SolverFeatherPGS(_build_model(), solve_mode="matrix_free")._sparse_mass_matrix_size)
         # The split solve uses dense factors.
         self.assertIsNone(
-            SolverFeatherPGS(_build_model(), pgs_mode="split", friction_anchor_beta=0.0)._sparse_mass_matrix_size
+            SolverFeatherPGS(_build_model(), solve_mode="split", friction_anchor_beta=0.0)._sparse_mass_matrix_size
         )
 
     def test_unsupported_configurations_keep_existing_path(self):
@@ -531,12 +531,12 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
         self.assertEqual(_make_solver(model, True)._sparse_mass_matrix_size, 9)
         for options in (
             {"enable_joint_velocity_limits": True},
-            {"pgs_iterations": 0},
-            {"dense_max_constraints": 2048},
+            {"iterations": 0},
+            {"articulation_constraint_max": 2048},
             {"friction_anchor_beta": 0.2},
-            {"pgs_warmstart": True},
-            {"pgs_contact_regularization": 0.01},
-            {"pgs_velocity_iterations": 1},
+            {"contact_warmstart": True},
+            {"contact_regularization": 0.01},
+            {"velocity_iterations": 1},
             {"contact_friction_gap_threshold": 0.01},
         ):
             with self.subTest(options=options):
@@ -621,7 +621,7 @@ class TestFeatherPGSSparseSelectionGuard(unittest.TestCase):
         """Select sparse factors for the uncoupled Y tree used by the bilateral guard."""
         self.assertEqual(
             SolverFeatherPGS(
-                _build_y_tree("cuda:0"), pgs_mode="matrix_free", friction_anchor_beta=0.0
+                _build_y_tree("cuda:0"), solve_mode="matrix_free", friction_anchor_beta=0.0
             )._sparse_mass_matrix_size,
             3,
         )
@@ -635,7 +635,7 @@ class TestFeatherPGSSparseSelectionGuard(unittest.TestCase):
             ("disabled closure", {"closure": True, "closure_enabled": False}),
         ):
             with self.subTest(label):
-                solver = SolverFeatherPGS(_build_y_tree("cuda:0", **kwargs), pgs_mode="matrix_free")
+                solver = SolverFeatherPGS(_build_y_tree("cuda:0", **kwargs), solve_mode="matrix_free")
                 self.assertIsNone(solver._sparse_mass_matrix_size)
                 self.assertGreater(solver.J_by_size[3].size, 1)
 

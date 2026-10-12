@@ -71,13 +71,13 @@ def _max_arm_speed_over_impact(device, *, enable_joint_velocity_limits: bool, fu
     # iterations; dedicated rows and the end-of-iteration clamp hold it.
     solver = SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
-        drive_mode="physx_pgs",
+        solve_mode="matrix_free",
+        drive_mode="rows",
         enable_joint_velocity_limits=enable_joint_velocity_limits,
         fuse_joint_velocity_limits=fuse,
-        pgs_iterations=8,
-        dense_max_constraints=32,
-        mf_max_constraints=32,
+        iterations=8,
+        articulation_constraint_max=32,
+        free_body_constraint_max=32,
     )
     state_0, state_1 = model.state(), model.state()
     control = model.control()

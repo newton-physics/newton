@@ -20,7 +20,7 @@ def test_disabled_material_options_keep_default_patches(test, device):
     body = builder.add_body()
     builder.add_shape_sphere(body, radius=0.05)
     model = builder.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", contact_torsion_radius=0.0)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", contact_torsion_radius=0.0)
     test.assertEqual(solver.friction_anchor_beta, 0.2)
     test.assertTrue(solver._friction_anchors_enabled)
     test.assertFalse(solver._contact_torsion_enabled)

@@ -93,7 +93,7 @@ def _loop_anchor_gap(model, state) -> float:
 def _run(device, steps: int = 720, crank_target: float = 0.6, **solver_kwargs):
     builder = _build_four_bar()
     model = builder.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.1, **solver_kwargs)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1, **solver_kwargs)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     targets = model.joint_target_q.numpy().copy()
@@ -207,8 +207,8 @@ def test_four_bar_capture_matches_eager(test, device):
     targets = model.joint_target_q.numpy().copy()
     targets[0] = 0.6
     control.joint_target_q.assign(targets)
-    eager = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.1)
-    captured = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.1)
+    eager = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1)
+    captured = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1)
     e0, e1 = model.state(), model.state()
     c0, c1 = model.state(), model.state()
 
@@ -246,7 +246,7 @@ def test_connect_ownership_survives_interleaved_articulation(test, device):
 
     loop_joint = b.add_joint_ball(parent=left, child=right)
     model = b.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free")
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free")
 
     test.assertEqual(int(model.joint_articulation.numpy()[loop_joint]), -1)
     np.testing.assert_array_equal(solver._model_plan.loop_joint_articulation, np.array([-1, -1, -1, 0], dtype=np.int32))
@@ -260,7 +260,7 @@ def check_standalone_world_root_is_not_loop_joint(test, device, **solver_kwargs)
     model = b.finalize(device=device)
     test.assertEqual(model.joint_articulation.numpy().tolist(), [0, -1])
     test.assertEqual(standalone_joint, 1)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", **solver_kwargs)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", **solver_kwargs)
     test.assertEqual(solver._connect_count, 0)
     np.testing.assert_array_equal(solver._model_plan.loop_joint_articulation, np.array([-1, -1], dtype=np.int32))
 
@@ -282,7 +282,7 @@ def test_connect_survives_foreign_joint_between_tree_and_loop(test, device):
     and leave the four-bar open.
     """
     model = _build_interleaved_four_bar().finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.1)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1)
     test.assertEqual(solver._connect_count, 1, "closure row lost: loop joint attributed to the wrong articulation")
 
     state_0, state_1 = model.state(), model.state()
@@ -307,7 +307,7 @@ def test_unsupported_loop_joints_are_rejected(test, device):
         test, UserWarning, "another joint already connects these bodies", lambda: b.add_joint_fixed(parent=1, child=2)
     )
     with test.assertRaisesRegex(NotImplementedError, "only BALL loop-closing joints"):
-        SolverFeatherPGS(b.finalize(device=device), pgs_mode="matrix_free")
+        SolverFeatherPGS(b.finalize(device=device), solve_mode="matrix_free")
 
     b = newton.ModelBuilder(up_axis=newton.Axis.Z)
     first = b.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
@@ -318,7 +318,7 @@ def test_unsupported_loop_joints_are_rejected(test, device):
         warnings.simplefilter("ignore", UserWarning)
         b.add_joint_ball(parent=first, child=second)
     with test.assertRaisesRegex(NotImplementedError, "connects articulations"):
-        SolverFeatherPGS(b.finalize(device=device), pgs_mode="matrix_free")
+        SolverFeatherPGS(b.finalize(device=device), solve_mode="matrix_free")
 
 
 def test_closure_row_overflow_is_reported(test, device):
@@ -326,8 +326,8 @@ def test_closure_row_overflow_is_reported(test, device):
     model = _build_four_bar().finalize(device=device)
     solver = SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
-        dense_max_constraints=2,
+        solve_mode="matrix_free",
+        articulation_constraint_max=2,
         joint_limit_activation_gap=0.0,
         warn_constraint_overflow=False,
     )
@@ -430,7 +430,7 @@ def test_kinematic_parent_closure_carries_load(test, device):
     """
     b, carrier, load, joints = _build_carried_load()
     model = b.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
     articulation = wp.array([int(solver.body_to_articulation.numpy()[carrier])], dtype=wp.int32, device=device)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -460,7 +460,7 @@ def test_world_parent_closure_holds_hanging_load(test, device):
     """Hold a load hanging from world anchors through three point closures."""
     b, _, load, joints = _build_carried_load(world_parent=True)
     model = b.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     for _ in range(240):
@@ -478,7 +478,7 @@ def test_model_edits_release_and_reanchor_closures(test, device):
     """Release closures through Model.joint_enabled, re-anchor them through joint_X_p and engage them again."""
     b, carrier, load, joints = _build_carried_load()
     model = b.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     dt = 1.0 / 240.0
@@ -523,7 +523,7 @@ def test_disabled_loop_joint_starts_released(test, device):
     """Start a loop joint disabled in Model.joint_enabled released, and engage it by enabling it."""
     b, _, load, joints = _build_carried_load(enabled=False, world_parent=True)
     model = b.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     z0 = float(state_0.body_q.numpy()[load, 2])
     for _ in range(48):
@@ -552,7 +552,7 @@ def test_kinematic_parent_turning_dynamic_is_rejected(test, device):
     load = b.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
     loop_joint = b.add_joint_ball(carrier, load)
     model = b.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", joint_limit_activation_gap=0.0)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", joint_limit_activation_gap=0.0)
     test.assertEqual(solver._connect_parent_prescribed.numpy().tolist(), [1])
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, 0.01)
@@ -572,7 +572,7 @@ def test_kinematic_parent_turning_dynamic_is_rejected(test, device):
     with test.assertRaisesRegex(NotImplementedError, f"loop-closing joint {loop_joint} .* no longer kinematic"):
         solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
     with test.assertRaisesRegex(NotImplementedError, "connects articulations 0 and 1"):
-        SolverFeatherPGS(model, pgs_mode="matrix_free", joint_limit_activation_gap=0.0)
+        SolverFeatherPGS(model, solve_mode="matrix_free", joint_limit_activation_gap=0.0)
 
 
 def test_imported_connect_equality_is_enforced(test, device):
@@ -604,9 +604,9 @@ def test_imported_connect_equality_is_enforced(test, device):
         test.assertEqual(model.mujoco.equality_constraint_count, 1)
         if not convert:
             with test.assertRaisesRegex(NotImplementedError, "equality"):
-                SolverFeatherPGS(model, pgs_mode="matrix_free")
+                SolverFeatherPGS(model, solve_mode="matrix_free")
             continue
-        solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16)
+        solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16)
         test.assertEqual(solver._connect_count, 1)
         state_0, state_1 = model.state(), model.state()
         for _ in range(120):
@@ -632,7 +632,7 @@ def _four_bar_setup(device, world_count=1, **solver_kwargs):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.replicate(four_bar, world_count)
     model = builder.finalize(device=device)
-    options = {"pgs_mode": "matrix_free", "pgs_iterations": 16, "pgs_beta": 0.1, **solver_kwargs}
+    options = {"solve_mode": "matrix_free", "iterations": 16, "baumgarte": 0.1, **solver_kwargs}
     solver = SolverFeatherPGS(model, **options)
     control = model.control()
     targets = model.joint_target_q.numpy().reshape(world_count, -1)
@@ -684,7 +684,7 @@ def test_world_parent_release(test, device):
     """Drop a load hung from world anchors once its closures are disabled in the model."""
     b, _, load, joints = _build_carried_load(world_parent=True)
     model = b.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     state_0, state_1 = _step_four_bar(solver, state_0, state_1, model.control(), 60)
     z_held = float(state_0.body_q.numpy()[load, 2])
@@ -697,7 +697,7 @@ def test_reanchor_world_parent_closure(test, device):
     """Move a world-parent closure's anchors through joint_X_p and notify_model_changed."""
     b, _, load, joints = _build_carried_load(world_parent=True)
     model = b.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
     shift = np.array([0.05, 0.0, 0.0])
     joint_X_p = model.joint_X_p.numpy()
@@ -773,7 +773,7 @@ def test_release_matches_xpbd(test, device):
         b, _, load, joints = _build_carried_load(world_parent=True)
         model = b.finalize(device=device)
         if name == "feather_pgs":
-            solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.2)
+            solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
         else:
             solver = newton.solvers.SolverXPBD(model, iterations=8)
         state_0, state_1 = model.state(), model.state()
@@ -804,9 +804,9 @@ def test_closure_owner_stays_awake_and_releases(test, device):
     contacts = pipeline.contacts()
     solver = SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
-        pgs_iterations=16,
-        pgs_beta=0.1,
+        solve_mode="matrix_free",
+        iterations=16,
+        baumgarte=0.1,
         enable_sleeping=True,
         sleep_quiet_time=0.05,
         friction_anchor_beta=0.0,
@@ -839,7 +839,7 @@ def test_propagation_rejects_closures(test, device):
         model = _build_four_bar().finalize(device=device)
         _set_joint_enabled(model, [_LOOP_JOINT], enabled)
         with test.assertRaisesRegex(NotImplementedError, "Loop-closing joints are not supported"):
-            SolverFeatherPGS(model, pgs_mode="matrix_free", articulated_contact_response="propagation")
+            SolverFeatherPGS(model, solve_mode="matrix_free", articulated_contact_response="propagation")
 
 
 def test_disabled_tree_joint_is_reported(test, device):
@@ -868,7 +868,7 @@ def test_disabled_tree_joint_is_reported(test, device):
         solver.check_constraint_capacity()
 
     with test.assertRaisesRegex(NotImplementedError, "disabled joints in an articulation tree"):
-        SolverFeatherPGS(model, pgs_mode="matrix_free")
+        SolverFeatherPGS(model, solve_mode="matrix_free")
 
 
 def _expect_one_warning(test, category, pattern, call):

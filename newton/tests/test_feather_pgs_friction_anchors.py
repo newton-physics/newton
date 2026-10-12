@@ -96,12 +96,12 @@ def _build_v_jaws(tilt_deg: float, geometry: str = "box", device=None):
 # Few iterations and a soft normal law leave the velocity-only point friction rows
 # under-converged, so the tilted pinch leaks drift unless anchors correct it.
 _SQUEEZE_SOLVER = {
-    "pgs_iterations": 8,
-    "pgs_velocity_iterations": 0,
-    "pgs_beta": 0.05,
-    "pgs_contact_regularization": 0.1,
+    "iterations": 8,
+    "velocity_iterations": 0,
+    "baumgarte": 0.05,
+    "contact_regularization": 0.1,
     "contact_friction_gap_threshold": 0.001,
-    "dense_max_constraints": 64,
+    "articulation_constraint_max": 64,
 }
 
 
@@ -110,7 +110,7 @@ def _run_squeeze(tilt_deg, steps, dt=0.005, matching="latest", substeps=1, devic
     model, jaws, box = _build_v_jaws(tilt_deg, device=device)
     kwargs = dict(_SQUEEZE_SOLVER)
     kwargs.update(solver_kwargs)
-    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs)
+    solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, broad_phase="nxn", contact_matching=matching)
     contacts = pipeline.contacts()
     s0, s1 = model.state(), model.state()
@@ -154,7 +154,7 @@ def _run_incline(steps: int, dt: float, **solver_kwargs):
     theta, mu = 30.0, 0.3
     model, box, _rot = _build_incline(theta, mu)
     solver = newton.solvers.SolverFeatherPGS(
-        model, pgs_mode="matrix_free", pgs_iterations=32, pgs_beta=0.05, **solver_kwargs
+        model, solve_mode="matrix_free", iterations=32, baumgarte=0.05, **solver_kwargs
     )
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, broad_phase="nxn", contact_matching="latest")
     contacts = pipeline.contacts()
@@ -176,10 +176,10 @@ class TestFeatherPGSFrictionAnchors(unittest.TestCase):
         """Preserve velocity-only rows and omit anchor state with ``friction_anchor_beta=0``."""
         model, _jaws, _box = _build_v_jaws(5.0)
         solver = newton.solvers.SolverFeatherPGS(
-            model, pgs_mode="matrix_free", **_SQUEEZE_SOLVER, friction_anchor_beta=0.0
+            model, solve_mode="matrix_free", **_SQUEEZE_SOLVER, friction_anchor_beta=0.0
         )
         self.assertFalse(solver._friction_anchors_enabled)
-        self.assertFalse(hasattr(solver._friction_patches, "current"))
+        self.assertFalse(hasattr(solver._friction_patches, "fixed_normal"))
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, broad_phase="nxn")
         contacts = pipeline.contacts()
         s0, s1 = model.state(), model.state()
@@ -200,7 +200,7 @@ class TestFeatherPGSFrictionAnchors(unittest.TestCase):
         """Keep patch history owned by the solver, independently of collision matching."""
         model, _jaws, _box = _build_v_jaws(5.0)
         solver = newton.solvers.SolverFeatherPGS(
-            model, pgs_mode="matrix_free", **_SQUEEZE_SOLVER, friction_anchor_beta=0.2
+            model, solve_mode="matrix_free", **_SQUEEZE_SOLVER, friction_anchor_beta=0.2
         )
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
         state = model.state()
@@ -268,7 +268,7 @@ class TestFeatherPGSFrictionAnchors(unittest.TestCase):
 
         def check(model, solver_kwargs, steps=120):
             solver = newton.solvers.SolverFeatherPGS(
-                model, pgs_mode="matrix_free", friction_anchor_beta=beta, **solver_kwargs
+                model, solve_mode="matrix_free", friction_anchor_beta=beta, **solver_kwargs
             )
             self.assertEqual(solver.friction_anchor_beta, beta)
             pipeline = newton.CollisionPipeline(
@@ -310,13 +310,13 @@ class TestFeatherPGSFrictionAnchors(unittest.TestCase):
         self.assertGreater(check(model, _SQUEEZE_SOLVER)[0], 0)
         # Free-body rows: a free box resting on a static slab.
         model, _, _ = _build_incline(0.0, 0.5)
-        self.assertGreater(check(model, {"pgs_iterations": 16, "pgs_beta": 0.05})[1], 0)
+        self.assertGreater(check(model, {"iterations": 16, "baumgarte": 0.05})[1], 0)
 
     def test_graph_capture_replays(self):
         """Capture and replay two steps with device-side anchor history under a CUDA graph."""
         model, jaws, box = _build_v_jaws(5.0)
         solver = newton.solvers.SolverFeatherPGS(
-            model, pgs_mode="matrix_free", friction_anchor_beta=0.05, **_SQUEEZE_SOLVER
+            model, solve_mode="matrix_free", friction_anchor_beta=0.05, **_SQUEEZE_SOLVER
         )
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, broad_phase="nxn", contact_matching="latest")
         contacts = pipeline.contacts()
@@ -343,7 +343,7 @@ class TestFeatherPGSFrictionAnchors(unittest.TestCase):
         self.assertLess(abs(bq[box][2] - bq[jaws[0]][2]), 0.01)
 
 
-def _position_rhs(family: str, *, phi, pgs_beta, friction_anchor_beta, dt, device):
+def _position_rhs(family: str, *, phi, baumgarte, friction_anchor_beta, dt, device):
     """Position-solve RHS of one world with rows ``[CONTACT, FRICTION, FRICTION]``.
 
     ``phi`` holds what the row builders store: raw separation for dense rows, and
@@ -369,7 +369,7 @@ def _position_rhs(family: str, *, phi, pgs_beta, friction_anchor_beta, dt, devic
         wp.launch(
             compute_world_contact_bias,
             dim=1,
-            inputs=[count, phi_arr, row_type, zeros3(), pgs_beta, friction_anchor_beta, 1.0, 1.0, dt],
+            inputs=[count, phi_arr, row_type, zeros3(), baumgarte, friction_anchor_beta, 1.0, 1.0, dt],
             outputs=[rhs, zeros3()],
             device=device,
         )
@@ -394,7 +394,7 @@ def _position_rhs(family: str, *, phi, pgs_beta, friction_anchor_beta, dt, devic
                 wp.zeros((1,), dtype=wp.float32, device=device),
                 wp.array([float("inf")], dtype=wp.float32, device=device),
                 1.0e-6,
-                pgs_beta,
+                baumgarte,
                 1.0,
                 dt,
                 1.0,
@@ -424,17 +424,17 @@ class TestFeatherPGSFrictionAnchorKernels(unittest.TestCase):
     def test_rhs_bias_matches_on_every_row_family_and_vanishes_in_velocity_pass(self):
         """Apply equal positional bias on all row families and drop it in velocity-only passes."""
         device = "cuda:0"
-        pgs_beta, fa_beta, dt = 0.05, 0.3, 0.005
+        baumgarte, fa_beta, dt = 0.05, 0.3, 0.005
         phi_n, e0, e1 = -2.0e-3, 1.0e-4, -2.5e-4
-        expect_pos = np.array([pgs_beta * phi_n / dt, fa_beta * e0 / dt, fa_beta * e1 / dt], dtype=np.float32)
+        expect_pos = np.array([baumgarte * phi_n / dt, fa_beta * e0 / dt, fa_beta * e1 / dt], dtype=np.float32)
         dense, count, row_type, phi_dense = _position_rhs(
-            "dense", phi=[phi_n, e0, e1], pgs_beta=pgs_beta, friction_anchor_beta=fa_beta, dt=dt, device=device
+            "dense", phi=[phi_n, e0, e1], baumgarte=baumgarte, friction_anchor_beta=fa_beta, dt=dt, device=device
         )
         np.testing.assert_allclose(dense, expect_pos, rtol=1.0e-5)
         free, _, _, phi_free = _position_rhs(
             "free",
             phi=[phi_n, fa_beta * e0, fa_beta * e1],
-            pgs_beta=pgs_beta,
+            baumgarte=baumgarte,
             friction_anchor_beta=fa_beta,
             dt=dt,
             device=device,
@@ -500,9 +500,13 @@ class TestFeatherPGSFrictionAnchorKernels(unittest.TestCase):
         device = "cuda:0"
         model = _build_two_world_free_model(device)
         solver = newton.solvers.SolverFeatherPGS(
-            model, pgs_mode="matrix_free", friction_anchor_beta=0.2, dense_max_constraints=4, mf_max_constraints=4
+            model,
+            solve_mode="matrix_free",
+            friction_anchor_beta=0.2,
+            articulation_constraint_max=4,
+            free_body_constraint_max=4,
         )
-        self.assertFalse(solver.pgs_warmstart)
+        self.assertFalse(solver.contact_warmstart)
         previous = solver._friction_patches.previous
         n = previous.valid.shape[0]
         body_world = model.body_world.numpy()

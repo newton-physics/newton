@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the FeatherPGS contact regularizer (``pgs_contact_regularization``)."""
+"""Tests for the FeatherPGS contact regularizer (``contact_regularization``)."""
 
 import inspect
 import unittest
@@ -51,11 +51,11 @@ def _stack_scene(device, g, velocity_iterations=2):
     )
     solver = newton.solvers.SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
-        pgs_iterations=8,
-        pgs_velocity_iterations=velocity_iterations,
-        pgs_contact_regularization=g,
-        pgs_warmstart=True,
+        solve_mode="matrix_free",
+        iterations=8,
+        velocity_iterations=velocity_iterations,
+        contact_regularization=g,
+        contact_warmstart=True,
     )
     return model, pipeline, solver, bodies
 
@@ -99,14 +99,14 @@ def _resting_box(device, g, rate, frames, articulated=False, **solver_kwargs):
         contact_matching="latest",
     )
     solver = newton.solvers.SolverFeatherPGS(
-        model, pgs_mode="matrix_free", pgs_iterations=12, pgs_contact_regularization=g, **solver_kwargs
+        model, solve_mode="matrix_free", iterations=12, contact_regularization=g, **solver_kwargs
     )
     _, zs = _run(model, pipeline, solver, frames, dt=1.0 / rate)
     return 0.05 - zs[-1]
 
 
 def _sag_formula(g, rate):
-    """Resting sag of a body under gravity: ``g * a * dt^2 / pgs_beta`` with the default beta."""
+    """Resting sag of a body under gravity: ``g * a * dt^2 / baumgarte`` with the default beta."""
     return g * 9.81 / (rate * rate) / 0.2
 
 
@@ -115,12 +115,12 @@ def _scissor_step(device, g, velocity_iterations):
     model = _build_scissor_model(device)
     solver = newton.solvers.SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
-        pgs_iterations=8,
-        pgs_velocity_iterations=velocity_iterations,
-        pgs_contact_regularization=g,
-        dense_max_constraints=64,
-        mf_max_constraints=16,
+        solve_mode="matrix_free",
+        iterations=8,
+        velocity_iterations=velocity_iterations,
+        contact_regularization=g,
+        articulation_constraint_max=64,
+        free_body_constraint_max=16,
     )
     state_in, state_out = model.state(), model.state()
     newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
@@ -138,7 +138,7 @@ def test_regularization_documented_sag(test: unittest.TestCase, device):
     The sag is ``g * a * dt^2 / beta``: 6.8 mm at g = 0.5 and 60 Hz, 0.43 mm at 240 Hz.
     """
     for rate in (60, 240):
-        sag = _resting_box(device, 0.5, rate, 3 * rate, pgs_warmstart=True)
+        sag = _resting_box(device, 0.5, rate, 3 * rate, contact_warmstart=True)
         expected = _sag_formula(0.5, rate)
         test.assertAlmostEqual(sag, expected, delta=0.15 * expected, msg=f"{rate} Hz: sag {sag * 1000:.2f} mm")
 
@@ -151,10 +151,10 @@ def test_regularization_documented_sag_on_dense_rows(test: unittest.TestCase, de
     ``lambda = m * a * dt / 4``, so it sags by ``g * a * dt^2 / (4 * beta)``.
     """
     for rate in (60, 240):
-        sag = _resting_box(device, 0.5, rate, 3 * rate, articulated=True, pgs_warmstart=True)
+        sag = _resting_box(device, 0.5, rate, 3 * rate, articulated=True, contact_warmstart=True)
         expected = 0.25 * _sag_formula(0.5, rate)
         test.assertAlmostEqual(sag, expected, delta=0.15 * expected, msg=f"{rate} Hz: sag {sag * 1000:.2f} mm")
-        rigid = _resting_box(device, 0.0, rate, 3 * rate, articulated=True, pgs_warmstart=True)
+        rigid = _resting_box(device, 0.0, rate, 3 * rate, articulated=True, contact_warmstart=True)
         test.assertLess(abs(rigid), 0.1 * expected, msg=f"{rate} Hz: rigid sag {rigid * 1000:.3f} mm")
 
 
@@ -222,11 +222,11 @@ def test_regularization_indeterminate_split(test: unittest.TestCase, device):
     )
     solver = newton.solvers.SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
-        pgs_iterations=8,
-        pgs_velocity_iterations=2,
-        pgs_contact_regularization=0.02,
-        pgs_warmstart=True,
+        solve_mode="matrix_free",
+        iterations=8,
+        velocity_iterations=2,
+        contact_regularization=0.02,
+        contact_warmstart=True,
     )
     observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
     contacts = pipeline.contacts()
@@ -264,9 +264,9 @@ def test_regularization_validation(test: unittest.TestCase, device):
     model = builder.finalize(device=device)
     for bad in (-0.1, float("nan"), float("inf"), 1.0e7):
         with test.subTest(value=bad), test.assertRaises(ValueError):
-            newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_contact_regularization=bad)
-    newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_contact_regularization=0.0)
-    newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_contact_regularization=1.0e6)
+            newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", contact_regularization=bad)
+    newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", contact_regularization=0.0)
+    newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", contact_regularization=1.0e6)
 
 
 def test_zero_regularization_shares_one_weight_slot(test: unittest.TestCase, device):
@@ -276,11 +276,11 @@ def test_zero_regularization_shares_one_weight_slot(test: unittest.TestCase, dev
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
     builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05)
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free")
+    solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free")
     test.assertFalse(solver._regularization_enabled)
     test.assertEqual(solver.row_w.shape, (1, 1))
     test.assertEqual(solver.mf_row_w.shape, (1, 1))
-    regularized = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_contact_regularization=0.1)
+    regularized = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", contact_regularization=0.1)
     test.assertTrue(regularized._regularization_enabled)
     test.assertEqual(regularized.row_w.shape, regularized.impulses.shape)
     test.assertEqual(regularized.mf_row_w.shape, regularized.mf_impulses.shape)
@@ -320,7 +320,7 @@ def test_compliance_parameters_removed(test: unittest.TestCase, device):
     builder.add_shape_box(b, hx=0.05, hy=0.05, hz=0.05)
     model = builder.finalize(device=device)
     with test.assertRaises(TypeError):
-        newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", dense_contact_compliance=1.0e-4)
+        newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", dense_contact_compliance=1.0e-4)
 
 
 def test_restitution_rows_stay_rigid(test: unittest.TestCase, device):
@@ -348,11 +348,11 @@ def test_restitution_rows_stay_rigid(test: unittest.TestCase, device):
         contacts = pipeline.contacts()
         solver = newton.solvers.SolverFeatherPGS(
             model,
-            pgs_mode="matrix_free",
-            pgs_iterations=16,
-            pgs_velocity_iterations=0,
-            pgs_contact_regularization=g,
-            pgs_warmstart=True,
+            solve_mode="matrix_free",
+            iterations=16,
+            velocity_iterations=0,
+            contact_regularization=g,
+            contact_warmstart=True,
         )
         s0, s1 = model.state(), model.state()
         control = model.control()

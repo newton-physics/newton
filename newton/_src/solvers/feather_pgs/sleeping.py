@@ -19,7 +19,7 @@ class _SleepState:
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Sleeping thresholds and quiet time must be finite and positive")
         model = solver.model
-        if model.requires_grad or model.particle_count or solver.pgs_warmstart or solver.pgs_velocity_iterations:
+        if model.requires_grad or model.particle_count or solver.contact_warmstart or solver.velocity_iterations:
             raise ValueError(
                 "Experimental sleeping requires a rigid, non-differentiable model without warm start or "
                 "velocity-only iterations"

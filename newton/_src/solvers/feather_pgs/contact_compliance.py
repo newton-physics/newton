@@ -62,19 +62,19 @@ def update_compliant_rhs(
 def validate_configuration(settings):
     """Reject constructor combinations without a defined and tested compliant row update."""
     required = {
-        "pgs_velocity_iterations": 0,
-        "pgs_warmstart": False,
-        "pgs_contact_regularization": 0.0,
+        "velocity_iterations": 0,
+        "contact_warmstart": False,
+        "contact_regularization": 0.0,
         "contact_shared_anchor": False,
         "contact_friction_shared_anchor": False,
-        "friction_mode": "current",
+        "friction_mode": "fixed_normal",
         "contact_friction_position_iterations": -1,
     }
     for key, expected in required.items():
         if settings[key] != expected:
             raise ValueError(f"contact_compliance requires {key}={expected!r}; got {settings[key]!r}")
-    if settings["pgs_iterations"] <= 0:
-        raise ValueError("contact_compliance requires positive pgs_iterations")
+    if settings["iterations"] <= 0:
+        raise ValueError("contact_compliance requires positive iterations")
 
 
 def validate_step(solver):
@@ -128,7 +128,11 @@ def _prepare_compliant_rows(self):
     # Failed contact reservations roll back the live row count; check the loss
     # counters even when overflow warnings are disabled.
     dropped = int(self._row_dropped_dense.numpy().sum()) + int(self._row_dropped_mf.numpy().sum())
-    if dropped or np.any(dense_counts > self.dense_max_constraints) or np.any(mf_counts > self.mf_max_constraints):
+    if (
+        dropped
+        or np.any(dense_counts > self.articulation_constraint_max)
+        or np.any(mf_counts > self.free_body_constraint_max)
+    ):
         raise RuntimeError("contact_compliance rejects overflowing solver rows")
     stiffness = contacts.rigid_contact_stiffness.numpy()[:count]
     damping = contacts.rigid_contact_damping.numpy()[:count]
@@ -181,7 +185,7 @@ def _prepare_compliant_rows(self):
             self._compliant_dense_gamma[world, slot] = gamma
             self._compliant_dense_base[world, slot] = bias - dense_target[world, slot]
             # The compliance replaces the row's constraint force mixing.
-            dense_diag[world, slot] += gamma - self.pgs_cfm
+            dense_diag[world, slot] += gamma - self.cfm
             children = (dense_parent[world] == slot) & (dense_type[world] == PGS_CONSTRAINT_TYPE_FRICTION)
             dense_mu[world, children] *= friction_weight
         else:
@@ -189,7 +193,7 @@ def _prepare_compliant_rows(self):
                 raise RuntimeError("Contact map no longer points to an effective free-body normal row")
             self._compliant_mf_gamma[world, slot] = gamma
             self._compliant_mf_base[world, slot] = bias - (mf_target[world, slot] if mf_target is not None else 0.0)
-            mf_inv[world, slot] = 1.0 / (1.0 / mf_inv[world, slot] - self.pgs_cfm + gamma)
+            mf_inv[world, slot] = 1.0 / (1.0 / mf_inv[world, slot] - self.cfm + gamma)
             children = (mf_parent[world] == slot) & (mf_type[world] == PGS_CONSTRAINT_TYPE_FRICTION)
             mf_mu[world, children] *= friction_weight
         active += 1

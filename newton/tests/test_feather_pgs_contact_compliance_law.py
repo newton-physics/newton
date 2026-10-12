@@ -37,15 +37,15 @@ def test_unsupported_solver_modes_rejected(test, device):
     """Reject settings whose compliant update has not been wired or validated, before any allocation."""
     model = SimpleNamespace(device=SimpleNamespace(is_cuda=True))
     for key, value in (
-        ("pgs_velocity_iterations", 1),
-        ("pgs_contact_regularization", 0.01),
-        ("pgs_warmstart", True),
-        ("pgs_iterations", 0),
+        ("velocity_iterations", 1),
+        ("contact_regularization", 0.01),
+        ("contact_warmstart", True),
+        ("iterations", 0),
         ("contact_shared_anchor", True),
         ("contact_friction_shared_anchor", True),
     ):
         with test.assertRaisesRegex(ValueError, key):
-            SolverFeatherPGS(model, pgs_mode="matrix_free", contact_compliance=True, **{key: value})
+            SolverFeatherPGS(model, solve_mode="matrix_free", contact_compliance=True, **{key: value})
 
 
 def test_static_indentation_and_baseline_failure(test, device):

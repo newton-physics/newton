@@ -121,7 +121,7 @@ def _run_star(model, solver, steps, *, contacts=False):
 def _star_solver(model, overrides, **kwargs):
     """Construct a solver with a temporary kernel-selection override."""
     with kernel_overrides(overrides):
-        return SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs)
+        return SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs)
 
 
 _DENSE_LOOP_KERNELS = {
@@ -134,18 +134,24 @@ _DENSE_LOOP_KERNELS = {
 
 def test_fixed_base_sibling_branches_detect_diagonal_mass_topology(test, device):
     """Detect independent fixed-base branches, and keep coupled topologies off the diagonal path."""
-    solver = SolverFeatherPGS(_build_fixed_base_star_model(device), pgs_mode="matrix_free", dense_max_constraints=16)
+    solver = SolverFeatherPGS(
+        _build_fixed_base_star_model(device), solve_mode="matrix_free", articulation_constraint_max=16
+    )
     test.assertEqual(solver._diagonal_mass_sizes, frozenset((16,)))
     test.assertTrue(solver._execution_plan.use_diagonal_mass(16))
     test.assertIsNone(solver._sparse_mass_matrix_size)
     # A serial chain couples every DOF, and pinned kernels disable the selection.
-    chain = SolverFeatherPGS(_build_chain_model(device, num_links=3), pgs_mode="matrix_free", dense_max_constraints=16)
+    chain = SolverFeatherPGS(
+        _build_chain_model(device, num_links=3), solve_mode="matrix_free", articulation_constraint_max=16
+    )
     test.assertEqual(chain._diagonal_mass_sizes, frozenset())
-    pinned = _star_solver(_build_fixed_base_star_model(device), {"cholesky_kernel": "loop"}, dense_max_constraints=16)
+    pinned = _star_solver(
+        _build_fixed_base_star_model(device), {"cholesky_kernel": "loop"}, articulation_constraint_max=16
+    )
     test.assertEqual(pinned._diagonal_mass_sizes, frozenset())
     # The DOFs of one multi-DOF joint are coupled.
     ball = SolverFeatherPGS(
-        _build_fixed_base_star_model(device, num_branches=4, ball_branch=True), pgs_mode="matrix_free"
+        _build_fixed_base_star_model(device, num_branches=4, ball_branch=True), solve_mode="matrix_free"
     )
     test.assertEqual(ball._diagonal_mass_sizes, frozenset())
 
@@ -153,14 +159,14 @@ def test_fixed_base_sibling_branches_detect_diagonal_mass_topology(test, device)
 def test_fixed_base_sibling_branches_use_diagonal_mass_path(test, device):
     """Match the dense reference while selecting independent branch solves."""
     model = _build_fixed_base_star_model(device)
-    optimized = SolverFeatherPGS(model, pgs_mode="matrix_free", dense_max_constraints=16)
+    optimized = SolverFeatherPGS(model, solve_mode="matrix_free", articulation_constraint_max=16)
     test.assertEqual(optimized._diagonal_mass_sizes, frozenset((16,)))
     test.assertTrue(optimized._execution_plan.use_diagonal_mass(16))
     test.assertIsNone(optimized._cholesky_kernels_by_size[16])
     test.assertIsNone(optimized._triangular_solve_kernels_by_size[16])
     test.assertIsNone(optimized._hinv_jt_kernels_by_size[16])
 
-    reference = _star_solver(model, _DENSE_LOOP_KERNELS, dense_max_constraints=16)
+    reference = _star_solver(model, _DENSE_LOOP_KERNELS, articulation_constraint_max=16)
     test.assertFalse(reference._execution_plan.use_diagonal_mass(16))
     test.assertIsNone(reference._sparse_mass_matrix_size)
 
@@ -173,9 +179,9 @@ def test_diagonal_mass_rows_match_dense_and_sparse_factors(test, device):
     """Match the dense loop kernels bitwise, and the sparse factors, with contact and limit rows."""
     # Point friction: the sparse factors compared against solve hard point-friction contacts.
     options = {
-        "dense_max_constraints": 64,
+        "articulation_constraint_max": 64,
         "enable_joint_limits": True,
-        "pgs_iterations": 8,
+        "iterations": 8,
         "friction_anchor_beta": 0.0,
     }
     for with_chain in (False, True):
@@ -183,7 +189,7 @@ def test_diagonal_mass_rows_match_dense_and_sparse_factors(test, device):
             model = _build_fixed_base_star_model(
                 device, num_branches=6, ground=True, armature=0.05, with_chain=with_chain
             )
-            diagonal = SolverFeatherPGS(model, pgs_mode="matrix_free", **options)
+            diagonal = SolverFeatherPGS(model, solve_mode="matrix_free", **options)
             test.assertTrue(diagonal._execution_plan.use_diagonal_mass(6))
             # With a second response group per world the responses are gathered per world.
             test.assertEqual(diagonal._hinv_jt_writes_world, with_chain)
@@ -206,7 +212,7 @@ def test_diagonal_mass_rows_match_dense_and_sparse_factors(test, device):
                     np.testing.assert_allclose(d[1], f[1], rtol=0.0, atol=1.0e-4, err_msg=f"sparse qd step {step}")
             # The armature enters the factor: without it the trajectory differs.
             plain = _build_fixed_base_star_model(device, num_branches=6, ground=True, with_chain=with_chain)
-            unarmed = _run_star(plain, SolverFeatherPGS(plain, pgs_mode="matrix_free", **options), 60, contacts=True)
+            unarmed = _run_star(plain, SolverFeatherPGS(plain, solve_mode="matrix_free", **options), 60, contacts=True)
             test.assertGreater(float(np.abs(unarmed[5][1] - runs[0][5][1]).max()), 1.0e-6)
 
 
@@ -220,7 +226,7 @@ def test_sleeping_diagonal_dynamics_skip_is_exact(test, device):
     for skip in (False, True):
         model = _build_fixed_base_star_model(device, num_branches=3, ground=True)
         solver = SolverFeatherPGS(
-            model, pgs_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, dense_max_constraints=64
+            model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, articulation_constraint_max=64
         )
         test.assertTrue(solver._execution_plan.use_diagonal_mass(3))
         solver.sleeping.skip_dynamics = skip

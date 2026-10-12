@@ -37,9 +37,9 @@ def _drive_scene(device, sleeping):
     model = builder.finalize(device=device)
     solver = SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
-        drive_mode="physx_pgs",
-        pgs_iterations=16,
+        solve_mode="matrix_free",
+        drive_mode="rows",
+        iterations=16,
         friction_anchor_beta=0.0,
         **(SLEEP if sleeping else {}),
     )
@@ -66,13 +66,13 @@ def _compliance_scene(device, sleeping):
         setattr(contacts, name, wp.zeros(32, dtype=float, device=device))
     solver = SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
+        solve_mode="matrix_free",
         contact_compliance=True,
         friction_anchor_beta=0.0,
-        pgs_iterations=8,
-        pgs_beta=0.05,
-        dense_max_constraints=32,
-        mf_max_constraints=32,
+        iterations=8,
+        baumgarte=0.05,
+        articulation_constraint_max=32,
+        free_body_constraint_max=32,
         **(SLEEP if sleeping else {}),
     )
     return model, pipeline, contacts, solver

@@ -76,15 +76,15 @@ def run_fixture(
         options = dict(
             # Isolate the normal material law from positional patch friction.
             friction_anchor_beta=0.0,
-            pgs_iterations=iterations,
-            pgs_velocity_iterations=0,
-            dense_max_constraints=32,
-            mf_max_constraints=32,
-            pgs_beta=0.05,
+            iterations=iterations,
+            velocity_iterations=0,
+            articulation_constraint_max=32,
+            free_body_constraint_max=32,
+            baumgarte=0.05,
             **extra,
         )
         options.update(solver_options or {})
-        solver = SolverFeatherPGS(model, pgs_mode="matrix_free", **options)
+        solver = SolverFeatherPGS(model, solve_mode="matrix_free", **options)
         state, next_state = model.state(), model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
         trace = []
@@ -160,14 +160,14 @@ def run_native_hydro_fixture(*, device, articulated=True):
         for enabled in (False, True):
             solver = SolverFeatherPGS(
                 model,
-                pgs_mode="matrix_free",
+                solve_mode="matrix_free",
                 contact_compliance=enabled,
                 friction_anchor_beta=0.0,
-                pgs_iterations=128,
-                pgs_contact_regularization=0.0,
-                dense_max_constraints=2048,
-                mf_max_constraints=32 if articulated else 2048,
-                pgs_beta=0.05,
+                iterations=128,
+                contact_regularization=0.0,
+                articulation_constraint_max=2048,
+                free_body_constraint_max=32 if articulated else 2048,
+                baumgarte=0.05,
             )
             output = model.state()
             step_input = model.state()
@@ -305,7 +305,7 @@ def test_omitted_friction_anchor_beta_keeps_patches_without_compliance(test, dev
     model = builder.finalize(device=device)
     for kwargs in ({}, {"friction_anchor_beta": None}, {"contact_compliance": False}):
         with test.subTest(**kwargs):
-            solver = SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs)
+            solver = SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs)
             test.assertEqual(solver.friction_anchor_beta, 0.2)
             test.assertTrue(solver._friction_anchors_enabled)
 

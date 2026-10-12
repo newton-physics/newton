@@ -73,7 +73,7 @@ def test_torsion_uses_cfm_floor(test, device):
     """Apply the same configured diagonal floor as other dense rows."""
     # The spin row's J Y is 2 / I_zz = 25000; use a floor that float32 can resolve next to it.
     cfm = 8.0
-    result, solver, *_ = fixture(0.01, device=device, center_only=True, pgs_cfm=cfm)
+    result, solver, *_ = fixture(0.01, device=device, center_only=True, cfm=cfm)
     count = int(result["count"][0])
     types = result["row_type"][0, :count]
     test.assertEqual(np.count_nonzero(types == PGS_CONSTRAINT_TYPE_TORSION), 1)
@@ -85,7 +85,7 @@ def test_torsion_uses_cfm_floor(test, device):
 
 def test_torsion_respects_relaxation(test, device):
     """Apply half the unconstrained spin correction at omega one half."""
-    result, solver, *_ = fixture(100.0, device=device, center_only=True, pgs_iterations=1, pgs_omega=0.5)
+    result, solver, *_ = fixture(100.0, device=device, center_only=True, iterations=1, relaxation=0.5)
     test.assertEqual(solver._torsion_stats["rows"], 1)
     spin = np.abs(result["v_out"].reshape(2, 6)[:, 5])
     np.testing.assert_allclose(spin, 0.5, atol=1e-4)
@@ -105,8 +105,8 @@ def test_torsion_keeps_joint_velocity_limits(test, device):
                 device=device,
                 center_only=True,
                 spin=0.0,
-                pgs_iterations=iterations,
-                pgs_velocity_iterations=velocity_iterations,
+                iterations=iterations,
+                velocity_iterations=velocity_iterations,
                 contact_torsion_device=preparation != "host",
             )
             limits = np.full(model.joint_dof_count, np.inf, dtype=np.float32)
@@ -154,10 +154,10 @@ def test_torsion_keeps_fused_drive_velocity_limits(test, device):
                 center_only=True,
                 spin=0.0,
                 model_arrays={"joint_velocity_limit": limits, "joint_target_kd": damping},
-                drive_mode="physx_pgs",
+                drive_mode="rows",
                 fuse_joint_velocity_limits=True,
-                pgs_iterations=iterations,
-                pgs_velocity_iterations=velocity_iterations,
+                iterations=iterations,
+                velocity_iterations=velocity_iterations,
                 contact_torsion_device=preparation != "host",
             )
             test.assertTrue(solver.fuse_joint_velocity_limits)
@@ -232,16 +232,16 @@ def test_torsion_keeps_free_body_velocity_limits(test, device):
             contacts.rigid_contact_count.assign(np.array([1], np.int32))
             solver = SolverFeatherPGS(
                 model,
-                pgs_mode="matrix_free",
+                solve_mode="matrix_free",
                 friction_anchor_beta=0.0,
-                pgs_iterations=iterations,
-                pgs_velocity_iterations=velocity_iterations,
-                pgs_beta=0.05,
-                pgs_cfm=0,
-                pgs_contact_regularization=0,
-                pgs_warmstart=False,
-                dense_max_constraints=64,
-                mf_max_constraints=16,
+                iterations=iterations,
+                velocity_iterations=velocity_iterations,
+                baumgarte=0.05,
+                cfm=0,
+                contact_regularization=0,
+                contact_warmstart=False,
+                articulation_constraint_max=64,
+                free_body_constraint_max=16,
                 contact_torsion_radius=radius,
                 contact_torsion_device=preparation != "host",
             )
@@ -279,7 +279,9 @@ def test_selected_unsupported_shape_fails_at_construction(test, device):
     types[0] = int(GeoType.MESH)
     model.shape_type.assign(types)
     with test.assertRaisesRegex(ValueError, "[Uu]nsupported.*shape|shape.*[Uu]nsupported"):
-        SolverFeatherPGS(model, pgs_mode="matrix_free", contact_torsion_radius=0.01, contact_torsion_shape_indices=(0,))
+        SolverFeatherPGS(
+            model, solve_mode="matrix_free", contact_torsion_radius=0.01, contact_torsion_shape_indices=(0,)
+        )
 
 
 def test_hydro_contact_input_is_rejected(test, device):

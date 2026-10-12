@@ -94,7 +94,7 @@ def _build_two_revolute_chain(coef0: float, coef1: float, legacy: bool = False):
 
 
 def _run_model(model, leader_target: float, steps: int, **solver_kwargs):
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.1, **solver_kwargs)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1, **solver_kwargs)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     targets = model.joint_target_q.numpy().copy()
@@ -164,17 +164,17 @@ def check_invalid_legacy_mimic_keeps_precedence(test, device, **solver_kwargs):
 
 def test_reject_quaternion_mimics_at_construction(test, device):
     """Reject mimics of BALL, FREE and DISTANCE joints at construction."""
-    check_reject_quaternion_mimics_at_construction(test, device, pgs_mode="matrix_free")
+    check_reject_quaternion_mimics_at_construction(test, device, solve_mode="matrix_free")
 
 
 def test_scalar_and_d6_mimic_coordinate_maps(test, device):
     """Map scalar and D6 mimic followers to their coordinate rows."""
-    check_scalar_and_d6_mimic_coordinate_maps(test, device, pgs_mode="matrix_free")
+    check_scalar_and_d6_mimic_coordinate_maps(test, device, solve_mode="matrix_free")
 
 
 def test_invalid_legacy_mimic_keeps_precedence(test, device):
     """Validate a legacy mimic entry in place of the joint-owned mimic it replaces."""
-    check_invalid_legacy_mimic_keeps_precedence(test, device, pgs_mode="matrix_free")
+    check_invalid_legacy_mimic_keeps_precedence(test, device, solve_mode="matrix_free")
 
 
 def test_cross_articulation_mimic_is_rejected(test, device):
@@ -188,7 +188,7 @@ def test_cross_articulation_mimic_is_rejected(test, device):
         # The follower of the second copy mimics the leader of the first copy.
         builder.add_constraint_mimic(joint0=j_follower + 2, joint1=j_leader, coef0=0.0, coef1=1.0)
     with test.assertRaisesRegex(NotImplementedError, "different articulations"):
-        SolverFeatherPGS(builder.finalize(device=device), pgs_mode="matrix_free")
+        SolverFeatherPGS(builder.finalize(device=device), solve_mode="matrix_free")
 
 
 # -- Dynamics --------------------------------------------------------------------------
@@ -229,7 +229,7 @@ def test_runtime_coefficient_change(test, device):
     """Read joint-owned coefficients every step, also from a captured graph."""
     builder, _, follower = _build_two_revolute_chain(0.0, 1.0)
     model = builder.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.1)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     targets = model.joint_target_q.numpy().copy()
@@ -273,7 +273,7 @@ def test_replicated_mimics_have_articulation_local_ranges(test, device):
     template, _, _ = _build_two_revolute_chain(coef0=0.0, coef1=1.0)
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     builder.replicate(template, world_count=4)
-    solver = SolverFeatherPGS(builder.finalize(device=device), pgs_mode="matrix_free")
+    solver = SolverFeatherPGS(builder.finalize(device=device), solve_mode="matrix_free")
     test.assertEqual(solver._mimic_art_start.numpy().tolist(), [0, 1, 2, 3, 4])
     test.assertEqual(solver._mimic_art_list.numpy().tolist(), [0, 1, 2, 3])
 
@@ -289,12 +289,12 @@ def test_disabled_mimic_is_ignored(test, device):
 
 
 def test_mimic_row_overflow_is_reported(test, device):
-    """Drop and flag a mimic row beyond dense_max_constraints rather than keep part of it."""
+    """Drop and flag a mimic row beyond articulation_constraint_max rather than keep part of it."""
     builder, _, _ = _build_two_revolute_chain(0.0, 1.0)
     model = builder.finalize(device=device)
     # A zero activation gap keeps the (far) joint-limit rows out of the single row slot.
-    options = {"dense_max_constraints": 1, "joint_limit_activation_gap": 0.0, "warn_constraint_overflow": False}
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", **options)
+    options = {"articulation_constraint_max": 1, "joint_limit_activation_gap": 0.0, "warn_constraint_overflow": False}
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", **options)
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, DT)
     test.assertEqual(int(solver.mimic_slot.numpy()[0]), 0)
@@ -305,7 +305,7 @@ def test_mimic_row_overflow_is_reported(test, device):
         # A second, consistent row on the other joint (identity coupling in both directions).
         builder.add_constraint_mimic(joint0=0, joint1=1, coef0=0.0, coef1=1.0)
     model = builder.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", **options)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", **options)
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, DT)
     test.assertEqual(int(solver.constraint_count.numpy()[0]), 1)
@@ -319,7 +319,7 @@ def test_mimic_row_overflow_is_reported(test, device):
 
 def test_split_reject_quaternion_mimics_at_construction(test, device):
     """Reject quaternion mimics at construction in the split solve."""
-    check_reject_quaternion_mimics_at_construction(test, device, pgs_mode="split")
+    check_reject_quaternion_mimics_at_construction(test, device, solve_mode="split")
 
 
 def test_split_rejects_supported_mimics(test, device):
@@ -327,13 +327,13 @@ def test_split_rejects_supported_mimics(test, device):
     for joint_type in (newton.JointType.REVOLUTE, newton.JointType.PRISMATIC, newton.JointType.D6):
         with test.subTest(joint_type=joint_type):
             builder, _, _ = _build_mimic_layout(joint_type)
-            with test.assertRaisesRegex(NotImplementedError, "require pgs_mode='matrix_free'"):
-                SolverFeatherPGS(builder.finalize(device=device), pgs_mode="split")
+            with test.assertRaisesRegex(NotImplementedError, "require solve_mode='matrix_free'"):
+                SolverFeatherPGS(builder.finalize(device=device), solve_mode="split")
 
 
 def test_split_invalid_legacy_mimic_keeps_precedence(test, device):
     """Keep legacy mimic precedence during validation in the split solve."""
-    check_invalid_legacy_mimic_keeps_precedence(test, device, pgs_mode="split")
+    check_invalid_legacy_mimic_keeps_precedence(test, device, solve_mode="split")
 
 
 class TestFeatherPGSMimicLayout(unittest.TestCase):

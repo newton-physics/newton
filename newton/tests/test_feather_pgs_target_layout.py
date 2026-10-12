@@ -32,11 +32,11 @@ def _floating_base_arm():
     return builder.finalize(), hinge
 
 
-def test_floating_base_drive_reads_its_own_target(test, device, drive_mode, pgs_mode="matrix_free"):
+def test_floating_base_drive_reads_its_own_target(test, device, drive_mode, solve_mode="matrix_free"):
     """Read the target of a revolute drive after a free joint at joint_target_q_start, not its DOF index."""
     with wp.ScopedDevice(device):
         model, hinge = _floating_base_arm()
-        solver = newton.solvers.SolverFeatherPGS(model, pgs_mode=pgs_mode, pgs_iterations=16, drive_mode=drive_mode)
+        solver = newton.solvers.SolverFeatherPGS(model, solve_mode=solve_mode, iterations=16, drive_mode=drive_mode)
         state_0, state_1 = model.state(), model.state()
         control = model.control()
         targets = control.joint_target_q.numpy()
@@ -53,7 +53,7 @@ class TestFeatherPGSTargetLayout(unittest.TestCase):
     pass
 
 
-for _drive_mode in ("augmented", "physx_pgs"):
+for _drive_mode in ("augmented", "rows"):
     add_function_test(
         TestFeatherPGSTargetLayout,
         f"test_floating_base_drive_reads_its_own_target_{_drive_mode}",
@@ -67,7 +67,7 @@ add_function_test(
     test_floating_base_drive_reads_its_own_target,
     devices=get_test_devices(),
     drive_mode="augmented",
-    pgs_mode="split",
+    solve_mode="split",
 )
 
 

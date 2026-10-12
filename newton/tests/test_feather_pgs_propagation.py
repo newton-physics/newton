@@ -3,7 +3,7 @@
 
 """Propagation contact responses of SolverFeatherPGS.
 
-``articulated_contact_response="propagation"`` and ``"propagation-fused"`` solve contacts of
+``articulated_contact_response="propagation"`` and ``"propagation_fused"`` solve contacts of
 articulated bodies as body-space rows whose response comes from the articulated-body
 factorization of each tree. These tests check the row response against the dense
 ``J H^-1 J^T`` of the immediate response, the native tree kernels against the generic
@@ -27,7 +27,7 @@ from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 DENSE_PATH = 0
 PROPAGATION_PATH = 2
-RESPONSES = ("propagation", "propagation-fused", "propagation-colored")
+RESPONSES = ("propagation", "propagation_fused", "propagation_colored")
 
 
 def _chain(builder, x, n_links, root_z, joint="revolute"):
@@ -125,14 +125,14 @@ def test_contact_effective_mass_matches_dense_response(test, device):
             model = _scene(device, kind)
             # Point friction: the propagation rows have no friction patches.
             # An articulation-local solve writes its rows' diagonals when it runs, so iterate once.
-            reference = SolverFeatherPGS(model, pgs_iterations=1, dense_max_constraints=96, friction_anchor_beta=0.0)
+            reference = SolverFeatherPGS(model, iterations=1, articulation_constraint_max=96, friction_anchor_beta=0.0)
             _, contacts = _step(model, reference)
             count = int(contacts.rigid_contact_count.numpy()[0])
             with kernel_overrides({"propagation_tree_kernel": tree_kernel}):
                 solver = SolverFeatherPGS(
                     model,
-                    pgs_iterations=0,
-                    dense_max_constraints=96,
+                    iterations=0,
+                    articulation_constraint_max=96,
                     friction_anchor_beta=0.0,
                     articulated_contact_response="propagation",
                 )
@@ -170,7 +170,7 @@ def test_native_tree_kernels_match_generic(test, device):
                     model = _scene(device, kind)
                     with kernel_overrides({"propagation_tree_kernel": tree_kernel}):
                         solver = SolverFeatherPGS(
-                            model, pgs_iterations=8, dense_max_constraints=64, articulated_contact_response=response
+                            model, iterations=8, articulation_constraint_max=64, articulated_contact_response=response
                         )
                     state, _ = _step(model, solver)
                     results.append(state.joint_qd.numpy())
@@ -189,8 +189,8 @@ def test_propagation_row_overflow_is_flagged_and_reset(test, device):
     model = builder.finalize(device=device)
     for response, capacity in (
         # Dense rows hold the two rows of each joint limit; one contact's three rows fit.
-        ("propagation", {"mf_max_constraints": 1, "dense_max_constraints": 4}),
-        ("propagation-fused", {"dense_max_constraints": 4}),
+        ("propagation", {"free_body_constraint_max": 1, "articulation_constraint_max": 4}),
+        ("propagation_fused", {"articulation_constraint_max": 4}),
     ):
         with test.subTest(response=response):
             solver = SolverFeatherPGS(
@@ -216,7 +216,7 @@ def test_captured_steps_match_eager(test, device):
             control = model.control()
 
             def run(capture, model=model, pipeline=pipeline, contacts=contacts, control=control, response=response):
-                solver = SolverFeatherPGS(model, dense_max_constraints=64, articulated_contact_response=response)
+                solver = SolverFeatherPGS(model, articulation_constraint_max=64, articulated_contact_response=response)
                 state_0, state_1 = model.state(), model.state()
                 newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
@@ -275,8 +275,8 @@ def test_global_kinematic_floor_moves_articulated_bodies(test, device):
                 model = _chains_on_global_floor(device, floor)
                 solver = SolverFeatherPGS(
                     model,
-                    pgs_iterations=50,
-                    dense_max_constraints=64,
+                    iterations=50,
+                    articulation_constraint_max=64,
                     friction_anchor_beta=0.0,
                     articulated_contact_response=response,
                 )
@@ -299,7 +299,7 @@ def test_global_kinematic_floor_moves_articulated_bodies(test, device):
             # Both worlds respond to the global kinematic floor like to world geometry. The kinematic
             # floor's contacts differ from the static floor's by float32 rounding of its body frame,
             # and the colored sweep also orders the two floors' contacts differently.
-            atol = 5.0e-5 if response == "propagation-colored" else 1.0e-5
+            atol = 5.0e-5 if response == "propagation_colored" else 1.0e-5
             np.testing.assert_allclose(results[("kinematic", 0.0)], results[("static", 0.0)], rtol=1.0e-4, atol=atol)
             np.testing.assert_allclose(results[("static", 0.0)][:2], results[("static", 0.0)][2:], atol=1.0e-5)
             # The floor's prescribed velocity enters every world's contact target.
@@ -355,9 +355,7 @@ def test_phased_sweeps_touch_only_their_row_family(test, device):
     # Fast enough to close the 0.01 rad gap to the upper limit within one step.
     joint_qd[0] = 5.0
     model.joint_qd.assign(joint_qd)
-    solver = SolverFeatherPGS(
-        model, pgs_iterations=0, enable_joint_limits=True, articulated_contact_response="propagation"
-    )
+    solver = SolverFeatherPGS(model, iterations=0, enable_joint_limits=True, articulated_contact_response="propagation")
     _step(model, solver)
 
     dense_count = int(solver.constraint_count.numpy()[0])
@@ -457,10 +455,10 @@ def test_propagation_matches_immediate_when_converged(test, device):
             solver = SolverFeatherPGS(
                 model,
                 articulated_contact_response=response,
-                pgs_iterations=32,
+                iterations=32,
                 friction_anchor_beta=0.0,
-                dense_max_constraints=capacity,
-                mf_max_constraints=16,
+                articulation_constraint_max=capacity,
+                free_body_constraint_max=16,
             )
             state_out = model.state()
             solver.step(initial, state_out, model.control(), contacts, 1.0 / 240.0)

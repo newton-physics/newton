@@ -551,10 +551,10 @@ def test_shared_anchors_step_on_every_route(test, device):
     builder.add_ground_plane()
     model = builder.finalize(device=device)
     routes = (
-        {"pgs_mode": "matrix_free"},
-        {"pgs_mode": "split"},
+        {"solve_mode": "matrix_free"},
+        {"solve_mode": "split"},
         {"articulated_contact_response": "propagation"},
-        {"articulated_contact_response": "propagation-fused"},
+        {"articulated_contact_response": "propagation_fused"},
     )
 
     def run(route, shared):
@@ -563,8 +563,8 @@ def test_shared_anchors_step_on_every_route(test, device):
             friction_anchor_beta=0.0,
             contact_shared_anchor=shared,
             contact_friction_shared_anchor=shared,
-            dense_max_constraints=128,
-            mf_max_constraints=128,
+            articulation_constraint_max=128,
+            free_body_constraint_max=128,
             **route,
         )
         pipeline = newton.CollisionPipeline(model)
@@ -592,7 +592,7 @@ def test_shared_anchors_step_on_every_route(test, device):
 def test_solver_exposes_documented_defaults(test, device):
     """Expose the documented contact-control defaults, with friction patches on."""
     model = _free_body_model(device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free")
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free")
     test.assertEqual(solver.friction_anchor_beta, 0.2)
     test.assertTrue(solver._friction_anchors_enabled)
     test.assertEqual(solver.contact_speculative_scale, 1.0)
@@ -601,16 +601,16 @@ def test_solver_exposes_documented_defaults(test, device):
     test.assertEqual(solver.articulation_pair_contact_gap_gate, 0.0)
     test.assertEqual(solver.contact_friction_gap_threshold, float("inf"))
     test.assertFalse(solver.contact_friction_articulation_pairs_only)
-    test.assertEqual(solver.pgs_contact_regularization, 0.0)
-    test.assertEqual(solver.pgs_velocity_iterations, 0)
-    test.assertFalse(solver.pgs_warmstart)
+    test.assertEqual(solver.contact_regularization, 0.0)
+    test.assertEqual(solver.velocity_iterations, 0)
+    test.assertFalse(solver.contact_warmstart)
     test.assertEqual(solver.restitution_velocity_threshold, 0.5)
     test.assertTrue(solver.warn_constraint_overflow)
     test.assertIsNotNone(solver._row_overflow_warning_emitted)
-    quiet_solver = SolverFeatherPGS(model, pgs_mode="matrix_free", warn_constraint_overflow=False)
+    quiet_solver = SolverFeatherPGS(model, solve_mode="matrix_free", warn_constraint_overflow=False)
     test.assertFalse(quiet_solver.warn_constraint_overflow)
     test.assertIsNone(quiet_solver._row_overflow_warning_emitted)
-    point = SolverFeatherPGS(model, pgs_mode="matrix_free", friction_anchor_beta=0.0)
+    point = SolverFeatherPGS(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
     test.assertFalse(point._friction_anchors_enabled)
 
 
@@ -619,7 +619,7 @@ def test_solver_validates_and_stores_contact_controls(test, device):
     model = _free_body_model(device)
     solver = SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
+        solve_mode="matrix_free",
         contact_speculative_scale=0.0,
         contact_gap_gate=0.001,
         same_articulation_contact_gap_gate=0.002,
@@ -643,9 +643,9 @@ def test_solver_validates_and_stores_contact_controls(test, device):
         for value in (-0.1, float("nan"), float("inf"), "invalid"):
             with test.subTest(name=name, value=value):
                 with test.assertRaisesRegex(ValueError, name):
-                    SolverFeatherPGS(model, pgs_mode="matrix_free", **{name: value})
+                    SolverFeatherPGS(model, solve_mode="matrix_free", **{name: value})
     with test.assertRaisesRegex(ValueError, "contact_friction_gap_threshold"):
-        SolverFeatherPGS(model, pgs_mode="matrix_free", contact_friction_gap_threshold=float("nan"))
+        SolverFeatherPGS(model, solve_mode="matrix_free", contact_friction_gap_threshold=float("nan"))
 
 
 def test_scoped_gap_gate_only_drops_distant_same_articulation_contact(test, device):

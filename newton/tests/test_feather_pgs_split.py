@@ -60,7 +60,7 @@ def _run(model, solver, steps):
 def test_mixed_world_stack_rests(test, device):
     """Rest a box stack on an articulated platform: dense and free-body rows exchange impulses every sweep."""
     model = _stack_on_platform(device)
-    solver = SolverFeatherPGS(model, pgs_mode="split", pgs_iterations=16)
+    solver = SolverFeatherPGS(model, solve_mode="split", iterations=16)
     test.assertTrue(solver._has_mixed_contacts)
     state = _run(model, solver, 240)
     solver.check_constraint_capacity()
@@ -78,10 +78,10 @@ def test_mixed_world_stack_rests(test, device):
 def test_mixed_world_matches_matrix_free_solve(test, device):
     """Converge to the matrix-free solve's resting state on the same mixed scene."""
     final = {}
-    for pgs_mode in ("split", "matrix_free"):
+    for solve_mode in ("split", "matrix_free"):
         model = _stack_on_platform(device)
-        solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, pgs_iterations=32)
-        final[pgs_mode] = _run(model, solver, 120).body_q.numpy()
+        solver = SolverFeatherPGS(model, solve_mode=solve_mode, iterations=32)
+        final[solve_mode] = _run(model, solver, 120).body_q.numpy()
     np.testing.assert_allclose(final["split"], final["matrix_free"], rtol=0.0, atol=2.0e-3)
 
 
@@ -90,7 +90,7 @@ def test_captured_mixed_step_matches_eager(test, device):
     trajectories = []
     for capture in (False, True):
         model = _stack_on_platform(device)
-        solver = SolverFeatherPGS(model, pgs_mode="split")
+        solver = SolverFeatherPGS(model, solve_mode="split")
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
         state_0, state_1 = model.state(), model.state()
@@ -127,7 +127,7 @@ class TestFeatherPGSSplit(unittest.TestCase):
         final = {}
         for device in ("cpu", "cuda:0"):
             model = _stack_on_platform(device)
-            final[device] = _run(model, SolverFeatherPGS(model, pgs_mode="split"), 120).body_q.numpy()
+            final[device] = _run(model, SolverFeatherPGS(model, solve_mode="split"), 120).body_q.numpy()
         np.testing.assert_allclose(final["cpu"][:, :3], final["cuda:0"][:, :3], rtol=0.0, atol=1.0e-4)
         np.testing.assert_allclose(final["cpu"][:, 3:], final["cuda:0"][:, 3:], rtol=0.0, atol=5.0e-4)
 

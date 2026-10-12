@@ -115,18 +115,18 @@ def _build_heterogeneous_world_model(device):
 def test_defaults(test, device):
     """Keep the documented constructor defaults."""
     solver = SolverFeatherPGS(_build_chain_model(device, num_links=2, num_worlds=1))
-    test.assertEqual(solver.pgs_mode, "matrix_free")
-    test.assertEqual(solver.pgs_iterations, 12)
-    test.assertAlmostEqual(solver.pgs_beta, 0.2)
-    test.assertAlmostEqual(solver.pgs_cfm, 1.0e-6)
-    test.assertEqual(solver.pgs_omega, 1.0)
+    test.assertEqual(solver.solve_mode, "matrix_free")
+    test.assertEqual(solver.iterations, 12)
+    test.assertAlmostEqual(solver.baumgarte, 0.2)
+    test.assertAlmostEqual(solver.cfm, 1.0e-6)
+    test.assertEqual(solver.relaxation, 1.0)
     test.assertEqual(solver.update_mass_matrix_interval, 1)
     test.assertFalse(solver.enable_joint_limits)
     test.assertEqual(solver.joint_limit_activation_gap, float("inf"))
     test.assertFalse(solver.enable_joint_velocity_limits)
     test.assertEqual(solver.velocity_limit_activation_fraction, 0.0)
-    test.assertEqual(solver.dense_max_constraints, 32)
-    test.assertEqual(solver.mf_max_constraints, 512)
+    test.assertEqual(solver.articulation_constraint_max, 32)
+    test.assertEqual(solver.free_body_constraint_max, 512)
     test.assertTrue(solver.warn_constraint_overflow)
     np.testing.assert_allclose(solver.rigid_body_angular_damping.numpy(), 0.05)
 
@@ -136,23 +136,23 @@ def test_constructor_validates_options(test, device):
     model = _build_chain_model(device, num_links=2, num_worlds=1)
     invalid = (
         ({"update_mass_matrix_interval": 0}, "update_mass_matrix_interval"),
-        ({"pgs_iterations": -1}, "pgs_iterations"),
+        ({"iterations": -1}, "iterations"),
         ({"joint_limit_activation_gap": -0.1}, "joint_limit_activation_gap"),
         ({"joint_limit_activation_gap": float("nan")}, "joint_limit_activation_gap"),
         ({"velocity_limit_activation_fraction": -0.1}, "velocity_limit_activation_fraction"),
         ({"velocity_limit_activation_fraction": 1.5}, "velocity_limit_activation_fraction"),
         ({"velocity_limit_activation_fraction": float("nan")}, "velocity_limit_activation_fraction"),
-        ({"dense_max_constraints": 0}, "dense_max_constraints"),
-        ({"dense_max_constraints": _DENSE_META_MAX_PARENT + 2}, "dense_max_constraints"),
-        ({"mf_max_constraints": 0}, "mf_max_constraints"),
+        ({"articulation_constraint_max": 0}, "articulation_constraint_max"),
+        ({"articulation_constraint_max": _DENSE_META_MAX_PARENT + 2}, "articulation_constraint_max"),
+        ({"free_body_constraint_max": 0}, "free_body_constraint_max"),
     )
     for kwargs, message in invalid:
         with test.subTest(**kwargs):
             with test.assertRaisesRegex(ValueError, message):
-                SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs)
+                SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs)
     test.assertEqual(
         SolverFeatherPGS(
-            model, pgs_mode="matrix_free", velocity_limit_activation_fraction=float("inf")
+            model, solve_mode="matrix_free", velocity_limit_activation_fraction=float("inf")
         ).velocity_limit_activation_fraction,
         float("inf"),
     )
@@ -188,8 +188,8 @@ def test_unsupported_model_features_raise(test, device):
 def test_default_kernel_selection_is_cached(test, device):
     """Resolve identical solver shapes to the same cached kernel objects."""
     model = _build_chain_model(device)
-    first = SolverFeatherPGS(model, pgs_mode="matrix_free")
-    second = SolverFeatherPGS(model, pgs_mode="matrix_free")
+    first = SolverFeatherPGS(model, solve_mode="matrix_free")
+    second = SolverFeatherPGS(model, solve_mode="matrix_free")
     for attr in ("_cholesky_kernels_by_size", "_triangular_solve_kernels_by_size", "_hinv_jt_kernels_by_size"):
         first_kernels = getattr(first, attr)
         second_kernels = getattr(second, attr)
@@ -201,7 +201,7 @@ def test_default_kernel_selection_is_cached(test, device):
 
 def test_compact_world_dof_mapping_pads_heterogeneous_worlds(test, device):
     """Pad the per-world response DOF map of worlds with fewer DOFs."""
-    solver = SolverFeatherPGS(_build_heterogeneous_world_model(device), pgs_mode="matrix_free")
+    solver = SolverFeatherPGS(_build_heterogeneous_world_model(device), solve_mode="matrix_free")
     test.assertEqual(solver.max_world_dofs, 6)
     np.testing.assert_array_equal(solver.world_dof_count.numpy(), np.array((6, 1), dtype=np.int32))
     indices = solver.world_dof_indices.numpy()
@@ -213,12 +213,14 @@ def test_compact_world_dof_mapping_pads_heterogeneous_worlds(test, device):
 def test_diagonal_fusion_requires_nonaliased_world_response(test, device):
     """Compute the row diagonal in H^-1 J^T only when it writes separate world storage."""
     aliased = SolverFeatherPGS(
-        _build_chain_model(device, num_links=23, num_worlds=1), pgs_mode="matrix_free", dense_max_constraints=192
+        _build_chain_model(device, num_links=23, num_worlds=1),
+        solve_mode="matrix_free",
+        articulation_constraint_max=192,
     )
     direct = SolverFeatherPGS(
         _build_chain_model(device, num_links=23, num_worlds=1, with_free_body=True),
-        pgs_mode="matrix_free",
-        dense_max_constraints=192,
+        solve_mode="matrix_free",
+        articulation_constraint_max=192,
     )
     test.assertTrue(aliased._jy_world_aliased)
     test.assertFalse(aliased._hinv_jt_writes_world)
@@ -234,7 +236,7 @@ def test_tiled_and_loop_kernels_step_identically(test, device):
     for overrides in ({}, {"cholesky_kernel": "loop", "trisolve_kernel": "loop", "hinv_jt_kernel": "par_row"}):
         model = _build_chain_model(device, num_links=14, num_worlds=2)
         with kernel_overrides(overrides):
-            solver = SolverFeatherPGS(model, pgs_mode="matrix_free", dense_max_constraints=64)
+            solver = SolverFeatherPGS(model, solve_mode="matrix_free", articulation_constraint_max=64)
         if not overrides:
             test.assertTrue(solver._execution_plan.use_tiled_cholesky(14))
             test.assertTrue(solver._execution_plan.use_tiled_hinv_jt(14))
@@ -406,9 +408,9 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
                 model.constraint_mimic_joint1.assign(joint0)
             if swap:
                 with test.assertRaisesRegex(NotImplementedError, "equality"):
-                    SolverFeatherPGS(model, pgs_mode="matrix_free")
+                    SolverFeatherPGS(model, solve_mode="matrix_free")
             else:
-                SolverFeatherPGS(model, pgs_mode="matrix_free")
+                SolverFeatherPGS(model, solve_mode="matrix_free")
 
 
 def test_enabling_equality_constraint_at_runtime_raises(test, device):
@@ -429,10 +431,10 @@ def test_enabling_equality_constraint_at_runtime_raises(test, device):
 def test_joint_limit_solver_compatibility_validation(test, device):
     """Reject the options the split solve cannot honor and unknown solve modes."""
     model = _build_chain_model(device, num_links=2, num_worlds=1)
-    with test.assertRaisesRegex(NotImplementedError, "requires pgs_mode='matrix_free'"):
-        SolverFeatherPGS(model, pgs_mode="split", enable_joint_velocity_limits=True)
-    with test.assertRaisesRegex(ValueError, "pgs_mode"):
-        SolverFeatherPGS(model, pgs_mode="dense")
+    with test.assertRaisesRegex(NotImplementedError, "requires solve_mode='matrix_free'"):
+        SolverFeatherPGS(model, solve_mode="split", enable_joint_velocity_limits=True)
+    with test.assertRaisesRegex(ValueError, "solve_mode"):
+        SolverFeatherPGS(model, solve_mode="dense")
 
 
 def test_split_rejects_matrix_free_only_options(test, device):
@@ -440,42 +442,42 @@ def test_split_rejects_matrix_free_only_options(test, device):
     model = _build_chain_model(device, num_links=2, num_worlds=1)
     options = (
         ({"enable_joint_velocity_limits": True}, "enable_joint_velocity_limits"),
-        ({"drive_mode": "physx_pgs"}, "physx_pgs"),
+        ({"drive_mode": "rows"}, "rows"),
         ({"friction_anchor_beta": 0.2}, "friction_anchor_beta"),
-        ({"pgs_contact_regularization": 0.02}, "pgs_contact_regularization"),
-        ({"pgs_velocity_iterations": 2}, "pgs_velocity_iterations"),
-        ({"pgs_warmstart": True}, "pgs_warmstart"),
+        ({"contact_regularization": 0.02}, "contact_regularization"),
+        ({"velocity_iterations": 2}, "velocity_iterations"),
+        ({"contact_warmstart": True}, "contact_warmstart"),
         ({"contact_compliance": True, "friction_anchor_beta": 0.0}, "contact_compliance"),
         ({"enable_sleeping": True}, "enable_sleeping"),
     )
     for kwargs, name in options:
         with test.subTest(option=name):
-            with test.assertRaisesRegex(NotImplementedError, f"{name}.*requires pgs_mode='matrix_free'"):
-                SolverFeatherPGS(model, pgs_mode="split", **kwargs)
+            with test.assertRaisesRegex(NotImplementedError, f"{name}.*requires solve_mode='matrix_free'"):
+                SolverFeatherPGS(model, solve_mode="split", **kwargs)
     # Contact torsion is CUDA-only; on CUDA the split solve rejects it.
     error = NotImplementedError if wp.get_device(device).is_cuda else ValueError
     with test.assertRaises(error):
-        SolverFeatherPGS(model, pgs_mode="split", contact_torsion_radius=0.01)
+        SolverFeatherPGS(model, solve_mode="split", contact_torsion_radius=0.01)
     # The default friction resolves to point friction in the split solve.
-    test.assertEqual(SolverFeatherPGS(model, pgs_mode="split").friction_anchor_beta, 0.0)
+    test.assertEqual(SolverFeatherPGS(model, solve_mode="split").friction_anchor_beta, 0.0)
     # Positive shape restitution is rejected at construction and when notified.
     restitution = model.shape_material_restitution.numpy().copy()
     model.shape_material_restitution.fill_(0.5)
-    with test.assertRaisesRegex(NotImplementedError, "restitution requires pgs_mode='matrix_free'"):
-        SolverFeatherPGS(model, pgs_mode="split")
+    with test.assertRaisesRegex(NotImplementedError, "restitution requires solve_mode='matrix_free'"):
+        SolverFeatherPGS(model, solve_mode="split")
     model.shape_material_restitution.assign(restitution)
-    solver = SolverFeatherPGS(model, pgs_mode="split")
+    solver = SolverFeatherPGS(model, solve_mode="split")
     model.shape_material_restitution.fill_(0.5)
-    with test.assertRaisesRegex(NotImplementedError, "restitution requires pgs_mode='matrix_free'"):
+    with test.assertRaisesRegex(NotImplementedError, "restitution requires solve_mode='matrix_free'"):
         solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
 
 
 def test_split_defaults(test, device):
     """Keep the documented defaults in split mode and allocate its Delassus storage."""
-    solver = SolverFeatherPGS(_build_chain_model(device, num_links=2, num_worlds=2), pgs_mode="split")
-    test.assertEqual(solver.pgs_mode, "split")
-    test.assertEqual(solver.pgs_iterations, 12)
-    test.assertEqual(solver.dense_max_constraints, 32)
+    solver = SolverFeatherPGS(_build_chain_model(device, num_links=2, num_worlds=2), solve_mode="split")
+    test.assertEqual(solver.solve_mode, "split")
+    test.assertEqual(solver.iterations, 12)
+    test.assertEqual(solver.articulation_constraint_max, 32)
     test.assertEqual(solver.C.shape, (2, 32, 32))
     test.assertFalse(solver._jy_world_aliased)
     test.assertFalse(solver._hinv_jt_writes_world)
@@ -485,13 +487,13 @@ def test_split_kernel_selection(test, device):
     """Select the native split-mode kernels on CUDA and the scalar Warp kernels on CPU."""
     is_cuda = wp.get_device(device).is_cuda
     # One 14-DOF chain per world: tiled H^-1 J^T, fused with the Delassus assembly on CUDA.
-    single = SolverFeatherPGS(_build_chain_model(device, num_links=14, num_worlds=2), pgs_mode="split")
+    single = SolverFeatherPGS(_build_chain_model(device, num_links=14, num_worlds=2), solve_mode="split")
     test.assertEqual(single._split_fused_response, is_cuda)
     test.assertEqual(single._pgs_solve_tiled_row_kernel is not None, is_cuda)
     test.assertIsNone(single._pgs_solve_mf_kernel)
     # A free body next to the chain: two solved articulations per world, so no fusion.
     mixed = SolverFeatherPGS(
-        _build_chain_model(device, num_links=14, num_worlds=2, with_free_body=True), pgs_mode="split"
+        _build_chain_model(device, num_links=14, num_worlds=2, with_free_body=True), solve_mode="split"
     )
     test.assertTrue(mixed._has_mixed_contacts)
     test.assertFalse(mixed._split_fused_response)
@@ -509,8 +511,8 @@ def test_split_kernel_selection(test, device):
 def test_split_kernel_selection_is_cached(test, device):
     """Resolve identical split-mode solver shapes to the same cached kernel objects."""
     model = _build_chain_model(device, num_links=14, num_worlds=2, with_free_body=True)
-    first = SolverFeatherPGS(model, pgs_mode="split")
-    second = SolverFeatherPGS(model, pgs_mode="split")
+    first = SolverFeatherPGS(model, solve_mode="split")
+    second = SolverFeatherPGS(model, solve_mode="split")
     test.assertEqual(first._delassus_kernels_by_size.keys(), second._delassus_kernels_by_size.keys())
     for size, kernel in first._delassus_kernels_by_size.items():
         test.assertIs(kernel, second._delassus_kernels_by_size[size])
@@ -532,7 +534,9 @@ def test_split_native_and_scalar_kernels_step_identically(test, device):
         for overrides in ({}, scalar):
             model = _build_limited_chain_on_ground(device, 14, with_free_body=with_free_body)
             with kernel_overrides(overrides):
-                solver = SolverFeatherPGS(model, pgs_mode="split", enable_joint_limits=True, dense_max_constraints=64)
+                solver = SolverFeatherPGS(
+                    model, solve_mode="split", enable_joint_limits=True, articulation_constraint_max=64
+                )
             if not overrides:
                 test.assertIsNotNone(solver._pgs_solve_tiled_row_kernel)
             pipeline = newton.CollisionPipeline(model)
@@ -555,7 +559,7 @@ def test_non_default_tile_threads_compiles_and_steps(test, device):
     model = _build_chain_model(device)
     forced = {"cholesky_kernel": "tiled", "trisolve_kernel": "tiled", "hinv_jt_kernel": "tiled", "pgs_kernel": "loop"}
     with kernel_overrides(forced):
-        solver = SolverFeatherPGS(model, pgs_mode="split", dense_max_constraints=384)
+        solver = SolverFeatherPGS(model, solve_mode="split", articulation_constraint_max=384)
     test.assertTrue(all(solver._execution_plan.use_tiled_hinv_jt(size) for size in solver.size_groups))
     test.assertFalse(any(solver._execution_plan.use_fused_hinv_jt(size) for size in solver.size_groups))
     test.assertFalse(solver._split_fused_response)
@@ -575,17 +579,17 @@ def test_articulated_contact_response_validation(test, device):
     solver = SolverFeatherPGS(model)
     test.assertEqual(solver.articulated_contact_response, "immediate")
     test.assertFalse(solver.propagation_same_articulation_rows)
-    solver = SolverFeatherPGS(model, articulated_contact_response="propagation", dense_max_constraints=16)
+    solver = SolverFeatherPGS(model, articulated_contact_response="propagation", articulation_constraint_max=16)
     test.assertEqual(solver.articulated_contact_response, "propagation")
     # Every contact row, free-body rows included, uses the propagation family.
     test.assertEqual(solver.propagation_max_constraints, 512 + 16)
-    solver = SolverFeatherPGS(model, articulated_contact_response="propagation-fused", dense_max_constraints=16)
-    test.assertEqual(solver.articulated_contact_response, "propagation-fused")
+    solver = SolverFeatherPGS(model, articulated_contact_response="propagation_fused", articulation_constraint_max=16)
+    test.assertEqual(solver.articulated_contact_response, "propagation_fused")
     test.assertEqual(solver.propagation_max_constraints, 16)
 
     with test.assertRaisesRegex(ValueError, "articulated_contact_response"):
         SolverFeatherPGS(model, articulated_contact_response="bad")
-    for response in ("immediate", "propagation-fused"):
+    for response in ("immediate", "propagation_fused"):
         with test.subTest(response=response):
             with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
                 SolverFeatherPGS(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
@@ -603,8 +607,8 @@ def test_articulated_contact_response_validation(test, device):
         chain.add_articulation(joints)
         mixed.add_world(chain)
     mixed_model = mixed.finalize(device=device)
-    with test.assertRaisesRegex(NotImplementedError, "propagation-fused"):
-        SolverFeatherPGS(mixed_model, articulated_contact_response="propagation-fused")
+    with test.assertRaisesRegex(NotImplementedError, "propagation_fused"):
+        SolverFeatherPGS(mixed_model, articulated_contact_response="propagation_fused")
     test.assertEqual(
         SolverFeatherPGS(mixed_model, articulated_contact_response="propagation").articulated_contact_response,
         "propagation",
@@ -614,10 +618,10 @@ def test_articulated_contact_response_validation(test, device):
 def test_propagation_rejects_unsupported_options(test, device):
     """Reject the split solve and the options the propagation rows do not implement; accept the rest."""
     model = _build_chain_model(device, num_links=2, num_worlds=1)
-    for response in ("propagation", "propagation-fused", "propagation-colored"):
-        with test.subTest(response=response, option="pgs_mode"):
-            with test.assertRaisesRegex(NotImplementedError, "requires pgs_mode='matrix_free'"):
-                SolverFeatherPGS(model, pgs_mode="split", articulated_contact_response=response)
+    for response in ("propagation", "propagation_fused", "propagation_colored"):
+        with test.subTest(response=response, option="solve_mode"):
+            with test.assertRaisesRegex(NotImplementedError, "requires solve_mode='matrix_free'"):
+                SolverFeatherPGS(model, solve_mode="split", articulated_contact_response=response)
         # The default friction selects friction patches, as with the immediate response.
         test.assertEqual(SolverFeatherPGS(model, articulated_contact_response=response).friction_anchor_beta, 0.2)
         options = (
@@ -630,10 +634,10 @@ def test_propagation_rejects_unsupported_options(test, device):
                 with test.assertRaisesRegex(NotImplementedError, f"{name}.*articulated_contact_response"):
                     SolverFeatherPGS(model, articulated_contact_response=response, **kwargs)
         for kwargs in (
-            {"drive_mode": "physx_pgs"},
-            {"pgs_contact_regularization": 0.02},
-            {"pgs_velocity_iterations": 2},
-            {"pgs_warmstart": True},
+            {"drive_mode": "rows"},
+            {"contact_regularization": 0.02},
+            {"velocity_iterations": 2},
+            {"contact_warmstart": True},
         ):
             with test.subTest(response=response, **kwargs):
                 solver = SolverFeatherPGS(model, articulated_contact_response=response, **kwargs)
@@ -650,15 +654,15 @@ def test_propagation_matrix_free_compiles_and_steps_with_velocity_limit_rows(tes
     """Step both propagation responses with dense joint velocity-limit rows."""
     model = _build_chain_model(device, num_links=3, num_worlds=1)
     model.joint_velocity_limit.assign(np.full(model.joint_dof_count, 0.1, dtype=np.float32))
-    for response in ("propagation", "propagation-fused", "propagation-colored"):
+    for response in ("propagation", "propagation_fused", "propagation_colored"):
         with test.subTest(response=response):
             solver = SolverFeatherPGS(
                 model,
                 articulated_contact_response=response,
                 enable_joint_velocity_limits=True,
-                pgs_iterations=2,
-                dense_max_constraints=16,
-                mf_max_constraints=16,
+                iterations=2,
+                articulation_constraint_max=16,
+                free_body_constraint_max=16,
             )
             state_0, state_1 = model.state(), model.state()
             state_0.joint_qd.assign(np.full(model.joint_dof_count, 1.0, dtype=np.float32))
@@ -673,11 +677,13 @@ class TestFeatherPGSLaunchConfig(unittest.TestCase):
     def test_cpu_construction_raises(self):
         """Reject the default CUDA-only matrix-free solve on CPU, naming the split solve, which constructs."""
         model = _build_chain_model("cpu", num_links=2, num_worlds=1)
-        for options in ({}, {"pgs_mode": "matrix_free"}):
+        for options in ({}, {"solve_mode": "matrix_free"}):
             with self.subTest(**options):
-                with self.assertRaisesRegex(NotImplementedError, "requires a CUDA device; use pgs_mode='split' on CPU"):
+                with self.assertRaisesRegex(
+                    NotImplementedError, "requires a CUDA device; use solve_mode='split' on CPU"
+                ):
                     SolverFeatherPGS(model, **options)
-        self.assertEqual(SolverFeatherPGS(model, pgs_mode="split").pgs_mode, "split")
+        self.assertEqual(SolverFeatherPGS(model, solve_mode="split").solve_mode, "split")
 
     def test_hinv_fusion_requires_full_working_set_to_fit(self):
         """Fuse H^-1 J^T with the Delassus assembly only when the whole row set and its Delassus tile fit."""
@@ -807,9 +813,9 @@ def test_drive_mode_validation(test, device):
     solver = SolverFeatherPGS(model)
     test.assertEqual(solver.drive_mode, "augmented")
     test.assertFalse(solver.fuse_joint_velocity_limits)
-    test.assertEqual(SolverFeatherPGS(model, pgs_mode="matrix_free", drive_mode="physx_pgs").drive_mode, "physx_pgs")
-    with test.assertRaisesRegex(NotImplementedError, "requires pgs_mode='matrix_free'"):
-        SolverFeatherPGS(model, pgs_mode="split", drive_mode="physx_pgs")
+    test.assertEqual(SolverFeatherPGS(model, solve_mode="matrix_free", drive_mode="rows").drive_mode, "rows")
+    with test.assertRaisesRegex(NotImplementedError, "requires solve_mode='matrix_free'"):
+        SolverFeatherPGS(model, solve_mode="split", drive_mode="rows")
     with test.assertRaisesRegex(ValueError, "drive_mode"):
         SolverFeatherPGS(model, drive_mode="implicit")
 
@@ -820,19 +826,19 @@ def test_fuse_joint_velocity_limits_validation(test, device):
     inert = (
         {"drive_mode": "augmented"},
         {"drive_mode": "augmented", "enable_joint_velocity_limits": True},
-        {"drive_mode": "physx_pgs"},
+        {"drive_mode": "rows"},
         {
-            "drive_mode": "physx_pgs",
+            "drive_mode": "rows",
             "enable_joint_velocity_limits": True,
             "velocity_limit_activation_fraction": float("inf"),
         },
-        {"drive_mode": "physx_pgs", "enable_joint_velocity_limits": True, "fuse_joint_velocity_limits": False},
+        {"drive_mode": "rows", "enable_joint_velocity_limits": True, "fuse_joint_velocity_limits": False},
     )
     for kwargs in inert:
         with test.subTest(**kwargs):
-            test.assertFalse(SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs).fuse_joint_velocity_limits)
+            test.assertFalse(SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs).fuse_joint_velocity_limits)
     # The applicable combination engages by default.
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", drive_mode="physx_pgs", enable_joint_velocity_limits=True)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", drive_mode="rows", enable_joint_velocity_limits=True)
     test.assertTrue(solver.fuse_joint_velocity_limits)
 
 
@@ -849,13 +855,13 @@ def test_fuse_joint_velocity_limits_clamps_driven_dofs_without_rows(test, device
         model.joint_velocity_limit.assign(np.full(n, qdot_max, dtype=np.float32))
         solver = SolverFeatherPGS(
             model,
-            pgs_mode="matrix_free",
-            drive_mode="physx_pgs",
+            solve_mode="matrix_free",
+            drive_mode="rows",
             enable_joint_velocity_limits=True,
             fuse_joint_velocity_limits=fuse,
-            pgs_iterations=64,
-            dense_max_constraints=16,
-            mf_max_constraints=16,
+            iterations=64,
+            articulation_constraint_max=16,
+            free_body_constraint_max=16,
         )
         state_0, state_1 = model.state(), model.state()
         control = model.control()

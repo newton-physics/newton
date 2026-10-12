@@ -70,7 +70,7 @@ def test_contact_kernels_match_the_scalar_split_solve(test, device):
     They sweep whole contacts as 3x3 blocks, so they agree with the row-by-row loop at convergence.
     """
     model = _legged_base(device)
-    options = {"pgs_mode": "split", "dense_max_constraints": 48, "pgs_iterations": 64}
+    options = {"solve_mode": "split", "articulation_constraint_max": 48, "iterations": 64}
     with _overrides(pgs_kernel="loop"):
         _, reference = _trajectory(model, steps=30, **options)
     for overrides in (
@@ -93,9 +93,9 @@ def test_contact_kernels_reject_non_contact_rows(test, device):
         for options in ({"enable_joint_limits": True}, {"contact_friction_gap_threshold": 0.01}):
             with test.subTest(pgs_kernel=kernel, **options), _overrides(pgs_kernel=kernel):
                 with test.assertRaisesRegex(ValueError, "contact rows only"):
-                    SolverFeatherPGS(model, pgs_mode="split", **options)
+                    SolverFeatherPGS(model, solve_mode="split", **options)
     with _overrides(pgs_kernel="tiled_contact"), test.assertRaisesRegex(ValueError, "shared memory"):
-        SolverFeatherPGS(model, pgs_mode="split", dense_max_constraints=768)
+        SolverFeatherPGS(model, solve_mode="split", articulation_constraint_max=768)
 
 
 def test_matrix_free_ignores_the_dense_pgs_kernel(test, device):
@@ -110,10 +110,10 @@ def test_matrix_free_ignores_the_dense_pgs_kernel(test, device):
             test.assertAlmostEqual(solver.friction_anchor_beta, 0.2)
 
 
-def test_launch_widths_step_identically(test, device, pgs_mode="matrix_free"):
+def test_launch_widths_step_identically(test, device, solve_mode="matrix_free"):
     """Step identically with non-default tile and serial-kernel launch widths."""
     model = _legged_base(device)
-    options = {"pgs_mode": pgs_mode, "dense_max_constraints": 48, "friction_anchor_beta": 0.0}
+    options = {"solve_mode": solve_mode, "articulation_constraint_max": 48, "friction_anchor_beta": 0.0}
     with _overrides(sparse_mass_matrix=False, cholesky_kernel="tiled", trisolve_kernel="tiled", hinv_jt_kernel="tiled"):
         default, reference = _trajectory(model, **options)
     with _overrides(
@@ -143,7 +143,7 @@ def test_launch_width_overrides_are_validated(test, device):
     ):
         with test.subTest(**{key: value}), _overrides(**{key: value}):
             with test.assertRaisesRegex(ValueError, key):
-                SolverFeatherPGS(model, pgs_mode="split")
+                SolverFeatherPGS(model, solve_mode="split")
 
 
 class TestFeatherPGSKernelOverrides(unittest.TestCase):
@@ -163,7 +163,7 @@ add_function_test(
     "test_launch_widths_step_identically_split",
     test_launch_widths_step_identically,
     devices=cuda_devices,
-    pgs_mode="split",
+    solve_mode="split",
 )
 add_function_test(
     TestFeatherPGSKernelOverrides,

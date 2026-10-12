@@ -158,7 +158,7 @@ def _com_velocity(model, state):
     return (mass[:, None] * body_qd[:, :3]).sum(axis=0) / mass.sum()
 
 
-def _spin_free_articulation(model, omega=OMEGA, pgs_mode="matrix_free"):
+def _spin_free_articulation(model, omega=OMEGA, solve_mode="matrix_free"):
     """Spin the articulation with its composite centre of mass at rest, then step.
 
     Returns the largest centre-of-mass velocity drift [m/s] seen over the run.
@@ -181,7 +181,7 @@ def _spin_free_articulation(model, omega=OMEGA, pgs_mode="matrix_free"):
     state_0.joint_qd.assign(joint_qd)
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
+    solver = SolverFeatherPGS(model, solve_mode=solve_mode)
     solver.rigid_body_angular_damping.zero_()
     control = model.control()
     reference = _com_velocity(model, state_0)
@@ -193,7 +193,7 @@ def _spin_free_articulation(model, omega=OMEGA, pgs_mode="matrix_free"):
     return worst
 
 
-def test_single_link_conserves_com_velocity(test, device, pgs_mode="matrix_free"):
+def test_single_link_conserves_com_velocity(test, device, solve_mode="matrix_free"):
     """Hold the center-of-mass velocity of a lone rotating free body in free fall.
 
     With no gravity the public-to-internal shift cancels step to step, so this case passes even
@@ -201,23 +201,23 @@ def test_single_link_conserves_com_velocity(test, device, pgs_mode="matrix_free"
     is the discriminating single-body case.
     """
     model = _build_equivalent_single(device)
-    test.assertLess(_spin_free_articulation(model, pgs_mode=pgs_mode), 1e-6)
+    test.assertLess(_spin_free_articulation(model, solve_mode=solve_mode), 1e-6)
 
 
-def test_single_link_offset_com_tumbling(test, device, pgs_mode="matrix_free"):
+def test_single_link_offset_com_tumbling(test, device, solve_mode="matrix_free"):
     """Conserve the COM velocity of a lone tumbling free body with an offset center of mass.
 
     Tumbling changes the angular velocity within each step, so the public-to-internal shift's
     reference-point error stops cancelling step to step: on the defective formulation this body
-    drifts at ~0.5 m/s within the run, versus ~1e-7 here, in every ``pgs_mode`` and
+    drifts at ~0.5 m/s within the run, versus ~1e-7 here, in every ``solve_mode`` and
     ``articulated_contact_response``. This is the single-body case the fix corrects — every
     real robot root link has an offset centre of mass; it fails without the fix.
     """
     model = _build_single_offset_com_tumbling(device)
-    test.assertLess(_spin_free_articulation(model, omega=(20.0, 0.5, 0.0), pgs_mode=pgs_mode), 1e-3)
+    test.assertLess(_spin_free_articulation(model, omega=(20.0, 0.5, 0.0), solve_mode=solve_mode), 1e-3)
 
 
-def test_welded_pair_conserves_com_velocity(test, device, pgs_mode="matrix_free"):
+def test_welded_pair_conserves_com_velocity(test, device, solve_mode="matrix_free"):
     """Hold the COM velocity of a welded two-link articulation to the integrator's own accuracy.
 
     The pair is the same physical object as the single link above -- same mass, centre of mass
@@ -226,10 +226,10 @@ def test_welded_pair_conserves_com_velocity(test, device, pgs_mode="matrix_free"
     frame correction and ~1.64 m/s without it; the bound sits between the two.
     """
     model = _build_welded_pair(device)
-    test.assertLess(_spin_free_articulation(model, pgs_mode=pgs_mode), 0.5)
+    test.assertLess(_spin_free_articulation(model, solve_mode=solve_mode), 0.5)
 
 
-def test_welded_pair_drift_converges_with_timestep(test, device, pgs_mode="matrix_free"):
+def test_welded_pair_drift_converges_with_timestep(test, device, solve_mode="matrix_free"):
     """Show the residual drift is first-order in dt, not a fixed formulation error.
 
     Halving the step must roughly halve the drift. A formulation error would sit flat instead,
@@ -239,16 +239,16 @@ def test_welded_pair_drift_converges_with_timestep(test, device, pgs_mode="matri
     original = DT
     try:
         DT = 1.0 / 200.0
-        coarse = _spin_free_articulation(_build_welded_pair(device), pgs_mode=pgs_mode)
+        coarse = _spin_free_articulation(_build_welded_pair(device), solve_mode=solve_mode)
         DT = 1.0 / 400.0
-        fine = _spin_free_articulation(_build_welded_pair(device), pgs_mode=pgs_mode)
+        fine = _spin_free_articulation(_build_welded_pair(device), solve_mode=solve_mode)
     finally:
         DT = original
     test.assertGreater(coarse, 0.0)
     test.assertLess(fine, 0.65 * coarse)
 
 
-def test_offset_root_com_conserves_com_velocity(test, device, pgs_mode="matrix_free"):
+def test_offset_root_com_conserves_com_velocity(test, device, solve_mode="matrix_free"):
     """Conserve momentum for a root link whose own COM is offset from its origin.
 
     This exercises the public-to-internal free-base shift, which is an identity only when the
@@ -256,10 +256,10 @@ def test_offset_root_com_conserves_com_velocity(test, device, pgs_mode="matrix_f
     and the dominant error term for a real robot link.
     """
     model = _build_welded_pair(device, root_com_z=-0.076)
-    test.assertLess(_spin_free_articulation(model, pgs_mode=pgs_mode), 0.5)
+    test.assertLess(_spin_free_articulation(model, solve_mode=solve_mode), 0.5)
 
 
-def test_matches_featherstone_reference(test, device, pgs_mode="matrix_free"):
+def test_matches_featherstone_reference(test, device, solve_mode="matrix_free"):
     """Track SolverFeatherstone on chains deep enough to expose the free base.
 
     Featherstone solves the same dynamics without FeatherPGS's frame re-centring machinery, so
@@ -277,7 +277,7 @@ def test_matches_featherstone_reference(test, device, pgs_mode="matrix_free"):
         if solver_cls is SolverFeatherstone:
             solver = solver_cls(model, angular_damping=0.0)
         else:
-            solver = solver_cls(model, pgs_mode=pgs_mode)
+            solver = solver_cls(model, solve_mode=solve_mode)
             solver.rigid_body_angular_damping.zero_()
         control = model.control()
         for _ in range(20):
@@ -302,7 +302,11 @@ for _name in (
 ):
     add_function_test(TestFeatherPgsFreeBaseMomentum, _name, globals()[_name], devices=devices)
     add_function_test(
-        TestFeatherPgsFreeBaseMomentum, f"{_name}_split", globals()[_name], devices=get_test_devices(), pgs_mode="split"
+        TestFeatherPgsFreeBaseMomentum,
+        f"{_name}_split",
+        globals()[_name],
+        devices=get_test_devices(),
+        solve_mode="split",
     )
 
 

@@ -216,10 +216,10 @@ def _make_solver(
     return SolverFeatherPGS(
         model,
         articulated_contact_response=response,
-        pgs_iterations=8,
+        iterations=8,
         friction_anchor_beta=0.0,
         propagation_cached_response=cached,
-        propagation_cached_response_max_bodies=cache_max_bodies,
+        propagation_cached_response_body_max=cache_max_bodies,
         **solver_kwargs,
     )
 
@@ -344,7 +344,7 @@ def test_cached_path_detected(test, device):
     test.assertIsNotNone(solver._propagation_cached_gemv_kernel)
     test.assertEqual(
         solver.propagation_cache_max_bodies,
-        min(solver.max_propagation_bodies, solver.propagation_cached_response_max_bodies),
+        min(solver.max_propagation_bodies, solver.propagation_cached_response_body_max),
     )
     for size in solver._propagation_tree_sizes:
         test.assertIn(size, solver._propagation_cached_kernels)
@@ -384,7 +384,7 @@ def test_lockstep_single_contact(test, device):
 def test_lockstep_colored(test, device):
     """Match the tree walk under the colored sweep."""
     model = _build_model(device, chains=(6,), spheres=("base", "mid", "deep"))
-    stats, _, cached = _run_lockstep(model, "propagation-colored", 40)
+    stats, _, cached = _run_lockstep(model, "propagation_colored", 40)
     test.assertTrue(cached._propagation_cached_kernels)
     test.assertTrue(np.all(cached.propagation_cache_world_flag.numpy() == 1))
     _assert_stats(test, stats, expect_min_bodies=2)
@@ -416,7 +416,7 @@ def test_overflow_falls_back_to_tree_walk(test, device):
 def test_clutter_does_not_evict_cache(test, device):
     """Count only the articulation's bodies against the cache capacity, not free clutter."""
     model = _build_clutter_model(device, n_boxes=2)
-    stats, _, cached = _run_lockstep(model, "propagation", 40, cache_max_bodies=4, dense_max_constraints=128)
+    stats, _, cached = _run_lockstep(model, "propagation", 40, cache_max_bodies=4, articulation_constraint_max=128)
     counts = cached.propagation_body_count.numpy()
     test.assertTrue(np.all(counts > 4), f"scene must overflow the total active-body count, got {counts}")
     eligible_counts = cached.propagation_cache_body_count.numpy()

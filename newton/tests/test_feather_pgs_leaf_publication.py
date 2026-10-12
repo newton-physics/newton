@@ -153,8 +153,8 @@ def _solver(model, *, enabled, velocity_limits=False, **options):
     """Build a solver with serial (``enabled=False``) or parallel tree traversal."""
     solver = SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
-        pgs_iterations=8,
+        solve_mode="matrix_free",
+        iterations=8,
         update_mass_matrix_interval=2,
         enable_joint_limits=True,
         enable_joint_velocity_limits=velocity_limits,
@@ -202,7 +202,7 @@ def _check_graph_publication(test, model):
     device = model.device
     # Hold every finite limit row: these checks cover traversal, not row capacity.
     rows = 2 * model.joint_dof_count
-    solvers = [_solver(model, enabled=value, dense_max_constraints=rows) for value in (False, True)]
+    solvers = [_solver(model, enabled=value, articulation_constraint_max=rows) for value in (False, True)]
     eager = []
     for solver in solvers:
         state = model.state()

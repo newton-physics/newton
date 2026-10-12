@@ -15,12 +15,12 @@ from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 # A manipulation profile without contact torsion; the torsion variant is in test_feather_pgs_sleeping_torsion.
 PROFILE = {
-    "pgs_iterations": 32,
-    "pgs_contact_regularization": 0.01,
+    "iterations": 32,
+    "contact_regularization": 0.01,
     "friction_anchor_beta": 0.2,
     "contact_friction_gap_threshold": 0.001,
-    "dense_max_constraints": 512,
-    "mf_max_constraints": 512,
+    "articulation_constraint_max": 512,
+    "free_body_constraint_max": 512,
     "enable_sleeping": True,
     "sleep_quiet_time": 0.1,
 }
@@ -245,7 +245,7 @@ def test_coincident_entity_counts_keep_property_owners(test, device):
     model = builder.finalize(device=device)
     test.assertEqual(model.body_count, model.joint_count)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
-    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", **PROFILE)
+    solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **PROFILE)
     states = [model.state(), model.state()]
     np.testing.assert_array_equal(solver.body_to_articulation.numpy(), [1, 0])
     _advance(pipeline, solver, states, model.control(), 400)
@@ -274,7 +274,7 @@ def test_solver_body_attribute_notification_wakes_its_island(test, device):
     builder.replicate(box, 2)
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
-    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", **PROFILE)
+    solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **PROFILE)
     states = [model.state(), model.state()]
     _advance(pipeline, solver, states, model.control(), 400)
     np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
@@ -318,7 +318,7 @@ def test_mimic_articulation_stays_awake(test, device):
             box = builder.add_body(xform=wp.transform((2.0, 0.0, 0.1), wp.quat_identity()))
             builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1)
             model = builder.finalize(device=device)
-            solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", **PROFILE)
+            solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **PROFILE)
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
             _advance(pipeline, solver, [model.state(), model.state()], model.control(), 400)
             awake = solver.sleeping.art_awake.numpy()
@@ -354,7 +354,7 @@ def _articulations(device, tiles=False, profile=None):
     model = builder.finalize(device=device)
     # Deterministic contact order, as in production, so A/B trajectories compare bitwise.
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=512, deterministic=True)
-    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", **(profile or PROFILE))
+    solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **(profile or PROFILE))
     return model, pipeline, solver, [model.state(), model.state()], model.control()
 
 
@@ -367,7 +367,7 @@ def _two_world_boxes(device):
     builder.replicate(box, 2)
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
-    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", **PROFILE)
+    solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **PROFILE)
     return model, pipeline, solver, [model.state(), model.state()]
 
 

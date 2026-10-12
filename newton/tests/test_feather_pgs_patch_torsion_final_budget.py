@@ -19,7 +19,7 @@ def test_final_budget_and_velocity_response(test, device):
                     0.0075,
                     device=device,
                     friction_anchor_beta=0.2,
-                    pgs_iterations=iterations,
+                    iterations=iterations,
                     closing=0.1,
                     spin=spin,
                     sliding=sliding,

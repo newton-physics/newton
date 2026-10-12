@@ -141,7 +141,7 @@ def synthetic_fixture(*, worlds=3, witnesses=5, patches=True, seed=4, device="cp
     solver = SimpleNamespace(
         model=model,
         world_count=worlds,
-        dense_max_constraints=dense,
+        articulation_constraint_max=dense,
         _max_contacts_alloc=capacity,
         _contact_torsion_shape_set=None,
         _friction_anchors_enabled=patches,
@@ -300,14 +300,14 @@ def test_ring_and_capacity_errors_are_latched(test, device):
         before = solver.row_type.numpy().copy()
         if failure == "ring":
             parents = solver.row_parent.numpy()
-            parents[0, 0] = solver.dense_max_constraints - 1
+            parents[0, 0] = solver.articulation_constraint_max - 1
             solver.row_parent.assign(parents)
         elif failure == "dense":
             solver._row_dropped_dense.fill_(1)
         elif failure == "input":
             contacts.rigid_contact_count.fill_(contacts.rigid_contact_max + 1)
         else:
-            solver.constraint_count.fill_(solver.dense_max_constraints)
+            solver.constraint_count.fill_(solver.articulation_constraint_max)
         preparer = DeviceTorsionPreparation(solver)
         with test.subTest(failure=failure), test.assertRaises(RuntimeError):
             preparer.prepare(state, augmented, contacts)
@@ -518,13 +518,13 @@ def test_cuda_loaded_closed_linkage(test, device):
             model = builder.finalize(device=device)
             solver = newton.solvers.SolverFeatherPGS(
                 model,
-                pgs_mode="matrix_free",
-                pgs_iterations=64,
-                pgs_velocity_iterations=velocity,
-                pgs_contact_regularization=regularization,
+                solve_mode="matrix_free",
+                iterations=64,
+                velocity_iterations=velocity,
+                contact_regularization=regularization,
                 contact_torsion_radius=0.01,
-                dense_max_constraints=128,
-                mf_max_constraints=64,
+                articulation_constraint_max=128,
+                free_body_constraint_max=64,
                 enable_bilateral_preelimination=False,
                 **PATCH_OPTIONS,
             )
@@ -568,9 +568,9 @@ def test_cuda_solver_profiles(test, device):
     for patches in (False, True):
         for velocity, regularization in ((16, 0.0), (0, 0.01)):
             options = {
-                "pgs_iterations": 16,
-                "pgs_velocity_iterations": velocity,
-                "pgs_contact_regularization": regularization,
+                "iterations": 16,
+                "velocity_iterations": velocity,
+                "contact_regularization": regularization,
                 "sliding": 0.03,
                 "spin": 0.4,
             }
@@ -613,7 +613,7 @@ def test_cuda_preparation_graph_changes_and_failure(test, device):
         preparer.validate()
         test.assertEqual(np.count_nonzero(preparer.work.spin_row.numpy() >= 0), 0 if count == 0 else 6)
     bad = initial_parent.numpy()
-    bad[0, 0] = solver.dense_max_constraints - 1
+    bad[0, 0] = solver.articulation_constraint_max - 1
     initial_parent.assign(bad)
     wp.capture_launch(capture.graph)
     with test.assertRaisesRegex(RuntimeError, "load ring"):
@@ -654,7 +654,7 @@ def test_cuda_captured_capacity_errors(test, device):
         elif failure == "dense":
             solver._row_dropped_dense.fill_(1)
         else:
-            initial_count.fill_(solver.dense_max_constraints)
+            initial_count.fill_(solver.articulation_constraint_max)
         for _ in range(2):
             wp.capture_launch(capture.graph)
             with test.subTest(failure=failure), test.assertRaises(RuntimeError):
@@ -666,16 +666,16 @@ def test_cuda_captured_capacity_errors(test, device):
 
 def test_public_api_noop_and_fail_stop(test, device):
     """Allocate no torsion state without a radius, refuse to capture host torsion, and fail-stop errors."""
-    _, plain, model, state, _ = fixture(0.0, device=device, contact_torsion_device=True, pgs_iterations=16)
+    _, plain, model, state, _ = fixture(0.0, device=device, contact_torsion_device=True, iterations=16)
     test.assertIsNone(plain._device_torsion)
     plain.check_constraint_capacity()
 
-    _, reference, model, state, contacts = fixture(0.01, device=device, pgs_iterations=16)
+    _, reference, model, state, contacts = fixture(0.01, device=device, iterations=16)
     with test.assertRaisesRegex(RuntimeError, "requires contact_torsion_device"):
         with wp.ScopedCapture(device=model.device):
             reference.step(state, model.state(), model.control(), contacts, 0.0025)
 
-    _, solver, model, state, contacts = fixture(0.01, device=device, contact_torsion_device=True, pgs_iterations=16)
+    _, solver, model, state, contacts = fixture(0.01, device=device, contact_torsion_device=True, iterations=16)
     output = model.state()
     solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
     for _ in range(2):
@@ -693,7 +693,7 @@ def test_public_api_noop_and_fail_stop(test, device):
 
 def test_cuda_cold_capture_reports_errors_until_reset(test, device):
     """Capture a fresh solver's step without preparation and report a replay's error until reset."""
-    _, solver, model, state, contacts = fixture(0.01, device=device, contact_torsion_device=True, pgs_iterations=16)
+    _, solver, model, state, contacts = fixture(0.01, device=device, contact_torsion_device=True, iterations=16)
     output = model.state()
     with wp.ScopedCapture(device=model.device) as capture:
         solver.step(state, output, model.control(), contacts, 0.0025)
@@ -726,9 +726,9 @@ def test_cuda_full_solver_graph(test, device):
                 0.01,
                 device=device,
                 contact_torsion_device=True,
-                pgs_iterations=16,
-                pgs_velocity_iterations=velocity,
-                pgs_contact_regularization=regularization,
+                iterations=16,
+                velocity_iterations=velocity,
+                contact_regularization=regularization,
                 sliding=0.01,
                 spin=0.4,
                 **PATCH_OPTIONS,

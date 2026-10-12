@@ -489,7 +489,7 @@ class TestFeatherPGSLocalInternalSolve(unittest.TestCase):
             paired_dof_count=secondary_dofs,
             persistent_queue=True,
             warps_per_block=2,
-            mf_max_constraints=max_constraints,
+            free_body_constraint_max=max_constraints,
             local_mf_max_constraints=max_constraints,
             dense_response_matrix=True,
         )

@@ -42,11 +42,11 @@ def _solver(model, response):
     return SolverFeatherPGS(
         model,
         articulated_contact_response=response,
-        pgs_iterations=8,
+        iterations=8,
         propagation_cached_response=False,
         friction_anchor_beta=0.0,
-        dense_max_constraints=3,
-        mf_max_constraints=3,
+        articulation_constraint_max=3,
+        free_body_constraint_max=3,
         contact_friction_gap_threshold=0.0,
         contact_speculative_scale=0.0,
     )
@@ -97,7 +97,7 @@ def test_mixed_units_match_serial_propagation(test, device):
     """Match the serial sweep's impulses, twists and trajectory with units of mixed row counts."""
     model = _mixed_gap_model(device)
     runs = {}
-    for response in ("propagation-colored", "propagation"):
+    for response in ("propagation_colored", "propagation"):
         solver = _solver(model, response)
         state_in, state_out = model.state(), model.state()
         _seed(model, state_in)
@@ -109,7 +109,7 @@ def test_mixed_units_match_serial_propagation(test, device):
             pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, DT)
             runs[response] = (solver, state_out, state_in, pipeline, contacts)
-        colored, colored_state, _, _, colored_contacts = runs["propagation-colored"]
+        colored, colored_state, _, _, colored_contacts = runs["propagation_colored"]
         serial, serial_state, _, _, serial_contacts = runs["propagation"]
         if step == 0:
             _assert_mixed_topology(test, colored, colored_contacts)
@@ -129,7 +129,7 @@ def test_mixed_units_graph_matches_eager(test, device):
     model = _mixed_gap_model(device)
     finals = []
     for capture in (False, True):
-        solver = _solver(model, "propagation-colored")
+        solver = _solver(model, "propagation_colored")
         state, output = model.state(), model.state()
         _seed(model, state)
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)

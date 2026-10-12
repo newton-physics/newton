@@ -22,7 +22,7 @@ def _get_pgs_solve_sparse_kernel(
     max_world_dofs: int,
     max_row_dofs: int,
     *,
-    mf_max_constraints: int = 0,
+    free_body_constraint_max: int = 0,
     free_row_dofs: int = 0,
 ) -> wp.Kernel:
     """Build a CUDA sweep over factored articulations and physical free bodies.
@@ -42,7 +42,7 @@ def _get_pgs_solve_sparse_kernel(
     Launch with ``ceil(world_count / 2)`` tiles and 64 threads per tile.
     """
     M, D, S = int(max_constraints), int(max_world_dofs), int(max_row_dofs)
-    F = int(mf_max_constraints)
+    F = int(free_body_constraint_max)
     P = int(free_row_dofs)
     if M <= 0 or D <= 0 or S <= 0 or S > D or F < 0 or P < 0 or P > S:
         raise ValueError("sparse PGS requires positive capacities and max_row_dofs <= max_world_dofs")

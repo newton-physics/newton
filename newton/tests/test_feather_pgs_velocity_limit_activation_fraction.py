@@ -127,11 +127,11 @@ def _max_arm_speed_over_impact(device, *, enable_joint_velocity_limits: bool) ->
     # Deliberately under-converged: the velocity limit must still have the last word.
     solver = SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
+        solve_mode="matrix_free",
         enable_joint_velocity_limits=enable_joint_velocity_limits,
-        pgs_iterations=8,
-        dense_max_constraints=32,
-        mf_max_constraints=32,
+        iterations=8,
+        articulation_constraint_max=32,
+        free_body_constraint_max=32,
     )
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -219,7 +219,7 @@ def test_rigid_axis_past_threshold_allocates_rows_same_step(test, device):
     test.assertEqual(count, 2)
 
 
-def test_free_body_velocity_limits_hold(test, device, pgs_mode="matrix_free"):
+def test_free_body_velocity_limits_hold(test, device, solve_mode="matrix_free"):
     """Hold a free body's authored linear and angular speed limits."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
     SolverFeatherPGS.register_custom_attributes(builder)
@@ -228,7 +228,7 @@ def test_free_body_velocity_limits_hold(test, device, pgs_mode="matrix_free"):
     )
     builder.add_shape_box(body, hx=0.1, hy=0.2, hz=0.3)
     model = builder.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
+    solver = SolverFeatherPGS(model, solve_mode=solve_mode)
     state_0, state_1 = model.state(), model.state()
     qd = state_0.joint_qd.numpy()
     qd[3:6] = (5.0, 0.0, 0.0)
@@ -280,7 +280,7 @@ add_function_test(
     "test_free_body_velocity_limits_hold_split",
     test_free_body_velocity_limits_hold,
     devices=get_test_devices(),
-    pgs_mode="split",
+    solve_mode="split",
 )
 
 

@@ -31,17 +31,17 @@ def test_ant_joint_limits_skip_and_restore(test, device):
         with test.subTest(skip_constraints=skip):
             solver = newton.solvers.SolverFeatherPGS(
                 model,
-                pgs_mode="matrix_free",
+                solve_mode="matrix_free",
                 enable_sleeping=True,
                 sleep_skip_constraints=skip,
                 sleep_linear_threshold=0.05,
                 sleep_angular_threshold=0.15,
                 sleep_quiet_time=0.5,
                 enable_joint_limits=True,
-                pgs_iterations=8,
+                iterations=8,
                 friction_anchor_beta=0.0,
-                dense_max_constraints=256,
-                mf_max_constraints=256,
+                articulation_constraint_max=256,
+                free_body_constraint_max=256,
             )
             original_indices = solver._joint_limit_q_index.numpy().copy()
             test.assertEqual(int(np.count_nonzero(original_indices >= 0)), 8)
@@ -264,11 +264,11 @@ class _Scene:
         options = {} if skip else {"sleep_skip_constraints": False}
         self.solver = newton.solvers.SolverFeatherPGS(
             self.model,
-            pgs_mode="matrix_free",
+            solve_mode="matrix_free",
             enable_sleeping=True,
             sleep_quiet_time=0.05,
             friction_anchor_beta=0.0,
-            pgs_iterations=16,
+            iterations=16,
             **options,
         )
         self.states = [self.model.state(), self.model.state()]

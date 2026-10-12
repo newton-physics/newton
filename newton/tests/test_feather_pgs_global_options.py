@@ -184,7 +184,7 @@ def _spin(model, state):
 
 
 def _split_or_default(device):
-    return {} if device.is_cuda else {"pgs_mode": "split"}
+    return {} if device.is_cuda else {"solve_mode": "split"}
 
 
 def test_angular_damping_matches_the_per_body_attribute(test, device):
@@ -239,11 +239,11 @@ def test_angular_damping_survives_graph_capture(test, device):
 
 _SOLVES = {
     "matrix_free": {},
-    "physx_grasp": {"pgs_schedule": "physx_grasp"},
+    "phased": {"row_schedule": "phased"},
     "propagation": {"articulated_contact_response": "propagation"},
-    "propagation-fused": {"articulated_contact_response": "propagation-fused"},
-    "propagation-colored": {"articulated_contact_response": "propagation-colored"},
-    "split": {"pgs_mode": "split"},
+    "propagation_fused": {"articulated_contact_response": "propagation_fused"},
+    "propagation_colored": {"articulated_contact_response": "propagation_colored"},
+    "split": {"solve_mode": "split"},
 }
 
 
@@ -312,7 +312,7 @@ def _friction_start_runs(device):
     yield (
         "split-loop",
         lambda: _build_contact_scene(device),
-        {"init": _set_box_velocities, "pgs_mode": "split", "overrides": {"pgs_kernel": "loop"}},
+        {"init": _set_box_velocities, "solve_mode": "split", "overrides": {"pgs_kernel": "loop"}},
         None,
     )
     mixed = {
@@ -335,8 +335,8 @@ def _friction_start_runs(device):
         "enable_joint_limits": True,
         "joint_limit_activation_gap": 0.0,
         "friction_anchor_beta": 0.0,
-        "dense_max_constraints": 64,
-        "mf_max_constraints": 32,
+        "articulation_constraint_max": 64,
+        "free_body_constraint_max": 32,
     }
     yield (
         "local",
@@ -347,7 +347,7 @@ def _friction_start_runs(device):
     yield (
         "paired",
         lambda: _build_mixed_response_model(device, **{**mixed, "dof_count": 23}),
-        {**common, "dense_max_constraints": 96},
+        {**common, "articulation_constraint_max": 96},
         "_paired_factor_coordinates",
     )
 
@@ -362,7 +362,7 @@ def _friction_start_runs(device):
             "init": slide_branches,
             "enable_joint_limits": True,
             "friction_anchor_beta": 0.0,
-            "dense_max_constraints": 96,
+            "articulation_constraint_max": 96,
             "use_parallel_streams": True,
         },
         "_sparse_diagonal_contact_solve",
@@ -372,13 +372,13 @@ def _friction_start_runs(device):
 def test_friction_position_iterations_gate_every_solve_path(test, device):
     """Hold friction at zero before the last k position iterations on every solve path.
 
-    ``k = pgs_iterations`` (and larger) is bitwise the default, ``k = 0`` leaves every friction row at zero,
+    ``k = iterations`` (and larger) is bitwise the default, ``k = 0`` leaves every friction row at zero,
     and an intermediate ``k`` solves friction, ending with a state different from both.
     """
     iterations = 8
     for label, build, options, path in _friction_start_runs(device):
         with test.subTest(solve=label):
-            run = {"steps": 6, "pgs_iterations": iterations, **options}
+            run = {"steps": 6, "iterations": iterations, **options}
             default = _run(build(), **run)
             if path is not None:
                 test.assertTrue(getattr(default[0], path), f"{label}: {path} was not selected")
@@ -399,7 +399,7 @@ def test_friction_position_iterations_gate_every_solve_path(test, device):
 
 def test_velocity_iterations_always_solve_friction(test, device):
     """Solve friction in the velocity-only iterations even when no position iteration does."""
-    run = {"init": _set_box_velocities, "steps": 4, "pgs_velocity_iterations": 4}
+    run = {"init": _set_box_velocities, "steps": 4, "velocity_iterations": 4}
     gated = _run(_build_contact_scene(device), contact_friction_position_iterations=0, **run)
     test.assertTrue(any(np.any(f != 0.0) for f in gated[3]))
 
@@ -424,8 +424,8 @@ def test_friction_position_iterations_validate_their_value(test, device):
     with test.assertRaisesRegex(ValueError, "contact_friction_position_iterations"):
         SolverFeatherPGS(model, contact_friction_position_iterations=-2, **mode)
     if device.is_cuda:
-        with test.assertRaisesRegex(NotImplementedError, "pgs_warmstart"):
-            SolverFeatherPGS(model, contact_friction_position_iterations=2, pgs_warmstart=True)
+        with test.assertRaisesRegex(NotImplementedError, "contact_warmstart"):
+            SolverFeatherPGS(model, contact_friction_position_iterations=2, contact_warmstart=True)
         with test.assertRaisesRegex(ValueError, "contact_friction_position_iterations"):
             run_compliance_fixture(
                 device=device,
@@ -443,7 +443,7 @@ def test_friction_position_iterations_validate_their_value(test, device):
 def _bounce(device, scene, **options):
     """Return the post-impact vertical velocity of a sphere with restitution 0.8 hitting a plane."""
     model, body = _build_plane_model(device, separation=0.0008, restitution=0.8, scene=scene)
-    solver = SolverFeatherPGS(model, pgs_iterations=16, pgs_cfm=0.0, **options)
+    solver = SolverFeatherPGS(model, iterations=16, cfm=0.0, **options)
     solver.rigid_body_angular_damping.zero_()
     state_in, state_out = model.state(), model.state()
     _reset_state(model, state_in, -2.0)
@@ -476,9 +476,9 @@ def test_disabled_restitution_lets_split_accept_restitution(test, device):
     """Construct and notify a split solve with positive shape restitution once restitution is disabled."""
     model = _build_contact_scene(device, restitution=0.5)
     with test.assertRaisesRegex(NotImplementedError, "restitution"):
-        SolverFeatherPGS(model, pgs_mode="split")
-    disabled = _run(model, init=_set_box_velocities, pgs_mode="split", enable_restitution=False)
-    inelastic = _run(_build_contact_scene(device), init=_set_box_velocities, pgs_mode="split")
+        SolverFeatherPGS(model, solve_mode="split")
+    disabled = _run(model, init=_set_box_velocities, solve_mode="split", enable_restitution=False)
+    inelastic = _run(_build_contact_scene(device), init=_set_box_velocities, solve_mode="split")
     _assert_bitwise(test, disabled, inelastic, "split")
     model.shape_material_restitution.fill_(0.9)
     disabled[0].notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)

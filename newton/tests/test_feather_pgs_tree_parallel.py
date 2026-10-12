@@ -205,7 +205,7 @@ def test_serial_selection_skips_tree_setup(test, device):
     for options in ({}, {"parallel_tree": False}):
         with test.subTest(options=options):
             with patch.object(_FeatherPGSTreePlan, "build", wraps=_FeatherPGSTreePlan.build) as build:
-                solver = SolverFeatherPGS(model, pgs_mode="matrix_free", **options)
+                solver = SolverFeatherPGS(model, solve_mode="matrix_free", **options)
             build.assert_not_called()
             test.assertIsNone(solver._tree_plan)
             test.assertEqual(solver._tree_net_wrenches, ())
@@ -221,13 +221,13 @@ def test_explicit_parallel_preserves_eligibility_fallback(test, device):
     """Build a plan for branched trees and fall back to serial traversal for an unbranched chain."""
     model = _build_fingers(device, articulations=1)
     with patch.object(_FeatherPGSTreePlan, "build", wraps=_FeatherPGSTreePlan.build) as build:
-        solver = SolverFeatherPGS(model, pgs_mode="matrix_free", parallel_tree=True)
+        solver = SolverFeatherPGS(model, solve_mode="matrix_free", parallel_tree=True)
     build.assert_called_once()
     test.assertIsNotNone(solver._tree_plan)
     test.assertTrue(any(group.lanes > 1 for group in solver._tree_plan.groups))
     test.assertEqual(len(solver._tree_net_wrenches), len(solver._tree_plan.groups))
     model = _build_model(device, chain=True)[0]
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", parallel_tree=True)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", parallel_tree=True)
     test.assertIsNone(solver._tree_plan)
     test.assertEqual(solver._tree_net_wrenches, ())
 
@@ -243,7 +243,7 @@ def test_backward_torques_with_live_forces_and_passive_terms(test, device):
             model.joint_target_ke.assign(np.linspace(0.0, 4.0, model.joint_dof_count, dtype=np.float32))
             model.joint_target_kd.assign(np.linspace(0.5, 0.0, model.joint_dof_count, dtype=np.float32))
             # Hold every finite limit row: these checks cover traversal, not row capacity.
-            options = {"velocity_limits": velocity_limits, "dense_max_constraints": 2 * model.joint_dof_count}
+            options = {"velocity_limits": velocity_limits, "articulation_constraint_max": 2 * model.joint_dof_count}
             solvers = [_solver(model, enabled=value, **options) for value in (False, True)]
             states = [model.state() for _ in solvers]
             following = [model.state() for _ in solvers]
@@ -283,7 +283,7 @@ def test_stage1_matches_serial_with_velocity_prescale(test, device):
             model = _build_fingers(device, ragged=True)
             model.joint_velocity_limit.fill_(0.05)
             # Hold every finite limit row: these checks cover traversal, not row capacity.
-            options = {"velocity_limits": velocity_limits, "dense_max_constraints": 2 * model.joint_dof_count}
+            options = {"velocity_limits": velocity_limits, "articulation_constraint_max": 2 * model.joint_dof_count}
             solvers = [_solver(model, enabled=value, **options) for value in (False, True)]
             states = [model.state() for _ in solvers]
             outputs = [model.state() for _ in solvers]
@@ -354,7 +354,7 @@ def test_contact_trajectory_matches_serial(test, device):
 
 def _run_split_fingers(device, parallel_tree):
     model = _build_fingers(device, articulations=2, ragged=True)
-    solver = SolverFeatherPGS(model, pgs_mode="split", parallel_tree=parallel_tree)
+    solver = SolverFeatherPGS(model, solve_mode="split", parallel_tree=parallel_tree)
     state, next_state = model.state(), model.state()
     control = model.control()
     for _ in range(10):

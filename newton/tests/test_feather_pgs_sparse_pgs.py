@@ -246,7 +246,7 @@ class TestFeatherPGSSparsePGS(unittest.TestCase):
         impulses = array([[3.0], [3.0]])
         delta = wp.zeros((2, 6), device=device)
         wp.launch_tiled(
-            _get_pgs_solve_sparse_kernel(1, 6, 6, mf_max_constraints=1),
+            _get_pgs_solve_sparse_kernel(1, 6, 6, free_body_constraint_max=1),
             dim=[1],
             inputs=[
                 2,
@@ -378,7 +378,7 @@ class TestFeatherPGSSparsePGS(unittest.TestCase):
         delta = wp.full((worlds, 21), float("nan"), device=device)
         wp.launch_tiled(
             _get_pgs_solve_sparse_kernel(
-                capacity, 21, support, mf_max_constraints=mf_capacity if include_mf else 0, free_row_dofs=6
+                capacity, 21, support, free_body_constraint_max=mf_capacity if include_mf else 0, free_row_dofs=6
             ),
             dim=[2],
             inputs=[

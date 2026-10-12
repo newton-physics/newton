@@ -12,7 +12,7 @@ a falling body at the edge of the margin. The velocity pass distinguishes the
 two using the position solution's linearized end gap, not impulse magnitude.
 
 No restitution is involved anywhere here: this is ordinary free fall with
-``pgs_velocity_iterations`` enabled.
+``velocity_iterations`` enabled.
 """
 
 import itertools
@@ -44,7 +44,7 @@ EXPECTED_PATHS = {
 
 def _make_solver(model, **kwargs):
     """Create the solver without angular damping, which would mask the contact response."""
-    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs)
+    solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs)
     solver.rigid_body_angular_damping.zero_()
     return solver
 
@@ -78,17 +78,17 @@ def _build(device, scene, mass=1.0):
     return builder.finalize(device=device), body
 
 
-def _drop(device, velocity_iterations, steps=620, scene="free", *, pgs_warmstart=False):
+def _drop(device, velocity_iterations, steps=620, scene="free", *, contact_warmstart=False):
     """Drop a body onto a plane; return heights, velocities, contact counts, routes."""
     model, body = _build(device, scene)
-    solver = _make_solver(model, pgs_velocity_iterations=velocity_iterations, pgs_warmstart=pgs_warmstart)
+    solver = _make_solver(model, velocity_iterations=velocity_iterations, contact_warmstart=contact_warmstart)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
     heights, velocities, counts, routes = [], [], [], set()
     pipeline = (
         newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
-        if pgs_warmstart
+        if contact_warmstart
         else newton.CollisionPipeline(model)
     )
     contacts = pipeline.contacts()
@@ -142,7 +142,7 @@ def _single_step(device, gap, approach_speed, velocity_iterations=4, mass=1.0):
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Inertia validation corrected", category=UserWarning)
         model = builder.finalize(device=device)
-    solver = _make_solver(model, pgs_velocity_iterations=velocity_iterations)
+    solver = _make_solver(model, velocity_iterations=velocity_iterations)
     # The position solve does not depend on the velocity-only iterations, so a twin
     # solver without them exposes the position-solve rows, impulses and velocity.
     position_solver = _make_solver(model)
@@ -265,7 +265,7 @@ def test_velocity_iterations_do_not_halt_a_falling_body(test, device):
     """Land a falling body on the plane with the velocity pass enabled."""
     for iterations in (2, 8):
         h, v, n, _r = _drop(device, iterations)
-        _assert_landed(test, h, v, n, f"pgs_velocity_iterations={iterations}")
+        _assert_landed(test, h, v, n, f"velocity_iterations={iterations}")
 
 
 def test_velocity_iterations_match_the_position_only_landing(test, device):
@@ -378,7 +378,7 @@ def test_multiworld_end_gap_uses_each_world_position_velocity(test, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.replicate(template, 2)
     model = builder.finalize(device=device)
-    solver = _make_solver(model, pgs_velocity_iterations=4)
+    solver = _make_solver(model, velocity_iterations=4)
     state_0, state_1 = model.state(), model.state()
     joint_qd = state_0.joint_qd.numpy().reshape(2, 6)
     joint_qd[0, 2] = -0.5 * gap / SIM_DT
@@ -408,11 +408,11 @@ def test_warm_start_with_velocity_iterations_is_supported(test, device):
     """Combine the contact warm start with end-gap classification on both row families."""
     # Exercise the dense and free-body identity warm starts through the velocity
     # iterations, not just their construction.
-    h, v, n, routes = _drop(device, 4, scene="articulated", pgs_warmstart=True)
+    h, v, n, routes = _drop(device, 4, scene="articulated", contact_warmstart=True)
     _assert_landed(test, h, v, n, "dense warm start")
     test.assertEqual(routes, {PATH_DENSE})
 
-    h, v, n, routes = _drop(device, 4, pgs_warmstart=True)
+    h, v, n, routes = _drop(device, 4, contact_warmstart=True)
     _assert_landed(test, h, v, n, "free-body warm start")
     test.assertEqual(routes, {PATH_MATRIX_FREE})
 
@@ -434,7 +434,7 @@ def test_velocity_iterations_keep_angular_damping(test, device):
                 builder.add_shape_sphere(body, radius=RADIUS, cfg=cfg)
                 builder.add_ground_plane(cfg=cfg)
             model = builder.finalize(device=device)
-            solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_velocity_iterations=iterations)
+            solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", velocity_iterations=iterations)
             solver.rigid_body_angular_damping.fill_(damping)
             state_in, state_out = model.state(), model.state()
             state_in.joint_qd.assign(np.array([0.0, 0.0, 0.0, 0.0, 0.0, spin], dtype=np.float32))

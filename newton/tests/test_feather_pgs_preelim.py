@@ -171,7 +171,7 @@ class TestPreeliminationKernels(unittest.TestCase):
         self.assertGreater(residual, 0.0)
 
 
-def _run_four_bar(device, steps: int = 720, crank_target: float = 0.6, pgs_iterations: int = 2, **solver_kwargs):
+def _run_four_bar(device, steps: int = 720, crank_target: float = 0.6, iterations: int = 2, **solver_kwargs):
     """Drive the four-bar and track the worst loop-anchor gap.
 
     Runs at a low iteration count on purpose: with iterative connect rows the anchor gap
@@ -179,9 +179,7 @@ def _run_four_bar(device, steps: int = 720, crank_target: float = 0.6, pgs_itera
     keeps it small at the same budget.
     """
     model = _build_four_bar().finalize(device=device)
-    solver = SolverFeatherPGS(
-        model, pgs_mode="matrix_free", pgs_iterations=pgs_iterations, pgs_beta=0.1, **solver_kwargs
-    )
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=iterations, baumgarte=0.1, **solver_kwargs)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     targets = model.joint_target_q.numpy().copy()
@@ -213,9 +211,7 @@ def test_default_preserves_all_bilateral_trajectory(test, device):
     builder.set_joint_mimic(1, 0)
     model = builder.finalize(device=device)
     solvers = [
-        SolverFeatherPGS(
-            model, pgs_mode="matrix_free", pgs_iterations=8, enable_bilateral_preelimination=True, **options
-        )
+        SolverFeatherPGS(model, solve_mode="matrix_free", iterations=8, enable_bilateral_preelimination=True, **options)
         for options in ({}, {"bilateral_preelimination_include_mimics": True})
     ]
     states = [(model.state(), model.state()) for _ in solvers]
@@ -248,14 +244,14 @@ def test_mimics_can_remain_iterative_when_total_rows_exceed_capacity(test, devic
     model = _build_overcapacity_mixed_bilateral_model(device)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        solver_all = SolverFeatherPGS(model, pgs_mode="matrix_free", enable_bilateral_preelimination=True)
+        solver_all = SolverFeatherPGS(model, solve_mode="matrix_free", enable_bilateral_preelimination=True)
     test.assertFalse(solver_all._preelim_active)
     test.assertTrue(any("9 bilateral rows" in str(w.message) for w in caught))
 
     solver = SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
-        pgs_iterations=8,
+        solve_mode="matrix_free",
+        iterations=8,
         enable_bilateral_preelimination=True,
         bilateral_preelimination_include_mimics=False,
     )
@@ -313,7 +309,7 @@ def test_mimic_held_at_low_iterations(test, device):
         builder.set_joint_mimic(1, 0, coeffs=(0.0, -1.0))
         model = builder.finalize(device=device)
         solver = SolverFeatherPGS(
-            model, pgs_mode="matrix_free", pgs_iterations=1, pgs_beta=0.1, enable_bilateral_preelimination=enabled
+            model, solve_mode="matrix_free", iterations=1, baumgarte=0.1, enable_bilateral_preelimination=enabled
         )
         test.assertEqual(solver._preelim_active, enabled)
         state_0, state_1 = model.state(), model.state()
@@ -352,10 +348,10 @@ def test_preelimination_with_free_body_in_world(test, device):
         model = builder.finalize(device=device)
         solver = SolverFeatherPGS(
             model,
-            pgs_mode="matrix_free",
-            pgs_iterations=2,
-            pgs_beta=0.1,
-            dense_max_constraints=64,
+            solve_mode="matrix_free",
+            iterations=2,
+            baumgarte=0.1,
+            articulation_constraint_max=64,
             enable_bilateral_preelimination=True,
         )
         test.assertTrue(solver._preelim_active)
@@ -381,7 +377,7 @@ def test_preelimination_with_free_body_in_world(test, device):
 
 def test_mechanism_behavior_preserved(test, device):
     """Keep the rocker tracking the crank through the closed loop (parallel four-bar)."""
-    _, _, state, _ = _run_four_bar(device, enable_bilateral_preelimination=True, pgs_iterations=16)
+    _, _, state, _ = _run_four_bar(device, enable_bilateral_preelimination=True, iterations=16)
     q = state.joint_q.numpy()
     test.assertAlmostEqual(q[2], q[0], delta=0.08)
     test.assertGreater(abs(q[2]), 0.3, "rocker did not move: loop not transmitting")
@@ -403,14 +399,14 @@ def test_prescribed_parent_closure_warns_and_falls_back(test, device):
     b, _, _, _ = _build_carried_load()
     with test.assertWarnsRegex(UserWarning, "kinematic or world parent.*whole solver"):
         solver = SolverFeatherPGS(
-            b.finalize(device=device), pgs_mode="matrix_free", enable_bilateral_preelimination=True
+            b.finalize(device=device), solve_mode="matrix_free", enable_bilateral_preelimination=True
         )
     test.assertFalse(solver._preelim_active)
     test.assertEqual(solver._connect_count, 3)
 
     # An eligible four-bar is eliminated alone, but not next to a world-parent closure.
     eligible = SolverFeatherPGS(
-        _build_four_bar().finalize(device=device), pgs_mode="matrix_free", enable_bilateral_preelimination=True
+        _build_four_bar().finalize(device=device), solve_mode="matrix_free", enable_bilateral_preelimination=True
     )
     test.assertTrue(eligible._preelim_active)
     b = _build_four_bar()
@@ -421,7 +417,7 @@ def test_prescribed_parent_closure_warns_and_falls_back(test, device):
         b.add_joint_ball(-1, load, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.5), wp.quat_identity()))
     with test.assertWarnsRegex(UserWarning, "whole solver"):
         mixed = SolverFeatherPGS(
-            b.finalize(device=device), pgs_mode="matrix_free", enable_bilateral_preelimination=True
+            b.finalize(device=device), solve_mode="matrix_free", enable_bilateral_preelimination=True
         )
     test.assertFalse(mixed._preelim_active)
     test.assertEqual(mixed._preelim_count, 0)
@@ -435,10 +431,10 @@ def test_preelimination_capture_matches_eager(test, device):
     targets = model.joint_target_q.numpy().copy()
     targets[0] = 0.6
     control.joint_target_q.assign(targets)
-    options = {"pgs_iterations": 2, "pgs_beta": 0.1, "enable_bilateral_preelimination": True}
+    options = {"iterations": 2, "baumgarte": 0.1, "enable_bilateral_preelimination": True}
     eager, captured = (
-        SolverFeatherPGS(model, pgs_mode="matrix_free", **options),
-        SolverFeatherPGS(model, pgs_mode="matrix_free", **options),
+        SolverFeatherPGS(model, solve_mode="matrix_free", **options),
+        SolverFeatherPGS(model, solve_mode="matrix_free", **options),
     )
     e0, e1 = model.state(), model.state()
     c0, c1 = model.state(), model.state()
@@ -459,7 +455,7 @@ def test_preelimination_capture_matches_eager(test, device):
     test.assertLess(_loop_anchor_gap(model, c0), 2.0e-5)
 
 
-def _run_loaded_four_bar(device, pgs_warmstart):
+def _run_loaded_four_bar(device, contact_warmstart):
     """Rest a 1 kg box on an eliminated four-bar's coupler; return the solver, worst gap and carried impulse."""
     builder = _build_four_bar()
     box = builder.add_body(xform=wp.transform(wp.vec3(0.2, 0.0, 0.4705), wp.quat_identity()))
@@ -467,13 +463,13 @@ def _run_loaded_four_bar(device, pgs_warmstart):
     model = builder.finalize(device=device)
     solver = SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
-        pgs_iterations=1,
-        pgs_beta=0.1,
-        dense_max_constraints=64,
+        solve_mode="matrix_free",
+        iterations=1,
+        baumgarte=0.1,
+        articulation_constraint_max=64,
         friction_anchor_beta=0.0,
         enable_bilateral_preelimination=True,
-        pgs_warmstart=pgs_warmstart,
+        contact_warmstart=contact_warmstart,
     )
     pipeline = newton.CollisionPipeline(model, contact_matching="latest")
     contacts = pipeline.contacts()
@@ -486,7 +482,7 @@ def _run_loaded_four_bar(device, pgs_warmstart):
         state_0, state_1 = state_1, state_0
         if step >= 20:
             gap_max = max(gap_max, _loop_anchor_gap(model, state_0))
-        if pgs_warmstart:
+        if contact_warmstart:
             history = solver._ws_prev_impulses.numpy()[0]
             contact_rows = solver._ws_prev_row_type.numpy()[0] == PGS_CONSTRAINT_TYPE_CONTACT
             carried = max(carried, float(np.abs(history[contact_rows]).max(initial=0.0)))
@@ -499,8 +495,8 @@ def test_warmstart_with_preelimination_holds_a_loaded_closure(test, device):
     The carried contact impulse is installed into the velocity before the bilateral projection,
     so it cannot reopen the closure.
     """
-    solver, model, state, box, gap_warm, carried = _run_loaded_four_bar(device, pgs_warmstart=True)
-    _, _, _, _, gap_cold, _ = _run_loaded_four_bar(device, pgs_warmstart=False)
+    solver, model, state, box, gap_warm, carried = _run_loaded_four_bar(device, contact_warmstart=True)
+    _, _, _, _, gap_cold, _ = _run_loaded_four_bar(device, contact_warmstart=False)
     test.assertTrue(solver._preelim_active)
     # The carried contact history is the box's weight impulse, m g dt.
     weight_impulse = float(model.body_mass.numpy()[box]) * 9.81 * DT
@@ -518,15 +514,15 @@ def test_split_rejects_bilateral_rows(test, device):
     model = _build_four_bar().finalize(device=device)
     for enabled in (False, True):
         with test.subTest(enable_bilateral_preelimination=enabled):
-            with test.assertRaisesRegex(NotImplementedError, "require pgs_mode='matrix_free'"):
-                SolverFeatherPGS(model, pgs_mode="split", enable_bilateral_preelimination=enabled)
+            with test.assertRaisesRegex(NotImplementedError, "require solve_mode='matrix_free'"):
+                SolverFeatherPGS(model, solve_mode="split", enable_bilateral_preelimination=enabled)
 
 
 def test_propagation_keeps_iterative_mimic_rows(test, device):
     """Keep iterative mimic rows with the propagation responses; pre-elimination falls back with a warning."""
     builder, _, _ = _build_two_revolute_chain(0.0, 1.0)
     model = builder.finalize(device=device)
-    for response in ("propagation", "propagation-fused", "propagation-colored"):
+    for response in ("propagation", "propagation_fused", "propagation_colored"):
         with test.subTest(response=response):
             with test.assertWarnsRegex(UserWarning, "propagation"):
                 solver = SolverFeatherPGS(
@@ -539,7 +535,7 @@ def test_propagation_keeps_iterative_mimic_rows(test, device):
 def test_propagation_rejects_loop_joints(test, device):
     """Reject loop-closing joints with the propagation responses."""
     model = _build_four_bar().finalize(device=device)
-    for response in ("propagation", "propagation-fused", "propagation-colored"):
+    for response in ("propagation", "propagation_fused", "propagation_colored"):
         with test.subTest(response=response):
             with test.assertRaisesRegex(NotImplementedError, "Loop-closing joints.*articulated_contact_response"):
                 SolverFeatherPGS(model, articulated_contact_response=response)

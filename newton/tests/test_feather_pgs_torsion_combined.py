@@ -14,12 +14,12 @@ from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 def _check_pair(test, device, regularization, velocity, **options):
     """Check split position integration and the accumulated velocity correction."""
     common = dict(
-        pgs_iterations=64,
-        pgs_contact_regularization=regularization,
+        iterations=64,
+        contact_regularization=regularization,
         **options,
     )
-    baseline, *_ = fixture(0.01, device=device, pgs_velocity_iterations=0, **common)
-    result, solver, model, state, contacts = fixture(0.01, device=device, pgs_velocity_iterations=velocity, **common)
+    baseline, *_ = fixture(0.01, device=device, velocity_iterations=0, **common)
+    result, solver, model, state, contacts = fixture(0.01, device=device, velocity_iterations=velocity, **common)
     np.testing.assert_array_equal(result["body_q"], baseline["body_q"])
     count = int(result["count"][0])
     delta = result["impulses"][0, :count] - baseline["impulses"][0, :count]

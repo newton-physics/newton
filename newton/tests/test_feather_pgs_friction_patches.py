@@ -42,9 +42,9 @@ def _ground_box(device, **solver_kwargs):
     body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.1), wp.quat_identity()))
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=125, mu=0.5))
     model = builder.finalize(device=device)
-    kwargs = {"pgs_iterations": 32}
+    kwargs = {"iterations": 32}
     kwargs.update(solver_kwargs)
-    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs)
+    solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
     contacts = pipeline.contacts()
     states = [model.state(), model.state()]
@@ -745,7 +745,7 @@ def _run_rolling(
         add_shape(body, radius=0.05, half_height=0.025, xform=wp.transform(wp.vec3(0), rotation))
     model = builder.finalize(device=device)
     kwargs = {} if friction_anchor_beta is None else {"friction_anchor_beta": friction_anchor_beta}
-    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs)
+    solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs)
     pipeline = newton.CollisionPipeline(model, deterministic=deterministic)
     contacts = pipeline.contacts()
     s0, s1 = model.state(), model.state()
@@ -852,10 +852,10 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
                 for enabled in (False, True):
                     model, jaws, obj = _build_v_jaws(5.0, geometry)
                     # Four iterations leave point friction under-converged on curved contacts.
-                    kwargs = dict(_SQUEEZE_SOLVER, pgs_iterations=4)
+                    kwargs = dict(_SQUEEZE_SOLVER, iterations=4)
                     if not enabled:
                         kwargs["friction_anchor_beta"] = 0.0
-                    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs)
+                    solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs)
                     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, broad_phase="nxn")
                     contacts = pipeline.contacts()
                     s0, s1 = model.state(), model.state()
@@ -903,7 +903,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
             body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, height), wp.quat_identity()))
             builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05)
         model = builder.finalize(device=device)
-        solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free")
+        solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free")
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
         s0, s1 = model.state(), model.state()
@@ -933,7 +933,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
                     self.assertAlmostEqual(solver.friction_anchor_beta, 0.2)
                     self.assertEqual(np.count_nonzero(solver._friction_patches.current.source.numpy() >= 0), 2)
                 else:
-                    self.assertFalse(hasattr(solver._friction_patches, "current"))
+                    self.assertFalse(hasattr(solver._friction_patches, "fixed_normal"))
 
     def test_rocking_cube_assigns_friction_only_to_supported_edge(self):
         """Retire the lifted face anchor before building rows for a cube resting on one edge."""
@@ -945,7 +945,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
         solver = newton.solvers.SolverFeatherPGS(
-            model, pgs_mode="matrix_free", friction_anchor_beta=0.2, contact_gap_gate=1.0e-4
+            model, solve_mode="matrix_free", friction_anchor_beta=0.2, contact_gap_gate=1.0e-4
         )
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=16)
         contacts = pipeline.contacts()
@@ -974,7 +974,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
         box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
         solver = newton.solvers.SolverFeatherPGS(
-            model, pgs_mode="matrix_free", friction_anchor_beta=0.2, pgs_iterations=64
+            model, solve_mode="matrix_free", friction_anchor_beta=0.2, iterations=64
         )
         # A pipeline publishes the contact capacity; the contacts are written by hand and never collided.
         contacts = newton.CollisionPipeline(model, rigid_contact_max=4, soft_contact_max=0).contacts()
@@ -1014,7 +1014,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
         body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.1), wp.quat_identity()))
         box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
-        solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", friction_anchor_beta=0.2)
+        solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", friction_anchor_beta=0.2)
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
         contacts = pipeline.contacts()
         s0, s1 = model.state(), model.state()
@@ -1046,7 +1046,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
         builder.replicate(template, 2)
         model = builder.finalize(device=device)
         solver = newton.solvers.SolverFeatherPGS(
-            model, pgs_mode="matrix_free", friction_anchor_beta=0.2, contact_gap_gate=0.001
+            model, solve_mode="matrix_free", friction_anchor_beta=0.2, contact_gap_gate=0.001
         )
         contacts = newton.CollisionPipeline(model, rigid_contact_max=2).contacts()
         shape_body = model.shape_body.numpy()
@@ -1085,7 +1085,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
                 box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
                 model = builder.finalize()
                 solver = newton.solvers.SolverFeatherPGS(
-                    model, pgs_mode="matrix_free", friction_anchor_beta=0.2, **{gate: 0.001}
+                    model, solve_mode="matrix_free", friction_anchor_beta=0.2, **{gate: 0.001}
                 )
                 contacts = newton.CollisionPipeline(model, rigid_contact_max=3).contacts()
                 contacts.rigid_contact_count.assign([3])
@@ -1105,7 +1105,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
         body = builder.add_body()
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=_DEVICE)
-        solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", friction_anchor_beta=0.2)
+        solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", friction_anchor_beta=0.2)
         patches = solver._friction_patches
         radius = patches.body_radius.numpy().copy()
         patches.previous.valid.fill_(1)
@@ -1127,7 +1127,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
                 )
                 model = builder.finalize()
                 solver = newton.solvers.SolverFeatherPGS(
-                    model, pgs_mode="matrix_free", friction_anchor_beta=0.2, pgs_iterations=64
+                    model, solve_mode="matrix_free", friction_anchor_beta=0.2, iterations=64
                 )
                 pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
                 contacts = pipeline.contacts()
@@ -1155,7 +1155,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
             builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
             model = builder.finalize()
             solver = newton.solvers.SolverFeatherPGS(
-                model, pgs_mode="matrix_free", friction_anchor_beta=0.2, dense_max_constraints=64
+                model, solve_mode="matrix_free", friction_anchor_beta=0.2, articulation_constraint_max=64
             )
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, contact_matching="latest")
             contacts = pipeline.contacts()
@@ -1223,7 +1223,7 @@ def _check_notified_friction_edit(test, device, replace, capture):
     body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.1), wp.quat_identity()))
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=32)
+    solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", iterations=32)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
     contacts = pipeline.contacts()
     state_0, state_1, control = model.state(), model.state(), model.control()

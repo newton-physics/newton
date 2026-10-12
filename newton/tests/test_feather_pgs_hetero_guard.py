@@ -51,8 +51,10 @@ def _build_model(world_link_counts: list[int], device, root_height: float = 1.0,
     return scene.finalize(device=device)
 
 
-def _final_joint_q(model, steps=60, pgs_mode="matrix_free", response="immediate", from_fk=False):
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, dense_max_constraints=64, articulated_contact_response=response)
+def _final_joint_q(model, steps=60, solve_mode="matrix_free", response="immediate", from_fk=False):
+    solver = SolverFeatherPGS(
+        model, solve_mode=solve_mode, articulation_constraint_max=64, articulated_contact_response=response
+    )
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
@@ -69,43 +71,43 @@ def _final_joint_q(model, steps=60, pgs_mode="matrix_free", response="immediate"
 
 def test_hetero_matrix_free_constructs(test, device):
     """Construct on worlds whose DOF counts differ."""
-    solver = SolverFeatherPGS(_build_model([1, 3, 1, 3], device), pgs_mode="matrix_free")
+    solver = SolverFeatherPGS(_build_model([1, 3, 1, 3], device), solve_mode="matrix_free")
     np.testing.assert_array_equal(solver.world_dof_count.numpy(), [1, 3, 1, 3])
 
 
 def test_homogeneous_matrix_free_constructs(test, device):
     """Construct on worlds with identical DOF counts."""
-    solver = SolverFeatherPGS(_build_model([3, 3, 3, 3], device), pgs_mode="matrix_free")
+    solver = SolverFeatherPGS(_build_model([3, 3, 3, 3], device), solve_mode="matrix_free")
     np.testing.assert_array_equal(solver.world_dof_count.numpy(), [3, 3, 3, 3])
 
 
 def test_hetero_split_constructs(test, device):
     """Construct the split solve on worlds whose DOF counts differ."""
-    solver = SolverFeatherPGS(_build_model([1, 3, 1, 3], device), pgs_mode="split")
-    test.assertEqual(solver.pgs_mode, "split")
+    solver = SolverFeatherPGS(_build_model([1, 3, 1, 3], device), solve_mode="split")
+    test.assertEqual(solver.solve_mode, "split")
     test.assertEqual(solver.size_groups, [3, 1])
-    test.assertEqual(solver.C.shape, (4, solver.dense_max_constraints, solver.dense_max_constraints))
+    test.assertEqual(solver.C.shape, (4, solver.articulation_constraint_max, solver.articulation_constraint_max))
 
 
 def test_homogeneous_split_constructs(test, device):
     """Construct the split solve on worlds with identical DOF counts."""
-    solver = SolverFeatherPGS(_build_model([3, 3, 3, 3], device), pgs_mode="split")
-    test.assertEqual(solver.pgs_mode, "split")
+    solver = SolverFeatherPGS(_build_model([3, 3, 3, 3], device), solve_mode="split")
+    test.assertEqual(solver.solve_mode, "split")
     test.assertEqual(solver.size_groups, [3])
 
 
-def test_hetero_worlds_match_isolated_worlds(test, device, pgs_mode="matrix_free"):
+def test_hetero_worlds_match_isolated_worlds(test, device, solve_mode="matrix_free"):
     """Simulate each world of a heterogeneous model exactly as it simulates alone."""
-    combined = _final_joint_q(_build_model([1, 3], device), pgs_mode=pgs_mode)
-    single = _final_joint_q(_build_model([1], device), pgs_mode=pgs_mode)
-    triple = _final_joint_q(_build_model([3], device), pgs_mode=pgs_mode)
+    combined = _final_joint_q(_build_model([1, 3], device), solve_mode=solve_mode)
+    single = _final_joint_q(_build_model([1], device), solve_mode=solve_mode)
+    triple = _final_joint_q(_build_model([3], device), solve_mode=solve_mode)
     np.testing.assert_allclose(combined, np.concatenate([single, triple]), rtol=0.0, atol=1.0e-5)
 
 
 def test_homogeneous_propagation_constructs(test, device):
     """Construct both propagation responses on worlds with identical DOF counts."""
     model = _build_model([3, 3, 3, 3], device)
-    for response in ("propagation", "propagation-fused", "propagation-colored"):
+    for response in ("propagation", "propagation_fused", "propagation_colored"):
         with test.subTest(response=response):
             solver = SolverFeatherPGS(model, articulated_contact_response=response)
             test.assertEqual(solver.articulated_contact_response, response)
@@ -122,7 +124,7 @@ def test_hetero_propagation_matches_isolated_worlds(test, device):
         model = _build_model(link_counts, device, 0.35, free_box)
         return _final_joint_q(model, response=response, from_fk=True)
 
-    for response in ("propagation", "propagation-colored"):
+    for response in ("propagation", "propagation_colored"):
         combined = run([1, 3], None, response)
         single = run([1], None, response)
         triple = run([3], None, response)
@@ -130,9 +132,9 @@ def test_hetero_propagation_matches_isolated_worlds(test, device):
         np.testing.assert_allclose(combined, np.concatenate([single, triple]), rtol=0.0, atol=1.0e-4)
 
     # The fused response needs one articulation size, but a free box still makes world DOF counts differ.
-    combined = run([3, 3], [False, True], "propagation-fused")
-    plain = run([3], [False], "propagation-fused")
-    boxed = run([3], [True], "propagation-fused")
+    combined = run([3, 3], [False, True], "propagation_fused")
+    plain = run([3], [False], "propagation_fused")
+    boxed = run([3], [True], "propagation_fused")
     np.testing.assert_allclose(combined, np.concatenate([plain, boxed]), rtol=0.0, atol=1.0e-5)
 
 
@@ -171,7 +173,7 @@ add_function_test(
     "test_hetero_worlds_match_isolated_worlds_split",
     test_hetero_worlds_match_isolated_worlds,
     devices=split_devices,
-    pgs_mode="split",
+    solve_mode="split",
 )
 add_function_test(
     TestFeatherPGSHeteroGuard,

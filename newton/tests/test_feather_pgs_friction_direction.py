@@ -43,12 +43,12 @@ def _slide(device, beta, mesh, angle, articulated=False, *, locked_tangent=False
     model = builder.finalize(device=device)
     solver = newton.solvers.SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
+        solve_mode="matrix_free",
         friction_anchor_beta=beta,
-        pgs_iterations=64,
-        pgs_cfm=0.0 if locked_tangent else 1.0e-6,
-        mf_max_constraints=128,
-        dense_max_constraints=32,
+        iterations=64,
+        cfm=0.0 if locked_tangent else 1.0e-6,
+        free_body_constraint_max=128,
+        articulation_constraint_max=32,
     )
     solver.rigid_body_angular_damping.zero_()
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=128, deterministic=True)

@@ -62,13 +62,13 @@ def _trajectory(model, steps=40, **solver_kwargs):
     return solver, state_0.joint_q.numpy(), state_0.joint_qd.numpy()
 
 
-def test_fused_assembly_matches_the_separate_pipeline(test, device, pgs_mode="matrix_free"):
+def test_fused_assembly_matches_the_separate_pipeline(test, device, solve_mode="matrix_free"):
     """Match separate assembly and factorization with the warp-per-articulation and tiled kernels."""
     for links, branched, kernel in ((3, False, "warp"), (6, True, "warp"), (14, False, "tiled"), (15, True, "tiled")):
         with test.subTest(links=links, branched=branched):
             model = _tree(device, links, branched=branched)
-            fused, q, qd = _trajectory(model, pgs_mode=pgs_mode, use_parallel_streams=True)
-            reference, q_ref, qd_ref = _trajectory(model, pgs_mode=pgs_mode)
+            fused, q, qd = _trajectory(model, solve_mode=solve_mode, use_parallel_streams=True)
+            reference, q_ref, qd_ref = _trajectory(model, solve_mode=solve_mode)
             size = fused.size_groups[0]
             selected = {
                 "warp": fused._crba_cholesky_warp_kernels_by_size[size],
@@ -126,14 +126,14 @@ def test_fused_assembly_follows_the_mass_update_interval(test, device):
 def test_fused_assembly_is_selected_only_where_supported(test, device):
     """Keep the separate pipeline without streams, with loop joints, PGS drive rows or on CPU."""
     is_cuda = wp.get_device(device).is_cuda
-    pgs_mode = "matrix_free" if is_cuda else "split"
-    solver = SolverFeatherPGS(_tree(device, 3), pgs_mode=pgs_mode, use_parallel_streams=True)
+    solve_mode = "matrix_free" if is_cuda else "split"
+    solver = SolverFeatherPGS(_tree(device, 3), solve_mode=solve_mode, use_parallel_streams=True)
     test.assertEqual(bool(solver._crba_source_dof_by_size), is_cuda)
     if not is_cuda:
         return
     for model, options in (
         (_tree(device, 3), {}),
-        (_tree(device, 3), {"use_parallel_streams": True, "drive_mode": "physx_pgs"}),
+        (_tree(device, 3), {"use_parallel_streams": True, "drive_mode": "rows"}),
         (_tree(device, 3, loop=True), {"use_parallel_streams": True}),
     ):
         with test.subTest(**options):
@@ -158,7 +158,7 @@ add_function_test(
     "test_fused_assembly_matches_the_separate_pipeline_split",
     test_fused_assembly_matches_the_separate_pipeline,
     devices=cuda_devices,
-    pgs_mode="split",
+    solve_mode="split",
 )
 add_function_test(
     TestFeatherPGSFusedCrba,

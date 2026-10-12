@@ -13,7 +13,7 @@ import newton
 from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
-MODES = ("current", "bisection", "bisection_desaxce", "coulomb_newton")
+MODES = ("fixed_normal", "bisection", "bisection_desaxce", "coulomb_newton")
 DT = 1.0 / 240.0
 G = 9.81
 
@@ -44,7 +44,7 @@ def _box_on_slope(device, slope_angle, mu, articulated):
 def _slide(device, mode, slope_angle, mu, articulated, steps=120):
     """Return the box's final body velocity and height."""
     model = _box_on_slope(device, slope_angle, mu, articulated)
-    solver = SolverFeatherPGS(model, pgs_iterations=32, friction_mode=mode, friction_anchor_beta=0.0)
+    solver = SolverFeatherPGS(model, iterations=32, friction_mode=mode, friction_anchor_beta=0.0)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
@@ -81,7 +81,7 @@ def test_sliding_follows_each_modes_coulomb_update(test, device):
         for mode in MODES:
             results[(articulated, mode)] = _slide(device, mode, slope_angle, mu, articulated, steps)
     for articulated in (False, True):
-        for mode in ("current", "coulomb_newton"):
+        for mode in ("fixed_normal", "coulomb_newton"):
             with test.subTest(articulated=articulated, mode=mode):
                 velocity, height = results[(articulated, mode)]
                 test.assertAlmostEqual(float(velocity[0]), expected, delta=0.005 * expected)
@@ -107,7 +107,7 @@ def test_modes_select_distinct_kernels(test, device):
     for mode in MODES:
         solver = SolverFeatherPGS(model, friction_mode=mode, friction_anchor_beta=0.0)
         name = solver._pgs_solve_mf_gs_kernel.key
-        test.assertEqual(mode == "current", not name.endswith(mode), name)
+        test.assertEqual(mode == "fixed_normal", not name.endswith(mode), name)
         names.add(name)
     test.assertEqual(len(names), len(MODES))
 
@@ -123,13 +123,13 @@ def test_unsupported_combinations_raise(test, device):
             with test.assertWarnsRegex(UserWarning, "point friction"):
                 solver = SolverFeatherPGS(model, friction_mode=mode)
             test.assertEqual(solver.friction_anchor_beta, 0.0)
-            with test.assertRaisesRegex(ValueError, "friction_mode='current'"):
+            with test.assertRaisesRegex(ValueError, "friction_mode='fixed_normal'"):
                 SolverFeatherPGS(model, friction_mode=mode, friction_anchor_beta=0.2)
-            with test.assertRaisesRegex(ValueError, "friction_mode='current'"):
+            with test.assertRaisesRegex(ValueError, "friction_mode='fixed_normal'"):
                 SolverFeatherPGS(model, friction_mode=mode, friction_anchor_beta=0.0, contact_torsion_radius=0.01)
             with test.assertRaisesRegex(ValueError, "friction_mode"):
                 SolverFeatherPGS(model, friction_mode=mode, friction_anchor_beta=0.0, contact_compliance=True)
-            for response in ("propagation", "propagation-fused"):
+            for response in ("propagation", "propagation_fused"):
                 with test.assertRaisesRegex(NotImplementedError, "friction_mode"):
                     SolverFeatherPGS(model, friction_mode=mode, articulated_contact_response=response)
 
@@ -163,9 +163,9 @@ def test_split_rejects_other_modes(test, device):
     for mode in MODES[1:]:
         with test.subTest(mode=mode), warnings.catch_warnings():
             warnings.simplefilter("error")
-            with test.assertRaisesRegex(NotImplementedError, f"friction_mode='{mode}'.*pgs_mode='matrix_free'"):
-                SolverFeatherPGS(model, pgs_mode="split", friction_mode=mode)
-    test.assertEqual(SolverFeatherPGS(model, pgs_mode="split").friction_mode, "current")
+            with test.assertRaisesRegex(NotImplementedError, f"friction_mode='{mode}'.*solve_mode='matrix_free'"):
+                SolverFeatherPGS(model, solve_mode="split", friction_mode=mode)
+    test.assertEqual(SolverFeatherPGS(model, solve_mode="split").friction_mode, "fixed_normal")
 
 
 class TestFeatherPGSFrictionMode(unittest.TestCase):

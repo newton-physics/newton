@@ -56,8 +56,8 @@ def _reference_trajectory(steps, *, effort_limit=1.0e6, damping=0.0):
     return np.asarray(history)
 
 
-def _solver_trajectory(model, steps, pgs_mode):
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
+def _solver_trajectory(model, steps, solve_mode):
+    solver = SolverFeatherPGS(model, solve_mode=solve_mode)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     history = []
@@ -68,26 +68,29 @@ def _solver_trajectory(model, steps, pgs_mode):
     return np.asarray(history)
 
 
-def test_implicit_drive_matches_backward_euler_reference(test, device, pgs_mode="matrix_free"):
+def test_implicit_drive_matches_backward_euler_reference(test, device, solve_mode="matrix_free"):
     """Integrate the PD drive implicitly through the augmented mass matrix."""
     np.testing.assert_allclose(
-        _solver_trajectory(_build_slider(device), 120, pgs_mode), _reference_trajectory(120), rtol=1.0e-4, atol=1.0e-5
+        _solver_trajectory(_build_slider(device), 120, solve_mode), _reference_trajectory(120), rtol=1.0e-4, atol=1.0e-5
     )
 
 
-def test_drive_force_is_clamped_to_the_effort_limit(test, device, pgs_mode="matrix_free"):
+def test_drive_force_is_clamped_to_the_effort_limit(test, device, solve_mode="matrix_free"):
     """Clamp the explicit drive force to the joint effort limit before the implicit solve."""
     reference = _reference_trajectory(120, effort_limit=5.0)
     np.testing.assert_allclose(
-        _solver_trajectory(_build_slider(device, effort_limit=5.0), 120, pgs_mode), reference, rtol=1.0e-4, atol=1.0e-5
+        _solver_trajectory(_build_slider(device, effort_limit=5.0), 120, solve_mode),
+        reference,
+        rtol=1.0e-4,
+        atol=1.0e-5,
     )
     test.assertGreater(float(np.abs(reference - _reference_trajectory(120)).max()), 1.0e-2, "the clamp must be active")
 
 
-def test_passive_joint_damping_is_applied(test, device, pgs_mode="matrix_free"):
+def test_passive_joint_damping_is_applied(test, device, solve_mode="matrix_free"):
     """Apply Model.joint_damping as a passive joint force."""
     np.testing.assert_allclose(
-        _solver_trajectory(_build_slider(device, damping=3.0), 120, pgs_mode),
+        _solver_trajectory(_build_slider(device, damping=3.0), 120, solve_mode),
         _reference_trajectory(120, damping=3.0),
         rtol=1.0e-4,
         atol=1.0e-5,
@@ -106,7 +109,7 @@ for _name, _func in (
     ("test_passive_joint_damping_is_applied", test_passive_joint_damping_is_applied),
 ):
     add_function_test(TestFeatherPGSAugmentedDrives, _name, _func, devices=devices)
-    add_function_test(TestFeatherPGSAugmentedDrives, f"{_name}_split", _func, devices=split_devices, pgs_mode="split")
+    add_function_test(TestFeatherPGSAugmentedDrives, f"{_name}_split", _func, devices=split_devices, solve_mode="split")
 
 
 if __name__ == "__main__":

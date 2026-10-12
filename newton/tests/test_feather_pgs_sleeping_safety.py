@@ -267,11 +267,11 @@ def _runtime(model):
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=128)
     solver = newton.solvers.SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
+        solve_mode="matrix_free",
         enable_sleeping=True,
         friction_anchor_beta=0.0,
         sleep_quiet_time=0.05,
-        pgs_iterations=16,
+        iterations=16,
     )
     state_in, state_out = model.state(), model.state()
     newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)

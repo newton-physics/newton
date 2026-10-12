@@ -114,7 +114,7 @@ def _run_mixed_response(
     warmstart,
     preelimination,
     dof_count=13,
-    dense_max_constraints=32,
+    articulation_constraint_max=32,
     inactive_joint_limit_capacity=False,
     friction=0.0,
     restitution=0.0,
@@ -136,16 +136,16 @@ def _run_mixed_response(
     with kernel_overrides({"hinv_jt_kernel": kernel}):
         solver = SolverFeatherPGS(
             model,
-            pgs_mode="matrix_free",
-            pgs_warmstart=warmstart,
+            solve_mode="matrix_free",
+            contact_warmstart=warmstart,
             enable_bilateral_preelimination=preelimination,
             enable_joint_limits=inactive_joint_limit_capacity,
             joint_limit_activation_gap=0.0,
-            pgs_iterations=8,
-            pgs_contact_regularization=contact_regularization,
+            iterations=8,
+            contact_regularization=contact_regularization,
             friction_anchor_beta=friction_anchor_beta,
-            dense_max_constraints=dense_max_constraints,
-            mf_max_constraints=32,
+            articulation_constraint_max=articulation_constraint_max,
+            free_body_constraint_max=32,
         )
     state_in, state_out = model.state(), model.state()
     joint_qd = state_in.joint_qd.numpy()
@@ -202,7 +202,7 @@ class TestFeatherPGSPairedResponse(unittest.TestCase):
             "warmstart": False,
             "preelimination": False,
             "dof_count": 23,
-            "dense_max_constraints": 96,
+            "articulation_constraint_max": 96,
             "inactive_joint_limit_capacity": True,
             "friction": 0.7,
             "restitution": 0.3,
@@ -253,7 +253,7 @@ class TestFeatherPGSPairedResponse(unittest.TestCase):
             "warmstart": False,
             "preelimination": False,
             "dof_count": 23,
-            "dense_max_constraints": 96,
+            "articulation_constraint_max": 96,
             "friction": 0.7,
             "restitution": 0.3,
             "tangential_velocity": 2.0,
@@ -288,22 +288,22 @@ class TestFeatherPGSPairedResponse(unittest.TestCase):
             for radius in (0.0, 0.01):
                 solvers[radius] = SolverFeatherPGS(
                     model,
-                    pgs_mode="matrix_free",
+                    solve_mode="matrix_free",
                     enable_joint_limits=True,
                     joint_limit_activation_gap=0.0,
-                    pgs_iterations=8,
-                    dense_max_constraints=96,
-                    mf_max_constraints=32,
+                    iterations=8,
+                    articulation_constraint_max=96,
+                    free_body_constraint_max=32,
                     contact_torsion_radius=radius,
                 )
             point = SolverFeatherPGS(
                 model,
-                pgs_mode="matrix_free",
+                solve_mode="matrix_free",
                 enable_joint_limits=True,
                 joint_limit_activation_gap=0.0,
-                pgs_iterations=8,
-                dense_max_constraints=96,
-                mf_max_constraints=32,
+                iterations=8,
+                articulation_constraint_max=96,
+                free_body_constraint_max=32,
                 friction_anchor_beta=0.0,
             )
         self.assertTrue(solvers[0.0]._friction_anchors_enabled)
@@ -325,7 +325,7 @@ class TestFeatherPGSPairedResponse(unittest.TestCase):
             "warmstart": False,
             "preelimination": False,
             "dof_count": 23,
-            "dense_max_constraints": 96,
+            "articulation_constraint_max": 96,
             "inactive_joint_limit_capacity": True,
             "friction": 0.7,
             "restitution": 0.3,
@@ -355,23 +355,23 @@ class TestFeatherPGSPairedResponse(unittest.TestCase):
         for dof_count, expected in ((23, 23), (12, None), (27, None)):
             with self.subTest(dof_count=dof_count):
                 model = _build_mixed_response_model("cuda:0", dof_count=dof_count)
-                solver = SolverFeatherPGS(model, dense_max_constraints=96, mf_max_constraints=32)
+                solver = SolverFeatherPGS(model, articulation_constraint_max=96, free_body_constraint_max=32)
                 self.assertEqual(solver._paired_response_primary_size, expected)
         model = _build_mixed_response_model("cuda:0", dof_count=23)
         # The tiled response is chunked only when the row capacity exceeds one chunk.
-        self.assertIsNone(SolverFeatherPGS(model, dense_max_constraints=16)._paired_response_primary_size)
+        self.assertIsNone(SolverFeatherPGS(model, articulation_constraint_max=16)._paired_response_primary_size)
         for options in ({"enable_bilateral_preelimination": True},):
             with self.subTest(**options):
-                solver = SolverFeatherPGS(model, dense_max_constraints=96, mf_max_constraints=32, **options)
+                solver = SolverFeatherPGS(model, articulation_constraint_max=96, free_body_constraint_max=32, **options)
                 self.assertIsNone(solver._paired_response_primary_size)
         for options in (
             {"enable_joint_velocity_limits": True},
-            {"pgs_contact_regularization": 0.01},
-            {"pgs_schedule": "physx_grasp"},
-            {"drive_mode": "physx_pgs"},
+            {"contact_regularization": 0.01},
+            {"row_schedule": "phased"},
+            {"drive_mode": "rows"},
         ):
             with self.subTest(**options):
-                solver = SolverFeatherPGS(model, dense_max_constraints=96, mf_max_constraints=32, **options)
+                solver = SolverFeatherPGS(model, articulation_constraint_max=96, free_body_constraint_max=32, **options)
                 self.assertEqual(solver._paired_response_primary_size, 23)
                 self.assertFalse(solver._paired_factor_coordinates)
 
@@ -386,9 +386,9 @@ class TestFeatherPGSPairedResponse(unittest.TestCase):
                     model,
                     friction_anchor_beta=0.0,
                     contact_compliance=True,
-                    pgs_iterations=16,
-                    dense_max_constraints=96,
-                    mf_max_constraints=32,
+                    iterations=16,
+                    articulation_constraint_max=96,
+                    free_body_constraint_max=32,
                 )
             state_0, state_1 = model.state(), model.state()
             joint_qd = state_0.joint_qd.numpy()

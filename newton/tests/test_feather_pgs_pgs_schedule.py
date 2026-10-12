@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Row schedules of the SolverFeatherPGS matrix-free sweep (``pgs_schedule``)."""
+"""Row schedules of the SolverFeatherPGS matrix-free sweep (``row_schedule``)."""
 
 import unittest
 
@@ -18,7 +18,7 @@ from newton._src.solvers.feather_pgs.kernels import (
 from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
-SCHEDULES = ("interleaved", "contact_then_internal", "physx_grasp")
+SCHEDULES = ("interleaved", "contact_then_internal", "phased")
 # Scissor link offset whose links start just apart, with speculative contact rows.
 _SPECULATIVE_OFFSET = 0.031
 
@@ -79,8 +79,8 @@ def _solver(model, **kwargs):
     options = {
         "enable_joint_limits": True,
         "friction_anchor_beta": 0.0,
-        "drive_mode": "physx_pgs",
-        "dense_max_constraints": 64,
+        "drive_mode": "rows",
+        "articulation_constraint_max": 64,
     }
     options.update(kwargs)
     return SolverFeatherPGS(model, **options)
@@ -103,19 +103,19 @@ def test_schedule_validation(test, device):
     """Accept the three schedules and reject unknown names and unsupported combinations."""
     model = _scene(device)
     for schedule in SCHEDULES:
-        test.assertEqual(SolverFeatherPGS(model, pgs_schedule=schedule).pgs_schedule, schedule)
-    with test.assertRaisesRegex(ValueError, "pgs_schedule"):
-        SolverFeatherPGS(model, pgs_schedule="bad")
+        test.assertEqual(SolverFeatherPGS(model, row_schedule=schedule).row_schedule, schedule)
+    with test.assertRaisesRegex(ValueError, "row_schedule"):
+        SolverFeatherPGS(model, row_schedule="bad")
     for schedule in SCHEDULES[1:]:
         with test.subTest(schedule=schedule):
-            with test.assertRaisesRegex(NotImplementedError, "contact_torsion_radius.*pgs_schedule='interleaved'"):
-                SolverFeatherPGS(model, pgs_schedule=schedule, contact_torsion_radius=0.01)
-            with test.assertRaisesRegex(NotImplementedError, "contact_compliance.*pgs_schedule='interleaved'"):
-                SolverFeatherPGS(model, pgs_schedule=schedule, contact_compliance=True, friction_anchor_beta=0.0)
-    with test.assertRaisesRegex(NotImplementedError, "propagation-fused"):
-        SolverFeatherPGS(model, pgs_schedule="contact_then_internal", articulated_contact_response="propagation-fused")
-    fused = SolverFeatherPGS(model, pgs_schedule="physx_grasp", articulated_contact_response="propagation-fused")
-    test.assertEqual(fused.pgs_schedule, "physx_grasp")
+            with test.assertRaisesRegex(NotImplementedError, "contact_torsion_radius.*row_schedule='interleaved'"):
+                SolverFeatherPGS(model, row_schedule=schedule, contact_torsion_radius=0.01)
+            with test.assertRaisesRegex(NotImplementedError, "contact_compliance.*row_schedule='interleaved'"):
+                SolverFeatherPGS(model, row_schedule=schedule, contact_compliance=True, friction_anchor_beta=0.0)
+    with test.assertRaisesRegex(NotImplementedError, "propagation_fused"):
+        SolverFeatherPGS(model, row_schedule="contact_then_internal", articulated_contact_response="propagation_fused")
+    fused = SolverFeatherPGS(model, row_schedule="phased", articulated_contact_response="propagation_fused")
+    test.assertEqual(fused.row_schedule, "phased")
 
 
 def test_split_rejects_schedules(test, device):
@@ -123,8 +123,8 @@ def test_split_rejects_schedules(test, device):
     model = _scene(device)
     for schedule in SCHEDULES[1:]:
         with test.subTest(schedule=schedule):
-            with test.assertRaisesRegex(NotImplementedError, "pgs_schedule.*requires pgs_mode='matrix_free'"):
-                SolverFeatherPGS(model, pgs_mode="split", pgs_schedule=schedule)
+            with test.assertRaisesRegex(NotImplementedError, "row_schedule.*requires solve_mode='matrix_free'"):
+                SolverFeatherPGS(model, solve_mode="split", row_schedule=schedule)
 
 
 def test_row_phases_touch_only_their_row_families(test, device):
@@ -134,7 +134,7 @@ def test_row_phases_touch_only_their_row_families(test, device):
     articulation (dense rows) and a free body above its velocity bound (velocity-limit rows).
     """
     model = _scene(device)
-    solver = _solver(model, pgs_iterations=0, pgs_schedule="physx_grasp")
+    solver = _solver(model, iterations=0, row_schedule="phased")
     _step(model, solver)
     dense_count = int(solver.constraint_count.numpy()[0])
     row_type = solver.row_type.numpy()[0, :dense_count]
@@ -166,15 +166,13 @@ def test_row_phases_touch_only_their_row_families(test, device):
     test.assertEqual(touched[5], (False, False, False, True))
 
 
-def test_physx_grasp_keeps_the_interleaved_row_order(test, device):
+def test_phased_keeps_the_interleaved_row_order(test, device):
     """Match the interleaved sweep: the dense layout already puts internal rows before contacts."""
     for iterations in (1, 12):
         results = []
-        for schedule in ("interleaved", "physx_grasp"):
+        for schedule in ("interleaved", "phased"):
             model = _scene(device, worlds=2, offset=_SPECULATIVE_OFFSET)
-            results.append(
-                _step(model, _solver(model, pgs_iterations=iterations, pgs_schedule=schedule)).joint_qd.numpy()
-            )
+            results.append(_step(model, _solver(model, iterations=iterations, row_schedule=schedule)).joint_qd.numpy())
         np.testing.assert_allclose(results[1], results[0], rtol=0.0, atol=1.0e-6)
 
 
@@ -183,7 +181,7 @@ def test_contact_then_internal_gives_internal_rows_the_last_word(test, device):
     changes = {}
     for schedule, iterations in (("contact_then_internal", 12), ("interleaved", 1)):
         model = _scene(device, offset=_SPECULATIVE_OFFSET)
-        solver = _solver(model, pgs_iterations=iterations, pgs_schedule=schedule)
+        solver = _solver(model, iterations=iterations, row_schedule=schedule)
         _step(model, solver)
         dense_count = int(solver.constraint_count.numpy()[0])
         row_type = solver.row_type.numpy()[0, :dense_count]
@@ -197,20 +195,20 @@ def test_contact_then_internal_gives_internal_rows_the_last_word(test, device):
 
 
 def test_propagation_schedules(test, device):
-    """Run the propagation response with every schedule; physx_grasp is its interleaved order."""
+    """Run the propagation response with every schedule; phased is its interleaved order."""
     results = {}
     for schedule in SCHEDULES:
         model = _scene(device, offset=_SPECULATIVE_OFFSET)
         solver = _solver(
             model,
             drive_mode="augmented",
-            pgs_iterations=200,
-            pgs_schedule=schedule,
+            iterations=200,
+            row_schedule=schedule,
             articulated_contact_response="propagation",
         )
         results[schedule] = _step(model, solver, steps=3).joint_qd.numpy()
         test.assertTrue(np.isfinite(results[schedule]).all())
-    np.testing.assert_array_equal(results["physx_grasp"], results["interleaved"])
+    np.testing.assert_array_equal(results["phased"], results["interleaved"])
 
 
 def test_captured_schedules_match_eager(test, device):
@@ -220,7 +218,7 @@ def test_captured_schedules_match_eager(test, device):
             finals = []
             for capture in (False, True):
                 model = _scene(device, offset=_SPECULATIVE_OFFSET)
-                solver = _solver(model, pgs_iterations=4, pgs_schedule=schedule)
+                solver = _solver(model, iterations=4, row_schedule=schedule)
                 state_0, state_1 = model.state(), model.state()
                 newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
                 pipeline = newton.CollisionPipeline(model, deterministic=True)
@@ -259,7 +257,7 @@ cuda_devices = get_cuda_test_devices()
 for _fn in (
     test_schedule_validation,
     test_row_phases_touch_only_their_row_families,
-    test_physx_grasp_keeps_the_interleaved_row_order,
+    test_phased_keeps_the_interleaved_row_order,
     test_contact_then_internal_gives_internal_rows_the_last_word,
     test_propagation_schedules,
     test_captured_schedules_match_eager,

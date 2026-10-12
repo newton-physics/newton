@@ -24,7 +24,7 @@ def _assert_bitwise(test, a, b, label):
     np.testing.assert_array_equal(a[2], b[2], err_msg=f"{label}: joint_qd")
 
 
-_POINT = {"init": _set_box_velocities, "steps": 8, "friction_anchor_beta": 0.0, "pgs_mode": "split"}
+_POINT = {"init": _set_box_velocities, "steps": 8, "friction_anchor_beta": 0.0, "solve_mode": "split"}
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -33,10 +33,10 @@ _POINT = {"init": _set_box_velocities, "steps": 8, "friction_anchor_beta": 0.0, 
 
 def test_default_launch_settings(test, device):
     """Select the kernels and launch widths automatically, matching explicitly pinned defaults bitwise."""
-    solver = SolverFeatherPGS(_build_contact_scene(device), pgs_mode="split")
+    solver = SolverFeatherPGS(_build_contact_scene(device), solve_mode="split")
     test.assertEqual(solver.pgs_kernel, "auto" if device.is_cuda else "loop")
     test.assertEqual((solver._pgs_chunk_size, solver._tile_threads, solver._serial_kernel_block_dim), (1, 64, 256))
-    modes = ({"pgs_mode": "split"}, {}) if device.is_cuda else ({"pgs_mode": "split"},)
+    modes = ({"solve_mode": "split"}, {}) if device.is_cuda else ({"solve_mode": "split"},)
     for mode in modes:
         run = {"init": _set_box_velocities, "steps": 8, **mode}
         explicit = {"pgs_kernel": "auto", "pgs_chunk_size": 1, "tile_threads": 64, "serial_kernel_block_dim": 256}
@@ -52,10 +52,10 @@ def test_kernel_overrides_are_scoped_to_construction(test, device):
     """Apply overrides to solvers built inside the block only, and keep them on that instance."""
     model = _build_contact_scene(device)
     with kernel_overrides({"tile_threads": 32, "serial_kernel_block_dim": 64}):
-        pinned = SolverFeatherPGS(model, pgs_mode="split")
+        pinned = SolverFeatherPGS(model, solve_mode="split")
         with kernel_overrides({"tile_threads": 128}):
-            nested = SolverFeatherPGS(model, pgs_mode="split")
-    default = SolverFeatherPGS(model, pgs_mode="split")
+            nested = SolverFeatherPGS(model, solve_mode="split")
+    default = SolverFeatherPGS(model, solve_mode="split")
     test.assertEqual((pinned._tile_threads, pinned._serial_kernel_block_dim), (32, 64))
     test.assertEqual((nested._tile_threads, nested._serial_kernel_block_dim), (128, 256))
     test.assertEqual((default._tile_threads, default._serial_kernel_block_dim), (64, 256))
@@ -117,7 +117,7 @@ def test_kernel_overrides_validate_their_values(test, device):
     ):
         with test.subTest(overrides=overrides), test.assertRaisesRegex(ValueError, pattern):
             with kernel_overrides(overrides):
-                SolverFeatherPGS(model, pgs_mode="split")
+                SolverFeatherPGS(model, solve_mode="split")
     if not device.is_cuda:
         return
     for kernel in ("tiled_contact", "streaming"):
@@ -128,7 +128,7 @@ def test_kernel_overrides_validate_their_values(test, device):
         ):
             with test.subTest(kernel=kernel, options=options), test.assertRaisesRegex(ValueError, "contact rows only"):
                 with kernel_overrides({"pgs_kernel": kernel}):
-                    SolverFeatherPGS(model, pgs_mode="split", **options)
+                    SolverFeatherPGS(model, solve_mode="split", **options)
 
 
 def test_cpu_ignores_contact_only_kernels(test, device):
@@ -138,7 +138,7 @@ def test_cpu_ignores_contact_only_kernels(test, device):
         for options in ({}, {"contact_friction_gap_threshold": -float("inf")}, {"enable_joint_limits": True}):
             with test.subTest(kernel=kernel, options=options):
                 with kernel_overrides({"pgs_kernel": kernel}):
-                    solver = SolverFeatherPGS(model, pgs_mode="split", **options)
+                    solver = SolverFeatherPGS(model, solve_mode="split", **options)
                 test.assertEqual(solver.pgs_kernel, "loop")
 
 
@@ -164,7 +164,7 @@ class _FakeNvtx(types.ModuleType):
 def test_profile_annotates_every_stage_without_changing_results(test, device):
     """Open and close one NVTX range per step stage under NEWTON_PROFILE, leaving the results bitwise unchanged."""
     fake = _FakeNvtx()
-    mode = {} if device.is_cuda else {"pgs_mode": "split"}
+    mode = {} if device.is_cuda else {"solve_mode": "split"}
     run = {"init": _set_box_velocities, "steps": 3, **mode}
     with mock.patch.dict(sys.modules, {"nvtx": fake}), mock.patch.object(solver_feather_pgs, "PROFILE_ENABLED", True):
         annotated = _run(_build_contact_scene(device), **run)
@@ -188,7 +188,7 @@ def test_profile_annotates_every_stage_without_changing_results(test, device):
 def test_profile_closes_the_open_range_when_a_stage_raises(test, device):
     """Close the open stage range when a step raises."""
     fake = _FakeNvtx()
-    mode = {} if device.is_cuda else {"pgs_mode": "split"}
+    mode = {} if device.is_cuda else {"solve_mode": "split"}
     model = _build_contact_scene(device)
     solver = SolverFeatherPGS(model, **mode)
     state_in, state_out = model.state(), model.state()

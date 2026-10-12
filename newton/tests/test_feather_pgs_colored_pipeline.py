@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Sweep variants of ``articulated_contact_response="propagation-colored"``.
+"""Sweep variants of ``articulated_contact_response="propagation_colored"``.
 
 The lane-per-unit sweep prefetches each unit's rows, solves standard units straight-line and,
 for a few worlds, reads the rows from a packed per-step record, optionally staged in shared
@@ -28,11 +28,11 @@ def _solver(model, regularization, **overrides):
     with kernel_overrides(overrides):
         return SolverFeatherPGS(
             model,
-            articulated_contact_response="propagation-colored",
-            pgs_iterations=8,
-            mf_max_constraints=CONTACT_MAX,
-            dense_max_constraints=64,
-            pgs_contact_regularization=regularization,
+            articulated_contact_response="propagation_colored",
+            iterations=8,
+            free_body_constraint_max=CONTACT_MAX,
+            articulation_constraint_max=64,
+            contact_regularization=regularization,
         )
 
 

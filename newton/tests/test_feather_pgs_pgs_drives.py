@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""PGS joint drive rows (``drive_mode="physx_pgs"``) of SolverFeatherPGS."""
+"""PGS joint drive rows (``drive_mode="rows"``) of SolverFeatherPGS."""
 
 import unittest
 
@@ -61,7 +61,7 @@ def _backward_euler_trajectory(steps):
 
 
 def _slider_trajectory(model, steps, **kwargs):
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", drive_mode="physx_pgs", **kwargs)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", drive_mode="rows", **kwargs)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     history = []
@@ -186,15 +186,15 @@ def test_saturated_pgs_drive_differs_from_the_augmented_drive(test, device):
     effort_limit = 5.0
     model = _build_slider(device, effort_limit=effort_limit)
     qd = {}
-    for drive_mode in ("augmented", "physx_pgs"):
-        solver = SolverFeatherPGS(model, pgs_mode="matrix_free", drive_mode=drive_mode, pgs_iterations=100)
+    for drive_mode in ("augmented", "rows"):
+        solver = SolverFeatherPGS(model, solve_mode="matrix_free", drive_mode=drive_mode, iterations=100)
         state_0, state_1 = model.state(), model.state()
         solver.step(state_0, state_1, model.control(), None, DT)
         qd[drive_mode] = float(state_1.joint_qd.numpy()[0])
     augmented_mass = MASS + ARMATURE + DT * KD + DT * DT * KE
     test.assertAlmostEqual(qd["augmented"], DT * effort_limit / augmented_mass, delta=1.0e-6)
-    test.assertAlmostEqual(qd["physx_pgs"], DT * effort_limit / (MASS + ARMATURE), delta=1.0e-6)
-    test.assertGreater(qd["physx_pgs"] - qd["augmented"], 1.0e-3)
+    test.assertAlmostEqual(qd["rows"], DT * effort_limit / (MASS + ARMATURE), delta=1.0e-6)
+    test.assertGreater(qd["rows"] - qd["augmented"], 1.0e-3)
 
 
 def test_pgs_drive_bounds_complete_reaction_under_external_load(test, device):
@@ -221,7 +221,7 @@ def test_pgs_drive_bounds_complete_reaction_under_external_load(test, device):
                 )
                 builder.add_articulation([joint])
                 model = builder.finalize(device=device)
-                solver = SolverFeatherPGS(model, pgs_mode="matrix_free", drive_mode="physx_pgs")
+                solver = SolverFeatherPGS(model, solve_mode="matrix_free", drive_mode="rows")
                 state_0, state_1 = model.state(), model.state()
                 newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
                 state_0.body_f.assign(np.array([[force, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32))
@@ -235,7 +235,7 @@ def test_drive_rows_precede_limit_rows_and_count_against_capacity(test, device):
     """Allocate drive rows first in each world and flag the world when they do not fit."""
     model = _build_driven_chain(device, num_links=3, num_worlds=2)
     solver = SolverFeatherPGS(
-        model, pgs_mode="matrix_free", drive_mode="physx_pgs", enable_joint_limits=True, warn_constraint_overflow=False
+        model, solve_mode="matrix_free", drive_mode="rows", enable_joint_limits=True, warn_constraint_overflow=False
     )
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, DT)
@@ -247,13 +247,13 @@ def test_drive_rows_precede_limit_rows_and_count_against_capacity(test, device):
         test.assertTrue(np.all(row_type[world, 3:9] == PGS_CONSTRAINT_TYPE_JOINT_LIMIT))
     test.assertFalse(np.any(solver.constraint_overflow.numpy()))
 
-    with test.assertWarnsRegex(UserWarning, r"need at least 6 dense rows .* dense_max_constraints=2"):
+    with test.assertWarnsRegex(UserWarning, r"need at least 6 dense rows .* articulation_constraint_max=2"):
         small = SolverFeatherPGS(
             model,
-            pgs_mode="matrix_free",
-            drive_mode="physx_pgs",
+            solve_mode="matrix_free",
+            drive_mode="rows",
             enable_joint_limits=True,
-            dense_max_constraints=2,
+            articulation_constraint_max=2,
             warn_constraint_overflow=False,
         )
     small.step(model.state(), model.state(), model.control(), None, DT)
@@ -273,7 +273,7 @@ def test_undriven_dofs_get_no_drive_rows(test, device):
     kd[1] = 0.0
     model.joint_target_ke.assign(ke)
     model.joint_target_kd.assign(kd)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", drive_mode="physx_pgs", joint_limit_activation_gap=0.0)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", drive_mode="rows", joint_limit_activation_gap=0.0)
     solver.step(model.state(), model.state(), model.control(), None, DT)
     test.assertEqual(int(solver.constraint_count.numpy()[0]), 2)
     np.testing.assert_array_equal(solver.drive_slot.numpy(), [0, -1, 1])
@@ -315,9 +315,7 @@ def test_drive_rows_use_the_exact_unit_response(test, device):
     model = _build_driven_chain(device, num_links=3, num_worlds=1)
     diags = {}
     for cfm in (0.0, 0.5):
-        solver = SolverFeatherPGS(
-            model, pgs_mode="matrix_free", drive_mode="physx_pgs", enable_joint_limits=True, pgs_cfm=cfm
-        )
+        solver = SolverFeatherPGS(model, solve_mode="matrix_free", drive_mode="rows", enable_joint_limits=True, cfm=cfm)
         solver.step(model.state(), model.state(), model.control(), None, DT)
         diags[cfm] = solver.diag.numpy()[0, : int(solver.constraint_count.numpy()[0])]
     test.assertEqual(diags[0.0].size, 9)  # 3 drive rows + 2 position-limit rows per DOF
@@ -325,7 +323,7 @@ def test_drive_rows_use_the_exact_unit_response(test, device):
     np.testing.assert_allclose(diags[0.5][3:] - diags[0.0][3:], 0.5, rtol=1.0e-5)  # limit rows
     # With a large CFM the PGS drive still reaches the backward-Euler reference.
     np.testing.assert_allclose(
-        _slider_trajectory(_build_slider(device), 120, pgs_cfm=0.5),
+        _slider_trajectory(_build_slider(device), 120, cfm=0.5),
         _backward_euler_trajectory(120),
         rtol=1.0e-4,
         atol=1.0e-5,
@@ -333,15 +331,15 @@ def test_drive_rows_use_the_exact_unit_response(test, device):
 
 
 def test_fused_clamp_lands_on_the_limit_with_large_cfm(test, device):
-    """Return a driven DOF exactly to its limit regardless of pgs_cfm."""
+    """Return a driven DOF exactly to its limit regardless of cfm."""
     model = _build_arm_and_box_model(device)
     solver = SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
-        drive_mode="physx_pgs",
+        solve_mode="matrix_free",
+        drive_mode="rows",
         enable_joint_velocity_limits=True,
-        pgs_cfm=0.5,
-        pgs_iterations=8,
+        cfm=0.5,
+        iterations=8,
     )
     state_0, state_1 = model.state(), model.state()
     joint_qd = state_0.joint_qd.numpy()
@@ -359,9 +357,9 @@ def test_fused_clamp_lands_on_the_limit_with_large_cfm(test, device):
 def test_captured_drive_rows_match_eager_steps(test, device):
     """Replay a captured graph of drive, velocity-limit and contact rows identically to eager steps."""
     model = _build_arm_and_box_model(device)
-    kwargs = {"drive_mode": "physx_pgs", "enable_joint_velocity_limits": True, "pgs_iterations": 8}
-    eager = _run_arm_and_box(model, SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs), 20)
-    captured = _run_arm_and_box(model, SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs), 20, capture=True)
+    kwargs = {"drive_mode": "rows", "enable_joint_velocity_limits": True, "iterations": 8}
+    eager = _run_arm_and_box(model, SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs), 20)
+    captured = _run_arm_and_box(model, SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs), 20, capture=True)
     np.testing.assert_allclose(captured, eager, atol=2.0e-6)
 
 
@@ -374,12 +372,16 @@ def test_streamed_drive_metadata_matches_resident(test, device):
         test.assertEqual(
             _use_resident_mfgs_metadata(rows, 32, 7, max_shared, has_drive_rows=True, fuse_vel_limits=True), resident
         )
-    kwargs = {"drive_mode": "physx_pgs", "enable_joint_velocity_limits": True, "pgs_iterations": 8}
+    kwargs = {"drive_mode": "rows", "enable_joint_velocity_limits": True, "iterations": 8}
     reference = _run_arm_and_box(
-        model, SolverFeatherPGS(model, pgs_mode="matrix_free", dense_max_constraints=resident_rows, **kwargs), 20
+        model,
+        SolverFeatherPGS(model, solve_mode="matrix_free", articulation_constraint_max=resident_rows, **kwargs),
+        20,
     )
     streamed = _run_arm_and_box(
-        model, SolverFeatherPGS(model, pgs_mode="matrix_free", dense_max_constraints=streamed_rows, **kwargs), 20
+        model,
+        SolverFeatherPGS(model, solve_mode="matrix_free", articulation_constraint_max=streamed_rows, **kwargs),
+        20,
     )
     np.testing.assert_allclose(streamed, reference, atol=1.0e-6)
 

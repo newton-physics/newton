@@ -13,7 +13,7 @@ from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_CONTACT
 from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
-RESPONSES = ("propagation", "propagation-fused", "propagation-colored")
+RESPONSES = ("propagation", "propagation_fused", "propagation_colored")
 PROPAGATION_PATH = 2
 
 
@@ -57,7 +57,7 @@ def _scene(device, restitution=0.0, mimic=False):
 
 
 def _solver(model, **kwargs):
-    options = {"dense_max_constraints": 128, "mf_max_constraints": 128, "friction_anchor_beta": 0.0}
+    options = {"articulation_constraint_max": 128, "free_body_constraint_max": 128, "friction_anchor_beta": 0.0}
     options.update(kwargs)
     return SolverFeatherPGS(model, **options)
 
@@ -68,7 +68,7 @@ def _pipeline(model, warmstart=False):
 
 def _settled_state(model, steps):
     """Return a mid-trajectory state of the immediate response (boxes landing on the chain)."""
-    solver = _solver(model, pgs_iterations=32)
+    solver = _solver(model, iterations=32)
     pipeline = _pipeline(model)
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
@@ -82,7 +82,7 @@ def _settled_state(model, steps):
 
 def _one_step(model, state, **kwargs):
     solver = _solver(model, **kwargs)
-    pipeline = _pipeline(model, kwargs.get("pgs_warmstart", False))
+    pipeline = _pipeline(model, kwargs.get("contact_warmstart", False))
     contacts = pipeline.contacts()
     state_out = model.state()
     pipeline.collide(state, contacts)
@@ -94,11 +94,11 @@ def _one_step(model, state, **kwargs):
 CASES = {
     "point friction": {},
     "friction patches": {"friction_anchor_beta": 0.2},
-    "regularization": {"pgs_contact_regularization": 0.05},
-    "velocity iterations": {"pgs_velocity_iterations": 300},
-    "drive rows": {"drive_mode": "physx_pgs"},
+    "regularization": {"contact_regularization": 0.05},
+    "velocity iterations": {"velocity_iterations": 300},
+    "drive rows": {"drive_mode": "rows"},
     "drive rows and velocity limits": {
-        "drive_mode": "physx_pgs",
+        "drive_mode": "rows",
         "enable_joint_velocity_limits": True,
         "velocity_limit_activation_fraction": 0.5,
     },
@@ -113,11 +113,11 @@ def test_options_match_the_immediate_response_at_convergence(test, device):
         if "velocity_limit_activation_fraction" in options:
             model.joint_velocity_limit.fill_(0.5)
         state = _settled_state(model, 40)
-        _, _, reference = _one_step(model, state, pgs_iterations=300, **options)
+        _, _, reference = _one_step(model, state, iterations=300, **options)
         for response in RESPONSES:
             with test.subTest(option=name, response=response):
                 solver, contacts, body_qd = _one_step(
-                    model, state, pgs_iterations=300, articulated_contact_response=response, **options
+                    model, state, iterations=300, articulated_contact_response=response, **options
                 )
                 count = int(contacts.rigid_contact_count.numpy()[0])
                 test.assertTrue((solver.contact_path.numpy()[:count] == PROPAGATION_PATH).any())
@@ -142,13 +142,13 @@ def test_restitution_rebounds_on_propagation_rows(test, device):
             state.joint_qd.assign(joint_qd)
             newton.eval_fk(model, state.joint_q, state.joint_qd, state)
             solver, contacts, after = _one_step(
-                model, state, pgs_iterations=64, articulated_contact_response=response, enable_joint_limits=True
+                model, state, iterations=64, articulated_contact_response=response, enable_joint_limits=True
             )
             count = int(contacts.rigid_contact_count.numpy()[0])
             test.assertTrue((solver.contact_path.numpy()[:count] == PROPAGATION_PATH).any())
             test.assertGreater(float(np.abs(solver.propagation_restitution_bias.numpy()).max()), 1.0)
             test.assertGreater(float(after[3, 2]), 0.5)
-            _, _, reference = _one_step(model, state, pgs_iterations=64, enable_joint_limits=True)
+            _, _, reference = _one_step(model, state, iterations=64, enable_joint_limits=True)
             np.testing.assert_allclose(after[3], reference[3], rtol=0.0, atol=1.0e-2)
 
 
@@ -162,7 +162,7 @@ def test_regularization_weights_reach_the_propagation_rows(test, device):
     for response in RESPONSES:
         with test.subTest(response=response):
             solver, _, _ = _one_step(
-                model, state, pgs_iterations=8, articulated_contact_response=response, pgs_contact_regularization=1.0
+                model, state, iterations=8, articulated_contact_response=response, contact_regularization=1.0
             )
             count = int(solver.propagation_constraint_count.numpy()[0])
             rows = solver.propagation_row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_CONTACT
@@ -170,7 +170,7 @@ def test_regularization_weights_reach_the_propagation_rows(test, device):
             weights = solver.propagation_row_w.numpy()[0, :count]
             # The unsplit diagonal from the bodies' own responses.
             body_response = solver.propagation_body_response.numpy()
-            d = np.full(count, solver.pgs_cfm)
+            d = np.full(count, solver.cfm)
             for body, J in (
                 (solver.propagation_body_a.numpy()[0, :count], solver.propagation_J_a.numpy()[0, :count]),
                 (solver.propagation_body_b.numpy()[0, :count], solver.propagation_J_b.numpy()[0, :count]),
@@ -189,7 +189,7 @@ def test_warm_start_seeds_the_propagation_rows(test, device):
     state = _settled_state(model, 150)
     for response in RESPONSES:
         with test.subTest(response=response):
-            solver = _solver(model, pgs_iterations=64, pgs_warmstart=True, articulated_contact_response=response)
+            solver = _solver(model, iterations=64, contact_warmstart=True, articulated_contact_response=response)
             pipeline = _pipeline(model, warmstart=True)
             contacts = pipeline.contacts()
             state_0, state_1 = model.state(), model.state()
@@ -201,7 +201,7 @@ def test_warm_start_seeds_the_propagation_rows(test, device):
                 state_0, state_1 = state_1, state_0
             solved = solver.propagation_impulses.numpy().copy()
             # Without iterations the step publishes the seeded impulses unchanged.
-            solver.pgs_iterations = 0
+            solver.iterations = 0
             pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, model.control(), contacts, 1.0 / 240.0)
             seeded = solver.propagation_impulses.numpy()
@@ -214,7 +214,7 @@ def test_mimic_rows_hold_with_propagation(test, device):
     for response in RESPONSES:
         with test.subTest(response=response):
             model = _scene(device, mimic=True)
-            solver = _solver(model, pgs_iterations=32, articulated_contact_response=response)
+            solver = _solver(model, iterations=32, articulated_contact_response=response)
             pipeline = _pipeline(model)
             contacts = pipeline.contacts()
             state_0, state_1 = model.state(), model.state()

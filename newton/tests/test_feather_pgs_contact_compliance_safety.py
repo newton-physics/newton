@@ -113,8 +113,8 @@ def test_rolled_back_capacity_fails_without_warnings(test, device):
                 enabled=True,
                 steps=1,
                 solver_options={
-                    "dense_max_constraints": 1,
-                    "mf_max_constraints": 1,
+                    "articulation_constraint_max": 1,
+                    "free_body_constraint_max": 1,
                     "warn_constraint_overflow": False,
                 },
             )
@@ -123,7 +123,7 @@ def test_rolled_back_capacity_fails_without_warnings(test, device):
 def test_solver_overflow_and_dropped_contact_rejected(test, device):
     """Reject overflowing rows and missing mappings for positive stiffness."""
     _, _, solver, _ = run_fixture(device=device, articulated=True, enabled=True, steps=1)
-    solver.constraint_count.fill_(solver.dense_max_constraints + 1)
+    solver.constraint_count.fill_(solver.articulation_constraint_max + 1)
     with test.assertRaisesRegex(RuntimeError, "overflowing solver rows"):
         _prepare_compliant_rows(solver)
     solver.constraint_count.fill_(1)

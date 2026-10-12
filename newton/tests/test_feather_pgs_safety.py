@@ -23,10 +23,10 @@ def _box_on_ground(device, worlds=1):
     return builder.finalize(device=device)
 
 
-def test_capacity_failure_is_observable(test, device, pgs_mode="matrix_free"):
+def test_capacity_failure_is_observable(test, device, solve_mode="matrix_free"):
     """Flag dropped free-body contact rows until reset, without optional telemetry."""
     model = _box_on_ground(device)
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, mf_max_constraints=1, warn_constraint_overflow=False)
+    solver = SolverFeatherPGS(model, solve_mode=solve_mode, free_body_constraint_max=1, warn_constraint_overflow=False)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_in, state_out = model.state(), model.state()
@@ -40,7 +40,7 @@ def test_capacity_failure_is_observable(test, device, pgs_mode="matrix_free"):
     solver.check_constraint_capacity()
 
 
-def test_dense_capacity_failure_is_world_local(test, device, pgs_mode="matrix_free"):
+def test_dense_capacity_failure_is_world_local(test, device, solve_mode="matrix_free"):
     """Flag only the world whose dense rows overflow."""
     template = newton.ModelBuilder()
     link = template.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
@@ -58,7 +58,9 @@ def test_dense_capacity_failure_is_world_local(test, device, pgs_mode="matrix_fr
     builder.add_ground_plane()
     model = builder.finalize(device=device)
 
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, dense_max_constraints=3, warn_constraint_overflow=False)
+    solver = SolverFeatherPGS(
+        model, solve_mode=solve_mode, articulation_constraint_max=3, warn_constraint_overflow=False
+    )
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_in, state_out = model.state(), model.state()
@@ -69,16 +71,16 @@ def test_dense_capacity_failure_is_world_local(test, device, pgs_mode="matrix_fr
     test.assertLessEqual(int(solver.constraint_count.numpy()[0]), 3)
 
 
-def test_overflow_warning_is_printed_once(test, device, pgs_mode="matrix_free", response="immediate"):
+def test_overflow_warning_is_printed_once(test, device, solve_mode="matrix_free", response="immediate"):
     """Print one device-side warning per overflowing row family, inside this test."""
     model = _box_on_ground(device, worlds=2)
     if response == "propagation":
-        # The propagation rows hold every contact, in mf_max_constraints + dense_max_constraints rows.
+        # The propagation rows hold every contact, in free_body_constraint_max + articulation_constraint_max rows.
         solver = SolverFeatherPGS(
-            model, mf_max_constraints=1, dense_max_constraints=1, articulated_contact_response=response
+            model, free_body_constraint_max=1, articulation_constraint_max=1, articulated_contact_response=response
         )
     else:
-        solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, mf_max_constraints=1)
+        solver = SolverFeatherPGS(model, solve_mode=solve_mode, free_body_constraint_max=1)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_in, state_out = model.state(), model.state()
@@ -146,7 +148,7 @@ for _name in (
         globals()[_name],
         devices=get_test_devices(),
         check_output=_name != "test_overflow_warning_is_printed_once",
-        pgs_mode="split",
+        solve_mode="split",
     )
 add_function_test(
     TestFeatherPGSCapacityStatus,

@@ -63,10 +63,10 @@ def _run(model, solver, steps):
     return observed, state_0
 
 
-def test_watermarks_are_zero_when_disabled(test, device, pgs_mode="matrix_free"):
+def test_watermarks_are_zero_when_disabled(test, device, solve_mode="matrix_free"):
     """Report zeros and allocate nothing without ``row_watermark``."""
     model = _scene(device)
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
+    solver = SolverFeatherPGS(model, solve_mode=solve_mode)
     _run(model, solver, 4)
     test.assertIsNone(solver._row_watermarks)
     marks = solver.constraint_row_watermarks()
@@ -74,20 +74,20 @@ def test_watermarks_are_zero_when_disabled(test, device, pgs_mode="matrix_free")
     test.assertTrue(all(value == 0 for value in marks.values()))
 
 
-def test_watermarks_track_the_largest_row_counts(test, device, pgs_mode="matrix_free"):
+def test_watermarks_track_the_largest_row_counts(test, device, solve_mode="matrix_free"):
     """Match the per-step maxima of the retained and requested rows and the contact count."""
     model = _scene(device)
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, row_watermark=True, friction_anchor_beta=0.0)
+    solver = SolverFeatherPGS(model, solve_mode=solve_mode, row_watermark=True, friction_anchor_beta=0.0)
     observed, state = _run(model, solver, 30)
     marks = solver.constraint_row_watermarks()
     test.assertGreater(observed["dense"], 0)
     test.assertGreater(observed["mf"], 0)
-    test.assertEqual(marks["dense_high_water"], observed["dense"])
-    test.assertEqual(marks["dense_raw_high_water"], observed["dense_raw"])
-    test.assertEqual(marks["mf_high_water"], observed["mf"])
-    test.assertEqual(marks["mf_raw_high_water"], observed["mf_raw"])
+    test.assertEqual(marks["articulation_high_water"], observed["dense"])
+    test.assertEqual(marks["articulation_raw_high_water"], observed["dense_raw"])
+    test.assertEqual(marks["free_body_high_water"], observed["mf"])
+    test.assertEqual(marks["free_body_raw_high_water"], observed["mf_raw"])
     test.assertEqual(marks["contact_high_water"], observed["contact"])
-    for family in ("dense", "mf", "propagation"):
+    for family in ("articulation", "free_body", "propagation"):
         with test.subTest(family=family):
             test.assertEqual(marks[f"{family}_dropped_contact_rows_high_water"], 0)
             test.assertEqual(marks[f"{family}_overflow_excess_high_water"], 0)
@@ -108,29 +108,29 @@ def test_watermarks_track_propagation_rows(test, device):
     test.assertEqual(marks["propagation_overflow_world_steps"], 0)
 
 
-def test_watermarks_record_capacity_overflow(test, device, pgs_mode="matrix_free"):
+def test_watermarks_record_capacity_overflow(test, device, solve_mode="matrix_free"):
     """Record the dropped rows, the excess over capacity and the overflowing world-steps."""
     model = _scene(device)
     capacity = 3
     solver = SolverFeatherPGS(
         model,
-        pgs_mode=pgs_mode,
+        solve_mode=solve_mode,
         row_watermark=True,
         friction_anchor_beta=0.0,
-        mf_max_constraints=capacity,
+        free_body_constraint_max=capacity,
         warn_constraint_overflow=False,
     )
     steps = 5
     observed, _ = _run(model, solver, steps)
     marks = solver.constraint_row_watermarks()
     test.assertGreater(observed["mf_raw"], capacity)
-    test.assertEqual(marks["mf_high_water"], capacity)
-    test.assertEqual(marks["mf_raw_high_water"], observed["mf_raw"])
-    test.assertEqual(marks["mf_overflow_excess_high_water"], observed["mf_raw"] - capacity)
-    test.assertGreater(marks["mf_dropped_contact_rows_high_water"], 0)
+    test.assertEqual(marks["free_body_high_water"], capacity)
+    test.assertEqual(marks["free_body_raw_high_water"], observed["mf_raw"])
+    test.assertEqual(marks["free_body_overflow_excess_high_water"], observed["mf_raw"] - capacity)
+    test.assertGreater(marks["free_body_dropped_contact_rows_high_water"], 0)
     # Only the world with the resting box overflows, in every step.
-    test.assertEqual(marks["mf_overflow_world_steps"], steps)
-    test.assertEqual(marks["dense_overflow_world_steps"], 0)
+    test.assertEqual(marks["free_body_overflow_world_steps"], steps)
+    test.assertEqual(marks["articulation_overflow_world_steps"], 0)
 
 
 def test_watermarks_accumulate_in_captured_steps(test, device):
@@ -166,7 +166,7 @@ def test_watermarks_accumulate_in_captured_steps(test, device):
                 substep()
         results.append(solver.constraint_row_watermarks())
     test.assertEqual(results[0], results[1])
-    test.assertGreater(results[1]["dense_high_water"], 0)
+    test.assertGreater(results[1]["articulation_high_water"], 0)
 
 
 class TestFeatherPGSRowWatermark(unittest.TestCase):
@@ -181,7 +181,7 @@ for _fn in (
 ):
     add_function_test(TestFeatherPGSRowWatermark, _fn.__name__, _fn, devices=cuda_devices)
     add_function_test(
-        TestFeatherPGSRowWatermark, f"{_fn.__name__}_split", _fn, devices=get_test_devices(), pgs_mode="split"
+        TestFeatherPGSRowWatermark, f"{_fn.__name__}_split", _fn, devices=get_test_devices(), solve_mode="split"
     )
 add_function_test(
     TestFeatherPGSRowWatermark,

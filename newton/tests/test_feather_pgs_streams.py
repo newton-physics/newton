@@ -53,7 +53,7 @@ def _scene(device, worlds=2):
 
 def _run(model, steps=60, capture=False, **solver_kwargs):
     solver = SolverFeatherPGS(
-        model, enable_joint_limits=True, friction_anchor_beta=0.0, dense_max_constraints=96, **solver_kwargs
+        model, enable_joint_limits=True, friction_anchor_beta=0.0, articulation_constraint_max=96, **solver_kwargs
     )
     pipeline = newton.CollisionPipeline(model, deterministic=True)
     contacts = pipeline.contacts()
@@ -81,10 +81,10 @@ def _run(model, steps=60, capture=False, **solver_kwargs):
     return solver, state_0.joint_q.numpy().copy()
 
 
-def test_streams_and_double_buffer_step_identically(test, device, pgs_mode="matrix_free"):
+def test_streams_and_double_buffer_step_identically(test, device, solve_mode="matrix_free"):
     """Match the serial single-buffer trajectory bitwise with streams and double buffering."""
     model = _scene(device)
-    reference_solver, reference = _run(model, pgs_mode=pgs_mode)
+    reference_solver, reference = _run(model, solve_mode=solve_mode)
     test.assertEqual(reference_solver._size_streams, {})
     test.assertFalse(reference_solver._double_buffered)
     test.assertGreater(len(reference_solver.size_groups), 1)
@@ -95,7 +95,7 @@ def test_streams_and_double_buffer_step_identically(test, device, pgs_mode="matr
         {"use_parallel_streams": True, "double_buffer": True, "update_mass_matrix_interval": 3},
     ):
         with test.subTest(**options):
-            solver, joint_q = _run(model, pgs_mode=pgs_mode, **options)
+            solver, joint_q = _run(model, solve_mode=solve_mode, **options)
             test.assertEqual(bool(solver._size_streams), options.get("use_parallel_streams", False))
             test.assertEqual(solver._double_buffered, options.get("double_buffer", False))
             if solver._double_buffered:
@@ -110,15 +110,15 @@ def test_streams_and_double_buffer_step_identically(test, device, pgs_mode="matr
                             test.assertFalse(solver._H_bufs[index][size].numpy().any())
             expected = reference
             if "update_mass_matrix_interval" in options:
-                _, expected = _run(model, pgs_mode=pgs_mode, update_mass_matrix_interval=3)
+                _, expected = _run(model, solve_mode=solve_mode, update_mass_matrix_interval=3)
             np.testing.assert_array_equal(joint_q, expected)
 
 
-def test_captured_double_buffer_matches_eager(test, device, pgs_mode="matrix_free"):
+def test_captured_double_buffer_matches_eager(test, device, solve_mode="matrix_free"):
     """Replay a two-step graph of the double-buffered solve with the eager result."""
     model = _scene(device)
-    _, eager = _run(model, pgs_mode=pgs_mode, use_parallel_streams=True, double_buffer=True)
-    _, captured = _run(model, pgs_mode=pgs_mode, use_parallel_streams=True, double_buffer=True, capture=True)
+    _, eager = _run(model, solve_mode=solve_mode, use_parallel_streams=True, double_buffer=True)
+    _, captured = _run(model, solve_mode=solve_mode, use_parallel_streams=True, double_buffer=True, capture=True)
     np.testing.assert_array_equal(captured, eager)
 
 
@@ -138,7 +138,7 @@ def _run_sequence(model, plan, *, delay_clear=False, **solver_kwargs):
     double-buffer clearing of the last eager step before each capture first waits for a
     long kernel on its stream, so it is still pending when the graph is first launched.
     """
-    solver = SolverFeatherPGS(model, friction_anchor_beta=0.0, dense_max_constraints=96, **solver_kwargs)
+    solver = SolverFeatherPGS(model, friction_anchor_beta=0.0, articulation_constraint_max=96, **solver_kwargs)
     pipeline = newton.CollisionPipeline(model, deterministic=True)
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
@@ -226,7 +226,7 @@ def test_capture_after_eager_orders_the_pending_clear(test, device):
     results = []
     for double_buffer in (False, True):
         solver = SolverFeatherPGS(
-            model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.1, double_buffer=double_buffer
+            model, solve_mode="matrix_free", iterations=16, baumgarte=0.1, double_buffer=double_buffer
         )
         test.assertEqual(solver._double_buffered, double_buffer)
         state_0, state_1 = model.state(), model.state()
@@ -255,7 +255,7 @@ def test_capture_after_eager_orders_the_pending_clear(test, device):
 def test_flags_are_ignored_where_they_do_not_apply(test, device):
     """Keep one stream and one buffer set on CPU, with sparse factors and with one size group."""
     if wp.get_device(device).is_cpu:
-        solver = SolverFeatherPGS(_scene(device), pgs_mode="split", use_parallel_streams=True, double_buffer=True)
+        solver = SolverFeatherPGS(_scene(device), solve_mode="split", use_parallel_streams=True, double_buffer=True)
         test.assertEqual(solver._size_streams, {})
         test.assertFalse(solver._double_buffered)
         return
@@ -292,7 +292,7 @@ for _fn in (
     add_function_test(TestFeatherPGSStreams, _fn.__name__, _fn, devices=cuda_devices)
 for _fn in (test_streams_and_double_buffer_step_identically, test_captured_double_buffer_matches_eager):
     add_function_test(TestFeatherPGSStreams, _fn.__name__, _fn, devices=cuda_devices)
-    add_function_test(TestFeatherPGSStreams, f"{_fn.__name__}_split", _fn, devices=cuda_devices, pgs_mode="split")
+    add_function_test(TestFeatherPGSStreams, f"{_fn.__name__}_split", _fn, devices=cuda_devices, solve_mode="split")
 add_function_test(
     TestFeatherPGSStreams,
     "test_flags_are_ignored_where_they_do_not_apply",

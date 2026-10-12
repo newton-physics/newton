@@ -64,7 +64,7 @@ def _built_rows(device, q: float, *, gap: float, lower: float = -1.0, upper: flo
 
 
 def _make_layout_scene(
-    device, *, enable_joint_velocity_limits=True, pgs_mode="matrix_free", response="immediate", pgs_iterations=0
+    device, *, enable_joint_velocity_limits=True, solve_mode="matrix_free", response="immediate", iterations=0
 ):
     """Build a scene that produces every row family: limits, velocity limits and contacts."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -103,13 +103,13 @@ def _make_layout_scene(
     model.joint_velocity_limit.assign(velocity_limits)
     solver = SolverFeatherPGS(
         model,
-        pgs_mode=pgs_mode,
+        solve_mode=solve_mode,
         enable_joint_limits=True,
         enable_joint_velocity_limits=enable_joint_velocity_limits,
         velocity_limit_activation_fraction=0.5,
-        dense_max_constraints=64,
-        mf_max_constraints=64,
-        pgs_iterations=pgs_iterations,
+        articulation_constraint_max=64,
+        free_body_constraint_max=64,
+        iterations=iterations,
         articulated_contact_response=response,
     )
     state_0, state_1 = model.state(), model.state()
@@ -124,10 +124,10 @@ def _make_layout_scene(
     return model, solver, state_0, state_1, pipeline
 
 
-def _make_layout_run(device, *, enable_joint_velocity_limits=True, pgs_mode="matrix_free"):
+def _make_layout_run(device, *, enable_joint_velocity_limits=True, solve_mode="matrix_free"):
     """Build the layout scene and its rows for one step."""
     model, solver, state_0, state_1, pipeline = _make_layout_scene(
-        device, enable_joint_velocity_limits=enable_joint_velocity_limits, pgs_mode=pgs_mode
+        device, enable_joint_velocity_limits=enable_joint_velocity_limits, solve_mode=solve_mode
     )
     contacts = pipeline.contacts()
     pipeline.collide(state_0, contacts)
@@ -164,7 +164,7 @@ def test_combined_row_families_follow_the_documented_layout(test, device):
 
 def test_dense_row_families_respect_phase_bounds(test, device):
     """Lay out split-mode dense rows as limits, contacts; free-body rows as contacts, velocity limits."""
-    solver = _make_layout_run(device, enable_joint_velocity_limits=False, pgs_mode="split")
+    solver = _make_layout_run(device, enable_joint_velocity_limits=False, solve_mode="split")
     dense_count = int(solver.constraint_count.numpy()[0])
     dense_types = solver.row_type.numpy()[0, :dense_count]
     limit_rows = np.flatnonzero(dense_types == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
@@ -230,7 +230,7 @@ def _driven_limited_joint_position(device, **solver_kwargs) -> float:
     )
     builder.add_articulation([joint])
     model = builder.finalize(device=device)
-    solver = SolverFeatherPGS(model, pgs_iterations=8, **solver_kwargs)
+    solver = SolverFeatherPGS(model, iterations=8, **solver_kwargs)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     control.joint_target_q.fill_(1.0)
@@ -240,16 +240,16 @@ def _driven_limited_joint_position(device, **solver_kwargs) -> float:
     return float(state_0.joint_q.numpy()[0])
 
 
-def test_limit_holds_a_driven_joint(test, device, pgs_mode="matrix_free"):
+def test_limit_holds_a_driven_joint(test, device, solve_mode="matrix_free"):
     """Hold a joint driven past its upper limit at the limit when joint limits are enabled."""
-    position = _driven_limited_joint_position(device, pgs_mode=pgs_mode, enable_joint_limits=True)
+    position = _driven_limited_joint_position(device, solve_mode=solve_mode, enable_joint_limits=True)
     test.assertAlmostEqual(position, 0.3, delta=2.0e-3)
 
 
-def test_disabled_joint_limits_are_not_enforced(test, device, pgs_mode="matrix_free"):
+def test_disabled_joint_limits_are_not_enforced(test, device, solve_mode="matrix_free"):
     """Leave finite joint limits unenforced by default, so the drive reaches its target."""
-    test.assertAlmostEqual(_driven_limited_joint_position(device, pgs_mode=pgs_mode), 1.0, delta=2.0e-3)
-    position = _driven_limited_joint_position(device, pgs_mode=pgs_mode, enable_joint_limits=False)
+    test.assertAlmostEqual(_driven_limited_joint_position(device, solve_mode=solve_mode), 1.0, delta=2.0e-3)
+    position = _driven_limited_joint_position(device, solve_mode=solve_mode, enable_joint_limits=False)
     test.assertAlmostEqual(position, 1.0, delta=2.0e-3)
 
 
@@ -278,7 +278,7 @@ def test_default_finite_limits_keep_rows_and_warn_at_capacity(test, device):
             test.assertEqual(len(messages), int(expect_warning), messages)
             if expect_warning:
                 test.assertIn("at least 34 dense rows", messages[0])
-                test.assertIn("dense_max_constraints=32", messages[0])
+                test.assertIn("articulation_constraint_max=32", messages[0])
             solver.step(model.state(), model.state(), model.control(), None, 0.01)
             # Large finite bounds are not reclassified as unlimited: two rows per DOF, up to
             # the capacity.
@@ -288,7 +288,7 @@ def test_default_finite_limits_keep_rows_and_warn_at_capacity(test, device):
     model = _build_default_limit_chain(device, 17)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        SolverFeatherPGS(model, enable_joint_limits=True, dense_max_constraints=34)
+        SolverFeatherPGS(model, enable_joint_limits=True, articulation_constraint_max=34)
         gap_solver = SolverFeatherPGS(model, enable_joint_limits=True, joint_limit_activation_gap=0.5)
     test.assertFalse([w for w in caught if "joint position limits" in str(w.message)])
     gap_solver.step(model.state(), model.state(), model.control(), None, 0.01)
@@ -327,11 +327,9 @@ def test_disabled_joint_limits_build_no_rows(test, device, **mode_kwargs):
     test.assertAlmostEqual(float(state_1.joint_q.numpy()[0]), 0.2, places=6)
 
 
-def _run_layout_trajectory(device, response, pgs_iterations):
+def _run_layout_trajectory(device, response, iterations):
     """Step the layout scene four times; record each step's row families, impulses and joint state."""
-    model, solver, state_0, state_1, pipeline = _make_layout_scene(
-        device, response=response, pgs_iterations=pgs_iterations
-    )
+    model, solver, state_0, state_1, pipeline = _make_layout_scene(device, response=response, iterations=iterations)
     contacts = pipeline.contacts()
     control = model.control()
     samples = []
@@ -365,16 +363,16 @@ def test_fused_propagation_matches_phased_trajectory(test, device):
     free body's contacts on free-body rows, must give the same trajectory. A single iteration
     pins the order of the row families within an iteration.
     """
-    for pgs_iterations in (1, 8):
-        with test.subTest(pgs_iterations=pgs_iterations):
-            _check_fused_matches_phased(test, device, pgs_iterations)
+    for iterations in (1, 8):
+        with test.subTest(iterations=iterations):
+            _check_fused_matches_phased(test, device, iterations)
 
 
-def _check_fused_matches_phased(test, device, pgs_iterations):
-    phased = _run_layout_trajectory(device, "propagation", pgs_iterations)
-    fused = _run_layout_trajectory(device, "propagation-fused", pgs_iterations)
+def _check_fused_matches_phased(test, device, iterations):
+    phased = _run_layout_trajectory(device, "propagation", iterations)
+    fused = _run_layout_trajectory(device, "propagation_fused", iterations)
     for step, (expected, observed) in enumerate(zip(phased, fused, strict=True)):
-        for label, sample in (("propagation", expected), ("propagation-fused", observed)):
+        for label, sample in (("propagation", expected), ("propagation_fused", observed)):
             with test.subTest(step=step, response=label):
                 types = sample["row_type"]
                 # Dense rows hold only the joint rows; every contact touching the link is a propagation row.
@@ -444,7 +442,7 @@ for _name, _func in (
         f"{_name}_split",
         _func,
         devices=split_devices,
-        pgs_mode="split",
+        solve_mode="split",
     )
 for _name, _func in (
     ("test_finite_gap_builds_only_near_limit_rows", test_finite_gap_builds_only_near_limit_rows),

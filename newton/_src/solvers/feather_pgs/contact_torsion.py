@@ -100,10 +100,10 @@ def configure_contact_torsion(solver, radius, indices, patterns):
 
 def _validate_torsion_mode(solver):
     """Reject unsupported construction and runtime mode combinations."""
-    if not solver.model.device.is_cuda or solver.model.requires_grad or solver.pgs_warmstart:
-        raise ValueError("Contact torsion requires a non-differentiable CUDA model and pgs_warmstart=False")
-    if solver.friction_mode != "current":
-        raise ValueError(f"Contact torsion requires friction_mode='current', got {solver.friction_mode!r}")
+    if not solver.model.device.is_cuda or solver.model.requires_grad or solver.contact_warmstart:
+        raise ValueError("Contact torsion requires a non-differentiable CUDA model and contact_warmstart=False")
+    if solver.friction_mode != "fixed_normal":
+        raise ValueError(f"Contact torsion requires friction_mode='fixed_normal', got {solver.friction_mode!r}")
 
 
 @dataclass
@@ -344,10 +344,10 @@ def prepare_torsion_velocity_pass(solver, dt):
     """
     wp.launch(
         _prepare_velocity_torsion_rows,
-        dim=solver.world_count * solver.dense_max_constraints,
+        dim=solver.world_count * solver.articulation_constraint_max,
         inputs=[
             solver.constraint_count,
-            solver.dense_max_constraints,
+            solver.articulation_constraint_max,
             solver.row_type,
             solver._contact_torsion_group,
             solver.phi,
@@ -404,7 +404,7 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
         coefficient, anchors, touching = budget
         lead = touching[0]
         row = int(count[world])
-        if row >= solver.dense_max_constraints:
+        if row >= solver.articulation_constraint_max:
             raise RuntimeError("Experimental torsion row capacity exceeded; refusing dropped work")
         count[world] += 1
         for field in fields.values():

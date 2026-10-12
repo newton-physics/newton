@@ -28,10 +28,10 @@ def _scene(device, *, enabled=True, ground=True, stack=False):
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
     solver = SolverFeatherPGS(
         model,
-        pgs_mode="matrix_free",
+        solve_mode="matrix_free",
         enable_sleeping=enabled,
         sleep_quiet_time=0.05,
-        pgs_iterations=16,
+        iterations=16,
         friction_anchor_beta=0.0,
     )
     return model, pipeline, solver, [model.state(), model.state()], model.control()
@@ -112,20 +112,20 @@ def test_invalid_options(test, device):
         ({"sleep_quiet_time": 0.0}, "finite and positive"),
         ({"sleep_linear_threshold": float("nan")}, "finite and positive"),
         ({"sleep_angular_threshold": -1.0}, "finite and positive"),
-        ({"pgs_velocity_iterations": 1}, "sleeping requires"),
-        ({"pgs_warmstart": True}, "sleeping requires"),
+        ({"velocity_iterations": 1}, "sleeping requires"),
+        ({"contact_warmstart": True}, "sleeping requires"),
     ):
         with test.subTest(kwargs=kwargs), test.assertRaisesRegex(ValueError, message):
-            SolverFeatherPGS(model, pgs_mode="matrix_free", enable_sleeping=True, friction_anchor_beta=0.0, **kwargs)
+            SolverFeatherPGS(model, solve_mode="matrix_free", enable_sleeping=True, friction_anchor_beta=0.0, **kwargs)
     # The same options are valid without sleeping, so the errors above come from the sleep guard.
-    SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_velocity_iterations=1, friction_anchor_beta=0.0)
-    SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_warmstart=True, friction_anchor_beta=0.0)
+    SolverFeatherPGS(model, solve_mode="matrix_free", velocity_iterations=1, friction_anchor_beta=0.0)
+    SolverFeatherPGS(model, solve_mode="matrix_free", contact_warmstart=True, friction_anchor_beta=0.0)
 
 
 def test_default_and_explicit_disabled_match(test, device):
     """Keep the trajectory bitwise unchanged with sleeping explicitly disabled."""
     model, pipeline, explicit, states, control = _scene(device, enabled=False)
-    default = SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=16, friction_anchor_beta=0.0)
+    default = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, friction_anchor_beta=0.0)
     reference = [model.state(), model.state()]
     _advance(pipeline, explicit, states, control, 30)
     _advance(pipeline, default, reference, control, 30)
@@ -186,9 +186,9 @@ def test_sleeping_body_keeps_its_parent_wrench(test, device):
     """Publish the last awake joint wrench of a sleeping body instead of a skipped dynamics result."""
     model, pipeline = _parent_wrench_scene(device)
     solver = SolverFeatherPGS(
-        model, pgs_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
+        model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
     )
-    reference = SolverFeatherPGS(model, pgs_mode="matrix_free", friction_anchor_beta=0.0)
+    reference = SolverFeatherPGS(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
     flags = {newton.solvers.SolverObservableFlags.BODY_PARENT_F}
     observables, reference_observables = solver.observables(flags), reference.observables(flags)
     states, reference_states = [model.state(), model.state()], [model.state(), model.state()]
@@ -209,7 +209,7 @@ def test_sleeping_body_keeps_its_legacy_parent_wrench(test, device):
     with test.assertWarns(DeprecationWarning):
         model.request_state_attributes("body_parent_f")
     solver = SolverFeatherPGS(
-        model, pgs_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
+        model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
     )
     states = [model.state(), model.state()]
     test.assertIsNotNone(states[0].body_parent_f)
@@ -224,9 +224,9 @@ def test_sleeping_body_keeps_its_legacy_parent_wrench(test, device):
 
 def _sleeping_wrench_solvers(model):
     solver = SolverFeatherPGS(
-        model, pgs_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
+        model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
     )
-    reference = SolverFeatherPGS(model, pgs_mode="matrix_free", friction_anchor_beta=0.0)
+    reference = SolverFeatherPGS(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
     return solver, reference
 
 

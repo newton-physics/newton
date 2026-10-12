@@ -24,9 +24,9 @@ def _run_velocity_post_solve(solver):
     solver._pack_mf_meta(solver.mf_rhs_unbiased)
     solver._launch_pgs_solve(
         solver.rhs_unbiased,
-        solver.pgs_velocity_iterations,
+        solver.velocity_iterations,
         regularize=False,
-        freeze_drive_rows=solver.pgs_velocity_drive_mode == "freeze",
+        freeze_drive_rows=solver.velocity_drive_mode == "freeze",
     )
 
 
@@ -79,8 +79,8 @@ def test_rebound_preserves_loaded_sliding_when_spin_retires(test, device):
                     sliding=1.0,
                     spin=0.0,
                     center_only=True,
-                    pgs_iterations=64,
-                    pgs_velocity_iterations=16,
+                    iterations=64,
+                    velocity_iterations=16,
                     **PATCH_OPTIONS,
                 )
                 baseline, *_ = fixture(0.0, device=device, **options)
@@ -112,8 +112,8 @@ def test_spin_opposition_and_final_budget(test, device):
                 result, solver, *_ = fixture(
                     0.01,
                     device=device,
-                    pgs_iterations=16,
-                    pgs_velocity_iterations=velocity,
+                    iterations=16,
+                    velocity_iterations=velocity,
                     spin=spin,
                     sliding=sliding,
                     center_only=sliding == 0,
@@ -133,7 +133,7 @@ def test_postpass_accumulated_impulse_response_and_position_split(test, device):
         spin=100.0,
         closing=0.1,
         center_only=True,
-        pgs_iterations=16,
+        iterations=16,
         **PATCH_OPTIONS,
     )
     result, solver, *_ = fixture(
@@ -142,8 +142,8 @@ def test_postpass_accumulated_impulse_response_and_position_split(test, device):
         spin=100.0,
         closing=0.1,
         center_only=True,
-        pgs_iterations=16,
-        pgs_velocity_iterations=4,
+        iterations=16,
+        velocity_iterations=4,
         **PATCH_OPTIONS,
     )
     baseline = original[0]
@@ -158,7 +158,7 @@ def test_zero_load_and_speculation(test, device):
     """Remove torque when normal load or current touching support disappears."""
     for options in ({"closing": 0.0}, {"closing": -0.1}, {"separation": 0.004}, {"mu": 0.0}):
         with test.subTest(options=options):
-            result, solver, *_ = fixture(0.01, device=device, pgs_velocity_iterations=4, **PATCH_OPTIONS, **options)
+            result, solver, *_ = fixture(0.01, device=device, velocity_iterations=4, **PATCH_OPTIONS, **options)
             active = result["row_type"] == PGS_CONSTRAINT_TYPE_TORSION
             test.assertLess(np.abs(result["impulses"][active]).max(initial=0), 2e-7)
             _assert_budget(test, result, solver)
@@ -167,7 +167,7 @@ def test_zero_load_and_speculation(test, device):
 def test_carried_spin_is_refunded_when_postpass_retires_group(test, device):
     """Undo carried spin through its response column when final support is separated."""
     original, solver, model, state, contacts = fixture(
-        0.01, device=device, spin=100.0, center_only=True, pgs_velocity_iterations=4, **PATCH_OPTIONS
+        0.01, device=device, spin=100.0, center_only=True, velocity_iterations=4, **PATCH_OPTIONS
     )
     group = solver._torsion_stats["groups"][0]
     count = int(solver.constraint_count.numpy()[0])
@@ -206,7 +206,7 @@ def test_internal_timestep_export_uses_final_linear_impulse(test, device):
     for dt in (0.00125, 0.0025, 0.005):
         with test.subTest(dt=dt):
             result, solver, model, initial, contacts = fixture(
-                0.01, device=device, spin=100.0, center_only=True, dt=dt, pgs_velocity_iterations=4, **PATCH_OPTIONS
+                0.01, device=device, spin=100.0, center_only=True, dt=dt, velocity_iterations=4, **PATCH_OPTIONS
             )
             observables = solver.observables({SolverObservableFlags.CONTACT_F})
             for _ in range(4):
@@ -225,9 +225,9 @@ def test_internal_timestep_export_uses_final_linear_impulse(test, device):
 def test_selected_out_torsion_matches_zero_radius(test, device):
     """Keep the torsion-zero velocity path identical when no shapes are selected."""
     for velocity in (0, 4):
-        expected, *_ = fixture(0.0, device=device, pgs_velocity_iterations=velocity, **PATCH_OPTIONS)
+        expected, *_ = fixture(0.0, device=device, velocity_iterations=velocity, **PATCH_OPTIONS)
         actual, *_ = fixture(
-            0.01, device=device, pgs_velocity_iterations=velocity, contact_torsion_shape_indices=(), **PATCH_OPTIONS
+            0.01, device=device, velocity_iterations=velocity, contact_torsion_shape_indices=(), **PATCH_OPTIONS
         )
         for key in expected:
             np.testing.assert_array_equal(actual[key], expected[key], err_msg=key)
@@ -235,8 +235,8 @@ def test_selected_out_torsion_matches_zero_radius(test, device):
 
 def test_runtime_incompatible_mutation_rejected(test, device):
     """Reject unsupported mutation before stepping an allocated torsion solver."""
-    _, solver, model, state, contacts = fixture(0.01, device=device, pgs_velocity_iterations=4)
-    solver.pgs_warmstart = True
+    _, solver, model, state, contacts = fixture(0.01, device=device, velocity_iterations=4)
+    solver.contact_warmstart = True
     with test.assertRaisesRegex(ValueError, "warmstart"):
         solver.step(state, model.state(), model.control(), contacts, 0.0025)
 

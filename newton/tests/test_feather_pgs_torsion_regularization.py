@@ -43,8 +43,8 @@ def test_analytic_regularized_load_and_saturated_spin(test, device):
                 device=device,
                 center_only=True,
                 spin=100.0,
-                pgs_iterations=16,
-                pgs_contact_regularization=regularization,
+                iterations=16,
+                contact_regularization=regularization,
             )
             group = solver._torsion_stats["groups"][0]
             impulse = result["impulses"][0]
@@ -69,8 +69,8 @@ def test_final_load_budget_across_iterations(test, device):
                     result, solver, *_ = fixture(
                         0.0075,
                         device=device,
-                        pgs_iterations=iterations,
-                        pgs_contact_regularization=regularization,
+                        iterations=iterations,
+                        contact_regularization=regularization,
                         spin=spin,
                         sliding=sliding,
                         **PATCH_OPTIONS,
@@ -89,15 +89,15 @@ def test_final_load_budget_across_iterations(test, device):
 def test_zero_controls_and_no_load(test, device):
     """Preserve excluded/radius-zero controls and forbid spin without compressive load."""
     for regularization in (0.0, 0.01, 0.02):
-        base, *_ = fixture(0.0, device=device, pgs_contact_regularization=regularization)
+        base, *_ = fixture(0.0, device=device, contact_regularization=regularization)
         excluded, *_ = fixture(
-            0.01, device=device, pgs_contact_regularization=regularization, contact_torsion_shape_indices=()
+            0.01, device=device, contact_regularization=regularization, contact_torsion_shape_indices=()
         )
         for name in base:
             np.testing.assert_array_equal(base[name], excluded[name], err_msg=name)
         for options in ({"closing": 0.0}, {"mu": 0.0}):
             result, *_ = fixture(
-                0.01, device=device, pgs_contact_regularization=regularization, center_only=True, **options
+                0.01, device=device, contact_regularization=regularization, center_only=True, **options
             )
             test.assertLess(
                 np.abs(result["impulses"][result["row_type"] == PGS_CONSTRAINT_TYPE_TORSION]).max(initial=0), 1e-9
@@ -114,7 +114,7 @@ def test_substep_force_export_and_release(test, device):
             center_only=True,
             spin=100.0,
             dt=dt,
-            pgs_contact_regularization=0.02,
+            contact_regularization=0.02,
             **PATCH_OPTIONS,
         )
         count = int(contacts.rigid_contact_count.numpy()[0])

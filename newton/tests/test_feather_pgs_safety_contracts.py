@@ -29,10 +29,10 @@ def _driven_model(device, worlds=2):
     return builder.finalize(device=device)
 
 
-def test_partial_reset_refreshes_only_selected_mass_factors(test, device, pgs_mode="matrix_free"):
+def test_partial_reset_refreshes_only_selected_mass_factors(test, device, solve_mode="matrix_free"):
     """Refresh only the selected world's (or the global slot's) factors, eagerly and under graph replay."""
     model = _driven_model(device)
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, update_mass_matrix_interval=100)
+    solver = SolverFeatherPGS(model, solve_mode=solve_mode, update_mass_matrix_interval=100)
     state, output = model.state(), model.state()
     control = model.control()
     solver.step(state, output, control, None, 0.01)
@@ -70,7 +70,7 @@ def test_partial_warp_capacity_preserves_world_boundaries(test, device, pgs_kern
         with test.subTest(capacity=capacity):
             with kernel_overrides({"pgs_kernel": pgs_kernel}):
                 solver = SolverFeatherPGS(
-                    _driven_model(device, worlds=3), pgs_mode="split", dense_max_constraints=capacity
+                    _driven_model(device, worlds=3), solve_mode="split", articulation_constraint_max=capacity
                 )
             test.assertEqual(
                 solver._pgs_solve_tiled_row_kernel is not None, pgs_kernel == "tiled" and wp.get_device(device).is_cuda
@@ -141,7 +141,7 @@ add_function_test(
     "test_partial_reset_refreshes_only_selected_mass_factors_split",
     test_partial_reset_refreshes_only_selected_mass_factors,
     devices=get_test_devices(),
-    pgs_mode="split",
+    solve_mode="split",
 )
 add_function_test(
     TestFeatherPGSSafety,

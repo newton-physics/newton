@@ -33,10 +33,10 @@ def _mask(values, device):
     return wp.array(values, dtype=wp.bool, device=device)
 
 
-def test_reset_validates_mask_length(test, device, pgs_mode="matrix_free"):
+def test_reset_validates_mask_length(test, device, solve_mode="matrix_free"):
     """Accept ``(world_count + 1,)`` masks and reject every other length, including the legacy ``(world_count,)``."""
     model = _build_two_worlds_with_global_body(device)
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode)
+    solver = SolverFeatherPGS(model, solve_mode=solve_mode)
     state = model.state()
     solver.impulses.fill_(17.0)
     before = solver.impulses.numpy().copy()
@@ -53,10 +53,10 @@ def test_reset_validates_mask_length(test, device, pgs_mode="matrix_free"):
     np.testing.assert_array_equal(solver.impulses.numpy(), before)
 
 
-def test_reset_isolates_global_slot(test, device, pgs_mode="matrix_free"):
+def test_reset_isolates_global_slot(test, device, solve_mode="matrix_free"):
     """Select local worlds and global entities independently through the final mask entry."""
     model = _build_two_worlds_with_global_body(device)
-    solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, update_mass_matrix_interval=100)
+    solver = SolverFeatherPGS(model, solve_mode=solve_mode, update_mass_matrix_interval=100)
     state, output = model.state(), model.state()
     control = model.control()
     solver.step(state, output, control, None, 0.01)
@@ -95,7 +95,7 @@ for _name, _func in (
     ("test_reset_validates_mask_length", test_reset_validates_mask_length),
     ("test_reset_isolates_global_slot", test_reset_isolates_global_slot),
 ):
-    add_function_test(TestFeatherPGSReset, f"{_name}_split", _func, devices=get_test_devices(), pgs_mode="split")
+    add_function_test(TestFeatherPGSReset, f"{_name}_split", _func, devices=get_test_devices(), solve_mode="split")
 
 
 if __name__ == "__main__":

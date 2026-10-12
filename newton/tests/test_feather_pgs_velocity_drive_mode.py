@@ -3,8 +3,8 @@
 
 """Treatment of PGS joint-drive rows in the velocity-only iterations of SolverFeatherPGS.
 
-The drive rows exist only with ``drive_mode="physx_pgs"``; without that option the test is
-skipped, since implicit drives have no rows for ``pgs_velocity_drive_mode`` to act on.
+The drive rows exist only with ``drive_mode="rows"``; without that option the test is
+skipped, since implicit drives have no rows for ``velocity_drive_mode`` to act on.
 """
 
 import inspect
@@ -55,7 +55,7 @@ def _driven_lever_on_ground(device):
 
 def _one_step(device, **solver_kwargs):
     model = _driven_lever_on_ground(device)
-    solver = SolverFeatherPGS(model, pgs_mode="matrix_free", drive_mode="physx_pgs", pgs_iterations=4, **solver_kwargs)
+    solver = SolverFeatherPGS(model, solve_mode="matrix_free", drive_mode="rows", iterations=4, **solver_kwargs)
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
     pipeline = newton.CollisionPipeline(model)
@@ -70,12 +70,12 @@ def _one_step(device, **solver_kwargs):
     return float(impulses[drive_slot]), contact_impulse
 
 
-@unittest.skipUnless(_HAS_DRIVE_ROWS, "PGS joint-drive rows (drive_mode='physx_pgs') are not available")
+@unittest.skipUnless(_HAS_DRIVE_ROWS, "PGS joint-drive rows (drive_mode='rows') are not available")
 def test_frozen_drive_rows_keep_the_position_solve_impulse(test, device):
     """Keep the position solve's drive impulse under ``"freeze"`` and keep solving the drive rows under ``"active"``."""
-    position_drive, position_contact = _one_step(device, pgs_velocity_iterations=0)
-    frozen_drive, frozen_contact = _one_step(device, pgs_velocity_iterations=8, pgs_velocity_drive_mode="freeze")
-    active_drive, _active_contact = _one_step(device, pgs_velocity_iterations=8, pgs_velocity_drive_mode="active")
+    position_drive, position_contact = _one_step(device, velocity_iterations=0)
+    frozen_drive, frozen_contact = _one_step(device, velocity_iterations=8, velocity_drive_mode="freeze")
+    active_drive, _active_contact = _one_step(device, velocity_iterations=8, velocity_drive_mode="active")
 
     # The velocity-only iterations change the contact impulse (its position bias is dropped).
     test.assertGreater(abs(frozen_contact - position_contact), 1.0e-4 * abs(position_contact))

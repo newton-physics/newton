@@ -20,10 +20,10 @@ from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 _PAIR_SOLVER = {
-    "pgs_mode": "matrix_free",
-    "dense_max_constraints": 64,
-    "mf_max_constraints": 32,
-    "pgs_iterations": 8,
+    "solve_mode": "matrix_free",
+    "articulation_constraint_max": 64,
+    "free_body_constraint_max": 32,
+    "iterations": 8,
     "enable_joint_limits": True,
 }
 
@@ -456,7 +456,7 @@ def test_sparse_diagonal_response_matches_dense_joint_limits(test, device):
         trajectories.append(history)
 
     first_q, first_qd = trajectories[0][0]
-    # Each branch recovers pgs_beta of its violation in one step, on both sides.
+    # Each branch recovers baumgarte of its violation in one step, on both sides.
     np.testing.assert_allclose(first_q.reshape(2, 19)[:, :16], np.tile(0.104 * side, (2, 1)), rtol=0.0, atol=2.0e-6)
     np.testing.assert_allclose(first_qd.reshape(2, 19)[:, :16], np.tile(-0.12 * side, (2, 1)), rtol=0.0, atol=2.0e-6)
     for sparse, dense in zip(*trajectories, strict=True):
@@ -469,7 +469,7 @@ def test_sparse_diagonal_contact_friction_matches_general_owner(test, device):
     model = _build_sparse_contact_friction_model(device=device)
 
     def make_solver(**kwargs):
-        options = dict(_PAIR_SOLVER, dense_max_constraints=96)
+        options = dict(_PAIR_SOLVER, articulation_constraint_max=96)
         options.update(kwargs)
         return SolverFeatherPGS(model, **options)
 
@@ -526,7 +526,7 @@ def test_sparse_diagonal_contact_compliance_matches_general_owner(test, device):
     for label, streams, compliance in (("sparse", True, True), ("general", False, True), ("rigid", False, False)):
         solver = SolverFeatherPGS(
             model,
-            **dict(_PAIR_SOLVER, dense_max_constraints=96, pgs_iterations=16),
+            **dict(_PAIR_SOLVER, articulation_constraint_max=96, iterations=16),
             use_parallel_streams=streams,
             friction_anchor_beta=0.0,
             contact_compliance=compliance,
@@ -566,7 +566,11 @@ def test_sparse_diagonal_is_selected_only_where_supported(test, device):
     model = _build_sparse_diagonal_pair_model(device=device)
     if not wp.get_device(device).is_cuda:
         solver = SolverFeatherPGS(
-            model, pgs_mode="split", enable_joint_limits=True, dense_max_constraints=64, use_parallel_streams=True
+            model,
+            solve_mode="split",
+            enable_joint_limits=True,
+            articulation_constraint_max=64,
+            use_parallel_streams=True,
         )
         test.assertFalse(solver._sparse_diagonal_contact_solve)
         return
@@ -576,11 +580,11 @@ def test_sparse_diagonal_is_selected_only_where_supported(test, device):
         ("no streams", {"use_parallel_streams": False}),
         ("joint limits off", {"enable_joint_limits": False}),
         ("torsion", {"contact_torsion_radius": 0.01}),
-        ("regularization", {"pgs_contact_regularization": 0.02}),
-        ("velocity iterations", {"pgs_velocity_iterations": 1}),
-        ("warm start", {"pgs_warmstart": True}),
-        ("schedule", {"pgs_schedule": "physx_grasp"}),
-        ("drive rows", {"drive_mode": "physx_pgs"}),
+        ("regularization", {"contact_regularization": 0.02}),
+        ("velocity iterations", {"velocity_iterations": 1}),
+        ("warm start", {"contact_warmstart": True}),
+        ("schedule", {"row_schedule": "phased"}),
+        ("drive rows", {"drive_mode": "rows"}),
         ("friction mode", {"friction_mode": "bisection", "friction_anchor_beta": 0.0}),
     ):
         with test.subTest(label):

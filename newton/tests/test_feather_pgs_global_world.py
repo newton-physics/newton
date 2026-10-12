@@ -57,17 +57,17 @@ def _step_once(model, solver, floor_velocity=0.0, box_velocity=-1.0):
     return output.body_qd.numpy()[:, 2], contacts
 
 
-def test_global_kinematic_floor_supports_every_world(test, device, pgs_mode="matrix_free", response="immediate"):
+def test_global_kinematic_floor_supports_every_world(test, device, solve_mode="matrix_free", response="immediate"):
     """Stop the boxes of every world on a global kinematic floor exactly as on world geometry."""
     static_model = _floor_model(device, "static")
     static_v = _step_once(
-        static_model, SolverFeatherPGS(static_model, pgs_mode=pgs_mode, articulated_contact_response=response)
+        static_model, SolverFeatherPGS(static_model, solve_mode=solve_mode, articulated_contact_response=response)
     )[0][:2]
     test.assertLess(np.max(np.abs(static_v)), 0.05)
 
     model = _floor_model(device, "kinematic")
     solver = SolverFeatherPGS(
-        model, pgs_mode=pgs_mode, warn_constraint_overflow=False, articulated_contact_response=response
+        model, solve_mode=solve_mode, warn_constraint_overflow=False, articulated_contact_response=response
     )
     v, contacts = _step_once(model, solver)
     count = int(contacts.rigid_contact_count.numpy()[0])
@@ -78,14 +78,14 @@ def test_global_kinematic_floor_supports_every_world(test, device, pgs_mode="mat
 
     # The prescribed floor velocity enters every world's contact target.
     moving_v = _step_once(
-        model, SolverFeatherPGS(model, pgs_mode=pgs_mode, articulated_contact_response=response), floor_velocity=0.5
+        model, SolverFeatherPGS(model, solve_mode=solve_mode, articulated_contact_response=response), floor_velocity=0.5
     )[0][:2]
     np.testing.assert_allclose(moving_v, static_v + 0.5, atol=1.0e-4)
 
     # The floor is elided from the response even when world 0, where it is stored, has no dynamic body.
     model = _floor_model(device, "kinematic", kinematic_world0=True)
     solver = SolverFeatherPGS(
-        model, pgs_mode=pgs_mode, warn_constraint_overflow=False, articulated_contact_response=response
+        model, solve_mode=solve_mode, warn_constraint_overflow=False, articulated_contact_response=response
     )
     state, output = model.state(), model.state()
     joint_qd = state.joint_qd.numpy()
@@ -101,7 +101,7 @@ def test_global_kinematic_floor_supports_every_world(test, device, pgs_mode="mat
     np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [False, False, False])
 
 
-def test_global_kinematic_floor_capture_replay(test, device, pgs_mode="matrix_free", response="immediate"):
+def test_global_kinematic_floor_capture_replay(test, device, solve_mode="matrix_free", response="immediate"):
     """Match eager stepping for both worlds on a global kinematic floor with captured collide and step."""
     model = _floor_model(device, "kinematic")
     pipeline = newton.CollisionPipeline(model)
@@ -135,10 +135,10 @@ def test_global_kinematic_floor_capture_replay(test, device, pgs_mode="matrix_fr
         return state_0.body_q.numpy()[:2], state_0.body_qd.numpy()[:2]
 
     eager_q, eager_qd = run(
-        SolverFeatherPGS(model, pgs_mode=pgs_mode, articulated_contact_response=response), 20, capture=False
+        SolverFeatherPGS(model, solve_mode=solve_mode, articulated_contact_response=response), 20, capture=False
     )
     captured_q, captured_qd = run(
-        SolverFeatherPGS(model, pgs_mode=pgs_mode, articulated_contact_response=response), 20, capture=True
+        SolverFeatherPGS(model, solve_mode=solve_mode, articulated_contact_response=response), 20, capture=True
     )
     np.testing.assert_allclose(captured_q, eager_q, atol=1.0e-6)
     np.testing.assert_allclose(captured_qd, eager_qd, atol=1.0e-5)
@@ -186,12 +186,12 @@ def _expect_one_warning(test, category, pattern, call):
 
 
 def test_jointed_global_kinematic_flags_other_world_contacts(
-    test, device, pgs_mode="matrix_free", response="immediate"
+    test, device, solve_mode="matrix_free", response="immediate"
 ):
     """Solve a jointed kinematic global articulation in world 0 and flag its other-world contacts."""
     model = _jointed_kinematic_floor_model(device)
     solver = _construct(
-        test, model, True, pgs_mode=pgs_mode, warn_constraint_overflow=False, articulated_contact_response=response
+        test, model, True, solve_mode=solve_mode, warn_constraint_overflow=False, articulated_contact_response=response
     )
     state, output = model.state(), model.state()
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -216,10 +216,10 @@ def test_jointed_global_kinematic_flags_other_world_contacts(
 
 
 def test_construction_warns_about_unsolvable_global_contacts(
-    test, device, pgs_mode="matrix_free", response="immediate"
+    test, device, solve_mode="matrix_free", response="immediate"
 ):
     """Warn once at construction when shapes allow contacts coupling a global articulation with another world."""
-    kwargs = {"pgs_mode": pgs_mode, "articulated_contact_response": response}
+    kwargs = {"solve_mode": solve_mode, "articulated_contact_response": response}
     # Dynamic global bodies and jointed kinematic global articulations warn.
     _construct(test, _floor_model(device, "dynamic"), True, **kwargs)
     _construct(test, _jointed_kinematic_floor_model(device), True, **kwargs)
@@ -255,13 +255,13 @@ def _lift_box(model, world):
     model.joint_q.assign(joint_q)
 
 
-def test_dynamic_global_body_flags_other_world_contacts(test, device, pgs_mode="matrix_free", response="immediate"):
+def test_dynamic_global_body_flags_other_world_contacts(test, device, solve_mode="matrix_free", response="immediate"):
     """Let a dynamic global body interact with world 0, and drop and flag its contacts with another world."""
     # Only world 1's box touches the global dynamic floor.
     model = _floor_model(device, "dynamic")
     _lift_box(model, 0)
     solver = _construct(
-        test, model, True, pgs_mode=pgs_mode, warn_constraint_overflow=False, articulated_contact_response=response
+        test, model, True, solve_mode=solve_mode, warn_constraint_overflow=False, articulated_contact_response=response
     )
     v, contacts = _step_once(model, solver)
     count = int(contacts.rigid_contact_count.numpy()[0])
@@ -275,7 +275,7 @@ def test_dynamic_global_body_flags_other_world_contacts(test, device, pgs_mode="
     model = _floor_model(device, "dynamic")
     _lift_box(model, 1)
     solver = _construct(
-        test, model, True, pgs_mode=pgs_mode, warn_constraint_overflow=False, articulated_contact_response=response
+        test, model, True, solve_mode=solve_mode, warn_constraint_overflow=False, articulated_contact_response=response
     )
     v, contacts = _step_once(model, solver)
     count = int(contacts.rigid_contact_count.numpy()[0])
@@ -314,19 +314,19 @@ def _place(model, state, z):
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
 
-def test_global_overflow_has_its_own_reset_slot(test, device, pgs_mode="matrix_free", response="immediate"):
+def test_global_overflow_has_its_own_reset_slot(test, device, solve_mode="matrix_free", response="immediate"):
     """Latch global row loss in the global entry, and clear only its own status with each reset-mask entry."""
     model = _global_overflow_model(device)
     # One contact's rows fit; the propagation response holds every contact row in a family
-    # of mf_max_constraints + dense_max_constraints rows.
-    capacity = {"mf_max_constraints": 3}
+    # of free_body_constraint_max + articulation_constraint_max rows.
+    capacity = {"free_body_constraint_max": 3}
     if response == "propagation":
-        capacity = {"mf_max_constraints": 1, "dense_max_constraints": 2}
+        capacity = {"free_body_constraint_max": 1, "articulation_constraint_max": 2}
     solver = _construct(
         test,
         model,
         True,
-        pgs_mode=pgs_mode,
+        solve_mode=solve_mode,
         warn_constraint_overflow=False,
         articulated_contact_response=response,
         **capacity,
@@ -389,7 +389,7 @@ def _few_articulation_models(device):
     Yields ``(name, model, z_contact, z_free)``: one global free box on the ground
     (one world, one articulation), and two worlds holding one articulation between them
     (world 0 has only static geometry, world 1 a box) plus a global box. ``z_contact``
-    places the boxes on the ground, where their contacts overflow ``mf_max_constraints=3``;
+    places the boxes on the ground, where their contacts overflow ``free_body_constraint_max=3``;
     ``z_free`` lifts them out of contact.
     """
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
@@ -412,19 +412,19 @@ def _few_articulation_models(device):
     yield "two_worlds_two_articulations", builder.finalize(device=device), [0.099, 0.099], [2.0, 2.0]
 
 
-def _check_global_slot_reset(test, device, model, z_contact, z_free, pgs_mode, response):
+def _check_global_slot_reset(test, device, model, z_contact, z_free, solve_mode, response):
     entries = model.world_count + 1
     # A dynamic global box can only meet another world's body when there are several worlds.
     # One contact's rows fit; the propagation response holds every contact row in a family
-    # of mf_max_constraints + dense_max_constraints rows.
-    capacity = {"mf_max_constraints": 3}
+    # of free_body_constraint_max + articulation_constraint_max rows.
+    capacity = {"free_body_constraint_max": 3}
     if response == "propagation":
-        capacity = {"mf_max_constraints": 1, "dense_max_constraints": 2}
+        capacity = {"free_body_constraint_max": 1, "articulation_constraint_max": 2}
     solver = _construct(
         test,
         model,
         model.world_count > 1,
-        pgs_mode=pgs_mode,
+        solve_mode=solve_mode,
         warn_constraint_overflow=False,
         articulated_contact_response=response,
         **capacity,
@@ -483,12 +483,12 @@ def _check_global_slot_reset(test, device, model, z_contact, z_free, pgs_mode, r
     test.assertEqual(solver.constraint_overflow.numpy().tolist(), clear)
 
 
-def test_global_slot_reset_with_few_articulations(test, device, pgs_mode="matrix_free", response="immediate"):
+def test_global_slot_reset_with_few_articulations(test, device, solve_mode="matrix_free", response="immediate"):
     """Clear the global entry on every reset mask, even when articulations do not outnumber the status entries."""
     for name, model, z_contact, z_free in _few_articulation_models(device):
         with test.subTest(model=name):
             test.assertLessEqual(model.articulation_count, model.world_count)
-            _check_global_slot_reset(test, device, model, z_contact, z_free, pgs_mode, response)
+            _check_global_slot_reset(test, device, model, z_contact, z_free, solve_mode, response)
 
 
 class TestFeatherPGSGlobalWorld(unittest.TestCase):
@@ -513,7 +513,7 @@ for _name, _func in (
 ):
     add_function_test(TestFeatherPGSGlobalWorld, _name, _func, devices=devices)
     split_devices = devices if _name == "test_global_kinematic_floor_capture_replay" else get_test_devices()
-    add_function_test(TestFeatherPGSGlobalWorld, f"{_name}_split", _func, devices=split_devices, pgs_mode="split")
+    add_function_test(TestFeatherPGSGlobalWorld, f"{_name}_split", _func, devices=split_devices, solve_mode="split")
     # The propagation response moves these free-body contacts to its body-space rows.
     add_function_test(TestFeatherPGSGlobalWorld, f"{_name}_propagation", _func, devices=devices, response="propagation")
 

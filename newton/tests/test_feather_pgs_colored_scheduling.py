@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contact-unit coloring of ``articulated_contact_response="propagation-colored"``.
+"""Contact-unit coloring of ``articulated_contact_response="propagation_colored"``.
 
 The colored sweep solves one color at a time, in parallel within a color; units past the color
 cap run in an ordered serial tail. A coloring with few units per color, or a spill into the tail,
@@ -49,10 +49,10 @@ def _heap(device, nx=6, ny=6, nz=3, pitch=0.042, half=0.02, kinematic_tray=False
 
 def _colored_solver(model, **kwargs):
     options = {
-        "articulated_contact_response": "propagation-colored",
-        "pgs_iterations": 6,
-        "mf_max_constraints": CONTACT_MAX,
-        "dense_max_constraints": 64,
+        "articulated_contact_response": "propagation_colored",
+        "iterations": 6,
+        "free_body_constraint_max": CONTACT_MAX,
+        "articulation_constraint_max": 64,
     }
     options.update(kwargs)
     return SolverFeatherPGS(model, **options)
@@ -147,7 +147,7 @@ def test_kinematic_free_body_is_recorded_as_static(test, device):
     builder.add_shape_box(dynamic, hx=0.1, hy=0.1, hz=0.1)
     model = builder.finalize(device=device)
     model.rigid_contact_max = CONTACT_MAX
-    solver = _colored_solver(model, mf_max_constraints=256)
+    solver = _colored_solver(model, free_body_constraint_max=256)
     _settle(model, solver, steps=1)
     n = int(solver.color_world_unit_cursor.numpy()[0])
     bodies = np.concatenate([solver.color_unit_body_a.numpy()[:n], solver.color_unit_body_b.numpy()[:n]])
@@ -159,15 +159,15 @@ def test_kinematic_free_body_is_recorded_as_static(test, device):
 def test_colored_result_matches_the_immediate_response(test, device):
     """Settle the heap like the immediate response."""
     finals = {}
-    for response in ("propagation-colored", "immediate"):
+    for response in ("propagation_colored", "immediate"):
         model = _heap(device, nx=4, ny=4, nz=2)
         solver = _colored_solver(model, articulated_contact_response=response, row_watermark=True)
         state, _ = _settle(model, solver, steps=24)
-        test.assertEqual(solver.constraint_row_watermarks()["mf_dropped_contact_rows_high_water"], 0)
+        test.assertEqual(solver.constraint_row_watermarks()["free_body_dropped_contact_rows_high_water"], 0)
         finals[response] = state.body_q.numpy()[:, :3]
     test.assertTrue(np.isfinite(finals["immediate"]).all())
     # A different sweep order, so the heights agree only to a tolerance.
-    test.assertLess(float(np.max(np.abs(finals["propagation-colored"][:, 2] - finals["immediate"][:, 2]))), 0.01)
+    test.assertLess(float(np.max(np.abs(finals["propagation_colored"][:, 2] - finals["immediate"][:, 2]))), 0.01)
 
 
 def test_coloring_is_deterministic_for_a_fixed_contact_set(test, device):
@@ -220,7 +220,7 @@ def test_colored_accepts_a_large_row_budget(test, device):
     """Keep the per-unit coloring state in global scratch, so the row budget is uncapped."""
     model = _heap(device, nx=2, ny=2, nz=1)
     model.rigid_contact_max = 65536
-    solver = _colored_solver(model, mf_max_constraints=32768, dense_max_constraints=2048)
+    solver = _colored_solver(model, free_body_constraint_max=32768, articulation_constraint_max=2048)
     test.assertEqual(solver.propagation_max_constraints, 32768 + 2048)
 
 

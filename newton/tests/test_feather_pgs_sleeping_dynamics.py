@@ -17,7 +17,7 @@ _FIELDS = ("body_q", "body_qd", "joint_q", "joint_qd")
 # Hard point friction: branched articulations of one topology select sparse mass factors.
 _SPARSE_PROFILE = {
     "friction_anchor_beta": 0.0,
-    "pgs_contact_regularization": 0.0,
+    "contact_regularization": 0.0,
     "contact_friction_gap_threshold": float("inf"),
 }
 
@@ -82,7 +82,7 @@ class _Run:
         with kernel_overrides(overrides):
             self.solver = newton.solvers.SolverFeatherPGS(
                 self.model,
-                pgs_mode="matrix_free",
+                solve_mode="matrix_free",
                 **{
                     **PROFILE,
                     "update_mass_matrix_interval": interval,

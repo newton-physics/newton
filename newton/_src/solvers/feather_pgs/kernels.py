@@ -18,7 +18,7 @@ from .friction import contact_tangent_basis, friction_pair_candidate
 from .friction_patches import FrictionPatches, warmstart_dt_scale
 
 PGS_CONSTRAINT_TYPE_CONTACT = 0
-# PGS joint drive row (``drive_mode="physx_pgs"``): a bilateral row per driven DOF whose
+# PGS joint drive row (``drive_mode="rows"``): a bilateral row per driven DOF whose
 # impulse follows the PhysX force-drive update each iteration; the velocity-only
 # iterations can freeze these rows.
 PGS_CONSTRAINT_TYPE_JOINT_TARGET = 1
@@ -2398,7 +2398,7 @@ def build_mass_update_mask(
 # one articulation, one row per follower coordinate. Connect rows close a kinematic
 # loop: three rows per loop-closing BALL joint pin its parent and child anchors
 # together. Both are bilateral equality rows with an unbounded impulse and the
-# Baumgarte bias ``pgs_beta * phi / dt``. Coefficients, enable flags and anchors are
+# Baumgarte bias ``baumgarte * phi / dt``. Coefficients, enable flags and anchors are
 # read from device arrays every step, so runtime changes need no re-initialization
 # and stay compatible with CUDA graph capture.
 
@@ -5975,7 +5975,7 @@ def finalize_mf_constraint_counts(
 ):
     """Turn the monotone MF slot counter into the row count.
 
-    Truncates at the first rejected reservation and at ``mf_max_constraints``
+    Truncates at the first rejected reservation and at ``free_body_constraint_max``
     (see :func:`finalize_world_constraint_counts`). ``slots_per_contact`` is
     kept for call-site compatibility.  The MF buffer may contain a mix of 3-row
     normal+friction contacts and 1-row speculative normal contacts, so rounding
@@ -7353,7 +7353,7 @@ def accumulate_propagation_warmstart_body_impulses(
             wp.atomic_add(propagation_body_impulses, bb, k, propagation_J_b[world, row, k] * impulse)
 
 
-# Coloring of the propagation contact units ("propagation-colored").
+# Coloring of the propagation contact units ("propagation_colored").
 #
 # Two units conflict when they share a body with a response: their twist updates and deferred
 # impulses overlap. The units of one color are body-disjoint and solve in parallel; colors run in
