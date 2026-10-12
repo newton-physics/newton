@@ -276,12 +276,9 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
                 "   Because ``newton.solvers`` is a module rather than a package, use",
                 f"   ``from newton.solvers import {sub_name}`` instead of ``import {mod_name}``.",
                 "",
-                f".. currentmodule:: newton._src.solvers.{sub_name}",
-                "",
             ]
         )
-    else:
-        lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
+    lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
 
     # Render submodules as direct document links instead of autosummary stubs.
     # Child module pages still need hidden toctree edges to satisfy Sphinx.

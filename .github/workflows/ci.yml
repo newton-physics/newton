@@ -38,7 +38,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.26"
+          version: "0.12.23"
       - name: Test CI tooling
         run: uv run --no-project --with packaging==26.2 -m unittest discover -s scripts/ci/tests
       - name: Check deprecation allowlists
@@ -79,7 +79,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.26"
+          version: "0.12.23"
       - name: Test dependency resolution (Python 3.10)
         run: uv sync --dry-run --python 3.10 --extra dev
       - name: Test dependency resolution (Python 3.11)
@@ -122,14 +122,17 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.26"
+          version: "0.12.23"
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version-file: ".python-version"
+      # Post-submit (push) runs start cold to catch stale-cache issues without
+      # slowing the merge queue.
       - name: Restore Warp kernel cache
-        if: github.event_name != 'merge_group'
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        id: restore-warp-cache
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: |
             ~/.cache/warp
@@ -147,7 +150,7 @@ jobs:
           uv run --extra dev -m newton.tests
           --strict-warnings
           --parallel-timeout ${{ matrix.os == 'macos-latest' && 6900 || 3300 }}
-          ${{ matrix.os == 'macos-latest' && '--disable-process-pooling' || '' }}
+          ${{ matrix.os == 'macos-latest' && '--max-tasks-per-child 10' || '' }}
           --no-cache-clear
           --junit-report-xml rspec.xml
           --coverage
@@ -159,6 +162,17 @@ jobs:
           --no-cache-clear
           --start-directory asv/tests
           --junit-report-xml asv-rspec.xml
+      # Merge queue caches are scoped to throwaway gh-readonly-queue refs.
+      # Cache keys are immutable, so cold runs only save when the key is new.
+      - name: Save Warp kernel cache
+        if: github.event_name != 'merge_group' && steps.restore-warp-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: |
+            ~/.cache/warp
+            ~/Library/Caches/warp
+            ~\AppData\Local\NVIDIA\warp\Cache
+          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
       - name: Test Summary
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:

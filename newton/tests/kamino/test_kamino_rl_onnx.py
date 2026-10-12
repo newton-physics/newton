@@ -215,6 +215,31 @@ class TestKaminoRlOnnx(unittest.TestCase):
         expected = observation @ weights.T + bias
         np.testing.assert_allclose(actual, expected)
 
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA device required")
+    def test_fixed_batch_policy_replays_cuda_graph(self):
+        """Rebatch a fixed export without changing its file and replay new inputs."""
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmp_dir:
+            path, weights, bias = self._save_policy(tmp_dir)
+            model = onnx.load(path)
+            for value in (*model.graph.input, *model.graph.output):
+                value.type.tensor_type.shape.dim[0].dim_value = 1
+            onnx.save(model, path)
+            with open(path, "rb") as stream:
+                original = stream.read()
+            policy = WarpOnnxPolicy(path, device="cuda:0", batch_size=2, action_width=2)
+            observation = wp.zeros((2, 2), dtype=wp.float32, device="cuda:0")
+            with wp.ScopedCapture(device="cuda:0") as capture:
+                output = policy(observation)
+            for values in (
+                np.array([[1.0, 2.0], [-1.0, 0.5]], dtype=np.float32),
+                np.array([[3.0, -2.0], [0.0, 4.0]], dtype=np.float32),
+            ):
+                observation.assign(values)
+                wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(output.numpy(), values @ weights.T + bias)
+            with open(path, "rb") as stream:
+                self.assertEqual(stream.read(), original)
+
     def test_policy_rejects_invalid_warp_dtype(self):
         """Reject Warp observations with an incompatible dtype."""
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmp_dir:

@@ -122,6 +122,12 @@ def test_svd_one_sided_jacobi_recovers_ill_conditioned_singular_values(test: uni
     np.testing.assert_allclose(s_np, s_true, rtol=1.0e-2)
     np.testing.assert_allclose(u_np @ np.diag(s_np) @ v_np.T, a_np, atol=1e-4)
 
+    # A norm-based convergence cutoff incorrectly skips this correlated small column.
+    mixed_scale = np.array([[1.0e4, 1.0e-4], [0.0, 1.0e-4]], dtype=np.float32)
+    u, s, _v = _run_svd(mixed_scale[None], [2], device)
+    np.testing.assert_allclose(s[0], np.linalg.svd(mixed_scale.astype(np.float64), compute_uv=False), rtol=1e-5)
+    np.testing.assert_allclose(u[0].T @ u[0], np.eye(2), atol=1e-5)
+
 
 def test_svd_one_sided_jacobi_handles_more_columns_than_rows(test: unittest.TestCase, device):
     """Verify a 3x5 matrix (rank <= 3) recovers its 3 real singular values and drops the 2 excess directions to exactly 0.
@@ -144,22 +150,23 @@ def test_svd_one_sided_jacobi_handles_more_columns_than_rows(test: unittest.Test
     np.testing.assert_allclose(s_np[3:], [0.0, 0.0], atol=1e-6)
     np.testing.assert_allclose(u_np[:, :3] @ np.diag(s_np[:3]) @ v_np[:, :3].T, a_np, atol=1e-4)
     np.testing.assert_allclose(u_np.T @ u_np, np.eye(3), atol=1e-5)
+    np.testing.assert_allclose(v_np[:, :3].T @ v_np[:, :3], np.eye(3), atol=1e-5)
 
 
 def test_svd_one_sided_jacobi_batch_has_no_cross_talk_with_heterogeneous_n_columns(test: unittest.TestCase, device):
     """Verify two matrices in one batched launch, with different n_columns, match solving each independently.
 
-    Robot 1's third column is zero-padding (n_columns=2), robot 0's is a
-    genuine 3x3 problem (n_columns=3): mixing different active sizes in one
-    launch must not let one batch element's data leak into another's.
+    Both wide (n_columns=4) and tall (n_columns=2) active problems must
+    ignore nonzero padding and match their independently solved, zero-padded
+    references.
     """
     rng = np.random.default_rng(31)
-    a0 = rng.normal(size=(3, 3)).astype(np.float32)
-    a1 = rng.normal(size=(3, 3)).astype(np.float32)
-    a1[:, 2] = 0.0
-
-    u_batch, s_batch, v_batch = _run_svd(np.stack([a0, a1]), [3, 2], device)
-    u0, s0, v0 = _run_svd(a0[None], [3], device)
+    a0 = rng.normal(size=(3, 5)).astype(np.float32)
+    a1 = rng.normal(size=(3, 5)).astype(np.float32)
+    u_batch, s_batch, v_batch = _run_svd(np.stack([a0, a1]), [4, 2], device)
+    a0[:, 4:] = 0.0
+    a1[:, 2:] = 0.0
+    u0, s0, v0 = _run_svd(a0[None], [4], device)
     u1, s1, v1 = _run_svd(a1[None], [2], device)
 
     np.testing.assert_allclose(s_batch[0], s0[0], atol=1e-5)

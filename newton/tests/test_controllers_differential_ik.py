@@ -1602,37 +1602,52 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         self.assertAlmostEqual(float(outputs.joint_qd_target.numpy()[0]), expected, places=5)
 
     def test_dt_as_wp_array(self):
-        """step()'s dt accepts a single-element wp.array with the same result as an equal-valued float scalar."""
-        device = wp.get_device()
-        dt_scalar = 0.02
-        ctrl = ControllerDifferentialIKModelFree(
-            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.5, device=device
-        )
-        pose = _identity_transform(1, device)
-        desired = wp.array(
-            [wp.transform(p=wp.vec3(0.1, 0.0, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
-        )
-        jacobian = _identity_jacobian(1, 6, device)
+        """Accept valid array durations and reject invalid durations without changing targets."""
+        for device in devices:
+            for method in (DifferentialIKMethod.DAMPED_LEAST_SQUARES, DifferentialIKMethod.TRANSPOSE):
+                with self.subTest(device=str(device), method=method):
+                    dt_scalar = 0.02
+                    ctrl = ControllerDifferentialIKModelFree(
+                        controlled_dofs_per_robot=_dofs_arr([6], device),
+                        bandwidth=1.0,
+                        damping=0.5 if method == DifferentialIKMethod.DAMPED_LEAST_SQUARES else None,
+                        ik_method=method,
+                        device=device,
+                    )
+                    inputs, outputs = ctrl.input(), ctrl.output()
+                    inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+                    inputs.tool_pose_world = _identity_transform(1, device)
+                    inputs.desired_tool_pose_world = wp.array(
+                        [wp.transform(p=wp.vec3(0.1, 0.0, 0.0), q=wp.quat_identity())],
+                        dtype=wp.transform,
+                        device=device,
+                    )
+                    inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+                    ctrl.step(inputs=inputs, outputs=outputs, dt=dt_scalar)
+                    qd_scalar = outputs.joint_qd_target.numpy().copy()
+                    q_target_scalar = outputs.joint_q_target.numpy().copy()
+                    ctrl.step(inputs=inputs, outputs=outputs, dt=wp.array([dt_scalar], dtype=wp.float32, device=device))
+                    np.testing.assert_allclose(outputs.joint_qd_target.numpy(), qd_scalar, atol=1e-6)
+                    np.testing.assert_allclose(outputs.joint_q_target.numpy(), q_target_scalar, atol=1e-6)
 
-        inputs = ctrl.input()
-        outputs = ctrl.output()
-        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
-        inputs.tool_pose_world = pose
-        inputs.desired_tool_pose_world = desired
-        inputs.jacobian_tool_world = jacobian
-        ctrl.step(inputs=inputs, outputs=outputs, dt=dt_scalar)
-        qd_scalar = outputs.joint_qd_target.numpy().copy()
-        q_target_scalar = outputs.joint_q_target.numpy().copy()
-
-        inputs = ctrl.input()
-        outputs = ctrl.output()
-        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
-        inputs.tool_pose_world = pose
-        inputs.desired_tool_pose_world = desired
-        inputs.jacobian_tool_world = jacobian
-        ctrl.step(inputs=inputs, outputs=outputs, dt=wp.array([dt_scalar], dtype=wp.float32, device=device))
-        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), qd_scalar, atol=1e-6)
-        np.testing.assert_allclose(outputs.joint_q_target.numpy(), q_target_scalar, atol=1e-6)
+                    invalid_durations = [
+                        (wp.zeros(2, dtype=wp.float32, device=device), ValueError),
+                        (wp.zeros(1, dtype=wp.float64, device=device), TypeError),
+                        (object(), TypeError),
+                    ]
+                    invalid_durations.extend(
+                        (wp.zeros(1, dtype=wp.float32, device=other), ValueError)
+                        for other in devices
+                        if other != device
+                    )
+                    for dt, error in invalid_durations:
+                        with self.subTest(dt=dt):
+                            outputs.joint_qd_target.fill_(7.0)
+                            outputs.joint_q_target.fill_(9.0)
+                            with self.assertRaises(error):
+                                ctrl.step(inputs=inputs, outputs=outputs, dt=dt)
+                            np.testing.assert_array_equal(outputs.joint_qd_target.numpy(), np.full(6, 7.0))
+                            np.testing.assert_array_equal(outputs.joint_q_target.numpy(), np.full(6, 9.0))
 
     def test_is_graphable(self):
         """A controller with every gain baked at construction reports is_graphable() == True."""

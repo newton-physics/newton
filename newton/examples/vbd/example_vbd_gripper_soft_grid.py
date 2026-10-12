@@ -111,7 +111,6 @@ PARAMS = {
     "camera_pitch": -10.0,
     "camera_yaw": 128.0,
     "draw_wireframe": False,
-    "initial_paused": False,
 }
 
 
@@ -145,7 +144,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.params["solver_iterations"],
-            rigid_compliant_alm=True,
             integrate_with_external_rigid_solver=False,
             rigid_body_contact_buffer_size=self.params["rigid_body_contact_buffer_size"],
         )
@@ -170,8 +168,6 @@ class Example:
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = self.params["draw_wireframe"]
-        if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = self.params["initial_paused"]
         self.viewer.set_camera(
             wp.vec3(*self.params["camera_pos"]),
             self.params["camera_pitch"],

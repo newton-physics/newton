@@ -752,6 +752,32 @@ The collected attributes are returned in the result dictionary and can be access
                armature_value = attrs["physxJoint:armature"]
                print(f"PhysX joint {prim_path} has armature: {armature_value}")
 
+MuJoCo Tendons
+--------------
+
+Register :class:`~newton.solvers.SolverMuJoCo` custom attributes before importing
+USD assets containing ``MjcTendon`` prims:
+
+.. code-block:: python
+
+   import newton
+   from newton.solvers import SolverMuJoCo
+
+   builder = newton.ModelBuilder()
+   SolverMuJoCo.register_custom_attributes(builder)
+   builder.add_usd("robot.usda")
+
+Both fixed and spatial tendons are supported. An unauthored ``mjc:type`` defaults
+to ``"spatial"``. Spatial paths use ``mjc:path`` and optional ``mjc:path:indices``
+to reference sites and wrapping spheres or cylinders, including repeated targets.
+``mjc:path:segments`` and ``mjc:path:divisors`` define pulley branches;
+``mjc:sideSites`` and ``mjc:sideSites:indices`` select side sites for wrapping
+geometry. Segment and side-site arrays follow the indexed path order.
+
+Referenced shapes must be included by the import options. Paths with invalid
+indices or unresolved targets emit a warning and contribute no wrap entries.
+MuJoCo export also warns when it skips a tendon with no usable path.
+
 Custom Attributes from USD
 --------------------------
 
