@@ -1374,6 +1374,7 @@ class Model:
 
         Constructed from finalized collision topology and cached on first access.
         Reading :attr:`shape_contact_pair_count` does not construct the table.
+        In-place edits to the computed pair table are unsupported; assign a replacement array instead.
         Assigning an array replaces the table, updates the count to its length,
         and clears cached statistics. Assigning ``None`` removes the table and
         sets the count to zero.
