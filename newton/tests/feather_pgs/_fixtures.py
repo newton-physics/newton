@@ -1253,3 +1253,19 @@ def _assert_budget(test, result, solver):
         sliding = sum(float(np.linalg.norm(impulse[n + 1 : n + 3])) for n in group["anchor_rows"])
         spin = abs(float(impulse[group["row"]])) / group["effective_radius_m"]
         test.assertLessEqual(sliding + spin, group["mu"] * normal + 3e-6)
+
+
+def _conclude_position_problem(solver, dt):
+    """Switch the solved position problem to the velocity-only right-hand sides, as a step does."""
+    solver._compute_velocity_pass_rhs(dt)
+
+
+def _run_velocity_post_solve(solver):
+    """Run the velocity-only iterations of a step on the current row state."""
+    solver._pack_mf_meta(solver._mf_rhs_unbiased)
+    solver._launch_pgs_solve(
+        solver._rhs_unbiased,
+        solver.velocity_iterations,
+        regularize=False,
+        freeze_drive_rows=solver.velocity_drive_mode == "freeze",
+    )

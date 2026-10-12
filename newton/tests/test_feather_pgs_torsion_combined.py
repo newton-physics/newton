@@ -6,7 +6,13 @@ import unittest
 
 import numpy as np
 
-from newton.tests.feather_pgs._fixtures import PATCH_OPTIONS, _assert_budget, fixture
+from newton.tests.feather_pgs._fixtures import (
+    PATCH_OPTIONS,
+    _assert_budget,
+    _conclude_position_problem,
+    _run_velocity_post_solve,
+    fixture,
+)
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 
@@ -92,8 +98,8 @@ def test_no_load_near_positive_gap_and_release(test, device):
         solver._v_hat.assign(separating)
         solver._v_out.assign(separating + solver._Y_world.numpy()[0, :n].T @ before)
         velocity_before = solver._v_out.numpy().copy()
-        velocity_tests._conclude_position_problem(solver, 0.0025)
-        velocity_tests._run_velocity_post_solve(solver)
+        _conclude_position_problem(solver, 0.0025)
+        _run_velocity_post_solve(solver)
         after = solver._impulses.numpy()[0, :n]
         test.assertLess(np.abs(after[group["normal_rows"]]).max(initial=0), 2e-7)
         test.assertLess(abs(float(after[group["row"]])), 2e-7)

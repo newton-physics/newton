@@ -10,24 +10,14 @@ import warp as wp
 from newton._src.solvers.feather_pgs import contact_torsion
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_TORSION
 from newton.solvers import SolverObservableFlags
-from newton.tests.feather_pgs._fixtures import PATCH_OPTIONS, _assert_budget, fixture
+from newton.tests.feather_pgs._fixtures import (
+    PATCH_OPTIONS,
+    _assert_budget,
+    _conclude_position_problem,
+    _run_velocity_post_solve,
+    fixture,
+)
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
-
-
-def _conclude_position_problem(solver, dt):
-    """Switch the solved position problem to the velocity-only right-hand sides, as a step does."""
-    solver._compute_velocity_pass_rhs(dt)
-
-
-def _run_velocity_post_solve(solver):
-    """Run the velocity-only iterations of a step on the current row state."""
-    solver._pack_mf_meta(solver._mf_rhs_unbiased)
-    solver._launch_pgs_solve(
-        solver._rhs_unbiased,
-        solver.velocity_iterations,
-        regularize=False,
-        freeze_drive_rows=solver.velocity_drive_mode == "freeze",
-    )
 
 
 def test_end_gap_retires_spin_but_preserves_target_and_carried_impulse(test, device):
