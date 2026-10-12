@@ -9,7 +9,6 @@ without instantiating ``ImageLogger`` itself.
 """
 
 import contextlib
-import sys
 import types
 import unittest
 import warnings
@@ -127,17 +126,14 @@ class _FakeGL:
         self.calls.append(("glDeleteBuffers", (n,)))
 
 
-def _install_fake_pyglet(fake_gl: _FakeGL) -> None:
-    """Make ``from pyglet import gl`` resolve to *fake_gl* for this test."""
+def _install_fake_pyglet(test: unittest.TestCase, fake_gl: _FakeGL) -> None:
+    """Make ``from pyglet import gl`` resolve to *fake_gl* until *test* is cleaned up."""
     fake_pyglet = types.ModuleType("pyglet")
     fake_pyglet.gl = fake_gl  # type: ignore[attr-defined]
-    sys.modules["pyglet"] = fake_pyglet
-    sys.modules["pyglet.gl"] = fake_gl  # type: ignore[assignment]
-
-
-def _uninstall_fake_pyglet() -> None:
-    sys.modules.pop("pyglet", None)
-    sys.modules.pop("pyglet.gl", None)
+    stack = contextlib.ExitStack()
+    test.addCleanup(stack.close)
+    stack.enter_context(patch_sys_module("pyglet", fake_pyglet))
+    stack.enter_context(patch_sys_module("pyglet.gl", fake_gl))
 
 
 class _ImageLoggerFixture(unittest.TestCase):
@@ -145,17 +141,13 @@ class _ImageLoggerFixture(unittest.TestCase):
 
     def setUp(self):
         self.fake_gl = _FakeGL()
-        _install_fake_pyglet(self.fake_gl)
+        _install_fake_pyglet(self, self.fake_gl)
 
         from newton._src.viewer.image_logger import ImageLogger  # noqa: PLC0415
 
         self.ImageLogger = ImageLogger
         self.cpu_device = wp.get_device("cpu")
         self.logger = ImageLogger(device=self.cpu_device)
-
-    def tearDown(self):
-        # Avoid leaking the fake module into other tests.
-        _uninstall_fake_pyglet()
 
 
 class TestImageLoggerOrchestration(_ImageLoggerFixture):
@@ -558,7 +550,7 @@ class TestImageLoggerEnsurePboRollback(unittest.TestCase):
 
     def setUp(self):
         self.fake_gl = _FakeGL()
-        _install_fake_pyglet(self.fake_gl)
+        _install_fake_pyglet(self, self.fake_gl)
 
         from newton._src.viewer.image_logger import ImageLogger, LoggedImage  # noqa: PLC0415
 
@@ -566,9 +558,6 @@ class TestImageLoggerEnsurePboRollback(unittest.TestCase):
         self.LoggedImage = LoggedImage
         self.cuda_device = wp.get_device("cuda:0")
         self.logger = ImageLogger(device=self.cuda_device)
-
-    def tearDown(self):
-        _uninstall_fake_pyglet()
 
     def test_registered_gl_buffer_failure_rolls_back_pbo(self):
         entry = self.LoggedImage(name="cam0")
