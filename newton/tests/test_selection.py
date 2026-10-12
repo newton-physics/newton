@@ -2321,52 +2321,89 @@ def test_actuator_parameters_capture_cold(test, device):
 
 
 def test_actuator_access_after_capture_before_replay(test, device):
-    """Read and write actuator parameters eagerly after a cold capture, before replay or after discard.
+    """Access actuator parameters correctly after cold captures that have not been replayed.
 
-    The mapping built during capture is initialized only when the graph runs, so it is not cached:
-    eager accesses build their own mapping, and a retained graph still replays correctly.
+    A mapping built during capture is initialized only when its graph runs, so it is not cached.
+    Covers retained, discarded and aborted captures and a second graph replayed before the first,
+    followed by eager gets and sets, replays of the retained graphs and a replaced parameter array.
     """
     if not wp.is_mempool_enabled(device):
         test.skipTest("CUDA graph capture of allocations requires the mempool")
-    for layout in ("dense", "irregular"):
-        for discard in (False, True):
-            with test.subTest(layout=layout, discard=discard):
-                model = _make_sparse_robot_model(layout, device)
-                warm_view = ArticulationView(model, "robot_a", verbose=False)
-                warm_actuator = _reversed_row_actuator(model, device)[0]
-                warm_view.get_actuator_parameter(warm_actuator, warm_actuator.drive, "kp")
+    for layout in ("dense", "regular", "irregular"):
+        for scenario in ("retained", "discarded", "aborted", "second_graph_first"):
+            with test.subTest(layout=layout, scenario=scenario):
+                _check_actuator_access_after_capture(test, device, layout, scenario)
 
-                view = ArticulationView(model, "robot_a", verbose=False)
-                actuator, kp, row_of_dof = _reversed_row_actuator(model, device)
-                selected_dofs = _articulation_rows(model, view.articulation_ids.numpy().reshape(-1))["dof"]
-                gathered = wp.zeros((3, 7), dtype=float, device=device)
-                with wp.ScopedCapture(device) as capture:
-                    wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
-                # checked before any eager access, which would otherwise read the unreplayed mapping
-                test.assertEqual(len(view._actuator_dof_mapping_cache), 0)
-                if discard:
-                    capture = None
-                    gc.collect()
 
-                eager = view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy()
-                assert_np_equal(eager, kp[row_of_dof[selected_dofs]])
-                replacement = -(np.arange(21, dtype=np.float32).reshape(3, 7) + 1.0)
-                view.set_actuator_parameter(
-                    actuator,
-                    actuator.drive,
-                    "kp",
-                    replacement,
-                    mask=wp.array([True, False, True], dtype=bool, device=device),
-                )
-                expected_kp = kp.copy()
-                expected_kp[row_of_dof[selected_dofs[0]]] = replacement[0]
-                expected_kp[row_of_dof[selected_dofs[2]]] = replacement[2]
-                assert_np_equal(actuator.drive.kp.numpy(), expected_kp)
-                test.assertEqual(len(view._actuator_dof_mapping_cache), 1)
+def _check_actuator_access_after_capture(test, device, layout, scenario):
+    model = _make_sparse_robot_model(layout, device)
+    warm_view = ArticulationView(model, "robot_a", verbose=False)
+    warm_actuator = _reversed_row_actuator(model, device)[0]
+    warm_view.get_actuator_parameter(warm_actuator, warm_actuator.drive, "kp")  # compile the kernels
 
-                if not discard:
-                    wp.capture_launch(capture.graph)
-                    assert_np_equal(gathered.numpy(), expected_kp[row_of_dof[selected_dofs]])
+    view = ArticulationView(model, "robot_a", verbose=False)
+    actuator, kp, row_of_dof = _reversed_row_actuator(model, device)
+    rows = row_of_dof[_articulation_rows(model, view.articulation_ids.numpy().reshape(-1))["dof"]]
+    cache = view._actuator_dof_mapping_cache
+    graph_mask = wp.array([False, True, False], dtype=bool, device=device)
+    eager_mask = wp.array([True, False, True], dtype=bool, device=device)
+    expected_kp = kp.copy()
+
+    def capture_access():
+        values = wp.zeros((3, 7), dtype=float, device=device)
+        gathered = wp.zeros((3, 7), dtype=float, device=device)
+        with wp.ScopedCapture(device) as capture:
+            view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=graph_mask)
+            wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
+        return capture.graph, values, gathered
+
+    def replay(graph, values, gathered, offset):
+        new_values = -(np.arange(21, dtype=np.float32).reshape(3, 7) + offset)
+        values.assign(new_values)
+        wp.capture_launch(graph)
+        expected_kp[rows[1]] = new_values[1]
+        assert_np_equal(actuator.drive.kp.numpy(), expected_kp)
+        assert_np_equal(gathered.numpy(), expected_kp[rows])
+
+    def eager_access(offset):
+        assert_np_equal(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), expected_kp[rows])
+        new_values = -(np.arange(21, dtype=np.float32).reshape(3, 7) + offset)
+        view.set_actuator_parameter(actuator, actuator.drive, "kp", new_values, mask=eager_mask)
+        expected_kp[rows[0]] = new_values[0]
+        expected_kp[rows[2]] = new_values[2]
+        assert_np_equal(actuator.drive.kp.numpy(), expected_kp)
+
+    graphs = []
+    if scenario == "aborted":
+        with test.assertRaisesRegex(RuntimeError, "abort capture"):
+            with wp.ScopedCapture(device):
+                view.set_actuator_parameter(actuator, actuator.drive, "kp", np.zeros((3, 7), np.float32))
+                view.get_actuator_parameter(actuator, actuator.drive, "kp")
+                raise RuntimeError("abort capture")
+    else:
+        graphs.append(capture_access())
+        if scenario == "second_graph_first":
+            graphs.append(capture_access())
+    # checked before any eager access or replay, which could otherwise read an unreplayed mapping
+    test.assertEqual(len(cache), 0)
+    if scenario == "discarded":
+        graphs.clear()
+        gc.collect()
+    if scenario == "second_graph_first":
+        replay(*graphs[1], offset=1.0)
+
+    eager_access(offset=100.0)
+    test.assertEqual(len(cache), 1)
+    mapping = cache[actuator]
+    for i, graph in enumerate(graphs):
+        replay(*graph, offset=200.0 + 100.0 * i)
+
+    # a replaced parameter array is read and written through the cached mapping, eagerly and in a new graph
+    expected_kp[:] = kp * 2.0
+    actuator.drive.kp = wp.array(expected_kp, dtype=float, device=device)
+    eager_access(offset=500.0)
+    replay(*capture_access(), offset=600.0)
+    test.assertIs(cache[actuator], mapping)
 
 
 def test_actuator_capture_without_mempool_raises(test, device):
