@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import sys
 import tempfile
 import unittest
 import warnings
@@ -11,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 from newton.solvers import SolverBase
+from newton.tests.unittest_utils import patch_sys_module
 
 try:
     from docs import generate_api
@@ -201,7 +201,7 @@ class TestGenerateApiDeprecatedSymbols(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
             with (
-                mock.patch.dict(sys.modules, {mod_name: fake_module}),
+                patch_sys_module(mod_name, fake_module),
                 mock.patch.object(generate_api, "OUTPUT_DIR", output_dir),
                 mock.patch.object(generate_api, "REPO_ROOT", output_dir.parent),
                 warnings.catch_warnings(),

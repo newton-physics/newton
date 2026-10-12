@@ -1087,9 +1087,7 @@ class ViewerBase(ABC):
         """
         pass
 
-    def get_frame(
-        self, target_image: wp.array3d[wp.uint8] | None = None, *, render_ui: bool = False
-    ) -> wp.array3d[wp.uint8]:
+    def get_frame(self, *, output: wp.array3d[wp.uint8] | None = None, render_ui: bool = False) -> wp.array3d[wp.uint8]:
         """Retrieve the last rendered frame as RGB image data.
 
         Call after :meth:`end_frame`. Supported by :class:`ViewerGL` and
@@ -1097,7 +1095,7 @@ class ViewerBase(ABC):
         ``.numpy()`` on the result to obtain a NumPy array.
 
         Args:
-            target_image: Optional pre-allocated Warp array on the viewer
+            output: Optional pre-allocated Warp array on the viewer
                 device with shape ``(height, width, 3)`` and dtype ``wp.uint8``.
                 If ``None``, a new array is created.
             render_ui: Whether to include UI overlays. Support depends on
@@ -1106,7 +1104,7 @@ class ViewerBase(ABC):
         Returns:
             RGB image data on the viewer device with shape
             ``(height, width, 3)``, dtype ``wp.uint8``, and a top-left origin.
-            If supplied, returns ``target_image``.
+            If supplied, returns ``output``.
 
         Raises:
             NotImplementedError: The viewer backend does not support frame

@@ -934,6 +934,40 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
                 for got, exp in zip(signature, reference, strict=True):
                     self.assertLess(np.max(np.abs(got - exp)), self.epsilon)
 
+    def test_04_inverse_diagonal_of_diagonal_matrix(self):
+        """
+        Test the inverse diagonal of A^T * A + offset * I
+        (used by the `jacobi_diagonal` preconditioner in FK).
+        """
+        # Diagonal matrix A = diag(2, 3) stored as two 1-vector blocks.
+        bsm = BlockSparseMatrices(
+            num_matrices=1, nzb_dtype=BlockDType(shape=(1,), dtype=wp.float32), device=self.default_device
+        )
+        bsm.finalize(max_dims=[(2, 2)], capacities=[2])
+        bsm.dims.assign([[2, 2]])
+        bsm.num_nzb.assign([2])
+        bsm.nzb_coords.assign([[0, 0], [1, 1]])
+        bsm.nzb_values.view(dtype=wp.float32).assign([2.0, 3.0])
+        mask = wp.array([True], dtype=wp.bool, device=self.default_device)
+
+        # diag(A^T A + I)^-1 = [1 / (2^2 + 1), 1 / (3^2 + 1)]
+        inv_diag = wp.empty((1, 2), dtype=wp.float32, device=self.default_device)
+        block_sparse_ATA_inv_diagonal_2d(bsm, inv_diag, mask, diag_offset=1.0)
+        wp.synchronize()
+        np.testing.assert_allclose(inv_diag.numpy(), [[0.2, 0.1]], rtol=1e-6)
+
+        # Without an offset: diag(A^T A)^-1 = [1 / 4, 1 / 9]
+        block_sparse_ATA_inv_diagonal_2d(bsm, inv_diag, mask)
+        wp.synchronize()
+        np.testing.assert_allclose(inv_diag.numpy(), [[0.25, 1.0 / 9.0]], rtol=1e-6)
+
+        # Masked-out matrices are skipped entirely (output is left untouched).
+        mask_off = wp.array([False], dtype=wp.bool, device=self.default_device)
+        inv_diag.fill_(7.0)
+        block_sparse_ATA_inv_diagonal_2d(bsm, inv_diag, mask_off, diag_offset=1.0)
+        wp.synchronize()
+        np.testing.assert_array_equal(inv_diag.numpy(), [[7.0, 7.0]])
+
 
 ###
 # Test execution
