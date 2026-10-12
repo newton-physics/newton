@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import types
 import unittest
+import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -5276,7 +5277,7 @@ class TestDriveStateGraphCapture(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-@unittest.skipUnless(HAS_USD and _HAS_ONNX, "pxr or onnx not installed")
+@unittest.skipUnless(HAS_USD, "pxr not installed")
 class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """Verify ``parse_actuator_prim`` correctly handles neural drive
     prims with asset-typed ``newton:modelPath`` attributes.
@@ -5304,6 +5305,14 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         """Create a minimal ONNX LSTM checkpoint with optional metadata."""
         path = os.path.join(self._tmp_dir, "lstm.onnx")
         _build_lstm_onnx(path, hidden_size=8, num_layers=1, metadata=metadata)
+        return path
+
+    def _make_torch_checkpoint(self, extension: str = ".pt2") -> str:
+        """Create a pt2-shaped archive whose metadata selects the MLP drive."""
+        path = os.path.join(self._tmp_dir, f"mlp{extension}")
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("archive/archive_format", "pt2")
+            archive.writestr("archive/extra/metadata.json", json.dumps({"model_type": "mlp"}))
         return path
 
     def _build_neural_stage(self, model_path: str) -> "Usd.Stage":
@@ -5360,6 +5369,14 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
         return stage
 
+    def _write_neural_stage(self, model_path: str) -> str:
+        """Write a USD stage that references the checkpoint by relative path."""
+        stage_path = os.path.join(self._tmp_dir, f"robot{Path(model_path).suffix}.usda")
+        stage = self._build_neural_stage(os.path.basename(model_path))
+        stage.GetRootLayer().Export(stage_path)
+        return stage_path
+
+    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
     def test_parse_mlp_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for MLP checkpoint."""
         model_path = self._make_mlp_checkpoint(metadata={"model_type": "mlp"})
@@ -5377,6 +5394,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertEqual(cls, ClampingDCMotor)
         self.assertAlmostEqual(kwargs["saturation_effort"], 100.0)
 
+    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
     def test_parse_lstm_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for LSTM checkpoint."""
         model_path = self._make_lstm_checkpoint(metadata={"model_type": "lstm"})
@@ -5387,6 +5405,41 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed.drive_class, DriveNeuralLSTM)
         self.assertEqual(parsed.drive_kwargs["model_path"], model_path)
+
+    def test_usd_torch_checkpoints_require_explicit_opt_in(self):
+        """Reject USD-authored Torch checkpoints before adding an actuator."""
+        for extension in (".pt2", ".pt", ".pth"):
+            with self.subTest(extension=extension):
+                model_path = self._make_torch_checkpoint(extension)
+                stage_path = self._write_neural_stage(model_path)
+                stage = Usd.Stage.Open(stage_path)
+                prim = stage.GetPrimAtPath("/World/Robot/NeuralActuator")
+                with self.assertRaisesRegex(ValueError, "allow_unsafe_torch_checkpoints"):
+                    parse_actuator_prim(prim)
+
+                builder = newton.ModelBuilder()
+                with self.assertRaisesRegex(ValueError, "allow_unsafe_torch_checkpoints"):
+                    builder.add_usd(stage_path)
+                self.assertFalse(builder.actuator_entries)
+
+    def test_usd_torch_checkpoint_opt_in(self):
+        """Preserve trusted USD Torch imports through an explicit opt-in."""
+        model_path = self._make_torch_checkpoint()
+        stage_path = self._write_neural_stage(model_path)
+        stage = Usd.Stage.Open(stage_path)
+        prim = stage.GetPrimAtPath("/World/Robot/NeuralActuator")
+        parsed = parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=True)
+        self.assertEqual(parsed.drive_class, DriveNeuralMLP)
+        self.assertEqual(parsed.drive_kwargs["model_path"], model_path)
+
+        for import_stage in (parse_usd, lambda builder, source, **kwargs: builder.add_usd(source, **kwargs)):
+            with self.subTest(import_stage=import_stage):
+                builder = newton.ModelBuilder()
+                result = import_stage(builder, stage_path, allow_unsafe_torch_checkpoints=True)
+                self.assertEqual(result["actuator_count"], 1)
+                self.assertEqual(
+                    next(iter(builder.actuator_entries.values())).drive_shared_kwargs["model_path"], model_path
+                )
 
 
 # ---------------------------------------------------------------------------
