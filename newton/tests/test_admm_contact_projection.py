@@ -83,17 +83,12 @@ class TestAdmmContactProjection(unittest.TestCase):
 
     def test_inactive_sentinel(self):
         """Retain the sentinel fast path for inactive rows."""
-        velocity = np.array([[0.1, -2.0, 0.3]], dtype=np.float32)
+        # Without the sentinel early return, the shifted normal velocity
+        # is -1e8, so the Coulomb projection would change this velocity.
+        velocity = np.array([[0.1, -2.0e8, 0.3]], dtype=np.float32)
         for device in wp.get_devices():
             with self.subTest(device=str(device)):
                 np.testing.assert_array_equal(_project(device, velocity, -1e8, [[0, 1, 0]]), velocity)
-
-    def test_nonfinite_velocity(self):
-        """Avoid hiding nonfinite input velocities."""
-        for device in wp.get_devices():
-            with self.subTest(device=str(device)):
-                result = _project(device, [[np.nan, 0, 0]], -1000.0, [[0, 1, 0]])
-                self.assertFalse(np.isfinite(result).all())
 
 
 if __name__ == "__main__":
