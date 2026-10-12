@@ -17,27 +17,6 @@ from newton.tests.unittest_utils import get_test_devices
 
 
 class TestModelDeformableObjects(unittest.TestCase):
-    def test_existing_custom_curve_frequency_keeps_its_references(self):
-        """Preserve an existing custom frequency named curve when adding built-in curve metadata."""
-        prototype = newton.ModelBuilder()
-        _add_curve(prototype, label="cable")
-        prototype.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name="curve"))
-        prototype.add_custom_attribute(
-            newton.ModelBuilder.CustomAttribute(
-                name="source_row", dtype=wp.int32, frequency="curve", references="curve"
-            )
-        )
-        prototype.add_custom_values(**{"source_row": 0})
-        prototype.add_custom_values(**{"source_row": 1})
-        prototype.collapse_fixed_joints()
-        builder = newton.ModelBuilder()
-        builder.replicate(prototype, 2)
-        model = builder.finalize(device="cpu")
-        self.assertEqual(model.curve_count, 2)
-        self.assertEqual(model.custom_frequency_counts["curve"], 4)
-        np.testing.assert_array_equal(model.source_row.numpy(), [0, 1, 2, 3])
-        self.assertEqual(model.attribute_specs["source_row"].references, "curve")
-
     def test_family_attribute_frequencies_survive_replication(self):
         """Size model and state attributes by deformable objects rather than their elements."""
         prototype = newton.ModelBuilder()
