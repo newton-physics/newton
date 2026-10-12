@@ -99,6 +99,52 @@ class TestModelDeformableObjects(unittest.TestCase):
         np.testing.assert_array_equal(model.asset_tag.numpy(), [10, 20])
         np.testing.assert_array_equal(model.selected_curve.numpy(), [1])
 
+    def test_curve_and_articulation_vector_references_follow_collapse(self):
+        """Remap vector references to removed and surviving objects, preserving sentinels."""
+        builder = newton.ModelBuilder()
+        points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)]
+        for label in ("removed", "reduced", "unaffected"):
+            bodies, joints = builder.add_rod(
+                rod=newton.Rod(points[:2] if label == "removed" else points, radius=0.02),
+                label=label,
+                wrap_in_articulation=False,
+                body_frame_origin="com",
+            )
+            root = (
+                builder.add_joint_free(bodies[0]) if label == "unaffected" else builder.add_joint_fixed(-1, bodies[0])
+            )
+            builder.add_articulation([*joints, root], label=label)
+
+        for family in ("curve", "articulation"):
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=f"{family}_tag",
+                    dtype=wp.int32,
+                    frequency=getattr(newton.Model.AttributeFrequency, family.upper()),
+                    values={0: 10, 1: 20, 2: 30},
+                )
+            )
+            for name, value in (("pair", wp.vec2i(1, 2)), ("sentinels", wp.vec3i(0, -1, 1))):
+                builder.add_custom_attribute(
+                    newton.ModelBuilder.CustomAttribute(
+                        name=f"{family}_{name}",
+                        dtype=type(value),
+                        frequency=newton.Model.AttributeFrequency.ONCE,
+                        references=family,
+                        values={0: value},
+                    )
+                )
+
+        with self.assertWarnsRegex(UserWarning, "removed.*all.*segment bodies"):
+            builder.collapse_fixed_joints()
+        model = builder.finalize(device="cpu")
+        for family in ("curve", "articulation"):
+            with self.subTest(family=family):
+                self.assertEqual(getattr(model, f"{family}_label"), ["reduced", "unaffected"])
+                np.testing.assert_array_equal(getattr(model, f"{family}_tag").numpy(), [20, 30])
+                np.testing.assert_array_equal(getattr(model, f"{family}_pair").numpy(), [[0, 1]])
+                np.testing.assert_array_equal(getattr(model, f"{family}_sentinels").numpy(), [[-1, -1, 0]])
+
     def test_empty_model_has_empty_public_deformable_arrays(self):
         """Inspect an empty model without placeholder objects or missing arrays."""
         for device in get_test_devices():

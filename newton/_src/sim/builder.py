@@ -7327,6 +7327,9 @@ class ModelBuilder:
                 return [remap_object_reference(v, remap) for v in value]
             if isinstance(value, tuple):
                 return tuple(remap_object_reference(v, remap) for v in value)
+            value_type = type(value)
+            if wp.types.type_is_vector(value_type) and wp.types.type_is_int(value_type._wp_scalar_type_):
+                return value_type(*(remap_object_reference(v, remap) for v in value))
             # Covers Python int as well as Warp scalar integer types (wp.int32 etc.),
             # whose default `dtype(0)` instances are not Python ints.
             try:
