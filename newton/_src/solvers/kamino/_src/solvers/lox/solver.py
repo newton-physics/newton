@@ -516,7 +516,7 @@ class LOXSolver:
             joint_penalty_scale=self._data.joint_penalty_scale,
         )
         system = problem.system
-        # The patch Schur complements of A, of which the matrix A + alpha W takes the fraction alpha
+        # The patch weights W of A, of which the matrix A + alpha W takes the fraction alpha
         problem.compute_patch_schur_weights()
         if self._config.consensus_fraction > 0.0:
             system.add_weights_to_matrix(self._config.consensus_fraction)

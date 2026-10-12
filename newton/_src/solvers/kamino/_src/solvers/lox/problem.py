@@ -58,8 +58,7 @@ from .problem_kernels import (
 from .system import LOXSystem
 from .system_kernels import (
     _compute_free_body_blocks,
-    _compute_patch_schur_weights,
-    _compute_patch_schur_weights_subtraction,
+    make_patch_weights_kernel,
 )
 from .types import (
     BoxRows,
@@ -617,14 +616,19 @@ class LOXProblem:
         self._free_block = wp.zeros(max(body_count, 1), dtype=mat66f, device=device)
         self._free_lower = wp.zeros(max(body_count, 1), dtype=mat66f, device=device)
         # The Woodbury form handles up to six joint rows between two bodies
-        self._patch_schur_kernel = (
-            _compute_patch_schur_weights
-            if max((len(rows) for rows in pair_rows_flat), default=0) <= 6
-            else _compute_patch_schur_weights_subtraction
+        self._patch_weights_kernel = make_patch_weights_kernel(
+            woodbury=max((len(rows) for rows in pair_rows_flat), default=0) <= 6
         )
+        # Placeholders of the joint row arrays of a problem without structural or dynamic rows
+        self._empty_vec6 = wp.zeros(1, dtype=vec6f, device=device)
+        self._empty_float = wp.zeros(1, dtype=wp.float32, device=device)
+        self._empty_int = wp.zeros(1, dtype=wp.int32, device=device)
 
     def compute_patch_schur_weights(self) -> None:
-        """Set the body weights to the Schur complements of each body and its joint neighbors in ``A``."""
+        """Set the body weights to the geometric means of the free and pinned patch Schur complements in ``A``.
+
+        See :func:`.system_kernels.make_patch_weights_kernel`.
+        """
         system = self.system
         if system.num_bodies == 0:
             return
@@ -632,9 +636,9 @@ class LOXProblem:
         dynamic = self._data.dynamic_rows
         has_structural = structural is not None and structural.count > 0
         has_dynamic = dynamic is not None and dynamic.count > 0
-        empty_vec6 = wp.zeros(1, dtype=vec6f, device=self.device)
-        empty_float = wp.zeros(1, dtype=wp.float32, device=self.device)
-        empty_int = wp.zeros(1, dtype=wp.int32, device=self.device)
+        empty_vec6 = self._empty_vec6
+        empty_float = self._empty_float
+        empty_int = self._empty_int
         rows = [
             structural.jacobian_a if has_structural else empty_vec6,
             structural.jacobian_b if has_structural else empty_vec6,
@@ -665,10 +669,14 @@ class LOXProblem:
             device=self.device,
         )
         wp.launch(
-            self._patch_schur_kernel,
+            self._patch_weights_kernel,
             dim=system.num_bodies,
             inputs=[
                 data.body_block,
+                data.body_local,
+                data.info.dim,
+                data.info.mio,
+                data.matrix,
                 self._data.body_weight_enabled,
                 self._free_block,
                 self._free_lower,

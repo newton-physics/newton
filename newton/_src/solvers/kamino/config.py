@@ -1305,9 +1305,10 @@ class LOXSolverConfig:
     ``A v = f + J^T r``. Zero gives a staggered solve, which keeps ``W`` as the projection metric
     only, and one gives ADMM.
 
-    ``W`` takes for each body the full ``6 x 6`` Schur complement of the body in the matrix of the
-    body and its joint neighbors, each neighbor keeping only its joint to the body. It bounds
-    ``[(A^-1)_ii]^-1``, so the projection metric majorizes the Delassus of each body.
+    ``W`` takes for each body the matrix geometric mean of two ``6 x 6`` Schur complements of the body
+    in the matrix of the body and its joint neighbors, which bound ``[(A^-1)_ii]^-1``: from below when
+    each neighbor keeps only its joint to the body, and from above when the neighbors keep their full
+    rows of ``A`` with the other bodies held fixed.
     """
 
     @override

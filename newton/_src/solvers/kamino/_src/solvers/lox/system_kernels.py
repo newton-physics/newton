@@ -11,9 +11,11 @@ matrix layout. The consensus body weights use the body mass matrix
 
 from __future__ import annotations
 
+from functools import cache
 from typing import Any
 
 import warp as wp
+from warp.fem.linalg import symmetric_eigenvalues_qr
 
 from ...core.math import compute_gyroscopic_torque
 from ...core.types import mat36f, mat66f, vec6f
@@ -30,12 +32,11 @@ __all__ = [
     "_assemble_structural_joint_rows",
     "_build_candidate_right_hand_side",
     "_compute_free_body_blocks",
-    "_compute_patch_schur_weights",
-    "_compute_patch_schur_weights_subtraction",
     "apply_body_weight",
     "compute_body_explicit_wrench",
     "compute_structural_correction",
     "is_rotational_structural_row",
+    "make_patch_weights_kernel",
     "normalize_symmetric_matrix",
     "unpack_body_solution",
 ]
@@ -51,6 +52,9 @@ wp.set_module_options({"enable_backward": False})
 # Constants
 ###
 
+
+_EIGENVALUE_TOLERANCE = 1.0e-7
+"""Relative off-diagonal tolerance of the QR eigenvalues of the normalized body blocks."""
 
 _EIGENVALUE_FLUSH_FRACTION = 1.0e-10
 """Magnitude, relative to the largest entry, at or below which symmetric matrices flush their entries to zero
@@ -747,11 +751,9 @@ def _finish_body_weight(bid: wp.int32, schur: mat66f, weight: wp.array[mat66f], 
     inverse_weight[bid] = inverse
 
 
-@wp.kernel
-def _compute_patch_schur_weights(
-    # Inputs:
-    body_block: wp.array[wp.int32],
-    body_weight_enabled: wp.array[wp.int32],
+@wp.func
+def _free_patch_schur(
+    bid: wp.int32,
     free_block: wp.array[mat66f],
     free_lower: wp.array[mat66f],
     neighbor_offset: wp.array[wp.int32],
@@ -768,26 +770,19 @@ def _compute_patch_schur_weights(
     dynamic_jacobian_b: wp.array[vec6f],
     dynamic_effective_inertia: wp.array[wp.float32],
     model_time_dt: wp.array[wp.float32],
-    # Outputs:
-    weight: wp.array[mat66f],
-    inverse_weight: wp.array[mat66f],
-):
-    """Set ``W_i`` to the Schur complement of body ``i`` in the matrix of ``i`` and its joint neighbors ``j``.
+) -> mat66f:
+    """Return the Schur complement ``S_free`` of body ``i`` in its free patch, in Woodbury form.
 
-    Each neighbor keeps only its joint to ``i``: with ``F_j`` the block of ``j`` without its joint rows to
-    dynamic bodies, and the at most six rows of the joint ``J_e = [J_ei, J_ej]`` with coefficients ``C``,
+    In the free patch, each joint neighbor ``j`` keeps only its joint to ``i``: with ``F_j`` the block of ``j``
+    without its joint rows to dynamic bodies, and the at most six rows of the joint ``J_e = [J_ei, J_ej]``
+    with coefficients ``C``,
 
-        ``W_i = F_i + sum_e J_ei^T (C^-1 + J_ej F_j^-1 J_ej^T)^-1 J_ei``,
+        ``S_free = F_i + sum_e J_ei^T (C^-1 + J_ej F_j^-1 J_ej^T)^-1 J_ei``,
 
     a sum of positive semi-definite terms that remains accurate for stiff joints and tends to the composite
     inertia of the patch. A neighbor whose ``F_j`` is not positive definite, e.g. a massless body, adds
-    nothing. The result bounds ``[(A^-1)_ii]^-1``.
+    nothing. The result bounds ``[(A^-1)_ii]^-1`` from below.
     """
-    bid = wp.tid()
-    if body_block[bid] < 0 or body_weight_enabled[bid] == 0:
-        weight[bid] = mat66f(0.0)
-        inverse_weight[bid] = mat66f(0.0)
-        return
     schur = free_block[bid]
     for entry in range(neighbor_offset[bid], neighbor_offset[bid + 1]):
         lower = free_lower[neighbor_body[entry]]
@@ -859,16 +854,13 @@ def _compute_patch_schur_weights(
                     schur[row, col] += value
                     if col < row:
                         schur[col, row] += value
-    _finish_body_weight(bid, schur, weight, inverse_weight)
+    return schur
 
 
-@wp.kernel
-def _compute_patch_schur_weights_subtraction(
-    # Inputs:
-    body_block: wp.array[wp.int32],
-    body_weight_enabled: wp.array[wp.int32],
+@wp.func
+def _free_patch_schur_subtraction(
+    bid: wp.int32,
     free_block: wp.array[mat66f],
-    free_lower: wp.array[mat66f],
     neighbor_offset: wp.array[wp.int32],
     neighbor_body: wp.array[wp.int32],
     neighbor_row_offset: wp.array[wp.int32],
@@ -883,19 +875,11 @@ def _compute_patch_schur_weights_subtraction(
     dynamic_jacobian_b: wp.array[vec6f],
     dynamic_effective_inertia: wp.array[wp.float32],
     model_time_dt: wp.array[wp.float32],
-    # Outputs:
-    weight: wp.array[mat66f],
-    inverse_weight: wp.array[mat66f],
-):
-    """Set ``W_i = F_i + sum_e (R_ei - A_ij (F_j + R_ej)^-1 A_ji)``, the patch Schur complement of each body.
+) -> mat66f:
+    """Return ``S_free = F_i + sum_e (R_ei - A_ij (F_j + R_ej)^-1 A_ji)``, the free-patch Schur complement of a body.
 
-    Equivalent to :func:`_compute_patch_schur_weights` for joints with more than six rows between two bodies.
+    Equivalent to :func:`_free_patch_schur` for joints with more than six rows between two bodies.
     """
-    bid = wp.tid()
-    if body_block[bid] < 0 or body_weight_enabled[bid] == 0:
-        weight[bid] = mat66f(0.0)
-        inverse_weight[bid] = mat66f(0.0)
-        return
     schur = free_block[bid]
     for entry in range(neighbor_offset[bid], neighbor_offset[bid + 1]):
         neighbor_matrix = free_block[neighbor_body[entry]]
@@ -931,7 +915,163 @@ def _compute_patch_schur_weights_subtraction(
                     value -= lower[axis, inner] * solved[inner, col]
                 solved[axis, col] = value / lower[axis, axis]
         schur -= wp.transpose(solved) @ solved
-    _finish_body_weight(bid, schur, weight, inverse_weight)
+    return schur
+
+
+@wp.func
+def _geometric_mean_mat66(lower_bound: mat66f, upper_bound: mat66f) -> tuple[mat66f, wp.bool]:
+    """Return the matrix geometric mean ``A # B = L (L^-1 B L^-T)^1/2 L^T`` of two symmetric positive-definite
+    ``6 x 6`` matrices, with ``A = L L^T``, and whether it is defined.
+
+    ``A`` is the lower bound, so the eigenvalues of ``L^-1 B L^-T`` are clamped at one, which keeps the
+    mean at least ``A`` against round-off in ``B``.
+    """
+    lower, valid = _cholesky_mat66(lower_bound)
+    if not valid:
+        return lower_bound, False
+    # X = L^-1 B, then M = L^-1 X^T = L^-1 B L^-T
+    solved = mat66f(0.0)
+    for axis in range(6):
+        for col in range(6):
+            value = upper_bound[axis, col]
+            for inner in range(axis):
+                value -= lower[axis, inner] * solved[inner, col]
+            solved[axis, col] = value / lower[axis, axis]
+    transposed = wp.transpose(solved)
+    congruent = mat66f(0.0)
+    for axis in range(6):
+        for col in range(6):
+            value = transposed[axis, col]
+            for inner in range(axis):
+                value -= lower[axis, inner] * congruent[inner, col]
+            congruent[axis, col] = value / lower[axis, axis]
+    normalized, scale = normalize_symmetric_matrix(0.5 * (congruent + wp.transpose(congruent)), 6)
+    if not wp.isfinite(scale) or scale <= 0.0:
+        return lower_bound, False
+    # M = P^T D P, with one eigenvector per row of P
+    eigenvalues, eigenvectors = symmetric_eigenvalues_qr(normalized, _EIGENVALUE_TOLERANCE)
+    root = mat66f(0.0)
+    for index in range(6):
+        vector = eigenvectors[index]
+        root += wp.sqrt(wp.max(scale * eigenvalues[index], 1.0)) * wp.outer(vector, vector)
+    return lower @ root @ wp.transpose(lower), True
+
+
+@cache
+def make_patch_weights_kernel(woodbury: bool):
+    """Build the kernel of the body weights ``W``.
+
+    ``W_i`` is the geometric mean of the Schur complements of body ``i`` in its free and pinned patches. The
+    free complement :func:`_free_patch_schur` bounds ``[(A^-1)_ii]^-1`` from below. In the pinned patch, the
+    joint neighbors ``j`` keep their full rows of ``A`` with the other bodies held fixed, so
+    ``S_pinned = A_ii - sum_j A_ij A_jj^-1 A_ji`` bounds it from above. The weight
+    ``S_free # S_pinned`` lies between both bounds.
+
+    Args:
+        woodbury: Whether the free complement takes the Woodbury form, for at most six joint rows between two
+            bodies, or :func:`_free_patch_schur_subtraction`.
+    """
+
+    @wp.kernel
+    def _compute_patch_weights(
+        # Inputs:
+        body_block: wp.array[wp.int32],
+        body_local: wp.array[wp.int32],
+        dimensions: wp.array[wp.int32],
+        matrix_offsets: wp.array[wp.int32],
+        matrix: wp.array[wp.float32],
+        body_weight_enabled: wp.array[wp.int32],
+        free_block: wp.array[mat66f],
+        free_lower: wp.array[mat66f],
+        neighbor_offset: wp.array[wp.int32],
+        neighbor_body: wp.array[wp.int32],
+        neighbor_row_offset: wp.array[wp.int32],
+        neighbor_row_kind: wp.array[wp.int32],
+        neighbor_row: wp.array[wp.int32],
+        neighbor_row_side: wp.array[wp.int32],
+        structural_jacobian_a: wp.array[vec6f],
+        structural_jacobian_b: wp.array[vec6f],
+        structural_penalty: wp.array[wp.float32],
+        structural_world: wp.array[wp.int32],
+        dynamic_jacobian_a: wp.array[vec6f],
+        dynamic_jacobian_b: wp.array[vec6f],
+        dynamic_effective_inertia: wp.array[wp.float32],
+        model_time_dt: wp.array[wp.float32],
+        # Outputs:
+        weight: wp.array[mat66f],
+        inverse_weight: wp.array[mat66f],
+    ):
+        bid = wp.tid()
+        block = body_block[bid]
+        if block < 0 or body_weight_enabled[bid] == 0:
+            weight[bid] = mat66f(0.0)
+            inverse_weight[bid] = mat66f(0.0)
+            return
+        if wp.static(woodbury):
+            free = _free_patch_schur(
+                bid,
+                free_block,
+                free_lower,
+                neighbor_offset,
+                neighbor_body,
+                neighbor_row_offset,
+                neighbor_row_kind,
+                neighbor_row,
+                neighbor_row_side,
+                structural_jacobian_a,
+                structural_jacobian_b,
+                structural_penalty,
+                structural_world,
+                dynamic_jacobian_a,
+                dynamic_jacobian_b,
+                dynamic_effective_inertia,
+                model_time_dt,
+            )
+        else:
+            free = _free_patch_schur_subtraction(
+                bid,
+                free_block,
+                neighbor_offset,
+                neighbor_body,
+                neighbor_row_offset,
+                neighbor_row_kind,
+                neighbor_row,
+                neighbor_row_side,
+                structural_jacobian_a,
+                structural_jacobian_b,
+                structural_penalty,
+                structural_world,
+                dynamic_jacobian_a,
+                dynamic_jacobian_b,
+                dynamic_effective_inertia,
+                model_time_dt,
+            )
+        offset = matrix_offsets[block]
+        dimension = dimensions[block]
+        local = body_local[bid]
+        pinned = _read_body_block(matrix, offset, dimension, local, local)
+        for entry in range(neighbor_offset[bid], neighbor_offset[bid + 1]):
+            neighbor_local = body_local[neighbor_body[entry]]
+            neighbor_matrix = _read_body_block(matrix, offset, dimension, neighbor_local, neighbor_local)
+            neighbor_lower, neighbor_valid = _cholesky_mat66(0.5 * (neighbor_matrix + wp.transpose(neighbor_matrix)))
+            if not neighbor_valid:
+                continue
+            # Y = L_j^-1 A_ji, then A_ij A_jj^-1 A_ji = Y^T Y
+            coupling = _read_body_block(matrix, offset, dimension, neighbor_local, local)
+            solved = mat66f(0.0)
+            for axis in range(6):
+                for col in range(6):
+                    value = coupling[axis, col]
+                    for inner in range(axis):
+                        value -= neighbor_lower[axis, inner] * solved[inner, col]
+                    solved[axis, col] = value / neighbor_lower[axis, axis]
+            pinned -= wp.transpose(solved) @ solved
+        mean, valid = _geometric_mean_mat66(0.5 * (free + wp.transpose(free)), 0.5 * (pinned + wp.transpose(pinned)))
+        if not valid:
+            mean = free
+        _finish_body_weight(bid, mean, weight, inverse_weight)
+
+    return _compute_patch_weights
 
 
 @wp.func
