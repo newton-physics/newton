@@ -396,20 +396,27 @@ class TestDeformableStateWrites(unittest.TestCase):
         for device in get_test_devices():
             model = _replicated_model(3, device=device)
             for _getter, setter, attribute in _state_accessors(model):
+                state = model.state()
+                target = getattr(state, attribute)
+                initial = wp.clone(target)
+                before = target.numpy().copy()
                 for mask in (None, [True, False, True], [False] * 3):
                     with self.subTest(device=device, setter=setter.__name__, mask=mask):
-                        state = model.state()
-                        before = getattr(state, attribute).numpy().copy()
+                        wp.copy(target, initial)
                         with self.assertRaisesRegex(ValueError, "values"):
                             setter(state, None, mask=mask)
-                        np.testing.assert_array_equal(getattr(state, attribute).numpy(), before)
+                        np.testing.assert_array_equal(target.numpy(), before)
 
     def test_host_values_validate_before_writing(self):
         """Reject invalid host values and element counts without changing the state."""
         for device in get_test_devices():
             model = _replicated_model(5, device=device)
             for getter, setter, attribute in _state_accessors(model):
-                host = getter(model.state()).numpy().copy()
+                state = model.state()
+                target = getattr(state, attribute)
+                initial = wp.clone(target)
+                before = target.numpy().copy()
+                host = getter(state).numpy().copy()
                 invalid = (
                     ("wrong_count", host[:-1]),
                     ("wrong_components", host[..., :-1]),
@@ -421,15 +428,14 @@ class TestDeformableStateWrites(unittest.TestCase):
                 for name, values in invalid:
                     for mask in (None, [True, False, True, False, True], [False] * 5):
                         with self.subTest(device=device, setter=setter.__name__, values=name, mask=mask):
-                            state = model.state()
-                            before = getattr(state, attribute).numpy().copy()
+                            wp.copy(target, initial)
                             with self.assertRaisesRegex(ValueError, "values"):
                                 setter(state, values, mask=mask)
-                            np.testing.assert_array_equal(getattr(state, attribute).numpy(), before)
+                            np.testing.assert_array_equal(target.numpy(), before)
 
     def test_indices_replace_mask_without_reordering_values(self):
         """Convert unsorted and repeated object indices into matching-row resets."""
-        for device in wp.get_devices():
+        for device in get_test_devices():
             model = _replicated_model(4, device=device)
             cloth = DeformableSurfaceView(model, "/World/Cloth")
             backing = wp.ones(8, dtype=wp.bool, device=device)
@@ -450,7 +456,7 @@ class TestDeformableStateWrites(unittest.TestCase):
 
     def test_mask_conversion_validates_without_mutation(self):
         """Reject invalid host indices and array layouts before replacing a mask."""
-        for device in wp.get_devices():
+        for device in get_test_devices():
             model = _replicated_model(3, device=device)
             view = DeformableSurfaceView(model, "/World/Cloth")
             mask = wp.array([True, False, True], dtype=wp.bool, device=device)
@@ -493,7 +499,7 @@ class TestDeformableStateWrites(unittest.TestCase):
 
     def test_mask_conversion_uses_view_rows_in_uneven_and_global_scenes(self):
         """Keep object membership independent of model-world partition sizes."""
-        for device in wp.get_devices():
+        for device in get_test_devices():
             for global_only in (False, True):
                 builder = newton.ModelBuilder()
                 for count in (1, 0, 2):
@@ -562,17 +568,31 @@ class TestDeformableStateWrites(unittest.TestCase):
 
     def test_masked_writes_keep_full_buffer_row_order(self):
         """Copy matching full-buffer rows and preserve every unselected row."""
-        for device in wp.get_devices():
+        for device in get_test_devices():
             model = _replicated_model(4, device=device)
             for getter, setter, attribute in _state_accessors(model):
+                state = model.state()
+                target = getattr(state, attribute)
+                initial = wp.clone(target)
+                before = getter(state).numpy().copy()
+                defaults = before.copy()
+                for i in range(4):
+                    defaults[i, ..., 0] += 10.0 + i
+                values = wp.array(defaults, dtype=target.dtype, device=device)
+                strided = np.stack((defaults, defaults), axis=-1)[..., 0]
+                host_inputs = (
+                    ("full", defaults),
+                    ("list", defaults.tolist()),
+                    ("float64", defaults.astype(np.float64)),
+                    ("strided", strided),
+                    ("flat", defaults.reshape(-1)),
+                    ("flat_list", defaults.reshape(-1).tolist()),
+                    ("rows", defaults.reshape(-1, defaults.shape[-1])),
+                    ("fortran", np.asfortranarray(defaults.reshape(defaults.shape[-1], -1))),
+                )
                 for selection in (None, [True, False, True, False], [False] * 4):
                     with self.subTest(device=device, setter=setter.__name__, selection=selection):
-                        state = model.state()
-                        before = getter(state).numpy().copy()
-                        defaults = before.copy()
-                        for i in range(4):
-                            defaults[i, ..., 0] += 10.0 + i
-                        values = wp.array(defaults, dtype=getattr(state, attribute).dtype, device=device)
+                        wp.copy(target, initial)
                         expected = before.copy()
                         chosen = np.ones(4, dtype=bool) if selection is None else selection
                         expected[chosen] = defaults[chosen]
@@ -588,20 +608,10 @@ class TestDeformableStateWrites(unittest.TestCase):
                         np.testing.assert_array_equal(backing.numpy(), backing_np)
 
                         # Host inputs follow the same mapping outside capture.
-                        strided = np.stack((defaults, defaults), axis=-1)[..., 0]
-                        host_inputs = (
-                            ("full", defaults),
-                            ("list", defaults.tolist()),
-                            ("float64", defaults.astype(np.float64)),
-                            ("strided", strided),
-                            ("flat", defaults.reshape(-1)),
-                            ("flat_list", defaults.reshape(-1).tolist()),
-                            ("rows", defaults.reshape(-1, defaults.shape[-1])),
-                            ("fortran", np.asfortranarray(defaults.reshape(defaults.shape[-1], -1))),
-                        )
                         for name, host_values in host_inputs:
                             with self.subTest(host_layout=name):
-                                state = model.state()
+                                # An earlier successful write must not hide a later no-op.
+                                wp.copy(target, initial)
                                 setter(state, host_values, mask=selection)
                                 np.testing.assert_array_equal(getter(state).numpy(), expected)
 
@@ -666,7 +676,7 @@ class TestDeformableStateWrites(unittest.TestCase):
             tape.backward(grads=seeds)
             return tape
 
-        for device in wp.get_devices():
+        for device in get_test_devices():
             model = _replicated_model(3, device=device)
             for convert_indices in (False, True):
                 for getter, setter, attribute in _state_accessors(model):
