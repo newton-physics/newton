@@ -16,6 +16,9 @@ from ...sim.contacts import GENERATION_SENTINEL
 from .friction import contact_tangent_basis, friction_pair_candidate
 from .friction_patches import FrictionPatches, warmstart_dt_scale
 
+# SolverFeatherPGS rejects models with ``requires_grad``, so no kernel needs an adjoint.
+wp.set_module_options({"enable_backward": False})
+
 PGS_CONSTRAINT_TYPE_CONTACT = 0
 # PGS joint drive row (``drive_mode="rows"``): a bilateral row per driven DOF whose
 # impulse follows the PhysX force-drive update each iteration; the velocity-only
@@ -945,7 +948,7 @@ def compute_link_velocity(
     return v_s, a_s
 
 
-@wp.kernel(module=_KINEMATICS_KERNEL_MODULE)
+@wp.kernel(module=_KINEMATICS_KERNEL_MODULE, enable_backward=False)
 def eval_rigid_fk_id(
     articulation_start: wp.array[int],
     articulation_joint_end: wp.array[int],
@@ -1468,7 +1471,7 @@ def accumulate_articulation_tau(
             body_ft_s[parent] = body_ft_s[parent] + f_s
 
 
-@wp.kernel(module=_INVERSE_DYNAMICS_KERNEL_MODULE)
+@wp.kernel(module=_INVERSE_DYNAMICS_KERNEL_MODULE, enable_backward=False)
 def eval_rigid_tau(
     articulation_start: wp.array[int],
     articulation_joint_end: wp.array[int],
@@ -1632,7 +1635,7 @@ def _get_tree_tau_kernel(lanes: int):
     return tree_tau
 
 
-@wp.kernel(module=_MASS_DYNAMICS_KERNEL_MODULE)
+@wp.kernel(module=_MASS_DYNAMICS_KERNEL_MODULE, enable_backward=False)
 def compute_composite_inertia(
     articulation_start: wp.array[int],
     articulation_joint_end: wp.array[int],
@@ -2215,7 +2218,7 @@ def prepare_articulation_augmented_drives(
     row_counts[articulation] = slot
 
 
-@wp.kernel(module=_INVERSE_DYNAMICS_KERNEL_MODULE)
+@wp.kernel(module=_INVERSE_DYNAMICS_KERNEL_MODULE, enable_backward=False)
 def eval_augmented_drives(
     articulation_start: wp.array[int],
     articulation_H_rows: wp.array[int],
@@ -2268,7 +2271,7 @@ def eval_augmented_drives(
     )
 
 
-@wp.kernel(module=_INVERSE_DYNAMICS_KERNEL_MODULE)
+@wp.kernel(module=_INVERSE_DYNAMICS_KERNEL_MODULE, enable_backward=False)
 def eval_rigid_tau_and_augmented_drives(
     articulation_start: wp.array[int],
     articulation_joint_end: wp.array[int],
@@ -6129,7 +6132,7 @@ def hinv_jt_par_row(
 # =============================================================================
 
 
-@wp.kernel(module=_MASS_DYNAMICS_KERNEL_MODULE)
+@wp.kernel(module=_MASS_DYNAMICS_KERNEL_MODULE, enable_backward=False)
 def crba_fill_par_dof(
     articulation_start: wp.array[int],
     articulation_dof_start: wp.array[int],
@@ -8441,7 +8444,7 @@ def compute_dense_contact_bounds(
 # ---------------------------------------------------------------------------
 
 
-@wp.kernel(module=_MASS_DYNAMICS_KERNEL_MODULE)
+@wp.kernel(module=_MASS_DYNAMICS_KERNEL_MODULE, enable_backward=False)
 def compute_compact_diagonal_inverse_mass(
     articulation_start: wp.array[int],
     articulation_dof_start: wp.array[int],
@@ -8474,7 +8477,7 @@ def compute_compact_diagonal_inverse_mass(
     diagonal_inverse_mass[global_dof] = 1.0 / mass
 
 
-@wp.kernel(module=_MASS_DYNAMICS_KERNEL_MODULE)
+@wp.kernel(module=_MASS_DYNAMICS_KERNEL_MODULE, enable_backward=False)
 def solve_compact_diagonal_mass(
     diagonal_inverse_mass: wp.array[float],
     group_to_art: wp.array[int],

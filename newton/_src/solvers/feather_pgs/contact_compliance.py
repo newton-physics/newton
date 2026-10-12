@@ -22,6 +22,9 @@ import warp as wp
 
 from .kernels import PGS_CONSTRAINT_TYPE_CONTACT, PGS_CONSTRAINT_TYPE_FRICTION
 
+# SolverFeatherPGS rejects models with ``requires_grad``, so no kernel needs an adjoint.
+wp.set_module_options({"enable_backward": False})
+
 
 def material_coefficients(stiffness, damping, friction_scale, *, shape_friction=0.0):
     """Resolve one hydroelastic contact's material fields with explicit SI semantics.

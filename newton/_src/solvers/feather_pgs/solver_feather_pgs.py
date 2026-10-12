@@ -182,6 +182,9 @@ from .sparse_contact import (
 from .sparse_mass_matrix import _get_crba_sparse_factor_kernel, _SparseMassMatrixPlan, solve_sparse_mass_matrix
 from .sparse_pgs import _get_pgs_solve_sparse_kernel
 
+# SolverFeatherPGS rejects models with ``requires_grad``, so no kernel needs an adjoint.
+wp.set_module_options({"enable_backward": False})
+
 _SMALL_DOF_THRESHOLD_DEFAULT = 12
 _MFGS_RESIDENT_METADATA_MAX_BYTES = 4096
 _MFGS_TILE_SHARED_STORAGE_BYTES = 128

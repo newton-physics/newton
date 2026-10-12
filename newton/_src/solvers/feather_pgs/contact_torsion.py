@@ -27,6 +27,9 @@ from .kernels import (
     PGS_CONSTRAINT_TYPE_TORSION,
 )
 
+# SolverFeatherPGS rejects models with ``requires_grad``, so no kernel needs an adjoint.
+wp.set_module_options({"enable_backward": False})
+
 _TOUCH_TOLERANCE = 1.0e-5
 _NORMAL_COSINE = 0.999
 _MAX_GROUP_CONTACTS = 4096
