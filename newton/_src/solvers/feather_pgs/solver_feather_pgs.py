@@ -88,7 +88,6 @@ from .kernels import (
     compute_com_transforms,
     compute_compact_diagonal_inverse_mass,
     compute_composite_inertia,
-    compute_contact_linear_force_from_impulses,
     compute_contact_spatial_force_from_impulses,
     compute_delta_and_accumulate,
     compute_dense_contact_bounds,
@@ -133,7 +132,6 @@ from .kernels import (
     integrate_generalized_joints,
     invert_lower_factor_grouped,
     local_solve_launch_gate,
-    pack_contact_linear_force_as_spatial,
     pgs_solve_loop,
     pgs_solve_mf_loop,
     populate_connect_J_for_size,
@@ -1263,7 +1261,7 @@ class SolverFeatherPGS(SolverBase):
         (torsional friction is not reported). Contacts whose rows were dropped for capacity,
         and contacts of sleeping islands whose rows are skipped (``sleep_skip_constraints``),
         report zero, as do rows beyond the contact count or the rigid capacity and the
-        soft-contact rows. These are the forces :meth:`update_contacts` reports. A zero force
+        soft-contact rows. A zero force
         under a sleeping body does not mean the contact was lost: force-threshold logic and
         :class:`~newton.sensors.SensorContact` see an apparent unloading while the island
         sleeps; pass ``sleep_skip_constraints=False`` (or leave sleeping off) to keep the
@@ -7152,44 +7150,6 @@ class SolverFeatherPGS(SolverBase):
                 "global body, or a kinematic global articulation with joints, with another world cannot "
                 "be solved per world at any capacity and need a different scene layout. Reset the "
                 "affected worlds before accepting transitions."
-            )
-
-    @override
-    def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """Write the linear contact forces of the last step to ``contacts``.
-
-        Fills :attr:`~newton.Contacts.rigid_contact_force` [N] and, when allocated, the
-        linear part of :attr:`~newton.Contacts.force` from the normal and friction impulses
-        of each contact divided by the time step. The torque part of
-        :attr:`~newton.Contacts.force` is left zero; this solver does not report a contact
-        wrench. Contacts whose rows were dropped for capacity report zero force. The
-        :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` observable reports the same
-        forces from :meth:`step`.
-
-        Args:
-            contacts: The contacts passed to the last :meth:`step`.
-            state: Unused.
-        """
-        del state
-        if contacts is None or contacts.rigid_contact_count is None:
-            return
-
-        dt = self._last_step_dt
-        inv_dt = 0.0 if dt is None or dt <= 0.0 else 1.0 / dt
-        wp.launch(
-            compute_contact_linear_force_from_impulses,
-            dim=contacts.rigid_contact_max,
-            inputs=self._contact_force_inputs(contacts, inv_dt),
-            outputs=[contacts.rigid_contact_force],
-            device=self.model.device,
-        )
-        if contacts.force is not None:
-            wp.launch(
-                pack_contact_linear_force_as_spatial,
-                dim=contacts.rigid_contact_max,
-                inputs=[contacts.rigid_contact_count, contacts.rigid_contact_force],
-                outputs=[contacts.force],
-                device=self.model.device,
             )
 
     def _contact_force_inputs(self, contacts: Contacts, inv_dt: float) -> list:

@@ -117,9 +117,8 @@ def test_substep_force_export_and_release(test, device):
             pgs_contact_regularization=0.02,
             **PATCH_OPTIONS,
         )
-        solver.update_contacts(contacts)
         count = int(contacts.rigid_contact_count.numpy()[0])
-        forces = contacts.rigid_contact_force.numpy()[:count]
+        forces = result["contact_f"][:count, :3]
         normals = contacts.rigid_contact_normal.numpy()[:count]
         slots = solver.contact_slot.numpy()[:count]
         for contact, slot in enumerate(slots):

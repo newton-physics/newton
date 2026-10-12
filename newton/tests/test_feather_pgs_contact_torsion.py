@@ -15,7 +15,7 @@ from newton import GeoType
 from newton._src.solvers.feather_pgs.contact_torsion import _contact_groups, _group_budget
 from newton._src.solvers.feather_pgs.friction_patches import link_patch_rows
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_TORSION
-from newton.solvers import SolverFeatherPGS
+from newton.solvers import SolverFeatherPGS, SolverObservableFlags
 from newton.tests.test_feather_pgs_friction_patches import _patch_fixture
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
@@ -116,8 +116,10 @@ def fixture(
     solver.rigid_body_angular_damping.zero_()
     if row_limit is not None:
         solver.dense_max_constraints = row_limit
-    solver.step(a, z, model.control(), contacts, dt)
+    observables = solver.observables({SolverObservableFlags.CONTACT_F})
+    solver.step(a, z, model.control(), contacts, dt, observables=observables)
     result = {name: getattr(z, name).numpy() for name in ("body_q", "body_qd", "joint_q", "joint_qd")}
+    result["contact_f"] = observables.contact_f.numpy()
     result.update(
         {
             name: getattr(solver, name).numpy()

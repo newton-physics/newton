@@ -48,17 +48,17 @@ def _net_body_forces(model, contacts, contact_f):
     return net
 
 
-def _check_rows(test, contacts, contact_f, legacy):
-    """Live rows hold the legacy linear force and no torque; every other row is zero."""
+def _check_rows(test, contacts, contact_f):
+    """Live rows hold a finite linear force and no torque; every other row is zero."""
     count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertGreater(count, 0)
-    np.testing.assert_array_equal(contact_f[:count, :3], legacy[:count])
+    test.assertTrue(np.isfinite(contact_f[:count, :3]).all())
     np.testing.assert_array_equal(contact_f[:count, 3:], 0.0)
     np.testing.assert_array_equal(contact_f[count:], 0.0)
 
 
-def test_contact_f_matches_legacy_force_and_weight(test, device, steps=150, **options):
-    """Report the legacy update_contacts force per contact, and each box's weight at rest."""
+def test_contact_f_reports_each_box_weight(test, device, steps=150, **options):
+    """Report linear-only per-contact forces that sum to each box's weight at rest."""
     model, pipeline = _stacked_boxes(device)
     solver = SolverFeatherPGS(model, pgs_iterations=32, **options)
     observables = solver.observables({SolverObservableFlags.CONTACT_F})
@@ -72,8 +72,7 @@ def test_contact_f_matches_legacy_force_and_weight(test, device, steps=150, **op
         solver.step(states[0], states[1], control, contacts, DT, observables=observables)
         states.reverse()
     contact_f = observables.contact_f.numpy()
-    solver.update_contacts(contacts)
-    _check_rows(test, contacts, contact_f, contacts.rigid_contact_force.numpy())
+    _check_rows(test, contacts, contact_f)
     if options.get("mf_max_constraints") is not None:
         # Rows beyond the capacity were dropped; those contacts report zero.
         count = int(contacts.rigid_contact_count.numpy()[0])
@@ -123,15 +122,14 @@ def test_contact_f_in_a_captured_graph(test, device):
     observables.contact_f.fill_(wp.spatial_vector(FILL, FILL, FILL, FILL, FILL, FILL))
     for _ in range(60):
         wp.capture_launch(recorded.graph)
-    solver.update_contacts(contacts)
-    _check_rows(test, contacts, observables.contact_f.numpy(), contacts.rigid_contact_force.numpy())
+    _check_rows(test, contacts, observables.contact_f.numpy())
     weight = np.linalg.norm(model.gravity.numpy()[0])
     net = _net_body_forces(model, contacts, observables.contact_f.numpy())
     np.testing.assert_allclose(net[1, 2], UPPER_MASS * weight, rtol=0.03)
 
 
 def test_contact_f_of_sleeping_islands(test, device, skip_constraints=True):
-    """Report the legacy force of a sleeping island's contacts: zero with skipped rows, else the resting force."""
+    """Report a sleeping island's contact forces: zero with skipped rows, else the resting force."""
     model, pipeline = _stacked_boxes(device)
     solver = SolverFeatherPGS(
         model,
@@ -154,8 +152,7 @@ def test_contact_f_of_sleeping_islands(test, device, skip_constraints=True):
         states.reverse()
     np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
     contact_f = observables.contact_f.numpy()
-    solver.update_contacts(contacts)
-    _check_rows(test, contacts, contact_f, contacts.rigid_contact_force.numpy())
+    _check_rows(test, contacts, contact_f)
     net = _net_body_forces(model, contacts, contact_f)
     if skip_constraints:
         np.testing.assert_array_equal(net, 0.0)
@@ -166,7 +163,7 @@ def test_contact_f_of_sleeping_islands(test, device, skip_constraints=True):
 
 
 def test_contact_f_of_compliant_hydroelastic_rows(test, device):
-    """Report the legacy force of hydroelastic contacts solved with contact compliance."""
+    """Report the force of hydroelastic contacts solved with contact compliance."""
     with wp.ScopedDevice(device):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
@@ -207,8 +204,7 @@ def test_contact_f_of_compliant_hydroelastic_rows(test, device):
             states.reverse()
         test.assertGreater(solver.compliance_contact_count, 0)
         contact_f = observables.contact_f.numpy()
-        solver.update_contacts(contacts)
-        _check_rows(test, contacts, contact_f, contacts.rigid_contact_force.numpy())
+        _check_rows(test, contacts, contact_f)
         test.assertGreater(np.abs(contact_f[:, 2]).sum(), 0.0)
 
 
@@ -248,8 +244,8 @@ def test_overflowing_contact_count_stays_in_the_rigid_rows(test, device, capture
     else:
         step()
     contact_f = observables.contact_f.numpy()
-    solver.update_contacts(contacts)
-    np.testing.assert_array_equal(contact_f[:rigid_capacity, :3], contacts.rigid_contact_force.numpy())
+    test.assertTrue(np.isfinite(contact_f[:rigid_capacity, :3]).all())
+    test.assertFalse(np.any(contact_f[:rigid_capacity] == FILL))
     np.testing.assert_array_equal(contact_f[:rigid_capacity, 3:], 0.0)
     np.testing.assert_array_equal(contact_f[rigid_capacity:], 0.0)
 
@@ -304,14 +300,14 @@ all_devices = get_test_devices()
 
 add_function_test(
     TestFeatherPGSContactObservable,
-    "test_contact_f_matches_legacy_force_and_weight",
-    test_contact_f_matches_legacy_force_and_weight,
+    "test_contact_f_reports_each_box_weight",
+    test_contact_f_reports_each_box_weight,
     devices=cuda_devices,
 )
 add_function_test(
     TestFeatherPGSContactObservable,
-    "test_contact_f_matches_legacy_force_and_weight_split",
-    test_contact_f_matches_legacy_force_and_weight,
+    "test_contact_f_reports_each_box_weight_split",
+    test_contact_f_reports_each_box_weight,
     devices=all_devices,
     pgs_mode="split",
 )
@@ -325,8 +321,8 @@ for _suffix, _options in (
 ):
     add_function_test(
         TestFeatherPGSContactObservable,
-        f"test_contact_f_matches_legacy_force_and_weight_{_suffix}",
-        test_contact_f_matches_legacy_force_and_weight,
+        f"test_contact_f_reports_each_box_weight_{_suffix}",
+        test_contact_f_reports_each_box_weight,
         devices=cuda_devices,
         **_options,
     )

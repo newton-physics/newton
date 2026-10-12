@@ -2097,45 +2097,6 @@ def contact_linear_force_from_impulses(
 
 
 @wp.kernel
-def compute_contact_linear_force_from_impulses(
-    contact_count: wp.array[wp.int32],
-    contact_normal: wp.array[wp.vec3],
-    contact_world: wp.array[wp.int32],
-    contact_slot: wp.array[wp.int32],
-    contact_path: wp.array[wp.int32],
-    contact_slots_needed: wp.array[wp.int32],
-    world_impulses: wp.array2d[wp.float32],
-    mf_impulses: wp.array2d[wp.float32],
-    propagation_impulses: wp.array2d[wp.float32],
-    world_constraint_count: wp.array[wp.int32],
-    mf_constraint_count: wp.array[wp.int32],
-    propagation_constraint_count: wp.array[wp.int32],
-    inv_dt: float,
-    # outputs
-    rigid_contact_force: wp.array[wp.vec3],
-):
-    """Convert the solved normal and friction impulses of each contact into a world-frame force."""
-    c = wp.tid()
-    if c >= contact_count[0]:
-        return
-    rigid_contact_force[c] = contact_linear_force_from_impulses(
-        c,
-        contact_normal,
-        contact_world,
-        contact_slot,
-        contact_path,
-        contact_slots_needed,
-        world_impulses,
-        mf_impulses,
-        propagation_impulses,
-        world_constraint_count,
-        mf_constraint_count,
-        propagation_constraint_count,
-        inv_dt,
-    )
-
-
-@wp.kernel
 def compute_contact_spatial_force_from_impulses(
     contact_count: wp.array[wp.int32],
     contact_normal: wp.array[wp.vec3],
@@ -2177,22 +2138,6 @@ def compute_contact_spatial_force_from_impulses(
             inv_dt,
         )
     contact_f[c] = wp.spatial_vector(force, wp.vec3(0.0))
-
-
-@wp.kernel
-def pack_contact_linear_force_as_spatial(
-    contact_count: wp.array[wp.int32],
-    rigid_contact_force: wp.array[wp.vec3],
-    # outputs
-    contact_force: wp.array[wp.spatial_vector],
-):
-    """Pack linear contact forces into Newton's spatial-force contact buffer."""
-    c = wp.tid()
-    total_contacts = contact_count[0]
-    if c >= total_contacts:
-        return
-
-    contact_force[c] = wp.spatial_vector(rigid_contact_force[c], wp.vec3(0.0))
 
 
 @wp.func

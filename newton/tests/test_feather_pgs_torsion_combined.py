@@ -64,9 +64,8 @@ def test_distributed_budget_and_export(test, device):
                 _, result, solver, _, _, contacts = _check_pair(
                     test, device, 0.01, 16, spin=10.0, sliding=1.0, dt=dt, **patch
                 )
-                solver.update_contacts(contacts)
                 count = int(contacts.rigid_contact_count.numpy()[0])
-                forces = contacts.rigid_contact_force.numpy()[:count]
+                forces = result["contact_f"][:count, :3]
                 normals = contacts.rigid_contact_normal.numpy()[:count]
                 for index, slot in enumerate(solver.contact_slot.numpy()[:count]):
                     if slot >= 0:

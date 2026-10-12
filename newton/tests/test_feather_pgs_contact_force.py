@@ -9,22 +9,19 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverFeatherPGS
+from newton.solvers import SolverFeatherPGS, SolverObservableFlags
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DT = 1.0 / 120.0
 BOX_MASS = 2.0
 
 
-def _box_on_ground(device, gravity=None, mu=None, *, legacy_force_test=None):
-    """Box resting on the ground; ``legacy_force_test`` requests the deprecated ``Contacts.force``."""
+def _box_on_ground(device, gravity=None, mu=None):
+    """Box resting on the ground."""
     builder = newton.ModelBuilder() if gravity is None else newton.ModelBuilder(gravity=gravity)
     shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
     if mu is not None:
         shape_cfg.mu = mu
-    if legacy_force_test is not None:
-        with legacy_force_test.assertWarns(DeprecationWarning):
-            builder.request_contact_attributes("force")
     # Solid-cube inertia for a 0.2 m box of mass BOX_MASS.
     inertia = wp.mat33(np.eye(3) * BOX_MASS * 0.04 / 6.0)
     body = builder.add_body(
@@ -37,18 +34,17 @@ def _box_on_ground(device, gravity=None, mu=None, *, legacy_force_test=None):
 
 def test_resting_box_reports_weight_as_linear_force(test, device, pgs_mode="matrix_free", response="immediate"):
     """Report the resting box's weight through the linear contact force and leave the torque zero."""
-    model = _box_on_ground(device, legacy_force_test=test)
+    model = _box_on_ground(device)
     solver = SolverFeatherPGS(model, pgs_mode=pgs_mode, pgs_iterations=32, articulated_contact_response=response)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
-    test.assertIsNotNone(contacts.force)
+    observables = solver.observables({SolverObservableFlags.CONTACT_F})
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     for _ in range(120):
         pipeline.collide(state_0, contacts)
-        solver.step(state_0, state_1, control, contacts, DT)
+        solver.step(state_0, state_1, control, contacts, DT, observables=observables)
         state_0, state_1 = state_1, state_0
-    solver.update_contacts(contacts)
 
     count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertGreater(count, 0)
@@ -56,12 +52,11 @@ def test_resting_box_reports_weight_as_linear_force(test, device, pgs_mode="matr
     # Force on shape0's body by shape1's; orient every record as the force on the box.
     box_shape = int(np.flatnonzero(model.shape_body.numpy() >= 0)[0])
     sign = np.where(shape0 == box_shape, 1.0, -1.0)[:, None]
-    linear = contacts.rigid_contact_force.numpy()[:count] * sign
+    wrench = observables.contact_f.numpy()[:count]
+    linear = wrench[:, :3] * sign
     weight = BOX_MASS * float(np.linalg.norm(model.gravity.numpy()[0]))
     np.testing.assert_allclose(linear.sum(axis=0), [0.0, 0.0, weight], rtol=2.0e-2, atol=2.0e-2 * weight)
 
-    wrench = contacts.force.numpy()[:count]
-    np.testing.assert_allclose(wrench[:, :3] * sign, linear, rtol=1.0e-6, atol=1.0e-6)
     np.testing.assert_array_equal(wrench[:, 3:], np.zeros((count, 3)))
 
 
@@ -138,10 +133,10 @@ def _impact(model, solver, joint_qd):
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     pipeline.collide(state_in, contacts)
-    solver.step(state_in, state_out, model.control(), contacts, 0.01)
-    solver.update_contacts(contacts)
+    observables = solver.observables({SolverObservableFlags.CONTACT_F})
+    solver.step(state_in, state_out, model.control(), contacts, 0.01, observables=observables)
     count = int(contacts.rigid_contact_count.numpy()[0])
-    return state_out.joint_qd.numpy()[:6], contacts.rigid_contact_force.numpy()[:count].sum(axis=0)
+    return state_out.joint_qd.numpy()[:6], observables.contact_f.numpy()[:count, :3].sum(axis=0)
 
 
 def test_free_body_contact_response_includes_armature(test, device, pgs_mode="matrix_free", response="immediate"):

@@ -228,6 +228,7 @@ def test_regularization_indeterminate_split(test: unittest.TestCase, device):
         pgs_contact_regularization=0.02,
         pgs_warmstart=True,
     )
+    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
     contacts = pipeline.contacts()
     s0, s1 = model.state(), model.state()
     control = model.control()
@@ -235,14 +236,13 @@ def test_regularization_indeterminate_split(test: unittest.TestCase, device):
     for _k in range(120):
         pipeline.collide(s0, contacts)
         s0.clear_forces()
-        solver.step(s0, s1, control, contacts, DT)
+        solver.step(s0, s1, control, contacts, DT, observables=observables)
         s0, s1 = s1, s0
-    solver.update_contacts(contacts)
 
     count = int(contacts.rigid_contact_count.numpy()[0])
     shape0 = contacts.rigid_contact_shape0.numpy()[:count]
     shape1 = contacts.rigid_contact_shape1.numpy()[:count]
-    force = contacts.rigid_contact_force.numpy()[:count]
+    force = observables.contact_f.numpy()[:count, :3]
     loads = []
     for s in supports:
         fz = 0.0
