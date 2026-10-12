@@ -278,7 +278,7 @@ def test_matches_featherstone_reference(test, device, solve_mode="matrix_free"):
             solver = solver_cls(model, angular_damping=0.0)
         else:
             solver = solver_cls(model, solve_mode=solve_mode)
-            solver._rigid_body_angular_damping.zero_()
+            solver._default_angular_damping.zero_()
         control = model.control()
         for _ in range(20):
             solver.step(state_0, state_1, control, None, DT)

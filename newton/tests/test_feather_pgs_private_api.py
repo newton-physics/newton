@@ -103,7 +103,6 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
         self.assertEqual(parameters["friction_mode"].default, "fixed_normal")
         self.assertIn(".. experimental::", SolverFeatherPGS.__doc__)
         for option, default in (
-            ("angular_damping", None),
             ("contact_friction_scale", 1.0),
             ("contact_friction_position_iterations", -1),
             ("enable_restitution", True),
@@ -111,6 +110,7 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
             with self.subTest(option=option):
                 self.assertEqual(parameters[option].default, default)
         self.assertNotIn("enable_contact_friction", parameters)
+        self.assertNotIn("angular_damping", parameters)
 
     def test_pgs_mode_selects_only_the_supported_solves(self):
         """Offer exactly the matrix-free and split solves, with the matrix-free solve as the default."""

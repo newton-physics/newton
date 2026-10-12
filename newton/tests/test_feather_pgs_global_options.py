@@ -189,19 +189,14 @@ def _split_or_default(device):
     return {} if device.is_cuda else {"solve_mode": "split"}
 
 
-def test_angular_damping_matches_the_per_body_attribute(test, device):
-    """Apply one global value exactly as a per-body attribute of that value, and override the attribute."""
+def test_angular_damping_defaults_to_the_featherstone_value(test, device):
+    """Damp free roots by 0.05 without the attribute, exactly as a registered attribute of that value."""
     mode = _split_or_default(device)
     run = {"init": _spin, "steps": 20, **mode}
     default = _run(_build_spinning_model(device), **run)
-    explicit = _run(_build_spinning_model(device), angular_damping=0.05, **run)
-    _assert_bitwise(test, default, explicit, "angular_damping=0.05 vs default")
-    attribute = _run(_build_spinning_model(device, register=True, damping=0.3), **run)
-    for damping in (None, 0.0):
-        with test.subTest(model_damping=damping):
-            model = _build_spinning_model(device, register=damping is not None, damping=damping)
-            _assert_bitwise(test, _run(model, angular_damping=0.3, **run), attribute, "override vs attribute")
-    undamped = _run(_build_spinning_model(device), angular_damping=0.0, **run)
+    registered = _run(_build_spinning_model(device, register=True, damping=0.05), **run)
+    _assert_bitwise(test, default, registered, "unregistered vs 0.05 attribute")
+    undamped = _run(_build_spinning_model(device, register=True, damping=0.0), **run)
     test.assertGreater(float(np.abs(undamped[2] - default[2]).max()), 1.0e-3)
 
 
@@ -209,12 +204,24 @@ def test_angular_damping_decays_free_root_spin_analytically(test, device):
     """Scale a free sphere's spin by ``1 - d dt`` per step and leave hinge rates alone."""
     damping = 0.4
     steps = 25
-    solver, _, joint_qd, _ = _run(
-        _build_spinning_model(device), init=_spin, steps=steps, angular_damping=damping, **_split_or_default(device)
+    _, _, joint_qd, _ = _run(
+        _build_spinning_model(device, register=True, damping=damping),
+        init=_spin,
+        steps=steps,
+        **_split_or_default(device),
     )
     test.assertAlmostEqual(float(joint_qd[5]), 4.0 * (1.0 - damping * DT) ** steps, delta=1.0e-5)
-    test.assertEqual(solver.angular_damping, damping)
-    np.testing.assert_allclose(solver._rigid_body_angular_damping.numpy(), damping)
+
+
+def test_angular_damping_follows_in_place_edits(test, device):
+    """Apply an in-place edit of the attribute on the next step, as on the per-body path."""
+    model = _build_spinning_model(device, register=True, damping=0.3)
+    solver = SolverFeatherPGS(model, **_split_or_default(device))
+    state_in, state_out = model.state(), model.state()
+    _spin(model, state_in)
+    model.physx.angular_damping.fill_(0.0)
+    solver.step(state_in, state_out, model.control(), None, DT)
+    test.assertAlmostEqual(float(state_out.joint_qd.numpy()[5]), 4.0, delta=1.0e-5)
 
 
 def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
@@ -260,21 +267,13 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     test.assertAlmostEqual(float(state_out.joint_qd.numpy()[5]), 4.0, delta=1.0e-5)
 
 
-def test_angular_damping_validates_its_value(test, device):
-    """Reject negative, nonfinite and non-numeric damping."""
-    model = _build_spinning_model(device)
-    for value in (-0.1, float("nan"), float("inf"), "fast"):
-        with test.subTest(value=value), test.assertRaisesRegex(ValueError, "angular_damping"):
-            SolverFeatherPGS(model, angular_damping=value, **_split_or_default(device))
-
-
 def test_angular_damping_survives_graph_capture(test, device):
-    """Replay a captured step with the global damping exactly like eager steps."""
-    run = {"init": _spin, "steps": 6, "angular_damping": 0.3}
+    """Replay a captured step with per-body damping exactly like eager steps."""
+    run = {"init": _spin, "steps": 6}
     _assert_bitwise(
         test,
-        _run(_build_spinning_model(device), capture=True, **run),
-        _run(_build_spinning_model(device), **run),
+        _run(_build_spinning_model(device, register=True, damping=0.3), capture=True, **run),
+        _run(_build_spinning_model(device, register=True, damping=0.3), **run),
         "captured",
     )
 
@@ -542,9 +541,9 @@ class TestFeatherPGSGlobalOptions(unittest.TestCase):
 
 
 for _fn in (
-    test_angular_damping_matches_the_per_body_attribute,
+    test_angular_damping_defaults_to_the_featherstone_value,
     test_angular_damping_decays_free_root_spin_analytically,
-    test_angular_damping_validates_its_value,
+    test_angular_damping_follows_in_place_edits,
     test_physx_attributes_import_from_usd_and_are_read_every_step,
     test_zero_friction_matches_normal_rows_only,
     test_contact_friction_scale_matches_scaled_materials,

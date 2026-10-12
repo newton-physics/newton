@@ -1323,7 +1323,6 @@ class SolverFeatherPGS(SolverBase):
     cfm = _ConstructionOption()
     relaxation = _StepOption()
     update_mass_matrix_interval = _ConstructionOption()
-    angular_damping = _ConstructionOption()
     enable_joint_limits = _ConstructionOption()
     joint_limit_activation_gap = _ConstructionOption()
     enable_joint_velocity_limits = _ConstructionOption()
@@ -1378,7 +1377,9 @@ class SolverFeatherPGS(SolverBase):
         Each attribute maps to the matching PhysX rigid-body USD attribute:
 
         - ``physx:angular_damping`` [1/s] damps the angular velocity of free bodies and
-          floating bases (``physxRigidBody:angularDamping``, default 0.05).
+          floating bases as ``w *= 1 - d dt`` each step (``physxRigidBody:angularDamping``,
+          default 0.05, as :class:`~newton.solvers.SolverFeatherstone`); joints with a parent
+          body are not damped. Fill the attribute for one value on every body.
         - ``physx:max_linear_velocity`` [m/s] and ``physx:max_angular_velocity`` [rad/s]
           bound the velocity of free bodies (``physxRigidBody:maxLinearVelocity`` and
           ``physxRigidBody:maxAngularVelocity``, default unbounded).
@@ -1456,7 +1457,6 @@ class SolverFeatherPGS(SolverBase):
         cfm: float = 1.0e-6,
         relaxation: float = 1.0,
         update_mass_matrix_interval: int = 1,
-        angular_damping: float | None = None,
         enable_joint_limits: bool = False,
         joint_limit_activation_gap: float = float("inf"),
         enable_joint_velocity_limits: bool = False,
@@ -1539,12 +1539,6 @@ class SolverFeatherPGS(SolverBase):
                 articulations. Under CUDA graph capture the
                 host-side cadence is baked into the graph, so the interval should divide the
                 number of steps captured per graph.
-            angular_damping: Angular damping [1/s] of every free body and floating base,
-                applied as ``w *= 1 - angular_damping * dt`` each step. ``None`` (the default)
-                uses the per-body ``physx:angular_damping`` attribute (see
-                :meth:`register_custom_attributes`, default 0.05). A value overrides that
-                attribute for all free roots; joints with a parent body are not damped either
-                way. Must be finite and non-negative. Configure at construction.
             enable_joint_limits: Enforce :attr:`~newton.Model.joint_limit_lower` and
                 :attr:`~newton.Model.joint_limit_upper` of PRISMATIC, REVOLUTE and D6 DOFs as
                 unilateral rows. When ``False`` (the default), no joint-limit rows are created,
@@ -2181,15 +2175,9 @@ class SolverFeatherPGS(SolverBase):
                     f"articulated_contact_response={articulated_contact_response!r}"
                 )
 
-        self._angular_damping = (
-            None if angular_damping is None else _finite_non_negative("angular_damping", angular_damping)
-        )
-        # Stand-ins for models without the physx attributes (and for the angular_damping scalar).
+        # Stand-ins for models without the physx attributes.
         self._default_angular_damping = wp.full(
-            max(model.body_count, 1),
-            _DEFAULT_ANGULAR_DAMPING if self._angular_damping is None else self._angular_damping,
-            dtype=wp.float32,
-            device=model.device,
+            max(model.body_count, 1), _DEFAULT_ANGULAR_DAMPING, dtype=wp.float32, device=model.device
         )
         self._unbounded_body_velocity = wp.full(
             max(model.body_count, 1), float("inf"), dtype=wp.float32, device=model.device
@@ -2497,8 +2485,6 @@ class SolverFeatherPGS(SolverBase):
 
     @property
     def _rigid_body_angular_damping(self) -> wp.array:
-        if self._angular_damping is not None:
-            return self._default_angular_damping
         attribute = self._physx_attribute("angular_damping")
         return self._default_angular_damping if attribute is None else attribute
 
