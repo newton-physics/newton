@@ -89,11 +89,19 @@ def test_overflow_warning_is_printed_once(test, device, pgs_mode="matrix_free", 
         try:
             pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
-            # Flush the device printf into this capture.
-            wp.synchronize()
         finally:
-            output = capture.end()
-        step_output.append([line for line in output.splitlines() if line.strip() and "load on device" not in line])
+            # Flush the device printf into this capture, also when the step raises.
+            try:
+                wp.synchronize()
+            finally:
+                output = capture.end()
+        step_output.append(
+            [
+                line
+                for line in output.splitlines()
+                if line.strip() and not (line.startswith("Module") and "load on device" in line)
+            ]
+        )
     family = "propagation" if response == "propagation" else "matrix-free"
     test.assertEqual(len(step_output[0]), 1, step_output[0])
     test.assertRegex(step_output[0][0], rf"^Warning: FeatherPGS {family} constraint-row overflow in world [01]:")
