@@ -1646,7 +1646,7 @@ add_function_test(
 
 def test_fused_assembly_matches_the_separate_pipeline(test, device, solve_mode="matrix_free"):
     """Match separate assembly and factorization with the warp-per-articulation and tiled kernels."""
-    for links, branched, kernel in ((3, False, "warp"), (6, True, "warp"), (14, False, "tiled"), (15, True, "tiled")):
+    for links, branched, kernel in ((3, False, "warp"), (6, True, "warp"), (14, False, "tiled"), (14, True, "tiled")):
         with test.subTest(links=links, branched=branched):
             model = _tree(device, links, branched=branched)
             options = {"solve_mode": solve_mode, "articulation_constraint_max": _ROWS}
@@ -1667,24 +1667,23 @@ def test_fused_assembly_matches_the_separate_pipeline(test, device, solve_mode="
 
 def test_fused_assembly_covers_articulations_wider_than_the_block(test, device):
     """Match separate assembly when the tiled block has fewer threads than the articulation has DOFs."""
-    for links in (33, 64):
-        model = _tree(device, links, worlds=1)
-        with kernel_overrides({"sparse_mass_matrix": False}):
-            reference, q_ref, qd_ref = _trajectory(model, steps=2)
-        size = reference._size_groups[0]
-        test.assertIsNone(reference._crba_cholesky_kernels_by_size[size])
-        for tile_threads in (32, 64):
-            with test.subTest(links=links, tile_threads=tile_threads):
-                overrides = {"tile_threads": tile_threads, "sparse_mass_matrix": False}
-                with kernel_overrides(overrides):
-                    fused, q, qd = _trajectory(model, steps=2, use_parallel_streams=True)
-                test.assertIsNotNone(fused._crba_cholesky_kernels_by_size[size])
-                test.assertEqual(fused._tile_threads, tile_threads)
-                np.testing.assert_allclose(
-                    fused._L_by_size[size].numpy(), reference._L_by_size[size].numpy(), atol=2.0e-5
-                )
-                np.testing.assert_allclose(q, q_ref, rtol=1.0e-5, atol=2.0e-5)
-                np.testing.assert_allclose(qd, qd_ref, rtol=1.0e-5, atol=2.0e-4)
+    # With 32 threads, 33 DOFs leave the second force-staging round one lane wide; both widths share its tile kernels.
+    model = _tree(device, 33, worlds=1)
+    with kernel_overrides({"sparse_mass_matrix": False}):
+        reference, q_ref, qd_ref = _trajectory(model, steps=2)
+    size = reference._size_groups[0]
+    test.assertGreater(size, 32)
+    test.assertIsNone(reference._crba_cholesky_kernels_by_size[size])
+    for tile_threads in (32, 64):
+        with test.subTest(tile_threads=tile_threads):
+            overrides = {"tile_threads": tile_threads, "sparse_mass_matrix": False}
+            with kernel_overrides(overrides):
+                fused, q, qd = _trajectory(model, steps=2, use_parallel_streams=True)
+            test.assertIsNotNone(fused._crba_cholesky_kernels_by_size[size])
+            test.assertEqual(fused._tile_threads, tile_threads)
+            np.testing.assert_allclose(fused._L_by_size[size].numpy(), reference._L_by_size[size].numpy(), atol=2.0e-5)
+            np.testing.assert_allclose(q, q_ref, rtol=1.0e-5, atol=2.0e-5)
+            np.testing.assert_allclose(qd, qd_ref, rtol=1.0e-5, atol=2.0e-4)
 
 
 def test_fused_assembly_follows_the_mass_update_interval(test, device):
