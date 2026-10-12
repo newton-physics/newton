@@ -11,7 +11,7 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton.tests.test_feather_pgs_sleeping_production import PROFILE, _advance, _articulations
+from newton.tests.feather_pgs._fixtures import PROFILE, _advance, _articulations
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 TORSION_PROFILE = {**PROFILE, "contact_torsion_device": True}

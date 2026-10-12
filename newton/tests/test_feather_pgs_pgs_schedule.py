@@ -16,7 +16,7 @@ from newton._src.solvers.feather_pgs.kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_TARGET,
 )
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
+from newton.tests.feather_pgs._fixtures import set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 SCHEDULES = ("interleaved", "contact_then_internal", "phased")

@@ -13,7 +13,7 @@ import warp as wp
 import newton
 from newton._src.solvers.feather_pgs.contact_compliance import _prepare_compliant_rows, start_step
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_contact_compliance import run_fixture
+from newton.tests.feather_pgs._fixtures import run_fixture
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 

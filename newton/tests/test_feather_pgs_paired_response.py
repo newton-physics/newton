@@ -12,7 +12,7 @@ import newton
 from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_FRICTION
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
+from newton.tests.feather_pgs._fixtures import set_torsion_radius
 
 
 def _build_mixed_response_model(

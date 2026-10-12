@@ -4,24 +4,19 @@
 """Regression tests for persistent patch friction in FeatherPGS."""
 
 import unittest
-from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton._src.solvers.feather_pgs.friction_patches import (
-    _FrictionPatchState,
     _pose_motion,
     finish_patch_impulses,
     link_patch_rows,
     seed_patch_impulses,
 )
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_CONTACT, PGS_CONSTRAINT_TYPE_FRICTION
-from newton.tests.test_feather_pgs_friction_anchors import _SQUEEZE_SOLVER, _build_v_jaws
-
-# FeatherPGS and its patch kernels are exercised on CUDA, the solver's only device.
-_DEVICE = "cuda:0"
+from newton.tests.feather_pgs._fixtures import _DEVICE, _SQUEEZE_SOLVER, _build_v_jaws, _patch_fixture
 
 
 @wp.kernel(enable_backward=False)
@@ -58,45 +53,6 @@ def _ground_box(device, **solver_kwargs):
         states.reverse()
 
     return model, solver, contacts, step
-
-
-def _patch_fixture(
-    points, *, shape0=None, normals=None, materials=(0.5, 0.5, 0.5), shape_bodies=(0, 1, 0), device=_DEVICE
-):
-    """Construct patch geometry without a collision matcher or a solver step."""
-    n = len(points)
-    body_count = max(shape_bodies) + 1
-    model = SimpleNamespace(
-        device=wp.get_device(device),
-        body_count=body_count,
-        body_world=wp.zeros(body_count, dtype=int, device=device),
-        shape_body=wp.array(shape_bodies, dtype=int, device=device),
-        shape_collision_radius=wp.array([0.2] * len(shape_bodies), dtype=float, device=device),
-        shape_transform=wp.array([wp.transform_identity()] * len(shape_bodies), dtype=wp.transform, device=device),
-        shape_scale=wp.ones(len(shape_bodies), dtype=wp.vec3, device=device),
-        shape_type=wp.zeros(len(shape_bodies), dtype=int, device=device),
-        shape_source_ptr=wp.zeros(len(shape_bodies), dtype=wp.uint64, device=device),
-        shape_margin=wp.zeros(len(shape_bodies), dtype=float, device=device),
-        shape_gap=wp.zeros(len(shape_bodies), dtype=float, device=device),
-        shape_is_solid=wp.ones(len(shape_bodies), dtype=bool, device=device),
-        shape_material_mu=wp.array(materials, dtype=float, device=device),
-    )
-    state = SimpleNamespace(body_q=wp.array([wp.transform_identity()] * body_count, dtype=wp.transform, device=device))
-    contacts = SimpleNamespace(
-        rigid_contact_count=wp.array([n], dtype=int, device=device),
-        rigid_contact_shape0=wp.array(shape0 if shape0 is not None else [0] * n, dtype=int, device=device),
-        rigid_contact_shape1=wp.ones(n, dtype=int, device=device),
-        rigid_contact_point0=wp.array(points, dtype=wp.vec3, device=device),
-        rigid_contact_point1=wp.array(points, dtype=wp.vec3, device=device),
-        rigid_contact_normal=wp.array(
-            normals if normals is not None else [[0.0, 0.0, -1.0]] * n, dtype=wp.vec3, device=device
-        ),
-        rigid_contact_margin0=wp.zeros(n, dtype=float, device=device),
-        rigid_contact_margin1=wp.zeros(n, dtype=float, device=device),
-    )
-    patches = _FrictionPatchState(model, max(n, 8), True, wp.zeros(max(n, 8), dtype=wp.vec2, device=device))
-    patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
-    return model, state, contacts, patches
 
 
 @unittest.skipUnless(wp.is_cuda_available(), "SolverFeatherPGS requires CUDA")

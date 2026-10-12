@@ -14,8 +14,7 @@ import warp as wp
 from newton._src.solvers.feather_pgs import solver_feather_pgs
 from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_fused_crba import _trajectory, _tree
-from newton.tests.test_feather_pgs_global_options import _build_contact_scene, _run, _set_box_velocities
+from newton.tests.feather_pgs._fixtures import _build_contact_scene, _run, _set_box_velocities, _trajectory, _tree
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 

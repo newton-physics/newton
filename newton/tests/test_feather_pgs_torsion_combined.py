@@ -6,8 +6,7 @@ import unittest
 
 import numpy as np
 
-from newton.tests import test_feather_pgs_torsion_velocity as velocity_tests
-from newton.tests.test_feather_pgs_contact_torsion import PATCH_OPTIONS, fixture
+from newton.tests.feather_pgs._fixtures import PATCH_OPTIONS, _assert_budget, fixture
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 
@@ -32,7 +31,7 @@ def _check_pair(test, device, regularization, velocity, **options):
     weights = solver._row_w.numpy()[0, :count]
     types = result["row_type"][0, :count]
     np.testing.assert_allclose(weights[types == 0], 1 / (1 + regularization), atol=1e-7)
-    velocity_tests._assert_budget(test, result, solver)
+    _assert_budget(test, result, solver)
     test.assertTrue(np.isfinite(result["body_qd"]).all())
     return baseline, result, solver, model, state, contacts
 

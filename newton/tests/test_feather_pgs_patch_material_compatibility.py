@@ -10,7 +10,7 @@ import numpy as np
 
 import newton
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_contact_torsion import fixture
+from newton.tests.feather_pgs._fixtures import fixture
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 

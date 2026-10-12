@@ -15,56 +15,15 @@ effective mass must include the same cross term.
 import unittest
 
 import numpy as np
-import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
+from newton.tests.feather_pgs._fixtures import _build_scissor_model
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DENSE_PATH = 0
 PROPAGATION_PATH = 2
 PGS_CFM = 1.0e-6
-
-
-def _build_scissor_model(device):
-    """One articulation: base link + two sibling links whose boxes overlap.
-
-    The siblings are not directly jointed, so collision produces a
-    link-link contact within a single articulation (common ancestor = base).
-    """
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    builder.default_shape_cfg.density = 1000.0
-    builder.default_shape_cfg.ke = 1.0e5
-    builder.default_shape_cfg.kd = 1.0e3
-    builder.default_shape_cfg.mu = 0.75
-    builder.default_shape_cfg.margin = 0.0
-    builder.default_shape_cfg.gap = 0.0
-
-    base = builder.add_link()
-    builder.add_shape_box(base, hx=0.05, hy=0.05, hz=0.05)
-    j_base = builder.add_joint_revolute(
-        parent=-1,
-        child=base,
-        axis=wp.vec3(0.0, 0.0, 1.0),
-        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
-        child_xform=wp.transform_identity(),
-    )
-
-    joints = [j_base]
-    for side in (1.0, -1.0):
-        link = builder.add_link()
-        builder.add_shape_box(link, hx=0.12, hy=0.03, hz=0.04)
-        joints.append(
-            builder.add_joint_revolute(
-                parent=base,
-                child=link,
-                axis=wp.vec3(0.0, 0.0, 1.0),
-                parent_xform=wp.transform(wp.vec3(0.06, side * 0.028, 0.0), wp.quat_identity()),
-                child_xform=wp.transform(wp.vec3(-0.12, 0.0, 0.0), wp.quat_identity()),
-            )
-        )
-    builder.add_articulation(joints)
-    return builder.finalize(device=device)
 
 
 def _step_once(model, solver):

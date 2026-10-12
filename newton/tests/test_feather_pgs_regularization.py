@@ -11,7 +11,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_CONTACT, compute_world_contact_bias
-from newton.tests.test_feather_pgs_propagation_same_articulation import _build_scissor_model
+from newton.tests.feather_pgs._fixtures import _build_scissor_model
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 DT = 1.0 / 60.0

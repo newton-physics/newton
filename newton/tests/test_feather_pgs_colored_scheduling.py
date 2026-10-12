@@ -16,35 +16,8 @@ import warp as wp
 import newton
 from newton._src.solvers.feather_pgs.kernels import PROPAGATION_COLOR_TAIL
 from newton.solvers import SolverFeatherPGS
+from newton.tests.feather_pgs._fixtures import CONTACT_MAX, _heap
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
-
-CONTACT_MAX = 8192
-
-
-def _heap(device, nx=6, ny=6, nz=3, pitch=0.042, half=0.02, kinematic_tray=False):
-    """A dense heap of touching boxes on the ground, optionally on one kinematic tray."""
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-    builder.rigid_gap = 0.002
-    builder.add_ground_plane()
-    if kinematic_tray:
-        # Every box of the bottom layer rests on the tray, a hub of their contact units.
-        tray = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.01), wp.quat_identity()), is_kinematic=True)
-        builder.add_shape_box(tray, hx=nx * pitch, hy=ny * pitch, hz=0.01)
-    z0 = 0.04 if kinematic_tray else 0.021
-    for ix in range(nx):
-        for iy in range(ny):
-            for iz in range(nz):
-                body = builder.add_body(
-                    xform=wp.transform(
-                        wp.vec3((ix - nx / 2) * pitch, (iy - ny / 2) * pitch, z0 + iz * (2 * half + 0.001)),
-                        wp.quat_identity(),
-                    )
-                )
-                builder.add_shape_box(body, hx=half, hy=half, hz=half)
-    model = builder.finalize(device=device)
-    # Sizes the solver's contact scratch, so it is set before the solver is built.
-    model.rigid_contact_max = CONTACT_MAX
-    return model
 
 
 def _colored_solver(model, **kwargs):

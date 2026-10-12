@@ -10,7 +10,7 @@ import warp as wp
 from newton._src.solvers.feather_pgs import contact_torsion
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_TORSION
 from newton.solvers import SolverObservableFlags
-from newton.tests.test_feather_pgs_contact_torsion import PATCH_OPTIONS, fixture
+from newton.tests.feather_pgs._fixtures import PATCH_OPTIONS, _assert_budget, fixture
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -92,16 +92,6 @@ def test_rebound_preserves_loaded_sliding_when_spin_retires(test, device):
                 np.testing.assert_allclose(actual["impulses"][tangent], baseline["impulses"][tangent], atol=2e-6)
                 np.testing.assert_allclose(actual["body_qd"], baseline["body_qd"], atol=3e-5)
                 _assert_budget(test, actual, solver)
-
-
-def _assert_budget(test, result, solver):
-    """Check the shared final-load budget and nonnegative normal impulses."""
-    for group in solver._torsion_stats["groups"]:
-        impulse = result["impulses"][group["world"]]
-        normal = sum(max(float(impulse[n]), 0.0) for n in group["normal_rows"])
-        sliding = sum(float(np.linalg.norm(impulse[n + 1 : n + 3])) for n in group["anchor_rows"])
-        spin = abs(float(impulse[group["row"]])) / group["effective_radius_m"]
-        test.assertLessEqual(sliding + spin, group["mu"] * normal + 3e-6)
 
 
 def test_spin_opposition_and_final_budget(test, device):

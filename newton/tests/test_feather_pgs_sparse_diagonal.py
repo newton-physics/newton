@@ -17,6 +17,7 @@ from newton._src.solvers.feather_pgs.solver_feather_pgs import (
     _get_pgs_solve_sparse_diagonal_kernel,
 )
 from newton.solvers import SolverFeatherPGS
+from newton.tests.feather_pgs._fixtures import _build_sparse_contact_friction_model
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 _PAIR_SOLVER = {
@@ -73,64 +74,6 @@ def _build_sparse_diagonal_pair_model(
     if with_free_body:
         body = scene.add_body(xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
         scene.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-
-    replicated = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    replicated.replicate(scene, num_worlds, spacing=(3.0, 3.0, 0.0))
-    return replicated.finalize(device=device)
-
-
-def _build_sparse_contact_friction_model(num_branches=16, num_worlds=2, *, device=None):
-    """Build the sparse pair model with tilted sliding branches resting on a static ground plane.
-
-    Each branch slides along ``(1, 0, 1) / sqrt(2)`` and carries a small box that touches the ground, so every
-    contact normal and tangent row acts on that branch's single coordinate and friction is active.
-    """
-    scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    scene.default_shape_cfg.ke = 1.0e5
-    scene.default_shape_cfg.kd = 1.0e3
-    scene.default_shape_cfg.mu = 0.8
-    scene.default_shape_cfg.margin = 0.0
-    scene.default_shape_cfg.gap = 0.0
-    scene.add_ground_plane()
-    base = scene.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-    star_joints = [
-        scene.add_joint_fixed(
-            parent=-1, child=base, parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity())
-        )
-    ]
-    for branch in range(num_branches):
-        child = scene.add_link(mass=1.0 + 0.01 * branch, inertia=wp.mat33(np.eye(3)))
-        # Four boxes keep the four-point patches within the dense row capacity of the test solvers.
-        if branch % 4 == 0:
-            scene.add_shape_box(child, hx=0.01, hy=0.01, hz=0.01)
-        star_joints.append(
-            scene.add_joint_prismatic(
-                parent=base,
-                child=child,
-                axis=wp.normalize(wp.vec3(1.0, 0.0, 1.0)),
-                parent_xform=wp.transform(wp.vec3(0.05 * branch, 0.0, -0.4905), wp.quat_identity()),
-                limit_lower=-0.1,
-                limit_upper=0.1,
-            )
-        )
-    scene.add_articulation(star_joints)
-
-    chain_joints = []
-    parent = -1
-    for _link_index in range(3):
-        child = scene.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        chain_joints.append(
-            scene.add_joint_revolute(
-                parent=parent,
-                child=child,
-                axis=newton.Axis.Y,
-                parent_xform=wp.transform(wp.vec3(0.0, 1.0, 1.0), wp.quat_identity()),
-                limit_lower=-0.2,
-                limit_upper=0.2,
-            )
-        )
-        parent = child
-    scene.add_articulation(chain_joints)
 
     replicated = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     replicated.replicate(scene, num_worlds, spacing=(3.0, 3.0, 0.0))

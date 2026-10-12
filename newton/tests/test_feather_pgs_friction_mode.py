@@ -11,7 +11,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
+from newton.tests.feather_pgs._fixtures import set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 MODES = ("fixed_normal", "bisection", "bisection_desaxce", "coulomb_newton")

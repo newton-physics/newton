@@ -13,7 +13,7 @@ from newton import GeoType
 from newton._src.solvers.feather_pgs.contact_torsion import _contact_groups
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_JOINT_TARGET, PGS_CONSTRAINT_TYPE_TORSION
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_contact_torsion import fixture, set_torsion_radius
+from newton.tests.feather_pgs._fixtures import fixture, set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 

@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.feather_pgs._testing import kernel_overrides
-from newton.tests.test_feather_pgs_sleeping_production import PROFILE
+from newton.tests.feather_pgs._fixtures import PROFILE
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 _FIELDS = ("body_q", "body_qd", "joint_q", "joint_qd")

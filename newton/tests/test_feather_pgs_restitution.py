@@ -20,10 +20,16 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.tests.feather_pgs._fixtures import (
+    RADIUS,
+    _build_plane_model,
+    _diagonal_inertia,
+    _reset_state,
+    _shape_cfg,
+    _sphere_inertia,
+)
 from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices
 
-RADIUS = 0.05
-CONTACT_GAP = 0.1
 DEFAULT_DT = 1.0e-3
 IMPACT_FRACTION = 0.4
 
@@ -34,75 +40,6 @@ PATH_MATRIX_FREE = 1
 # The route each scene takes: a lone free body uses the free-body rows, and a
 # contact on an articulated root uses the dense rows.
 EXPECTED_PATHS = {"free": {PATH_MATRIX_FREE}, "articulated": {PATH_DENSE}}
-
-
-def _diagonal_inertia(value):
-    """Return an isotropic inertia tensor."""
-    return wp.mat33(value, 0.0, 0.0, 0.0, value, 0.0, 0.0, 0.0, value)
-
-
-def _sphere_inertia(mass):
-    """Return the inertia of a solid sphere about its centre."""
-    return _diagonal_inertia(0.4 * mass * RADIUS * RADIUS)
-
-
-def _shape_cfg(restitution):
-    """Return an inertialess, frictionless test material."""
-    return newton.ModelBuilder.ShapeConfig(
-        density=0.0,
-        mu=0.0,
-        restitution=restitution,
-        margin=0.0,
-        gap=CONTACT_GAP,
-    )
-
-
-def _build_plane_model(
-    device,
-    *,
-    separation,
-    restitution,
-    plane_restitution=None,
-    mass=1.0,
-    gravity=(0.0, 0.0, 0.0),
-    scene="free",
-):
-    """Build one sphere above a plane, optionally as a two-link articulation."""
-    builder = newton.ModelBuilder(gravity=gravity)
-    xform = wp.transform(wp.vec3(0.0, 0.0, RADIUS + separation), wp.quat_identity())
-    if scene == "free":
-        body = builder.add_body(
-            xform=xform,
-            mass=mass,
-            inertia=_sphere_inertia(mass),
-            lock_inertia=True,
-        )
-    elif scene == "articulated":
-        # A concentric, shape-free fixed child makes this a real floating
-        # articulation without adding a second contact or a changing contact
-        # point velocity to the analytical one-row problem.
-        body = builder.add_link(
-            xform=xform,
-            mass=mass,
-            inertia=_sphere_inertia(mass),
-            lock_inertia=True,
-        )
-        child_mass = 0.25 * mass
-        child = builder.add_link(
-            xform=xform,
-            mass=child_mass,
-            inertia=_sphere_inertia(child_mass),
-            lock_inertia=True,
-        )
-        root_joint = builder.add_joint_free(child=body)
-        fixed_joint = builder.add_joint_fixed(parent=body, child=child)
-        builder.add_articulation([root_joint, fixed_joint])
-    else:
-        raise ValueError(f"unknown scene {scene!r}")
-
-    builder.add_shape_sphere(body, radius=RADIUS, cfg=_shape_cfg(restitution))
-    builder.add_ground_plane(cfg=_shape_cfg(restitution if plane_restitution is None else plane_restitution))
-    return builder.finalize(device=device), body
 
 
 def _make_solver(
@@ -128,16 +65,6 @@ def _make_solver(
     solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs)
     solver._rigid_body_angular_damping.zero_()
     return solver
-
-
-def _reset_state(model, state, vertical_velocity):
-    """Restore the authored pose and set a free root's world-z velocity."""
-    wp.copy(state.joint_q, model.joint_q)
-    joint_qd = np.zeros(model.joint_dof_count, dtype=np.float32)
-    joint_qd[2] = vertical_velocity
-    state.joint_qd.assign(joint_qd)
-    state.clear_forces()
-    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
 
 def _step_plane(

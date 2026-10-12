@@ -10,8 +10,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_connect import _build_four_bar
-from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
+from newton.tests.feather_pgs._fixtures import _build_four_bar, set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 

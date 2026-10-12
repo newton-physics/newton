@@ -9,125 +9,19 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.feather_pgs._testing import kernel_overrides
-from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_FRICTION
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_contact_compliance import run_fixture as run_compliance_fixture
-from newton.tests.test_feather_pgs_local_owned import _build_mixed_response_model
-from newton.tests.test_feather_pgs_restitution import _build_plane_model, _reset_state
-from newton.tests.test_feather_pgs_sparse_diagonal import _build_sparse_contact_friction_model
+from newton.tests.feather_pgs._fixtures import (
+    DT,
+    _build_contact_scene,
+    _build_mixed_response_model,
+    _build_plane_model,
+    _build_sparse_contact_friction_model,
+    _reset_state,
+    _run,
+    _set_box_velocities,
+)
+from newton.tests.feather_pgs._fixtures import run_fixture as run_compliance_fixture
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
-
-DT = 1.0 / 240.0
-
-
-def _build_contact_scene(device, *, mu=0.6, restitution=0.0, worlds=2):
-    """Build a sliding articulated box with a driven arm and two sliding free boxes per world."""
-    scene = newton.ModelBuilder()
-    scene.default_shape_cfg.mu = mu
-    scene.default_shape_cfg.restitution = restitution
-    scene.add_ground_plane()
-    for i in range(2):
-        body = scene.add_body(xform=wp.transform(wp.vec3(0.4 * i, 0.6, 0.099), wp.quat_rpy(0.0, 0.0, 0.2 * i)))
-        scene.add_shape_box(body, hx=0.1, hy=0.08, hz=0.1)
-    xform = wp.transform(wp.vec3(0.0, 0.0, 0.049), wp.quat_identity())
-    base = scene.add_link(xform=xform)
-    scene.add_shape_box(base, hx=0.15, hy=0.1, hz=0.05)
-    arm = scene.add_link()
-    scene.add_shape_capsule(arm, radius=0.03, half_height=0.08)
-    axis = newton.ModelBuilder.JointDofConfig
-    scene.add_articulation(
-        [
-            scene.add_joint_d6(
-                parent=-1,
-                child=base,
-                parent_xform=xform,
-                linear_axes=[axis(axis=newton.Axis.X), axis(axis=newton.Axis.Z)],
-            ),
-            scene.add_joint_revolute(
-                base,
-                arm,
-                axis=wp.vec3(0.0, 1.0, 0.0),
-                parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
-                child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.12), wp.quat_identity()),
-                target_ke=20.0,
-                target_kd=1.0,
-                target_pos=0.4,
-            ),
-        ]
-    )
-    builder = newton.ModelBuilder()
-    builder.replicate(scene, worlds)
-    return builder.finalize(device=device)
-
-
-def _set_box_velocities(model, state, speed=1.5):
-    """Give every free box and articulated box a horizontal velocity so friction does work."""
-    joint_qd = state.joint_qd.numpy()
-    starts = model.joint_qd_start.numpy()
-    for joint, joint_type in enumerate(model.joint_type.numpy()):
-        if joint_type in (int(newton.JointType.FREE), int(newton.JointType.D6)):
-            joint_qd[starts[joint]] = speed
-    state.joint_qd.assign(joint_qd)
-    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-
-
-def _friction_impulses(solver):
-    """Return every friction row impulse of the dense, free-body and propagation row families."""
-    values = []
-    families = [
-        (solver._constraint_count, solver._row_type, solver._impulses),
-        (solver._mf_constraint_count, solver._mf_row_type, solver._mf_impulses),
-    ]
-    if solver._propagation_active:
-        families.append(
-            (solver._propagation_constraint_count, solver._propagation_row_type, solver._propagation_impulses)
-        )
-    for count_array, type_array, impulse_array in families:
-        row_type = type_array.numpy()
-        impulses = impulse_array.numpy()
-        for world, rows in enumerate(count_array.numpy()):
-            friction = row_type[world, :rows] == PGS_CONSTRAINT_TYPE_FRICTION
-            values.append(impulses[world, :rows][friction])
-    return np.concatenate(values) if values else np.zeros(0)
-
-
-def _run(model, *, steps=12, init=None, overrides=None, capture=False, **options):
-    """Step ``model`` and return the solver, the final joint state and each step's friction impulses."""
-    with kernel_overrides(overrides or {}):
-        solver = SolverFeatherPGS(model, **options)
-    state_in, state_out = model.state(), model.state()
-    if init is not None:
-        init(model, state_in)
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=False)
-    contacts = pipeline.contacts()
-    control = model.control()
-    friction = []
-
-    def step():
-        pipeline.collide(state_in, contacts)
-        solver.step(state_in, state_out, control, contacts, DT)
-        for src, dst in (
-            (state_out.joint_q, state_in.joint_q),
-            (state_out.joint_qd, state_in.joint_qd),
-            (state_out.body_q, state_in.body_q),
-            (state_out.body_qd, state_in.body_qd),
-        ):
-            wp.copy(dst, src)
-
-    if capture:
-        step()
-        friction.append(_friction_impulses(solver))
-        with wp.ScopedCapture(model.device) as graph:
-            step()
-        for _ in range(steps - 1):
-            wp.capture_launch(graph.graph)
-            friction.append(_friction_impulses(solver))
-    else:
-        for _ in range(steps):
-            step()
-            friction.append(_friction_impulses(solver))
-    return solver, state_in.joint_q.numpy(), state_in.joint_qd.numpy(), friction
 
 
 def _assert_bitwise(test, a, b, label):

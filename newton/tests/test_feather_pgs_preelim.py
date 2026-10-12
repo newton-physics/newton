@@ -18,8 +18,12 @@ from newton._src.solvers.feather_pgs.kernels import (
     PGS_CONSTRAINT_TYPE_MIMIC,
 )
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_connect import _build_carried_load, _build_four_bar, _loop_anchor_gap
-from newton.tests.test_feather_pgs_mimic import _build_two_revolute_chain
+from newton.tests.feather_pgs._fixtures import (
+    _build_carried_load,
+    _build_four_bar,
+    _build_two_revolute_chain,
+    _loop_anchor_gap,
+)
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DT = 1.0 / 240.0

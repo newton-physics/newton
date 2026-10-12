@@ -17,7 +17,7 @@ from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton._src.solvers.feather_pgs.kernels import PROPAGATION_UNIT_META, PROPAGATION_UNIT_RING
 from newton._src.solvers.feather_pgs.solver_feather_pgs import _colored_staging_supported
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_colored_scheduling import CONTACT_MAX, _heap
+from newton.tests.feather_pgs._fixtures import CONTACT_MAX, _heap
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DT = 1.0 / 240.0

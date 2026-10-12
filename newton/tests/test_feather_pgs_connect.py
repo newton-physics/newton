@@ -12,82 +12,14 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
+from newton.tests.feather_pgs._fixtures import (
+    _CHILD_ANCHORS,
+    _REL_P,
+    _build_carried_load,
+    _build_four_bar,
+    _loop_anchor_gap,
+)
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
-
-
-def _build_four_bar():
-    """Build a planar four-bar: two grounded revolute chains closed by a BALL loop joint.
-
-    Ground pivots at x=0 and x=0.4; crank and rocker hang down 0.2 m; the coupler
-    connects the crank tip to the rocker tip through the loop closure. The crank is
-    position-driven; the rocker is undriven, so any coherent motion it does comes from
-    the closed loop.
-    """
-    b = newton.ModelBuilder(up_axis=newton.Axis.Z)
-    z0 = 0.6
-
-    crank = b.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, z0 - 0.1), wp.quat_identity()))
-    b.add_shape_box(crank, hx=0.02, hy=0.02, hz=0.1)
-    j_crank = b.add_joint_revolute(
-        parent=-1,
-        child=crank,
-        axis=wp.vec3(0.0, 1.0, 0.0),
-        parent_xform=wp.transform(wp.vec3(0.0, 0.0, z0), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
-    )
-    coupler = b.add_link(xform=wp.transform(wp.vec3(0.2, 0.0, z0 - 0.2), wp.quat_identity()))
-    b.add_shape_box(coupler, hx=0.2, hy=0.02, hz=0.02)
-    j_coupler = b.add_joint_revolute(
-        parent=crank,
-        child=coupler,
-        axis=wp.vec3(0.0, 1.0, 0.0),
-        parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0), wp.quat_identity()),
-    )
-    rocker = b.add_link(xform=wp.transform(wp.vec3(0.4, 0.0, z0 - 0.1), wp.quat_identity()))
-    b.add_shape_box(rocker, hx=0.02, hy=0.02, hz=0.1)
-    j_rocker = b.add_joint_revolute(
-        parent=-1,
-        child=rocker,
-        axis=wp.vec3(0.0, 1.0, 0.0),
-        parent_xform=wp.transform(wp.vec3(0.4, 0.0, z0), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
-    )
-    b.add_articulation([j_crank, j_coupler, j_rocker], label="four_bar")
-
-    # Loop closure: coupler tip pinned to rocker tip (a trailing BALL loop joint,
-    # matching how the MJCF importer closes `connect` equalities).
-    b.add_joint_ball(
-        parent=coupler,
-        child=rocker,
-        parent_xform=wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()),
-    )
-
-    # Drive the crank only.
-    b.joint_target_ke[0] = 50.0
-    b.joint_target_kd[0] = 5.0
-    b.joint_target_mode[0] = int(newton.JointTargetMode.POSITION)
-    return b
-
-
-def _loop_anchor_gap(model, state) -> float:
-    """World-space distance between the loop joint's parent and child anchors [m]."""
-    bq = state.body_q.numpy().reshape(-1, 7).astype(np.float64)
-    jt = model.joint_type.numpy()
-    jp = model.joint_parent.numpy()
-    jc = model.joint_child.numpy()
-    Xp = model.joint_X_p.numpy()
-    Xc = model.joint_X_c.numpy()
-    j = int(np.nonzero(jt == int(newton.JointType.BALL))[0][-1])
-
-    def anchor(body, X):
-        t = wp.transform(wp.vec3(*bq[body, :3]), wp.quat(*bq[body, 3:]))
-        a = wp.transform(wp.vec3(*X[:3]), wp.quat(*X[3:]))
-        w = wp.transform_multiply(t, a)
-        return np.array([w.p[0], w.p[1], w.p[2]])
-
-    return float(np.linalg.norm(anchor(int(jp[j]), Xp[j]) - anchor(int(jc[j]), Xc[j])))
 
 
 def _run(device, steps: int = 720, crank_target: float = 0.6, **solver_kwargs):
@@ -341,44 +273,6 @@ def test_closure_row_overflow_is_reported(test, device):
 # ---------------------------------------------------------------------------
 # Closures with a prescribed (kinematic or world) parent
 # ---------------------------------------------------------------------------
-
-_CHILD_ANCHORS = ((0.0, 0.0, 0.0), (0.05, 0.0, 0.0), (0.0, 0.05, 0.0))
-_REL_P = np.array([0.0, 0.0, -0.2])
-
-
-def _build_carried_load(*, enabled: bool = True, world_parent: bool = False):
-    """A kinematic carrier holding a dynamic box through three BALL loop joints.
-
-    Three non-collinear point closures pin all six relative degrees of freedom, so the
-    load must follow the carrier as if welded at ``_REL_P`` below it. With
-    ``world_parent`` the carrier is the world and the anchors are world points.
-    """
-    b = newton.ModelBuilder(up_axis=newton.Axis.Z)
-    carrier_p = np.array([0.0, 0.0, 1.0])
-    carrier = -1
-    if not world_parent:
-        carrier = b.add_body(xform=wp.transform(wp.vec3(*carrier_p), wp.quat_identity()), is_kinematic=True)
-        b.add_shape_box(carrier, hx=0.03, hy=0.03, hz=0.03)
-    load = b.add_body(xform=wp.transform(wp.vec3(*(carrier_p + _REL_P)), wp.quat_identity()))
-    b.add_shape_box(load, hx=0.04, hy=0.04, hz=0.04, cfg=newton.ModelBuilder.ShapeConfig(density=500.0))
-    joints = []
-    # The closures intentionally parallel the load's free joint and each other.
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", message=r".*another joint already connects these bodies", category=UserWarning
-        )
-        for c in _CHILD_ANCHORS:
-            p = (_REL_P if not world_parent else carrier_p + _REL_P) + np.array(c)
-            joints.append(
-                b.add_joint_ball(
-                    parent=carrier,
-                    child=load,
-                    parent_xform=wp.transform(wp.vec3(*p), wp.quat_identity()),
-                    child_xform=wp.transform(wp.vec3(*c), wp.quat_identity()),
-                    enabled=enabled,
-                )
-            )
-    return b, carrier, load, joints
 
 
 def _anchor_gaps(model, state, joints):

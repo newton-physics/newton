@@ -11,20 +11,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
+from newton.tests.feather_pgs._fixtures import PROFILE, _advance, _articulations
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
-
-# A manipulation profile without contact torsion; the torsion variant is in test_feather_pgs_sleeping_torsion.
-PROFILE = {
-    "iterations": 32,
-    "contact_regularization": 0.01,
-    "friction_anchor_beta": 0.2,
-    "contact_friction_gap_max": 0.001,
-    "articulation_constraint_max": 512,
-    "free_body_constraint_max": 512,
-    "enable_sleeping": True,
-    "sleep_quiet_time": 0.1,
-}
 
 
 def test_anchored_articulations_sleep_and_wake(test, device):
@@ -327,40 +315,6 @@ def test_mimic_articulation_stays_awake(test, device):
             test.assertEqual(int(awake[solver._body_to_articulation.numpy()[box]]), 0)
 
 
-def _articulations(device, tiles=False, profile=None, torsion_radius=None):
-    """Two undriven two-link articulations resting on the ground, which route contacts to dense rows.
-
-    With ``tiles``, each base is a grid of small boxes so its ground pair exceeds the warp-flood threshold.
-    """
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    for x in (0.0, 1.0):
-        base = builder.add_link(xform=wp.transform((x, 0.0, 0.1), wp.quat_identity()))
-        if tiles:
-            for i in range(4):
-                for j in range(3):
-                    offset = wp.transform((-0.15 + 0.1 * i, -0.067 + 0.067 * j, 0.0), wp.quat_identity())
-                    builder.add_shape_box(base, xform=offset, hx=0.05, hy=0.033, hz=0.1)
-        else:
-            builder.add_shape_box(base, hx=0.2, hy=0.1, hz=0.1)
-        tip = builder.add_link(xform=wp.transform((x + 0.3, 0.0, 0.1), wp.quat_identity()))
-        builder.add_shape_box(tip, hx=0.1, hy=0.1, hz=0.1)
-        hinge = wp.transform((0.3, 0.0, 0.0), wp.quat_identity())
-        builder.add_articulation(
-            [
-                builder.add_joint_free(child=base),
-                builder.add_joint_revolute(parent=base, child=tip, parent_xform=hinge, axis=(0.0, 1.0, 0.0)),
-            ]
-        )
-    model = builder.finalize(device=device)
-    if torsion_radius is not None:
-        set_torsion_radius(model, torsion_radius)
-    # Deterministic contact order, as in production, so A/B trajectories compare bitwise.
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=512, deterministic=True)
-    solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **(profile or PROFILE))
-    return model, pipeline, solver, [model.state(), model.state()], model.control()
-
-
 def _two_world_boxes(device):
     box = newton.ModelBuilder()
     body = box.add_body(xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
@@ -372,16 +326,6 @@ def _two_world_boxes(device):
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
     solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **PROFILE)
     return model, pipeline, solver, [model.state(), model.state()]
-
-
-def _advance(pipeline, solver, states, control, steps, *, clear=True, contacts=None):
-    contacts = contacts or pipeline.contacts()
-    for _ in range(steps):
-        if clear:
-            states[0].clear_forces()
-        pipeline.collide(states[0], contacts)
-        solver.step(states[0], states[1], control, contacts, 0.005)
-        states.reverse()
 
 
 devices = get_cuda_test_devices()

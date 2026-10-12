@@ -17,92 +17,10 @@ from newton._src.solvers.feather_pgs.kernels import (
     compute_world_contact_bias,
     compute_world_contact_velocity_bias,
 )
-
-_MU_JAW, _MU_BOX = 5.0, 0.5
-_BOX_HALF, _JAW_HALF_T, _GAP0 = 0.02, 0.005, 0.001
-
-
-def _build_v_jaws(tilt_deg: float, geometry: str = "box", device=None):
-    """Fixed base and two independently driven prismatic jaws pinching a free 0.1 kg object.
-
-    Both jaws are driven toward the object with equal gains and mirrored targets. Their
-    faces tilt toward +z by ``tilt_deg``, so the two normal rows' depenetration biases
-    share a +z tangential component: the geometry that leaks tangential drift through
-    velocity-only friction rows.
-    """
-    b = newton.ModelBuilder(up_axis=newton.Axis.Z)
-    b.rigid_gap = 0.005
-    base = b.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), label="base")
-    b.add_shape_box(
-        base,
-        hx=0.05,
-        hy=0.05,
-        hz=0.005,
-        cfg=newton.ModelBuilder.ShapeConfig(density=1000.0, has_shape_collision=False),
-    )
-    root = b.add_joint_fixed(-1, base, parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()))
-    jaw_cfg = newton.ModelBuilder.ShapeConfig(density=2000.0, mu=_MU_JAW)
-    x0 = _BOX_HALF + _JAW_HALF_T + _GAP0
-    jaws, joints = [], []
-    for name, sign in (("jaw_L", -1.0), ("jaw_R", 1.0)):
-        body = b.add_link(xform=wp.transform(wp.vec3(sign * x0, 0.0, 0.5), wp.quat_identity()), label=name)
-        rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), float(-sign * np.radians(tilt_deg)))
-        b.add_shape_box(body, hx=_JAW_HALF_T, hy=0.02, hz=0.02, xform=wp.transform(wp.vec3(0.0), rot), cfg=jaw_cfg)
-        joints.append(
-            b.add_joint_prismatic(
-                base,
-                body,
-                parent_xform=wp.transform(wp.vec3(sign * x0, 0.0, 0.0), wp.quat_identity()),
-                axis=newton.Axis.X,
-                limit_lower=-0.05,
-                limit_upper=0.05,
-                target_pos=-0.01 * sign,
-                target_ke=100.0,
-                target_kd=10.0,
-            )
-        )
-        jaws.append(body)
-    b.add_articulation([root, *joints], label="gripper")
-    for dof in range(len(b.joint_effort_limit)):
-        b.joint_effort_limit[dof] = 10.0
-    box = b.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), label="box")
-    if geometry == "sphere":
-        b.add_shape_sphere(
-            box,
-            radius=_BOX_HALF,
-            cfg=newton.ModelBuilder.ShapeConfig(density=0.1 / (4.0 / 3.0 * np.pi * _BOX_HALF**3), mu=_MU_BOX),
-        )
-    elif geometry == "capsule":
-        b.add_shape_capsule(
-            box,
-            radius=_BOX_HALF,
-            half_height=_BOX_HALF,
-            xform=wp.transform(wp.vec3(0), wp.quat_from_axis_angle(wp.vec3(1, 0, 0), np.pi / 2)),
-            cfg=newton.ModelBuilder.ShapeConfig(
-                density=0.1 / (np.pi * _BOX_HALF**2 * 2 * _BOX_HALF + 4.0 / 3.0 * np.pi * _BOX_HALF**3), mu=_MU_BOX
-            ),
-        )
-    else:
-        b.add_shape_box(
-            box,
-            hx=_BOX_HALF,
-            hy=_BOX_HALF,
-            hz=_BOX_HALF,
-            cfg=newton.ModelBuilder.ShapeConfig(density=0.1 / (2 * _BOX_HALF) ** 3, mu=_MU_BOX),
-        )
-    return b.finalize(device=device), jaws, box
-
-
-# Few iterations and a soft normal law leave the velocity-only point friction rows
-# under-converged, so the tilted pinch leaks drift unless anchors correct it.
-_SQUEEZE_SOLVER = {
-    "iterations": 8,
-    "velocity_iterations": 0,
-    "baumgarte": 0.05,
-    "contact_regularization": 0.1,
-    "contact_friction_gap_max": 0.001,
-    "articulation_constraint_max": 64,
-}
+from newton.tests.feather_pgs._fixtures import (
+    _SQUEEZE_SOLVER,
+    _build_v_jaws,
+)
 
 
 def _run_squeeze(tilt_deg, steps, dt=0.005, matching="latest", substeps=1, device=None, **solver_kwargs):

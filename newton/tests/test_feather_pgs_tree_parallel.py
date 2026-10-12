@@ -13,7 +13,7 @@ import warp as wp
 import newton
 from newton._src.solvers.feather_pgs.solver_feather_pgs import _FeatherPGSTreePlan
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_leaf_publication import (
+from newton.tests.feather_pgs._fixtures import (
     _build_branched_model,
     _build_contact_model,
     _build_model,

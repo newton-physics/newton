@@ -12,7 +12,7 @@ import newton
 import newton._src.solvers.feather_pgs.kernels
 from newton._src.geometry.sdf_hydroelastic import HydroelasticSDF
 from newton.solvers import SolverFeatherPGS, SolverObservableFlags
-from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
+from newton.tests.feather_pgs._fixtures import set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DT = 1.0 / 120.0

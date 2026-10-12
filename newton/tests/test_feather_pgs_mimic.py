@@ -12,6 +12,7 @@ import warp as wp
 import newton
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_MIMIC
 from newton.solvers import SolverFeatherPGS
+from newton.tests.feather_pgs._fixtures import _build_two_revolute_chain
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DT = 1.0 / 240.0
@@ -51,46 +52,6 @@ def _build_mimic_layout(joint_type):
     builder.add_articulation(joints)
     builder.set_joint_mimic(joints[2], joints[1], coeffs=(0.1, -0.5))
     return builder, joints[1], joints[2]
-
-
-def _build_two_revolute_chain(coef0: float, coef1: float, legacy: bool = False):
-    """Build a fixed-base chain of two revolute Z-joints with a mimic between them.
-
-    The leader joint is position-driven; the follower joint has no drive and no spring,
-    so any tracking it does comes from the mimic row alone.
-    """
-    b = newton.ModelBuilder(up_axis=newton.Axis.Z)
-    # add_link (not add_body): add_body wraps each body in its own free-joint articulation.
-    link_a = b.add_link(xform=wp.transform(wp.vec3(0.2, 0.0, 0.5), wp.quat_identity()))
-    b.add_shape_box(link_a, hx=0.1, hy=0.02, hz=0.02)
-    j_leader = b.add_joint_revolute(
-        parent=-1,
-        child=link_a,
-        axis=wp.vec3(0.0, 0.0, 1.0),
-        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0), wp.quat_identity()),
-    )
-    link_b = b.add_link(xform=wp.transform(wp.vec3(0.6, 0.0, 0.5), wp.quat_identity()))
-    b.add_shape_box(link_b, hx=0.1, hy=0.02, hz=0.02)
-    j_follower = b.add_joint_revolute(
-        parent=link_a,
-        child=link_b,
-        axis=wp.vec3(0.0, 0.0, 1.0),
-        parent_xform=wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0), wp.quat_identity()),
-    )
-    b.add_articulation([j_leader, j_follower], label="mimic_chain")
-    b.joint_target_ke[0] = 50.0
-    b.joint_target_kd[0] = 5.0
-    b.joint_target_mode[0] = int(newton.JointTargetMode.POSITION)
-    # follower: q_follower = coef0 + coef1 * q_leader
-    if legacy:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            b.add_constraint_mimic(joint0=j_follower, joint1=j_leader, coef0=coef0, coef1=coef1)
-    else:
-        b.set_joint_mimic(j_follower, j_leader, coeffs=(coef0, coef1))
-    return b, j_leader, j_follower
 
 
 def _run_model(model, leader_target: float, steps: int, **solver_kwargs):
