@@ -675,12 +675,10 @@ raises ``NotImplementedError`` in CI.
 Embedded success criteria
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Every runnable example must keep its human-readable success criteria beside its
-implementation in a literal ``_EXAMPLE_SPEC`` dictionary. The module docstring
-is the specification's required general description, so the description remains
-available through Python's normal documentation tools without being duplicated.
-Common criteria apply to every run; each run records only its command-line
-arguments and any additional criteria:
+Every runnable example must have a non-empty module docstring and a literal
+``_EXAMPLE_SPEC`` dictionary. Keep teaching explanations in the docstring and
+plain-text QA expectations in the dictionary. Common criteria apply to every
+listed run; run-specific criteria are additional:
 
 .. code-block:: python
 
@@ -688,75 +686,35 @@ arguments and any additional criteria:
 
     _EXAMPLE_SPEC = {
         "schema_version": 1,
-        "success_criteria": (
-            "The mechanism remains upright.",
-        ),
+        "success_criteria": ("The mechanism remains upright.",),
         "runs": (
-            {
-                "args": (),
-                "success_criteria": (),
-            },
+            {"args": (), "success_criteria": ()},
             {
                 "args": ("--solver", "xpbd"),
-                "success_criteria": (
-                    "The XPBD solver completes the same motion.",
-                ),
+                "success_criteria": ("The XPBD solver completes the same motion.",),
             },
         ),
     }
 
-Keep the value static and literal so tooling can inspect it without importing
-the example or initializing optional dependencies. Keep criteria concise and
-specific to the scene; shared viewer, interaction, jitter-capture, and reporting
-procedures live in ``.agents/skills/example-testing/``. A default-only example
-needs just one run entry with empty arguments and additional criteria. Do not
-add simulation methods or QA infrastructure just to supply this metadata.
+Validate metadata with ``uv run --extra dev -m newton.tests -k test_example_spec``.
+Shared visual QA procedures live in ``.agents/skills/example-testing/``;
+these human criteria do not imply equivalent automated assertions.
 
-These are human acceptance criteria, not a guarantee of equivalent automated
-assertions. A successful ``--test`` run does not replace visual inspection.
-When adding or changing examples, update their metadata and run
-``python -m unittest newton.tests.test_example_spec``; the completeness check
-covers the full discovered registry.
-
-The ``--describe`` command
-prints the complete specification to standard output. It emits a Markdown
-document by default and can emit structured JSON for automation:
+Extract the description and criteria without importing the example. Output is
+Markdown by default, or JSON with ``--format json``:
 
 .. code-block:: console
 
     python -m newton.examples --describe <example_name>
     python -m newton.examples --describe <example_name> --format json
 
-The Markdown document contains the example name, its module-docstring
-description, common success criteria, and each supported command with its
-additional criteria. The strings in ``_EXAMPLE_SPEC`` are plain text; the
-command supplies the Markdown structure around them.
-
-JSON output contract
-~~~~~~~~~~~~~~~~~~~~
-
-The JSON document is a versioned machine-readable interface with these fields:
-
-``schema_version``
-    The integer schema version. The current version is ``1``. Producers may add
-    compatible fields without changing this number; consumers should ignore
-    unknown fields. Removing or changing the meaning or type of an existing
-    field requires a new schema version.
-
-``name``
-    The example name accepted by ``python -m newton.examples``.
-
-``description``
-    The non-empty general description extracted from the module docstring.
-
-``success_criteria``
-    An ordered array of non-empty strings that apply to every documented run.
-
-``runs``
-    A non-empty ordered array of run objects. Each run contains ``args`` (the
-    ordered array of command-line argument strings), ``command`` (the complete
-    shell command), and ``success_criteria`` (an ordered array of additional
-    criteria for that run, which may be empty).
+JSON v1 contains ``schema_version`` (integer ``1``), ``name`` (the CLI example
+name), ``description`` (the module docstring), ``success_criteria`` (an ordered,
+non-empty array of non-empty strings), and ``runs`` (a non-empty ordered array).
+Each run contains ``args`` (ordered argument strings), ``command`` (the complete
+shell command), and additional ``success_criteria`` (which may be empty).
+Consumers should ignore unknown fields; removing fields or changing their types
+or meanings requires a new schema version.
 
 Discovery and registration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
