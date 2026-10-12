@@ -29,7 +29,7 @@ from .broad_phase_common import (
 )
 
 _EXPLICIT_LARGE_PAIR_COUNT_PER_WORLD = 20_000
-_EXPLICIT_LARGE_PAIR_COUNT_TOTAL = 1_000_000
+_EXPLICIT_LARGE_PAIR_COUNT_TOTAL = 100_000_000
 
 
 @wp.kernel(enable_backward=False)
