@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs import solver_feather_pgs
 from newton.solvers import SolverFeatherPGS
 from newton.tests.test_feather_pgs_contact_compliance import run_fixture as run_compliance_fixture
 from newton.tests.test_feather_pgs_fused_crba import _trajectory, _tree
@@ -255,7 +256,7 @@ def test_debug_rejects_unsupported_combinations(test, device):
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# nvtx
+# NEWTON_PROFILE
 
 
 class _FakeNvtx(types.ModuleType):
@@ -265,7 +266,7 @@ class _FakeNvtx(types.ModuleType):
         super().__init__("nvtx")
         self.events = []
 
-    def start_range(self, message):
+    def start_range(self, message, color=None):
         self.events.append(("start", message))
         return len(self.events)
 
@@ -273,22 +274,22 @@ class _FakeNvtx(types.ModuleType):
         self.events.append(("end", range_id))
 
 
-def test_nvtx_annotates_every_stage_without_changing_results(test, device):
-    """Open and close one range per step stage, leaving the results bitwise unchanged."""
+def test_profile_annotates_every_stage_without_changing_results(test, device):
+    """Open and close one NVTX range per step stage under NEWTON_PROFILE, leaving the results bitwise unchanged."""
     fake = _FakeNvtx()
     mode = {} if device.is_cuda else {"pgs_mode": "split"}
     run = {"init": _set_box_velocities, "steps": 3, **mode}
-    with mock.patch.dict(sys.modules, {"nvtx": fake}):
-        annotated = _run(_build_contact_scene(device), nvtx=True, **run)
-    _assert_bitwise(test, annotated, _run(_build_contact_scene(device), **run), "nvtx")
+    with mock.patch.dict(sys.modules, {"nvtx": fake}), mock.patch.object(solver_feather_pgs, "PROFILE_ENABLED", True):
+        annotated = _run(_build_contact_scene(device), **run)
+    _assert_bitwise(test, annotated, _run(_build_contact_scene(device), **run), "profile")
     stages = [message for kind, message in fake.events if kind == "start"]
     expected = [
-        "FeatherPGS.fk_id_crba",
-        "FeatherPGS.factor",
-        "FeatherPGS.unconstrained_velocity",
-        "FeatherPGS.rows",
-        "FeatherPGS.solve",
-        "FeatherPGS.integrate",
+        "FeatherPGS::fk_id_crba",
+        "FeatherPGS::factor",
+        "FeatherPGS::unconstrained_velocity",
+        "FeatherPGS::rows",
+        "FeatherPGS::solve",
+        "FeatherPGS::integrate",
     ]
     test.assertEqual(stages, expected * 3)
     # Each range closes before the next one opens, and the last one closes at the end of the step.
@@ -297,25 +298,22 @@ def test_nvtx_annotates_every_stage_without_changing_results(test, device):
         test.assertEqual(fake.events[index + 1][1], index + 1)
 
 
-def test_nvtx_closes_the_open_range_when_a_stage_raises(test, device):
+def test_profile_closes_the_open_range_when_a_stage_raises(test, device):
     """Close the open stage range when a step raises."""
     fake = _FakeNvtx()
     mode = {} if device.is_cuda else {"pgs_mode": "split"}
     model = _build_contact_scene(device)
-    with mock.patch.dict(sys.modules, {"nvtx": fake}):
-        solver = SolverFeatherPGS(model, nvtx=True, **mode)
+    solver = SolverFeatherPGS(model, **mode)
     state_in, state_out = model.state(), model.state()
-    with mock.patch.object(solver, "_stage1_crba", side_effect=RuntimeError("injected")):
-        with test.assertRaisesRegex(RuntimeError, "injected"):
-            solver.step(state_in, state_out, model.control(), None, 1.0 / 240.0)
+    with (
+        mock.patch.dict(sys.modules, {"nvtx": fake}),
+        mock.patch.object(solver_feather_pgs, "PROFILE_ENABLED", True),
+        mock.patch.object(solver, "_stage1_crba", side_effect=RuntimeError("injected")),
+        test.assertRaisesRegex(RuntimeError, "injected"),
+    ):
+        solver.step(state_in, state_out, model.control(), None, 1.0 / 240.0)
     test.assertEqual([kind for kind, _ in fake.events], ["start", "end"])
-    test.assertIsNone(solver._nvtx_range)
-
-
-def test_nvtx_requires_the_nvtx_package(test, device):
-    """Raise ImportError at construction when nvtx is requested without the nvtx package."""
-    with mock.patch.dict(sys.modules, {"nvtx": None}), test.assertRaises(ImportError):
-        SolverFeatherPGS(_build_contact_scene(device), nvtx=True, pgs_mode="split")
+    test.assertIsNone(solver._profile_timer)
 
 
 class TestFeatherPGSAdvancedOptions(unittest.TestCase):
@@ -328,9 +326,8 @@ for _fn in (
     test_debug_iterations_reproduce_the_whole_solve,
     test_debug_logs_split_impulse_changes,
     test_debug_logs_split_free_body_rows,
-    test_nvtx_annotates_every_stage_without_changing_results,
-    test_nvtx_closes_the_open_range_when_a_stage_raises,
-    test_nvtx_requires_the_nvtx_package,
+    test_profile_annotates_every_stage_without_changing_results,
+    test_profile_closes_the_open_range_when_a_stage_raises,
 ):
     add_function_test(TestFeatherPGSAdvancedOptions, _fn.__name__, _fn, devices=get_test_devices())
 

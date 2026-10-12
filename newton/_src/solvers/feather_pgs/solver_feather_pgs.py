@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import functools
-import importlib
 import math
+import os
 import re
 import warnings
 import weakref
@@ -235,6 +235,8 @@ _COLORED_BLOCK_DIM = 64
 _COLORED_WORLDS_PER_BLOCK = 2
 # Static shared memory the colored sweep's per-world twist staging may use.
 _COLORED_STAGING_BYTES = 45056
+# NVTX ranges around the stages of SolverFeatherPGS.step() when NEWTON_PROFILE is set.
+PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
 _SUPPORTED_JOINT_TYPES = (
     int(JointType.PRISMATIC),
     int(JointType.REVOLUTE),
@@ -1431,7 +1433,6 @@ class SolverFeatherPGS(SolverBase):
         tile_threads: int = _TILE_THREADS,
         serial_kernel_block_dim: int = _SERIAL_KERNEL_BLOCK_DIM,
         pgs_debug: bool = False,
-        nvtx: bool = False,
     ):
         """Create a FeatherPGS solver for a finalized model.
 
@@ -1854,8 +1855,6 @@ class SolverFeatherPGS(SolverBase):
                 runs as its own launch followed by a host synchronization, and the specialized
                 solve paths are replaced by the general sweep, so the option is slow and
                 rejects CUDA graph capture and ``contact_compliance``.
-            nvtx: Experimental, advanced: annotate the stages of :meth:`step` with NVTX ranges
-                for profilers such as Nsight Systems. Results are unchanged.
         """
         if contact_compliance:
             # Reject unsupported combinations before any allocation.
@@ -2036,9 +2035,7 @@ class SolverFeatherPGS(SolverBase):
         self._pgs_convergence_log: list[np.ndarray] = []
         self._pgs_ncp_residual_log: list[np.ndarray] = []
         self._debug_scratch = None
-        self.nvtx = bool(nvtx)
-        self._nvtx = importlib.import_module("nvtx") if self.nvtx else None
-        self._nvtx_range = None
+        self._profile_timer = None
         self.contact_shared_anchor = bool(contact_shared_anchor)
         self.contact_friction_shared_anchor = bool(contact_friction_shared_anchor)
         self._contact_anchor_args = (int(self.contact_shared_anchor), int(self.contact_friction_shared_anchor))
@@ -5717,13 +5714,13 @@ class SolverFeatherPGS(SolverBase):
         body_parent_f = state_out.body_parent_f
         if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F):
             body_parent_f = observables.body_parent_f
-        if self._nvtx is None:
+        if not PROFILE_ENABLED:
             self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
         else:
             try:
                 self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
             finally:
-                self._nvtx_stage(None)
+                self._profile_stage(None)
         if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
             # Rows are built only for articulated models; without joints every contact reports zero.
             inv_dt = 1.0 / dt if self.model.joint_count else 0.0
@@ -5788,7 +5785,7 @@ class SolverFeatherPGS(SolverBase):
         self._begin_dense_rows()
 
         # Stage 1: forward kinematics, inverse dynamics with implicit drives, and CRBA.
-        self._nvtx_stage("fk_id_crba")
+        self._profile_stage("fk_id_crba")
         stage3_qd = self._stage1_fk_id(state_in, state_aug, state_out)
         # With sleeping, wrenches go to solver-owned history first, so frozen bodies never read a caller buffer.
         computed_parent_f = self.sleeping.parent_wrenches if self.sleeping is not None else body_parent_f
@@ -5796,7 +5793,7 @@ class SolverFeatherPGS(SolverBase):
         self._stage1_crba(state_aug)
 
         # Stage 2: factor the augmented mass matrix of every articulation group.
-        self._nvtx_stage("factor")
+        self._profile_stage("factor")
         for size in self._for_sizes():
             if size in (self._sparse_mass_matrix_size, self._sparse_diagonal_response_size):
                 continue
@@ -5828,7 +5825,7 @@ class SolverFeatherPGS(SolverBase):
                 )
 
         # Stage 3: unconstrained acceleration and velocity prediction.
-        self._nvtx_stage("unconstrained_velocity")
+        self._profile_stage("unconstrained_velocity")
         state_aug.joint_qdd.zero_()
         for size in self._for_sizes():
             if size == self._sparse_mass_matrix_size:
@@ -5877,19 +5874,19 @@ class SolverFeatherPGS(SolverBase):
         self._stage3_compute_v_hat(state_in, state_aug, dt, stage3_qd)
 
         # Stage 4: constraint rows, responses Y = H^-1 J^T, diagonals and right-hand sides.
-        self._nvtx_stage("rows")
+        self._profile_stage("rows")
         self._stage4_build_rows(state_in, state_aug, control, contacts, dt)
         if self._contact_torsion_enabled:
             prepare_torsion_rows(self, state_in, state_aug, contacts)
         has_contacts = contacts is not None and contacts.rigid_contact_max > 0
-        self._nvtx_stage("solve")
+        self._profile_stage("solve")
         if self.pgs_mode == "split":
             self._solve_split(state_aug, dt)
         else:
             self._solve_matrix_free(state_in, state_aug, contacts, dt)
 
         # Stage 7: convert the solved velocity to accelerations, integrate and publish.
-        self._nvtx_stage("integrate")
+        self._profile_stage("integrate")
         if self.pgs_velocity_iterations > 0:
             # Positions follow the position solve; the velocity-only iterations then refine
             # the velocity without the position bias.
@@ -5993,15 +5990,17 @@ class SolverFeatherPGS(SolverBase):
         self._step += 1
         return state_out
 
-    def _nvtx_stage(self, name: str | None) -> None:
-        """Close the open NVTX stage range and open the range of stage ``name`` (``nvtx`` only)."""
-        if self._nvtx is None:
+    def _profile_stage(self, name: str | None) -> None:
+        """Close the open stage range and open the NVTX range of stage ``name`` when ``NEWTON_PROFILE`` is set."""
+        if not PROFILE_ENABLED:
             return
-        if self._nvtx_range is not None:
-            self._nvtx.end_range(self._nvtx_range)
-            self._nvtx_range = None
+        if self._profile_timer is not None:
+            self._profile_timer.__exit__(None, None, None)
+            self._profile_timer = None
         if name is not None:
-            self._nvtx_range = self._nvtx.start_range(f"FeatherPGS.{name}")
+            self._profile_timer = wp.ScopedTimer(
+                f"FeatherPGS::{name}", use_nvtx=True, synchronize=False, print=False
+            ).__enter__()
 
     def _init_streams(self, model: Model) -> None:
         """Create the per-size-group streams and the double-buffer memset stream."""

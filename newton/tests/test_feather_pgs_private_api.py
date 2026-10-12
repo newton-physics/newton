@@ -118,23 +118,24 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
         self.assertEqual(typing.get_args(parameter.annotation), ("matrix_free", "split"))
         parameters = inspect.signature(SolverFeatherPGS.__init__).parameters
         self.assertNotIn("delassus_kernel", parameters)
+        self.assertNotIn("nvtx", parameters)
         for option, default in (
             ("pgs_kernel", "auto"),
             ("pgs_chunk_size", None),
             ("tile_threads", 64),
             ("serial_kernel_block_dim", 256),
             ("pgs_debug", False),
-            ("nvtx", False),
         ):
             with self.subTest(option=option):
                 self.assertEqual(parameters[option].default, default)
 
     def test_solver_reads_no_environment_variables(self):
-        """Configure the solver only through its constructor, never through the environment."""
+        """Configure the solver only through its constructor; the environment only enables profiling ranges."""
         pattern = re.compile(r"\bos\.(environ|getenv)\b|FEATHER_PGS_|IL_NEWTON")
+        profiling = 'os.environ.get("NEWTON_PROFILE", "0")'
         for path in sorted(_PACKAGE_DIR.glob("*.py")):
             with self.subTest(file=path.name):
-                self.assertIsNone(pattern.search(path.read_text(encoding="utf-8")))
+                self.assertIsNone(pattern.search(path.read_text(encoding="utf-8").replace(profiling, "")))
 
     def test_prescribed_response_is_not_a_public_execution_knob(self):
         """Select the kinematic-body response internally, not through a constructor option."""
