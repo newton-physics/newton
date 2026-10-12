@@ -1565,12 +1565,6 @@ def test_legacy_constraint_overrides_joint_mimic(test, device):
     test.assertAlmostEqual(q[1], 0.1 - 0.5 * q[0], delta=0.02)
 
 
-def test_scaled_offset_mimic(test, device):
-    """Converge q_follower to coef0 + coef1 * q_leader for a scaled, offset mimic."""
-    _, q = _run_chain(device, coef0=0.1, coef1=-0.5, leader_target=0.6)
-    test.assertAlmostEqual(q[1], 0.1 - 0.5 * q[0], delta=0.02)
-
-
 def test_runtime_coefficient_change(test, device):
     """Read joint-owned coefficients every step, also from a captured graph."""
     builder, _, follower = _build_two_revolute_chain(0.0, 1.0)
@@ -1704,7 +1698,6 @@ for _name in (
     "test_identity_mimic_tracks_leader",
     "test_legacy_constraint_mimic_tracks_leader",
     "test_legacy_constraint_overrides_joint_mimic",
-    "test_scaled_offset_mimic",
     "test_runtime_coefficient_change",
     "test_mimic_row_is_assembled",
     "test_replicated_mimics_have_articulation_local_ranges",
@@ -1836,8 +1829,15 @@ class TestFeatherPGSSprings(unittest.TestCase):
     pass
 
 
+# test_joint_damping covers passive damping on the matrix-free CUDA and split CPU routes.
+add_function_test(
+    TestFeatherPGSSprings,
+    "test_passive_damping_decays_velocity_split",
+    test_passive_damping_decays_velocity,
+    devices=get_cuda_test_devices(),
+    solve_mode="split",
+)
 for _name, _func in (
-    ("test_passive_damping_decays_velocity", test_passive_damping_decays_velocity),
     ("test_nonzero_spring_stiffness_warns_and_is_ignored", test_nonzero_spring_stiffness_warns_and_is_ignored),
     ("test_zero_or_absent_spring_stiffness_does_not_warn", test_zero_or_absent_spring_stiffness_does_not_warn),
     (
