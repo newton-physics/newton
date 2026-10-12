@@ -83,7 +83,7 @@ def parse_urdf(
     mesh_maxhullvert: int | None = None,
     force_position_velocity_actuation: bool = False,
     override_root_xform: bool = False,
-    legacy_joint_damping: bool = False,
+    joint_damping_mode: Literal["passive", "drive"] | None = None,
 ):
     """
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -183,15 +183,21 @@ def parse_urdf(
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
             damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
-        legacy_joint_damping: If True, restore the Newton 1.6 mapping of URDF
-            ``<dynamics damping>`` to ``joint_target_kd``. Missing values use
-            ``default_joint_cfg.target_kd``. Passive damping retains its former
-            defaults: ``default_joint_cfg.damping`` for revolute/prismatic joints
-            and zero for planar joints. Defaults to False, which imports URDF
-            damping into ``joint_damping`` and keeps drive gains independent.
-            Use this option while migrating previously tuned controllers,
-            especially with XPBD/VBD, which do not consume passive joint damping.
+        joint_damping_mode: How to interpret URDF ``<dynamics damping>``.
+            ``"passive"`` imports it into ``joint_damping`` and keeps drive
+            damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
+            into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
+            In drive mode, passive damping uses ``default_joint_cfg.damping``
+            for revolute/prismatic joints and zero for planar joints.
+            Deprecated default: None retains the drive mapping in Newton 1.7
+            and warns when the URDF authors damping. The default will become
+            ``"passive"`` in Newton 1.8. Pass either mode explicitly to silence
+            the warning. XPBD/VBD do not consume passive joint damping.
     """
+    if joint_damping_mode not in (None, "passive", "drive"):
+        raise ValueError("joint_damping_mode must be 'passive', 'drive', or None")
+    use_drive_damping = joint_damping_mode != "passive"
+
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
 
@@ -233,13 +239,23 @@ def parse_urdf(
         xml_content = sanitize_xml_content(source)
         urdf_root = ET.fromstring(xml_content)
 
+    if joint_damping_mode is None and urdf_root.find("joint/dynamics[@damping]") is not None:
+        warnings.warn(
+            "The default joint_damping_mode currently maps URDF damping to drive damping. "
+            "The default will switch to 'passive' in Newton 1.8. "
+            "Pass joint_damping_mode='drive' to retain the current mapping or "
+            "joint_damping_mode='passive' to use passive damping explicitly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
     default_joint_limit_upper = builder.default_joint_cfg.limit_upper
     default_joint_limit_effort = builder.default_joint_cfg.effort_limit
     default_joint_target_kd = builder.default_joint_cfg.target_kd
     default_joint_damping = builder.default_joint_cfg.damping
-    urdf_default_damping = default_joint_target_kd if legacy_joint_damping else default_joint_damping
+    urdf_default_damping = default_joint_target_kd if use_drive_damping else default_joint_damping
     default_joint_friction = builder.default_joint_cfg.friction
 
     # load shape defaults
@@ -797,8 +813,8 @@ def parse_urdf(
         effort_limit = joint.get("limit_effort", None)
         velocity_limit = joint.get("limit_velocity")
         joint_damping = joint["damping"]
-        joint_target_kd = joint_damping if legacy_joint_damping else default_joint_target_kd
-        joint_passive_damping = default_joint_damping if legacy_joint_damping else joint_damping
+        joint_target_kd = joint_damping if use_drive_damping else default_joint_target_kd
+        joint_passive_damping = default_joint_damping if use_drive_damping else joint_damping
         joint_friction = joint["friction"]
 
         parent_xform = joint["origin"]
@@ -869,7 +885,7 @@ def parse_urdf(
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_target_kd,
-                        damping=0.0 if legacy_joint_damping else joint_damping,
+                        damping=0.0 if use_drive_damping else joint_damping,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
@@ -878,7 +894,7 @@ def parse_urdf(
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_target_kd,
-                        damping=0.0 if legacy_joint_damping else joint_damping,
+                        damping=0.0 if use_drive_damping else joint_damping,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),

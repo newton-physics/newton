@@ -12,6 +12,7 @@ import tempfile
 import types
 import unittest
 import warnings
+from contextlib import nullcontext
 from unittest import mock
 from urllib.parse import urlparse
 
@@ -49,6 +50,30 @@ _PARTIAL_EQ_SOLREF_WARNING = (
 
 
 class TestImportUsdPhysics(unittest.TestCase):
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_legacy_unit_flags_warn_when_enabled(self):
+        """Deprecate each enabled legacy unit flag without warning for defaults."""
+        from pxr import Usd
+
+        for kwargs, expected_flags in (
+            ({}, ()),
+            ({"legacy_angular_velocity_units": False, "legacy_springref_units": False}, ()),
+            ({"legacy_angular_velocity_units": True}, ("legacy_angular_velocity_units",)),
+            ({"legacy_springref_units": True}, ("legacy_springref_units",)),
+            (
+                {"legacy_angular_velocity_units": True, "legacy_springref_units": True},
+                ("legacy_angular_velocity_units", "legacy_springref_units"),
+            ),
+        ):
+            with self.subTest(kwargs=kwargs):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    newton.ModelBuilder().add_usd(Usd.Stage.CreateInMemory(), **kwargs)
+                deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
+                self.assertEqual(len(deprecations), len(expected_flags))
+                for warning, flag in zip(deprecations, expected_flags, strict=True):
+                    self.assertRegex(str(warning.message), rf"{flag}.*deprecated.*1\.8")
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_binding_outside_import_root(self):
         """Import shared physics materials without importing unrelated bodies."""
@@ -120,7 +145,19 @@ class TestImportUsdPhysics(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity(self):
-        """Keep rigid-body velocities unchanged by legacy joint-state units."""
+        """Import rigid-body velocities correctly with either body ordering."""
+        for bodies_follow_joint_ordering in (False, True):
+            with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering):
+                self._check_rigid_body_velocity(bodies_follow_joint_ordering=bodies_follow_joint_ordering)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_legacy_rigid_body_velocity_units(self):
+        """Keep rigid-body velocity conversion unchanged by the deprecated flag."""
+        with self.assertWarnsRegex(DeprecationWarning, r"legacy_angular_velocity_units.*1\.8"):
+            self._check_rigid_body_velocity(legacy_angular_velocity_units=True)
+
+    def _check_rigid_body_velocity(self, **import_kwargs):
+        """Import a rotated body and check its body and joint velocities."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -142,24 +179,18 @@ class TestImportUsdPhysics(unittest.TestCase):
             (10.0, 20.0, 30.0),
             wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi),
         )
-        for legacy_units in (False, True):
-            with self.subTest(legacy_units=legacy_units):
-                builder = newton.ModelBuilder()
-                result = builder.add_usd(
-                    stage,
-                    xform=scene_xform,
-                    legacy_angular_velocity_units=legacy_units,
-                )
-                body_id = result["path_body_map"]["/World/Body"]
-                model = builder.finalize()
-                expected = np.asarray((-2.0, 3.0, -1.0, 0.0, 0.0, -0.5 * np.pi))
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, xform=scene_xform, **import_kwargs)
+        body_id = result["path_body_map"]["/World/Body"]
+        model = builder.finalize()
+        expected = np.asarray((-2.0, 3.0, -1.0, 0.0, 0.0, -0.5 * np.pi))
 
-                assert_np_equal(model.body_qd.numpy()[body_id], expected, tol=1.0e-5)
-                assert_np_equal(model.joint_qd.numpy(), expected, tol=1.0e-5)
+        assert_np_equal(model.body_qd.numpy()[body_id], expected, tol=1.0e-5)
+        assert_np_equal(model.joint_qd.numpy(), expected, tol=1.0e-5)
 
-                state = model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-5)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_physx_joint_state_velocity_units(self):
@@ -214,7 +245,13 @@ class TestImportUsdPhysics(unittest.TestCase):
             ({"legacy_angular_velocity_units": False}, np.pi),
         ):
             with self.subTest(kwargs=kwargs):
-                result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()], **kwargs)
+                warning = (
+                    self.assertWarnsRegex(DeprecationWarning, r"legacy_angular_velocity_units.*1\.8")
+                    if kwargs.get("legacy_angular_velocity_units")
+                    else nullcontext()
+                )
+                with warning:
+                    result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()], **kwargs)
                 joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
                 for path, offset, position, velocity in (
                     ("/World/Revolute", 0, 0.5 * np.pi, angular_velocity),
@@ -5025,7 +5062,13 @@ def Xform "Articulation" (
                 ({"legacy_springref_units": False}, False),
             ):
                 with self.subTest(angle_units=angle_units, kwargs=kwargs):
-                    result = builder.add_usd(stage, **kwargs)
+                    warning = (
+                        self.assertWarnsRegex(DeprecationWarning, r"legacy_springref_units.*1\.8")
+                        if legacy
+                        else nullcontext()
+                    )
+                    with warning:
+                        result = builder.add_usd(stage, **kwargs)
                     model = builder.finalize(device="cpu")
                     springref = model.mujoco.dof_springref.numpy()
                     reference = model.mujoco.dof_ref.numpy()

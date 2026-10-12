@@ -4146,7 +4146,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
-        legacy_joint_damping: bool = False,
+        joint_damping_mode: Literal["passive", "drive"] | None = None,
     ):
         """
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -4245,14 +4245,16 @@ class ModelBuilder:
                 :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
-            legacy_joint_damping: If True, restore the Newton 1.6 mapping of URDF
-                ``<dynamics damping>`` to ``joint_target_kd``. Missing values use
-                ``default_joint_cfg.target_kd``. Passive damping retains its former
-                defaults: ``default_joint_cfg.damping`` for revolute/prismatic joints
-                and zero for planar joints. Defaults to False, which imports URDF
-                damping into ``joint_damping`` and keeps drive gains independent.
-                Use this option while migrating previously tuned controllers,
-                especially with XPBD/VBD, which do not consume passive joint damping.
+            joint_damping_mode: How to interpret URDF ``<dynamics damping>``.
+                ``"passive"`` imports it into ``joint_damping`` and keeps drive
+                damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
+                into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
+                In drive mode, passive damping uses ``default_joint_cfg.damping``
+                for revolute/prismatic joints and zero for planar joints.
+                Deprecated default: None retains the drive mapping in Newton 1.7
+                and warns when the URDF authors damping. The default will become
+                ``"passive"`` in Newton 1.8. Pass either mode explicitly to silence
+                the warning. XPBD/VBD do not consume passive joint damping.
         """
         from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
 
@@ -4277,7 +4279,7 @@ class ModelBuilder:
             mesh_maxhullvert=mesh_maxhullvert,
             force_position_velocity_actuation=force_position_velocity_actuation,
             override_root_xform=override_root_xform,
-            legacy_joint_damping=legacy_joint_damping,
+            joint_damping_mode=joint_damping_mode,
         )
 
     def add_usd(
@@ -4450,15 +4452,21 @@ class ModelBuilder:
                 where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
                 False (identity translation matching MuJoCo 3.9 semantics).
-            legacy_angular_velocity_units: If True, restore Newton 1.6 joint-state
-                angular velocity handling: resolved ``state:angular:physics:velocity``
+            legacy_angular_velocity_units: Deprecated in Newton 1.7 and scheduled
+                for removal in Newton 1.8;
+                enabling this option emits a :class:`DeprecationWarning`.
+                If True, restore Newton 1.6 joint-state angular velocity handling:
+                resolved ``state:angular:physics:velocity``
                 and D6 ``state:rot*:physics:velocity`` values are copied into
                 ``joint_qd`` without converting degrees/s to radians/s. Applies
                 to revolute, native D6, and merged joints. Rigid-body velocities,
                 linear joint velocities, positions, and drive targets retain their
                 usual unit conversion. Defaults to False.
-            legacy_springref_units: If True, restore Newton 1.6 handling of
-                ``mjc:springref`` as an already converted Newton value, ignoring
+            legacy_springref_units: Deprecated in Newton 1.7 and scheduled
+                for removal in Newton 1.8;
+                enabling this option emits a :class:`DeprecationWarning`.
+                If True, restore Newton 1.6 handling of ``mjc:springref`` as an
+                already converted Newton value, ignoring
                 ``mjc:compiler:angle`` for spring references only. ``mjc:ref``
                 conversion is unchanged. Requires registered MuJoCo custom
                 attributes to load spring references. Defaults to False, which

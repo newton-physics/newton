@@ -317,15 +317,21 @@ def parse_usd(
             where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
             False (identity translation matching MuJoCo 3.9 semantics).
-        legacy_angular_velocity_units: If True, restore Newton 1.6 joint-state
-            angular velocity handling: resolved ``state:angular:physics:velocity``
+        legacy_angular_velocity_units: Deprecated in Newton 1.7 and scheduled
+            for removal in Newton 1.8;
+            enabling this option emits a :class:`DeprecationWarning`.
+            If True, restore Newton 1.6 joint-state angular velocity handling:
+            resolved ``state:angular:physics:velocity``
             and D6 ``state:rot*:physics:velocity`` values are copied into
             ``joint_qd`` without converting degrees/s to radians/s. Applies
             to revolute, native D6, and merged joints. Rigid-body velocities,
             linear joint velocities, positions, and drive targets retain their
             usual unit conversion. Defaults to False.
-        legacy_springref_units: If True, restore Newton 1.6 handling of
-            ``mjc:springref`` as an already converted Newton value, ignoring
+        legacy_springref_units: Deprecated in Newton 1.7 and scheduled
+            for removal in Newton 1.8;
+            enabling this option emits a :class:`DeprecationWarning`.
+            If True, restore Newton 1.6 handling of ``mjc:springref`` as an
+            already converted Newton value, ignoring
             ``mjc:compiler:angle`` for spring references only. ``mjc:ref``
             conversion is unchanged. Requires registered MuJoCo custom
             attributes to load spring references. Defaults to False, which
@@ -454,6 +460,18 @@ def parse_usd(
             * - ``"actuator_count"``
               - Number of external actuators parsed from the USD stage
     """
+    for name, enabled in (
+        ("legacy_angular_velocity_units", legacy_angular_velocity_units),
+        ("legacy_springref_units", legacy_springref_units),
+    ):
+        if enabled:
+            warnings.warn(
+                f"{name}=True is deprecated and will be removed in Newton 1.8. "
+                "Migrate authored asset values to their documented units and leave this option False.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
     first_imported_joint = builder.joint_count
