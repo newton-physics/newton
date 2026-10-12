@@ -28,9 +28,11 @@ class ActuatorTarget:
     resolves the target to MuJoCo's heterogeneous ``trnid`` representation.
 
     Targets must belong to the builder's current world or the global world
-    (``-1``). For ball and free joints, a single-value ``gear`` scales the
-    selected DOF's axis. Longer gear vectors use MuJoCo's native transmission
-    layout and define the direction explicitly.
+    (``-1``). For ball and free joints, the native MuJoCo transmission requires an explicit three- or six-component gear,
+    respectively, and does not select a Newton DOF. Ball gears express torque
+    in the child body frame; free gears combine world-frame force at the body
+    origin with child-frame torque. Use :attr:`~newton.Control.joint_f` to apply forces in
+    Newton's DOF convention.
     """
 
     class Kind(Enum):
@@ -68,11 +70,13 @@ class ActuatorTarget:
 
     @classmethod
     def joint(cls, joint: int, *, dof: int | None = None) -> ActuatorTarget:
-        """Target a Newton joint, optionally selecting one local DOF.
+        """Target a Newton joint, selecting a scalar axis for D6 joints.
 
         Args:
             joint: Newton joint index.
-            dof: Local DOF within the joint. Required for multi-DOF joints.
+            dof: Local DOF within a scalar or D6 joint. Required for multi-axis
+                D6 joints. Omit for ball/free joints and supply an explicit
+                native MuJoCo gear to the actuator helper.
 
         Returns:
             A typed joint target.
@@ -84,7 +88,8 @@ class ActuatorTarget:
         """Target an absolute Newton joint-DOF index.
 
         Args:
-            dof: Absolute Newton joint-DOF index.
+            dof: Absolute Newton joint-DOF index for a scalar or D6 joint.
+                Ball/free joints require :meth:`joint` with native gear instead.
 
         Returns:
             A typed joint-DOF target.
@@ -164,7 +169,7 @@ def _validate_site(builder: ModelBuilder, site: int, name: str) -> None:
 
 
 def _resolve_target(builder: ModelBuilder, target: ActuatorTarget) -> tuple[int, wp.vec2i, int]:
-    """Resolve transmission type, indices, and the axis for a single-value gear."""
+    """Resolve transmission indices and any required native gear length."""
     from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
     if not isinstance(target, ActuatorTarget):
@@ -174,7 +179,13 @@ def _resolve_target(builder: ModelBuilder, target: ActuatorTarget) -> tuple[int,
         _validate_index("joint", target.index, len(builder.joint_type))
         linear_dofs, angular_dofs = builder.joint_dof_dim[target.index]
         dof_count = linear_dofs + angular_dofs
-        if target.dof is None:
+        if builder.joint_type[target.index] in (JointType.BALL, JointType.FREE):
+            if target.dof is not None:
+                raise ValueError(
+                    "Ball/free joints require a joint target without dof and an explicit native MuJoCo gear."
+                )
+            local_dof = 0
+        elif target.dof is None:
             if dof_count != 1:
                 raise ValueError(
                     f"Joint {target.index} has {dof_count} DOFs; specify the local dof in ActuatorTarget.joint()."
@@ -189,12 +200,13 @@ def _resolve_target(builder: ModelBuilder, target: ActuatorTarget) -> tuple[int,
         _validate_index("joint dof", target.index, len(builder.joint_qd))
         dof = target.index
         joint = bisect_right(builder.joint_qd_start, dof) - 1
-        local_dof = dof - int(builder.joint_qd_start[joint])
+        if builder.joint_type[joint] in (JointType.BALL, JointType.FREE):
+            raise ValueError("Ball/free joints require ActuatorTarget.joint() with an explicit native MuJoCo gear.")
 
     if target.kind in (ActuatorTarget.Kind.JOINT, ActuatorTarget.Kind.JOINT_DOF):
         _validate_target_world(builder, "joint", joint, int(builder.joint_world[joint]))
-        gear_axis = local_dof if builder.joint_type[joint] in (JointType.BALL, JointType.FREE) else 0
-        return int(SolverMuJoCo.TrnType.JOINT), wp.vec2i(dof, -1), gear_axis
+        gear_length = {JointType.BALL: 3, JointType.FREE: 6}.get(builder.joint_type[joint], 0)
+        return int(SolverMuJoCo.TrnType.JOINT), wp.vec2i(dof, -1), gear_length
 
     if target.kind == ActuatorTarget.Kind.TENDON:
         tendon_count = builder._custom_frequency_counts.get("mujoco:tendon", 0)
@@ -295,17 +307,15 @@ def _add_actuator(
     actdim: int | None = None,
     actearly: bool = False,
     cranklength: float | None = None,
-    damping: float = 0.0,
-    armature: float = 0.0,
     ctrl: float = 0.0,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
     from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
     _ensure_mujoco_attributes(builder, "mujoco:actuator_trnid")
-    trntype, trnid, gear_axis = _resolve_target(builder, target)
-    if len(gear) == 1:
-        gear = [0.0] * gear_axis + list(gear)
+    trntype, trnid, gear_length = _resolve_target(builder, target)
+    if gear_length and len(gear) < gear_length:
+        raise ValueError(f"This joint requires an explicit native MuJoCo gear with at least {gear_length} components.")
     if trntype == int(SolverMuJoCo.TrnType.SLIDERCRANK):
         if cranklength is None or cranklength <= 0.0:
             raise ValueError("A slider-crank actuator requires a positive cranklength [m].")
@@ -335,8 +345,6 @@ def _add_actuator(
         ),
         "mujoco:actuator_has_forcerange": int(forcerange is not None),
         "mujoco:actuator_gear": _vector(builder, "mujoco:actuator_gear", gear, 6, exact=False),
-        "mujoco:actuator_damping": float(damping),
-        "mujoco:actuator_armature": float(armature),
         "mujoco:actuator_cranklength": 0.0 if cranklength is None else float(cranklength),
         "mujoco:actuator_dynprm": _vector(builder, "mujoco:actuator_dynprm", dynprm, 10, exact=False),
         "mujoco:actuator_gainprm": _vector(builder, "mujoco:actuator_gainprm", gainprm, 10, exact=False),
@@ -385,8 +393,6 @@ def add_actuator_general(
     actdim: int | None = None,
     actearly: bool = False,
     cranklength: float | None = None,
-    damping: float = 0.0,
-    armature: float = 0.0,
     ctrl: float = 0.0,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
@@ -401,9 +407,9 @@ def add_actuator_general(
         dynprm: Activation dynamics parameters, padded to ten values.
         gainprm: Gain parameters, padded to ten values.
         biasprm: Bias parameters, padded to ten values.
-        gear: Transmission gear, padded to six values. For ball/free joint targets,
-            a single value applies to the selected DOF axis; longer vectors use
-            MuJoCo's native gear layout.
+        gear: Native MuJoCo transmission gear, padded to six values. Ball/free
+            joints require at least three/six components; these use MuJoCo's
+            frames and force reference point, as described in :class:`ActuatorTarget`.
         ctrlrange: Optional control range.
         ctrllimited: Control-limit tri-state (false, true, or auto).
         forcerange: Optional actuator force range [N or N·m].
@@ -413,8 +419,6 @@ def add_actuator_general(
         actdim: Activation-state dimension, or ``None`` for automatic selection.
         actearly: Whether force uses the next activation state.
         cranklength: Slider-crank length [m]. Required for slider-crank targets.
-        damping: Actuator damping [N·s/m or N·m·s/rad].
-        armature: Actuator armature [kg or kg·m²].
         ctrl: Initial MuJoCo control value.
         custom_attributes: Additional registered ``mujoco:actuator`` attributes.
 
@@ -443,8 +447,6 @@ def add_actuator_general(
         actdim=actdim,
         actearly=actearly,
         cranklength=cranklength,
-        damping=damping,
-        armature=armature,
         ctrl=ctrl,
         custom_attributes=custom_attributes,
     )
@@ -460,8 +462,6 @@ def add_actuator_motor(
     forcerange: Sequence[float] | None = None,
     forcelimited: bool | int | str = "auto",
     cranklength: float | None = None,
-    damping: float = 0.0,
-    armature: float = 0.0,
     ctrl: float = 0.0,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
@@ -470,16 +470,14 @@ def add_actuator_motor(
     Args:
         builder: Model builder receiving the actuator.
         target: Typed actuator transmission target.
-        gear: Transmission gear, padded to six values. For ball/free joint targets,
-            a single value applies to the selected DOF axis; longer vectors use
-            MuJoCo's native gear layout.
+        gear: Native MuJoCo transmission gear, padded to six values. Ball/free
+            joints require at least three/six components; these use MuJoCo's
+            frames and force reference point, as described in :class:`ActuatorTarget`.
         ctrlrange: Optional control range.
         ctrllimited: Control-limit tri-state (false, true, or auto).
         forcerange: Optional actuator force range [N or N·m].
         forcelimited: Force-limit tri-state (false, true, or auto).
         cranklength: Slider-crank length [m]. Required for slider-crank targets.
-        damping: Actuator damping [N·s/m or N·m·s/rad].
-        armature: Actuator armature [kg or kg·m²].
         ctrl: Initial MuJoCo control value.
         custom_attributes: Additional registered ``mujoco:actuator`` attributes.
 
@@ -497,8 +495,6 @@ def add_actuator_motor(
         forcerange=forcerange,
         forcelimited=forcelimited,
         cranklength=cranklength,
-        damping=damping,
-        armature=armature,
         ctrl=ctrl,
         custom_attributes=custom_attributes,
     )
@@ -517,8 +513,6 @@ def add_actuator_position(
     forcerange: Sequence[float] | None = None,
     forcelimited: bool | int | str = "auto",
     cranklength: float | None = None,
-    damping: float = 0.0,
-    armature: float = 0.0,
     ctrl: float = 0.0,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
@@ -530,16 +524,14 @@ def add_actuator_position(
         kp: Position feedback gain.
         kv: Velocity feedback gain.
         dampratio: Damping ratio used when ``kv`` is zero.
-        gear: Transmission gear, padded to six values. For ball/free joint targets,
-            a single value applies to the selected DOF axis; longer vectors use
-            MuJoCo's native gear layout.
+        gear: Native MuJoCo transmission gear, padded to six values. Ball/free
+            joints require at least three/six components; these use MuJoCo's
+            frames and force reference point, as described in :class:`ActuatorTarget`.
         ctrlrange: Optional control range.
         ctrllimited: Control-limit tri-state (false, true, or auto).
         forcerange: Optional actuator force range [N or N·m].
         forcelimited: Force-limit tri-state (false, true, or auto).
         cranklength: Slider-crank length [m]. Required for slider-crank targets.
-        damping: Actuator damping [N·s/m or N·m·s/rad].
-        armature: Actuator armature [kg or kg·m²].
         ctrl: Initial MuJoCo control value.
         custom_attributes: Additional registered ``mujoco:actuator`` attributes.
 
@@ -548,11 +540,13 @@ def add_actuator_position(
     """
     from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
-    if kp <= 0.0:
-        raise ValueError("kp must be positive.")
+    if kp < 0.0:
+        raise ValueError("kp must be nonnegative.")
+    if kv < 0.0 or dampratio < 0.0:
+        raise ValueError("kv and dampratio must be nonnegative.")
     if kv != 0.0 and dampratio != 0.0:
         raise ValueError("Specify either kv or dampratio, not both.")
-    bias_damping = -float(kv) if kv != 0.0 else float(dampratio)
+    bias_damping = -float(kv) if kv != 0.0 else (float(dampratio) if kp > 0.0 else 0.0)
     return _add_actuator(
         builder,
         target,
@@ -567,8 +561,6 @@ def add_actuator_position(
         forcerange=forcerange,
         forcelimited=forcelimited,
         cranklength=cranklength,
-        damping=damping,
-        armature=armature,
         ctrl=ctrl,
         custom_attributes=custom_attributes,
     )
@@ -585,8 +577,6 @@ def add_actuator_velocity(
     forcerange: Sequence[float] | None = None,
     forcelimited: bool | int | str = "auto",
     cranklength: float | None = None,
-    damping: float = 0.0,
-    armature: float = 0.0,
     ctrl: float = 0.0,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
@@ -596,16 +586,14 @@ def add_actuator_velocity(
         builder: Model builder receiving the actuator.
         target: Typed actuator transmission target.
         kv: Velocity feedback gain.
-        gear: Transmission gear, padded to six values. For ball/free joint targets,
-            a single value applies to the selected DOF axis; longer vectors use
-            MuJoCo's native gear layout.
+        gear: Native MuJoCo transmission gear, padded to six values. Ball/free
+            joints require at least three/six components; these use MuJoCo's
+            frames and force reference point, as described in :class:`ActuatorTarget`.
         ctrlrange: Optional control range.
         ctrllimited: Control-limit tri-state (false, true, or auto).
         forcerange: Optional actuator force range [N or N·m].
         forcelimited: Force-limit tri-state (false, true, or auto).
         cranklength: Slider-crank length [m]. Required for slider-crank targets.
-        damping: Actuator damping [N·s/m or N·m·s/rad].
-        armature: Actuator armature [kg or kg·m²].
         ctrl: Initial MuJoCo control value.
         custom_attributes: Additional registered ``mujoco:actuator`` attributes.
 
@@ -614,8 +602,8 @@ def add_actuator_velocity(
     """
     from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
-    if kv <= 0.0:
-        raise ValueError("kv must be positive.")
+    if kv < 0.0:
+        raise ValueError("kv must be nonnegative.")
     return _add_actuator(
         builder,
         target,
@@ -630,8 +618,6 @@ def add_actuator_velocity(
         forcerange=forcerange,
         forcelimited=forcelimited,
         cranklength=cranklength,
-        damping=damping,
-        armature=armature,
         ctrl=ctrl,
         custom_attributes=custom_attributes,
     )

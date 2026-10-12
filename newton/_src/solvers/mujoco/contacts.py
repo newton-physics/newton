@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from ...geometry import ShapeFlags
 from ...sim import ModelBuilder
 from ._authoring import _add_custom_frequency_row, _ensure_mujoco_attributes, _vector
 
@@ -52,6 +53,8 @@ def add_contact_pair(
     for name, shape in (("shape0", shape0), ("shape1", shape1)):
         if shape < 0 or shape >= shape_count:
             raise IndexError(f"{name} index {shape} is outside [0, {shape_count}).")
+        if builder.shape_flags[shape] & ShapeFlags.SITE:
+            raise ValueError(f"{name} index {shape} identifies a site, not a contact geometry.")
     if shape0 == shape1:
         raise ValueError("A MuJoCo contact pair requires two distinct shapes.")
     world = builder.current_world

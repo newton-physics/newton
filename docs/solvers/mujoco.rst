@@ -407,7 +407,13 @@ only reachable through the ``mujoco`` :ref:`custom-attribute namespace <mujoco-c
 The :doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` helpers
 ``add_actuator_general``, ``add_actuator_motor``, ``add_actuator_position``,
 and ``add_actuator_velocity`` author complete
-actuator rows from a typed ``ActuatorTarget``.
+actuator rows from a typed ``ActuatorTarget``. Scalar and D6 joints support
+local or absolute DOF selection. Ball/free joints instead require an explicit
+native MuJoCo gear vector: ball-joint torque is in the child body frame;
+free-joint force is in the world frame at the body origin, and its torque is
+in the child body frame. These are different from Newton's parent-frame,
+COM-based DOF convention. Use :attr:`~newton.Control.joint_f` for forces in
+Newton's DOF convention.
 Additional actuators declared this way are appended after the joint-target
 actuators — see ``SolverMuJoCo._init_actuators``.
 
@@ -738,6 +744,47 @@ same three-phase cycle:
 Contacts are **not** pulled back into a Newton ``Contacts`` object
 automatically. Call :meth:`~newton.solvers.SolverMuJoCo.update_contacts`
 when you need contact points, forces, or material indices in Newton form.
+
+Separated speculative contacts
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+With ``use_mujoco_contacts=False``, Newton's collision pipeline can generate
+separated candidates using velocity expansion. By default, MuJoCo activates
+constraints only inside the authored collision margin. Generating a candidate
+alone therefore does not prevent an object from crossing a thin collider in
+one dynamics step.
+
+Set ``use_speculative_contacts=True`` to add frictionless normal constraints
+for separated candidates. Their target bounds closing velocity by the current
+clearance divided by the physics timestep. Collision margins and the material
+response of penetrating contacts retain their authored values. Friction begins
+when the surfaces enter the authored margin.
+
+.. experimental::
+
+   The ``SolverMuJoCo(use_speculative_contacts=True)`` mode may change without
+   prior notice. It requires Newton contacts on the MuJoCo Warp backend and
+   Euler or implicitfast integration. It does not provide continuous collision
+   detection or guarantee zero penetration: candidate coverage, rotation,
+   contact compliance, forces, and timestep still matter.
+
+This is a runtime solver option, like the choice of contact backend. It does
+not add an asset-authoring attribute or change the USD collision schema.
+
+Pass a velocity-expansion horizon to the collision pipeline before each step::
+
+    pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=0.05)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverMuJoCo(
+        model, use_mujoco_contacts=False, use_speculative_contacts=True
+    )
+    pipeline.collide(state_in, contacts, dt=dt)
+    solver.step(state_in, state_out, control, contacts, dt)
+
+For scheduled collision refreshes, the expansion horizon must cover the
+interval until the next refresh. The solver's velocity bound uses each
+individual dynamics timestep. Speculative constraints can consume additional
+constraint rows, so check contact and constraint capacities for the scene.
 
 Push, pull, and contact-conversion are implemented by
 ``SolverMuJoCo._apply_mjc_control``, ``SolverMuJoCo._update_newton_state``,

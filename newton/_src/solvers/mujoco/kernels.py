@@ -2983,6 +2983,7 @@ def update_eq_data_and_active_kernel(
     eq_constraint_polycoef: wp.array2d[wp.float32],
     eq_constraint_torquescale: wp.array[wp.float32],
     eq_constraint_enabled: wp.array[wp.bool],
+    preserve_inferred_poses: bool,
     # outputs
     eq_data_out: wp.array2d[vec11],
     eq_active_out: wp.array2d[wp.bool],
@@ -3030,7 +3031,7 @@ def update_eq_data_and_active_kernel(
         # that compiled pose when synchronizing the authored equality row.
         relpose = eq_constraint_relpose[newton_eq]
         quat = quat_xyzw_to_wxyz(wp.transform_get_rotation(relpose))
-        if wp.dot(quat, quat) > 0.0:
+        if not preserve_inferred_poses or wp.dot(quat, quat) > 0.0:
             pos = wp.transform_get_translation(relpose)
             data[3] = pos[0]
             data[4] = pos[1]

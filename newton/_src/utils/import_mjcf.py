@@ -3474,6 +3474,27 @@ def parse_mjcf(
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
+            elif actuator_type == "muscle":
+                timeconst = parse_vec(merged_attrib, "timeconst", [0.01, 0.04])
+                muscle_range = parse_vec(merged_attrib, "range", [0.75, 1.05])
+                tausmooth = parse_float(merged_attrib, "tausmooth", 0.0)
+                if tausmooth < 0.0:
+                    raise ValueError("MJCF muscle actuator tausmooth must be nonnegative.")
+                muscle_params = [
+                    float(muscle_range[0]),
+                    float(muscle_range[1]),
+                    parse_float(merged_attrib, "force", -1.0),
+                    parse_float(merged_attrib, "scale", 200.0),
+                    parse_float(merged_attrib, "lmin", 0.5),
+                    parse_float(merged_attrib, "lmax", 1.6),
+                    parse_float(merged_attrib, "vmax", 1.5),
+                    parse_float(merged_attrib, "fpmax", 1.3),
+                    parse_float(merged_attrib, "fvmax", 1.2),
+                ]
+                gainprm = vec10(*muscle_params, 0.0)
+                biasprm = vec10(*muscle_params, 0.0)
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+
             elif actuator_type == "damper":
                 kv = parse_float(merged_attrib, "kv", 1.0)
                 gainprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -3504,6 +3525,10 @@ def parse_mjcf(
                 parsing_mode="mjcf",
                 context={"actuator_name": act_name},
             )
+            if actuator_type == "muscle":
+                parsed_attrs["mujoco:actuator_dynprm"] = vec10(
+                    float(timeconst[0]), float(timeconst[1]), tausmooth, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+                )
             if (
                 actuator_type in {"position", "velocity", "intvelocity"}
                 and target_joint_name in mjcf_slide_joint_names
@@ -3529,6 +3554,11 @@ def parse_mjcf(
             shortcut_type_defaults = {
                 "position": {"mujoco:actuator_biastype": 1},  # affine
                 "velocity": {"mujoco:actuator_biastype": 1},  # affine
+                "muscle": {
+                    "mujoco:actuator_dyntype": 4,  # muscle
+                    "mujoco:actuator_gaintype": 2,  # muscle
+                    "mujoco:actuator_biastype": 2,  # muscle
+                },
                 "intvelocity": {"mujoco:actuator_biastype": 1, "mujoco:actuator_dyntype": 1},
                 "damper": {
                     "mujoco:actuator_gaintype": 1,  # affine

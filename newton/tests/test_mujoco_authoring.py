@@ -57,59 +57,120 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
         """Require an explicit local DOF for multi-DOF joint targets."""
         builder = newton.ModelBuilder()
         body = builder.add_link(mass=1.0)
-        joint = builder.add_joint_ball(parent=-1, child=body)
+        joint = builder.add_joint_d6(
+            parent=-1,
+            child=body,
+            angular_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in (newton.Axis.X, newton.Axis.Y)],
+        )
         builder.add_articulation([joint])
 
         with self.assertRaisesRegex(ValueError, "dof"):
             mujoco.add_actuator_motor(builder, target=mujoco.ActuatorTarget.joint(joint))
 
-    def test_multidof_actuator_drives_selected_axis(self):
-        """Local and absolute DOF targets select the corresponding ball/free/D6 axis."""
-        native_mujoco = newton.solvers.SolverMuJoCo.import_mujoco()[0]
-        for joint_type, dof_count in (("ball", 3), ("free", 6), ("d6", 2)):
-            for absolute in (False, True):
-                with self.subTest(joint_type=joint_type, absolute=absolute):
-                    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-                    _add_revolute(builder, "prefix")
-                    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-                    kwargs = (
-                        {
-                            "angular_axes": [
-                                newton.ModelBuilder.JointDofConfig(axis=axis) for axis in (newton.Axis.X, newton.Axis.Y)
-                            ]
-                        }
-                        if joint_type == "d6"
-                        else {}
+    def test_d6_actuator_drives_selected_axis(self):
+        """Drive each D6 axis through both local and absolute DOF targets."""
+        native = newton.solvers.SolverMuJoCo.import_mujoco()[0]
+        for absolute in (False, True):
+            with self.subTest(absolute=absolute):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                _add_revolute(builder, "prefix")
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                joint = builder.add_joint_d6(
+                    parent=-1,
+                    child=body,
+                    angular_axes=[
+                        newton.ModelBuilder.JointDofConfig(axis=axis) for axis in (newton.Axis.X, newton.Axis.Y)
+                    ],
+                )
+                builder.add_articulation([joint])
+                for dof in range(2):
+                    target = (
+                        mujoco.ActuatorTarget.joint_dof(builder.joint_qd_start[joint] + dof)
+                        if absolute
+                        else mujoco.ActuatorTarget.joint(joint, dof=dof)
                     )
-                    joint = getattr(builder, f"add_joint_{joint_type}")(parent=-1, child=body, **kwargs)
-                    builder.add_articulation([joint])
-                    for dof in range(dof_count):
-                        target = (
-                            mujoco.ActuatorTarget.joint_dof(builder.joint_qd_start[joint] + dof)
-                            if absolute
-                            else mujoco.ActuatorTarget.joint(joint, dof=dof)
-                        )
-                        mujoco.add_actuator_motor(builder, target, gear=(2.0,))
-                    # An explicit vector describes a native MuJoCo transmission direction.
-                    mujoco.add_actuator_motor(builder, target, gear=(0.5, 0.75, 1.0))
-                    solver = newton.solvers.SolverMuJoCo(builder.finalize(), use_mujoco_cpu=True, disable_contacts=True)
-                    data = native_mujoco.MjData(solver.mj_model)
-                    for dof in range(dof_count):
-                        data.ctrl[:] = 0.0
-                        data.ctrl[dof] = 1.0
-                        native_mujoco.mj_forward(solver.mj_model, data)
-                        expected = np.zeros(1 + dof_count)
-                        expected[1 + dof] = 2.0
-                        np.testing.assert_allclose(data.qfrc_actuator, expected, atol=1e-7)
+                    mujoco.add_actuator_motor(builder, target, gear=(2.0,))
+                solver = newton.solvers.SolverMuJoCo(builder.finalize(), use_mujoco_cpu=True, disable_contacts=True)
+                data = native.MjData(solver.mj_model)
+                for dof in range(2):
                     data.ctrl[:] = 0.0
-                    data.ctrl[-1] = 1.0
-                    native_mujoco.mj_forward(solver.mj_model, data)
-                    expected = np.zeros(1 + dof_count)
-                    if joint_type == "d6":
-                        expected[-1] = 0.5
-                    else:
-                        expected[1:4] = [0.5, 0.75, 1.0]
+                    data.ctrl[dof] = 1.0
+                    native.mj_forward(solver.mj_model, data)
+                    expected = np.zeros(3)
+                    expected[1 + dof] = 2.0
                     np.testing.assert_allclose(data.qfrc_actuator, expected, atol=1e-7)
+
+    def test_ball_free_targets_require_native_gear(self):
+        """Reject ambiguous Newton DOF selection on native ball/free transmissions."""
+        rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2)
+        for joint_type, gear in (("ball", (1.0, 0.0, 0.0)), ("free", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0))):
+            with self.subTest(joint_type=joint_type):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                body = builder.add_link(
+                    mass=1.0,
+                    inertia=wp.mat33(np.eye(3)),
+                    com=wp.vec3(0.1, 0.2, 0.0) if joint_type == "free" else wp.vec3(),
+                )
+                joint = getattr(builder, f"add_joint_{joint_type}")(parent=-1, child=body)
+                builder.add_articulation([joint])
+                q_start = builder.joint_q_start[joint] + (3 if joint_type == "free" else 0)
+                builder.joint_q[q_start : q_start + 4] = list(rotation)
+                for target in (mujoco.ActuatorTarget.joint(joint, dof=0), mujoco.ActuatorTarget.joint_dof(0)):
+                    with self.subTest(target=target), self.assertRaisesRegex(ValueError, "native.*gear"):
+                        mujoco.add_actuator_motor(builder, target, gear=gear)
+                with self.assertRaisesRegex(ValueError, "gear"):
+                    mujoco.add_actuator_motor(builder, mujoco.ActuatorTarget.joint(joint))
+                self.assertEqual(builder._custom_frequency_counts.get("mujoco:actuator", 0), 0)
+
+                mujoco.add_actuator_motor(builder, mujoco.ActuatorTarget.joint(joint), gear=gear, ctrl=1.0)
+                model = builder.finalize()
+                velocities = []
+                for use_mujoco_cpu in (True, False):
+                    solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                    np.testing.assert_allclose(solver.mj_model.actuator_gear[0], list(gear) + [0.0] * (6 - len(gear)))
+                    state0, state1 = model.state(), model.state()
+                    newton.eval_fk(model, model.joint_q, model.joint_qd, state0)
+                    solver.step(state0, state1, model.control(), None, 0.001)
+                    velocities.append(state1.joint_qd.numpy())
+                np.testing.assert_allclose(velocities[0], velocities[1], atol=1e-6)
+                # Native child-frame X torque acts about parent-frame Y after the rotation.
+                angular_start = 3 if joint_type == "free" else 0
+                self.assertGreater(velocities[0][angular_start + 1], 0.0)
+                self.assertAlmostEqual(velocities[0][angular_start], 0.0, places=6)
+
+    def test_zero_feedback_gains(self):
+        """Allow a damping-only position actuator and a disabled velocity actuator."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        _, joint = _add_revolute(builder, "hinge")
+        target = mujoco.ActuatorTarget.joint(joint)
+        mujoco.add_actuator_position(builder, target, kp=0.0, kv=2.0)
+        mujoco.add_actuator_velocity(builder, target, kv=0.0)
+        mujoco.add_actuator_position(builder, target, kp=0.0, dampratio=1.0)
+        solver = newton.solvers.SolverMuJoCo(builder.finalize(), use_mujoco_cpu=True, disable_contacts=True)
+        native = newton.solvers.SolverMuJoCo.import_mujoco()[0]
+        data = native.MjData(solver.mj_model)
+        data.qvel[:] = 0.5
+        data.ctrl[:] = 1.0
+        native.mj_forward(solver.mj_model, data)
+        np.testing.assert_allclose(data.actuator_force, [-1.0, 0.0, 0.0])
+        for gains in ({"kp": -1.0}, {"kv": -1.0}, {"dampratio": -1.0}):
+            with self.subTest(gains=gains), self.assertRaisesRegex(ValueError, "nonnegative"):
+                mujoco.add_actuator_position(builder, target, **gains)
+
+    def test_import_actuator_damping_remains_out_of_scope(self):
+        """Preserve upstream import behavior for scalar and vector actuator damping."""
+        for damping in ("3", "1 0 0"):
+            with self.subTest(damping=damping):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(
+                    f"""<mujoco><worldbody><body><joint name="hinge"/>
+                  <geom type="sphere" size="0.1"/></body></worldbody>
+                  <actuator><motor joint="hinge" damping="{damping}" armature="0.5"/></actuator></mujoco>""",
+                    ctrl_direct=True,
+                )
+                solver = newton.solvers.SolverMuJoCo(builder.finalize(), use_mujoco_cpu=True, disable_contacts=True)
+                np.testing.assert_array_equal(solver.mj_model.actuator_damping, 0.0)
+                np.testing.assert_array_equal(solver.mj_model.actuator_armature, 0.0)
 
     def test_reject_actuator_targets_across_worlds(self):
         """Reject primary and secondary transmission targets from another world."""
@@ -192,31 +253,36 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
 
     def test_remap_mjcf_actuator_targets_when_merging_builders(self):
         """Offset imported ctrl-direct actuator targets for each merged builder copy."""
-        mjcf = """
-        <mujoco>
-          <worldbody>
-            <body name="link">
-              <joint name="hinge" type="hinge" axis="0 0 1"/>
-              <geom type="sphere" size="0.1"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <motor joint="hinge"/>
-          </actuator>
-        </mujoco>
-        """
-        robot = newton.ModelBuilder()
-        robot.add_mjcf(mjcf, ctrl_direct=True)
+        for actuator in (
+            '<motor joint="hinge"/>',
+            '<muscle joint="hinge" force="1" lengthrange="0.5 1.5"/>',
+        ):
+            with self.subTest(actuator=actuator):
+                mjcf = f"""
+                <mujoco>
+                  <worldbody>
+                    <body name="link">
+                      <joint name="hinge" type="hinge" axis="0 0 1"/>
+                      <geom type="sphere" size="0.1"/>
+                    </body>
+                  </worldbody>
+                  <actuator>
+                    {actuator}
+                  </actuator>
+                </mujoco>
+                """
+                robot = newton.ModelBuilder()
+                robot.add_mjcf(mjcf, ctrl_direct=True)
 
-        scene = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(scene)
-        scene.add_builder(robot)
-        scene.add_builder(robot)
-        model = scene.finalize()
+                scene = newton.ModelBuilder()
+                newton.solvers.SolverMuJoCo.register_custom_attributes(scene)
+                scene.add_builder(robot)
+                scene.add_builder(robot)
+                model = scene.finalize()
 
-        np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy()[:, 0], [0, 1])
-        solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
-        np.testing.assert_array_equal(solver.mj_model.actuator_trnid[:, 0], [0, 1])
+                np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy()[:, 0], [0, 1])
+                solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+                np.testing.assert_array_equal(solver.mj_model.actuator_trnid[:, 0], [0, 1])
 
 
 class TestMuJoCoEntityAuthoring(unittest.TestCase):
@@ -284,31 +350,47 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy(), [[tendon, -1]])
 
     def test_add_spatial_tendon(self):
-        """Create a spatial tendon while hiding its child-row addresses."""
+        """Compile complete spatial tendon branches with a wrapping geom and pulley."""
         builder = newton.ModelBuilder()
         body, _ = _add_revolute(builder, "hinge")
-        site0 = builder.add_site(body, label="site0")
-        geom = builder.add_shape_sphere(body, radius=0.1, label="geom")
-        site1 = builder.add_site(body, label="site1")
-
+        site0 = builder.add_site(body, xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0), wp.quat_identity()))
+        site1 = builder.add_site(body, xform=wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity()))
+        sidesite = builder.add_site(body, xform=wp.transform(wp.vec3(0.0, 0.2, 0.0), wp.quat_identity()))
+        geom = builder.add_shape_sphere(body, radius=0.1, label="wrap_geom")
         tendon = mujoco.add_tendon_spatial(
             builder,
             path=[
                 mujoco.TendonWrapSite(site0),
-                mujoco.TendonWrapGeom(geom, sidesite=site1),
+                mujoco.TendonWrapGeom(geom, sidesite=sidesite),
+                mujoco.TendonWrapSite(site1),
                 mujoco.TendonWrapPulley(2.0),
+                mujoco.TendonWrapSite(site0),
+                mujoco.TendonWrapSite(site1),
             ],
             label="spatial",
         )
         model = builder.finalize()
-
         self.assertEqual(tendon, 0)
-        np.testing.assert_array_equal(model.mujoco.tendon_wrap_adr.numpy(), [0])
-        np.testing.assert_array_equal(model.mujoco.tendon_wrap_num.numpy(), [3])
-        np.testing.assert_array_equal(model.mujoco.tendon_wrap_type.numpy(), [0, 1, 2])
-        np.testing.assert_array_equal(model.mujoco.tendon_wrap_shape.numpy(), [site0, geom, -1])
-        np.testing.assert_array_equal(model.mujoco.tendon_wrap_sidesite.numpy(), [-1, site1, -1])
-        np.testing.assert_allclose(model.mujoco.tendon_wrap_prm.numpy(), [0.0, 0.0, 2.0])
+        np.testing.assert_array_equal(model.mujoco.tendon_wrap_shape.numpy(), [site0, geom, site1, -1, site0, site1])
+        native = newton.solvers.SolverMuJoCo.import_mujoco()[0]
+        for use_mujoco_cpu in (True, False):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                self.assertEqual(solver.mj_model.ntendon, 1)
+                np.testing.assert_array_equal(solver.mj_model.tendon_num, [6])
+                np.testing.assert_array_equal(
+                    solver.mj_model.wrap_type,
+                    [
+                        native.mjtWrap.mjWRAP_SITE,
+                        native.mjtWrap.mjWRAP_SPHERE,
+                        native.mjtWrap.mjWRAP_SITE,
+                        native.mjtWrap.mjWRAP_PULLEY,
+                        native.mjtWrap.mjWRAP_SITE,
+                        native.mjtWrap.mjWRAP_SITE,
+                    ],
+                )
+                self.assertAlmostEqual(solver.mj_model.wrap_prm[3], 2.0)
+                self.assertGreater(solver.mj_data.ten_length[0], 0.0)
 
     def test_reject_fixed_tendon_across_worlds(self):
         """Reject foreign joints before appending any tendon or child rows."""
@@ -438,6 +520,86 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         )
         np.testing.assert_allclose(model.mujoco.equality_constraint_anchor.numpy()[0], [0.1, 0.2, 0.3])
         np.testing.assert_allclose(model.mujoco.equality_constraint_polycoef.numpy()[2], [1.0, 2.0, 0.0, 0.0, 0.0])
+
+    def test_reject_equalities_across_worlds(self):
+        """Validate both equality operands before appending rows, preserving global references."""
+        builder = newton.ModelBuilder()
+        global_body, global_joint = _add_revolute(builder, "global")
+        builder.begin_world()
+        body0, joint0 = _add_revolute(builder, "world0")
+        builder.end_world()
+        builder.begin_world()
+        body1, joint1 = _add_revolute(builder, "world1")
+        for helper, foreign, local, global_index in (
+            (mujoco.add_equality_connect, body0, body1, global_body),
+            (mujoco.add_equality_weld, body0, body1, global_body),
+            (mujoco.add_equality_joint, joint0, joint1, global_joint),
+        ):
+            before = builder._custom_frequency_counts.get("mujoco:equality_constraint", 0)
+            for operands in ((foreign, local), (local, foreign)):
+                with self.subTest(helper=helper.__name__, operands=operands):
+                    with self.assertRaisesRegex(ValueError, "belongs to world 0"):
+                        helper(builder, *operands)
+                    self.assertEqual(builder._custom_frequency_counts.get("mujoco:equality_constraint", 0), before)
+            helper(builder, local, global_index)
+        mujoco.add_equality_connect(builder, body1)
+        mujoco.add_equality_weld(builder, body1)
+        builder.end_world()
+
+    def test_reject_invalid_equality_custom_attributes(self):
+        """Reject managed overrides and invalid extras without leaving partial rows."""
+        for helper in (mujoco.add_equality_connect, mujoco.add_equality_weld, mujoco.add_equality_joint):
+            builder = newton.ModelBuilder()
+            body0, joint0 = _add_revolute(builder, "first")
+            body1, joint1 = _add_revolute(builder, "second")
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name="body_value",
+                    namespace="test",
+                    frequency=newton.Model.AttributeFrequency.BODY,
+                    dtype=float,
+                )
+            )
+            operands = (joint0, joint1) if helper is mujoco.add_equality_joint else (body0, body1)
+            for extras, error in (
+                ({"mujoco:equality_constraint_world": 1}, ValueError),
+                ({"test:missing": 1}, AttributeError),
+                ({"test:body_value": 1}, ValueError),
+            ):
+                with self.subTest(helper=helper.__name__, extras=extras):
+                    with self.assertRaises(error):
+                        helper(builder, *operands, custom_attributes=extras)
+                    self.assertEqual(builder._custom_frequency_counts.get("mujoco:equality_constraint", 0), 0)
+
+    def test_weld_preserves_each_world_initial_pose(self):
+        """Infer weld-to-world poses per copy and preserve them across notifications."""
+        blueprint = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = blueprint.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        mujoco.add_equality_weld(blueprint, body)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_world(blueprint)
+        builder.add_world(blueprint, xform=wp.transform(wp.vec3(2.0, 0.0, 1.0), wp.quat_identity()))
+        model = builder.finalize()
+        solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, separate_worlds=True, disable_contacts=True)
+        initial = solver.mjw_model.eq_data.numpy().copy()
+        solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy(), initial)
+        state0, state1 = model.state(), model.state()
+        for _ in range(100):
+            solver.step(state0, state1, model.control(), None, 0.005)
+            state0, state1 = state1, state0
+        np.testing.assert_allclose(state0.body_q.numpy(), model.body_q.numpy(), atol=1e-5)
+
+    def test_reject_contact_pair_sites(self):
+        """Reject sites instead of silently dropping the pair during solver construction."""
+        builder = newton.ModelBuilder()
+        site = builder.add_site(-1)
+        shape = builder.add_shape_sphere(-1, radius=0.1)
+        for shapes in ((site, shape), (shape, site)):
+            with self.subTest(shapes=shapes), self.assertRaisesRegex(ValueError, "site"):
+                mujoco.add_contact_pair(builder, *shapes)
+        self.assertEqual(builder._custom_frequency_counts.get("mujoco:pair", 0), 0)
 
     def test_reject_self_referencing_equalities(self):
         """Reject equality constraints whose two operands are identical."""

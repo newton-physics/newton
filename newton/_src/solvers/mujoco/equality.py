@@ -264,6 +264,8 @@ def _add_equality_constraint(
     label: str | None = None,
     enabled: bool = True,
     custom_attributes: dict[str, Any] | None = None,
+    *,
+    validate_custom_attributes: bool = False,
 ) -> int:
     """Append a row to the ``mujoco:equality_constraint`` custom-attribute frequency on ``builder``.
 
@@ -285,6 +287,7 @@ def _add_equality_constraint(
         enabled: Whether the constraint is active.
         custom_attributes: Additional ``mujoco:equality_constraint``-frequency
             custom attributes to assign at the new index.
+        validate_custom_attributes: Reject managed-column overrides and validate extras before appending.
 
     Returns:
         Index of the new constraint row.
@@ -297,23 +300,29 @@ def _add_equality_constraint(
         torquescale_value = float(torquescale)
     objtype = MJC_OBJ_JOINT if constraint_type == EqType.JOINT else MJC_OBJ_BODY
 
-    indices = builder.add_custom_values(
-        **{
-            "mujoco:equality_constraint_type": int(constraint_type),
-            "mujoco:equality_constraint_objtype": int(objtype),
-            "mujoco:equality_constraint_body1": body1,
-            "mujoco:equality_constraint_body2": body2,
-            "mujoco:equality_constraint_anchor": anchor_vec,
-            "mujoco:equality_constraint_torquescale": torquescale_value,
-            "mujoco:equality_constraint_relpose": relpose_tf,
-            "mujoco:equality_constraint_joint1": joint1,
-            "mujoco:equality_constraint_joint2": joint2,
-            "mujoco:equality_constraint_polycoef": list(polycoef) if polycoef else [0.0, 0.0, 0.0, 0.0, 0.0],
-            "mujoco:equality_constraint_label": label or "",
-            "mujoco:equality_constraint_enabled": enabled,
-            "mujoco:equality_constraint_world": builder.current_world,
-        }
-    )
+    values = {
+        "mujoco:equality_constraint_type": int(constraint_type),
+        "mujoco:equality_constraint_objtype": int(objtype),
+        "mujoco:equality_constraint_body1": body1,
+        "mujoco:equality_constraint_body2": body2,
+        "mujoco:equality_constraint_anchor": anchor_vec,
+        "mujoco:equality_constraint_torquescale": torquescale_value,
+        "mujoco:equality_constraint_relpose": relpose_tf,
+        "mujoco:equality_constraint_joint1": joint1,
+        "mujoco:equality_constraint_joint2": joint2,
+        "mujoco:equality_constraint_polycoef": list(polycoef) if polycoef else [0.0, 0.0, 0.0, 0.0, 0.0],
+        "mujoco:equality_constraint_label": label or "",
+        "mujoco:equality_constraint_enabled": enabled,
+        "mujoco:equality_constraint_world": builder.current_world,
+    }
+    if validate_custom_attributes:
+        # Importers may override columns when projecting constraints onto native
+        # entities; public helpers accept only additional attributes.
+        from ._authoring import _prepare_custom_frequency_row  # noqa: PLC0415
+
+        values = _prepare_custom_frequency_row(builder, "mujoco:equality_constraint", values, custom_attributes)
+        custom_attributes = None
+    indices = builder.add_custom_values(**values)
     constraint_idx = indices["mujoco:equality_constraint_type"]
 
     if custom_attributes:
@@ -329,6 +338,16 @@ def _add_equality_constraint(
 def _validate_body(builder: ModelBuilder, body: int, name: str) -> None:
     if body < -1 or body >= len(builder.body_mass):
         raise IndexError(f"{name} index {body} is outside [-1, {len(builder.body_mass)}).")
+    if body >= 0:
+        _validate_world(builder, name, body, int(builder.body_world[body]))
+
+
+def _validate_world(builder: ModelBuilder, name: str, index: int, world: int) -> None:
+    if world not in (-1, builder.current_world):
+        raise ValueError(
+            f"{name} index {index} belongs to world {world}, "
+            f"but the equality is added to world {builder.current_world}."
+        )
 
 
 def _validate_joint(builder: ModelBuilder, joint: int, name: str) -> None:
@@ -337,6 +356,7 @@ def _validate_joint(builder: ModelBuilder, joint: int, name: str) -> None:
     linear_dofs, angular_dofs = builder.joint_dof_dim[joint]
     if linear_dofs + angular_dofs != 1:
         raise ValueError(f"{name} index {joint} must identify a scalar joint.")
+    _validate_world(builder, name, joint, int(builder.joint_world[joint]))
 
 
 def _ensure_equality_attributes(builder: ModelBuilder) -> None:
@@ -381,6 +401,8 @@ def add_equality_connect(
 ) -> int:
     """Add a MuJoCo connect equality between two bodies.
 
+    Both operands must belong to the current world or the global world (``-1``).
+
     Args:
         builder: Model builder receiving the constraint.
         body1: First body index, or ``-1`` for the world.
@@ -411,6 +433,7 @@ def add_equality_connect(
         label=label,
         enabled=enabled,
         custom_attributes=_equality_custom_attributes(custom_attributes, solref, solimp),
+        validate_custom_attributes=True,
     )
 
 
@@ -428,6 +451,8 @@ def add_equality_weld(
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
     """Add a MuJoCo weld equality between two bodies.
+
+    Both operands must belong to the current world or the global world (``-1``).
 
     Args:
         builder: Model builder receiving the constraint.
@@ -465,6 +490,7 @@ def add_equality_weld(
         label=label,
         enabled=enabled,
         custom_attributes=_equality_custom_attributes(custom_attributes, solref, solimp),
+        validate_custom_attributes=True,
     )
 
 
@@ -481,6 +507,8 @@ def add_equality_joint(
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
     """Add a MuJoCo polynomial equality between two scalar joints.
+
+    Both joints must belong to the current world or the global world (``-1``).
 
     Args:
         builder: Model builder receiving the constraint.
@@ -514,6 +542,7 @@ def add_equality_joint(
         label=label,
         enabled=enabled,
         custom_attributes=_equality_custom_attributes(custom_attributes, solref, solimp),
+        validate_custom_attributes=True,
     )
 
 
