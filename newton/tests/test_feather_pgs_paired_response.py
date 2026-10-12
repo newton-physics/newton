@@ -4,12 +4,12 @@
 """Paired articulation/free-body response of SolverFeatherPGS."""
 
 import unittest
-from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_FRICTION
 from newton.solvers import SolverFeatherPGS
 
@@ -133,7 +133,7 @@ def _run_mixed_response(
         static_plane=static_plane,
         **(model_kwargs or {}),
     )
-    with mock.patch.object(SolverFeatherPGS, "_kernel_overrides", {"hinv_jt_kernel": kernel}):
+    with kernel_overrides({"hinv_jt_kernel": kernel}):
         solver = SolverFeatherPGS(
             model,
             pgs_mode="matrix_free",
@@ -284,7 +284,7 @@ class TestFeatherPGSPairedResponse(unittest.TestCase):
         """Keep factor coordinates with default patch friction and yield them to the general owner for torsion."""
         model = _build_mixed_response_model("cuda:0", dof_count=23, friction=0.7)
         solvers = {}
-        with mock.patch.object(SolverFeatherPGS, "_kernel_overrides", {"hinv_jt_kernel": "auto"}):
+        with kernel_overrides({"hinv_jt_kernel": "auto"}):
             for radius in (0.0, 0.01):
                 solvers[radius] = SolverFeatherPGS(
                     model,
@@ -381,7 +381,7 @@ class TestFeatherPGSPairedResponse(unittest.TestCase):
         results = {}
         for kernel in ("par_row", "auto"):
             model = _build_mixed_response_model("cuda:0", dof_count=23, friction=0.5)
-            with mock.patch.object(SolverFeatherPGS, "_kernel_overrides", {"hinv_jt_kernel": kernel}):
+            with kernel_overrides({"hinv_jt_kernel": kernel}):
                 solver = SolverFeatherPGS(
                     model,
                     friction_anchor_beta=0.0,

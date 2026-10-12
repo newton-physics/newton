@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_CONTACT, PGS_CONSTRAINT_TYPE_JOINT_LIMIT
 from newton.solvers import SolverFeatherPGS
 
@@ -122,7 +123,7 @@ def _make_solver(model, sparse, **overrides):
         "friction_anchor_beta": 0.0,
     }
     options.update(overrides)
-    with mock.patch.dict(SolverFeatherPGS._kernel_overrides, {"sparse_mass_matrix": sparse}):
+    with kernel_overrides({"sparse_mass_matrix": sparse}):
         return SolverFeatherPGS(model, pgs_mode="matrix_free", **options)
 
 

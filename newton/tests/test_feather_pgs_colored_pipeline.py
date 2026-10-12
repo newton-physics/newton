@@ -13,6 +13,7 @@ import unittest
 import numpy as np
 
 import newton
+from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton._src.solvers.feather_pgs.kernels import PROPAGATION_UNIT_META, PROPAGATION_UNIT_RING
 from newton._src.solvers.feather_pgs.solver_feather_pgs import _colored_staging_supported
 from newton.solvers import SolverFeatherPGS
@@ -24,8 +25,7 @@ DT = 1.0 / 240.0
 
 def _solver(model, regularization, **overrides):
     """Build the colored solver with the given sweep-variant overrides."""
-    SolverFeatherPGS._kernel_overrides = overrides
-    try:
+    with kernel_overrides(overrides):
         return SolverFeatherPGS(
             model,
             articulated_contact_response="propagation-colored",
@@ -34,8 +34,6 @@ def _solver(model, regularization, **overrides):
             dense_max_constraints=64,
             pgs_contact_regularization=regularization,
         )
-    finally:
-        SolverFeatherPGS._kernel_overrides = {}
 
 
 def _settled_heap(device, regularization):

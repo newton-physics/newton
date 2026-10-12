@@ -13,6 +13,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.feather_pgs import solver_feather_pgs
+from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton.solvers import SolverFeatherPGS
 from newton.tests.test_feather_pgs_contact_compliance import run_fixture as run_compliance_fixture
 from newton.tests.test_feather_pgs_fused_crba import _trajectory, _tree
@@ -29,61 +30,54 @@ _POINT = {"init": _set_box_velocities, "steps": 8, "friction_anchor_beta": 0.0, 
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# Launch options
+# Kernel and launch overrides
 
 
-def test_launch_options_default_to_the_automatic_selection(test, device):
-    """Keep the automatic kernel selection and launch widths when the options keep their defaults."""
+def test_default_launch_settings(test, device):
+    """Select the kernels and launch widths automatically, matching explicitly pinned defaults bitwise."""
     solver = SolverFeatherPGS(_build_contact_scene(device), pgs_mode="split")
     test.assertEqual(solver.pgs_kernel, "auto" if device.is_cuda else "loop")
     test.assertEqual((solver._pgs_chunk_size, solver._tile_threads, solver._serial_kernel_block_dim), (1, 64, 256))
     modes = ({"pgs_mode": "split"}, {}) if device.is_cuda else ({"pgs_mode": "split"},)
     for mode in modes:
         run = {"init": _set_box_velocities, "steps": 8, **mode}
-        explicit = {"pgs_kernel": "auto", "pgs_chunk_size": None, "tile_threads": 64, "serial_kernel_block_dim": 256}
+        explicit = {"pgs_kernel": "auto", "pgs_chunk_size": 1, "tile_threads": 64, "serial_kernel_block_dim": 256}
         _assert_bitwise(
             test,
             _run(_build_contact_scene(device), **run),
-            _run(_build_contact_scene(device), **explicit, **run),
+            _run(_build_contact_scene(device), overrides=explicit, **run),
             "defaults",
         )
 
 
-def test_launch_options_match_the_kernel_override_hook(test, device):
-    """Select the same kernels as the matching _kernel_overrides entries, which keep precedence."""
-    cases = [
-        ({"pgs_kernel": "loop"}, {"pgs_kernel": "loop"}),
-        ({"pgs_kernel": "tiled_row"}, {"pgs_kernel": "tiled"}),
-        ({"pgs_kernel": "tiled_contact"}, {"pgs_kernel": "tiled_contact"}),
-        ({"pgs_kernel": "streaming", "pgs_chunk_size": 2}, {"pgs_kernel": "streaming", "pgs_chunk_size": 2}),
-        ({"tile_threads": 128}, {"tile_threads": 128}),
-        ({"serial_kernel_block_dim": 64}, {"serial_kernel_block_dim": 64}),
-    ]
-    for options, overrides in cases:
-        with test.subTest(options=options):
-            public = _run(_build_contact_scene(device), **options, **_POINT)
-            hook = _run(_build_contact_scene(device), overrides=overrides, **_POINT)
-            _assert_bitwise(test, public, hook, str(options))
-    with mock.patch.object(SolverFeatherPGS, "_kernel_overrides", {"tile_threads": 32, "pgs_kernel": "loop"}):
-        solver = SolverFeatherPGS(
-            _build_contact_scene(device), pgs_mode="split", tile_threads=128, pgs_kernel="tiled_row"
-        )
-    test.assertEqual((solver._tile_threads, solver.pgs_kernel), (32, "loop"))
+def test_kernel_overrides_are_scoped_to_construction(test, device):
+    """Apply overrides to solvers built inside the block only, and keep them on that instance."""
+    model = _build_contact_scene(device)
+    with kernel_overrides({"tile_threads": 32, "serial_kernel_block_dim": 64}):
+        pinned = SolverFeatherPGS(model, pgs_mode="split")
+        with kernel_overrides({"tile_threads": 128}):
+            nested = SolverFeatherPGS(model, pgs_mode="split")
+    default = SolverFeatherPGS(model, pgs_mode="split")
+    test.assertEqual((pinned._tile_threads, pinned._serial_kernel_block_dim), (32, 64))
+    test.assertEqual((nested._tile_threads, nested._serial_kernel_block_dim), (128, 256))
+    test.assertEqual((default._tile_threads, default._serial_kernel_block_dim), (64, 256))
+    test.assertEqual(pinned._kernel_overrides, {"tile_threads": 32, "serial_kernel_block_dim": 64})
+    test.assertEqual(default._kernel_overrides, {})
 
 
 def test_split_kernels_agree_with_the_loop_kernel(test, device):
     """Reach the loop kernel's result with the row kernels, and the block kernels' result with each other."""
-    reference = _run(_build_contact_scene(device), pgs_kernel="loop", **_POINT)
-    for options in ({"pgs_kernel": "tiled_row"}, {"tile_threads": 32}, {"tile_threads": 256}):
-        with test.subTest(options=options):
-            result = _run(_build_contact_scene(device), **options, **_POINT)
+    reference = _run(_build_contact_scene(device), overrides={"pgs_kernel": "loop"}, **_POINT)
+    for overrides in ({"pgs_kernel": "tiled"}, {"tile_threads": 32}, {"tile_threads": 256}):
+        with test.subTest(overrides=overrides):
+            result = _run(_build_contact_scene(device), overrides=overrides, **_POINT)
             np.testing.assert_allclose(result[1], reference[1], rtol=0.0, atol=1.0e-5)
             np.testing.assert_allclose(result[2], reference[2], rtol=0.0, atol=1.0e-3)
-    block = _run(_build_contact_scene(device), pgs_kernel="tiled_contact", **_POINT)
+    block = _run(_build_contact_scene(device), overrides={"pgs_kernel": "tiled_contact"}, **_POINT)
     np.testing.assert_allclose(block[1], reference[1], rtol=0.0, atol=2.0e-2)
-    for options in ({"pgs_kernel": "streaming"}, {"pgs_kernel": "streaming", "pgs_chunk_size": 4}):
-        with test.subTest(options=options):
-            result = _run(_build_contact_scene(device), **options, **_POINT)
+    for overrides in ({"pgs_kernel": "streaming"}, {"pgs_kernel": "streaming", "pgs_chunk_size": 4}):
+        with test.subTest(overrides=overrides):
+            result = _run(_build_contact_scene(device), overrides=overrides, **_POINT)
             np.testing.assert_allclose(result[1], block[1], rtol=0.0, atol=1.0e-5)
             np.testing.assert_allclose(result[2], block[2], rtol=0.0, atol=1.0e-3)
 
@@ -92,17 +86,19 @@ def test_serial_block_dim_and_matrix_free_kernel_choice_are_bitwise(test, device
     """Leave matrix-free results unchanged by the serial block size and the split-only kernel choice."""
     run = {"init": _set_box_velocities, "steps": 8}
     default = _run(_build_contact_scene(device), **run)
-    for options in ({"serial_kernel_block_dim": 64}, {"serial_kernel_block_dim": 512}, {"pgs_kernel": "loop"}):
-        with test.subTest(options=options):
-            _assert_bitwise(test, default, _run(_build_contact_scene(device), **options, **run), str(options))
+    for overrides in ({"serial_kernel_block_dim": 64}, {"serial_kernel_block_dim": 512}, {"pgs_kernel": "loop"}):
+        with test.subTest(overrides=overrides):
+            result = _run(_build_contact_scene(device), overrides=overrides, **run)
+            _assert_bitwise(test, default, result, str(overrides))
 
 
 def test_tile_threads_keep_fused_assembly_correct_above_the_block_width(test, device):
-    """Assemble articulations wider than a 32-thread block correctly through the public option."""
+    """Assemble articulations wider than a 32-thread block correctly with 32 tile threads."""
     model = _tree(device, 33, worlds=1)
-    with mock.patch.object(SolverFeatherPGS, "_kernel_overrides", {"sparse_mass_matrix": False}):
+    with kernel_overrides({"sparse_mass_matrix": False}):
         reference, q_ref, qd_ref = _trajectory(model, steps=2)
-        fused, q, qd = _trajectory(model, steps=2, use_parallel_streams=True, tile_threads=32)
+    with kernel_overrides({"sparse_mass_matrix": False, "tile_threads": 32}):
+        fused, q, qd = _trajectory(model, steps=2, use_parallel_streams=True)
     size = fused.size_groups[0]
     test.assertIsNotNone(fused._crba_cholesky_kernels_by_size[size])
     test.assertEqual(fused._tile_threads, 32)
@@ -111,19 +107,19 @@ def test_tile_threads_keep_fused_assembly_correct_above_the_block_width(test, de
     np.testing.assert_allclose(qd, qd_ref, rtol=1.0e-5, atol=2.0e-4)
 
 
-def test_launch_options_validate_their_values(test, device):
+def test_kernel_overrides_validate_their_values(test, device):
     """Reject unknown kernels, unsupported widths and contact-only kernels on rows they cannot solve."""
     model = _build_contact_scene(device)
-    for options, pattern in (
-        ({"pgs_kernel": "tiled"}, "pgs_kernel"),
+    for overrides, pattern in (
         ({"pgs_kernel": "fast"}, "pgs_kernel"),
         ({"pgs_chunk_size": 0}, "pgs_chunk_size"),
         ({"tile_threads": 48}, "tile_threads"),
         ({"serial_kernel_block_dim": 0}, "serial_kernel_block_dim"),
         ({"serial_kernel_block_dim": 48}, "serial_kernel_block_dim"),
     ):
-        with test.subTest(options=options), test.assertRaisesRegex(ValueError, pattern):
-            SolverFeatherPGS(model, pgs_mode="split", **options)
+        with test.subTest(overrides=overrides), test.assertRaisesRegex(ValueError, pattern):
+            with kernel_overrides(overrides):
+                SolverFeatherPGS(model, pgs_mode="split")
     if not device.is_cuda:
         return
     for kernel in ("tiled_contact", "streaming"):
@@ -134,7 +130,8 @@ def test_launch_options_validate_their_values(test, device):
             {"contact_friction_position_iterations": 2},
         ):
             with test.subTest(kernel=kernel, options=options), test.assertRaisesRegex(ValueError, "contact rows only"):
-                SolverFeatherPGS(model, pgs_mode="split", pgs_kernel=kernel, **options)
+                with kernel_overrides({"pgs_kernel": kernel}):
+                    SolverFeatherPGS(model, pgs_mode="split", **options)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -231,12 +228,13 @@ def test_debug_logs_split_free_body_rows(test, device):
 
 
 def test_cpu_ignores_contact_only_kernels(test, device):
-    """Run the scalar loop on CPU for every pgs_kernel, including rows the contact-only kernels reject."""
+    """Run the scalar loop on CPU for every split kernel override, including rows the contact-only kernels reject."""
     model = _build_contact_scene(device)
     for kernel in ("tiled_contact", "streaming"):
         for options in ({}, {"enable_contact_friction": False}, {"enable_joint_limits": True}):
             with test.subTest(kernel=kernel, options=options):
-                solver = SolverFeatherPGS(model, pgs_mode="split", pgs_kernel=kernel, **options)
+                with kernel_overrides({"pgs_kernel": kernel}):
+                    solver = SolverFeatherPGS(model, pgs_mode="split", **options)
                 test.assertEqual(solver.pgs_kernel, "loop")
 
 
@@ -321,8 +319,9 @@ class TestFeatherPGSAdvancedOptions(unittest.TestCase):
 
 
 for _fn in (
-    test_launch_options_default_to_the_automatic_selection,
-    test_launch_options_validate_their_values,
+    test_default_launch_settings,
+    test_kernel_overrides_are_scoped_to_construction,
+    test_kernel_overrides_validate_their_values,
     test_debug_iterations_reproduce_the_whole_solve,
     test_debug_logs_split_impulse_changes,
     test_debug_logs_split_free_body_rows,
@@ -332,7 +331,6 @@ for _fn in (
     add_function_test(TestFeatherPGSAdvancedOptions, _fn.__name__, _fn, devices=get_test_devices())
 
 for _fn in (
-    test_launch_options_match_the_kernel_override_hook,
     test_split_kernels_agree_with_the_loop_kernel,
     test_serial_block_dim_and_matrix_free_kernel_choice_are_bitwise,
     test_tile_threads_keep_fused_assembly_correct_above_the_block_width,

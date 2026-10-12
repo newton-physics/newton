@@ -118,14 +118,12 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
         self.assertEqual(typing.get_args(parameter.annotation), ("matrix_free", "split"))
         parameters = inspect.signature(SolverFeatherPGS.__init__).parameters
         self.assertNotIn("delassus_kernel", parameters)
+        self.assertNotIn("pgs_kernel", parameters)
+        self.assertNotIn("pgs_chunk_size", parameters)
+        self.assertNotIn("tile_threads", parameters)
+        self.assertNotIn("serial_kernel_block_dim", parameters)
         self.assertNotIn("nvtx", parameters)
-        for option, default in (
-            ("pgs_kernel", "auto"),
-            ("pgs_chunk_size", None),
-            ("tile_threads", 64),
-            ("serial_kernel_block_dim", 256),
-            ("pgs_debug", False),
-        ):
+        for option, default in (("pgs_debug", False),):
             with self.subTest(option=option):
                 self.assertEqual(parameters[option].default, default)
 

@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
@@ -67,13 +68,10 @@ def test_partial_warp_capacity_preserves_world_boundaries(test, device, pgs_kern
     """
     for capacity in (33, 35, 40):
         with test.subTest(capacity=capacity):
-            SolverFeatherPGS._kernel_overrides = {"pgs_kernel": pgs_kernel}
-            try:
+            with kernel_overrides({"pgs_kernel": pgs_kernel}):
                 solver = SolverFeatherPGS(
                     _driven_model(device, worlds=3), pgs_mode="split", dense_max_constraints=capacity
                 )
-            finally:
-                SolverFeatherPGS._kernel_overrides = {}
             test.assertEqual(
                 solver._pgs_solve_tiled_row_kernel is not None, pgs_kernel == "tiled" and wp.get_device(device).is_cuda
             )

@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
@@ -119,11 +120,8 @@ def _run_star(model, solver, steps, *, contacts=False):
 
 def _star_solver(model, overrides, **kwargs):
     """Construct a solver with a temporary kernel-selection override."""
-    try:
-        SolverFeatherPGS._kernel_overrides = overrides
+    with kernel_overrides(overrides):
         return SolverFeatherPGS(model, pgs_mode="matrix_free", **kwargs)
-    finally:
-        SolverFeatherPGS._kernel_overrides = {}
 
 
 _DENSE_LOOP_KERNELS = {

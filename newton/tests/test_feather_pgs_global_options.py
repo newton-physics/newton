@@ -4,12 +4,12 @@
 """Solver-wide physics overrides of SolverFeatherPGS: damping, friction and restitution switches."""
 
 import unittest
-from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_FRICTION
 from newton.solvers import SolverFeatherPGS
 from newton.tests.test_feather_pgs_contact_compliance import run_fixture as run_compliance_fixture
@@ -93,7 +93,7 @@ def _friction_impulses(solver):
 
 def _run(model, *, steps=12, init=None, overrides=None, capture=False, **options):
     """Step ``model`` and return the solver, the final joint state and each step's friction impulses."""
-    with mock.patch.object(SolverFeatherPGS, "_kernel_overrides", overrides or {}):
+    with kernel_overrides(overrides or {}):
         solver = SolverFeatherPGS(model, **options)
     state_in, state_out = model.state(), model.state()
     if init is not None:

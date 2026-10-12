@@ -1,9 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Kernel-selection test hooks of SolverFeatherPGS (``_kernel_overrides``)."""
+"""Kernel-selection test hooks of SolverFeatherPGS (``kernel_overrides``)."""
 
-import contextlib
 import unittest
 import warnings
 
@@ -11,17 +10,13 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
-@contextlib.contextmanager
 def _overrides(**overrides):
-    SolverFeatherPGS._kernel_overrides = overrides
-    try:
-        yield
-    finally:
-        SolverFeatherPGS._kernel_overrides = {}
+    return kernel_overrides(overrides)
 
 
 def _legged_base(device, worlds=2):

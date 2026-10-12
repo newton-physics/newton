@@ -4,12 +4,12 @@
 """Skipping the dynamics of sleeping SolverFeatherPGS articulations must not change any published state."""
 
 import unittest
-from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton.tests.test_feather_pgs_sleeping_production import PROFILE
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
@@ -79,7 +79,7 @@ class _Run:
         self.pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=512)
         options = dict(options)
         overrides = options.pop("kernel_overrides", {})
-        with mock.patch.object(newton.solvers.SolverFeatherPGS, "_kernel_overrides", overrides):
+        with kernel_overrides(overrides):
             self.solver = newton.solvers.SolverFeatherPGS(
                 self.model,
                 pgs_mode="matrix_free",

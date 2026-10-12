@@ -4,12 +4,12 @@
 """Articulation-local solve ownership of SolverFeatherPGS against the general world sweep."""
 
 import unittest
-from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton._src.solvers.feather_pgs.kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
@@ -140,7 +140,7 @@ def _run_mixed_response(
         static_plane=static_plane,
         **(model_kwargs or {}),
     )
-    with mock.patch.object(SolverFeatherPGS, "_kernel_overrides", {"hinv_jt_kernel": kernel}):
+    with kernel_overrides({"hinv_jt_kernel": kernel}):
         solver = SolverFeatherPGS(
             model,
             pgs_mode="matrix_free",
@@ -438,7 +438,7 @@ class TestFeatherPGSLocalOwners(unittest.TestCase):
         """Keep torsion-eligible worlds on the general owner, which solves the appended torsion row."""
         model = _build_mixed_response_model("cuda:0", friction=0.7)
         solvers = {}
-        with mock.patch.object(SolverFeatherPGS, "_kernel_overrides", {"hinv_jt_kernel": "par_row"}):
+        with kernel_overrides({"hinv_jt_kernel": "par_row"}):
             for radius in (0.0, 0.01):
                 solvers[radius] = SolverFeatherPGS(
                     model,

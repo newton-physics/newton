@@ -9,7 +9,7 @@ import warnings
 import weakref
 from dataclasses import dataclass
 from functools import cache
-from typing import ClassVar, Literal
+from typing import Literal
 
 import numpy as np
 import warp as wp
@@ -22,6 +22,7 @@ from ...sim.articulation import eval_fk
 from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
 from . import contact_compliance as _contact_compliance
+from ._testing import current_kernel_overrides
 from .contact_torsion import (
     configure_contact_torsion,
     prepare_torsion_rows,
@@ -1285,15 +1286,6 @@ class SolverFeatherPGS(SolverBase):
 
     SUPPORTED_OBSERVABLE_FLAGS = frozenset({SolverObservableFlags.BODY_PARENT_F, SolverObservableFlags.CONTACT_F})
 
-    # Test hook: pin a kernel implementation regardless of the size heuristic
-    # (keys: cholesky_kernel, trisolve_kernel, hinv_jt_kernel; split mode also
-    # delassus_kernel and pgs_kernel, which selects the native or scalar Gauss-Seidel
-    # kernels of both row families; sparse_mass_matrix=False keeps dense mass factors;
-    # diagonal_mass=False keeps diagonal mass matrices on the factor paths;
-    # propagation_tree_kernel="generic" replaces the one-warp propagation tree kernels
-    # by the per-articulation ones).
-    _kernel_overrides: ClassVar[dict[str, str]] = {}
-
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
         """Register the per-body attributes consumed by FeatherPGS.
@@ -1428,10 +1420,6 @@ class SolverFeatherPGS(SolverBase):
         propagation_same_articulation_rows: bool = False,
         propagation_cached_response: bool = True,
         propagation_cached_response_max_bodies: int = 8,
-        pgs_kernel: Literal["auto", "loop", "tiled_row", "tiled_contact", "streaming"] = "auto",
-        pgs_chunk_size: int | None = None,
-        tile_threads: int = _TILE_THREADS,
-        serial_kernel_block_dim: int = _SERIAL_KERNEL_BLOCK_DIM,
         pgs_debug: bool = False,
     ):
         """Create a FeatherPGS solver for a finalized model.
@@ -1685,8 +1673,8 @@ class SolverFeatherPGS(SolverBase):
                 tangential friction rows. ``-1`` (the default) solves them in every position iteration;
                 ``k >= 0`` solves them only in the last ``k`` position iterations (``0`` never),
                 and holds their impulses at zero before that. Velocity-only iterations always
-                solve friction. Values other than ``-1`` reject ``pgs_warmstart``,
-                ``contact_compliance`` and the contact-only ``pgs_kernel`` choices.
+                solve friction. Values other than ``-1`` reject ``pgs_warmstart`` and
+                ``contact_compliance``.
             contact_friction_gap_threshold: Contacts with a gap [m] above this threshold get
                 a normal row only. ``inf`` gives every contact friction.
             contact_friction_articulation_pairs_only: Apply
@@ -1833,22 +1821,6 @@ class SolverFeatherPGS(SolverBase):
             propagation_cached_response_max_bodies: Capacity of the cached responses in
                 contact-active bodies of cache-eligible articulations per world; free bodies
                 do not count. At least 1.
-            pgs_kernel: Experimental, advanced: Gauss-Seidel kernel of the split solve's dense
-                rows on CUDA. ``"auto"`` (the default) and ``"tiled_row"`` sweep a world's rows
-                in shared memory when they fit and fall back to ``"loop"`` otherwise; ``"loop"``
-                always uses the global-memory kernel. ``"tiled_contact"`` and
-                ``"streaming"`` solve each contact's three rows as one block, so they converge
-                along a different path than the row kernels, and reject joint-limit rows,
-                normal-only contact rows and ``contact_friction_position_iterations``. The
-                matrix-free solve and CPU devices ignore it.
-            pgs_chunk_size: Experimental, advanced: contacts per shared-memory chunk of the
-                ``"streaming"`` kernel. ``None`` selects 1. Must be positive.
-            tile_threads: Experimental, advanced: threads per block of the tiled Cholesky,
-                triangular-solve and ``H^-1 J^T`` kernels, one of 32, 64, 128 or 256. Values
-                other than 64 change the floating-point reduction order.
-            serial_kernel_block_dim: Experimental, advanced: CUDA block size of the kernels
-                with one thread per articulation. A positive multiple of 32; results do not
-                depend on it.
             pgs_debug: Experimental, advanced: record per-iteration convergence diagnostics of
                 the position solve in :attr:`pgs_convergence_log` and, for
                 ``pgs_mode="matrix_free"``, :attr:`pgs_ncp_residual_log`. Every iteration
@@ -1856,6 +1828,7 @@ class SolverFeatherPGS(SolverBase):
                 solve paths are replaced by the general sweep, so the option is slow and
                 rejects CUDA graph capture and ``contact_compliance``.
         """
+        self._kernel_overrides = current_kernel_overrides()
         if contact_compliance:
             # Reject unsupported combinations before any allocation.
             _contact_compliance.validate_configuration(
@@ -2154,18 +2127,12 @@ class SolverFeatherPGS(SolverBase):
             self.rigid_body_max_linear_velocity is not None and self.rigid_body_max_angular_velocity is not None
         )
 
-        # Kernel selection is automatic; _kernel_overrides is a test hook that pins
-        # one implementation regardless of the articulation-size heuristic and of the
-        # constructor's launch options.
+        # Kernel selection is automatic; the overrides pin one implementation for tests and tuning.
         self.cholesky_kernel = self._kernel_overrides.get("cholesky_kernel", "auto")
         self.trisolve_kernel = self._kernel_overrides.get("trisolve_kernel", "auto")
         self.hinv_jt_kernel = self._kernel_overrides.get("hinv_jt_kernel", "auto")
         self.delassus_kernel = self._kernel_overrides.get("delassus_kernel", "auto")
-        if pgs_kernel not in ("auto", "loop", "tiled_row", "tiled_contact", "streaming"):
-            raise ValueError(
-                f"pgs_kernel must be 'auto', 'loop', 'tiled_row', 'tiled_contact' or 'streaming', got {pgs_kernel!r}"
-            )
-        self.pgs_kernel = self._kernel_overrides.get("pgs_kernel", "tiled" if pgs_kernel == "tiled_row" else pgs_kernel)
+        self.pgs_kernel = self._kernel_overrides.get("pgs_kernel", "auto")
         if self.cholesky_kernel not in ("tiled", "loop", "auto"):
             raise ValueError("cholesky_kernel must be one of ['auto', 'loop', 'tiled']")
         if self.trisolve_kernel not in ("tiled", "loop", "auto"):
@@ -2176,16 +2143,14 @@ class SolverFeatherPGS(SolverBase):
             raise ValueError("delassus_kernel must be one of ['auto', 'par_row_col', 'tiled']")
         if self.pgs_kernel not in ("tiled", "loop", "auto", "tiled_contact", "streaming"):
             raise ValueError("pgs_kernel must be one of ['auto', 'loop', 'streaming', 'tiled', 'tiled_contact']")
-        self._pgs_chunk_size = int(
-            self._kernel_overrides.get("pgs_chunk_size", 1 if pgs_chunk_size is None else pgs_chunk_size)
-        )
+        self._pgs_chunk_size = int(self._kernel_overrides.get("pgs_chunk_size", 1))
         if self._pgs_chunk_size < 1:
             raise ValueError("pgs_chunk_size must be positive")
-        self._tile_threads = int(self._kernel_overrides.get("tile_threads", tile_threads))
+        self._tile_threads = int(self._kernel_overrides.get("tile_threads", _TILE_THREADS))
         if self._tile_threads not in (32, 64, 128, 256):
             raise ValueError("tile_threads must be one of (32, 64, 128, 256)")
         self._serial_kernel_block_dim = int(
-            self._kernel_overrides.get("serial_kernel_block_dim", serial_kernel_block_dim)
+            self._kernel_overrides.get("serial_kernel_block_dim", _SERIAL_KERNEL_BLOCK_DIM)
         )
         if self._serial_kernel_block_dim <= 0 or self._serial_kernel_block_dim % 32:
             raise ValueError("serial_kernel_block_dim must be a positive multiple of 32")

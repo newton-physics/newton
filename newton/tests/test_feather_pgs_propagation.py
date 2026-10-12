@@ -16,6 +16,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton._src.solvers.feather_pgs.kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
@@ -127,8 +128,7 @@ def test_contact_effective_mass_matches_dense_response(test, device):
             reference = SolverFeatherPGS(model, pgs_iterations=1, dense_max_constraints=96, friction_anchor_beta=0.0)
             _, contacts = _step(model, reference)
             count = int(contacts.rigid_contact_count.numpy()[0])
-            SolverFeatherPGS._kernel_overrides = {"propagation_tree_kernel": tree_kernel}
-            try:
+            with kernel_overrides({"propagation_tree_kernel": tree_kernel}):
                 solver = SolverFeatherPGS(
                     model,
                     pgs_iterations=0,
@@ -136,8 +136,6 @@ def test_contact_effective_mass_matches_dense_response(test, device):
                     friction_anchor_beta=0.0,
                     articulated_contact_response="propagation",
                 )
-            finally:
-                SolverFeatherPGS._kernel_overrides = {}
             test.assertEqual(solver._propagation_native_tree[solver._propagation_tree_sizes[0]], tree_kernel == "auto")
             _step(model, solver)
 
@@ -170,13 +168,10 @@ def test_native_tree_kernels_match_generic(test, device):
                 results = []
                 for tree_kernel in ("auto", "generic"):
                     model = _scene(device, kind)
-                    SolverFeatherPGS._kernel_overrides = {"propagation_tree_kernel": tree_kernel}
-                    try:
+                    with kernel_overrides({"propagation_tree_kernel": tree_kernel}):
                         solver = SolverFeatherPGS(
                             model, pgs_iterations=8, dense_max_constraints=64, articulated_contact_response=response
                         )
-                    finally:
-                        SolverFeatherPGS._kernel_overrides = {}
                     state, _ = _step(model, solver)
                     results.append(state.joint_qd.numpy())
                 np.testing.assert_allclose(results[0], results[1], rtol=1.0e-4, atol=1.0e-5)

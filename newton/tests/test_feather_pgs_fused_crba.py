@@ -4,12 +4,12 @@
 """Fused mass-matrix assembly and factorization of SolverFeatherPGS."""
 
 import unittest
-from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton.solvers import SolverFeatherPGS
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
@@ -86,14 +86,14 @@ def test_fused_assembly_covers_articulations_wider_than_the_block(test, device):
     """Match separate assembly when the tiled block has fewer threads than the articulation has DOFs."""
     for links in (33, 64):
         model = _tree(device, links, worlds=1)
-        with mock.patch.object(SolverFeatherPGS, "_kernel_overrides", {"sparse_mass_matrix": False}):
+        with kernel_overrides({"sparse_mass_matrix": False}):
             reference, q_ref, qd_ref = _trajectory(model, steps=2)
         size = reference.size_groups[0]
         test.assertIsNone(reference._crba_cholesky_kernels_by_size[size])
         for tile_threads in (32, 64):
             with test.subTest(links=links, tile_threads=tile_threads):
                 overrides = {"tile_threads": tile_threads, "sparse_mass_matrix": False}
-                with mock.patch.object(SolverFeatherPGS, "_kernel_overrides", overrides):
+                with kernel_overrides(overrides):
                     fused, q, qd = _trajectory(model, steps=2, use_parallel_streams=True)
                 test.assertIsNotNone(fused._crba_cholesky_kernels_by_size[size])
                 np.testing.assert_allclose(
