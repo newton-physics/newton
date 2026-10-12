@@ -2708,9 +2708,6 @@ for _fn in (
 SIM_DT = 1.0 / 2000.0
 
 
-RADIUS = 0.05
-
-
 DROP = 0.12
 
 

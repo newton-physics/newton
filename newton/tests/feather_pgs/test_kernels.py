@@ -1,15 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Construction, option validation and kernel selection of SolverFeatherPGS."""
+"""Kernel selection, launch configuration, streams and double buffering of SolverFeatherPGS."""
 
+import types
 import unittest
+import warnings
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton._src.solvers.feather_pgs import kernels as feather_pgs_kernels
+from newton._src.solvers.feather_pgs import solver_feather_pgs
 from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton._src.solvers.feather_pgs.solver_feather_pgs import (
     _DENSE_META_MAX_PARENT,
@@ -23,8 +27,217 @@ from newton._src.solvers.feather_pgs.solver_feather_pgs import (
     _use_resident_mfgs_metadata,
 )
 from newton.solvers import SolverFeatherPGS
-from newton.tests.feather_pgs._fixtures import set_torsion_radius
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.feather_pgs._fixtures import (
+    _build_contact_scene,
+    _build_four_bar,
+    _run,
+    _set_box_velocities,
+    _trajectory,
+    _tree,
+    set_torsion_radius,
+)
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices, patch_sys_module
+
+
+def _assert_bitwise(test, a, b, label):
+    np.testing.assert_array_equal(a[1], b[1], err_msg=f"{label}: joint_q")
+    np.testing.assert_array_equal(a[2], b[2], err_msg=f"{label}: joint_qd")
+
+
+# Dense row capacity of the stepping tests, shared so that their kernel specializations compile once.
+_ROWS = 64
+
+_POINT = {
+    "init": _set_box_velocities,
+    "steps": 8,
+    "friction_anchor_beta": 0.0,
+    "solve_mode": "split",
+    "articulation_constraint_max": _ROWS,
+}
+
+
+def test_default_launch_settings(test, device):
+    """Select the kernels and launch widths automatically, matching explicitly pinned defaults bitwise."""
+    solver = SolverFeatherPGS(_build_contact_scene(device), solve_mode="split")
+    test.assertEqual(solver._pgs_kernel, "auto" if device.is_cuda else "loop")
+    test.assertEqual((solver._pgs_chunk_size, solver._tile_threads, solver._serial_kernel_block_dim), (1, 64, 256))
+    modes = ({"solve_mode": "split"}, {}) if device.is_cuda else ({"solve_mode": "split"},)
+    for mode in modes:
+        run = {"init": _set_box_velocities, "steps": 8, **mode}
+        explicit = {"pgs_kernel": "auto", "pgs_chunk_size": 1, "tile_threads": 64, "serial_kernel_block_dim": 256}
+        _assert_bitwise(
+            test,
+            _run(_build_contact_scene(device), **run),
+            _run(_build_contact_scene(device), overrides=explicit, **run),
+            "defaults",
+        )
+
+
+def test_kernel_overrides_are_scoped_to_construction(test, device):
+    """Apply overrides to solvers built inside the block only, and keep them on that instance."""
+    model = _build_contact_scene(device)
+    with kernel_overrides({"tile_threads": 32, "serial_kernel_block_dim": 64}):
+        pinned = SolverFeatherPGS(model, solve_mode="split")
+        with kernel_overrides({"tile_threads": 128}):
+            nested = SolverFeatherPGS(model, solve_mode="split")
+    default = SolverFeatherPGS(model, solve_mode="split")
+    test.assertEqual((pinned._tile_threads, pinned._serial_kernel_block_dim), (32, 64))
+    test.assertEqual((nested._tile_threads, nested._serial_kernel_block_dim), (128, 256))
+    test.assertEqual((default._tile_threads, default._serial_kernel_block_dim), (64, 256))
+    test.assertEqual(pinned._kernel_overrides, {"tile_threads": 32, "serial_kernel_block_dim": 64})
+    test.assertEqual(default._kernel_overrides, {})
+
+
+def test_split_kernels_agree_with_the_loop_kernel(test, device):
+    """Reach the loop kernel's result with the row kernels, and the block kernels' result with each other."""
+    reference = _run(_build_contact_scene(device), overrides={"pgs_kernel": "loop"}, **_POINT)
+    for overrides in ({"pgs_kernel": "tiled"}, {"tile_threads": 32}, {"tile_threads": 256}):
+        with test.subTest(overrides=overrides):
+            result = _run(_build_contact_scene(device), overrides=overrides, **_POINT)
+            np.testing.assert_allclose(result[1], reference[1], rtol=0.0, atol=1.0e-5)
+            np.testing.assert_allclose(result[2], reference[2], rtol=0.0, atol=1.0e-3)
+    block = _run(_build_contact_scene(device), overrides={"pgs_kernel": "tiled_contact"}, **_POINT)
+    np.testing.assert_allclose(block[1], reference[1], rtol=0.0, atol=2.0e-2)
+    for overrides in ({"pgs_kernel": "streaming"}, {"pgs_kernel": "streaming", "pgs_chunk_size": 4}):
+        with test.subTest(overrides=overrides):
+            result = _run(_build_contact_scene(device), overrides=overrides, **_POINT)
+            np.testing.assert_allclose(result[1], block[1], rtol=0.0, atol=1.0e-5)
+            np.testing.assert_allclose(result[2], block[2], rtol=0.0, atol=1.0e-3)
+
+
+def test_serial_block_dim_and_matrix_free_kernel_choice_are_bitwise(test, device):
+    """Leave matrix-free results unchanged by the serial block size and the split-only kernel choice."""
+    run = {"init": _set_box_velocities, "steps": 8}
+    default = _run(_build_contact_scene(device), **run)
+    for overrides in ({"serial_kernel_block_dim": 64}, {"serial_kernel_block_dim": 512}, {"pgs_kernel": "loop"}):
+        with test.subTest(overrides=overrides):
+            result = _run(_build_contact_scene(device), overrides=overrides, **run)
+            _assert_bitwise(test, default, result, str(overrides))
+
+
+def test_kernel_overrides_validate_their_values(test, device):
+    """Reject unknown kernels, unsupported widths and contact-only kernels on rows they cannot solve."""
+    model = _build_contact_scene(device)
+    for overrides, pattern in (
+        ({"pgs_kernel": "fast"}, "pgs_kernel"),
+        ({"pgs_chunk_size": 0}, "pgs_chunk_size"),
+        ({"tile_threads": 48}, "tile_threads"),
+        ({"serial_kernel_block_dim": 0}, "serial_kernel_block_dim"),
+        ({"serial_kernel_block_dim": 48}, "serial_kernel_block_dim"),
+    ):
+        with test.subTest(overrides=overrides), test.assertRaisesRegex(ValueError, pattern):
+            with kernel_overrides(overrides):
+                SolverFeatherPGS(model, solve_mode="split")
+    if not device.is_cuda:
+        return
+    for kernel in ("tiled_contact", "streaming"):
+        for options in (
+            {"enable_joint_limits": True},
+            {"contact_friction_gap_max": 0.01},
+            {"contact_friction_position_iterations": 2},
+        ):
+            with test.subTest(kernel=kernel, options=options), test.assertRaisesRegex(ValueError, "contact rows only"):
+                with kernel_overrides({"pgs_kernel": kernel}):
+                    SolverFeatherPGS(model, solve_mode="split", **options)
+    with kernel_overrides({"pgs_kernel": "tiled_contact"}), test.assertRaisesRegex(ValueError, "shared memory"):
+        SolverFeatherPGS(model, solve_mode="split", articulation_constraint_max=768)
+
+
+def test_cpu_ignores_contact_only_kernels(test, device):
+    """Run the scalar loop on CPU for every split kernel override, including rows the contact-only kernels reject."""
+    model = _build_contact_scene(device)
+    for kernel in ("tiled_contact", "streaming"):
+        for options in ({}, {"contact_friction_gap_max": -float("inf")}, {"enable_joint_limits": True}):
+            with test.subTest(kernel=kernel, options=options):
+                with kernel_overrides({"pgs_kernel": kernel}):
+                    solver = SolverFeatherPGS(model, solve_mode="split", **options)
+                test.assertEqual(solver._pgs_kernel, "loop")
+
+
+class _FakeNvtx(types.ModuleType):
+    """Record NVTX ranges in place of the nvtx package."""
+
+    def __init__(self):
+        super().__init__("nvtx")
+        self.events = []
+
+    def start_range(self, message, color=None):
+        self.events.append(("start", message))
+        return len(self.events)
+
+    def end_range(self, range_id):
+        self.events.append(("end", range_id))
+
+
+def test_profile_annotates_every_stage_without_changing_results(test, device):
+    """Open and close one NVTX range per step stage under NEWTON_PROFILE, leaving the results bitwise unchanged."""
+    fake = _FakeNvtx()
+    mode = {} if device.is_cuda else {"solve_mode": "split"}
+    run = {"init": _set_box_velocities, "steps": 3, **mode}
+    with patch_sys_module("nvtx", fake), mock.patch.object(solver_feather_pgs, "PROFILE_ENABLED", True):
+        annotated = _run(_build_contact_scene(device), **run)
+    _assert_bitwise(test, annotated, _run(_build_contact_scene(device), **run), "profile")
+    stages = [message for kind, message in fake.events if kind == "start"]
+    expected = [
+        "FeatherPGS::fk_id_crba",
+        "FeatherPGS::factor",
+        "FeatherPGS::unconstrained_velocity",
+        "FeatherPGS::rows",
+        "FeatherPGS::solve",
+        "FeatherPGS::integrate",
+    ]
+    test.assertEqual(stages, expected * 3)
+    # Each range closes before the next one opens, and the last one closes at the end of the step.
+    test.assertEqual([kind for kind, _ in fake.events], ["start", "end"] * len(stages))
+    for index in range(0, len(fake.events), 2):
+        test.assertEqual(fake.events[index + 1][1], index + 1)
+
+
+def test_profile_closes_the_open_range_when_a_stage_raises(test, device):
+    """Close the open stage range when a step raises."""
+    fake = _FakeNvtx()
+    mode = {} if device.is_cuda else {"solve_mode": "split"}
+    model = _build_contact_scene(device)
+    solver = SolverFeatherPGS(model, **mode)
+    state_in, state_out = model.state(), model.state()
+    with (
+        patch_sys_module("nvtx", fake),
+        mock.patch.object(solver_feather_pgs, "PROFILE_ENABLED", True),
+        mock.patch.object(solver, "_stage1_crba", side_effect=RuntimeError("injected")),
+        test.assertRaisesRegex(RuntimeError, "injected"),
+    ):
+        solver.step(state_in, state_out, model.control(), None, 1.0 / 240.0)
+    test.assertEqual([kind for kind, _ in fake.events], ["start", "end"])
+    test.assertIsNone(solver._profile_timer)
+
+
+class TestFeatherPGSAdvancedOptions(unittest.TestCase):
+    pass
+
+
+for _fn in (
+    test_default_launch_settings,
+    test_kernel_overrides_are_scoped_to_construction,
+    test_kernel_overrides_validate_their_values,
+    test_profile_annotates_every_stage_without_changing_results,
+    test_profile_closes_the_open_range_when_a_stage_raises,
+):
+    add_function_test(TestFeatherPGSAdvancedOptions, _fn.__name__, _fn, devices=get_test_devices())
+
+
+for _fn in (
+    test_split_kernels_agree_with_the_loop_kernel,
+    test_serial_block_dim_and_matrix_free_kernel_choice_are_bitwise,
+):
+    add_function_test(TestFeatherPGSAdvancedOptions, _fn.__name__, _fn, devices=get_cuda_test_devices())
+
+
+add_function_test(
+    TestFeatherPGSAdvancedOptions,
+    test_cpu_ignores_contact_only_kernels.__name__,
+    test_cpu_ignores_contact_only_kernels,
+    devices=[device for device in get_test_devices() if device.is_cpu],
+)
 
 
 def _build_chain_model(device, num_links=3, num_worlds=2, *, with_free_body=False):
@@ -280,7 +493,7 @@ def test_unconverted_equality_constraints_raise(test, device):
             SolverFeatherPGS(_build_box_with_equality(device, enabled=True, target_kind=target_kind, target=7))
 
     # Imported equalities are converted to Newton loop joints by default; those rows are
-    # enforced through the loop joint (see test_feather_pgs_connect). Unconverted, they raise.
+    # enforced through the loop joint (see the loop-closure tests). Unconverted, they raise.
     mjcf = """
     <mujoco>
       <worldbody>
@@ -894,6 +1107,8 @@ def test_fuse_joint_velocity_limits_clamps_driven_dofs_without_rows(test, device
 
 
 devices = get_cuda_test_devices()
+
+
 for _name, _func in (
     ("test_defaults", test_defaults),
     ("test_constructor_validates_options", test_constructor_validates_options),
@@ -928,7 +1143,11 @@ for _name, _func in (
     ),
 ):
     add_function_test(TestFeatherPGSLaunchConfig, _name, _func, devices=devices)
+
+
 split_devices = get_test_devices()
+
+
 for _name, _func, _devices in (
     (
         "test_joint_limit_solver_compatibility_validation",
@@ -951,6 +1170,605 @@ for _name, _func, _devices in (
     ("test_non_default_tile_threads_compiles_and_steps", test_non_default_tile_threads_compiles_and_steps, devices),
 ):
     add_function_test(TestFeatherPGSLaunchConfig, _name, _func, devices=_devices)
+
+
+def _overrides(**overrides):
+    return kernel_overrides(overrides)
+
+
+def _legged_base(device, worlds=2):
+    """A floating base with four hinged legs dropped on the ground: articulated (dense) contact rows only."""
+    template = newton.ModelBuilder()
+    template.default_shape_cfg.mu = 0.6
+    root = template.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.25), wp.quat_rpy(0.05, 0.02, 0.0)))
+    template.add_shape_box(root, hx=0.2, hy=0.12, hz=0.04)
+    joints = [template.add_joint_free(root)]
+    for sx in (-1.0, 1.0):
+        for sy in (-1.0, 1.0):
+            leg = template.add_link()
+            template.add_shape_capsule(leg, radius=0.03, half_height=0.1)
+            joints.append(
+                template.add_joint_revolute(
+                    root,
+                    leg,
+                    axis=wp.vec3(0.0, 1.0, 0.0),
+                    parent_xform=wp.transform(wp.vec3(0.18 * sx, 0.1 * sy, -0.03), wp.quat_identity()),
+                    child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.13), wp.quat_identity()),
+                )
+            )
+    template.add_articulation(joints)
+    builder = newton.ModelBuilder()
+    builder.replicate(template, worlds)
+    builder.add_ground_plane()
+    return builder.finalize(device=device)
+
+
+def _legged_trajectory(model, steps=90, **solver_kwargs):
+    solver = SolverFeatherPGS(model, **solver_kwargs)
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    contacts = pipeline.contacts()
+    state_0, state_1 = model.state(), model.state()
+    qd = np.zeros(model.joint_dof_count, dtype=np.float32)
+    qd[0:6:2] = 0.4
+    state_0.joint_qd.assign(qd)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    control = model.control()
+    for _ in range(steps):
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+    solver.check_constraint_capacity()
+    return solver, state_0.joint_q.numpy().copy()
+
+
+def test_contact_kernels_match_the_scalar_split_solve(test, device):
+    """Converge the split solve's contact-only Gauss-Seidel kernels to the scalar loop's solution.
+
+    They sweep whole contacts as 3x3 blocks, so they agree with the row-by-row loop at convergence.
+    """
+    model = _legged_base(device)
+    options = {"solve_mode": "split", "articulation_constraint_max": _ROWS, "iterations": 64}
+    with _overrides(pgs_kernel="loop"):
+        _, reference = _legged_trajectory(model, steps=30, **options)
+    for overrides in (
+        {"pgs_kernel": "tiled_contact"},
+        {"pgs_kernel": "streaming"},
+        {"pgs_kernel": "streaming", "pgs_chunk_size": 4},
+    ):
+        with test.subTest(**overrides):
+            with _overrides(**overrides):
+                solver, joint_q = _legged_trajectory(model, steps=30, **options)
+            test.assertIsNotNone(solver._pgs_solve_contact_kernel)
+            test.assertGreater(int(solver._constraint_count.numpy().max()), 0)
+            np.testing.assert_allclose(joint_q, reference, rtol=0.0, atol=1.0e-5)
+
+
+def test_matrix_free_ignores_the_dense_pgs_kernel(test, device):
+    """Resolve the dense Gauss-Seidel kernel to the scalar loop in the matrix-free solve; keep friction patches."""
+    model = _legged_base(device)
+    for kernel in ("tiled_contact", "streaming", "tiled"):
+        with test.subTest(pgs_kernel=kernel), _overrides(pgs_kernel=kernel), warnings.catch_warnings():
+            warnings.simplefilter("error")
+            solver = SolverFeatherPGS(model, enable_joint_limits=True)
+            test.assertEqual(solver._pgs_kernel, "loop")
+            test.assertTrue(solver._friction_anchors_enabled)
+            test.assertAlmostEqual(solver.friction_anchor_beta, 0.2)
+
+
+def test_launch_widths_step_identically(test, device, solve_mode="matrix_free"):
+    """Step identically with non-default tile and serial-kernel launch widths."""
+    model = _legged_base(device)
+    options = {"solve_mode": solve_mode, "articulation_constraint_max": _ROWS, "friction_anchor_beta": 0.0}
+    with _overrides(sparse_mass_matrix=False, cholesky_kernel="tiled", trisolve_kernel="tiled", hinv_jt_kernel="tiled"):
+        default, reference = _legged_trajectory(model, **options)
+    with _overrides(
+        cholesky_kernel="tiled",
+        trisolve_kernel="tiled",
+        hinv_jt_kernel="tiled",
+        tile_threads=128,
+        serial_kernel_block_dim=64,
+    ):
+        solver, joint_q = _legged_trajectory(model, **options)
+    test.assertEqual((default._tile_threads, default._serial_kernel_block_dim), (64, 256))
+    test.assertEqual((solver._tile_threads, solver._serial_kernel_block_dim), (128, 64))
+    size = solver._size_groups[0]
+    test.assertIsNot(solver._cholesky_kernels_by_size[size], default._cholesky_kernels_by_size[size])
+    np.testing.assert_allclose(joint_q, reference, rtol=0.0, atol=1.0e-4)
+
+
+class TestFeatherPGSKernelOverrides(unittest.TestCase):
+    pass
+
+
+cuda_devices = get_cuda_test_devices()
+
+
+for _fn in (
+    test_contact_kernels_match_the_scalar_split_solve,
+    test_matrix_free_ignores_the_dense_pgs_kernel,
+    test_launch_widths_step_identically,
+):
+    add_function_test(TestFeatherPGSKernelOverrides, _fn.__name__, _fn, devices=cuda_devices)
+
+
+add_function_test(
+    TestFeatherPGSKernelOverrides,
+    "test_launch_widths_step_identically_split",
+    test_launch_widths_step_identically,
+    devices=cuda_devices,
+    solve_mode="split",
+)
+
+
+def _scene(device, worlds=2):
+    """Two articulation sizes (a 2-link and a 3-link chain) and a box, falling onto the ground."""
+    template = newton.ModelBuilder()
+    for x, links in ((0.0, 2), (0.8, 3)):
+        parent = -1
+        joints = []
+        for i in range(links):
+            link = template.add_link(xform=wp.transform(wp.vec3(x + 0.25 * i, 0.0, 0.3), wp.quat_identity()))
+            template.add_shape_capsule(
+                link,
+                radius=0.04,
+                half_height=0.1,
+                xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.5 * np.pi)),
+            )
+            joints.append(
+                template.add_joint_revolute(
+                    parent,
+                    link,
+                    axis=wp.vec3(0.0, 1.0, 0.0),
+                    parent_xform=wp.transform(
+                        wp.vec3(x, 0.0, 0.3) if parent < 0 else wp.vec3(0.25, 0.0, 0.0), wp.quat_identity()
+                    ),
+                    child_xform=wp.transform_identity(),
+                    limit_lower=-1.0,
+                    limit_upper=1.0,
+                )
+            )
+            parent = link
+        template.add_articulation(joints)
+    box = template.add_body(xform=wp.transform(wp.vec3(0.4, 0.4, 0.3), wp.quat_rpy(0.2, 0.1, 0.0)))
+    template.add_shape_box(box, hx=0.06, hy=0.06, hz=0.06)
+    builder = newton.ModelBuilder()
+    builder.replicate(template, worlds)
+    builder.add_ground_plane()
+    return builder.finalize(device=device)
+
+
+def _stream_trajectory(model, steps=60, capture=False, **solver_kwargs):
+    solver = SolverFeatherPGS(
+        model, enable_joint_limits=True, friction_anchor_beta=0.0, articulation_constraint_max=96, **solver_kwargs
+    )
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    contacts = pipeline.contacts()
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    control = model.control()
+
+    def substep():
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
+            wp.copy(getattr(state_0, name), getattr(state_1, name))
+
+    if capture:
+        # A graph of two steps cycles both buffer sets.
+        with wp.ScopedCapture(model.device) as scope:
+            substep()
+            substep()
+        for _ in range(steps // 2):
+            wp.capture_launch(scope.graph)
+    else:
+        for _ in range(steps):
+            substep()
+    solver.check_constraint_capacity()
+    return solver, state_0.joint_q.numpy().copy()
+
+
+def test_streams_and_double_buffer_step_identically(test, device, solve_mode="matrix_free"):
+    """Match the serial single-buffer trajectory bitwise with streams and double buffering."""
+    model = _scene(device)
+    reference_solver, reference = _stream_trajectory(model, solve_mode=solve_mode)
+    test.assertEqual(reference_solver._size_streams, {})
+    test.assertFalse(reference_solver._double_buffered)
+    test.assertGreater(len(reference_solver._size_groups), 1)
+    for options in (
+        {"use_parallel_streams": True},
+        {"double_buffer": True},
+        {"use_parallel_streams": True, "double_buffer": True},
+        {"use_parallel_streams": True, "double_buffer": True, "update_mass_matrix_interval": 3},
+    ):
+        with test.subTest(**options):
+            solver, joint_q = _stream_trajectory(model, solve_mode=solve_mode, **options)
+            test.assertEqual(bool(solver._size_streams), options.get("use_parallel_streams", False))
+            test.assertEqual(solver._double_buffered, options.get("double_buffer", False))
+            if solver._double_buffered:
+                # Both buffer sets were cleared on the memset stream after their last use.
+                wp.synchronize_device(device)
+                used = 1 - solver._buffer_index
+                test.assertIs(solver._J_bufs[used], solver._J_by_size)
+                for index in (0, 1):
+                    for size in solver._size_groups:
+                        test.assertFalse(solver._J_bufs[index][size].numpy().any())
+                        if "update_mass_matrix_interval" not in options:
+                            test.assertFalse(solver._H_bufs[index][size].numpy().any())
+            expected = reference
+            if "update_mass_matrix_interval" in options:
+                _, expected = _stream_trajectory(model, solve_mode=solve_mode, update_mass_matrix_interval=3)
+            np.testing.assert_array_equal(joint_q, expected)
+
+
+def test_captured_double_buffer_matches_eager(test, device, solve_mode="matrix_free"):
+    """Replay a two-step graph of the double-buffered solve with the eager result."""
+    model = _scene(device)
+    _, eager = _stream_trajectory(model, solve_mode=solve_mode, use_parallel_streams=True, double_buffer=True)
+    _, captured = _stream_trajectory(
+        model, solve_mode=solve_mode, use_parallel_streams=True, double_buffer=True, capture=True
+    )
+    np.testing.assert_array_equal(captured, eager)
+
+
+@wp.kernel
+def _spin(iterations: int, sink: wp.array[float]):
+    value = float(0.0)
+    for i in range(iterations):
+        value = wp.sin(value + float(i))
+    sink[0] = value
+
+
+def _run_sequence(model, plan, *, delay_clear=False, **solver_kwargs):
+    """Run ``plan`` and return ``joint_q`` after each operation.
+
+    Operations: ``("eager", n)``, ``("capture", name, n)`` (records ``n`` steps without
+    running them), ``("replay", name, n)`` and ``("reset",)``. With ``delay_clear`` the
+    double-buffer clearing of the last eager step before each capture first waits for a
+    long kernel on its stream, so it is still pending when the graph is first launched.
+    """
+    solver = SolverFeatherPGS(model, friction_anchor_beta=0.0, articulation_constraint_max=96, **solver_kwargs)
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    contacts = pipeline.contacts()
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    control = model.control()
+    sink = wp.zeros(1, dtype=float, device=model.device)
+
+    def substep():
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
+            wp.copy(getattr(state_0, name), getattr(state_1, name))
+
+    graphs = {}
+    results = []
+    for index, (operation, *args) in enumerate(plan):
+        if operation == "eager":
+            for step in range(args[0]):
+                last_before_capture = step == args[0] - 1 and index + 1 < len(plan) and plan[index + 1][0] == "capture"
+                if delay_clear and solver._double_buffered and last_before_capture:
+                    with wp.ScopedStream(solver._memset_stream, sync_enter=False):
+                        wp.launch(_spin, dim=1, inputs=[20_000_000], outputs=[sink])
+                substep()
+        elif operation == "capture":
+            with wp.ScopedCapture(model.device) as scope:
+                for _ in range(args[1]):
+                    substep()
+            graphs[args[0]] = scope.graph
+        elif operation == "replay":
+            for _ in range(args[1]):
+                wp.capture_launch(graphs[args[0]])
+        else:
+            solver.reset(state_0)
+        results.append(state_0.joint_q.numpy().copy())
+    solver.check_constraint_capacity()
+    return solver, results
+
+
+_SEQUENCES = {
+    "cold capture": [("capture", "a", 2), ("replay", "a", 6)],
+    "eager then capture": [("eager", 3), ("capture", "a", 2), ("replay", "a", 6), ("eager", 2)],
+    "odd steps per graph": [("eager", 2), ("capture", "a", 3), ("replay", "a", 5), ("eager", 1)],
+    "one step per graph": [("eager", 1), ("capture", "a", 1), ("replay", "a", 5)],
+    "two graphs alternated": [
+        ("eager", 2),
+        ("capture", "a", 1),
+        ("capture", "b", 2),
+        ("replay", "a", 2),
+        ("replay", "b", 2),
+        ("replay", "a", 3),
+        ("eager", 1),
+        ("replay", "b", 1),
+    ],
+    "capture after reset": [("eager", 2), ("reset",), ("capture", "a", 2), ("replay", "a", 4), ("reset",)],
+}
+
+
+def test_double_buffer_capture_sequences_match_single_buffer(test, device):
+    """Match the single-buffer trajectory bitwise across capture, replay, eager and reset sequences."""
+    model = _scene(device)
+    for name, plan in _SEQUENCES.items():
+        _, expected = _run_sequence(model, plan)
+        for streams in (False, True):
+            with test.subTest(sequence=name, use_parallel_streams=streams):
+                solver, actual = _run_sequence(model, plan, double_buffer=True, use_parallel_streams=streams)
+                test.assertTrue(solver._double_buffered)
+                for got, want in zip(actual, expected, strict=True):
+                    np.testing.assert_array_equal(got, want)
+
+
+def test_capture_after_eager_orders_the_pending_clear(test, device):
+    """Order an eager step's still-running buffer clearing before the first replay of a later graph.
+
+    The four-bar's loop-closure rows accumulate into the Jacobian, so a set that is not
+    cleared yet changes the replayed trajectory.
+    """
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.replicate(_build_four_bar(), 8)
+    model = builder.finalize(device=device)
+    control = model.control()
+    targets = model.joint_target_q.numpy().reshape(8, -1)
+    targets[:, 0] = 0.6
+    control.joint_target_q.assign(targets.reshape(-1))
+    sink = wp.zeros(1, dtype=float, device=device)
+    results = []
+    for double_buffer in (False, True):
+        solver = SolverFeatherPGS(
+            model, solve_mode="matrix_free", iterations=16, baumgarte=0.1, double_buffer=double_buffer
+        )
+        test.assertEqual(solver._double_buffered, double_buffer)
+        state_0, state_1 = model.state(), model.state()
+
+        def step(solver=solver, state_0=state_0, state_1=state_1):
+            solver.step(state_0, state_1, control, None, 1.0 / 240.0)
+            for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
+                wp.copy(getattr(state_0, name), getattr(state_1, name))
+
+        step()
+        step()
+        if double_buffer:
+            # Hold the last eager step's clearing back until long after the graph launches.
+            with wp.ScopedStream(solver._memset_stream, sync_enter=False):
+                wp.launch(_spin, dim=1, inputs=[100_000_000], outputs=[sink])
+        step()
+        with wp.ScopedCapture(device) as scope:
+            step()
+            step()
+        for _ in range(6):
+            wp.capture_launch(scope.graph)
+        results.append(state_0.joint_q.numpy())
+    np.testing.assert_array_equal(results[1], results[0])
+
+
+def test_reset_after_an_eager_error_steps_like_a_fresh_solver(test, device):
+    """Recover from an eager step that raised mid-step: after reset, step bitwise like a fresh solver.
+
+    The torsion error raises after the closure rows were written into the active buffer set (the
+    four-bar starts with a closure error so those rows are nonzero); the early error raises on the
+    first step, before the mass-matrix stage.
+    """
+    results = []
+    for fail_first in (None, "torsion", "early"):
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.replicate(_build_four_bar(), 2)
+        model = builder.finalize(device=device)
+        set_torsion_radius(model, 0.01)
+        solver = SolverFeatherPGS(
+            model,
+            solve_mode="matrix_free",
+            iterations=16,
+            baumgarte=0.1,
+            double_buffer=True,
+            contact_torsion_device=True,
+        )
+        test.assertTrue(solver._double_buffered)
+        state, output = model.state(), model.state()
+        joint_q = state.joint_q.numpy()
+        joint_q[0] = 0.2
+        state.joint_q.assign(joint_q)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        if fail_first == "torsion":
+            # A latched torsion error makes the eager step raise during torsion preparation.
+            solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+            with test.assertRaisesRegex(RuntimeError, "load ring"):
+                solver.step(state, output, model.control(), None, 1.0 / 240.0)
+        elif fail_first == "early":
+            with (
+                mock.patch.object(solver, "_stage1_fk_id", side_effect=KeyboardInterrupt("early")),
+                test.assertRaises(KeyboardInterrupt),
+            ):
+                solver.step(state, output, model.control(), None, 1.0 / 240.0)
+        if fail_first:
+            solver.reset(state)
+            solver.check_constraint_capacity()
+        for _ in range(3):
+            solver.step(state, output, model.control(), None, 1.0 / 240.0)
+            for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
+                wp.copy(getattr(state, name), getattr(output, name))
+        results.append((state.joint_q.numpy(), state.joint_qd.numpy()))
+    for recovered in results[1:]:
+        for got, want in zip(recovered, results[0], strict=True):
+            np.testing.assert_array_equal(got, want)
+
+
+def test_flags_are_ignored_where_they_do_not_apply(test, device):
+    """Keep one stream and one buffer set on CPU, with sparse factors and with one size group."""
+    if wp.get_device(device).is_cpu:
+        solver = SolverFeatherPGS(_scene(device), solve_mode="split", use_parallel_streams=True, double_buffer=True)
+        test.assertEqual(solver._size_streams, {})
+        test.assertFalse(solver._double_buffered)
+        return
+    builder = newton.ModelBuilder()
+    root = builder.add_link()
+    builder.add_shape_box(root, hx=0.1, hy=0.1, hz=0.1)
+    joints = [builder.add_joint_revolute(-1, root, axis=newton.Axis.Z)]
+    for side in (-1.0, 1.0):
+        leg = builder.add_link()
+        builder.add_shape_box(leg, hx=0.05, hy=0.05, hz=0.05)
+        joints.append(
+            builder.add_joint_revolute(
+                root, leg, axis=newton.Axis.Y, parent_xform=wp.transform(wp.vec3(side * 0.2, 0, 0), wp.quat_identity())
+            )
+        )
+    builder.add_articulation(joints)
+    model = builder.finalize(device=device)
+    solver = SolverFeatherPGS(model, friction_anchor_beta=0.0, use_parallel_streams=True, double_buffer=True)
+    test.assertIsNotNone(solver._sparse_mass_matrix_size)
+    test.assertFalse(solver._double_buffered)
+    # One size group needs no extra streams.
+    test.assertEqual(solver._size_streams, {})
+
+
+class TestFeatherPGSStreams(unittest.TestCase):
+    pass
+
+
+for _fn in (
+    test_double_buffer_capture_sequences_match_single_buffer,
+    test_capture_after_eager_orders_the_pending_clear,
+    test_reset_after_an_eager_error_steps_like_a_fresh_solver,
+):
+    add_function_test(TestFeatherPGSStreams, _fn.__name__, _fn, devices=cuda_devices)
+
+
+for _fn in (test_streams_and_double_buffer_step_identically, test_captured_double_buffer_matches_eager):
+    add_function_test(TestFeatherPGSStreams, _fn.__name__, _fn, devices=cuda_devices)
+    add_function_test(TestFeatherPGSStreams, f"{_fn.__name__}_split", _fn, devices=cuda_devices, solve_mode="split")
+
+
+add_function_test(
+    TestFeatherPGSStreams,
+    "test_flags_are_ignored_where_they_do_not_apply",
+    test_flags_are_ignored_where_they_do_not_apply,
+    devices=get_test_devices(),
+)
+
+
+def test_fused_assembly_matches_the_separate_pipeline(test, device, solve_mode="matrix_free"):
+    """Match separate assembly and factorization with the warp-per-articulation and tiled kernels."""
+    for links, branched, kernel in ((3, False, "warp"), (6, True, "warp"), (14, False, "tiled"), (15, True, "tiled")):
+        with test.subTest(links=links, branched=branched):
+            model = _tree(device, links, branched=branched)
+            options = {"solve_mode": solve_mode, "articulation_constraint_max": _ROWS}
+            fused, q, qd = _trajectory(model, use_parallel_streams=True, **options)
+            reference, q_ref, qd_ref = _trajectory(model, **options)
+            size = fused._size_groups[0]
+            selected = {
+                "warp": fused._crba_cholesky_warp_kernels_by_size[size],
+                "tiled": fused._crba_cholesky_kernels_by_size[size],
+            }
+            test.assertIsNotNone(selected[kernel])
+            test.assertIsNone(reference._crba_cholesky_warp_kernels_by_size[size])
+            test.assertIsNone(reference._crba_cholesky_kernels_by_size[size])
+            np.testing.assert_allclose(fused._L_by_size[size].numpy(), reference._L_by_size[size].numpy(), atol=2.0e-5)
+            np.testing.assert_allclose(q, q_ref, rtol=0.0, atol=2.0e-5)
+            np.testing.assert_allclose(qd, qd_ref, rtol=0.0, atol=2.0e-4)
+
+
+def test_fused_assembly_covers_articulations_wider_than_the_block(test, device):
+    """Match separate assembly when the tiled block has fewer threads than the articulation has DOFs."""
+    for links in (33, 64):
+        model = _tree(device, links, worlds=1)
+        with kernel_overrides({"sparse_mass_matrix": False}):
+            reference, q_ref, qd_ref = _trajectory(model, steps=2)
+        size = reference._size_groups[0]
+        test.assertIsNone(reference._crba_cholesky_kernels_by_size[size])
+        for tile_threads in (32, 64):
+            with test.subTest(links=links, tile_threads=tile_threads):
+                overrides = {"tile_threads": tile_threads, "sparse_mass_matrix": False}
+                with kernel_overrides(overrides):
+                    fused, q, qd = _trajectory(model, steps=2, use_parallel_streams=True)
+                test.assertIsNotNone(fused._crba_cholesky_kernels_by_size[size])
+                test.assertEqual(fused._tile_threads, tile_threads)
+                np.testing.assert_allclose(
+                    fused._L_by_size[size].numpy(), reference._L_by_size[size].numpy(), atol=2.0e-5
+                )
+                np.testing.assert_allclose(q, q_ref, rtol=1.0e-5, atol=2.0e-5)
+                np.testing.assert_allclose(qd, qd_ref, rtol=1.0e-5, atol=2.0e-4)
+
+
+def test_fused_assembly_follows_the_mass_update_interval(test, device):
+    """Refresh the fused factors on the interval and after an inertia notification only."""
+    model = _tree(device, 3)
+    results = []
+    for streams in (True, False):
+        solver, q, _ = _trajectory(model, steps=7, use_parallel_streams=streams, update_mass_matrix_interval=3)
+        body_mass = model.body_mass.numpy()
+        model.body_mass.assign(body_mass * 1.5)
+        model.body_inv_mass.assign(1.0 / (body_mass * 1.5))
+        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        solver.step(state_0, state_1, model.control(), None, 1.0 / 240.0)
+        model.body_mass.assign(body_mass)
+        model.body_inv_mass.assign(1.0 / body_mass)
+        results.append((q, solver._L_by_size[solver._size_groups[0]].numpy()))
+    np.testing.assert_allclose(results[0][0], results[1][0], rtol=0.0, atol=2.0e-5)
+    np.testing.assert_allclose(results[0][1], results[1][1], rtol=0.0, atol=2.0e-5)
+
+
+def test_fused_assembly_is_selected_only_where_supported(test, device):
+    """Keep the separate pipeline without streams, with loop joints, PGS drive rows or on CPU."""
+    is_cuda = wp.get_device(device).is_cuda
+    solve_mode = "matrix_free" if is_cuda else "split"
+    solver = SolverFeatherPGS(_tree(device, 3), solve_mode=solve_mode, use_parallel_streams=True)
+    test.assertEqual(bool(solver._crba_source_dof_by_size), is_cuda)
+    if not is_cuda:
+        return
+    for model, options in (
+        (_tree(device, 3), {}),
+        (_tree(device, 3), {"use_parallel_streams": True, "drive_mode": "rows"}),
+        (_tree(device, 3, loop=True), {"use_parallel_streams": True}),
+    ):
+        with test.subTest(**options):
+            solver = SolverFeatherPGS(model, **options)
+            test.assertFalse(solver._crba_source_dof_by_size)
+            test.assertIsNone(solver._crba_cholesky_warp_kernels_by_size[solver._size_groups[0]])
+
+
+class TestFeatherPGSFusedCrba(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestFeatherPGSFusedCrba,
+    "test_fused_assembly_matches_the_separate_pipeline",
+    test_fused_assembly_matches_the_separate_pipeline,
+    devices=cuda_devices,
+)
+
+
+add_function_test(
+    TestFeatherPGSFusedCrba,
+    "test_fused_assembly_matches_the_separate_pipeline_split",
+    test_fused_assembly_matches_the_separate_pipeline,
+    devices=cuda_devices,
+    solve_mode="split",
+)
+
+
+add_function_test(
+    TestFeatherPGSFusedCrba,
+    "test_fused_assembly_covers_articulations_wider_than_the_block",
+    test_fused_assembly_covers_articulations_wider_than_the_block,
+    devices=cuda_devices,
+)
+
+
+add_function_test(
+    TestFeatherPGSFusedCrba,
+    "test_fused_assembly_follows_the_mass_update_interval",
+    test_fused_assembly_follows_the_mass_update_interval,
+    devices=cuda_devices,
+)
+
+
+add_function_test(
+    TestFeatherPGSFusedCrba,
+    "test_fused_assembly_is_selected_only_where_supported",
+    test_fused_assembly_is_selected_only_where_supported,
+    devices=get_test_devices(),
+)
 
 
 if __name__ == "__main__":
