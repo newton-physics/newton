@@ -1536,6 +1536,12 @@ def test_fixed_loop_joint(test, device, solver_fn):
 # Test Registration
 # ---------------------------------------------------------------------------
 
+
+def _feather_pgs(model):
+    # The matrix-free solve is CUDA-only; split is the CPU route.
+    return newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free" if model.device.is_cuda else "split")
+
+
 devices = get_test_devices()
 
 for device in devices:
@@ -1565,6 +1571,7 @@ for device in devices:
             newton.solvers.SolverKamino,
             False,
         ),
+        "feather_pgs": (_feather_pgs, True),
     }
     for solver_name, (solver_fn, uses_gen_coords) in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
@@ -1632,6 +1639,7 @@ for device in devices:
             ),
             False,
         ),
+        "feather_pgs": (_feather_pgs, True),
     }
     for solver_name, (solver_fn, uses_gen_coords) in articulation_solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
@@ -1667,7 +1675,8 @@ for device in devices:
 
         # Torque-free precession exercises the articulated rigid-body dynamics
         # exactly (rigid joints, no soft constraints), so restrict it to the
-        # exact generalized-coordinate solvers.
+        # exact generalized-coordinate solvers. FeatherPGS lacks the multi-angular
+        # D6 motion-subspace derivative, so it is a known gap there.
         if solver_name in ("featherstone", "mujoco_cpu", "mujoco_warp"):
             add_function_test(
                 TestPhysicsVerification,
@@ -1709,6 +1718,14 @@ for device in devices:
             solver_fn=newton.solvers.SolverKamino,
             rebound_rtol=0.03,
         )
+        # FeatherPGS restitution needs the CUDA-only matrix-free solve.
+        add_function_test(
+            TestPhysicsVerification,
+            "test_restitution_feather_pgs",
+            test_restitution,
+            devices=[device],
+            solver_fn=_feather_pgs,
+        )
 
     # Full rigid restitution sweep: endpoint and intermediate coefficients,
     # coarse and fine timesteps, and late (gap=0) and predictive contacts.
@@ -1745,7 +1762,9 @@ for device in devices:
             use_mujoco_cpu=False,
         )
 
-    # Kinematic loop and loop joint constraint tests (MuJoCo only)
+    # Kinematic loop and loop joint constraint tests (MuJoCo only). FeatherPGS rejects MuJoCo CONNECT
+    # equalities and revolute or fixed loop closures, and its stiff ball closure resolves the initial
+    # 0.29 m closure violation with an orbit below this test's MuJoCo-tuned amplitude bound.
     loop_solvers = {
         "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(
             model, use_mujoco_cpu=True, iterations=100, ls_iterations=50

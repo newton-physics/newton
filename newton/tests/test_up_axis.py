@@ -77,6 +77,10 @@ solvers = {
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "kamino": newton.solvers.SolverKamino,
+    # The matrix-free solve is CUDA-only; split is the CPU route.
+    "feather_pgs": lambda model: newton.solvers.SolverFeatherPGS(
+        model, solve_mode="matrix_free" if model.device.is_cuda else "split"
+    ),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
