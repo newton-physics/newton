@@ -506,24 +506,32 @@ _SPARSE_PROFILE = {
 }
 
 
-def _compare(test, device, *, interval, velocity_limits, graph, arm=True, expect_sparse=False, **options):
+def _compare(
+    test,
+    device,
+    *,
+    interval,
+    velocity_limits,
+    graph,
+    arm=True,
+    expect_sparse=False,
+    settle_steps=100,
+    resettle_steps=150,
+    **options,
+):
     runs = [_Run(device, skip, interval, velocity_limits, graph, arm, options) for skip in (False, True)]
     test.assertTrue(runs[1].solver._sleep_skips_dynamics)
     test.assertFalse(runs[0].solver._sleep_skips_dynamics)
     test.assertEqual(runs[1].solver._sparse_mass_matrix_size is not None, expect_sparse)
-    slept = woke = False
-    for phase, steps, force in (("settle", 400, 0.0), ("push", 6, 20.0), ("resettle", 600, 0.0)):
+    latch = _MismatchLatch(device)
+    for phase, steps, force in (("settle", settle_steps, 0.0), ("push", 6, 20.0), ("resettle", resettle_steps, 0.0)):
+        latch.begin_phase()
         for step in range(steps):
             for run in runs:
                 run.advance(force)
-            for field in _FIELDS:
-                np.testing.assert_array_equal(
-                    runs[1].field(field), runs[0].field(field), err_msg=f"{phase} step {step} {field}"
-                )
-            awake = runs[1].solver._sleeping.art_awake.numpy()
-            slept |= phase == "settle" and not awake[:2].any()
-            woke |= phase == "push" and bool(awake[0])
-    test.assertTrue(slept and woke)
+            latch.record(runs[1], runs[0], step, sleep=phase == "settle", wake=phase == "push")
+        latch.check(test, phase)
+    test.assertTrue(latch.slept_and_woke())
     # The driven arm never sleeps, and everything else settles again.
     expected = [0, 0, 0, 1] if arm else [0, 0, 0]
     np.testing.assert_array_equal(runs[1].solver._sleeping.art_awake.numpy(), expected)
@@ -534,8 +542,10 @@ def test_eager_trajectories_match(test, device):
     """Settle, sleep, force-wake and resettle identically with and without skipped dynamics."""
     for interval in (1, 3):
         for velocity_limits in (False, True):
+            # Islands sleep within the quiet time; one configuration also covers a long sleeping horizon.
+            horizon = {"settle_steps": 400, "resettle_steps": 600} if interval == 1 and not velocity_limits else {}
             with test.subTest(interval=interval, velocity_limits=velocity_limits):
-                _compare(test, device, interval=interval, velocity_limits=velocity_limits, graph=False)
+                _compare(test, device, interval=interval, velocity_limits=velocity_limits, graph=False, **horizon)
 
 
 def test_alternate_kernel_paths_match(test, device):
@@ -555,6 +565,32 @@ def test_graph_trajectories_match(test, device):
     for interval in (1, 2):
         with test.subTest(interval=interval):
             _compare(test, device, interval=interval, velocity_limits=True, graph=True)
+
+
+def test_transient_divergence_is_reported(test, device):
+    """Report the step of a published mismatch that is gone again one step later."""
+    advance = _Run.advance
+    glitch = {"calls": 0, "saved": None}
+
+    def advance_with_glitch(run, force):
+        if not run.solver._sleeping.skip_dynamics:
+            advance(run, force)
+            return
+        if glitch["saved"] is not None:
+            wp.copy(run.states[0].joint_q, glitch["saved"])
+            glitch["saved"] = None
+        advance(run, force)
+        if glitch["calls"] == 7:
+            joint_q = run.states[0].joint_q
+            glitch["saved"] = wp.clone(joint_q)
+            values = joint_q.numpy()
+            values[0] += 1.0e-3
+            joint_q.assign(values)
+        glitch["calls"] += 1
+
+    with patch.object(_Run, "advance", advance_with_glitch):
+        with test.assertRaisesRegex(AssertionError, "settle step 7 joint_q differs"):
+            _compare(test, device, interval=1, velocity_limits=False, graph=False)
 
 
 class _Run:
@@ -586,12 +622,15 @@ class _Run:
                 self._step()
                 self._step()
             self.graph = capture.graph
-        self.force = np.zeros((self.model.body_count, 6), dtype=np.float32)
+        self.forces = {}
 
     def advance(self, force):
-        self.force[0, 0] = force
+        if force not in self.forces:
+            body_f = np.zeros((self.model.body_count, 6), dtype=np.float32)
+            body_f[0, 0] = force
+            self.forces[force] = wp.array(body_f, dtype=wp.spatial_vector, device=self.model.device)
         for state in self.states:
-            state.body_f.assign(self.force)
+            wp.copy(state.body_f, self.forces[force])
         if self.graph is None:
             self._step()
         else:
@@ -603,7 +642,83 @@ class _Run:
         self.states.reverse()
 
     def field(self, name):
-        return getattr(self.states[0], name).numpy()
+        return getattr(self.states[0], name).view(float).flatten()
+
+
+class _MismatchLatch:
+    """Latch the first mismatching step of each published field on the device and read it once per phase."""
+
+    def __init__(self, device):
+        self.device = device
+        self.first_step = wp.empty(len(_FIELDS), dtype=int, device=device)
+        self.max_diff = wp.empty(len(_FIELDS), dtype=float, device=device)
+        # First settle step with both branching articulations asleep, first push step with the pushed one awake.
+        self.transitions = wp.full(2, _NO_STEP, dtype=int, device=device)
+
+    def begin_phase(self):
+        self.first_step.fill_(_NO_STEP)
+        self.max_diff.zero_()
+
+    def record(self, actual, expected, step, *, sleep, wake):
+        for index, name in enumerate(_FIELDS):
+            values = actual.field(name)
+            wp.launch(
+                _latch_field_mismatch,
+                dim=values.size,
+                inputs=[values, expected.field(name), step, index],
+                outputs=[self.first_step, self.max_diff],
+                device=self.device,
+            )
+        wp.launch(
+            _latch_sleep_transitions,
+            dim=1,
+            inputs=[actual.solver._sleeping.art_awake, step, int(sleep), int(wake)],
+            outputs=[self.transitions],
+            device=self.device,
+        )
+
+    def check(self, test, phase):
+        first_step = self.first_step.numpy()
+        step = int(first_step.min())
+        if step != _NO_STEP:
+            index = int(np.argmax(first_step == step))
+            diff = self.max_diff.numpy()[index]
+            test.fail(f"{phase} step {step} {_FIELDS[index]} differs (max abs diff over the phase {diff})")
+
+    def slept_and_woke(self):
+        return bool((self.transitions.numpy() != _NO_STEP).all())
+
+
+_NO_STEP = 2**31 - 1
+
+
+@wp.kernel(enable_backward=False)
+def _latch_field_mismatch(
+    actual: wp.array[float],
+    expected: wp.array[float],
+    step: int,
+    field: int,
+    first_step: wp.array[int],
+    max_diff: wp.array[float],
+):
+    i = wp.tid()
+    a = actual[i]
+    e = expected[i]
+    if a == e or (wp.isnan(a) and wp.isnan(e)):
+        return
+    wp.atomic_min(first_step, field, step)
+    diff = wp.abs(a - e)
+    if wp.isnan(diff):
+        diff = wp.inf
+    wp.atomic_max(max_diff, field, diff)
+
+
+@wp.kernel(enable_backward=False)
+def _latch_sleep_transitions(awake: wp.array[int], step: int, sleep: int, wake: int, transitions: wp.array[int]):
+    if sleep != 0 and awake[0] == 0 and awake[1] == 0:
+        wp.atomic_min(transitions, 0, step)
+    if wake != 0 and awake[0] != 0:
+        wp.atomic_min(transitions, 1, step)
 
 
 def _dynamics_scene(device, arm):
@@ -657,7 +772,12 @@ class TestFeatherPGSSleepingDynamics(unittest.TestCase):
     pass
 
 
-for _name in ("test_eager_trajectories_match", "test_alternate_kernel_paths_match", "test_graph_trajectories_match"):
+for _name in (
+    "test_eager_trajectories_match",
+    "test_alternate_kernel_paths_match",
+    "test_graph_trajectories_match",
+    "test_transient_divergence_is_reported",
+):
     add_function_test(TestFeatherPGSSleepingDynamics, _name, globals()[_name], devices=devices)
 
 
