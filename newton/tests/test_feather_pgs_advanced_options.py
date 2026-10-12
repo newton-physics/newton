@@ -3,7 +3,6 @@
 
 """Experimental launch, diagnostic and profiling options of SolverFeatherPGS."""
 
-import sys
 import types
 import unittest
 from unittest import mock
@@ -15,7 +14,7 @@ from newton._src.solvers.feather_pgs import solver_feather_pgs
 from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton.solvers import SolverFeatherPGS
 from newton.tests.feather_pgs._fixtures import _build_contact_scene, _run, _set_box_velocities, _trajectory, _tree
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices, patch_sys_module
 
 
 def _assert_bitwise(test, a, b, label):
@@ -165,7 +164,7 @@ def test_profile_annotates_every_stage_without_changing_results(test, device):
     fake = _FakeNvtx()
     mode = {} if device.is_cuda else {"solve_mode": "split"}
     run = {"init": _set_box_velocities, "steps": 3, **mode}
-    with mock.patch.dict(sys.modules, {"nvtx": fake}), mock.patch.object(solver_feather_pgs, "PROFILE_ENABLED", True):
+    with patch_sys_module("nvtx", fake), mock.patch.object(solver_feather_pgs, "PROFILE_ENABLED", True):
         annotated = _run(_build_contact_scene(device), **run)
     _assert_bitwise(test, annotated, _run(_build_contact_scene(device), **run), "profile")
     stages = [message for kind, message in fake.events if kind == "start"]
@@ -192,7 +191,7 @@ def test_profile_closes_the_open_range_when_a_stage_raises(test, device):
     solver = SolverFeatherPGS(model, **mode)
     state_in, state_out = model.state(), model.state()
     with (
-        mock.patch.dict(sys.modules, {"nvtx": fake}),
+        patch_sys_module("nvtx", fake),
         mock.patch.object(solver_feather_pgs, "PROFILE_ENABLED", True),
         mock.patch.object(solver, "_stage1_crba", side_effect=RuntimeError("injected")),
         test.assertRaisesRegex(RuntimeError, "injected"),
