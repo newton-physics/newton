@@ -590,7 +590,7 @@ def _solve_contact_block(device, tangent_mass, rhs, initial, capacity=32):
             wp.ones((1, 1), dtype=float, device=device),
             wp.ones((1, 1), dtype=float, device=device),
             wp.full((1, 1), -1, dtype=int, device=device),
-            0.0,
+            wp.zeros((1, 1), dtype=float, device=device),
             1,
             1.0,
             0,
