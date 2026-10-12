@@ -61,6 +61,7 @@ class Example:
             floating=True,
             enable_self_collisions=False,
             ignore_inertial_definitions=True,  # Use geometry-based inertia for stability
+            joint_damping_mode="passive",
         )
 
         # Preserve the drive damping used before URDF damping became passive damping.

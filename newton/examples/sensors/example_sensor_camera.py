@@ -131,7 +131,7 @@ class Example:
 
         robot_asset = newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf"
         robot_builder = newton.ModelBuilder()
-        robot_builder.add_urdf(robot_asset, floating=False)
+        robot_builder.add_urdf(robot_asset, floating=False, joint_damping_mode="passive")
         robot_camera_body = robot_builder.body_label.index("fr3/fr3_link6")
 
         gaussian = None

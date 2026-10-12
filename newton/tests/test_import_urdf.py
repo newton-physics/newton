@@ -2510,7 +2510,7 @@ class TestUrdfJointFriction(unittest.TestCase):
     def test_joint_friction_parsed_from_urdf(self):
         """Joint friction values from <dynamics friction='...'> should be forwarded to the model."""
         builder = newton.ModelBuilder()
-        parse_urdf(FRICTION_URDF, builder)
+        parse_urdf(FRICTION_URDF, builder, joint_damping_mode="passive")
         model = builder.finalize()
 
         friction_values = model.joint_friction.numpy()
