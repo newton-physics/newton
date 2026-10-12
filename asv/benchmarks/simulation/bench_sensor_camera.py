@@ -290,8 +290,8 @@ class _SensorCameraSceneRig:
             np.tile(camera_row, (world_count, 1)), dtype=wp.transformf, device=self.model.device
         )
 
-        self.color_image = self.sensor.create_color_image_output(world_count, resolution, resolution)
-        self.depth_image = self.sensor.create_depth_image_output(world_count, resolution, resolution)
+        self.color_image = self.sensor.allocate_image_color(world_count, resolution, resolution)
+        self.depth_image = self.sensor.allocate_image_depth(world_count, resolution, resolution)
 
         self.model.bvh_build_shapes(self.state, bvh_constructor=BVH_CONSTRUCTOR)
         self.model.bvh_build_particles(self.state, bvh_constructor=BVH_CONSTRUCTOR)

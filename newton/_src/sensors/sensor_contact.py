@@ -301,7 +301,8 @@ class SensorContact:
     Construct a :class:`~newton.CollisionPipeline` before requesting
     :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` from the solver. Pass the resulting
     :class:`~newton.solvers.SolverObservables` and the pipeline's :class:`~newton.Contacts`
-    buffer to both the solver step and :meth:`update`.
+    buffer to both the solver step and :meth:`update`. The sensor uses only the linear part of
+    each ``CONTACT_F`` wrench (force [N]); the torque part is ignored.
 
     Parameters that select bodies or shapes accept label patterns -- see :ref:`label-matching`.
 
