@@ -213,10 +213,18 @@ def test_add_joint_ball_sets_passive_damping(test: TestJointDamping, device):
 
 
 devices = get_test_devices()
+# FeatherPGS applies joint_damping on PRISMATIC, REVOLUTE and D6 DOFs only; BALL damping is a known gap.
 solvers = {
     "featherstone": (lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0), False),
     "semi_implicit": (lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0), True),
     "kamino": (newton.solvers.SolverKamino, False),
+    # The matrix-free solve is CUDA-only; split is the CPU route.
+    "feather_pgs": (
+        lambda model: newton.solvers.SolverFeatherPGS(
+            model, solve_mode="matrix_free" if model.device.is_cuda else "split"
+        ),
+        False,
+    ),
 }
 
 for device in devices:

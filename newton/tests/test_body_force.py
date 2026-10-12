@@ -200,6 +200,11 @@ def test_descendant_free_joint_f_world_force_under_rotated_parent(
     test.assertAlmostEqual(child_qd[5], 0.0, delta=1.0e-6)
 
 
+def _feather_pgs(model):
+    # The matrix-free solve is CUDA-only; split is the CPU route.
+    return newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free" if model.device.is_cuda else "split")
+
+
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
@@ -207,6 +212,7 @@ solvers = {
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
+    "feather_pgs": _feather_pgs,
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
@@ -497,6 +503,7 @@ com_solvers = {
         1e-3,
         True,
     ),
+    "feather_pgs": (_feather_pgs, 1e-3, True),
 }
 
 # Test configurations for non-zero CoM tests
@@ -538,6 +545,7 @@ for device in devices:
                     use_control=use_control,
                 )
 
+# FeatherPGS supports FREE joints only at articulation roots.
 for device in devices:
     for solver_name in ("xpbd", "featherstone"):
         add_function_test(

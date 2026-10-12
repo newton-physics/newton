@@ -7,7 +7,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 def _build_mimic_model(device, vectorized, *, kinematic_reference=False, small_mismatch=False):
@@ -98,6 +98,9 @@ def _test_solver_mimic(test, device, solver_name):
                         joint_mimic_kd=3.0,
                     )
                 generalized = False
+            elif solver_name == "feather_pgs":
+                solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free")
+                generalized = True
             elif solver_name == "vbd":
                 solver = newton.solvers.SolverVBD(
                     model,
@@ -108,8 +111,9 @@ def _test_solver_mimic(test, device, solver_name):
             else:
                 raise ValueError(f"Unknown solver {solver_name}")
 
-            step_count = 240 if solver_name == "semi_implicit" else 1
-            dt = 1.0 / 240.0 if solver_name == "semi_implicit" else 1.0 / 60.0
+            # Penalty and Baumgarte-stabilized mimics converge over many steps.
+            step_count = 240 if solver_name in ("semi_implicit", "feather_pgs") else 1
+            dt = 1.0 / 240.0 if solver_name in ("semi_implicit", "feather_pgs") else 1.0 / 60.0
             for _ in range(step_count):
                 solver.step(state_in, state_out, None, None, dt)
                 state_in, state_out = state_out, state_in
@@ -180,6 +184,11 @@ def test_semi_implicit_mimic_validates_gains(test, device):
             with test.subTest(name=name, value=value):
                 with test.assertRaisesRegex(ValueError, f"{name} must be finite and non-negative"):
                     newton.solvers.SolverSemiImplicit(model, **{name: value})
+
+
+def test_feather_pgs_mimic(test, device):
+    """Enforce scalar and vectorized mimic relationships in FeatherPGS."""
+    _test_solver_mimic(test, device, "feather_pgs")
 
 
 def test_vbd_mimic(test, device):
@@ -262,6 +271,9 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestSolverMimic, "test_vbd_mimic", test_vbd_mimic, devices=devices)
+# FeatherPGS mimic rows need the CUDA-only matrix-free solve; its split solve rejects them.
+for device in get_cuda_test_devices():
+    add_function_test(TestSolverMimic, "test_feather_pgs_mimic", test_feather_pgs_mimic, devices=[device])
 
 
 if __name__ == "__main__":
