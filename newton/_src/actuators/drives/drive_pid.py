@@ -234,7 +234,6 @@ class DrivePID(DriveBase):
 
     def prepare_implicit(
         self,
-        *,
         positions: wp.array[float],
         velocities: wp.array[float],
         target_pos: wp.array[float],
@@ -247,6 +246,7 @@ class DrivePID(DriveBase):
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
+        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Fold ``ki*integral`` into the pack's constant column.
@@ -281,7 +281,6 @@ class DrivePID(DriveBase):
 
     def compute(
         self,
-        *,
         positions: wp.array[float],
         velocities: wp.array[float],
         target_pos: wp.array[float],
@@ -295,6 +294,7 @@ class DrivePID(DriveBase):
         state: DrivePID.State,
         dt: float,
         device: wp.Device | None = None,
+        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         wp.launch(

@@ -757,7 +757,6 @@ class DriveNeuralGRU(DriveBase):
 
     def compute(
         self,
-        *,
         positions: wp.array[float],
         velocities: wp.array[float],
         target_pos: wp.array[float],
@@ -771,6 +770,7 @@ class DriveNeuralGRU(DriveBase):
         state: DriveNeuralGRU.State,
         dt: float,
         device: wp.Device | None = None,
+        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Evaluate one GRU sample and write physical effort."""

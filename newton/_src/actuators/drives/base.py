@@ -25,9 +25,6 @@ class DriveBase:
     :class:`~newton.actuators.ClampingBase` objects.
 
     Subclasses must override ``compute`` and ``resolve_arguments``.
-    All operands of ``compute`` and ``prepare_implicit`` are keyword-only.
-    :class:`Actuator` passes the operands by keyword. Overrides can retain
-    the base parameter names or accept and forward ``**kwargs``.
 
     **Validation contract:**  :meth:`resolve_arguments` validates scalar
     parameter values (e.g. ``kp >= 0``) before they are batched into Warp
@@ -90,7 +87,6 @@ class DriveBase:
 
     def compute(
         self,
-        *,
         positions: wp.array[float],
         velocities: wp.array[float],
         target_pos: wp.array[float],
@@ -104,6 +100,7 @@ class DriveBase:
         state: DriveBase.State | None,
         dt: float,
         device: wp.Device | None = None,
+        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Compute actuator output effort and write to ``forces[i]``.
@@ -161,7 +158,6 @@ class DriveBase:
 
     def prepare_implicit(
         self,
-        *,
         positions: wp.array[float],
         velocities: wp.array[float],
         target_pos: wp.array[float],
@@ -174,6 +170,7 @@ class DriveBase:
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
+        *,
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Refresh the parameter pack before an implicit solve step.
