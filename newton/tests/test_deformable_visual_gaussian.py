@@ -506,7 +506,7 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
             cameras = wp.array(
                 [wp.transform(wp.vec3(0.4, 0.4, 3), wp.quat_identity())], dtype=wp.transform, device=render_model.device
             )
-            depth = sensor.create_depth_image_output(render_model.world_count, 16, 16)
+            depth = sensor.allocate_image_depth(render_model.world_count, 16, 16)
             sensor.update(render_state, cameras, rays, depth_image=depth)
             return depth.numpy()
 
@@ -687,7 +687,7 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
             dtype=wp.transformf,
             device=model.device,
         )
-        depth_image = sensor.create_depth_image_output(model.world_count, width, height)
+        depth_image = sensor.allocate_image_depth(model.world_count, width, height)
 
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
 
@@ -735,7 +735,7 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
             dtype=wp.transformf,
             device=model.device,
         )
-        depth_image = sensor.create_depth_image_output(model.world_count, width, height)
+        depth_image = sensor.allocate_image_depth(model.world_count, width, height)
 
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
         rest_depth = float(depth_image.numpy()[0, height // 2, width // 2])
@@ -793,7 +793,7 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
         )
         camera = wp.transformf(wp.vec3f(float(center[0, 0]), float(center[0, 1]), 2.0), wp.quat_identity())
         camera_transforms = wp.array([camera, camera], dtype=wp.transformf, device=model.device)
-        depth_image = sensor.create_depth_image_output(model.world_count, width, height)
+        depth_image = sensor.allocate_image_depth(model.world_count, width, height)
 
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
         depth = depth_image.numpy()[:, height // 2, width // 2]

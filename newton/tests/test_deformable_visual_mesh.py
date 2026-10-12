@@ -1082,7 +1082,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
             dtype=wp.transformf,
             device=model.device,
         )
-        depth_image = sensor.create_depth_image_output(model.world_count, width, height)
+        depth_image = sensor.allocate_image_depth(model.world_count, width, height)
 
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
         depth = depth_image.numpy()[0]
@@ -1118,7 +1118,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
             ),
         )
         camera_rays, camera_transforms = self._camera_setup(sensor, model)
-        depth_image = sensor.create_depth_image_output(model.world_count, 16, 16)
+        depth_image = sensor.allocate_image_depth(model.world_count, 16, 16)
 
         sensor.update(
             state,
@@ -1163,7 +1163,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
             default_render_config=SensorCamera.RenderConfig(enable_particles=False, max_distance=10.0),
         )
         camera_rays, camera_transforms = self._camera_setup(default_sensor, model)
-        default_depth_image = default_sensor.create_depth_image_output(model.world_count, 16, 16)
+        default_depth_image = default_sensor.allocate_image_depth(model.world_count, 16, 16)
         default_sensor.update(state, camera_transforms, camera_rays, depth_image=default_depth_image)
         default_depth = default_depth_image.numpy()[0]
         self.assertAlmostEqual(float(default_depth[8, 8]), 2.0, delta=0.25)
@@ -1177,7 +1177,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
             ),
         )
         camera_rays, camera_transforms = self._camera_setup(visual_sensor, model)
-        visual_depth_image = visual_sensor.create_depth_image_output(model.world_count, 16, 16)
+        visual_depth_image = visual_sensor.allocate_image_depth(model.world_count, 16, 16)
         visual_sensor.update(state, camera_transforms, camera_rays, depth_image=visual_depth_image)
         visual_depth = visual_depth_image.numpy()[0]
         self.assertAlmostEqual(float(visual_depth[8, 8]), 2.5, delta=0.25)
@@ -1195,7 +1195,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
             ),
         )
         camera_rays, camera_transforms = self._camera_setup(sensor, model)
-        color_image = sensor.create_color_image_output(model.world_count, 16, 16)
+        color_image = sensor.allocate_image_color(model.world_count, 16, 16)
 
         sensor.update(state, camera_transforms, camera_rays, color_image=color_image)
         rgba = sensor.Utils.to_rgba_from_color(color_image).numpy()[0, 8, 8]
@@ -1216,7 +1216,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
             ),
         )
         camera_rays, camera_transforms = self._camera_setup(sensor, model)
-        albedo_image = sensor.create_albedo_image_output(model.world_count, 16, 16)
+        albedo_image = sensor.allocate_image_albedo(model.world_count, 16, 16)
 
         sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
         rgba = self._unpack_rgba(albedo_image.numpy()[0, 8, 8])
@@ -1241,7 +1241,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
             ),
         )
         camera_rays, camera_transforms = self._camera_setup(sensor, model)
-        albedo_image = sensor.create_albedo_image_output(model.world_count, 16, 16)
+        albedo_image = sensor.allocate_image_albedo(model.world_count, 16, 16)
 
         sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
         rgba = self._unpack_rgba(albedo_image.numpy()[0, 8, 8])
@@ -1278,7 +1278,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
             ),
         )
         camera_rays, camera_transforms = self._camera_setup(sensor, model)
-        albedo_image = sensor.create_albedo_image_output(model.world_count, 16, 16)
+        albedo_image = sensor.allocate_image_albedo(model.world_count, 16, 16)
 
         sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
         rgba = self._unpack_rgba(albedo_image.numpy()[0, 8, 8])
@@ -1305,7 +1305,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
                 ),
             )
             _, transforms = self._camera_setup(sensor, model)
-            albedo = sensor.create_albedo_image_output(1, 16, 16)
+            albedo = sensor.allocate_image_albedo(1, 16, 16)
             for mode in SensorCamera.AntiAliasing:
                 with self.subTest(texture=name, mode=mode):
                     rays = sensor.compute_camera_rays_pinhole(
@@ -1334,7 +1334,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
             ),
         )
         rays, transforms = self._camera_setup(sensor, model)
-        albedo = sensor.create_albedo_image_output(1, 16, 16)
+        albedo = sensor.allocate_image_albedo(1, 16, 16)
         for _ in range(2):
             sensor.assign_checkerboard_material(shape_indices=[])
             sensor.update(model.state(), transforms, rays, albedo_image=albedo)
@@ -1358,7 +1358,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
         rays, transform = self._camera_setup(sensor, model)
         transforms = wp.array(np.repeat(transform.numpy(), 3, axis=0), dtype=wp.transformf, device=model.device)
         worlds = wp.array([1, 0, 1], dtype=wp.int32, device=model.device)
-        depth = sensor.create_depth_image_output(3, 16, 16)
+        depth = sensor.allocate_image_depth(3, 16, 16)
         sensor.update(state, transforms, rays, world_indices=worlds, depth_image=depth)
         center_depth = depth.numpy()[:, 8, 8]
         np.testing.assert_allclose(center_depth, [2.0, 1.6, 2.0], atol=0.03)

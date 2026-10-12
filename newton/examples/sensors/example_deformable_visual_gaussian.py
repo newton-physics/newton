@@ -178,8 +178,8 @@ class Example:
         )
         camera = _look_at_transform((1.45, -3.1, 1.35), (0.0, 0.0, 0.95))
         self.camera_transforms = wp.array([camera], dtype=wp.transformf, device=self.model.device)
-        self.color_image = self.sensor.create_color_image_output(1, self.camera_width, self.camera_height)
-        self.depth_image = self.sensor.create_depth_image_output(1, self.camera_width, self.camera_height)
+        self.color_image = self.sensor.allocate_image_color(1, self.camera_width, self.camera_height)
+        self.depth_image = self.sensor.allocate_image_depth(1, self.camera_width, self.camera_height)
         self.depth_rgba = wp.empty(
             (1, self.camera_height, self.camera_width, 4), dtype=wp.uint8, device=self.model.device
         )

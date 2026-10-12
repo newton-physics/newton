@@ -476,10 +476,10 @@ class Example:
 
         # Each view observes a different object in the same simulation world.
         self.camera_world_indices = wp.zeros(self.camera_count, dtype=wp.int32, device=self.model.device)
-        self.camera_color_image = self.camera_sensor.create_color_image_output(
+        self.camera_color_image = self.camera_sensor.allocate_image_color(
             self.camera_count, self.camera_width, self.camera_height
         )
-        self.camera_depth_image = self.camera_sensor.create_depth_image_output(
+        self.camera_depth_image = self.camera_sensor.allocate_image_depth(
             self.camera_count, self.camera_width, self.camera_height
         )
         self.camera_depth_rgba = wp.empty(
