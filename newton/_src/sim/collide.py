@@ -1570,9 +1570,9 @@ class CollisionPipeline:
                 budgets 128 candidates per candidate mesh, heightfield, or
                 planar-SDF pair, limited in aggregate to 6 neighbors per
                 participating shape, and the per-world budgets are summed.
-                Pairs come from the explicit pair list or
-                ``model.shape_contact_pairs``; without either (NXN/SAP), they
-                are counted per world from shape types, which can overcount.
+                Explicit mode uses its configured pair list. NXN and SAP
+                count pairs per world from shape masks, which can overcount,
+                even when ``model.shape_contact_pairs`` has already been built.
                 The estimate never falls below 1,000,000 and warns when its
                 buffers require at least 256 MiB. With deterministic contact
                 reduction (``deterministic=True`` or contact matching) it is
