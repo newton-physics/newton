@@ -783,7 +783,12 @@ def test_free_body_velocity_limits_hold(test, device, solve_mode="matrix_free"):
     """Hold a free body's authored linear and angular speed limits."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
     SolverFeatherPGS.register_custom_attributes(builder)
-    body = builder.add_body(custom_attributes={"feather_pgs:rigid_body_max_linear_velocity": 0.5, "feather_pgs:rigid_body_max_angular_velocity": 1.0})
+    body = builder.add_body(
+        custom_attributes={
+            "feather_pgs:rigid_body_max_linear_velocity": 0.5,
+            "feather_pgs:rigid_body_max_angular_velocity": 1.0,
+        }
+    )
     builder.add_shape_box(body, hx=0.1, hy=0.2, hz=0.3)
     model = builder.finalize(device=device)
     solver = SolverFeatherPGS(model, solve_mode=solve_mode)
