@@ -289,6 +289,68 @@ def test_hydro_contact_input_is_rejected(test, device):
         solver.step(initial, model.state(), model.control(), contacts, 0.0025)
 
 
+def test_patch_spanning_shape_pairs_takes_the_largest_radius(test, device):
+    """Give a patch over two shape pairs the larger radius in either contact order, on host and device."""
+    results = {}
+    for device_preparation, reverse in itertools.product((False, True), (False, True)):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+        pose = wp.transform(wp.vec3(0.0, 0.0, 0.0199), wp.quat_identity())
+        inertia = wp.mat33(np.diag([0.00012, 0.00012, 0.00008]).astype(np.float32))
+        body = builder.add_link(xform=pose, mass=0.3, inertia=inertia)
+        axes = [newton.ModelBuilder.JointDofConfig(axis=axis) for axis in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+        builder.add_articulation(
+            [builder.add_joint_d6(-1, body, parent_xform=pose, linear_axes=axes, angular_axes=axes)]
+        )
+        for x in (-0.02, 0.02):
+            builder.add_shape_box(
+                body,
+                hx=0.02,
+                hy=0.015,
+                hz=0.02,
+                xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()),
+                cfg=newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.5),
+            )
+        model = builder.finalize(device=device)
+        set_torsion_radius(model, np.array([0.0, 0.001, 0.04], dtype=np.float32))
+        solver = SolverFeatherPGS(
+            model,
+            contact_torsion_device=device_preparation,
+            iterations=128,
+            friction_anchor_beta=0.2,
+            cfm=0.0,
+            articulation_constraint_max=128,
+        )
+        solver._rigid_body_angular_damping.zero_()
+        state, output = model.state(), model.state()
+        state.joint_qd.assign(np.array([0.0, 0.0, -0.1, 0.0, 0.0, 100.0], dtype=np.float32))
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=False, rigid_contact_max=64)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        # Put every witness at the pieces' shared boundary so only the spin radius differs between orders.
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        point0, point1 = contacts.rigid_contact_point0.numpy(), contacts.rigid_contact_point1.numpy()
+        point0[:count] = (0.0, 0.0, 0.0)
+        point1[:count] = (0.0, 0.0, -0.02)
+        contacts.rigid_contact_point0.assign(point0)
+        contacts.rigid_contact_point1.assign(point1)
+        if reverse:
+            shape1 = contacts.rigid_contact_shape1.numpy()
+            shape1[:count] = shape1[:count][::-1]
+            contacts.rigid_contact_shape1.assign(shape1)
+        test.assertEqual(sorted(set(contacts.rigid_contact_shape1.numpy()[:count].tolist())), [1, 2])
+        solver.step(state, output, model.control(), contacts, 0.0025)
+        solver.check_constraint_capacity()
+        stats = solver._device_torsion.read_stats() if device_preparation else solver._torsion_stats
+        test.assertEqual(stats["rows"], 1)
+        test.assertAlmostEqual(stats["groups"][0]["effective_radius_m"], 0.04, places=6)
+        results[device_preparation, reverse] = output.joint_qd.numpy()
+    for key, joint_qd in results.items():
+        with test.subTest(device_preparation=key[0], reverse=key[1]):
+            np.testing.assert_allclose(joint_qd, results[False, False], rtol=0.0, atol=1.0e-4)
+
+
 class TestContactTorsionRegressions(unittest.TestCase):
     """Reject invalid storage/lifecycle paths rather than silently welding spin."""
 
@@ -306,6 +368,7 @@ for _fn in (
     test_contact_row_loss_fails_without_diagnostics,
     test_selected_unsupported_shape_fails_at_construction,
     test_hydro_contact_input_is_rejected,
+    test_patch_spanning_shape_pairs_takes_the_largest_radius,
 ):
     add_function_test(TestContactTorsionRegressions, _fn.__name__, _fn, devices=get_cuda_test_devices())
 

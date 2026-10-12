@@ -680,7 +680,7 @@ def test_zero_gap_gate_keeps_touching_contacts_only(test, device):
 
 
 def test_friction_gap_max_applies_to_every_route(test, device):
-    """Give contacts beyond the friction gap a normal row only, on every route, and none with a negative max."""
+    """Give contacts beyond the friction gap a normal row only, on every route, also with a negative max."""
     for route in (PATH_DENSE, PATH_MATRIX_FREE):
         with test.subTest(route=route):
             near = _launch_contact_allocator(device, route=route, gap=0.001, enable_friction=True, friction_gap=0.002)

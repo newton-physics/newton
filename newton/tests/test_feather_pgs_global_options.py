@@ -118,7 +118,7 @@ def test_angular_damping_follows_in_place_edits(test, device):
 
 
 def test_namespaced_attributes_import_from_usd_and_are_read_every_step(test, device):
-    """Import the PhysX body and collision USD attributes into the physx namespace, and step with replaced arrays."""
+    """Import the PhysX body and collision USD attributes into the feather_pgs namespace, and step with replaced arrays."""
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
     stage = Usd.Stage.CreateInMemory()

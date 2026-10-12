@@ -383,7 +383,8 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
         # The sweep reads the group's coefficient from its own row; anchor tangent
         # rows carry it divided by the anchor count under persistent patches.
         fields["row_mu"][world, row] = coefficient
-        radius = float(max(shape_radius[lead.shape_a], shape_radius[lead.shape_b]))
+        # A patch can span shape pairs; it takes the largest radius, as one pair takes the larger of its two.
+        radius = float(max(max(shape_radius[w.shape_a], shape_radius[w.shape_b]) for w in group))
         row_radius[world, row] = radius
         for witness in group:
             membership[world, witness.slot] = row
