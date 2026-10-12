@@ -1339,18 +1339,18 @@ def recompute_jnt_eq_anchor1_kernel(
 
     For each mapped ``[world, eq]`` entry, reads the translation from the
     joint's parent transform (``joint_X_p``).  When ``has_axis_offset`` is
-    set, adds ``axis_offset_distance`` along the hinge axis rotated into
-    the parent body frame.
+    nonzero, offsets the anchor by half of ``axis_offset_distance`` to that
+    side along the hinge axis rotated into the parent body frame.
 
     Args:
         mjc_eq_to_newton_jnt: Mapping from MuJoCo ``[world, eq]`` to Newton
             joint index, shape ``[world_count, neq]``.
             Negative values indicate unmapped entries.
-        has_axis_offset: ``1`` for the second hinge CONNECT that is offset
-            along the joint axis, ``0`` otherwise,
+        has_axis_offset: Side (``-1`` or ``+1``) along the joint axis for
+            hinge CONNECT rows, ``0`` otherwise,
             shape ``[world_count, neq]``.
-        axis_offset_distance: Distance [m] along the hinge axis for the
-            second CONNECT constraint point.
+        axis_offset_distance: Distance [m] between the two hinge CONNECT
+            points along the hinge axis.
         joint_X_p: Parent-body-local joint transform [m],
             shape ``[joint_count]``, dtype ``wp.transform``.
         joint_axis: Joint axis in joint-local frame,
@@ -1369,11 +1369,12 @@ def recompute_jnt_eq_anchor1_kernel(
     xform = joint_X_p[newton_jnt]
     anchor = wp.transform_get_translation(xform)
 
-    if has_axis_offset[world, mjc_eq] != 0:
+    side = has_axis_offset[world, mjc_eq]
+    if side != 0:
         qd_start = joint_qd_start[newton_jnt]
         axis_local = joint_axis[qd_start]
         axis_parent = wp.quat_rotate(wp.transform_get_rotation(xform), axis_local)
-        anchor = anchor + axis_offset_distance * axis_parent
+        anchor = anchor + (0.5 * float(side) * axis_offset_distance) * axis_parent
 
     jnt_eq_anchor1[world, mjc_eq] = anchor
 
