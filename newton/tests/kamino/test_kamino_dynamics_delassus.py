@@ -4,7 +4,7 @@
 """Unit tests for the DelassusOperator class"""
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import warp as wp
@@ -98,6 +98,11 @@ def print_delassus_info(delassus: DelassusOperator) -> None:
 ###
 
 
+def _allocation_patches(error):
+    """Fail every Warp allocator so an unguarded dense buffer is never reserved."""
+    return {name: Mock(side_effect=error) for name in ("zeros", "empty", "full", "array")}
+
+
 class TestDelassusSizing(unittest.TestCase):
     def test_accept_dense_delassus_at_int32_limit(self):
         """Allow a dense buffer at the int32 limit to reach allocation without reserving its memory."""
@@ -111,7 +116,7 @@ class TestDelassusSizing(unittest.TestCase):
             ),
         )
         delassus = DelassusOperator()
-        with patch.object(wp, "zeros", side_effect=MemoryError("Reached dense buffer allocation")):
+        with patch.multiple(wp, **_allocation_patches(MemoryError("Reached dense buffer allocation"))):
             with self.assertRaisesRegex(MemoryError, "Reached dense buffer allocation"):
                 delassus.finalize(model=model, data=DataKamino())
         self.assertEqual(delassus.num_maxsize, 2147483647)
@@ -149,12 +154,18 @@ class TestDelassusSizing(unittest.TestCase):
                     ),
                 )
                 delassus = DelassusOperator()
-                # Prevent multi-gigabyte allocations if the size check regresses.
-                with patch.object(wp, "zeros", side_effect=AssertionError("Dense buffer allocation attempted")):
+                with patch.multiple(wp, **_allocation_patches(AssertionError("Dense buffer allocation attempted"))):
                     with self.assertRaisesRegex(ValueError, "Kamino.*dense Delassus") as error:
                         delassus.finalize(model=model, data=DataKamino())
                 self.assertEqual(delassus.num_maxsize, expected_size)
-                for guidance in ("2147483647", "worlds", "max_contacts_per_world", "sparse_dynamics=True", "iterative"):
+                for guidance in (
+                    "2147483647",
+                    "worlds",
+                    "max_contacts_per_world",
+                    "sparse_dynamics=True",
+                    "sparse_jacobian=True",
+                    "iterative",
+                ):
                     self.assertIn(guidance, str(error.exception))
 
 

@@ -990,7 +990,7 @@ class DelassusOperator:
                 f"Kamino dense Delassus buffer requires {self._model_maxsize} elements across "
                 f"{self._num_worlds} worlds, exceeding the int32 indexing limit of {np.iinfo(np.int32).max}. "
                 "Reduce the number of worlds or max_contacts_per_world, or use sparse_dynamics=True "
-                "with an iterative linear solver."
+                "and sparse_jacobian=True with an iterative linear solver."
             )
 
         # Use the model's device
