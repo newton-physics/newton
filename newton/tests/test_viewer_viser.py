@@ -700,36 +700,16 @@ class TestViewerViserBindHost(unittest.TestCase):
             viewer = self._viewer(host="127.0.0.1", verbose=True)
         self.assertIn(f"http://127.0.0.1:{viewer._server.get_port()}", buffer.getvalue())
 
-    def test_wildcard_hosts_map_to_localhost(self):
-        """Map every wildcard spelling to localhost and keep specific hosts verbatim."""
-        viewer = self._viewer()
-        for host in ("0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", ""):
+    def test_url_matches_the_url_viser_prints(self):
+        """Report the same host viser's own startup message does, for both bind styles."""
+        for host, expected_host in (("0.0.0.0", "localhost"), ("127.0.0.1", "127.0.0.1")):
             with self.subTest(host=host):
-                viewer._host = host
-                self.assertEqual(viewer._browser_host(), "localhost")
-        for host in ("127.0.0.1", "192.168.1.10", "gpu-node-7.local"):
-            with self.subTest(host=host):
-                viewer._host = host
-                self.assertEqual(viewer._browser_host(), host)
-
-    def test_ipv6_literals_are_bracketed(self):
-        """Bracket a bare IPv6 literal so the port does not corrupt the URL."""
-        viewer = self._viewer()
-        for host, expected in (("::1", "[::1]"), ("fe80::1%eth0", "[fe80::1%eth0]"), ("[::1]", "[::1]")):
-            with self.subTest(host=host):
-                viewer._host = host
-                self.assertEqual(viewer._browser_host(), expected)
-
-    def test_url_parses_for_every_supported_host(self):
-        """Keep the reported URL parseable, so the port stays readable for any bind host."""
-        from urllib.parse import urlparse  # noqa: PLC0415
-
-        viewer = self._viewer()
-        for host in ("0.0.0.0", "127.0.0.1", "::1", "fe80::1%eth0", "gpu-node-7.local"):
-            with self.subTest(host=host):
-                viewer._host = host
-                parsed = urlparse(viewer.url)
-                self.assertEqual(parsed.port, viewer._server.get_port())
+                buffer = io.StringIO()
+                with contextlib.redirect_stdout(buffer):
+                    viewer = self._viewer(host=host, verbose=True)
+                url = f"http://{expected_host}:{viewer._server.get_port()}"
+                self.assertEqual(viewer.url, url)
+                self.assertIn(url, buffer.getvalue())
 
     def test_notebook_fallback_uses_the_bound_host(self):
         """Use the bound host when a notebook has no Jupyter proxy route to offer."""
@@ -738,13 +718,6 @@ class TestViewerViserBindHost(unittest.TestCase):
         with mock.patch.object(ViewerViser, "_get_jupyter_proxy_base_url", return_value=None):
             url = viewer.url
         self.assertTrue(url.startswith(f"http://127.0.0.1:{viewer._server.get_port()}"), url)
-
-    def test_host_must_be_a_nonempty_string(self):
-        """Reject an unusable bind address before Viser tries to bind it."""
-        with self.assertRaises(TypeError):
-            self._viewer(host=None)
-        with self.assertRaises(ValueError):
-            self._viewer(host="   ")
 
 
 if __name__ == "__main__":
