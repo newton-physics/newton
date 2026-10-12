@@ -463,6 +463,8 @@ for _cls, _fn, _devices in (
     ),
 ):
     add_function_test(_cls, _fn.__name__, _fn, devices=_devices)
+# Unbind the loop variables so unittest does not load the last test case class a second time.
+del _cls, _fn, _devices
 
 
 _DT = 0.01
