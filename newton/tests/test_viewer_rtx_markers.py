@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import unittest
 from unittest import mock
 
@@ -8,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, patch_sys_module
 from newton.viewer import ViewerRTX
 
 if USD_AVAILABLE:
@@ -20,9 +21,9 @@ class TestViewerRTXMarkers(unittest.TestCase):
     def setUp(self):
         self.ovrtx = mock.MagicMock()
         self.ovrtx.__version__ = "0.3.0"
-        patcher = mock.patch.dict("sys.modules", {"ovrtx": self.ovrtx})
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch_sys_module("ovrtx", self.ovrtx))
         self.viewer = ViewerRTX(headless=True)
         self.addCleanup(self.viewer.close)
         self.viewer._phase = ViewerRTX._PHASE_RENDER
