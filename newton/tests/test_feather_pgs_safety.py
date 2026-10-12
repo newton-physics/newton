@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import StdOutCapture, add_function_test, get_cuda_test_devices, get_test_devices
 
 
 def _box_on_ground(device, worlds=1):
@@ -70,7 +70,7 @@ def test_dense_capacity_failure_is_world_local(test, device, pgs_mode="matrix_fr
 
 
 def test_overflow_warning_is_printed_once(test, device, pgs_mode="matrix_free", response="immediate"):
-    """Print one device-side warning per overflowing row family."""
+    """Print one device-side warning per overflowing row family, inside this test."""
     model = _box_on_ground(device, worlds=2)
     if response == "propagation":
         # The propagation rows hold every contact, in mf_max_constraints + dense_max_constraints rows.
@@ -82,8 +82,22 @@ def test_overflow_warning_is_printed_once(test, device, pgs_mode="matrix_free", 
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_in, state_out = model.state(), model.state()
-    pipeline.collide(state_in, contacts)
-    solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+    step_output = []
+    for _ in range(2):
+        capture = StdOutCapture()
+        capture.begin()
+        try:
+            pipeline.collide(state_in, contacts)
+            solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+            # Flush the device printf into this capture.
+            wp.synchronize()
+        finally:
+            output = capture.end()
+        step_output.append([line for line in output.splitlines() if line.strip() and "load on device" not in line])
+    family = "propagation" if response == "propagation" else "matrix-free"
+    test.assertEqual(len(step_output[0]), 1, step_output[0])
+    test.assertRegex(step_output[0][0], rf"^Warning: FeatherPGS {family} constraint-row overflow in world [01]:")
+    test.assertEqual(step_output[1], [])
     expected = [0, 0, 0, 1] if response == "propagation" else [0, 1, 0, 0]
     np.testing.assert_array_equal(solver._row_overflow_warning_emitted.numpy(), expected)
 
@@ -105,6 +119,7 @@ add_function_test(
     test_dense_capacity_failure_is_world_local,
     devices=devices,
 )
+# The warning tests check their own output: CheckOutput's capture would receive the device printf.
 add_function_test(
     TestFeatherPGSCapacityStatus,
     "test_overflow_warning_is_printed_once",
