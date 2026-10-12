@@ -16,6 +16,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton._src.utils.import_urdf import parse_urdf as direct_parse_urdf
 from newton._src.utils.mesh import load_meshes_from_file
 from newton.tests.unittest_utils import assert_np_equal
 
@@ -2329,6 +2330,21 @@ FRICTION_URDF = """
 
 
 class TestUrdfJointFriction(unittest.TestCase):
+    def test_joint_damping_warning_points_to_caller(self):
+        """Report the user's import line through the builder and direct parser."""
+        for entry_point, importer in (
+            ("builder", lambda builder: builder.add_urdf(FRICTION_URDF)),
+            ("parser", lambda builder: direct_parse_urdf(builder, FRICTION_URDF)),
+        ):
+            with self.subTest(entry_point=entry_point):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    importer(newton.ModelBuilder())
+                deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
+                self.assertEqual(len(deprecations), 1)
+                self.assertEqual(deprecations[0].filename, importer.__code__.co_filename)
+                self.assertEqual(deprecations[0].lineno, importer.__code__.co_firstlineno)
+
     def test_joint_damping_mode_default_warns_for_authored_damping(self):
         """Keep drive damping by default and warn only for authored damping."""
         for source, expected, should_warn in (
