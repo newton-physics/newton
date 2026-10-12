@@ -23,7 +23,6 @@ import newton.examples
 import newton.utils
 from newton import JointTargetMode
 
-
 A1_ASSET_PATHS = {
     "left": Path("usd/a1_left/onerobotics_a1_left.usda"),
     "right": Path("usd/a1_right/onerobotics_a1_right.usda"),
