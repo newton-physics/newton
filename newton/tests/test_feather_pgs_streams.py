@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
+from newton.tests.test_feather_pgs_connect import _build_four_bar
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -69,7 +70,6 @@ def _run(model, steps=60, capture=False, **solver_kwargs):
     if capture:
         # A graph of two steps cycles both buffer sets.
         with wp.ScopedCapture(model.device) as scope:
-            solver.seed_double_buffer_events()
             substep()
             substep()
         for _ in range(steps // 2):
@@ -122,20 +122,134 @@ def test_captured_double_buffer_matches_eager(test, device, pgs_mode="matrix_fre
     np.testing.assert_array_equal(captured, eager)
 
 
-def test_capture_without_seeding_raises(test, device):
-    """Explain the missing seed instead of failing the capture on an event from outside it."""
-    model = _scene(device)
-    solver = SolverFeatherPGS(model, double_buffer=True, friction_anchor_beta=0.0, dense_max_constraints=96)
+@wp.kernel
+def _spin(iterations: int, sink: wp.array[float]):
+    value = float(0.0)
+    for i in range(iterations):
+        value = wp.sin(value + float(i))
+    sink[0] = value
+
+
+def _run_sequence(model, plan, *, delay_clear=False, **solver_kwargs):
+    """Run ``plan`` and return ``joint_q`` after each operation.
+
+    Operations: ``("eager", n)``, ``("capture", name, n)`` (records ``n`` steps without
+    running them), ``("replay", name, n)`` and ``("reset",)``. With ``delay_clear`` the
+    double-buffer clearing of the last eager step before each capture first waits for a
+    long kernel on its stream, so it is still pending when the graph is first launched.
+    """
+    solver = SolverFeatherPGS(model, friction_anchor_beta=0.0, dense_max_constraints=96, **solver_kwargs)
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
     control = model.control()
-    solver.step(state_0, state_1, control, None, 1.0 / 240.0)
-    solver.step(state_1, state_0, control, None, 1.0 / 240.0)
-    with test.assertRaisesRegex(RuntimeError, "seed_double_buffer_events"):
-        with wp.ScopedCapture(device):
+    sink = wp.zeros(1, dtype=float, device=model.device)
+
+    def substep():
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
+            wp.copy(getattr(state_0, name), getattr(state_1, name))
+
+    graphs = {}
+    results = []
+    for index, (operation, *args) in enumerate(plan):
+        if operation == "eager":
+            for step in range(args[0]):
+                last_before_capture = step == args[0] - 1 and index + 1 < len(plan) and plan[index + 1][0] == "capture"
+                if delay_clear and solver._double_buffered and last_before_capture:
+                    with wp.ScopedStream(solver._memset_stream, sync_enter=False):
+                        wp.launch(_spin, dim=1, inputs=[20_000_000], outputs=[sink])
+                substep()
+        elif operation == "capture":
+            with wp.ScopedCapture(model.device) as scope:
+                for _ in range(args[1]):
+                    substep()
+            graphs[args[0]] = scope.graph
+        elif operation == "replay":
+            for _ in range(args[1]):
+                wp.capture_launch(graphs[args[0]])
+        else:
+            solver.reset(state_0)
+        results.append(state_0.joint_q.numpy().copy())
+    solver.check_constraint_capacity()
+    return solver, results
+
+
+_SEQUENCES = {
+    "cold capture": [("capture", "a", 2), ("replay", "a", 6)],
+    "eager then capture": [("eager", 3), ("capture", "a", 2), ("replay", "a", 6), ("eager", 2)],
+    "odd steps per graph": [("eager", 2), ("capture", "a", 3), ("replay", "a", 5), ("eager", 1)],
+    "one step per graph": [("eager", 1), ("capture", "a", 1), ("replay", "a", 5)],
+    "two graphs alternated": [
+        ("eager", 2),
+        ("capture", "a", 1),
+        ("capture", "b", 2),
+        ("replay", "a", 2),
+        ("replay", "b", 2),
+        ("replay", "a", 3),
+        ("eager", 1),
+        ("replay", "b", 1),
+    ],
+    "capture after reset": [("eager", 2), ("reset",), ("capture", "a", 2), ("replay", "a", 4), ("reset",)],
+}
+
+
+def test_double_buffer_capture_sequences_match_single_buffer(test, device):
+    """Match the single-buffer trajectory bitwise across capture, replay, eager and reset sequences."""
+    model = _scene(device)
+    for name, plan in _SEQUENCES.items():
+        _, expected = _run_sequence(model, plan)
+        for streams in (False, True):
+            with test.subTest(sequence=name, use_parallel_streams=streams):
+                solver, actual = _run_sequence(model, plan, double_buffer=True, use_parallel_streams=streams)
+                test.assertTrue(solver._double_buffered)
+                for got, want in zip(actual, expected, strict=True):
+                    np.testing.assert_array_equal(got, want)
+
+
+def test_capture_after_eager_orders_the_pending_clear(test, device):
+    """Order an eager step's still-running buffer clearing before the first replay of a later graph.
+
+    The four-bar's loop-closure rows accumulate into the Jacobian, so a set that is not
+    cleared yet changes the replayed trajectory.
+    """
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.replicate(_build_four_bar(), 8)
+    model = builder.finalize(device=device)
+    control = model.control()
+    targets = model.joint_target_q.numpy().reshape(8, -1)
+    targets[:, 0] = 0.6
+    control.joint_target_q.assign(targets.reshape(-1))
+    sink = wp.zeros(1, dtype=float, device=device)
+    results = []
+    for double_buffer in (False, True):
+        solver = SolverFeatherPGS(
+            model, pgs_mode="matrix_free", pgs_iterations=16, pgs_beta=0.1, double_buffer=double_buffer
+        )
+        test.assertEqual(solver._double_buffered, double_buffer)
+        state_0, state_1 = model.state(), model.state()
+
+        def step(solver=solver, state_0=state_0, state_1=state_1):
             solver.step(state_0, state_1, control, None, 1.0 / 240.0)
-    # Eager steps after a capture do not wait on the capture's events.
-    solver.step(state_0, state_1, control, None, 1.0 / 240.0)
-    test.assertTrue(np.isfinite(state_1.joint_q.numpy()).all())
+            for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
+                wp.copy(getattr(state_0, name), getattr(state_1, name))
+
+        step()
+        step()
+        if double_buffer:
+            # Hold the last eager step's clearing back until long after the graph launches.
+            with wp.ScopedStream(solver._memset_stream, sync_enter=False):
+                wp.launch(_spin, dim=1, inputs=[100_000_000], outputs=[sink])
+        step()
+        with wp.ScopedCapture(device) as scope:
+            step()
+            step()
+        for _ in range(6):
+            wp.capture_launch(scope.graph)
+        results.append(state_0.joint_q.numpy())
+    np.testing.assert_array_equal(results[1], results[0])
 
 
 def test_flags_are_ignored_where_they_do_not_apply(test, device):
@@ -144,7 +258,6 @@ def test_flags_are_ignored_where_they_do_not_apply(test, device):
         solver = SolverFeatherPGS(_scene(device), pgs_mode="split", use_parallel_streams=True, double_buffer=True)
         test.assertEqual(solver._size_streams, {})
         test.assertFalse(solver._double_buffered)
-        solver.seed_double_buffer_events()
         return
     builder = newton.ModelBuilder()
     root = builder.add_link()
@@ -172,12 +285,11 @@ class TestFeatherPGSStreams(unittest.TestCase):
 
 
 cuda_devices = get_cuda_test_devices()
-add_function_test(
-    TestFeatherPGSStreams,
-    "test_capture_without_seeding_raises",
-    test_capture_without_seeding_raises,
-    devices=cuda_devices,
-)
+for _fn in (
+    test_double_buffer_capture_sequences_match_single_buffer,
+    test_capture_after_eager_orders_the_pending_clear,
+):
+    add_function_test(TestFeatherPGSStreams, _fn.__name__, _fn, devices=cuda_devices)
 for _fn in (test_streams_and_double_buffer_step_identically, test_captured_double_buffer_matches_eager):
     add_function_test(TestFeatherPGSStreams, _fn.__name__, _fn, devices=cuda_devices)
     add_function_test(TestFeatherPGSStreams, f"{_fn.__name__}_split", _fn, devices=cuda_devices, pgs_mode="split")

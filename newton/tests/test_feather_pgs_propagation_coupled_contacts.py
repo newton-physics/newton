@@ -142,7 +142,6 @@ def test_graph_replay_matches_eager_steps(test, device):
             pipeline.collide(state, contacts)
             solver.step(state, output, control, contacts, DT)
             with wp.ScopedCapture(device=model.device) as capture:
-                solver.seed_double_buffer_events()
                 for source, target in ((output, state), (state, output)):
                     pipeline.collide(source, contacts)
                     solver.step(source, target, control, contacts, DT)

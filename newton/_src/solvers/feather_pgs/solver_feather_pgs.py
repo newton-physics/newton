@@ -1567,8 +1567,8 @@ class SolverFeatherPGS(SolverBase):
             double_buffer: Keep two sets of the grouped mass-matrix and Jacobian buffers and
                 clear the set a step used on a separate CUDA stream while the next step runs
                 on the other set. Results are unchanged; CPU devices and the sparse mass
-                factors ignore it. To capture :meth:`step` in a CUDA graph, call
-                :meth:`seed_double_buffer_events` inside the capture before the first step.
+                factors ignore it. Within a captured graph the clearing overlaps the next
+                step; after an eager step, the stream's later work waits for its clearing.
             friction_anchor_beta: Position-correction gain of persistent friction patches;
                 ``0`` selects point friction. ``None`` selects ``0.2`` with
                 ``pgs_mode="matrix_free"``, and point friction with ``pgs_mode="split"``,
@@ -6084,19 +6084,6 @@ class SolverFeatherPGS(SolverBase):
             for stream in self._size_streams.values():
                 main_stream.wait_event(stream.record_event())
 
-    def seed_double_buffer_events(self) -> None:
-        """Seed the double-buffer waits of the first two steps of a CUDA graph capture.
-
-        With ``double_buffer``, call this inside the capture before the first :meth:`step`;
-        each step waits for the clearing of its buffer set, which the seeded events stand in
-        for. Without double buffering it does nothing.
-        """
-        if self._memset_stream is None:
-            return
-        main_stream = wp.get_stream(self.model.device)
-        self._memset_done_event = [main_stream.record_event(), main_stream.record_event()]
-        self._memset_done_capture = [self._current_capture()] * 2
-
     def _current_capture(self):
         """Return the graph the current stream captures into, or ``None`` outside a capture."""
         stream = wp.get_stream(self.model.device)
@@ -6109,16 +6096,11 @@ class SolverFeatherPGS(SolverBase):
         self.J_by_size = self._J_bufs[index]
         if self._jy_world_aliased:
             self.J_world = self.J_by_size[self.size_groups[0]]
+        # Only a clearing recorded earlier in the same capture is pending here: an eager step joins its
+        # clearing before it returns, and a graph launch ends after its clearing.
         event = self._memset_done_event[index]
         capture = self._current_capture()
-        if event is not None and self._memset_done_capture[index] is not capture:
-            if capture is not None:
-                raise RuntimeError(
-                    "double_buffer requires seed_double_buffer_events() inside the capture before the first step"
-                )
-            # The capture's clearing ran in its graph launches, ordered before this step.
-            event = None
-        if event is not None:
+        if event is not None and capture is not None and self._memset_done_capture[index] is capture:
             wp.get_stream(self.model.device).wait_event(event)
 
     def _clear_double_buffer(self) -> None:
@@ -6130,8 +6112,13 @@ class SolverFeatherPGS(SolverBase):
                 if self._mass_update_global_flag:
                     self._H_bufs[index][size].zero_()
                 self._J_bufs[index][size].zero_()
-        self._memset_done_event[index] = self._memset_stream.record_event()
-        self._memset_done_capture[index] = self._current_capture()
+        event = self._memset_stream.record_event()
+        capture = self._current_capture()
+        if capture is None:
+            # A graph captured after this step cannot wait on an event recorded outside it.
+            wp.get_stream(self.model.device).wait_event(event)
+        self._memset_done_event[index] = event
+        self._memset_done_capture[index] = capture
         self._buffer_index = 1 - index
 
     def _accumulate_row_watermarks(self, contacts: Contacts | None) -> None:

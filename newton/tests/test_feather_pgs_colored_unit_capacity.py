@@ -145,7 +145,6 @@ def test_mixed_units_graph_matches_eager(test, device):
         substep()
         if capture:
             with wp.ScopedCapture(device) as scope:
-                solver.seed_double_buffer_events()
                 substep()
             wp.capture_launch(scope.graph)
             _assert_mixed_topology(test, solver, contacts)
