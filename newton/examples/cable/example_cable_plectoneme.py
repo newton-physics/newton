@@ -31,17 +31,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The cable initially hangs in a smooth loop between fixed endpoints.",
-        "As the endpoints counter-twist, the centerline buckles out of plane and folds into a supercoil.",
-        "Self-contact keeps the twisted strands from simply passing through each other; the "
-        "cable remains connected and bounded.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def _drive_endpoints_kernel(
@@ -314,6 +303,18 @@ class Example:
         assert np.isfinite(body_qd).all(), "non-finite body velocities"
         assert np.max(np.abs(body_q[:, :3])) < 10.0, "body positions blew up"
         assert np.max(np.abs(body_qd)) < 1.0e3, "body velocities blew up"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The cable initially hangs in a smooth loop between fixed endpoints.",
+        "As the endpoints counter-twist, the centerline buckles out of plane and folds into a supercoil.",
+        "Self-contact keeps the twisted strands from simply passing through each other; the "
+        "cable remains connected and bounded.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

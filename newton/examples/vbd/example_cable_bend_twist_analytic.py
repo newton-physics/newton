@@ -51,25 +51,6 @@ import newton
 import newton.examples
 from newton.examples.vbd._viewer import com_from_node, node_xyz, set_viewer_camera
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Kinematic endpoints follow the prescribed bend or twist targets.",
-        "After the ramp and hold, simulated overlays closely match the analytic reference for each displayed row.",
-        "Bend rows follow constant-curvature centerlines without unwanted twist; twist rows "
-        "distribute twist uniformly without visible bending.",
-    ),
-    "runs": (
-        {"args": (), "success_criteria": ("Both bend and twist rows are displayed.",)},
-        {"args": ("--cable-analytic-mode", "bend"), "success_criteria": ("Only bend rows are displayed.",)},
-        {"args": ("--cable-analytic-mode", "twist"), "success_criteria": ("Only twist rows are displayed.",)},
-        {
-            "args": ("--cable-analytic-mode", "twist_max"),
-            "success_criteria": ("The maximum-twist reference row is displayed.",),
-        },
-    ),
-}
-
 
 @wp.kernel
 def _set_kinematic_targets_kernel(
@@ -545,6 +526,26 @@ class Example:
             assert max(twist_tip_errors) < math.radians(0.02), f"twist tip errors too high: {twist_tip_errors}"
             assert max(twist_linear_errors) < math.radians(0.02), f"twist linear errors too high: {twist_linear_errors}"
             assert max(twist_transverse) < 1.0e-5, f"pure twist created transverse motion: {twist_transverse}"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Kinematic endpoints follow the prescribed bend or twist targets.",
+        "After the ramp and hold, simulated overlays closely match the analytic reference for each displayed row.",
+        "Bend rows follow constant-curvature centerlines without unwanted twist; twist rows "
+        "distribute twist uniformly without visible bending.",
+    ),
+    "runs": (
+        {"args": (), "success_criteria": ("Both bend and twist rows are displayed.",)},
+        {"args": ("--cable-analytic-mode", "bend"), "success_criteria": ("Only bend rows are displayed.",)},
+        {"args": ("--cable-analytic-mode", "twist"), "success_criteria": ("Only twist rows are displayed.",)},
+        {
+            "args": ("--cable-analytic-mode", "twist_max"),
+            "success_criteria": ("The maximum-twist reference row is displayed.",),
+        },
+    ),
+}
 
 
 if __name__ == "__main__":

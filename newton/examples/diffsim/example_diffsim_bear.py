@@ -23,17 +23,6 @@ import newton
 import newton.examples
 from newton.tests.unittest_utils import most
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A deformable bear is standing on the ground plane.",
-        "It gradually learns how to run.",
-        "It may take a few minutes until getting a convincing running bear.",
-        "The loss is plotted on the right side of the window.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 PHASE_COUNT = 8
 PHASE_STEP = (2.0 * math.pi) / PHASE_COUNT
 PHASE_FREQ = 5.0
@@ -334,6 +323,18 @@ class Example:
             "--sim-steps", type=int, default=300, help="Number of simulation steps to execute in a training run."
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A deformable bear is standing on the ground plane.",
+        "It gradually learns how to run.",
+        "It may take a few minutes until getting a convincing running bear.",
+        "The loss is plotted on the right side of the window.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

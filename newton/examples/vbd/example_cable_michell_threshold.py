@@ -35,18 +35,6 @@ import newton
 import newton.examples
 from newton.examples.vbd._viewer import node_xyz, set_viewer_camera
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The fixed planar reference rings remain planar; do not count these kinematic "
-        "references as evidence of dynamic stability.",
-        "The above-threshold dynamic sweep develops a visible out-of-plane writhe response.",
-        "Rings remain finite and connected; neither the post-buckling shape nor amplitude is "
-        "required to vary monotonically with stiffness.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 def _cable_coplanarity(points) -> float:
     """Scale-free coplanarity metric: 0 for planar centerlines, growing out-of-plane."""
@@ -416,6 +404,19 @@ class Example:
         assert max_above_threshold_coplanarity > 10.0 * max(max_stable_coplanarity, 1.0e-8), (
             f"above-threshold rings should become much less planar than stable rings: {metrics}"
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The fixed planar reference rings remain planar; do not count these kinematic "
+        "references as evidence of dynamic stability.",
+        "The above-threshold dynamic sweep develops a visible out-of-plane writhe response.",
+        "Rings remain finite and connected; neither the post-buckling shape nor amplitude is "
+        "required to vary monotonically with stiffness.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

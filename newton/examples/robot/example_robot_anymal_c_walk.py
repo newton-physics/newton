@@ -19,12 +19,6 @@ import newton.examples
 import newton.utils
 from newton.examples.robot.onnx_policy_utils import validate_policy_io_shapes
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": ("An ANYmal C robot walks forward on a flat ground plane.",),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
 
@@ -386,6 +380,13 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_mujoco_contacts_arg(parser)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": ("An ANYmal C robot walks forward on a flat ground plane.",),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

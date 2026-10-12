@@ -20,15 +20,6 @@ import newton
 import newton.examples
 import newton.ik as ik
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Four replicated setups appear, each consisting of a Franka robotic arm in front of a table with three cubes on it.",
-        "The Franka arm moves and stacks the three cubes together.",
-    ),
-    "runs": ({"args": ("--world-count", "4"), "success_criteria": ()},),
-}
-
 
 class TaskType(enum.IntEnum):
     APPROACH = 0
@@ -718,6 +709,16 @@ class Example:
         parser.set_defaults(world_count=16)
         parser.add_argument("--verbose", action="store_true", help="Enable verbose output.")
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Four replicated setups appear, each consisting of a Franka robotic arm in front of a table with three cubes on it.",
+        "The Franka arm moves and stacks the three cubes together.",
+    ),
+    "runs": ({"args": ("--world-count", "4"), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

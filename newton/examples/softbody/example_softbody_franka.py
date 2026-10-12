@@ -25,16 +25,6 @@ import newton.utils
 from newton import ModelBuilder, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A setup appears with a Franka robotic arm and a table with a rubber duck on it.",
-        "The Franka arm starts to move and catch the rubber duck, raise it, and then drop it nicely on the table.",
-        "The rubber duck is behaving as a softbody.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 DUCK_OPACITY = 0.55
 
 
@@ -404,6 +394,17 @@ class Example:
             "body velocities are within a reasonable range",
             lambda q, qd: max(abs(qd)) < 0.7,
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A setup appears with a Franka robotic arm and a table with a rubber duck on it.",
+        "The Franka arm starts to move and catch the rubber duck, raise it, and then drop it nicely on the table.",
+        "The rubber duck is behaving as a softbody.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -23,18 +23,6 @@ import newton.usd
 from newton.math import quat_between_vectors_robust
 from newton.solvers import SolverVBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A cable-attached RJ45 plug and matching socket appear.",
-        "Drag the translation gizmo along the insertion axis: the latch deflects and the plug seats in the socket.",
-        "The seated latch prevents simply withdrawing the plug.",
-        "Depress the latch and withdraw the plug using the gizmo; the plug releases without "
-        "passing through the socket walls.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 CONTACT_KE = 1.0e5
 CONTACT_KD = 0.0
 
@@ -527,6 +515,19 @@ class Example:
             assert np.all(np.isfinite(body_q[i])), f"Body {i} has non-finite transform"
             drift = np.linalg.norm(body_q[i] - initial_q[i])
             assert drift < 1.0, f"Body {i} drifted {drift:.4f} from initial transform"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A cable-attached RJ45 plug and matching socket appear.",
+        "Drag the translation gizmo along the insertion axis: the latch deflects and the plug seats in the socket.",
+        "The seated latch prevents simply withdrawing the plug.",
+        "Depress the latch and withdraw the plug using the gizmo; the plug releases without "
+        "passing through the socket walls.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -23,16 +23,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "An ordered pile of cables drops onto the ground.",
-        "The pile settles and remains mostly static, with no sustained visible contact chatter "
-        "or cables falling through the ground.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(
@@ -269,6 +259,17 @@ class Example:
             )
 
             assert (np.abs(body_velocities) < 5e2).all(), "Velocities too large"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "An ordered pile of cables drops onto the ground.",
+        "The pile settles and remains mostly static, with no sustained visible contact chatter "
+        "or cables falling through the ground.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

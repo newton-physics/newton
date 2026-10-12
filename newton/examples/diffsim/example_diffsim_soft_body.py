@@ -22,17 +22,6 @@ import newton.examples
 from newton.tests.unittest_utils import most
 from newton.utils import bourke_color_map
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A deformable box is bouncing on the ground plane then on a wall and tries to reach a "
-        "floating target (purple box).",
-        "Previously displayed rollout trajectories remain visible while newer trajectories are added.",
-        "The deformable box is becoming increasingly good at reaching the target.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def assign_param(params: wp.array[wp.float32], tet_materials: wp.array2d[wp.float32]):
@@ -379,6 +368,18 @@ class Example:
             help="Set material behavior to be Anisotropic or Isotropic.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A deformable box is bouncing on the ground plane then on a wall and tries to reach a "
+        "floating target (purple box).",
+        "Previously displayed rollout trajectories remain visible while newer trajectories are added.",
+        "The deformable box is becoming increasingly good at reaching the target.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

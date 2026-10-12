@@ -27,15 +27,6 @@ from newton.examples.robot.example_robot_anymal_c_walk import (
 from newton.examples.robot.onnx_policy_utils import validate_policy_io_shapes
 from newton.solvers import SolverImplicitMPM
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "An Anymal robot is walking on a ground covered by particles.",
-        "The particles are reacting realistically to the movement of the robot.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -354,6 +345,16 @@ def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, de
         jitter=2.0 * radius,
         radius_mean=radius,
     )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "An Anymal robot is walking on a ground covered by particles.",
+        "The particles are reacting realistically to the movement of the robot.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

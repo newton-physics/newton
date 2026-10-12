@@ -18,16 +18,6 @@ import newton.examples
 from newton.tests.unittest_utils import most
 from newton.utils import bourke_color_map
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A cage of anchor spheres, a spring-connected particle, and a red target appear.",
-        "With --verbose, training iterations and loss values are printed.",
-        "As training converges, the particle approaches its target and loss reaches below 1e-6.",
-    ),
-    "runs": ({"args": ("--verbose",), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def compute_loss_kernel(
@@ -285,6 +275,17 @@ class Example:
             "--verbose", action="store_true", help="Print out additional status messages during execution."
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A cage of anchor spheres, a spring-connected particle, and a red target appear.",
+        "With --verbose, training iterations and loss values are printed.",
+        "As training converges, the particle approaches its target and loss reaches below 1e-6.",
+    ),
+    "runs": ({"args": ("--verbose",), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

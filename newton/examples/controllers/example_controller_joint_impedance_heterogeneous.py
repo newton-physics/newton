@@ -33,17 +33,6 @@ import newton.solvers
 from newton import JointTargetMode
 from newton.controllers import ControllerJointImpedance
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The three-joint chain tracks sinusoidal targets with staggered phases.",
-        "The single pendulum rotates continuously through the horizontal pose despite gravity.",
-        "Both mechanisms stay connected and follow bounded motion without unstable control oscillation.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
-
 # ---------------------------------------------------------------------------
 # Robot geometry
 # ---------------------------------------------------------------------------
@@ -261,6 +250,17 @@ class Example:
         assert np.all(np.abs(joint_q[:3] - offset_a) <= TARGET_AMP + 0.3), (
             f"Robot A joints out of expected range: {joint_q[:3]}"
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The three-joint chain tracks sinusoidal targets with staggered phases.",
+        "The single pendulum rotates continuously through the horizontal pose despite gravity.",
+        "Both mechanisms stay connected and follow bounded motion without unstable control oscillation.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -23,18 +23,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverMuJoCo, SolverVBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A MuJoCo-driven palm with two prismatic cube fingers appears around a VBD soft grid.",
-        "The gripper fingers close around the soft object.",
-        "The soft object deforms under the grip.",
-        "Proxy bodies and proxy joints make the VBD gripper view track the MuJoCo gripper configuration.",
-        "The soft object should stay bounded and should not drift unexpectedly from the gripper.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def _set_finger_targets(
@@ -411,6 +399,19 @@ class Example:
             help="Disable graph capture.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A MuJoCo-driven palm with two prismatic cube fingers appears around a VBD soft grid.",
+        "The gripper fingers close around the soft object.",
+        "The soft object deforms under the grip.",
+        "Proxy bodies and proxy joints make the VBD gripper view track the MuJoCo gripper configuration.",
+        "The soft object should stay bounded and should not drift unexpectedly from the gripper.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

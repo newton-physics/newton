@@ -17,17 +17,6 @@ import newton.examples
 from newton.solvers import SolverKamino, SolverMuJoCo, SolverSemiImplicit, SolverVBD, SolverXPBD
 from newton.viewer import ViewerBase
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "An orange ball falls on a deformable cuboid",
-        "The deformable cuboid is vibrating/oscillating before the ball hits it.",
-        "The ball bounces off the cuboid and rolls off screen.",
-        "The cuboid approaches rest over time.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 GRID_DIM_X = 20
 GRID_DIM_Y = 10
 GRID_DIM_Z = 10
@@ -412,6 +401,18 @@ class Example:
             default=10,
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "An orange ball falls on a deformable cuboid",
+        "The deformable cuboid is vibrating/oscillating before the ball hits it.",
+        "The ball bounces off the cuboid and rolls off screen.",
+        "The cuboid approaches rest over time.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

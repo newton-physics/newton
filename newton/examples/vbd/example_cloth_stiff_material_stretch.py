@@ -29,17 +29,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "5 blue-and-white checkerboard sheets are oriented so that they are parallel to the ground plane.",
-        "Each material is stretched so that it elongates towards the camera.",
-        "The materials oscillate as they are stretched.",
-        "The oscillations are damped and the materials quickly find a rest pose at the maximum stretch.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 def _theoretical_area_ratio(stretch: float, nu: float) -> float:
     """Closed-form area ratio for the StableNH 2D membrane under uniaxial stretch.
@@ -259,6 +248,18 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "5 blue-and-white checkerboard sheets are oriented so that they are parallel to the ground plane.",
+        "Each material is stretched so that it elongates towards the camera.",
+        "The materials oscillate as they are stretched.",
+        "The oscillations are damped and the materials quickly find a rest pose at the maximum stretch.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

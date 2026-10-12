@@ -18,15 +18,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The command finishes after its configured simulation frames and writes humanoid_recording.bin by default.",
-        "The default recording contains 1000 frames of 100 humanoid worlds and can be loaded by replay_viewer.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -121,6 +112,16 @@ class Example:
         parser.add_argument("recording_file", nargs="?", default="humanoid_recording.bin")
         parser.set_defaults(num_frames=1000, world_count=100)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The command finishes after its configured simulation frames and writes humanoid_recording.bin by default.",
+        "The default recording contains 1000 frames of 100 humanoid worlds and can be loaded by replay_viewer.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

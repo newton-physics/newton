@@ -16,18 +16,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Three two-link systems appear: a revolute pendulum on the left, a prismatic slider in "
-        "the middle, and a ball joint on the right.",
-        "The revolute pendulum swings; the prismatic body initially slides downward along its constrained axis.",
-        "Right-drag the hanging bodies: the revolute joint stays in its plane, the slider "
-        "follows its axis, and the ball joint permits rotation about all three axes.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.func
 def _ball_body_stays_on_joint_sphere(q: wp.transform, qd: wp.spatial_vector):
@@ -351,6 +339,19 @@ class Example:
         if self.contacts is not None:
             self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Three two-link systems appear: a revolute pendulum on the left, a prismatic slider in "
+        "the middle, and a ball joint on the right.",
+        "The revolute pendulum swings; the prismatic body initially slides downward along its constrained axis.",
+        "Right-drag the hanging bodies: the revolute joint stays in its plane, the slider "
+        "follows its axis, and the ball joint permits rotation about all three axes.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

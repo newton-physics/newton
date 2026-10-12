@@ -696,6 +696,9 @@ listed run; run-specific criteria are additional:
         ),
     }
 
+Place ``_EXAMPLE_SPEC`` after the simulation definitions, immediately before
+the ``if __name__ == "__main__":`` launch block.
+
 Validate metadata with ``uv run --extra dev -m newton.tests -k test_example_spec``.
 Shared visual QA procedures live in ``.agents/skills/example-testing/``;
 these human criteria do not imply equivalent automated assertions.

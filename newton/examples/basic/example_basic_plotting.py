@@ -27,19 +27,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Four humanoids fall onto the ground in the default run.",
-        "The example panel updates the step, solver iterations, kinetic energy, potential "
-        "energy, and active constraints.",
-        "Four live scalar plots show solver iterations, kinetic energy, potential energy, and active constraints.",
-        "Picking and moving a humanoid in world 0 changes the energy and constraint plots; "
-        "solver effort reflects the maximum across worlds.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -233,6 +220,20 @@ class Example:
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=4)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Four humanoids fall onto the ground in the default run.",
+        "The example panel updates the step, solver iterations, kinetic energy, potential "
+        "energy, and active constraints.",
+        "Four live scalar plots show solver iterations, kinetic energy, potential energy, and active constraints.",
+        "Picking and moving a humanoid in world 0 changes the energy and constraint plots; "
+        "solver effort reflects the maximum across worlds.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

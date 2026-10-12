@@ -18,15 +18,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverVBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A deformable box is dropped on an extended piece of cloth.",
-        "The deformable box is bouncing several times on the cloth.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -238,6 +229,16 @@ class Example:
             default=10,
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A deformable box is dropped on an extended piece of cloth.",
+        "The deformable box is bouncing several times on the cloth.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

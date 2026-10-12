@@ -21,17 +21,6 @@ import newton.examples
 import newton.usd
 from newton import ParticleFlags
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A curtain begins oriented on the x/y plane (assuming gravity is along z).",
-        "The curtain is pinned to the world along one side.",
-        "The curtain falls under gravity and oscillates around its rest pose.",
-        "The curtain loses energy and approaches its rest pose.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args=None):
@@ -165,6 +154,18 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A curtain begins oriented on the x/y plane (assuming gravity is along z).",
+        "The curtain is pinned to the world along one side.",
+        "The curtain falls under gravity and oscillates around its rest pose.",
+        "The curtain loses energy and approaches its rest pose.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

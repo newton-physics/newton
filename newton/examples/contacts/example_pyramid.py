@@ -16,20 +16,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Box pyramids and a large sphere on a ramp appear; pyramid count and height match the selected options.",
-        "The sphere rolls down the ramp and knocks boxes from the stacks.",
-        "Boxes respond through contact without explosive motion.",
-    ),
-    "runs": (
-        {"args": ("--broad-phase", "nxn"), "success_criteria": ()},
-        {"args": ("--broad-phase", "sap", "--num-pyramids", "5", "--pyramid-size", "40"), "success_criteria": ()},
-        {"args": ("--broad-phase", "explicit", "--num-pyramids", "40", "--pyramid-size", "5"), "success_criteria": ()},
-    ),
-}
-
 DEFAULT_NUM_PYRAMIDS = 20
 DEFAULT_PYRAMID_SIZE = 20
 CUBE_HALF = 0.4
@@ -275,6 +261,21 @@ class Example:
             help=f"Number of rows in each pyramid base (default: {DEFAULT_PYRAMID_SIZE}).",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Box pyramids and a large sphere on a ramp appear; pyramid count and height match the selected options.",
+        "The sphere rolls down the ramp and knocks boxes from the stacks.",
+        "Boxes respond through contact without explosive motion.",
+    ),
+    "runs": (
+        {"args": ("--broad-phase", "nxn"), "success_criteria": ()},
+        {"args": ("--broad-phase", "sap", "--num-pyramids", "5", "--pyramid-size", "40"), "success_criteria": ()},
+        {"args": ("--broad-phase", "explicit", "--num-pyramids", "40", "--pyramid-size", "5"), "success_criteria": ()},
+    ),
+}
 
 
 if __name__ == "__main__":

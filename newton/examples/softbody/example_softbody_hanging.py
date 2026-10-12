@@ -15,16 +15,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "4 hanging elongated softbodies appear with different damping values.",
-        "The softbodies are oscillating until reaching a steady state.",
-        "Damping value is higher on the left so the softbodies stop oscillating earlier on the left.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -155,6 +145,17 @@ class Example:
             default="vbd",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "4 hanging elongated softbodies appear with different damping values.",
+        "The softbodies are oscillating until reaching a steady state.",
+        "Damping value is higher on the left so the softbodies stop oscillating earlier on the left.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -19,15 +19,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Quadrupeds drop onto the plane and remain supported on their four legs.",
-        "The resting robots stay stable without sustained jitter or falling through the ground.",
-    ),
-    "runs": ({"args": ("--world-count", "16"), "success_criteria": ("Sixteen quadrupeds appear.",)},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -230,6 +221,16 @@ class Example:
             help="Solver type: xpbd (default), vbd, or kamino",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Quadrupeds drop onto the plane and remain supported on their four legs.",
+        "The resting robots stay stable without sustained jitter or falling through the ground.",
+    ),
+    "runs": ({"args": ("--world-count", "16"), "success_criteria": ("Sixteen quadrupeds appear.",)},),
+}
 
 
 if __name__ == "__main__":

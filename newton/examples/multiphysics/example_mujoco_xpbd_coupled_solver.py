@@ -27,23 +27,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverKamino, SolverMuJoCo, SolverXPBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Rigid boxes and an articulated chain appear above a cloth sheet.",
-        "The rigid bodies interact with the deformables, bouncing on contact without flying "
-        "apart or excessively penetrating the ground.",
-        "The deformables remain bounded without stretching explosively or sinking through the ground.",
-    ),
-    "runs": (
-        {
-            "args": (),
-            "success_criteria": ("Deformable contact reactions affect the rigid bodies through proxy coupling.",),
-        },
-        {"args": ("--solver", "xpbd"), "success_criteria": ("The same scene runs as a single-solver XPBD reference.",)},
-    ),
-}
-
 
 def _add_rigid_solver_arg(parser) -> None:
     parser.add_argument(
@@ -337,6 +320,24 @@ class Example:
             default=1,
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Rigid boxes and an articulated chain appear above a cloth sheet.",
+        "The rigid bodies interact with the deformables, bouncing on contact without flying "
+        "apart or excessively penetrating the ground.",
+        "The deformables remain bounded without stretching explosively or sinking through the ground.",
+    ),
+    "runs": (
+        {
+            "args": (),
+            "success_criteria": ("Deformable contact reactions affect the rigid bodies through proxy coupling.",),
+        },
+        {"args": ("--solver", "xpbd"), "success_criteria": ("The same scene runs as a single-solver XPBD reference.",)},
+    ),
+}
 
 
 if __name__ == "__main__":

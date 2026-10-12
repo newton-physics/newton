@@ -35,18 +35,6 @@ import newton
 import newton.examples
 from newton.examples.vbd._viewer import node_xyz, set_viewer_camera
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Three cantilever cables receive the same transverse tip load while their roots remain fixed.",
-        "After the load ramp and hold, larger bend stiffness produces smaller deflection; tip "
-        "deflection times bend stiffness is approximately equal across the cables.",
-        "The tips bend downward without appreciable sideways drift or axial stretching; "
-        "inspect the held response for persistent jitter.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     """Cantilever bend stiffness validation."""
@@ -243,6 +231,19 @@ class Example:
                 f"cable {i}: tip X displacement {x:+.4f} m outside expected "
                 f"foreshortening range [-{geometric_bound:.4f}, {0.005 * self.cable_length:.4f}]"
             )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Three cantilever cables receive the same transverse tip load while their roots remain fixed.",
+        "After the load ramp and hold, larger bend stiffness produces smaller deflection; tip "
+        "deflection times bend stiffness is approximately equal across the cables.",
+        "The tips bend downward without appreciable sideways drift or axial stretching; "
+        "inspect the held response for persistent jitter.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

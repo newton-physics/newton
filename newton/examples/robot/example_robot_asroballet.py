@@ -29,25 +29,6 @@ import newton.examples
 import newton.utils
 from newton.examples.robot.onnx_policy_utils import validate_policy_io_shapes
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The asRoBallet robot appears balanced on its ball.",
-        "After the viewer has keyboard focus, the robot responds to the i/k, j/l, and u/o controls.",
-        "The robot remains upright without the base separating from the ball.",
-    ),
-    "runs": (
-        {
-            "args": ("--controller", "policy"),
-            "success_criteria": ("The learned-policy controller responds to the commanded motion.",),
-        },
-        {
-            "args": ("--controller", "lqr"),
-            "success_criteria": ("The LQR controller responds to the commanded motion.",),
-        },
-    ),
-}
-
 ASROBALLET_SCENE_PATH = Path("mjcf") / "scene_floating_ball.xml"
 ASROBALLET_VIRTUAL_BALL_JOINT_SCENE_PATH = Path("mjcf") / "scene.xml"
 ASROBALLET_VELOCITY_POLICY_PATH = Path("rl_policies") / "velocity_tracking.onnx"
@@ -1441,6 +1422,26 @@ class Example:
         parser.add_argument("--velocity-y", type=float, default=0.0, help="Commanded lateral velocity [m/s].")
         parser.add_argument("--yaw-rate", type=float, default=0.0, help="Commanded yaw rate [rad/s].")
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The asRoBallet robot appears balanced on its ball.",
+        "After the viewer has keyboard focus, the robot responds to the i/k, j/l, and u/o controls.",
+        "The robot remains upright without the base separating from the ball.",
+    ),
+    "runs": (
+        {
+            "args": ("--controller", "policy"),
+            "success_criteria": ("The learned-policy controller responds to the commanded motion.",),
+        },
+        {
+            "args": ("--controller", "lqr"),
+            "success_criteria": ("The LQR controller responds to the commanded motion.",),
+        },
+    ),
+}
 
 
 if __name__ == "__main__":

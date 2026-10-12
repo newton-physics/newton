@@ -16,15 +16,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The bird remains balanced upright on the pedestal in the undisturbed run.",
-        "The body does not drift off its support or fall through the pedestal.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 PEDESTAL_BOTTOM_RADIUS = 0.08
 PEDESTAL_TOP_RADIUS = 0.006
 PEDESTAL_HEIGHT = 0.12
@@ -221,6 +212,16 @@ class Example:
         parser = newton.examples.create_parser()
         parser.add_argument("--solver", default="xpbd", choices=SOLVER_CHOICES, help="Solver used for the balance toy.")
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The bird remains balanced upright on the pedestal in the undisturbed run.",
+        "The body does not drift off its support or fall through the pedestal.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

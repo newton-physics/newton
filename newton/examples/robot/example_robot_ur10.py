@@ -20,15 +20,6 @@ import newton.utils
 from newton import JointTargetMode
 from newton.selection import ArticulationView
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "32 UR10 robotic arms appear standing on a cylinder.",
-        "They are all moving, performing different motions.",
-    ),
-    "runs": ({"args": ("--world-count", "32"), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def update_joint_target_trajectory_kernel(
@@ -225,6 +216,16 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=None)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "32 UR10 robotic arms appear standing on a cylinder.",
+        "They are all moving, performing different motions.",
+    ),
+    "runs": ({"args": ("--world-count", "32"), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

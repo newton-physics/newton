@@ -23,15 +23,6 @@ import newton.examples
 from newton import ModelFlags
 from newton.selection import ArticulationView
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "8 Ants appear on the ground plane.",
-        "They are all moving back and forth with different behavior due to random friction applied to them.",
-    ),
-    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
-}
-
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
 VERBOSE = True
@@ -283,6 +274,16 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=16)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "8 Ants appear on the ground plane.",
+        "They are all moving back and forth with different behavior due to random friction applied to them.",
+    ),
+    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

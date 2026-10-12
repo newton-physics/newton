@@ -28,16 +28,6 @@ import newton.utils
 from newton import Model, ModelBuilder, State, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A setup appears with a Franka robotic arm and a table with a shirt on it.",
-        "The Franka arm starts to move and fold the shirt properly.",
-        "The shirt should be folded in a reasonable state at the end of the demo.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def scale_positions(src: wp.array[wp.vec3], scale: float, dst: wp.array[wp.vec3]):
@@ -660,6 +650,17 @@ class Example:
             "body velocities are within a reasonable range",
             lambda q, qd: max(abs(qd)) < 70.0,
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A setup appears with a Franka robotic arm and a table with a shirt on it.",
+        "The Franka arm starts to move and fold the shirt properly.",
+        "The shirt should be folded in a reasonable state at the end of the demo.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

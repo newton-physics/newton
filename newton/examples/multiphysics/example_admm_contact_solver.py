@@ -24,17 +24,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverSemiImplicit, SolverXPBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A ball-jointed rigid tray/drawer appears below a grid-like XPBD particle pad.",
-        "The XPBD particles fall into the tray under gravity.",
-        "The tray responds to particle contact through ADMM contact coupling.",
-        "The particles should contact the tray and each other instead of passing through the tray.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel(enable_backward=False)
 def _gather_particles(
@@ -419,6 +408,18 @@ class Example:
             default=0.02,
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A ball-jointed rigid tray/drawer appears below a grid-like XPBD particle pad.",
+        "The XPBD particles fall into the tray under gravity.",
+        "The tray responds to particle contact through ADMM contact coupling.",
+        "The particles should contact the tray and each other instead of passing through the tray.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

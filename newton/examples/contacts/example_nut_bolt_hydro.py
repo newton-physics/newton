@@ -21,16 +21,6 @@ import newton
 import newton.examples
 from newton.geometry import HydroelasticSDF
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "20 identical setups appear consisting of a nut and bolt system.",
-        "The nut is slowly screwing into the bolt until reaching the end of the bolt.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
-
 # Assembly type for the nut and bolt
 
 
@@ -529,6 +519,16 @@ class Example:
             help="Number of assemblies per world.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "20 identical setups appear consisting of a nut and bolt system.",
+        "The nut is slowly screwing into the bolt until reaching the end of the bolt.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

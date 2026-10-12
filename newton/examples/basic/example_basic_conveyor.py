@@ -19,19 +19,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A circular belt carries boxes, capsules, and spheres around the conveyor.",
-        "Changing --belt-speed changes the transport speed.",
-        "Picked bags interact with the belt and other bags after release without falling through the belt.",
-    ),
-    "runs": (
-        {"args": ("--solver", "xpbd"), "success_criteria": ()},
-        {"args": ("--solver", "vbd", "--belt-speed", "2.0"), "success_criteria": ()},
-    ),
-}
-
 BELT_CENTER_Z = 0.55
 BELT_RING_RADIUS = 1.8
 BELT_HALF_WIDTH = 0.24
@@ -526,6 +513,20 @@ class Example:
             assert BELT_RING_RADIUS - 0.5 < radius < BELT_RING_RADIUS + 0.5, (
                 f"Bag body {body_idx} left the conveyor annulus: radius={radius:.3f}"
             )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A circular belt carries boxes, capsules, and spheres around the conveyor.",
+        "Changing --belt-speed changes the transport speed.",
+        "Picked bags interact with the belt and other bags after release without falling through the belt.",
+    ),
+    "runs": (
+        {"args": ("--solver", "xpbd"), "success_criteria": ()},
+        {"args": ("--solver", "vbd", "--belt-speed", "2.0"), "success_criteria": ()},
+    ),
+}
 
 
 if __name__ == "__main__":

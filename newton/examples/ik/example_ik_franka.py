@@ -18,16 +18,6 @@ import newton.examples
 import newton.ik as ik
 import newton.utils
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A fixed-base Franka arm appears with a gizmo at its gripper.",
-        "Left-drag and rotate the gizmo: the arm tracks reachable target poses without disconnected links.",
-        "When released, the target snaps back to the solved tool-center-point pose.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -164,6 +154,17 @@ class Example:
 
         self.viewer.end_frame()
         wp.synchronize()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A fixed-base Franka arm appears with a gizmo at its gripper.",
+        "Left-drag and rotate the gizmo: the arm tracks reachable target poses without disconnected links.",
+        "When released, the target snaps back to the solved tool-center-point pose.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

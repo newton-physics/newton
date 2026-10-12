@@ -16,16 +16,6 @@ import newton
 import newton.examples
 from newton import ParticleFlags
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "One roller initially carries the cloth while the other is empty.",
-        "Rotation transfers cloth from the full roller to the empty one without visible "
-        "tearing, explosive stretching, or persistent interpenetration.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def increment_time(time: wp.array[float], dt: float):
@@ -544,6 +534,17 @@ class Example:
         # Ensure bbox hasn't exploded
         bbox_size = np.linalg.norm(np.max(cloth_q, axis=0) - np.min(cloth_q, axis=0))
         assert bbox_size < 150.0, f"Bbox exploded: size={bbox_size:.2f}"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "One roller initially carries the cloth while the other is empty.",
+        "Rotation transfers cloth from the full roller to the empty one without visible "
+        "tearing, explosive stretching, or persistent interpenetration.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

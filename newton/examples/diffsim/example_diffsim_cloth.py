@@ -21,16 +21,6 @@ import newton.examples
 from newton.tests.unittest_utils import most
 from newton.utils import bourke_color_map
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A piece of cloth is thrown and tries to reach a floating target (red box).",
-        "Previously displayed rollout trajectories remain visible while newer trajectories are added.",
-        "The cloth is becoming increasingly good at reaching the target.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def com_kernel(positions: wp.array[wp.vec3], n: int, com: wp.array[wp.vec3]):
@@ -222,6 +212,17 @@ class Example:
             "--verbose", action="store_true", help="Print out additional status messages during execution."
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A piece of cloth is thrown and tries to reach a floating target (red box).",
+        "Previously displayed rollout trajectories remain visible while newer trajectories are added.",
+        "The cloth is becoming increasingly good at reaching the target.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

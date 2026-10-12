@@ -23,20 +23,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverKamino, SolverMuJoCo
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A closed four-bar linkage appears.",
-        "The scene is replicated across multiple worlds by default.",
-        "Two links are owned by Kamino and two links are owned by MuJoCo.",
-        "ADMM attachments keep the cross-solver revolute joints connected.",
-        "The linkage should remain assembled without excessive joint drift. It's expected that "
-        "the colored bars fall through the grey one.",
-        "The simulation should run without contact truncation warnings.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 def _configure_kamino_rigid_view(view: ModelView) -> None:
     # Kamino normalizes world ids and re-expresses body-local frames during
@@ -397,6 +383,21 @@ class Example:
             help="Disable graph capture.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A closed four-bar linkage appears.",
+        "The scene is replicated across multiple worlds by default.",
+        "Two links are owned by Kamino and two links are owned by MuJoCo.",
+        "ADMM attachments keep the cross-solver revolute joints connected.",
+        "The linkage should remain assembled without excessive joint drift. It's expected that "
+        "the colored bars fall through the grey one.",
+        "The simulation should run without contact truncation warnings.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

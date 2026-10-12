@@ -22,20 +22,6 @@ import newton.examples
 from newton.sensors import SensorContact
 from newton.tests.unittest_utils import find_nonfinite_members
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "An orange sphere and blue box start on a flap that rotates downward; the objects fall "
-        "and roll over inclined plates toward the ground.",
-        "The first inclined plate turns blue when touched by the matching box; the second "
-        "turns orange when touched by the matching sphere.",
-        "The scene resets and repeats, clearing previous contact indicators.",
-        "The Flap Contact Force plot updates while the objects contact the flap and returns to "
-        "zero after they leave it.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -255,6 +241,21 @@ class Example:
         # sensing_indices preserves the input order given to the sensor.
         assert self.model.shape_label[self.plate_contact_sensor.sensing_indices[0]] == "/env/Plate1"
         assert self.model.shape_label[self.plate_contact_sensor.sensing_indices[1]] == "/env/Plate2"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "An orange sphere and blue box start on a flap that rotates downward; the objects fall "
+        "and roll over inclined plates toward the ground.",
+        "The first inclined plate turns blue when touched by the matching box; the second "
+        "turns orange when touched by the matching sphere.",
+        "The scene resets and repeats, clearing previous contact indicators.",
+        "The Flap Contact Force plot updates while the objects contact the flap and returns to "
+        "zero after they leave it.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

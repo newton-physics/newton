@@ -13,12 +13,6 @@ import newton.utils
 from newton import Mesh, ParticleFlags
 from newton.solvers import style3d
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": ("A mannequin wearing a shirt appears.",),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -184,6 +178,13 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": ("A mannequin wearing a shirt appears.",),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

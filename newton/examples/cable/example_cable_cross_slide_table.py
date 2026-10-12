@@ -32,16 +32,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Two blue input pulleys pull the green and beige carriages through a deformable cable loop.",
-        "The beige table moves in the XY plane, tracking the commanded path without losing the cable from its guides.",
-        "Live plots report both blue input rotations, beige table X and Y positions, and tracking error.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 TABLE_RECT_HALF_X = 0.050
 TABLE_RECT_HALF_Y = 0.060
 TABLE_RECT_PERIOD = 16.0
@@ -981,6 +971,17 @@ class Example:
                 f"RMS error {table_tracking_rms_error:.4f} m exceeds "
                 f"{TABLE_TRACKING_RMS_ERROR_TOLERANCE:.4f} m."
             )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Two blue input pulleys pull the green and beige carriages through a deformable cable loop.",
+        "The beige table moves in the XY plane, tracking the commanded path without losing the cable from its guides.",
+        "Live plots report both blue input rotations, beige table X and Y positions, and tracking error.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

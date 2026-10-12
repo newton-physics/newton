@@ -20,15 +20,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The T-shaped body rotates freely and undergoes an intermediate-axis flip rather than falling under gravity.",
-        "The center of mass stays in place and rotation remains bounded without visible energy growth.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 _STEM_RADIUS = 0.10
 _STEM_HALF_HEIGHT = 0.5
 _STEM_DENSITY = 50.0
@@ -213,6 +204,16 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The T-shaped body rotates freely and undergoes an intermediate-axis flip rather than falling under gravity.",
+        "The center of mass stays in place and rotation remains bounded without visible energy growth.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

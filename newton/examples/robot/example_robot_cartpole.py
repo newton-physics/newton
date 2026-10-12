@@ -15,15 +15,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "2 identical setups appear consisting of a double pendulum attached to a rail.",
-        "The double pendulum is consistently moving.",
-    ),
-    "runs": ({"args": ("--world-count", "2"), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -232,6 +223,16 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=100)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "2 identical setups appear consisting of a double pendulum attached to a rail.",
+        "The double pendulum is consistently moving.",
+    ),
+    "runs": ({"args": ("--world-count", "2"), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

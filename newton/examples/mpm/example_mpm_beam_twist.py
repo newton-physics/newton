@@ -12,16 +12,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A beam made of particles twists under the driven boundary motion.",
-        "Particle stress colors develop during twisting; disabling Show Stress removes the stress coloring.",
-        "When the drive stops twisting, the beam remains in the twisted configuration without unbounded deformation.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def apply_twist(
@@ -332,6 +322,17 @@ class Example:
             jitter=0.0 * radius,
             radius_mean=radius,
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A beam made of particles twists under the driven boundary motion.",
+        "Particle stress colors develop during twisting; disabling Show Stress removes the stress coloring.",
+        "When the drive stops twisting, the beam remains in the twisted configuration without unbounded deformation.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

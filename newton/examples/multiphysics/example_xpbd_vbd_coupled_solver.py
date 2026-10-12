@@ -28,29 +28,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverVBD, SolverXPBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A cloth patch and particle bed appear in the scene.",
-        "The cloth and particles remain bounded above the ground without escaping upward.",
-    ),
-    "runs": (
-        {
-            "args": (),
-            "success_criteria": (
-                "The XPBD particle bed lands on and deforms the pinned VBD cloth; cloth contact reactions support the bed.",
-            ),
-        },
-        {"args": ("--solver", "xpbd"), "success_criteria": ("The scene runs as a monolithic XPBD reference.",)},
-        {
-            "args": ("--solver", "vbd"),
-            "success_criteria": (
-                "The scene runs as a monolithic VBD reference; record particle pass-through separately for review.",
-            ),
-        },
-    ),
-}
-
 
 def _configure_contact_only_xpbd_view(view: ModelView) -> None:
     # XPBD should treat VBD-owned cloth particles as collision proxies only.
@@ -306,6 +283,30 @@ class Example:
             default=8,
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A cloth patch and particle bed appear in the scene.",
+        "The cloth and particles remain bounded above the ground without escaping upward.",
+    ),
+    "runs": (
+        {
+            "args": (),
+            "success_criteria": (
+                "The XPBD particle bed lands on and deforms the pinned VBD cloth; cloth contact reactions support the bed.",
+            ),
+        },
+        {"args": ("--solver", "xpbd"), "success_criteria": ("The scene runs as a monolithic XPBD reference.",)},
+        {
+            "args": ("--solver", "vbd"),
+            "success_criteria": (
+                "The scene runs as a monolithic VBD reference; record particle pass-through separately for review.",
+            ),
+        },
+    ),
+}
 
 
 if __name__ == "__main__":

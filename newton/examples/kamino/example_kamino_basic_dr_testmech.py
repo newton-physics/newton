@@ -13,15 +13,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A mechanism with multiple linked pieces moves back and forth.",
-        "Motion propagates through its joints and links without disconnection.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
@@ -131,6 +122,16 @@ class Example:
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=1)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A mechanism with multiple linked pieces moves back and forth.",
+        "Motion propagates through its joints and links without disconnection.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

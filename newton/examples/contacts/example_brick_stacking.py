@@ -20,17 +20,6 @@ import newton
 import newton.examples
 import newton.ik as ik
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A Franka gripper and three bricks appear on a table.",
-        "The gripper stacks the red brick on the green one, then places the pair on the blue brick.",
-        "After release, all three bricks remain aligned in a stable stack without sustained jitter.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
-
 # Brick dimensions [m]
 
 
@@ -1048,6 +1037,17 @@ class Example:
 
         if errors:
             raise ValueError("Brick stacking verification failed:\n  " + "\n  ".join(errors))
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A Franka gripper and three bricks appear on a table.",
+        "The gripper stacks the red brick on the green one, then places the pair on the blue brick.",
+        "After release, all three bricks remain aligned in a stable stack without sustained jitter.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -20,17 +20,6 @@ from pxr import Usd, UsdGeom
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The scene starts paused; resume to observe the drop.",
-        "Sphere, box, capsule, cylinder, cone, and mesh bodies fall into the static box container.",
-        "The bodies settle inside the container without sustained jitter, explosive "
-        "separation, or passing through its walls.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 PARAMS = {
     "shape_names": ["mesh", "cone", "sphere", "box", "capsule", "cylinder"],
     "shape_size": 0.042,
@@ -293,6 +282,18 @@ class Example:
         parser.add_argument("--seed", type=int, default=42)
         parser.set_defaults(paused=True)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The scene starts paused; resume to observe the drop.",
+        "Sphere, box, capsule, cylinder, cone, and mesh bodies fall into the static box container.",
+        "The bodies settle inside the container without sustained jitter, explosive "
+        "separation, or passing through its walls.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

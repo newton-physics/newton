@@ -21,18 +21,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM, SolverXPBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "XPBD point particles appear above an implicit-MPM granular cube.",
-        "The XPBD particles fall into the MPM granular cube.",
-        "The XPBD particles participate in momentum exchange with the MPM material through proxy coupling.",
-        "The XPBD particles and MPM particles should remain bounded and above the ground.",
-        "Particle velocities should remain finite and within a reasonable range.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel(enable_backward=False)
 def _gather_particles(
@@ -402,6 +390,19 @@ class Example:
             default=18.0,
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "XPBD point particles appear above an implicit-MPM granular cube.",
+        "The XPBD particles fall into the MPM granular cube.",
+        "The XPBD particles participate in momentum exchange with the MPM material through proxy coupling.",
+        "The XPBD particles and MPM particles should remain bounded and above the ground.",
+        "Particle velocities should remain finite and within a reasonable range.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

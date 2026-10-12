@@ -19,18 +19,6 @@ import newton
 import newton.examples
 import newton.usd
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Seven shapes appear: ellipsoid, cylinder, sphere, capsule, box, bunny, and cone.",
-        "The shapes fall onto the ground and settle without explosive motion or persistent visible jitter.",
-    ),
-    "runs": (
-        {"args": ("--solver", "xpbd"), "success_criteria": ()},
-        {"args": ("--solver", "vbd"), "success_criteria": ()},
-    ),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -280,6 +268,19 @@ class Example:
         if self.contacts is not None:
             self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
         self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Seven shapes appear: ellipsoid, cylinder, sphere, capsule, box, bunny, and cone.",
+        "The shapes fall onto the ground and settle without explosive motion or persistent visible jitter.",
+    ),
+    "runs": (
+        {"args": ("--solver", "xpbd"), "success_criteria": ()},
+        {"args": ("--solver", "vbd"), "success_criteria": ()},
+    ),
+}
 
 
 if __name__ == "__main__":

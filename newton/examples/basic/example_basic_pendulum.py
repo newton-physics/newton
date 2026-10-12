@@ -15,15 +15,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The two-link pendulum swings back and forth with both joints connected.",
-        "Motion stays bounded and in the pendulum plane without explosive separation.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -174,6 +165,16 @@ class Example:
         if self.contacts is not None:
             self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The two-link pendulum swings back and forth with both joints connected.",
+        "Motion stays bounded and in the pendulum plane without explosive separation.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

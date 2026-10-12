@@ -10,12 +10,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": ("A column of particles collapses on the ground floor creating a circular pile of particles.",),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -139,6 +133,13 @@ class Example:
         parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)
         parser.add_argument("--points-per-particle", "-ppp", type=float, default=8)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": ("A column of particles collapses on the ground floor creating a circular pile of particles.",),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

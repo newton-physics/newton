@@ -19,16 +19,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A vertical stack of 6 boxes is falling on a pile of particles.",
-        "The particles are acting on the boxes such that they do not completely sink.",
-        "The boxes are acting on the particles such that they are displaced by the boxes.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def compute_body_forces(
@@ -386,6 +376,17 @@ class Example:
             radius_mean=radius,
             custom_attributes={"mpm:friction": 0.75},
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A vertical stack of 6 boxes is falling on a pile of particles.",
+        "The particles are acting on the boxes such that they do not completely sink.",
+        "The boxes are acting on the particles such that they are displaced by the boxes.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

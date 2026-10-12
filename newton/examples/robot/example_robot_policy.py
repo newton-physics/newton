@@ -31,23 +31,6 @@ import newton.utils
 from newton import JointTargetMode
 from newton.examples.robot.onnx_policy_utils import validate_policy_io_shapes
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The selected robot appears on the ground and responds to forward/back, lateral, and "
-        "turning keyboard commands.",
-        "For ordinary commands the robot moves without falling; pressing P resets it.",
-    ),
-    "runs": (
-        {"args": ("--robot", "anymal"), "success_criteria": ()},
-        {"args": ("--robot", "go2"), "success_criteria": ()},
-        {"args": ("--robot", "go2", "--physx"), "success_criteria": ()},
-        {"args": ("--robot", "g1_23dof"), "success_criteria": ()},
-        {"args": ("--robot", "g1_23dof", "--physx"), "success_criteria": ()},
-        {"args": ("--robot", "g1_29dof"), "success_criteria": ()},
-    ),
-}
-
 
 @dataclass
 class RobotConfig:
@@ -471,6 +454,24 @@ class Example:
             help="Run physX policy instead of MJWarp.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The selected robot appears on the ground and responds to forward/back, lateral, and "
+        "turning keyboard commands.",
+        "For ordinary commands the robot moves without falling; pressing P resets it.",
+    ),
+    "runs": (
+        {"args": ("--robot", "anymal"), "success_criteria": ()},
+        {"args": ("--robot", "go2"), "success_criteria": ()},
+        {"args": ("--robot", "go2", "--physx"), "success_criteria": ()},
+        {"args": ("--robot", "g1_23dof"), "success_criteria": ()},
+        {"args": ("--robot", "g1_23dof", "--physx"), "success_criteria": ()},
+        {"args": ("--robot", "g1_29dof"), "success_criteria": ()},
+    ),
+}
 
 
 if __name__ == "__main__":

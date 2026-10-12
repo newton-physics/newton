@@ -26,27 +26,6 @@ import newton.usd
 import newton.utils
 from newton.geometry import HydroelasticSDF
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Two worlds show a Franka arm, a support box, a cup, and the selected grasp object.",
-        "The arm lifts and transports the object while the cup remains upright.",
-    ),
-    "runs": (
-        {
-            "args": ("--world-count", "2", "--scene", "cube"),
-            "success_criteria": ("The arm grasps the cube and releases it on top of the cup.",),
-        },
-        {
-            "args": ("--world-count", "2", "--scene", "pen"),
-            "success_criteria": (
-                "The arm grasps the pen, brings it above the cup, loosens its grip to let "
-                "the pen rotate downward, then drops it inside the cup.",
-            ),
-        },
-    ),
-}
-
 
 class SceneType(Enum):
     PEN = "pen"
@@ -606,6 +585,28 @@ class Example:
             help="Scene type to load (pen, cube)",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Two worlds show a Franka arm, a support box, a cup, and the selected grasp object.",
+        "The arm lifts and transports the object while the cup remains upright.",
+    ),
+    "runs": (
+        {
+            "args": ("--world-count", "2", "--scene", "cube"),
+            "success_criteria": ("The arm grasps the cube and releases it on top of the cup.",),
+        },
+        {
+            "args": ("--world-count", "2", "--scene", "pen"),
+            "success_criteria": (
+                "The arm grasps the pen, brings it above the cup, loosens its grip to let "
+                "the pen rotate downward, then drops it inside the cup.",
+            ),
+        },
+    ),
+}
 
 
 if __name__ == "__main__":

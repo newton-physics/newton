@@ -15,16 +15,6 @@ import newton.examples
 from newton.tests import get_kamino_basics_asset
 from newton.tests.utils import basics
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Six sections show a fixed pendulum, cartpole, two floating pendulum variants, a rigid "
-        "box, and a four-bar linkage.",
-        "Right-drag movable bodies: the mechanisms respond while preserving their joints and remaining bounded.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
@@ -172,6 +162,17 @@ class Example:
             help="Load the heterogeneous basic models from USD (otherwise build them manually).",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Six sections show a fixed pendulum, cartpole, two floating pendulum variants, a rigid "
+        "box, and a four-bar linkage.",
+        "Right-drag movable bodies: the mechanisms respond while preserving their joints and remaining bounded.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

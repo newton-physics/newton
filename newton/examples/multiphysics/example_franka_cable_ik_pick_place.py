@@ -29,19 +29,6 @@ import newton.ik as ik
 import newton.utils
 from newton.solvers import SolverMuJoCo, SolverVBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A fixed-base Franka FR3 arm and a deformable cable appear on a working surface.",
-        "The Franka arm approaches the cable, descends to the cable, and closes the gripper around it.",
-        "The arm lifts the cable, moves it to a target location, lowers it, releases it, and retracts.",
-        "The cable behaves as a deformable VBD rod and interacts with the gripper through proxy contacts.",
-        "The grasped cable segment should be placed close to the target location.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
-
 # Initial Franka joint configuration (7 arm + 2 finger).
 
 
@@ -567,6 +554,19 @@ class Example:
             help="Disable graph capture.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A fixed-base Franka FR3 arm and a deformable cable appear on a working surface.",
+        "The Franka arm approaches the cable, descends to the cable, and closes the gripper around it.",
+        "The arm lifts the cable, moves it to a target location, lowers it, releases it, and retracts.",
+        "The cable behaves as a deformable VBD rod and interacts with the gripper through proxy contacts.",
+        "The grasped cable segment should be placed close to the target location.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

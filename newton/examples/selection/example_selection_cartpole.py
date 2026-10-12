@@ -20,15 +20,6 @@ import newton
 import newton.examples
 from newton.selection import ArticulationView
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "8 identical setups appear consisting of a double pendulum attached to a rail.",
-        "Each setup evolves from random initial cart and pole coordinates under a center-directed cart force.",
-    ),
-    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
-}
-
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
 
@@ -261,6 +252,16 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=16)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "8 identical setups appear consisting of a double pendulum attached to a rail.",
+        "Each setup evolves from random initial cart and pole coordinates under a center-directed cart force.",
+    ),
+    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

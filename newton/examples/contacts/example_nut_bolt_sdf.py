@@ -19,20 +19,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Four nut-and-bolt assemblies appear.",
-        "The nuts rotate and descend along the threads toward the ends of the bolts.",
-        "Both solver variants show the same qualitative thread-engagement outcome; exact trajectories need not match.",
-    ),
-    "runs": (
-        {"args": ("--world-count", "4", "--solver", "xpbd"), "success_criteria": ()},
-        {"args": ("--world-count", "4", "--solver", "mujoco"), "success_criteria": ()},
-    ),
-}
-
-
 # Assembly type for the nut and bolt
 
 
@@ -423,6 +409,20 @@ class Example:
         )
         parser.add_argument("--num-per-world", type=int, default=1, help="Number of assemblies per world.")
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Four nut-and-bolt assemblies appear.",
+        "The nuts rotate and descend along the threads toward the ends of the bolts.",
+        "Both solver variants show the same qualitative thread-engagement outcome; exact trajectories need not match.",
+    ),
+    "runs": (
+        {"args": ("--world-count", "4", "--solver", "xpbd"), "success_criteria": ()},
+        {"args": ("--world-count", "4", "--solver", "mujoco"), "success_criteria": ()},
+    ),
+}
 
 
 if __name__ == "__main__":

@@ -22,16 +22,6 @@ import newton
 import newton.examples
 from newton import JointTargetMode, ModelFlags
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "18 floating Allegro hands appear with a cube on their palm.",
-        "The hands are manipulating the cube to make it turn.",
-        "All hands have the same movement.",
-    ),
-    "runs": ({"args": ("--world-count", "18"), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def move_hand(
@@ -285,6 +275,17 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=None)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "18 floating Allegro hands appear with a cube on their palm.",
+        "The hands are manipulating the cube to make it turn.",
+        "All hands have the same movement.",
+    ),
+    "runs": ({"args": ("--world-count", "18"), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -17,17 +17,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Five spheres start above a wavy heightfield and drop onto its surface.",
-        "Spheres roll along the terrain; some may roll off its edges while others come to rest on the surface.",
-        "Spheres that come to rest on the terrain remain stable without persistent visible contact jitter; "
-        "other spheres may continue rolling smoothly.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -165,6 +154,18 @@ class Example:
         for body_idx in self.sphere_bodies:
             z = float(body_q[body_idx, 2])
             assert z > -1.0, f"Sphere body {body_idx} fell through heightfield: z={z:.4f}"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Five spheres start above a wavy heightfield and drop onto its surface.",
+        "Spheres roll along the terrain; some may roll off its edges while others come to rest on the surface.",
+        "Spheres that come to rest on the terrain remain stable without persistent visible contact jitter; "
+        "other spheres may continue rolling smoothly.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

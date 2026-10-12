@@ -23,15 +23,6 @@ import newton.examples
 import newton.usd
 from newton import ParticleFlags
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A suspended sheet twists as its two ends rotate.",
-        "The sheet stays connected and resolves folds without visible self-intersections or explosive stretching.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def initialize_rotation(
@@ -305,6 +296,16 @@ class Example:
             "particle velocities are within a reasonable range",
             lambda q, qd: max(abs(qd)) < 1.5,
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A suspended sheet twists as its two ends rotate.",
+        "The sheet stays connected and resolves folds without visible self-intersections or explosive stretching.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

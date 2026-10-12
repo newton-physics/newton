@@ -22,22 +22,6 @@ import newton.usd
 from newton.sensors import SensorCamera
 from newton.viewer import ViewerGL, ViewerRTX
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The sensor output contains 24 tiled Franka scenes with primitive shapes and continuously moving arms.",
-        "Switching Observer Camera and Robot Camera changes the sensor viewpoint.",
-        "Color, depth, albedo, normal, shape-index, and semantic outputs show corresponding "
-        "nonempty scene information.",
-        "Disable First Row: Clear clears those sensor views; Disable Second Row: Preserve "
-        "freezes the affected views while other worlds continue updating.",
-        "On GL or RTX, Sensor Color as Main View replaces the main view with sensor color and "
-        "restores normal scene rendering when disabled.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
-
 # Viewers with an interactive camera that can also display logged images.
 
 
@@ -631,6 +615,22 @@ class Example:
             help="Gaussian min response.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The sensor output contains 24 tiled Franka scenes with primitive shapes and continuously moving arms.",
+        "Switching Observer Camera and Robot Camera changes the sensor viewpoint.",
+        "Color, depth, albedo, normal, shape-index, and semantic outputs show corresponding "
+        "nonempty scene information.",
+        "Disable First Row: Clear clears those sensor views; Disable Second Row: Preserve "
+        "freezes the affected views while other worlds continue updating.",
+        "On GL or RTX, Sensor Color as Main View replaces the main view with sensor color and "
+        "restores normal scene rendering when disabled.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -31,18 +31,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverKamino, SolverMuJoCo, SolverVBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A pinned VBD cloth sheet appears with a rigid ball attached near its center.",
-        "A separate rigid pendulum link carries a VBD rigid payload through a model ball joint.",
-        "ADMM attachment constraints keep the rigid ball attached to the cloth and keep the pendulum payload coupled.",
-        "The ball should hang below the cloth plane while remaining attached to the cloth center.",
-        "The pendulum payload should remain coupled without excessive drift.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 def _add_rigid_solver_arg(parser) -> None:
     parser.add_argument(
@@ -304,6 +292,19 @@ class Example:
             help="Keep cross-solver joint neighbor bodies as inertial ADMM proxies.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A pinned VBD cloth sheet appears with a rigid ball attached near its center.",
+        "A separate rigid pendulum link carries a VBD rigid payload through a model ball joint.",
+        "ADMM attachment constraints keep the rigid ball attached to the cloth and keep the pendulum payload coupled.",
+        "The ball should hang below the cloth plane while remaining attached to the cloth center.",
+        "The pendulum payload should remain coupled without excessive drift.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

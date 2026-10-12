@@ -20,16 +20,6 @@ import newton
 import newton.examples
 from newton.selection import ArticulationView
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "8 identical setups appear consisting of a floating MuJoCo humanoid on top of a floating ant.",
-        "Both robots fall down on the ground and are then reset to their initial position.",
-        "All setups behave differently.",
-    ),
-    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
-}
-
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
 VERBOSE = True
@@ -328,6 +318,17 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=16)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "8 identical setups appear consisting of a floating MuJoCo humanoid on top of a floating ant.",
+        "Both robots fall down on the ground and are then reset to their initial position.",
+        "All setups behave differently.",
+    ),
+    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

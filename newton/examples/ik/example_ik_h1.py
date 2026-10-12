@@ -20,16 +20,6 @@ import newton.examples
 import newton.ik as ik
 import newton.utils
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The H1 pelvis/base stays anchored while four gizmos mark the hands and feet.",
-        "Left-drag each gizmo: its corresponding limb tracks reachable position and orientation targets.",
-        "On release, each gizmo snaps to the solved limb pose.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -173,6 +163,17 @@ class Example:
 
         self.viewer.end_frame()
         wp.synchronize()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The H1 pelvis/base stays anchored while four gizmos mark the hands and feet.",
+        "Left-drag each gizmo: its corresponding limb tracks reachable position and orientation targets.",
+        "On release, each gizmo snaps to the solved limb pose.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

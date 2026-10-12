@@ -44,17 +44,6 @@ import newton
 import newton.examples
 from newton.examples.vbd._viewer import node_xyz, set_viewer_camera
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The root remains untwisted while the tip rotates to its prescribed angle.",
-        "After the ramp and hold, orange simulated material-frame ticks align with the cyan "
-        "analytic ticks along the rod.",
-        "The twist profile is nearly linear and the centerline remains straight without visible bending leakage.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def _spin_tip_kernel(
@@ -491,6 +480,18 @@ class Example:
         assert material_scaling["max_scale_relative_error"] < 1.0e-9, (
             f"material scaling response is wrong: {material_scaling['max_scale_relative_error']}"
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The root remains untwisted while the tip rotates to its prescribed angle.",
+        "After the ramp and hold, orange simulated material-frame ticks align with the cyan "
+        "analytic ticks along the rod.",
+        "The twist profile is nearly linear and the centerline remains straight without visible bending leakage.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

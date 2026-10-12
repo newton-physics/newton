@@ -44,19 +44,6 @@ from newton import JointTargetMode
 from newton.controllers import ControllerOperationalSpace
 from newton.sensors import SensorContact
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Two arms press against their respective tables: the Franka table is tilted and the UR10 table is flat.",
-        "Changing desired X/Y sliders moves each tool along its own table while maintaining contact.",
-        "Changing desired press force changes the measured normal force; displayed actual "
-        "position and force respond to the commands.",
-        "At fixed targets, both arms remain bounded without growing oscillations.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
-
 # ---------------------------------------------------------------------------
 # Robot configuration
 # ---------------------------------------------------------------------------
@@ -680,6 +667,19 @@ class Example:
         # still leaves ample margin while catching real divergence.
         ur10_qd = joint_qd[self._ur10_coords]
         assert np.all(np.abs(ur10_qd) < 1.0), f"UR10 arm joints diverged: {ur10_qd}"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Two arms press against their respective tables: the Franka table is tilted and the UR10 table is flat.",
+        "Changing desired X/Y sliders moves each tool along its own table while maintaining contact.",
+        "Changing desired press force changes the measured normal force; displayed actual "
+        "position and force respond to the commands.",
+        "At fixed targets, both arms remain bounded without growing oscillations.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

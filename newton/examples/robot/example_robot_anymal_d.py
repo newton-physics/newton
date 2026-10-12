@@ -16,16 +16,6 @@ import newton.examples
 import newton.utils
 from newton import JointTargetMode, JointType
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "4 Anymal robots appear standing on the ground.",
-        "The user can grasp every robot with a right click and move them around.",
-        "The robots do not interact with each other but collide properly with the ground plane.",
-    ),
-    "runs": ({"args": ("--world-count", "4"), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -232,6 +222,17 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=8)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "4 Anymal robots appear standing on the ground.",
+        "The user can grasp every robot with a right click and move them around.",
+        "The robots do not interact with each other but collide properly with the ground plane.",
+    ),
+    "runs": ({"args": ("--world-count", "4"), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

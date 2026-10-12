@@ -22,17 +22,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Cards initially stack on top of a large cube.",
-        "A moving sphere strikes the stack and knocks cards off; cards retain their overall "
-        "shape while flexing on contact.",
-        "After the impact, cards settle without explosive motion or excessive ground penetration.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 CARD_COLOR_PALETTE = (
     (68 / 255, 119 / 255, 170 / 255),
     (102 / 255, 204 / 255, 238 / 255),
@@ -315,6 +304,18 @@ class Example:
 
         # Check no excessive penetration
         assert min_pos[2] > -0.1, f"Excessive penetration: z_min={min_pos[2]:.4f}"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Cards initially stack on top of a large cube.",
+        "A moving sphere strikes the stack and knocks cards off; cards retain their overall "
+        "shape while flexing on contact.",
+        "After the impact, cards settle without explosive motion or excessive ground penetration.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -18,16 +18,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Thirty dominoes stand along a spiral, with the first tilted to initiate contact.",
-        "Toppling propagates along the spiral through contact between neighboring dominoes.",
-        "The fallen dominoes remain on the ground without explosive scattering.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 NUM_DOMINOES = 30
 DOMINO_SPACING = 0.12
 DOMINO_HALF = (0.06, 0.016, 0.18)
@@ -197,6 +187,17 @@ class Example:
         parser = newton.examples.create_parser()
         parser.add_argument("--solver", default="xpbd", choices=SOLVER_CHOICES, help="Solver used for the dominoes.")
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Thirty dominoes stand along a spiral, with the first tilted to initiate contact.",
+        "Toppling propagates along the spiral through contact between neighboring dominoes.",
+        "The fallen dominoes remain on the ground without explosive scattering.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

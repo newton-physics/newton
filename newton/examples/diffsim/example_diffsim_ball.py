@@ -21,17 +21,6 @@ import newton.examples
 from newton.tests.unittest_utils import assert_np_equal
 from newton.utils import bourke_color_map
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A ball bounces off the ground and wall toward a floating target, with previous "
-        "trajectories retained in the view.",
-        "Training improves target accuracy and the loss plot shows the optimization trend.",
-        "When the gradient check runs, numeric and analytic gradients agree within the example check tolerance.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def loss_kernel(pos: wp.array[wp.vec3], target: wp.vec3, loss: wp.array[float]):
@@ -268,6 +257,18 @@ class Example:
             "--verbose", action="store_true", help="Print out additional status messages during execution."
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A ball bounces off the ground and wall toward a floating target, with previous "
+        "trajectories retained in the view.",
+        "Training improves target accuracy and the loss plot shows the optimization trend.",
+        "When the gradient check runs, numeric and analytic gradients agree within the example check tolerance.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

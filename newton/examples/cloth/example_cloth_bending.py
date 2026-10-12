@@ -17,12 +17,6 @@ import newton
 import newton.examples
 import newton.usd
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": ("A bent sheet of cloth is dropping on the floor while maintaining its overall shape.",),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -168,6 +162,13 @@ class Example:
             assert max_stretch_ratio < 0.2, (
                 f"edges stretched too much from rest length: max stretch ratio = {max_stretch_ratio:.2%}"
             )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": ("A bent sheet of cloth is dropping on the floor while maintaining its overall shape.",),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

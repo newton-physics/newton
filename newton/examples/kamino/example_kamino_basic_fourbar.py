@@ -18,16 +18,6 @@ import newton.examples
 from newton.tests import get_kamino_basics_asset
 from newton.tests.utils import basics
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A setup appears composed of a table with a four bars linkage sitting on top.",
-        "The user can grasp the four bar linkage, move it, and the four bar system react to "
-        "external forces while maintaining its integrity.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
@@ -186,6 +176,17 @@ class Example:
             help="Load the basic four-bar mechanism from USD (otherwise build it manually).",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A setup appears composed of a table with a four bars linkage sitting on top.",
+        "The user can grasp the four bar linkage, move it, and the four bar system react to "
+        "external forces while maintaining its integrity.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

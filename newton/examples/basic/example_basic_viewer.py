@@ -18,19 +18,6 @@ from pxr import Usd, UsdGeom
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Six floating shapes appear from left to right: sphere, box, cone, cylinder, capsule, "
-        "and bunny; the sphere bobs, the capsule sways, and the shapes rotate.",
-        "The Custom UI text section provides Time and Spacing sliders that change animation time and shape spacing.",
-        "With the GL renderer, Renderer Settings controls visibly affect exposure, diffuse "
-        "brightness, specular highlights, shadow radius and extents, and spotlight "
-        "illumination.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 class Example:
     def __init__(self, viewer, args):
@@ -233,6 +220,20 @@ class Example:
 
     def test_final(self):
         pass
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Six floating shapes appear from left to right: sphere, box, cone, cylinder, capsule, "
+        "and bunny; the sphere bobs, the capsule sways, and the shapes rotate.",
+        "The Custom UI text section provides Time and Spacing sliders that change animation time and shape spacing.",
+        "With the GL renderer, Renderer Settings controls visibly affect exposure, diffuse "
+        "brightness, specular highlights, shadow radius and extents, and spotlight "
+        "illumination.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -16,16 +16,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A stack of 4 deformable boxes are tied together by a ribbon.",
-        "The stack is dropping on the ground plane and bouncing while maintaining their structure.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
-
 # =============================================================================
 # Geometry Helpers
 # =============================================================================
@@ -306,6 +296,16 @@ class Example:
             default="vbd",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A stack of 4 deformable boxes are tied together by a ribbon.",
+        "The stack is dropping on the ground plane and bouncing while maintaining their structure.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

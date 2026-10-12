@@ -30,24 +30,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverKamino, SolverMuJoCo, SolverVBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Rigid boxes and an articulated chain appear above a cloth sheet and several soft bodies.",
-        "The rigid bodies interact with the deformables, bouncing on contact without flying "
-        "apart or excessively penetrating the ground.",
-        "The deformables remain bounded without stretching explosively or sinking through the ground.",
-        "The rigid bodies settle above the ground; inspect the late motion for persistent jitter.",
-    ),
-    "runs": (
-        {
-            "args": (),
-            "success_criteria": ("Deformable contact reactions affect the rigid bodies through proxy coupling.",),
-        },
-        {"args": ("--solver", "vbd"), "success_criteria": ("The same scene runs as a single-solver VBD reference.",)},
-    ),
-}
-
 
 def _add_rigid_solver_arg(parser) -> None:
     parser.add_argument(
@@ -403,6 +385,25 @@ class Example:
             default=1,
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Rigid boxes and an articulated chain appear above a cloth sheet and several soft bodies.",
+        "The rigid bodies interact with the deformables, bouncing on contact without flying "
+        "apart or excessively penetrating the ground.",
+        "The deformables remain bounded without stretching explosively or sinking through the ground.",
+        "The rigid bodies settle above the ground; inspect the late motion for persistent jitter.",
+    ),
+    "runs": (
+        {
+            "args": (),
+            "success_criteria": ("Deformable contact reactions affect the rigid bodies through proxy coupling.",),
+        },
+        {"args": ("--solver", "vbd"), "success_criteria": ("The same scene runs as a single-solver VBD reference.",)},
+    ),
+}
 
 
 if __name__ == "__main__":

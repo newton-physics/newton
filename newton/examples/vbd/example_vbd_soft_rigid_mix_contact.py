@@ -21,18 +21,6 @@ import newton
 import newton.examples
 from newton import ParticleFlags
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "An open-top cloth bag hangs from pinned vertices along its top edge, with several rigid shapes inside.",
-        "The rigid bodies settle in the bag before the lift; capture late consecutive frames "
-        "to characterize contact jitter.",
-        "After settling, the pinned edge rises and the bag carries all its contents upward "
-        "without bodies passing through the fabric.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 PARAMS = {
     "shape_names": [
         "mesh",
@@ -418,6 +406,19 @@ class Example:
         # Default to the full settle + lift sequence so --test exercises the lift.
         parser.set_defaults(num_frames=PARAMS["settle_frames"] + PARAMS["lift_frames"])
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "An open-top cloth bag hangs from pinned vertices along its top edge, with several rigid shapes inside.",
+        "The rigid bodies settle in the bag before the lift; capture late consecutive frames "
+        "to characterize contact jitter.",
+        "After settling, the pinned edge rises and the bag carries all its contents upward "
+        "without bodies passing through the fabric.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

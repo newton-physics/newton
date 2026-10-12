@@ -22,16 +22,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Three cables of different angular stiffness twist continuously along their zigzag paths.",
-        "In the initial camera view, motion is larger toward the right-hand cable.",
-        "The segments remain connected without explosive motion or excessive ground penetration.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def spin_first_capsules_kernel(
@@ -333,6 +323,17 @@ class Example:
             ground_tolerance = 0.5  # Larger tolerance for zigzag cables with dynamic spinning
             min_z = np.min(body_positions[:, 2])  # Z positions (Newton uses Z-up)
             assert min_z > -ground_tolerance, f"Cable penetrated ground too much: min_z = {min_z:.3f}"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Three cables of different angular stiffness twist continuously along their zigzag paths.",
+        "In the initial camera view, motion is larger toward the right-hand cable.",
+        "The segments remain connected without explosive motion or excessive ground penetration.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -22,17 +22,6 @@ import newton
 import newton.examples
 from newton import ParticleFlags
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Six cloth bags each contain a different rigid shape: mesh, cone, sphere, box, capsule, or cylinder.",
-        "The shapes fall, bounce against the bags, and approach rest without passing through the fabric.",
-        "After 120 simulation frames of settling, the bags lift and carry their contents; "
-        "inspect for renewed contact jitter.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 PARAMS = {
     "shape_names": ["mesh", "cone", "sphere", "box", "capsule", "cylinder"],
     "shape_size": 0.012,
@@ -385,6 +374,18 @@ class Example:
         parser = newton.examples.create_parser()
         parser.add_argument("--seed", type=int, default=42)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Six cloth bags each contain a different rigid shape: mesh, cone, sphere, box, capsule, or cylinder.",
+        "The shapes fall, bounce against the bags, and approach rest without passing through the fabric.",
+        "After 120 simulation frames of settling, the bags lift and carry their contents; "
+        "inspect for renewed contact jitter.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

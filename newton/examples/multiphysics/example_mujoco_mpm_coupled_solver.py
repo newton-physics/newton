@@ -22,18 +22,6 @@ import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM, SolverKamino, SolverMuJoCo
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A granular MPM bed appears with several rigid boxes above it.",
-        "The rigid boxes fall into the granular bed.",
-        "The granular bed deforms and reacts to the rigid boxes through proxy coupling.",
-        "The boxes should remain above the sand/ground instead of falling through.",
-        "The MPM particles should remain bounded and above the ground.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 def _add_rigid_solver_arg(parser) -> None:
     parser.add_argument(
@@ -346,6 +334,19 @@ class Example:
             default=4,
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A granular MPM bed appears with several rigid boxes above it.",
+        "The rigid boxes fall into the granular bed.",
+        "The granular bed deforms and reacts to the rigid boxes through proxy coupling.",
+        "The boxes should remain above the sand/ground instead of falling through.",
+        "The MPM particles should remain bounded and above the ground.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

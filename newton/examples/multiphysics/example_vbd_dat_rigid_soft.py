@@ -43,17 +43,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A pinned sheet supports a box, sphere, and capsule under a smaller free sheet.",
-        "Incoming spinning projectiles deform the sheets, which catch and retain the bodies.",
-        "Cloth stays outside rigid surfaces and the two sheets do not visibly pass through one another.",
-        "Bodies remain supported by the pinned sheet without tunneling or unbounded motion.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 PARAMS = {
     # simulation
     "fps": 60,
@@ -407,6 +396,18 @@ class Example:
         parser = newton.examples.create_parser()
         parser.set_defaults(num_frames=PARAMS["num_frames"])
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A pinned sheet supports a box, sphere, and capsule under a smaller free sheet.",
+        "Incoming spinning projectiles deform the sheets, which catch and retain the bodies.",
+        "Cloth stays outside rigid surfaces and the two sheets do not visibly pass through one another.",
+        "Bodies remain supported by the pinned sheet without tunneling or unbounded motion.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

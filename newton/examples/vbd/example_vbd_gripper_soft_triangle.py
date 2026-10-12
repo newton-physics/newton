@@ -24,16 +24,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Cube finger pads pinch the center of a triangle whose three vertices lie outside the jaws.",
-        "The triangle lifts with the gripper and remains held during the hold phase; its face "
-        "does not slip through the fingers.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 def _box_mesh(h: float) -> newton.Mesh:
     """A triangulated cube of half-extent ``h`` (outward-facing windings) as a Newton mesh."""
@@ -367,6 +357,17 @@ class Example:
         parser = newton.examples.create_parser()
         parser.set_defaults(num_frames=PARAMS["num_frames"])
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Cube finger pads pinch the center of a triangle whose three vertices lie outside the jaws.",
+        "The triangle lifts with the gripper and remains held during the hold phase; its face "
+        "does not slip through the fingers.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

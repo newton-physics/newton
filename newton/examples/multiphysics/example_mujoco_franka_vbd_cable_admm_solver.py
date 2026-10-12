@@ -27,20 +27,6 @@ import newton.ik as ik
 import newton.utils
 from newton.solvers import SolverMuJoCo, SolverVBD, SolverXPBD
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A fixed-base Franka arm and payload appear in each replicated world.",
-        "The arm approaches, descends, grasps and holds, lifts, moves to the target, lowers, releases, and retracts.",
-        "Robot-payload contacts resolve during grasping and transport; inspect for separation or interpenetration.",
-        "The arm base stays above the floor and pick/place targets remain aligned with the payload.",
-    ),
-    "runs": (
-        {"args": (), "success_criteria": ("The payload is a short XPBD rigid chain.",)},
-        {"args": ("--payload-kind", "vbd-cable"), "success_criteria": ("The payload is a VBD cable.",)},
-    ),
-}
-
 PAYLOAD_CENTER = wp.vec3(0.5, 0.0, 0.256)
 PAYLOAD_LENGTH = 0.42
 
@@ -672,6 +658,21 @@ class Example:
             help="Disable graph capture.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A fixed-base Franka arm and payload appear in each replicated world.",
+        "The arm approaches, descends, grasps and holds, lifts, moves to the target, lowers, releases, and retracts.",
+        "Robot-payload contacts resolve during grasping and transport; inspect for separation or interpenetration.",
+        "The arm base stays above the floor and pick/place targets remain aligned with the payload.",
+    ),
+    "runs": (
+        {"args": (), "success_criteria": ("The payload is a short XPBD rigid chain.",)},
+        {"args": ("--payload-kind", "vbd-cable"), "success_criteria": ("The payload is a VBD cable.",)},
+    ),
+}
 
 
 if __name__ == "__main__":

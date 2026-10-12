@@ -20,26 +20,6 @@ import warp as wp
 import newton
 import newton.examples
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": ("A fast capsule is fired toward a staggered wall of box-shaped bricks.",),
-    "runs": (
-        {
-            "args": (),
-            "success_criteria": (
-                "The capsule collides with and disrupts the brick wall rather than tunneling through it.",
-            ),
-        },
-        {
-            "args": ("--no-scheduler",),
-            "success_criteria": (
-                "The capsule passes through the wall while the bricks remain nearly undisturbed, "
-                "demonstrating the limitation of collision detection once per frame.",
-            ),
-        },
-    ),
-}
-
 FPS = 60
 SUBSTEPS = 20
 SPECULATIVE_GAP_MAX = 0.2
@@ -247,6 +227,27 @@ class Example:
             help="Adapt collision-detection frequency to the projectile speed.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": ("A fast capsule is fired toward a staggered wall of box-shaped bricks.",),
+    "runs": (
+        {
+            "args": (),
+            "success_criteria": (
+                "The capsule collides with and disrupts the brick wall rather than tunneling through it.",
+            ),
+        },
+        {
+            "args": ("--no-scheduler",),
+            "success_criteria": (
+                "The capsule passes through the wall while the bricks remain nearly undisturbed, "
+                "demonstrating the limitation of collision detection once per frame.",
+            ),
+        },
+    ),
+}
 
 
 if __name__ == "__main__":

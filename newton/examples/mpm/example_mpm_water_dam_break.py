@@ -14,17 +14,6 @@ import newton.examples
 from newton.solvers import SolverImplicitMPM
 from newton.viewer import ViewerRTX
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The initial water column spreads horizontally through the tank after release.",
-        "A continuous visible water surface follows the flowing material rather than remaining at its initial shape.",
-        "Water remains contained by the tank floor and walls without explosive particle escape.",
-        "With --show-particles, the extracted surface tracks the dense flowing particle volume; sparse spray may remain visible outside the reconstructed surface.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()}, {"args": ("--show-particles",), "success_criteria": ()}),
-}
-
 
 @wp.kernel
 def _project_inside_tank(
@@ -603,6 +592,18 @@ class Example:
         )
         parser.add_argument("--show-particles", action="store_true")
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The initial water column spreads horizontally through the tank after release.",
+        "A continuous visible water surface follows the flowing material rather than remaining at its initial shape.",
+        "Water remains contained by the tank floor and walls without explosive particle escape.",
+        "With --show-particles, the extracted surface tracks the dense flowing particle volume; sparse spray may remain visible outside the reconstructed surface.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()}, {"args": ("--show-particles",), "success_criteria": ()}),
+}
 
 
 if __name__ == "__main__":

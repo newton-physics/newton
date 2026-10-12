@@ -11,17 +11,6 @@ import newton
 import newton.examples
 import newton.usd
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Three cubes with X, Y, and Z face markings drop to the ground in different orientations.",
-        "After settling, the color depends on which body axis is aligned with gravity and is consistent across cubes.",
-        "Right-drag and reorient a cube, then release and let it settle; its color changes "
-        "consistently with the new orientation.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
 
 @wp.kernel
 def acc_to_color(
@@ -218,6 +207,18 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
         self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Three cubes with X, Y, and Z face markings drop to the ground in different orientations.",
+        "After settling, the color depends on which body axis is aligned with gravity and is consistent across cubes.",
+        "Right-drag and reorient a cube, then release and let it settle; its color changes "
+        "consistently with the new orientation.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

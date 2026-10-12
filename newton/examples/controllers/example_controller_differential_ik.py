@@ -42,17 +42,6 @@ import newton.utils
 from newton import Axis
 from newton.controllers import ControllerDifferentialIK, DifferentialIKMethod
 
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Four robot arms appear with independent draggable target gizmos.",
-        "Drag reachable targets: each arm follows its own configured task axes without moving unrelated robots.",
-        "With targets stationary, arms remain near their solved poses without sustained jitter.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-
-
 # ---------------------------------------------------------------------------
 # Robot configuration
 # ---------------------------------------------------------------------------
@@ -636,6 +625,17 @@ class Example:
         assert np.all(np.abs(five_dof_q - five_dof_ready_q) < 0.2), (
             f"5-DOF arm joints drifted from its ready pose: {five_dof_q}"
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Four robot arms appear with independent draggable target gizmos.",
+        "Drag reachable targets: each arm follows its own configured task axes without moving unrelated robots.",
+        "With targets stationary, arms remain near their solved poses without sustained jitter.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":
