@@ -41,11 +41,13 @@ def fixture(
     dt=0.0025,
     row_limit=None,
     model_arrays=None,
+    step=True,
     **solver_overrides,
 ):
     """Solve two equal articulated rectangular pads touching face to face.
 
     ``model_arrays`` maps model attribute names to values assigned before the solver is built.
+    With ``step=False`` the solver is returned before its first step, without a result.
     """
     b = newton.ModelBuilder(gravity=(0, 0, 0))
     for side in (-1, 1):
@@ -116,6 +118,8 @@ def fixture(
     solver._rigid_body_angular_damping.zero_()
     if row_limit is not None:
         solver._articulation_constraint_max = row_limit
+    if not step:
+        return None, solver, model, a, contacts
     observables = solver.observables({SolverObservableFlags.CONTACT_F})
     solver.step(a, z, model.control(), contacts, dt, observables=observables)
     result = {name: getattr(z, name).numpy() for name in ("body_q", "body_qd", "joint_q", "joint_qd")}

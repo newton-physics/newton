@@ -692,8 +692,11 @@ def test_public_api_noop_and_fail_stop(test, device):
 
 
 def test_cuda_cold_capture_reports_errors_until_reset(test, device):
-    """Capture a fresh solver's step without preparation and report a replay's error until reset."""
-    _, solver, model, state, contacts = fixture(0.01, device=device, contact_torsion_device=True, iterations=16)
+    """Capture the first step of a solver that never stepped, and report a replay's error until reset."""
+    _, solver, model, state, contacts = fixture(
+        0.01, device=device, contact_torsion_device=True, iterations=16, step=False
+    )
+    test.assertEqual(solver._step, 0)
     output = model.state()
     with wp.ScopedCapture(device=model.device) as capture:
         solver.step(state, output, model.control(), contacts, 0.0025)
