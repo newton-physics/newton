@@ -53,7 +53,7 @@ class TestNightlyReporting(unittest.TestCase):
         for conclusion, label in (
             ("failure", "❌ Failed"),
             ("timed_out", "❌ Failed (timed out)"),
-            ("cancelled", "❌ Failed (cancelled)"),
+            ("cancelled", "⏹️ Cancelled"),
             ("dispatch_error", "❌ Failed (dispatch error)"),
         ):
             with self.subTest(conclusion=conclusion):
@@ -74,7 +74,8 @@ const context = {repo: {owner: 'owner', repo: 'repo'}, payload: {}, serverUrl: '
 const core = {warning: () => {}, error: () => {}};
 const github = {rest: {
   actions: {listWorkflowRuns: async () => ({data: {workflow_runs: [
-    {conclusion: 'success'}, {conclusion: 'failure'}, {conclusion: 'success'}
+    {conclusion: 'cancelled'}, {conclusion: 'timed_out'}, {conclusion: 'failure'},
+    {conclusion: 'success'}, {conclusion: 'cancelled'}, {conclusion: 'success'}
   ]}})},
   issues: {
     listForRepo: async () => ({data: [{title: 'Nightly failure', number: 3265}]}),
@@ -97,9 +98,10 @@ const github = {rest: {
                 )
                 body = json.loads(result.stdout)["body"]
                 self.assertIn("Recent (newest → oldest)", body)
-                self.assertIn(f"| Minimum deps tests | ✅❌✅ | {label} |", body)
-                self.assertIn("| Multi-GPU tests | ✅❌✅ | ✅ Passed |", body)
-                self.assertIn("| Warp nightly tests | ✅❌✅ | ⏭️ Skipped |", body)
+                self.assertIn(f"| Minimum deps tests | ⏹️❌❌✅⏹️ | {label} |", body)
+                self.assertIn("| Multi-GPU tests | ⏹️❌❌✅⏹️ | ✅ Passed |", body)
+                self.assertIn("| Warp nightly tests | ⏹️❌❌✅⏹️ | ⏭️ Skipped |", body)
+                self.assertIn("History: ✅ Passed, ❌ Failed, ⏹️ Cancelled.", body)
 
 
 if __name__ == "__main__":
