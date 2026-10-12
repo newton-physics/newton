@@ -1050,11 +1050,13 @@ def apply_joint_forces(
     if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ROD:
         f_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
         t_total = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
-        # Interpret six-DoF joint forces as a spatial wrench at the COM (same as body_f).
-        # Avoid adding a moment arm that would introduce torque for pure forces.
+        # The input wrench is world-frame and referenced at the child's COM.
         wp.atomic_add(body_f, id_c, wp.spatial_vector(f_total, t_total))
         if id_p >= 0:
-            wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total))
+            # Shift the reaction wrench to the parent's COM.
+            r_pc = wp.transform_point(pose_c, com_c) - wp.transform_point(pose_p, com_p)
+            t_parent = t_total + wp.cross(r_pc, f_total)
+            wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_parent))
         # Record the contribution to the inbound joint wrench (used to populate
         # ``SolverObservables.body_parent_f``). For FREE and ROD joints this is
         # diagnostic only; for DISTANCE joints the solver adds its contribution.

@@ -548,6 +548,9 @@ def eval_fk(
     The written :attr:`State.body_qd` values use Newton's public body-twist
     convention ``(v_com_world, omega_world)``.
 
+    Stale joint coordinates can overwrite simulated body state. Use
+    :func:`eval_ik` to refresh the input arrays from body state when needed.
+
     Args:
         model: The model to evaluate.
         joint_q: Generalized joint position coordinates, shape [joint_coord_count], float

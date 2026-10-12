@@ -97,6 +97,22 @@ offsets ``[0, 1, 2, 3]`` to ``[2, (0, 1), (3, 4), 5]``, and use
 :attr:`newton.Model.joint_q_start` and
 :attr:`newton.Model.joint_qd_start` to locate each Rod slice.
 
+Rod angular rest is stored in :attr:`newton.Model.joint_target_q`; after
+editing it, call :meth:`newton.solvers.SolverVBD.notify_model_changed` with
+:attr:`newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`. Editing
+:attr:`newton.Model.body_q` no longer changes angular rest.
+
+Code that wrote the old bend offset ``qd_start + 2`` now silently sets stretch.
+The shear/bend isotropy check cannot detect every outdated offset; audit
+direct Rod ``joint_target_ke``/``joint_target_kd`` indexing.
+
+:func:`newton.eval_fk` now reconstructs Rod body state from ``joint_q`` and
+``joint_qd`` like free joints.
+:class:`newton.solvers.SolverVBD` advances Rod bodies in maximal coordinates
+without updating these arrays. Before calling ``eval_fk`` during the simulation,
+exclude the rod articulations with ``mask``/``indices`` or use
+:func:`newton.eval_ik` to update the coordinate arrays passed to ``eval_fk``.
+
 +------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
 | **warp.sim**                                                     | **Newton**                                                                                                            |
 +------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+

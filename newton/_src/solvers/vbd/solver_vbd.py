@@ -294,8 +294,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         For ROD joints, SolverVBD captures structural-rest bend and twist from
         ``model.joint_target_q`` when constructed. After changing these Model-owned
         angular rest targets, call :meth:`notify_model_changed` with
-        :attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES` or
-        :attr:`~newton.ModelFlags.JOINT_PROPERTIES`.
+        :attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`; the broader
+        :attr:`~newton.ModelFlags.JOINT_PROPERTIES` and
+        :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` also refresh it.
 
         For CUDA graph capture, the recommended construction order is
         ``CollisionPipeline`` -> ``Contacts`` -> ``SolverVBD``, all before capture.
@@ -339,8 +340,8 @@ class SolverVBD(SolverBase, CouplingInterface):
           - BALL: LINEAR=0 only
           - FIXED/REVOLUTE/PRISMATIC/D6: LINEAR=0, ANGULAR=1
 
-        STRETCH/SHEAR/BEND/TWIST name the four-slot layout emitted by the builder
-        rod APIs and apply only to :attr:`~newton.JointType.ROD`. Only structural
+        STRETCH/SHEAR/BEND/TWIST name SolverVBD's four-slot constraint layout
+        and apply only to :attr:`~newton.JointType.ROD`. Only structural
         slots are named here; per-DOF drive/limit slots (slot 2+ on non-rod
         joints) are not.
         """

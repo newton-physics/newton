@@ -3705,7 +3705,7 @@ def _rod_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device):
 
 
 def _rod_vbd_joint_f_applies_six_dof_wrench_impl(test: unittest.TestCase, device):
-    """Verify VBD applies a Rod joint's six-DoF wrench."""
+    """Verify VBD applies a Rod wrench and its reaction at each body's COM."""
     test.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
     newton.use_coord_layout_targets = True
 
@@ -3714,9 +3714,15 @@ def _rod_vbd_joint_f_applies_six_dof_wrench_impl(test: unittest.TestCase, device
     dt = 1.0 / 60.0
 
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0, 0.0, 0.0))
-    child = builder.add_link(mass=child_mass, inertia=wp.mat33(np.eye(3)))
+    parent = builder.add_link(
+        xform=wp.transform(wp.vec3(0.0, 0.0, -1.0), wp.quat_identity()),
+        com=wp.vec3(0.0, 0.0, -0.5),
+        mass=child_mass,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    child = builder.add_link(com=wp.vec3(0.0, 0.0, 0.5), mass=child_mass, inertia=wp.mat33(np.eye(3)))
     rod = builder.add_joint_rod(
-        -1,
+        parent,
         child,
         stretch_stiffness=0.0,
         bend_stiffness=0.0,
@@ -3744,6 +3750,24 @@ def _rod_vbd_joint_f_applies_six_dof_wrench_impl(test: unittest.TestCase, device
         [force_x * dt / child_mass, 0.0, 0.0, 0.0, torque_y * dt, 0.0],
         atol=1.0e-5,
     )
+    # The COMs are 2 m apart along Z, so the force adds a parent reaction torque about Y.
+    np.testing.assert_allclose(
+        body_qd[parent],
+        [-force_x * dt / child_mass, 0.0, 0.0, 0.0, -(torque_y + 2.0 * force_x) * dt, 0.0],
+        atol=1.0e-5,
+    )
+    # Internal actuation must not create angular momentum about the world origin.
+    body_q = state_1.body_q.numpy()
+    body_com = model.body_com.numpy()
+    body_mass = model.body_mass.numpy()
+    body_inertia = model.body_inertia.numpy()
+    angular_momentum = np.zeros(3)
+    for body in (parent, child):
+        com_world = np.asarray(wp.transform_point(wp.transform(*body_q[body]), wp.vec3(*body_com[body])))
+        angular_momentum += body_inertia[body] @ body_qd[body][3:] + body_mass[body] * np.cross(
+            com_world, body_qd[body][:3]
+        )
+    np.testing.assert_allclose(angular_momentum, 0.0, atol=1.0e-5)
 
 
 def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device):
@@ -6335,9 +6359,11 @@ def _joint_rod_api_deprecates_cable_names(test, device):
 
 def _cable_positional_argument_migrations(test, device):
     """Preserve active migrations and enforce completed migrations."""
+    rod_parameters = dict(inspect.signature(newton.ModelBuilder.add_joint_rod).parameters)
+    rod_parameters.pop("rest_rotation")  # the deprecated alias does not grow new parameters
     test.assertEqual(
-        inspect.signature(newton.ModelBuilder.add_joint_cable),
-        inspect.signature(newton.ModelBuilder.add_joint_rod),
+        list(inspect.signature(newton.ModelBuilder.add_joint_cable).parameters.values()),
+        list(rod_parameters.values()),
     )
 
     released_stiffness_args = (11.0, 0.1, 22.0, 0.2, 33.0, 0.3, 44.0, 0.4)
@@ -7654,6 +7680,16 @@ def _quat_between_vectors_robust_antiparallel_kernel(direction: wp.vec3, errors:
 
 
 class TestCable(unittest.TestCase):
+    def test_semi_implicit_rejects_rod_joints(self):
+        """Reject Rod models at SemiImplicit construction."""
+        self.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
+        newton.use_coord_layout_targets = True
+        builder = newton.ModelBuilder()
+        joint = builder.add_joint_rod(-1, builder.add_link())
+        builder.add_articulation([joint])
+        with self.assertRaisesRegex(ValueError, "SolverSemiImplicit does not support JointType.ROD"):
+            newton.solvers.SolverSemiImplicit(builder.finalize(device="cpu"))
+
     def test_quat_between_vectors_robust_antiparallel(self):
         """Rotate a diagonal direction onto its opposite on host and devices."""
         direction = wp.normalize(wp.vec3(1.0, 1.0, 1.0))

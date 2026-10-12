@@ -130,7 +130,7 @@ Every material axis uses :attr:`~newton.JointTargetMode.NONE`.
 structural rest. After editing rest rotations in
 :attr:`newton.Model.joint_target_q`, call
 :meth:`newton.solvers.SolverVBD.notify_model_changed` with
-:attr:`newton.ModelFlags.JOINT_PROPERTIES`.
+:attr:`newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:

@@ -6508,7 +6508,6 @@ class ModelBuilder:
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
-        rest_rotation: Quat | None = None,
         **kwargs,
     ) -> int:
         """Deprecated alias for :meth:`add_joint_rod`.
@@ -6526,7 +6525,6 @@ class ModelBuilder:
             child=child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            rest_rotation=rest_rotation,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
             shear_stiffness=shear_stiffness,
