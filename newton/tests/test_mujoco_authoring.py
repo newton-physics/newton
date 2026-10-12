@@ -103,8 +103,12 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
     def test_ball_free_targets_require_native_gear(self):
         """Reject ambiguous Newton DOF selection on native ball/free transmissions."""
         rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2)
-        for joint_type, gear in (("ball", (1.0, 0.0, 0.0)), ("free", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0))):
-            with self.subTest(joint_type=joint_type):
+        for joint_type, gear in (
+            ("ball", (1.0, 0.0, 0.0)),
+            ("free", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0)),
+            ("free", (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)),
+        ):
+            with self.subTest(joint_type=joint_type, gear=gear):
                 builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
                 body = builder.add_link(
                     mass=1.0,
@@ -133,10 +137,15 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
                     solver.step(state0, state1, model.control(), None, 0.001)
                     velocities.append(state1.joint_qd.numpy())
                 np.testing.assert_allclose(velocities[0], velocities[1], atol=1e-6)
-                # Native child-frame X torque acts about parent-frame Y after the rotation.
-                angular_start = 3 if joint_type == "free" else 0
-                self.assertGreater(velocities[0][angular_start + 1], 0.0)
-                self.assertAlmostEqual(velocities[0][angular_start], 0.0, places=6)
+                if joint_type == "free" and gear[0] != 0.0:
+                    # World-frame X force at the body origin also produces COM torque.
+                    self.assertGreater(velocities[0][0], 0.0)
+                    self.assertGreater(velocities[0][5], 0.0)
+                else:
+                    # Native child-frame X torque acts about parent-frame Y after rotation.
+                    angular_start = 3 if joint_type == "free" else 0
+                    self.assertGreater(velocities[0][angular_start + 1], 0.0)
+                    self.assertAlmostEqual(velocities[0][angular_start], 0.0, places=6)
 
     def test_zero_feedback_gains(self):
         """Allow a damping-only position actuator and a disabled velocity actuator."""
