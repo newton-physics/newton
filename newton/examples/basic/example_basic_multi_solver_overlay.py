@@ -1,11 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compare four quadruple pendulums using independent viewer layers.
+"""Example Basic Multi-Solver Overlay
 
-XPBD, Featherstone, MuJoCo Warp, and Kamino DVI each own their model, state,
-and CUDA graph. Layers initially overlay; layer transforms only displace
-rendered objects and do not change the underlying physics.
+Demonstrates the viewer "layer" system by running four simulations of
+the same quadruple-pendulum chain in a single viewer window, each driven
+by a different solver (XPBD, Featherstone, MuJoCo Warp, Kamino DVI). By default the
+layers overlay exactly so the per-solver divergence is obvious; bumping
+the ``spacing`` constant lays them out side-by-side along the world
+X-axis via ``viewer.set_layer_transform``. Layers can also be toggled
+independently via the "Layers" group in the viewer sidebar.
+
+Layers are created via ``viewer.activate(layer_id)``. Each layer owns its
+own model, state, and shape batches; the viewer accumulates the render
+objects from all layers and draws them together every frame. Each layer
+also captures its own CUDA graph so per-solver stepping stays fast.
+The per-layer transform applied via ``set_layer_transform`` is a pure
+render-time displacement: it shifts every drawn object in the layer
+without changing the underlying physics state, so passing
+``wp.transform_identity()`` (or a zero-translation transform) makes the
+layers overlay exactly.
+
+Command: python -m newton.examples basic_multi_solver_overlay
 """
 
 import warnings

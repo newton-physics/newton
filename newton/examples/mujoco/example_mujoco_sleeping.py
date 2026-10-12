@@ -1,7 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Visualize sleeping constraint islands as nearby stacks of ant robots topple and interact."""
+"""Example MuJoCo Sleeping
+
+Drops four nearby stacks of ants and visualizes MuJoCo Warp's sleeping
+islands. The stacks topple toward one another in a shared world, allowing
+their islands to merge. Awake articulations use Newton's display palette,
+with a shared color for every tree in the same constraint island. Sleeping
+islands are gray.
+
+Command: python -m newton.examples mujoco_sleeping
+"""
 
 from __future__ import annotations
 

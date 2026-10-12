@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Start a contact-driven chain reaction by tipping the first domino in a spiral."""
+"""Example Domino Spiral
+
+Places dominoes along a spiral and tilts the first one to start a
+contact-driven chain reaction.
+
+Command: python -m newton.examples domino_spiral
+"""
 
 from __future__ import annotations
 

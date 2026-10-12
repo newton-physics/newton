@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render animated shapes and line instances directly, without a Newton simulation model."""
+"""Example Viewer
+
+Shows how to use the Newton Viewer class to visualize various shapes
+and line instances without a Newton model.
+
+Command: python -m newton.examples basic_viewer
+"""
 
 import math
 

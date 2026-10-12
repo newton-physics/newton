@@ -1,7 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Insert and release a latched RJ45 plug using SDF contact and a translation gizmo."""
+"""Example SDF RJ45 Plug-Socket Insertion
+
+Use the translation gizmo to move the plug toward the socket.
+Click an axis arrow to slide along one axis, or a plane square
+for two-axis motion. The latch deflects on entry and locks
+the plug once fully inserted.
+
+Command: uv run -m newton.examples contacts_rj45_plug
+"""
 
 import dataclasses
 

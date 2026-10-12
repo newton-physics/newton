@@ -1,7 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Replicated four-bar mechanisms split their rigid links between Kamino and MuJoCo, joined through ADMM constraints."""
+"""Example Kamino-MuJoCo ADMM Coupled Solver
+
+A closed four-bar linkage is split across two rigid solvers: two links are
+owned by Kamino and two links are owned by MuJoCo. SolverCoupledADMM detects
+the model revolute joints that connect bodies owned by different solvers and
+turns them into ADMM attachments.
+
+Command: python -m newton.examples kamino_mujoco_admm_solver
+"""
 
 from __future__ import annotations
 

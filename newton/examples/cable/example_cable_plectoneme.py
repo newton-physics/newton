@@ -1,10 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Form a plectoneme by counter-twisting a cable hanging between fixed endpoints.
+"""Cable Plectoneme Formation
 
-The cable starts on a sagging arc; twisting drives out-of-plane buckling
-and self-contact supports the resulting supercoil.
+A cable hangs between two fixed endpoints and supercoils into a plectoneme
+when the endpoints are twisted:
+
+  1. the cable sags under gravity into a smooth loop (initialized on a
+     hanging arc to avoid a snap-in transient);
+  2. the two endpoints are gradually counter-twisted about the cable tangent;
+  3. past the buckling threshold the centerline leaves the plane and folds
+     back on itself into a plectoneme held open by rod self-contact.
+
+Plectoneme formation requires self-contact (the strands press against each
+other), so this uses hard-history contact at the true capsule radius with a
+healthy substep/iteration budget.
+
+Run interactively:
+  uv run --extra examples python -m newton.examples.cable.example_cable_plectoneme
+
+Run as a test:
+  uv run --extra examples python -m newton.examples.cable.example_cable_plectoneme --test --viewer null
 """
 
 import math

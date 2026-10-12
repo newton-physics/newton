@@ -1,10 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Plot per-step MuJoCo solver effort, energy, and active constraints for replicated falling humanoids.
+"""Example Basic Plotting
 
-Iteration count is the maximum across worlds; energy and constraint counts
-are measured in world 0.
+Shows how to access and plot per-step simulation diagnostics from the
+MuJoCo solver. This is useful for debugging solver performance, energy
+conservation, and contact behavior.
+
+The example loads a humanoid model that falls under gravity and collides
+with the ground, collecting per-step metrics:
+  - Solver iteration count (max across worlds — worst-case effort)
+  - Kinetic and potential energy (world 0 — replicated worlds are identical)
+  - Active constraint count (world 0 — replicated worlds are identical)
+
+Worlds are deterministic replicates, so per-world values are identical;
+iteration count is reported as a max to surface worst-case solver cost.
+
+Command: python -m newton.examples basic_plotting --world-count 4
 """
 
 import warnings

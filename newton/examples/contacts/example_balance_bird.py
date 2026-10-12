@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Balance a procedural toy bird on a narrow pedestal using rigid contact."""
+"""Example Balance Bird
+
+Balances a small procedural toy body on a narrow pedestal. The body is
+built from primitive shapes so the example has no external mesh asset.
+
+Command: python -m newton.examples balance_bird
+"""
 
 from __future__ import annotations
 

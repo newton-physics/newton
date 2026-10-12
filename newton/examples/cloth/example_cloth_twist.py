@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Twist an FEM cloth sheet with VBD while resolving self-contact."""
+"""Example Cloth Twist
+
+This simulation demonstrates twisting an FEM cloth model using the VBD
+solver, showcasing its ability to handle complex self-contacts while
+ensuring it remains intersection-free.
+
+Command: python -m newton.examples cloth_twist
+"""
 
 import math
 import os

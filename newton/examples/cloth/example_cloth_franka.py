@@ -1,10 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fold a shirt with a Franka arm using coupled Featherstone robot and VBD cloth simulation.
+"""Example Cloth Franka
 
-The simulation uses centimeter scale for cloth numerics; a separate
-visualization state converts back to meters.
+This simulation demonstrates a coupled robot-cloth simulation
+using the VBD solver for the cloth and Featherstone for the robot,
+showcasing its ability to handle complex contacts while ensuring it
+remains intersection-free.
+
+The simulation runs in centimeter scale for better numerical behavior
+of the VBD solver. A vis_state is used to convert back to meter scale
+for visualization.
+
+Command: python -m newton.examples cloth_franka
 """
 
 from __future__ import annotations

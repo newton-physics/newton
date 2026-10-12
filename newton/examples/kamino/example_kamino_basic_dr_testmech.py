@@ -1,7 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Simulate the multi-link DR TestMech with SolverKamino."""
+"""Example for basic DR TestMech system
+
+Shows how to simulate DR TestMech with multiple worlds using SolverKamino.
+
+Command: python -m newton.examples kamino_basic_dr_testmech --world-count 16
+"""
 
 import warp as wp
 

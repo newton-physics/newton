@@ -1,7 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Record humanoid model structure and simulation states to a ViewerFile recording."""
+"""Example Recording
+
+Shows how to record a simulation using ViewerFile for automatic recording
+of model structure and state data during simulation.
+
+Recording happens automatically - ViewerFile captures all logged states
+and saves them when the viewer is closed.
+
+Command: python -m newton.examples recording
+"""
 
 import numpy as np
 import warp as wp

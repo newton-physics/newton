@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Demonstrate threaded nut-and-bolt engagement using hydroelastic mesh contact."""
+"""Example SDF Mesh Collision
+
+Demonstrates nut/bolt mesh collision using hydroelastic contacts.
+
+Command: python -m newton.examples nut_bolt_hydro
+         python -m newton.examples nut_bolt_hydro --solver kamino
+"""
 
 import argparse
 import tempfile

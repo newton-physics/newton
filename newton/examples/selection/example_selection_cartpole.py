@@ -1,7 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Drive batched double-cartpoles from random initial states with center-directed cart forces via ArticulationView."""
+"""Example Selection Cartpole
+
+Demonstrates batch control of multiple cartpole worlds using
+ArticulationView. This example spawns multiple cartpole robots and applies
+center-directed cart forces from randomized initial cart and pole states.
+
+To limit the number of worlds to render use the max-worlds argument.
+Command: python -m newton.examples selection_cartpole --world-count 16 --max-worlds 8
+"""
 
 from __future__ import annotations
 

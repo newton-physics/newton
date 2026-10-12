@@ -1,7 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Simulate and manipulate a closed four-bar linkage with SolverKamino."""
+"""Example for basic four-bar mechanism
+
+Shows how to simulate a basic four-bar linkage with multiple worlds using SolverKamino.
+
+Command: python -m newton.examples kamino_basic_fourbar --world-count 16
+"""
 
 import argparse
 

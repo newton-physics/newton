@@ -1,10 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Transport boxes around a multi-belt circuit using contact forces and belt velocity fields.
+"""Example Basic Conveyor Forces
 
-Static frictionless belts provide constant or pivot velocity fields. Solver
-normal forces are converted into Coulomb-limited tangential body forces.
+A multi-belt conveyor circuit transports rigid boxes with a velocity field
+rather than belt friction: every belt is a static, frictionless surface with
+an attached constant or pivot velocity field. Each step the per-contact
+normal forces are read back from the solver and converted into Coulomb-limited
+tangential body forces, so boxes are carried around the loop, through the
+180-degree turn, up the incline, across the differential pair, and back.
+
+Command: python -m newton.examples basic_conveyor_forces
+         python -m newton.examples basic_conveyor_forces --solver kamino
 """
 
 import math

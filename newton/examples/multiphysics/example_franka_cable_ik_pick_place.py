@@ -1,7 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""A MuJoCo Franka arm uses GPU inverse kinematics to pick and place a VBD cable through proxy coupling."""
+"""Example Franka Cable IK Pick-and-Place (proxy coupling)
+
+A fixed-base Franka FR3 arm uses Newton's GPU IK solver to pick up a
+deformable cable and move it to a target location. The arm is simulated
+by MuJoCo (PD position targets driven from the IK result), the cable is
+a VBD rod, and SolverCoupledProxy couples the two: the gripper bodies are
+exposed to VBD as virtual proxies so the cable detects them as contacts.
+
+Cable geometry/material, Franka joint gains, contact parameters and the
+proxy coupling solver settings mirror IsaacLab's franka_cable_env_cfg.
+
+Standalone: depends only on newton + warp (no IsaacLab).
+
+Command: python -m newton.examples franka_cable_ik_pick_place
+"""
 
 from __future__ import annotations
 

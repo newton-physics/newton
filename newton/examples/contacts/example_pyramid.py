@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Knock down pyramids of rigid boxes with a wrecking ball rolling down a ramp."""
+"""Example Box Pyramid
+
+Builds pyramids of box-shaped cubes with a wrecking ball on a ramp
+to stress-test narrow-phase contact generation.
+
+Command: python -m newton.examples pyramid
+Kamino DVI: python -m newton.examples pyramid --solver kamino
+"""
 
 import numpy as np
 import warp as wp

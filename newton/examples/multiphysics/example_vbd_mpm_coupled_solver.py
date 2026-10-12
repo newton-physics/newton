@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""A VBD tetrahedral cube falls onto an MPM granular heap. Its deforming surface supplies colliders for two-way coupling."""
+"""Example VBD-MPM Coupled Solver
+
+A tetrahedral VBD cube falls into an implicit-MPM granular heap.  The soft
+body's surface is exported to MPM as a prescribed-velocity deformable mesh
+collider through the generic particle proxy hooks.
+
+Command: python -m newton.examples vbd_mpm_coupled_solver
+"""
 
 from __future__ import annotations
 

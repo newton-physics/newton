@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Collapse a water-like MPM column in a tank and render its extracted surface mesh."""
+"""Water-like MPM dam break rendered as an extracted surface mesh."""
 
 import argparse
 import warnings

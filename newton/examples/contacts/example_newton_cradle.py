@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Transfer motion through five contacting spheres suspended on revolute pendulums."""
+"""Example Newton Cradle
+
+Builds a five-ball Newton's cradle with revolute-joint pendulums and
+sphere-sphere contact.
+
+Command: python -m newton.examples newton_cradle
+"""
 
 from __future__ import annotations
 

@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Demonstrate adaptive collision scheduling with a fast capsule and a brick wall.
+"""Example Adaptive Collision Scheduling
 
-The collision scheduler refreshes speculative contacts often enough to prevent
+Fires a fast capsule into a staggered wall of box-shaped bricks. The
+collision scheduler refreshes speculative contacts often enough to prevent
 the projectile from tunneling while preserving a fixed solver substep count.
-Disable the scheduler to compare against collision detection once per frame.
+
+Command: python -m newton.examples adaptive_collision
 """
 
 from __future__ import annotations

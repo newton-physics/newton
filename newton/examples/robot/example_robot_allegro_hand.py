@@ -1,9 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Load Allegro hands from USD and drive finger targets while rotating the fixed root.
+"""Example Robot Allegro Hand
 
-Model-change notification updates the solver after changing the root transform.
+Shows how to set up a simulation of a Allegro hand articulation
+from a USD file using newton.ModelBuilder.add_usd().
+We also apply a sinusoidal trajectory to the joint targets and
+apply a continuous rotation to the fixed root joint in the form
+of the joint parent transform. The solver is updated
+about this change in the joint parent transform by calling
+self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES).
+
+Command: python -m newton.examples robot_allegro_hand --world-count 16
+         python -m newton.examples robot_allegro_hand --solver kamino
 """
 
 import numpy as np

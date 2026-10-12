@@ -71,7 +71,9 @@ _EXAMPLE_SPEC = {{
         output = render_example_spec("cable_bundle_hysteresis", spec, output_format="markdown")
 
         self.assertIn("# `cable_bundle_hysteresis`", output)
-        self.assertIn("Demonstrate the Dahl friction model for cable bending hysteresis.", output)
+        self.assertIn("Demonstrates Dahl friction model for cable bending hysteresis.", output)
+        self.assertIn("showing realistic memory effects in cable dynamics.", output)
+        self.assertIn("--test --viewer null", output)
         self.assertIn("python -m newton.examples cable_bundle_hysteresis --no-dahl", output)
         self.assertIn("The cables are mostly straight.", output)
 
@@ -83,7 +85,8 @@ _EXAMPLE_SPEC = {{
 
         self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["name"], "robot_asroballet")
-        self.assertTrue(payload["description"].startswith("Demonstrate LQR and learned-policy control"))
+        self.assertIn("Demonstrates LQR and learned-policy control for the asRoBallet robot", payload["description"])
+        self.assertIn('default; pass "--controller lqr" to use LQR.', payload["description"])
         self.assertEqual(len(payload["runs"]), 2)
         self.assertEqual(
             payload["runs"][1]["command"],

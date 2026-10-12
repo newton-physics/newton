@@ -1,7 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Drop and stack 52 stiff but flexible cloth cards on a cube, then strike them with a sphere."""
+"""Cloth Poker Cards
+
+This simulation demonstrates 52 poker cards (13 ranks x 4 suits) dropping
+and stacking on a cube, then being knocked off by a sphere. The cards use
+high bending stiffness to maintain their rigid shape while still being
+flexible enough to interact naturally.
+
+Standard poker card dimensions:
+- Width: 6.35 cm (2.5 inches) = 0.0635 m
+- Height: 8.89 cm (3.5 inches) = 0.0889 m
+- Resolution: 4x6 cells per card
+
+Command: uv run -m newton.examples cloth_poker_cards
+"""
 
 import numpy as np
 import warp as wp

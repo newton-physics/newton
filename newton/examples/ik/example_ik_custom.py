@@ -1,7 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Track a Franka end-effector gizmo with an additional soft sphere-avoidance objective."""
+"""Example IK Custom (custom collision objective + sphere gizmo)
+
+Inverse kinematics on a Franka arm, with collision
+avoidance against an interactive sphere obstacle.
+
+- Adds a custom CollisionSphereAvoidObjective (softplus penalty) for the EE
+- Adds gizmos for the end-effector target and the obstacle sphere
+- Re-solves IK every frame from the latest gizmo transforms
+- EE target gizmo snaps back to solved TCP pose on release
+
+Command: python -m newton.examples ik_custom
+"""
 
 import warp as wp
 

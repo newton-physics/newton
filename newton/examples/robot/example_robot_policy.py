@@ -1,10 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Control pretrained robot policies with I/K, J/L, and U/O, and reset with P.
+"""Example Robot control via keyboard
 
-ONNX inference uses Warp-NN; --physx selects a PhysX-trained policy,
-not a different Newton simulation solver.
+Shows how to control robots pretrained in IsaacLab with RL. Policies are
+loaded from ONNX files and run with Warp-NN's Warp-backed runtime, so PyTorch
+is not required for policy inference.
+
+Press "p" to reset the robot.
+Press "i", "j", "k", "l", "u", "o" to move the robot.
+Run this example with:
+python -m newton.examples robot_policy --robot g1_29dof
+python -m newton.examples robot_policy --robot g1_23dof
+python -m newton.examples robot_policy --robot go2
+python -m newton.examples robot_policy --robot anymal
+python -m newton.examples robot_policy --robot anymal --physx
 """
 
 from dataclasses import dataclass

@@ -1,10 +1,34 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Press Franka and UR10 tools against tilted and flat tables with hybrid force/motion control.
+"""Example Controllers — Operational Space Hybrid Force/Motion
 
-Each table defines an operational frame; tangential motion is position
-controlled while the normal direction is force controlled.
+Demonstrates ControllerOperationalSpace on two real, heterogeneous robots
+at once -- a 7-DOF Franka Panda arm (redundant against the 6D task) and a
+6-DOF UR10 arm (not redundant) -- each independently pressing a tool into
+its own table, with its position along the table steered interactively.
+The Franka's table is tilted 45 degrees toward it; the UR10's is flat.
+One controller call handles both, each robot resolved through its own
+tool site, Jacobian, and operational frame.
+
+Each operational frame is placed on its table's top surface, oriented so
+its Z axis is normal to the table -- so the same operational-frame-relative
+command works regardless of the table's tilt, and the axis triad drawn
+each frame lets you see exactly where the controller thinks "the table"
+and "into the table" are.
+
+Each operational frame's local Z (into its table) is wrench-controlled
+with a feedforward press force plus feedback from the measured contact
+force, plus a light superimposed motion-control term damping out
+bounce; the other five task axes are purely motion-controlled, tracking
+a desired (x, y) on the table's surface.
+
+Two sets of three sliders (x, y, press force) let you steer each robot's
+commanded task directly; a SensorContact reads back the actual contact
+force each tool exerts on its table, fed into the controller as wrench
+feedback and shown in the GUI alongside the commanded force.
+
+Command: python -m newton.examples controller_operational_space_hybrid_force_motion
 """
 
 from dataclasses import dataclass

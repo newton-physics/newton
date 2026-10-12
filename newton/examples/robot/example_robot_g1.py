@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Load replicated G1 humanoids from USD and simulate independent ground contact."""
+"""Example Robot G1
+
+Shows how to set up a simulation of a G1 robot articulation
+from a USD stage using newton.ModelBuilder.add_usd().
+
+Command: python -m newton.examples robot_g1 --world-count 16
+"""
 
 import warp as wp
 

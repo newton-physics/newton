@@ -1,9 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Load and navigate simulation recordings in a GL viewer.
+"""Example Replay Viewer
 
-Create humanoid_recording.bin with the recording example before this case.
+Shows how to use the replay UI with ViewerGL to load and
+display previously recorded simulation data.
+
+Recording is done automatically using ViewerFile:
+  viewer = newton.viewer.ViewerFile("my_recording.bin")
+  viewer.set_model(model)
+  viewer.log_state(state)  # Records automatically
+  viewer.close()  # Saves automatically
+
+Command: python -m newton.examples replay_viewer
 """
 
 import os

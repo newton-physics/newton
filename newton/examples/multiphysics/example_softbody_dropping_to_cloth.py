@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Drop a Neo-Hookean soft grid onto a suspended cloth sheet and resolve deformation on impact."""
+"""Example Softbody Dropping to Cloth
+
+This simulation demonstrates a volumetric soft body (tetrahedral grid)
+dropping onto a cloth sheet. The soft body uses Neo-Hookean elasticity
+and deforms on impact with the cloth.
+
+Command: python -m newton.examples.multiphysics.example_softbody_dropping_to_cloth
+"""
 
 import numpy as np
 import warp as wp

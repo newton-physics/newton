@@ -1,7 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""A falling XPBD particle pad contacts a ball-jointed tray through frictionless ADMM coupling."""
+"""Example ADMM Contact Coupled Solver
+
+An XPBD particle pad falls under gravity into a ball-jointed rigid drawer.
+SolverCoupledADMM runs particle-shape collision detection internally and
+supplies the drawer response through frictionless ADMM contacts.
+
+Pass ``--solver free`` to disable the ADMM contacts and compare against the
+uncoupled baseline.
+
+Command: python -m newton.examples admm_contact_solver
+         python -m newton.examples admm_contact_solver --solver free
+"""
 
 from __future__ import annotations
 

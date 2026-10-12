@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Walk an ANYmal C with a pretrained policy over sand coupled through implicit MPM."""
+"""Example MPM ANYmal
+
+Shows ANYmal C with a pretrained policy coupled with implicit MPM sand.
+
+Example usage (via unified runner):
+  python -m newton.examples mpm_anymal --viewer gl
+"""
 
 import sys
 

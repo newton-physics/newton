@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Demonstrate threaded nut-and-bolt engagement using signed-distance-field contact."""
+"""Example SDF Mesh Collision
+
+Demonstrates nut/bolt mesh collision using SDF (Signed Distance Field).
+
+Command: python -m newton.examples nut_bolt_sdf
+         python -m newton.examples nut_bolt_sdf --solver kamino
+"""
 
 import tempfile
 from pathlib import Path

@@ -1,9 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Propagate twist through three zigzag cables with increasing angular stiffness.
+"""Example Cable Twist
 
-The first segment spins continuously; rod joints transport twist across bends.
+Demonstrates twist propagation along cables with dynamic spinning.
+Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
+The first segment of each cable continuously spins, propagating twist along the cable.
+The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
+is transported through rod joints and across bends.
+
+Run interactively:
+  uv run --extra examples python -m newton.examples.cable.example_cable_twist
+
+Run as a test:
+  uv run --extra examples python -m newton.examples.cable.example_cable_twist --test --viewer null
 """
 
 import numpy as np

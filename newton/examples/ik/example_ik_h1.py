@@ -1,7 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Solve H1 limb inverse kinematics using four interactive hand and foot target gizmos."""
+"""Example IK H1 (positions + rotations)
+
+Inverse kinematics on H1 with four interactive end-effector
+targets (left/right hands + left/right feet) controlled via viewer.log_gizmo().
+
+- Uses both IKObjectivePosition and IKObjectiveRotation per end-effector
+- Re-solves IK every frame from the latest gizmo transforms
+- On gizmo release, snaps each target back to the solved link pose
+
+Command: python -m newton.examples ik_h1
+"""
 
 import warp as wp
 

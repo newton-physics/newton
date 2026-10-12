@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Load replicated H1 humanoids from USD and allow their unactuated floating bases to settle."""
+"""Example Robot H1
+
+Shows how to set up a simulation of a H1 articulation
+from a USD file using newton.ModelBuilder.add_usd().
+
+Command: python -m newton.examples robot_h1 --world-count 16
+         python -m newton.examples robot_h1 --solver kamino
+"""
 
 import warp as wp
 

@@ -1,7 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Load rigid quadruped articulations from a URDF and simulate them without a trained policy."""
+"""Example Basic URDF
+
+Shows how to set up a simulation of a rigid-body quadruped articulation
+from a URDF using the newton.ModelBuilder().
+Note this example does not include a trained policy.
+
+Users can pick bodies by right-clicking and dragging with the mouse.
+
+Command: python -m newton.examples basic_urdf
+Kamino DVI: python -m newton.examples basic_urdf --solver kamino
+"""
 
 import numpy as np
 import warp as wp

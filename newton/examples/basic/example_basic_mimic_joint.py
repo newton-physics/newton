@@ -1,9 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Drive a lead screw whose prismatic nut mimics screw rotation.
+"""Example Basic Mimic Joint
 
-The coupling is q_nut = pitch / (2*pi) * q_screw.
+Models a lead screw by making a prismatic nut joint mimic a revolute screw
+joint. The relationship converts screw rotation to linear travel:
+
+    q_nut = pitch / (2 * pi) * q_screw
+
+Command: python -m newton.examples basic_mimic_joint
 """
 
 import math

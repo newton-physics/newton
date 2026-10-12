@@ -1,15 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Demonstrate LQR and learned-policy control for the asRoBallet robot.
+"""Example Robot asRoBallet
 
-Hold "i"/"k" to move forward/backward, "j"/"l" to move left/right,
-and "u"/"o" to turn left/right. Nonzero velocity arguments select fixed
-command mode instead of keyboard control. Pass ``--virtual-ball-joint`` to
-constrain the ball center to the base using the original asRoBallet spherical
-joint.
+Demonstrates LQR and learned-policy control for the asRoBallet robot
+(RSS 2026: https://arxiv.org/abs/2604.24916).
 
-The robot was introduced in the RSS 2026 paper: https://arxiv.org/abs/2604.24916.
+Hold "i"/"k" to move forward/backward and "j"/"l" to move left/right.
+Hold "u"/"o" to turn left/right. Nonzero velocity arguments select fixed
+command mode instead of keyboard control. The policy controller is used by
+default; pass "--controller lqr" to use LQR.
+Pass "--virtual-ball-joint" to constrain the ball center to the base using
+the original asRoBallet spherical joint.
+
+Command: python -m newton.examples robot_asroballet
 """
 
 import math

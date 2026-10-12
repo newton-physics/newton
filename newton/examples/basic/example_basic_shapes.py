@@ -1,7 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Create primitive and mesh collision shapes with ModelBuilder and drop them onto a plane."""
+"""Example Basic Shapes
+
+Shows how to programmatically create a variety of
+collision shapes using the newton.ModelBuilder() API.
+Supports XPBD (default), VBD, and Kamino DVI solvers.
+
+Command: python -m newton.examples basic_shapes
+With VBD: python -m newton.examples basic_shapes --solver vbd
+With Kamino DVI: python -m newton.examples basic_shapes --solver kamino
+"""
 
 import warp as wp
 from pxr import Usd

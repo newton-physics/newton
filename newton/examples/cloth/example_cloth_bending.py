@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Drop a curved cloth mesh using VBD bending stiffness to preserve its rest curvature."""
+"""Example Sim Cloth Bending
+
+This simulation demonstrates cloth bending behavior using the Vertex Block
+Descent (VBD) integrator. A cloth mesh, initially curved, is dropped on
+the ground. The cloth maintains its curved shape due to bending stiffness,
+controlled by edge_ke and edge_kd parameters.
+"""
 
 import numpy as np
 import warp as wp

@@ -1,18 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Demonstrate rigid-VBD ADMM coupling through model attachment annotations and joints.
+"""Example Rigid-VBD ADMM Coupled Solver
 
-A rigid ball is attached to the centre of a pinned VBD cloth sheet through a
-model-level particle-body attachment annotation, while a separate rigid
-pendulum link carries a VBD rigid payload through a normal model ball joint.
-SolverCoupledADMM converts both cross-solver couplings into ADMM attachment
-constraints.
+A rigid ball is attached to the centre of a pinned VBD cloth sheet
+through a model-level particle-body attachment annotation, while a separate
+rigid pendulum link carries a VBD rigid payload through a normal model ball
+joint. SolverCoupledADMM converts both cross-solver couplings into ADMM
+attachment constraints.
 
-SolverCoupledADMM is an alternative to proxy-body coupling based on linearised
-ADMM over model joints, model attachment annotations, and collision-detected
-contacts rather than proxy bodies. See docs/plans/2026-04-23-admm-coupling.tex
-for the algorithm.
+This example demonstrates ``SolverCoupledADMM``, an
+alternative to proxy-body coupling based on linearised ADMM over model
+joints, model attachment annotations, and collision-detected contacts rather
+than proxy bodies. See ``docs/plans/2026-04-23-admm-coupling.tex`` for the
+algorithm.
+
+Command: python -m newton.examples mujoco_vbd_admm_solver
 """
 
 from __future__ import annotations

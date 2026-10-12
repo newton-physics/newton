@@ -1,7 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compare revolute, prismatic, and ball joints in three two-link mechanisms."""
+"""Example Basic Joints
+
+Shows how to use the ModelBuilder API to programmatically create different
+joint types: BALL, DISTANCE, PRISMATIC, and REVOLUTE.
+
+Command: python -m newton.examples basic_joints --solver xpbd
+         python -m newton.examples basic_joints --solver vbd
+         python -m newton.examples basic_joints --solver kamino
+"""
 
 import warp as wp
 

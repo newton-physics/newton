@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Control and reset multiple ant articulations per world with one ArticulationView."""
+"""Example Selection Multiple Articulations
+
+Shows how to control multiple articulation per world in a single ArticulationView.
+
+Command: python -m newton.examples selection_multiple
+         python -m newton.examples selection_multiple --solver kamino
+"""
 
 from __future__ import annotations
 

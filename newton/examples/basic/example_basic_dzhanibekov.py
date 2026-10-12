@@ -1,9 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Demonstrate intermediate-axis instability on a freely rotating T-shaped rigid body.
+"""Example Basic Dzhanibekov
 
-Gravity is disabled and the initial spin is about the stem axis.
+Demonstrates the Dzhanibekov effect on a free T-shaped rigid body.
+The body is composed of a horizontal bar (一) and a vertical stem (|).
+The initial angular velocity is about the stem axis, gravity is
+disabled, and the body is advanced by a rigid-body solver.
+
+Command: python -m newton.examples basic_dzhanibekov
+XPBD: python -m newton.examples basic_dzhanibekov --solver xpbd
+MuJoCo: python -m newton.examples basic_dzhanibekov --solver mujoco
+Kamino: python -m newton.examples basic_dzhanibekov --solver kamino
 """
 
 import numpy as np

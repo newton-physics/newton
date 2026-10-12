@@ -1,7 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Drop spheres onto sinusoidal heightfield terrain using rigid-body contact."""
+"""Example Basic Heightfield
+
+Demonstrates heightfield terrain with objects dropped onto it.
+Supports XPBD, MuJoCo, and Kamino DVI solvers.
+
+Command: uv run -m newton.examples basic_heightfield
+MuJoCo: uv run -m newton.examples basic_heightfield --solver mujoco
+Kamino DVI: uv run -m newton.examples basic_heightfield --solver kamino
+"""
 
 import numpy as np
 import warp as wp

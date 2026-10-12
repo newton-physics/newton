@@ -1,7 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Measure total and per-counterpart contact forces as a ball and cube drop across sensor plates."""
+"""Example Contact Sensor
+
+Shows how to use the SensorContact class to evaluate contact forces,
+including per-counterpart breakdowns.
+The flap has a contact sensor registering the total contact force of
+the objects on top. The plates' sensors register per-counterpart forces
+for the cube and the ball to detect which object touched which plate. Each
+plate will light up when touched by the matching object.
+
+
+Command: python -m newton.examples sensor_contact
+"""
 
 import numpy as np
 import warp as wp

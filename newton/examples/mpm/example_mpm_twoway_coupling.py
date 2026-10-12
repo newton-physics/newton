@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Couple falling rigid boxes to an MPM sand pile with two-way momentum exchange."""
+"""Example MPM 2-Way Coupling
+
+A simple scene spawning a dozen rigid shapes above a plane. The shapes
+fall and collide using the MuJoCo solver. Demonstrates basic builder APIs
+and the standard example structure.
+
+Command: python -m newton.examples mpm_twoway_coupling
+"""
 
 from __future__ import annotations
 

@@ -1,10 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render tiled camera sensor outputs for animated Franka scenes.
+"""Example Sensor Camera
 
-Display color, albedo, depth, normal, shape-index, and semantic images,
-with observer and robot camera views and per-world rendering controls.
+Shows how to use the SensorCamera class and display its output
+via Viewer.log_image.
+
+Command: python -m newton.examples sensor_camera
 """
 
 import math

@@ -1,7 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Drop a rigid sphere onto an oscillating deformable FEM beam."""
+"""Example Rigid Soft Contact
+
+Shows how to set up a rigid sphere colliding with a soft FEM beam.
+
+Command: uv run -m newton.examples rigid_soft_contact
+"""
 
 import numpy as np
 import warp as wp

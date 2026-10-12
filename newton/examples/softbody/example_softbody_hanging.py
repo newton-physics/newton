@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compare damping in four Neo-Hookean tetrahedral grids pinned along one side."""
+"""Example Softbody Hanging
+
+This simulation demonstrates volumetric soft bodies (tetrahedral grids) hanging
+from fixed particles on the left side. Four grids with different damping values
+(1e4 to 1e1) showcase the effect of damping on Neo-Hookean elastic behavior.
+
+Command: uv run -m newton.examples softbody.example_softbody_hanging
+"""
 
 import warp as wp
 

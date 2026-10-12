@@ -1,7 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Drain viscous MPM material through a narrow funnel onto the ground."""
+"""Viscous fluid flowing through a funnel using MPM.
+
+A funnel-shaped mesh collider is filled with viscous fluid particles that
+flow out through a narrow aperture at the bottom, demonstrating viscoplastic
+material behavior with mesh collisions.
+"""
 
 import numpy as np
 import warp as wp

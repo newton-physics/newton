@@ -1,7 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""A MuJoCo gripper squeezes a VBD soft grid using proxy joints to couple the palm and sliding fingers."""
+"""Example Proxy Joint Gripper
+
+A MuJoCo-driven palm and two prismatic cube fingers grip a VBD soft grid.
+The VBD entry receives the gripper bodies as body proxies and keeps the
+fixed/prismatic joints enabled as proxy joints whose targets track the
+MuJoCo source joint configuration.
+
+Command: python -m newton.examples proxy_joint_gripper
+"""
 
 from __future__ import annotations
 

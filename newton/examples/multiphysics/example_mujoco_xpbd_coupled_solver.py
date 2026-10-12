@@ -1,7 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rigid boxes and an articulated chain interact with XPBD cloth. Proxy coupling feeds contact impulses back to the rigid solver; --solver xpbd provides a single-solver reference."""
+"""Example Rigid-XPBD Coupled Solver
+
+Rigid boxes and an articulated pendulum chain (driven by MuJoCo or Kamino)
+interact with a cloth sheet (simulated by XPBD). Contact forces from the
+deformable side are fed back to the rigid bodies through SolverCoupledProxy's
+proxy-body coupling path with momentum-based force harvesting.
+
+Pass ``--solver xpbd`` to run the same scene with a single XPBD solver
+(no coupling) as a reference baseline.
+
+Command: python -m newton.examples mujoco_xpbd_coupled_solver
+         python -m newton.examples mujoco_xpbd_coupled_solver --solver xpbd
+"""
 
 from __future__ import annotations
 

@@ -1,11 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Demonstrate the Dahl friction model for cable bending hysteresis.
+"""Example Cable Bundle Hysteresis
 
-Seven cables pass through moving obstacles that apply cyclic loading: load,
-hold, then release. The Dahl model captures plastic deformation and hysteresis
-loops, showing memory effects in the cable dynamics.
+Demonstrates Dahl friction model for cable bending hysteresis.
+Creates a bundle of 7 cables passing through moving obstacles that
+apply cyclic loading (load -> hold -> release). The Dahl model captures
+plastic deformation and hysteresis loops in cable bending behavior,
+showing realistic memory effects in cable dynamics.
+
+Run interactively:
+  uv run --extra examples python -m newton.examples.cable.example_cable_bundle_hysteresis
+
+Run as a test:
+  uv run --extra examples python -m newton.examples.cable.example_cable_bundle_hysteresis --test --viewer null
 """
 
 import numpy as np

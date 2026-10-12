@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Use differentiable model-predictive control to steer a drone toward successive targets."""
+"""Example Diffsim Drone
+
+A drone and its 4 propellers is simulated with the goal of reaching
+different targets via model-predictive control (MPC) that continuously
+optimizes the control trajectory.
+
+Command: python -m newton.examples diffsim_drone
+"""
 
 import os
 

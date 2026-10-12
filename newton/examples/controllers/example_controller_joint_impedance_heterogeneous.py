@@ -1,10 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Track joint targets for a triple pendulum and a single pendulum with one impedance controller.
+"""Example Controllers — Heterogeneous Joint Impedance
 
-The controller compensates gravity and decouples inertia across the
-heterogeneous joint layouts.
+Demonstrates ControllerJointImpedance on a mixed fleet:
+  Robot A — 3-DOF revolute chain (triple pendulum)
+  Robot B — 1-DOF revolute pendulum, side by side with robot A
+
+Joints rotate about an axis perpendicular to gravity, so as each robot
+moves away from hanging straight down, gravity applies real torque the
+controller must compensate for. Robot A tracks a sinusoidal target with
+staggered joint phases; robot B rotates continuously, passing through the
+high-torque horizontal pose every revolution.
+Both robots use model-based impedance (gravity compensation + inertia
+decoupling computed internally by the controller from the sim model).
+
+The two robots have different DOF counts, exercising the heterogeneous
+per-robot DOF layout and the indexed-view scatter into the sim.
+
+Command: python -m newton.examples controller_joint_impedance_heterogeneous
+         python -m newton.examples controller_joint_impedance_heterogeneous --solver kamino
 """
 
 import math

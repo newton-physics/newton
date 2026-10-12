@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rigid boxes fall into an MPM granular bed. Proxy colliders exchange impulses between MPM and the rigid solver."""
+"""Example Rigid-MPM Coupled Solver
+
+Rigid boxes driven by MuJoCo or Kamino fall into a granular MPM bed.  The rigid bodies
+are exposed to MPM as proxy colliders in the same shared model, and MPM
+grid impulses are harvested back into rigid-body wrenches.
+
+Command: python -m newton.examples mujoco_mpm_coupled_solver
+"""
 
 from __future__ import annotations
 
