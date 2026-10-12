@@ -4,6 +4,7 @@
 """Parallel size-group streams and double buffering of SolverFeatherPGS."""
 
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -255,11 +256,12 @@ def test_capture_after_eager_orders_the_pending_clear(test, device):
 def test_reset_after_an_eager_error_steps_like_a_fresh_solver(test, device):
     """Recover from an eager step that raised mid-step: after reset, step bitwise like a fresh solver.
 
-    The step raises after the closure rows were written into the active buffer set, and the
-    four-bar starts with a closure error so those rows are nonzero.
+    The torsion error raises after the closure rows were written into the active buffer set (the
+    four-bar starts with a closure error so those rows are nonzero); the early error raises on the
+    first step, before the mass-matrix stage.
     """
     results = []
-    for fail_first in (False, True):
+    for fail_first in (None, "torsion", "early"):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.replicate(_build_four_bar(), 2)
         model = builder.finalize(device=device)
@@ -278,11 +280,18 @@ def test_reset_after_an_eager_error_steps_like_a_fresh_solver(test, device):
         joint_q[0] = 0.2
         state.joint_q.assign(joint_q)
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-        if fail_first:
+        if fail_first == "torsion":
             # A latched torsion error makes the eager step raise during torsion preparation.
             solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
             with test.assertRaisesRegex(RuntimeError, "load ring"):
                 solver.step(state, output, model.control(), None, 1.0 / 240.0)
+        elif fail_first == "early":
+            with (
+                mock.patch.object(solver, "_stage1_fk_id", side_effect=KeyboardInterrupt("early")),
+                test.assertRaises(KeyboardInterrupt),
+            ):
+                solver.step(state, output, model.control(), None, 1.0 / 240.0)
+        if fail_first:
             solver.reset(state)
             solver.check_constraint_capacity()
         for _ in range(3):
@@ -290,8 +299,9 @@ def test_reset_after_an_eager_error_steps_like_a_fresh_solver(test, device):
             for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
                 wp.copy(getattr(state, name), getattr(output, name))
         results.append((state.joint_q.numpy(), state.joint_qd.numpy()))
-    for got, want in zip(results[1], results[0], strict=True):
-        np.testing.assert_array_equal(got, want)
+    for recovered in results[1:]:
+        for got, want in zip(recovered, results[0], strict=True):
+            np.testing.assert_array_equal(got, want)
 
 
 def test_flags_are_ignored_where_they_do_not_apply(test, device):

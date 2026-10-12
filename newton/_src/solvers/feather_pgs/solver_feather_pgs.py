@@ -6109,6 +6109,8 @@ class SolverFeatherPGS(SolverBase):
     def _select_double_buffer(self) -> None:
         """Make the current buffer set active and wait until it was cleared."""
         self._double_buffer_selected = True
+        # Set by the mass-matrix stage; a step that raises before it wrote no mass matrices.
+        self._mass_update_global_flag = 0
         index = self._buffer_index
         self._H_by_size = self._H_bufs[index]
         self._J_by_size = self._J_bufs[index]
