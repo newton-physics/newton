@@ -579,7 +579,6 @@ def test_sparse_diagonal_is_selected_only_where_supported(test, device):
     for label, overrides in (
         ("no streams", {"use_parallel_streams": False}),
         ("joint limits off", {"enable_joint_limits": False}),
-        ("torsion", {"contact_torsion_radius": 0.01}),
         ("regularization", {"contact_regularization": 0.02}),
         ("velocity iterations", {"velocity_iterations": 1}),
         ("warm start", {"contact_warmstart": True}),

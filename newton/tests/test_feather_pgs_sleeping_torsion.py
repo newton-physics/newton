@@ -6,21 +6,15 @@
 These tests need the experimental contact torsion options and are skipped by a solver without them.
 """
 
-import inspect
 import unittest
 
 import numpy as np
 import warp as wp
 
-from newton.solvers import SolverFeatherPGS
 from newton.tests.test_feather_pgs_sleeping_production import PROFILE, _advance, _articulations
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
-TORSION_PROFILE = {**PROFILE, "contact_torsion_radius": 0.01, "contact_torsion_device": True}
-
-
-def _torsion_available():
-    return "contact_torsion_radius" in inspect.signature(SolverFeatherPGS.__init__).parameters
+TORSION_PROFILE = {**PROFILE, "contact_torsion_device": True}
 
 
 def _torsion_rows(solver):
@@ -32,9 +26,7 @@ def _torsion_rows(solver):
 
 def test_anchored_torsion_articulations_sleep_and_wake(test, device):
     """Drop every row of a settled scene and restore anchored torsion rows on a force wake."""
-    if not _torsion_available():
-        test.skipTest("this solver has no contact torsion")
-    model, pipeline, solver, states, control = _articulations(device, profile=TORSION_PROFILE)
+    model, pipeline, solver, states, control = _articulations(device, profile=TORSION_PROFILE, torsion_radius=0.01)
     _advance(pipeline, solver, states, control, 5)
     awake_rows = int(solver._constraint_count.numpy()[0])
     awake_torsion = _torsion_rows(solver)
@@ -66,9 +58,7 @@ def test_anchored_torsion_articulations_sleep_and_wake(test, device):
 
 def test_graph_replay_validates_torsion(test, device):
     """Sleep and wake inside a captured graph with device torsion, checking its status after replays."""
-    if not _torsion_available():
-        test.skipTest("this solver has no contact torsion")
-    model, pipeline, solver, states, control = _articulations(device, profile=TORSION_PROFILE)
+    model, pipeline, solver, states, control = _articulations(device, profile=TORSION_PROFILE, torsion_radius=0.01)
     contacts = pipeline.contacts()
     _advance(pipeline, solver, states, control, 2, contacts=contacts)
     with wp.ScopedCapture(device=model.device) as capture:

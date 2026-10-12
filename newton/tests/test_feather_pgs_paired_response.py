@@ -12,6 +12,7 @@ import newton
 from newton._src.solvers.feather_pgs._testing import kernel_overrides
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_FRICTION
 from newton.solvers import SolverFeatherPGS
+from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
 
 
 def _build_mixed_response_model(
@@ -286,6 +287,7 @@ class TestFeatherPGSPairedResponse(unittest.TestCase):
         solvers = {}
         with kernel_overrides({"hinv_jt_kernel": "auto"}):
             for radius in (0.0, 0.01):
+                set_torsion_radius(model, radius)
                 solvers[radius] = SolverFeatherPGS(
                     model,
                     solve_mode="matrix_free",
@@ -294,8 +296,8 @@ class TestFeatherPGSPairedResponse(unittest.TestCase):
                     iterations=8,
                     articulation_constraint_max=96,
                     free_body_constraint_max=32,
-                    contact_torsion_radius=radius,
                 )
+            set_torsion_radius(model, 0.0)
             point = SolverFeatherPGS(
                 model,
                 solve_mode="matrix_free",

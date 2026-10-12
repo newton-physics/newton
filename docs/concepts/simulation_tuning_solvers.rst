@@ -233,7 +233,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``contact_friction_scale``, ``contact_friction_position_iterations``,
        ``enable_restitution``,
        ``contact_speculative_scale``, ``contact_gap_gate``,
-       ``contact_torsion_radius``, ``contact_torsion_device``,
+       ``contact_torsion_device``,
        ``contact_compliance``, ``parallel_tree``, ``enable_sleeping``,
        ``sleep_linear_threshold``, ``sleep_angular_threshold``,
        ``sleep_quiet_time``, ``sleep_skip_constraints``,
@@ -267,10 +267,12 @@ repository examples spend tuning effort, not a shared solver API.
        :class:`~newton.CollisionPipeline`) reuses the previous step's
        impulses. ``contact_gap_gate`` and ``contact_speculative_scale`` bound
        the work and the closing allowance of speculative contacts.
-       Experimental ``contact_torsion_radius`` adds spin friction to the
-       contacts of articulated bodies, bounded by the shared Coulomb budget;
-       the radius is an explicit footprint assumption (``2 R / 3`` for a
-       uniformly loaded disk of radius ``R``). ``contact_torsion_device``
+       Experimental contact torsion adds spin friction to the contacts of
+       articulated bodies whose shapes carry a positive
+       ``physx:min_torsional_patch_radius`` (imported from
+       ``physxCollision:minTorsionalPatchRadius``), bounded by the shared
+       Coulomb budget; the radius is an effective footprint (``2 R / 3`` for
+       a uniformly loaded disk of radius ``R``). ``contact_torsion_device``
        prepares these rows on the device, which CUDA graph capture requires.
        The experimental ``contact_compliance`` option solves hydroelastic
        contacts with positive stiffness as implicit spring-dampers instead; it

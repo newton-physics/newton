@@ -25,7 +25,7 @@ from newton._src.solvers.feather_pgs.kernels import (
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_TORSION,
 )
-from newton.tests.test_feather_pgs_contact_torsion import PATCH_OPTIONS, fixture
+from newton.tests.test_feather_pgs_contact_torsion import PATCH_OPTIONS, fixture, set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 try:
@@ -143,7 +143,7 @@ def synthetic_fixture(*, worlds=3, witnesses=5, patches=True, seed=4, device="cp
         _world_count=worlds,
         _articulation_constraint_max=dense,
         _max_contacts_alloc=capacity,
-        _contact_torsion_shape_set=None,
+        _contact_torsion_shape_radius=full(worlds * 4, 0.01, float),
         _friction_anchors_enabled=patches,
         _friction_patches=SimpleNamespace(current=SimpleNamespace(owner=arr(owner, int))),
         _contact_path=zero(capacity, int),
@@ -157,7 +157,7 @@ def synthetic_fixture(*, worlds=3, witnesses=5, patches=True, seed=4, device="cp
         _row_mu=arr(mu, float),
         _row_dropped_dense=zero(worlds, int),
         _contact_torsion_group=full((worlds, dense), -1),
-        contact_torsion_radius=0.01,
+        _torsion_row_radius=zero((worlds, dense)),
         _body_to_joint=arr(np.arange(worlds * 2, dtype=np.int32), int),
         _body_to_articulation=arr(np.arange(worlds * 2, dtype=np.int32), int),
         _articulation_dof_start=arr(starts[:-1], int),
@@ -324,7 +324,8 @@ def test_patch_segments_match_world_scan(test, device):
         for patch_segments in (False, True):
             solver, state, augmented, contacts = synthetic_fixture(worlds=4, witnesses=12, seed=seed, device=device)
             rng = np.random.default_rng(seed)
-            solver._contact_torsion_shape_set = set(np.flatnonzero(rng.random(solver.model.shape_count) < 0.6))
+            radii = np.where(rng.random(solver.model.shape_count) < 0.6, 0.01, 0.0).astype(np.float32)
+            solver._contact_torsion_shape_radius = wp.array(radii, dtype=float, device=device)
             anchors = solver._contact_slots_needed.numpy()
             anchors[rng.random(anchors.size) < 0.3] = 1
             solver._contact_slots_needed.assign(anchors)
@@ -365,7 +366,9 @@ def test_patch_eligibility_and_point_cluster_edges(test, device):
                 points[:, 2] = 0.002
                 contacts.rigid_contact_point0.assign(points)
             elif scenario == "selector":
-                solver._contact_torsion_shape_set = {0}
+                radii = np.zeros(solver.model.shape_count, dtype=np.float32)
+                radii[0] = 0.01
+                solver._contact_torsion_shape_radius = wp.array(radii, dtype=float, device=device)
             else:
                 # Adjacent normals match, but the endpoints do not. The
                 # greedy oracle tests every member, not only its seed.
@@ -516,13 +519,13 @@ def test_cuda_loaded_closed_linkage(test, device):
             root_half = float(np.sqrt(0.5))
             builder.add_shape_plane(plane=(0.0, root_half, root_half, -0.362 * root_half))
             model = builder.finalize(device=device)
+            set_torsion_radius(model, 0.01)
             solver = newton.solvers.SolverFeatherPGS(
                 model,
                 solve_mode="matrix_free",
                 iterations=64,
                 velocity_iterations=velocity,
                 contact_regularization=regularization,
-                contact_torsion_radius=0.01,
                 articulation_constraint_max=128,
                 free_body_constraint_max=64,
                 enable_bilateral_preelimination=False,

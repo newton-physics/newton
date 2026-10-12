@@ -11,6 +11,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherPGS
+from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 MODES = ("fixed_normal", "bisection", "bisection_desaxce", "coulomb_newton")
@@ -125,8 +126,10 @@ def test_unsupported_combinations_raise(test, device):
             test.assertEqual(solver.friction_anchor_beta, 0.0)
             with test.assertRaisesRegex(ValueError, "friction_mode='fixed_normal'"):
                 SolverFeatherPGS(model, friction_mode=mode, friction_anchor_beta=0.2)
+            set_torsion_radius(model, 0.01)
             with test.assertRaisesRegex(ValueError, "friction_mode='fixed_normal'"):
-                SolverFeatherPGS(model, friction_mode=mode, friction_anchor_beta=0.0, contact_torsion_radius=0.01)
+                SolverFeatherPGS(model, friction_mode=mode, friction_anchor_beta=0.0)
+            set_torsion_radius(model, 0.0)
             with test.assertRaisesRegex(ValueError, "friction_mode"):
                 SolverFeatherPGS(model, friction_mode=mode, friction_anchor_beta=0.0, contact_compliance=True)
             for response in ("propagation", "propagation_fused"):

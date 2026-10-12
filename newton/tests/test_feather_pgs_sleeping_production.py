@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 # A manipulation profile without contact torsion; the torsion variant is in test_feather_pgs_sleeping_torsion.
@@ -326,7 +327,7 @@ def test_mimic_articulation_stays_awake(test, device):
             test.assertEqual(int(awake[solver._body_to_articulation.numpy()[box]]), 0)
 
 
-def _articulations(device, tiles=False, profile=None):
+def _articulations(device, tiles=False, profile=None, torsion_radius=None):
     """Two undriven two-link articulations resting on the ground, which route contacts to dense rows.
 
     With ``tiles``, each base is a grid of small boxes so its ground pair exceeds the warp-flood threshold.
@@ -352,6 +353,8 @@ def _articulations(device, tiles=False, profile=None):
             ]
         )
     model = builder.finalize(device=device)
+    if torsion_radius is not None:
+        set_torsion_radius(model, torsion_radius)
     # Deterministic contact order, as in production, so A/B trajectories compare bitwise.
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=512, deterministic=True)
     solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **(profile or PROFILE))

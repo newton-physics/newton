@@ -224,7 +224,7 @@ def test_angular_damping_follows_in_place_edits(test, device):
 
 
 def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
-    """Import the PhysX rigid-body USD attributes into the physx namespace, and step with replaced arrays."""
+    """Import the PhysX body and collision USD attributes into the physx namespace, and step with replaced arrays."""
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
     stage = Usd.Stage.CreateInMemory()
@@ -242,6 +242,7 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
         ("physxRigidBody:maxLinearVelocity", 2.0),
         ("physxRigidBody:maxAngularVelocity", 90.0),
         ("physxRigidBody:maxDepenetrationVelocity", 1.5),
+        ("physxCollision:minTorsionalPatchRadius", 0.004),
     ):
         prim.CreateAttribute(name, Sdf.ValueTypeNames.Float).Set(value)
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -252,6 +253,9 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     np.testing.assert_allclose(model.physx.max_linear_velocity.numpy(), [2.0])
     np.testing.assert_allclose(model.physx.max_angular_velocity.numpy(), [0.5 * np.pi], rtol=1.0e-6)
     np.testing.assert_allclose(model.physx.max_depenetration_velocity.numpy(), [1.5])
+    np.testing.assert_allclose(model.physx.min_torsional_patch_radius.numpy(), [0.004])
+    # Contact torsion is CUDA-only; this check covers the body attributes.
+    model.physx.min_torsional_patch_radius.zero_()
 
     solver = SolverFeatherPGS(model, **_split_or_default(device))
     model.physx.angular_damping = wp.zeros(1, dtype=wp.float32, device=device)

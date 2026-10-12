@@ -16,6 +16,7 @@ from newton._src.solvers.feather_pgs.kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_TARGET,
 )
 from newton.solvers import SolverFeatherPGS
+from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 SCHEDULES = ("interleaved", "contact_then_internal", "phased")
@@ -108,8 +109,10 @@ def test_schedule_validation(test, device):
         SolverFeatherPGS(model, row_schedule="bad")
     for schedule in SCHEDULES[1:]:
         with test.subTest(schedule=schedule):
-            with test.assertRaisesRegex(NotImplementedError, "contact_torsion_radius.*row_schedule='interleaved'"):
-                SolverFeatherPGS(model, row_schedule=schedule, contact_torsion_radius=0.01)
+            set_torsion_radius(model, 0.01)
+            with test.assertRaisesRegex(NotImplementedError, "contact torsion.*row_schedule='interleaved'"):
+                SolverFeatherPGS(model, row_schedule=schedule)
+            set_torsion_radius(model, 0.0)
             with test.assertRaisesRegex(NotImplementedError, "contact_compliance.*row_schedule='interleaved'"):
                 SolverFeatherPGS(model, row_schedule=schedule, contact_compliance=True, friction_anchor_beta=0.0)
     with test.assertRaisesRegex(NotImplementedError, "propagation_fused"):

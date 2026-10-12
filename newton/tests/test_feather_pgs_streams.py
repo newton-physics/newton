@@ -11,6 +11,7 @@ import warp as wp
 import newton
 from newton.solvers import SolverFeatherPGS
 from newton.tests.test_feather_pgs_connect import _build_four_bar
+from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -263,13 +264,13 @@ def test_reset_after_an_eager_error_steps_like_a_fresh_solver(test, device):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.replicate(_build_four_bar(), 2)
         model = builder.finalize(device=device)
+        set_torsion_radius(model, 0.01)
         solver = SolverFeatherPGS(
             model,
             solve_mode="matrix_free",
             iterations=16,
             baumgarte=0.1,
             double_buffer=True,
-            contact_torsion_radius=0.01,
             contact_torsion_device=True,
         )
         test.assertTrue(solver._double_buffered)

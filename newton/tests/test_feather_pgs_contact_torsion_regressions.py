@@ -13,17 +13,23 @@ from newton import GeoType
 from newton._src.solvers.feather_pgs.contact_torsion import _contact_groups
 from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_JOINT_TARGET, PGS_CONSTRAINT_TYPE_TORSION
 from newton.solvers import SolverFeatherPGS
-from newton.tests.test_feather_pgs_contact_torsion import fixture
+from newton.tests.test_feather_pgs_contact_torsion import fixture, set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 
-def test_radius_is_construction_only(test, device):
-    """Reject radius mutation for both compiled feature variants."""
-    for radius in (0.0, 0.01):
-        _, solver, *_ = fixture(radius, device=device, center_only=True)
-        for replacement in (0.0, 0.02, -1.0, float("nan")):
-            with test.subTest(radius=radius, replacement=replacement), test.assertRaises(AttributeError):
-                solver.contact_torsion_radius = replacement
+def test_radius_edits_apply_while_enablement_is_fixed(test, device):
+    """Read edited torsion radii every step, but enable torsion only when a radius was positive at construction."""
+    _, solver, model, initial, contacts = fixture(0.01, device=device, center_only=True)
+    test.assertEqual(solver._torsion_stats["groups"][0]["effective_radius_m"], np.float32(0.01))
+    set_torsion_radius(model, 0.02)
+    solver.step(initial, model.state(), model.control(), contacts, 0.0025)
+    test.assertEqual(solver._torsion_stats["groups"][0]["effective_radius_m"], np.float32(0.02))
+    _, solver, model, initial, contacts = fixture(0.0, device=device, center_only=True)
+    set_torsion_radius(model, 0.01)
+    solver.step(initial, model.state(), model.control(), contacts, 0.0025)
+    test.assertFalse(solver._contact_torsion_enabled)
+    count = int(solver._constraint_count.numpy()[0])
+    test.assertFalse(np.any(solver._row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_TORSION))
 
 
 def test_previous_friction_rows_are_not_current_rows(test, device):
@@ -51,14 +57,6 @@ def test_both_tangent_rows_must_belong_to_current_normal(test, device):
                 values[0, row + 2] = -1
                 array.assign(values)
             test.assertEqual(_contact_groups(solver, initial, contacts), [])
-
-
-def test_selectors_are_construction_only(test, device):
-    """Reject selector mutation rather than leaving a stale resolved selection."""
-    _, solver, *_ = fixture(0.01, device=device, center_only=True)
-    for name in ("contact_torsion_shape_indices", "contact_torsion_shape_patterns"):
-        with test.subTest(name=name), test.assertRaises(AttributeError):
-            setattr(solver, name, ())
 
 
 def test_normal_parent_metadata_is_preserved(test, device):
@@ -230,6 +228,7 @@ def test_torsion_keeps_free_body_velocity_limits(test, device):
                 points[0] = -poses[body, :3]
                 getattr(contacts, name).assign(points)
             contacts.rigid_contact_count.assign(np.array([1], np.int32))
+            set_torsion_radius(model, radius)
             solver = SolverFeatherPGS(
                 model,
                 solve_mode="matrix_free",
@@ -242,7 +241,6 @@ def test_torsion_keeps_free_body_velocity_limits(test, device):
                 contact_warmstart=False,
                 articulation_constraint_max=64,
                 free_body_constraint_max=16,
-                contact_torsion_radius=radius,
                 contact_torsion_device=preparation != "host",
             )
             solver._rigid_body_angular_damping.zero_()
@@ -273,15 +271,14 @@ def test_contact_row_loss_fails_without_diagnostics(test, device):
 
 
 def test_selected_unsupported_shape_fails_at_construction(test, device):
-    """Reject explicitly selected unsupported geometry instead of ignoring it."""
+    """Reject unsupported geometry with a torsion radius instead of ignoring it."""
     _, _solver, model, *_ = fixture(0.0, device=device, center_only=True)
     types = model.shape_type.numpy()
     types[0] = int(GeoType.MESH)
     model.shape_type.assign(types)
-    with test.assertRaisesRegex(ValueError, "[Uu]nsupported.*shape|shape.*[Uu]nsupported"):
-        SolverFeatherPGS(
-            model, solve_mode="matrix_free", contact_torsion_radius=0.01, contact_torsion_shape_indices=(0,)
-        )
+    set_torsion_radius(model, 0.01, (0,))
+    with test.assertRaisesRegex(ValueError, r"does not support the geometry of shapes \[0\]"):
+        SolverFeatherPGS(model, solve_mode="matrix_free")
 
 
 def test_hydro_contact_input_is_rejected(test, device):
@@ -297,10 +294,9 @@ class TestContactTorsionRegressions(unittest.TestCase):
 
 
 for _fn in (
-    test_radius_is_construction_only,
+    test_radius_edits_apply_while_enablement_is_fixed,
     test_previous_friction_rows_are_not_current_rows,
     test_both_tangent_rows_must_belong_to_current_normal,
-    test_selectors_are_construction_only,
     test_normal_parent_metadata_is_preserved,
     test_torsion_uses_cfm_floor,
     test_torsion_respects_relaxation,

@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-"""Bounded, local-only spin resistance with an explicit effective radius.
+"""Bounded, local-only spin resistance with an explicit per-shape effective radius.
 
-No material radius is enabled implicitly. This diagnostic adds one angular
+Only shapes with a positive ``physx:min_torsional_patch_radius`` get torsion. This diagnostic adds one angular
 row per coherent contact group, not one full torque budget per witness. With
 point friction a group is a coplanar cluster of one exact shape pair, and every
 member carries its own tangent pair. With persistent friction patches a group is
@@ -14,15 +14,12 @@ state is rebuilt per step; there is no anchor or elastic orientation memory.
 Host grouping precludes graphs and throughput use.
 """
 
-import re
 from dataclasses import dataclass
-from numbers import Integral
 
 import numpy as np
 import warp as wp
 
 from ...geometry import GeoType
-from ...utils.selection import match_labels
 from .kernels import (
     _FPGS_CONTACT_END_GAP_SLOP,
     PGS_CONSTRAINT_TYPE_CONTACT,
@@ -49,52 +46,21 @@ _SUPPORTED_TYPES = (
 )
 
 
-def configure_contact_torsion(solver, radius, indices, patterns):
-    """Validate the experimental opt-in and resolve stable shape-name selectors."""
-    radius = float(radius)
-    if not np.isfinite(radius) or radius < 0:
-        raise ValueError("contact_torsion_radius must be finite and non-negative [m]")
-    if indices is not None and patterns is not None:
-        raise ValueError("Use either contact_torsion_shape_indices or contact_torsion_shape_patterns")
-    selected = None
-    if indices is not None:
-        indices = tuple(indices)
-        if any(
-            not isinstance(i, Integral) or isinstance(i, bool) or i < 0 or i >= solver.model.shape_count
-            for i in indices
-        ):
-            raise ValueError("contact_torsion_shape_indices contains invalid global shape indices")
-        indices = tuple(int(i) for i in indices)
-        selected = frozenset(indices)
-    if patterns is not None:
-        if isinstance(patterns, str):
-            raise ValueError("contact_torsion_shape_patterns must be a sequence, not a string")
-        patterns = tuple(patterns)
-        selected = set()
-        for pattern in patterns:
-            if not isinstance(pattern, str):
-                raise ValueError("contact_torsion_shape_patterns entries must be strings")
-            try:
-                regex = re.compile(pattern)
-            except re.error as error:
-                raise ValueError("Invalid contact_torsion_shape_patterns regex") from error
-            matches = set(match_labels(solver.model.shape_label, regex))
-            if not matches:
-                raise ValueError(f"contact_torsion_shape_patterns matched no shapes: {pattern!r}")
-            selected.update(matches)
-        selected = frozenset(selected)
-    if radius > 0 and selected is not None:
+def configure_contact_torsion(solver):
+    """Enable contact torsion when any shape has a positive torsion radius, and validate the radii."""
+    radius_array = solver._contact_torsion_shape_radius
+    radii = radius_array.numpy() if radius_array is not None else np.zeros(0, dtype=np.float32)
+    if not np.all(np.isfinite(radii)) or np.any(radii < 0.0):
+        raise ValueError("physx:min_torsional_patch_radius must be finite and non-negative [m]")
+    enabled = bool(np.any(radii > 0.0))
+    if enabled:
         types = solver.model.shape_type.numpy()
-        unsupported = [i for i in selected if types[i] not in _SUPPORTED_TYPES]
+        unsupported = np.flatnonzero((radii > 0.0) & ~np.isin(types, _SUPPORTED_TYPES)).tolist()
         if unsupported:
-            raise ValueError(f"Unsupported contact torsion shape indices: {unsupported}")
-    solver._contact_torsion_radius = radius
-    solver._contact_torsion_enabled = radius > 0
-    solver._contact_torsion_shape_indices = indices
-    solver._contact_torsion_shape_patterns = patterns
-    solver._contact_torsion_shape_set = selected
+            raise ValueError(f"Contact torsion does not support the geometry of shapes {unsupported}")
+    solver._contact_torsion_enabled = enabled
     solver._torsion_stats = {}
-    if radius > 0:
+    if enabled:
         _validate_torsion_mode(solver)
 
 
@@ -179,7 +145,8 @@ def _contact_groups(solver, state, contacts):
     owners = solver._friction_patches.current.owner.numpy()[:count] if patches else None
     groups = {}
     rejected = set()
-    selected = solver._contact_torsion_shape_set
+    radius_array = solver._contact_torsion_shape_radius
+    radii = radius_array.numpy() if radius_array is not None else None
     admitted = 0
     for c in range(count):
         world, slot = int(worlds[c]), int(slots[c])
@@ -187,7 +154,7 @@ def _contact_groups(solver, state, contacts):
             continue
         region = (world, int(owners[c])) if patches else None
         a, b = int(shape_a[c]), int(shape_b[c])
-        if a < 0 or b < 0 or (selected is not None and a not in selected and b not in selected):
+        if a < 0 or b < 0 or radii is None or max(radii[a], radii[b]) <= 0.0:
             rejected.add(region)
             continue
         if shape_types[a] not in _SUPPORTED_TYPES or shape_types[b] not in _SUPPORTED_TYPES:
@@ -396,6 +363,8 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     motions = augmented_state._joint_S_s.numpy()
     prescribed = solver._prescribed_articulation.numpy()
     body_velocities = augmented_state._body_v_s.numpy()
+    shape_radius = solver._contact_torsion_shape_radius.numpy()
+    row_radius = solver._torsion_row_radius.numpy()
     for group in groups:
         world = group[0].world
         budget = _group_budget(solver, group, fields["row_mu"])
@@ -414,6 +383,8 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
         # The sweep reads the group's coefficient from its own row; anchor tangent
         # rows carry it divided by the anchor count under persistent patches.
         fields["row_mu"][world, row] = coefficient
+        radius = float(max(shape_radius[lead.shape_a], shape_radius[lead.shape_b]))
+        row_radius[world, row] = radius
         for witness in group:
             membership[world, witness.slot] = row
         normal = lead.normal
@@ -441,7 +412,7 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
                 "normal_rows": [w.slot for w in group],
                 "anchor_rows": [w.slot for w in anchors],
                 "shape_pair": [lead.shape_a, lead.shape_b],
-                "effective_radius_m": solver.contact_torsion_radius,
+                "effective_radius_m": radius,
                 "mu": coefficient,
                 "gap_max_m": max(w.gap for w in touching),
             }
@@ -451,6 +422,7 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
         return
     for name, values in fields.items():
         getattr(solver, f"_{name}").assign(values)
+    solver._torsion_row_radius.assign(row_radius)
     for size, values in jacobians.items():
         solver._J_by_size[size].assign(values)
     solver._constraint_count.assign(count)
@@ -464,7 +436,7 @@ def torque_sweep_source(dofs):
         {{
             for (int spin = 0; spin < m_dense; ++spin) {{
                 if (world_row_type.data[off_dense + spin] != {PGS_CONSTRAINT_TYPE_TORSION}) continue;
-                float radius = contact_torsion_radius;
+                float radius = torsion_row_radius.data[off_dense + spin];
                 // The torsion row carries its group's undivided coefficient. Persistent
                 // patches divide the anchor tangent rows' coefficient by the anchor count.
                 float mu = fmaxf(world_row_mu.data[off_dense + spin], 0.0f);

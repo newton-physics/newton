@@ -19,6 +19,7 @@ from newton._src.solvers.feather_pgs.kernels import (
     PGS_LOCAL_SOLVE_OWNER_PAIR_RESIDUAL,
 )
 from newton.solvers import SolverFeatherPGS
+from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
 
 
 def _build_mixed_response_model(
@@ -440,6 +441,7 @@ class TestFeatherPGSLocalOwners(unittest.TestCase):
         solvers = {}
         with kernel_overrides({"hinv_jt_kernel": "par_row"}):
             for radius in (0.0, 0.01):
+                set_torsion_radius(model, radius)
                 solvers[radius] = SolverFeatherPGS(
                     model,
                     solve_mode="matrix_free",
@@ -448,7 +450,6 @@ class TestFeatherPGSLocalOwners(unittest.TestCase):
                     iterations=8,
                     articulation_constraint_max=32,
                     free_body_constraint_max=32,
-                    contact_torsion_radius=radius,
                 )
         self.assertTrue(solvers[0.0]._local_internal_fast_path)
         self.assertTrue(solvers[0.01]._contact_torsion_enabled)

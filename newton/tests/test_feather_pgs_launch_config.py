@@ -23,6 +23,7 @@ from newton._src.solvers.feather_pgs.solver_feather_pgs import (
     _use_resident_mfgs_metadata,
 )
 from newton.solvers import SolverFeatherPGS
+from newton.tests.test_feather_pgs_contact_torsion import set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -456,8 +457,10 @@ def test_split_rejects_matrix_free_only_options(test, device):
                 SolverFeatherPGS(model, solve_mode="split", **kwargs)
     # Contact torsion is CUDA-only; on CUDA the split solve rejects it.
     error = NotImplementedError if wp.get_device(device).is_cuda else ValueError
+    set_torsion_radius(model, 0.01)
     with test.assertRaises(error):
-        SolverFeatherPGS(model, solve_mode="split", contact_torsion_radius=0.01)
+        SolverFeatherPGS(model, solve_mode="split")
+    set_torsion_radius(model, 0.0)
     # The default friction resolves to point friction in the split solve.
     test.assertEqual(SolverFeatherPGS(model, solve_mode="split").friction_anchor_beta, 0.0)
     # Positive shape restitution is rejected at construction and when notified.
@@ -624,8 +627,12 @@ def test_propagation_rejects_unsupported_options(test, device):
                 SolverFeatherPGS(model, solve_mode="split", articulated_contact_response=response)
         # The default friction selects friction patches, as with the immediate response.
         test.assertEqual(SolverFeatherPGS(model, articulated_contact_response=response).friction_anchor_beta, 0.2)
+        set_torsion_radius(model, 0.01)
+        with test.subTest(response=response, option="contact torsion"):
+            with test.assertRaisesRegex(NotImplementedError, "contact torsion.*articulated_contact_response"):
+                SolverFeatherPGS(model, articulated_contact_response=response)
+        set_torsion_radius(model, 0.0)
         options = (
-            ({"contact_torsion_radius": 0.01}, "contact_torsion_radius"),
             ({"contact_compliance": True, "friction_anchor_beta": 0.0}, "contact_compliance"),
             ({"enable_sleeping": True}, "enable_sleeping"),
         )

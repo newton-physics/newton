@@ -226,9 +226,7 @@ def test_selected_out_torsion_matches_zero_radius(test, device):
     """Keep the torsion-zero velocity path identical when no shapes are selected."""
     for velocity in (0, 4):
         expected, *_ = fixture(0.0, device=device, velocity_iterations=velocity, **PATCH_OPTIONS)
-        actual, *_ = fixture(
-            0.01, device=device, velocity_iterations=velocity, contact_torsion_shape_indices=(), **PATCH_OPTIONS
-        )
+        actual, *_ = fixture(0.01, device=device, velocity_iterations=velocity, torsion_shapes=(), **PATCH_OPTIONS)
         for key in expected:
             np.testing.assert_array_equal(actual[key], expected[key], err_msg=key)
 
