@@ -3,11 +3,11 @@
 
 """KAMINO: Linear Algebra: Blocked LLT (i.e. Cholesky) factorization using Warp's Tile API."""
 
-from ctypes import sizeof
 from functools import cache
 
 import warp as wp
 
+from ._array_ptr import get_float32_array_offset_ptr
 from ._tile_builtins import (
     HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
     HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
@@ -39,31 +39,6 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ###
 # Functions
 ###
-
-get_array_ptr_cpp = """return (uint64_t)arr.data;"""
-"""A native C++ function to get the raw pointer of a warp array."""
-
-
-def make_get_array_offset_ptr_func(dtype):
-    """Creates a function to get the offset pointer of a warp array."""
-
-    # Define a Warp wrapper around a native C++ function to get the raw pointer of a warp array
-    @wp.func_native(get_array_ptr_cpp)
-    def get_dtype_array_ptr(arr: wp.array[dtype]) -> wp.uint64: ...
-
-    # Define a Warp function to get the raw pointer of a warp array with an offset
-    @wp.func
-    def get_dtype_array_offset_ptr(arr: wp.array[dtype], start_index: int) -> wp.uint64:
-        return get_dtype_array_ptr(arr) + wp.uint64(start_index) * wp.uint64(wp.static(sizeof(dtype._type_)))
-
-    return get_dtype_array_offset_ptr
-
-
-get_int32_array_offset_ptr = make_get_array_offset_ptr_func(wp.int32)
-"""A Warp function to get the offset pointer of a wp.int32 warp array."""
-
-get_float32_array_offset_ptr = make_get_array_offset_ptr_func(wp.float32)
-"""A Warp function to get the offset pointer of a wp.float32 warp array."""
 
 
 # @wp.func

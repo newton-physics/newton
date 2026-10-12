@@ -17,6 +17,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.sim.collide import _TRIANGLE_PAIRS_MIN_CAPACITY
 from newton._src.solvers.coupled.interface import CouplingInterface
 from newton.solvers import (
     SolverBase,
@@ -1281,7 +1282,7 @@ class TestAdmmCollisionDetection(unittest.TestCase):
                     ),
                 )
                 pipeline = solver._admm_collision_pipeline
-                expected_capacity = capacity if capacity is not None else defaults["max_triangle_pairs"].default
+                expected_capacity = capacity if capacity is not None else _TRIANGLE_PAIRS_MIN_CAPACITY
                 expected_factor = (
                     factor if factor is not None else defaults["contact_reduction_hashtable_size_factor"].default
                 )

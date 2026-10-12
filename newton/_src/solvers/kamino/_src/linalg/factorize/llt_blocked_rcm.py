@@ -31,11 +31,13 @@ Layout conventions (same as llt_blocked):
                                             indexed by ``vio[i]`` with length ``dim[i]``
 """
 
-from ctypes import sizeof
+from __future__ import annotations
+
 from functools import cache
 
 import warp as wp
 
+from ._array_ptr import get_float32_array_offset_ptr, get_int32_array_offset_ptr
 from ._tile_builtins import (
     HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
     HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
@@ -77,31 +79,6 @@ __syncthreads();
 #endif
 """)
 def _sync_threads(): ...
-
-
-###
-# Raw-pointer helpers (mirrors llt_blocked.py)
-###
-
-get_array_ptr_cpp = """return (uint64_t)arr.data;"""
-"""A native C++ function to get the raw pointer of a warp array."""
-
-
-def make_get_array_offset_ptr_func(dtype):
-    """Creates a function to get the offset pointer of a warp array."""
-
-    @wp.func_native(get_array_ptr_cpp)
-    def get_dtype_array_ptr(arr: wp.array[dtype]) -> wp.uint64: ...
-
-    @wp.func
-    def get_dtype_array_offset_ptr(arr: wp.array[dtype], start_index: int) -> wp.uint64:
-        return get_dtype_array_ptr(arr) + wp.uint64(start_index) * wp.uint64(wp.static(sizeof(dtype._type_)))
-
-    return get_dtype_array_offset_ptr
-
-
-get_int32_array_offset_ptr = make_get_array_offset_ptr_func(wp.int32)
-get_float32_array_offset_ptr = make_get_array_offset_ptr_func(wp.float32)
 
 
 ###

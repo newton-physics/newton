@@ -7,7 +7,7 @@ from functools import cache
 
 import warp as wp
 
-from ...linalg.factorize.llt_blocked_rcm import get_float32_array_offset_ptr
+from ...linalg.factorize._array_ptr import get_float32_array_offset_ptr
 from .kernels import _compact_schur_fits
 from .sparse_kernels import _subgroup_sum
 
