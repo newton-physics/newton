@@ -604,13 +604,15 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
         if rigid_contact_stiffness:
             contact_ke = rigid_contact_stiffness[tid]
-            if contact_ke > 0.0:
+            invweight = body_invweight0[worldid, mj_body_a][0] + body_invweight0[worldid, mj_body_b][0]
+            factor = invweight * (1.0 - solimp[1])
+            if contact_ke > 0.0 and invweight > 0.0 and solimp[1] < 1.0:
                 imp = solimp[1]
                 solimp = vec5(imp, imp, 0.001, 1.0, 0.5)
-                contact_ke = contact_ke * (1.0 - imp)
+                contact_ke = wp.max(contact_ke * factor, MJ_MINVAL)
                 kd = rigid_contact_damping[tid]
                 if kd > 0.0:
-                    timeconst = 2.0 / kd
+                    timeconst = 2.0 / wp.max(kd * factor, MJ_MINVAL)
                     dampratio = wp.sqrt(1.0 / (timeconst * timeconst * contact_ke))
                 else:
                     timeconst = wp.sqrt(1.0 / contact_ke)

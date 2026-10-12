@@ -1,0 +1,1 @@
+Correct MuJoCo Warp's conversion of per-contact stiffness [N/m] and damping [N·s/m] using the combined body inverse weight and contact impedance. Retune per-contact gains calibrated to the previous conversion; contacts without positive per-contact stiffness are unchanged.
