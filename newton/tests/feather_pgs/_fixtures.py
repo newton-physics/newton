@@ -260,13 +260,13 @@ PATCH_OPTIONS = {"friction_anchor_beta": 0.2}
 
 
 def set_torsion_radius(model, radius, shapes=None):
-    """Set ``physx:min_torsional_patch_radius`` [m] of ``shapes`` (every shape for ``None``), zero elsewhere.
+    """Set ``feather_pgs:min_torsional_patch_radius`` [m] of ``shapes`` (every shape for ``None``), zero elsewhere.
 
     ``radius`` may also be one value per selected shape.
     """
     radii = np.zeros(model.shape_count, dtype=np.float32)
     radii[slice(None) if shapes is None else list(shapes)] = radius
-    namespace = getattr(model, "physx", None)
+    namespace = getattr(model, "feather_pgs", None)
     if namespace is not None and getattr(namespace, "min_torsional_patch_radius", None) is not None:
         namespace.min_torsional_patch_radius.assign(radii)
     else:
@@ -274,7 +274,7 @@ def set_torsion_radius(model, radius, shapes=None):
             "min_torsional_patch_radius",
             wp.array(radii, dtype=wp.float32, device=model.device),
             frequency=newton.Model.AttributeFrequency.SHAPE,
-            namespace="physx",
+            namespace="feather_pgs",
         )
 
 
@@ -905,8 +905,8 @@ def _build_mixed_response_model(
         custom_attributes = None
         if free_body_velocity_limit is not None:
             custom_attributes = {
-                "physx:max_linear_velocity": free_body_velocity_limit,
-                "physx:max_angular_velocity": free_body_velocity_limit,
+                "feather_pgs:rigid_body_max_linear_velocity": free_body_velocity_limit,
+                "feather_pgs:rigid_body_max_angular_velocity": free_body_velocity_limit,
             }
         box = builder.add_link(
             xform=wp.transform(wp.vec3(0.7, 0.0, 0.5695), wp.quat_identity()), custom_attributes=custom_attributes

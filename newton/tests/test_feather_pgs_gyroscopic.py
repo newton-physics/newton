@@ -27,7 +27,7 @@ def _undamped_builder():
 
 def _finalize_undamped(builder, device):
     model = builder.finalize(device=device)
-    model.physx.angular_damping.zero_()
+    model.feather_pgs.rigid_body_angular_damping.zero_()
     return model
 
 

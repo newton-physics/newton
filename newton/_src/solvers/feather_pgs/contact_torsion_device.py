@@ -829,7 +829,7 @@ def enable_device_torsion(solver, *, deferred_errors=False):
     state of the failing step instead of raising during preparation.
     """
     if not solver._contact_torsion_enabled:
-        raise ValueError("Give a shape a positive physx:min_torsional_patch_radius before device preparation")
+        raise ValueError("Give a shape a positive feather_pgs:min_torsional_patch_radius before device preparation")
     if wp.get_stream(solver.model.device).is_capturing:
         raise RuntimeError("Configure device torsion before CUDA graph capture")
     solver._device_torsion = DeviceTorsionPreparation(solver, deferred_errors=deferred_errors)

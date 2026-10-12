@@ -39,7 +39,7 @@ def _build_spinning_model(device, *, register=False, damping=None):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     if register:
         SolverFeatherPGS.register_custom_attributes(builder)
-    attributes = None if damping is None else {"physx:angular_damping": damping}
+    attributes = None if damping is None else {"feather_pgs:rigid_body_angular_damping": damping}
     sphere = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
         mass=1.0,
@@ -112,12 +112,12 @@ def test_angular_damping_follows_in_place_edits(test, device):
     solver = SolverFeatherPGS(model, **_split_or_default(device))
     state_in, state_out = model.state(), model.state()
     _spin(model, state_in)
-    model.physx.angular_damping.fill_(0.0)
+    model.feather_pgs.rigid_body_angular_damping.fill_(0.0)
     solver.step(state_in, state_out, model.control(), None, DT)
     test.assertAlmostEqual(float(state_out.joint_qd.numpy()[5]), 4.0, delta=1.0e-5)
 
 
-def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
+def test_namespaced_attributes_import_from_usd_and_are_read_every_step(test, device):
     """Import the PhysX body and collision USD attributes into the physx namespace, and step with replaced arrays."""
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
@@ -143,17 +143,17 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     SolverFeatherPGS.register_custom_attributes(builder)
     builder.add_usd(stage)
     model = builder.finalize(device=device)
-    np.testing.assert_allclose(model.physx.angular_damping.numpy(), [0.3])
-    np.testing.assert_allclose(model.physx.max_linear_velocity.numpy(), [2.0])
-    np.testing.assert_allclose(model.physx.max_angular_velocity.numpy(), [0.5 * np.pi], rtol=1.0e-6)
-    np.testing.assert_allclose(model.physx.max_depenetration_velocity.numpy(), [1.5])
-    np.testing.assert_allclose(model.physx.min_torsional_patch_radius.numpy(), [0.004])
+    np.testing.assert_allclose(model.feather_pgs.rigid_body_angular_damping.numpy(), [0.3])
+    np.testing.assert_allclose(model.feather_pgs.rigid_body_max_linear_velocity.numpy(), [2.0])
+    np.testing.assert_allclose(model.feather_pgs.rigid_body_max_angular_velocity.numpy(), [0.5 * np.pi], rtol=1.0e-6)
+    np.testing.assert_allclose(model.feather_pgs.rigid_body_max_depenetration_velocity.numpy(), [1.5])
+    np.testing.assert_allclose(model.feather_pgs.min_torsional_patch_radius.numpy(), [0.004])
     # Contact torsion is CUDA-only; this check covers the body attributes.
-    model.physx.min_torsional_patch_radius.zero_()
+    model.feather_pgs.min_torsional_patch_radius.zero_()
 
     solver = SolverFeatherPGS(model, **_split_or_default(device))
-    model.physx.angular_damping = wp.zeros(1, dtype=wp.float32, device=device)
-    model.physx.max_angular_velocity = wp.full(1, 100.0, dtype=wp.float32, device=device)
+    model.feather_pgs.rigid_body_angular_damping = wp.zeros(1, dtype=wp.float32, device=device)
+    model.feather_pgs.rigid_body_max_angular_velocity = wp.full(1, 100.0, dtype=wp.float32, device=device)
     state_in, state_out = model.state(), model.state()
     joint_qd = state_in.joint_qd.numpy()
     joint_qd[5] = 4.0
@@ -444,7 +444,7 @@ for _fn in (
     test_angular_damping_defaults_to_the_featherstone_value,
     test_angular_damping_decays_free_root_spin_analytically,
     test_angular_damping_follows_in_place_edits,
-    test_physx_attributes_import_from_usd_and_are_read_every_step,
+    test_namespaced_attributes_import_from_usd_and_are_read_every_step,
     test_zero_friction_matches_normal_rows_only,
     test_contact_friction_scale_matches_scaled_materials,
     test_contact_friction_scale_applies_to_notified_materials,

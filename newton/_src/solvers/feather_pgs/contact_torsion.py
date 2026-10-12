@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Bounded, local-only spin resistance with an explicit per-shape effective radius.
 
-Only shapes with a positive ``physx:min_torsional_patch_radius`` get torsion. This diagnostic adds one angular
+Only shapes with a positive ``feather_pgs:min_torsional_patch_radius`` get torsion. This diagnostic adds one angular
 row per coherent contact group, not one full torque budget per witness. With
 point friction a group is a coplanar cluster of one exact shape pair, and every
 member carries its own tangent pair. With persistent friction patches a group is
@@ -51,7 +51,7 @@ def configure_contact_torsion(solver):
     radius_array = solver._contact_torsion_shape_radius
     radii = radius_array.numpy() if radius_array is not None else np.zeros(0, dtype=np.float32)
     if not np.all(np.isfinite(radii)) or np.any(radii < 0.0):
-        raise ValueError("physx:min_torsional_patch_radius must be finite and non-negative [m]")
+        raise ValueError("feather_pgs:min_torsional_patch_radius must be finite and non-negative [m]")
     enabled = bool(np.any(radii > 0.0))
     if enabled:
         types = solver.model.shape_type.numpy()

@@ -267,9 +267,9 @@ def test_solver_body_attribute_notification_wakes_its_island(test, device):
     states = [model.state(), model.state()]
     _advance(pipeline, solver, states, model.control(), 400)
     np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
-    depenetration = model.physx.max_depenetration_velocity.numpy()
+    depenetration = model.feather_pgs.rigid_body_max_depenetration_velocity.numpy()
     depenetration[0] = 1.0
-    model.physx.max_depenetration_velocity.assign(depenetration)
+    model.feather_pgs.rigid_body_max_depenetration_velocity.assign(depenetration)
     solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
     _advance(pipeline, solver, states, model.control(), 1)
     np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 0])

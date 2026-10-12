@@ -269,7 +269,7 @@ repository examples spend tuning effort, not a shared solver API.
        the work and the closing allowance of speculative contacts.
        Experimental contact torsion adds spin friction to the contacts of
        articulated bodies whose shapes carry a positive
-       ``physx:min_torsional_patch_radius`` (imported from
+       ``feather_pgs:min_torsional_patch_radius`` (imported from
        ``physxCollision:minTorsionalPatchRadius``), bounded by the shared
        Coulomb budget; the radius is an effective footprint (``2 R / 3`` for
        a uniformly loaded disk of radius ``R``). ``contact_torsion_device``
