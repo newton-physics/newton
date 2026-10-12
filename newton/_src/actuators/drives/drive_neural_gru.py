@@ -13,7 +13,8 @@ from typing import Any, ClassVar
 import numpy as np
 import warp as wp
 
-from ..utils import _require_onnx, load_metadata
+from ...utils.onnx import require_onnx
+from ..utils import load_metadata
 from .base import DriveBase
 
 _FEATURE_POSITION = 0
@@ -237,7 +238,7 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
     if os.path.splitext(model_path)[1].lower() != ".onnx":
         raise ValueError(f"DriveNeuralGRU requires an ONNX checkpoint; got '{model_path}'")
 
-    onnx = _require_onnx()
+    onnx = require_onnx()
     model = onnx.load(model_path)
     initializers = {item.name: onnx.numpy_helper.to_array(item) for item in model.graph.initializer}
     constants: dict[str, np.ndarray] = {}
