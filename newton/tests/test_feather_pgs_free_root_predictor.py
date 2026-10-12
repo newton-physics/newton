@@ -55,7 +55,7 @@ def _record_slider_step(
 
 def _undamped(model):
     """Disable the per-body angular damping, so the free root keeps its spin."""
-    model.rigid_body_angular_damping.zero_()
+    model.physx.angular_damping.zero_()
     return model
 
 

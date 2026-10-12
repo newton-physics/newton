@@ -191,6 +191,8 @@ _TILE_THREADS = 64
 _SERIAL_KERNEL_BLOCK_DIM = 256
 # PhysX's default rigid-body angular damping [1/s].
 _DEFAULT_ANGULAR_DAMPING = 0.05
+# Namespace of the PhysX-schema custom attributes registered by register_custom_attributes().
+_ATTRIBUTE_NAMESPACE = "physx"
 # Per-world preset of the first rejected row slot: no reservation was rejected.
 _ROW_SLOT_UNBOUNDED = 2**31 - 1
 _CONTACT_BUILD_THREAD_CAP = 65536
@@ -1371,20 +1373,20 @@ class SolverFeatherPGS(SolverBase):
 
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
-        """Register the per-body attributes consumed by FeatherPGS.
+        """Register the per-body attributes consumed by FeatherPGS in the ``physx`` namespace.
 
         Each attribute maps to the matching PhysX rigid-body USD attribute:
 
-        - ``rigid_body_angular_damping`` [1/s] damps the angular velocity of free bodies
-          and floating bases (``physxRigidBody:angularDamping``, default 0.05).
-        - ``rigid_body_max_linear_velocity`` [m/s] and ``rigid_body_max_angular_velocity``
-          [rad/s] bound the velocity of free bodies (``physxRigidBody:maxLinearVelocity`` and
+        - ``physx:angular_damping`` [1/s] damps the angular velocity of free bodies and
+          floating bases (``physxRigidBody:angularDamping``, default 0.05).
+        - ``physx:max_linear_velocity`` [m/s] and ``physx:max_angular_velocity`` [rad/s]
+          bound the velocity of free bodies (``physxRigidBody:maxLinearVelocity`` and
           ``physxRigidBody:maxAngularVelocity``, default unbounded).
-        - ``rigid_body_max_depenetration_velocity`` [m/s] bounds the contact correction
-          velocity of free bodies (``physxRigidBody:maxDepenetrationVelocity``, default
-          unbounded).
+        - ``physx:max_depenetration_velocity`` [m/s] bounds the contact correction velocity
+          of free bodies (``physxRigidBody:maxDepenetrationVelocity``, default unbounded).
 
-        Models built without these attributes use the defaults.
+        The solver reads them from the model at every step, for example
+        ``model.physx.angular_damping``. Models built without these attributes use the defaults.
 
         Args:
             builder: Model builder to register the attributes with.
@@ -1400,7 +1402,8 @@ class SolverFeatherPGS(SolverBase):
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="rigid_body_angular_damping",
+                name="angular_damping",
+                namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1410,7 +1413,8 @@ class SolverFeatherPGS(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="rigid_body_max_linear_velocity",
+                name="max_linear_velocity",
+                namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1420,7 +1424,8 @@ class SolverFeatherPGS(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="rigid_body_max_angular_velocity",
+                name="max_angular_velocity",
+                namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1431,7 +1436,8 @@ class SolverFeatherPGS(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="rigid_body_max_depenetration_velocity",
+                name="max_depenetration_velocity",
+                namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1535,7 +1541,7 @@ class SolverFeatherPGS(SolverBase):
                 number of steps captured per graph.
             angular_damping: Angular damping [1/s] of every free body and floating base,
                 applied as ``w *= 1 - angular_damping * dt`` each step. ``None`` (the default)
-                uses the per-body ``rigid_body_angular_damping`` attribute (see
+                uses the per-body ``physx:angular_damping`` attribute (see
                 :meth:`register_custom_attributes`, default 0.05). A value overrides that
                 attribute for all free roots; joints with a parent body are not damped either
                 way. Must be finite and non-negative. Configure at construction.
@@ -2178,25 +2184,19 @@ class SolverFeatherPGS(SolverBase):
         self._angular_damping = (
             None if angular_damping is None else _finite_non_negative("angular_damping", angular_damping)
         )
-        self._rigid_body_angular_damping = (
-            getattr(model, "rigid_body_angular_damping", None) if self._angular_damping is None else None
+        # Stand-ins for models without the physx attributes (and for the angular_damping scalar).
+        self._default_angular_damping = wp.full(
+            max(model.body_count, 1),
+            _DEFAULT_ANGULAR_DAMPING if self._angular_damping is None else self._angular_damping,
+            dtype=wp.float32,
+            device=model.device,
         )
-        if self._rigid_body_angular_damping is None:
-            self._rigid_body_angular_damping = wp.full(
-                max(model.body_count, 1),
-                _DEFAULT_ANGULAR_DAMPING if self._angular_damping is None else self._angular_damping,
-                dtype=wp.float32,
-                device=model.device,
-            )
-        self._rigid_body_max_linear_velocity = getattr(model, "rigid_body_max_linear_velocity", None)
-        self._rigid_body_max_angular_velocity = getattr(model, "rigid_body_max_angular_velocity", None)
-        self._rigid_body_max_depenetration_velocity = getattr(model, "rigid_body_max_depenetration_velocity", None)
-        if self._rigid_body_max_depenetration_velocity is None:
-            self._rigid_body_max_depenetration_velocity = wp.full(
-                max(model.body_count, 1), float("inf"), dtype=wp.float32, device=model.device
-            )
+        self._unbounded_body_velocity = wp.full(
+            max(model.body_count, 1), float("inf"), dtype=wp.float32, device=model.device
+        )
         self._has_rigid_body_velocity_limits = (
-            self._rigid_body_max_linear_velocity is not None and self._rigid_body_max_angular_velocity is not None
+            self._physx_attribute("max_linear_velocity") is not None
+            and self._physx_attribute("max_angular_velocity") is not None
         )
 
         # Kernel selection is automatic; the overrides pin one implementation for tests and tuning.
@@ -2489,6 +2489,31 @@ class SolverFeatherPGS(SolverBase):
     def _friction_every_contact(self) -> bool:
         """Whether every contact gets friction rows (uniform normal/tangent/tangent triples)."""
         return bool(np.isposinf(self._contact_friction_gap_threshold))
+
+    def _physx_attribute(self, name: str) -> wp.array | None:
+        """Return the model's ``physx:<name>`` custom attribute, or ``None`` when it is not registered."""
+        namespace = getattr(self.model, _ATTRIBUTE_NAMESPACE, None)
+        return getattr(namespace, name, None)
+
+    @property
+    def _rigid_body_angular_damping(self) -> wp.array:
+        if self._angular_damping is not None:
+            return self._default_angular_damping
+        attribute = self._physx_attribute("angular_damping")
+        return self._default_angular_damping if attribute is None else attribute
+
+    @property
+    def _rigid_body_max_linear_velocity(self) -> wp.array | None:
+        return self._physx_attribute("max_linear_velocity")
+
+    @property
+    def _rigid_body_max_angular_velocity(self) -> wp.array | None:
+        return self._physx_attribute("max_angular_velocity")
+
+    @property
+    def _rigid_body_max_depenetration_velocity(self) -> wp.array:
+        attribute = self._physx_attribute("max_depenetration_velocity")
+        return self._unbounded_body_velocity if attribute is None else attribute
 
     @property
     def velocity_limits_fused(self) -> bool:

@@ -179,7 +179,7 @@ class _SleepState:
                 continue
             for index, (name, snapshot, arts) in enumerate(entries):
                 # Read the model's current allocation: callers may replace an array instead of assigning into it.
-                current = getattr(self.model, name).numpy()
+                current = _model_array(self.model, name).numpy()
                 if current.shape != snapshot.shape:
                     raise ValueError(f"Model array {name!r} changed shape from {snapshot.shape} to {current.shape}.")
                 differs = (current != snapshot) & ~(_isnan(current) & _isnan(snapshot))
@@ -1122,7 +1122,7 @@ def _entity_arrays(model, frequency, size):
     """Model arrays declared at ``frequency`` with one row per entity, so coincident counts never mix owners."""
     arrays = []
     for name, spec in model.attribute_specs.items():
-        value = vars(model).get(name)
+        value = _model_array(model, name)
         if (
             spec.frequency != frequency
             or spec.assignment not in (None, Model.AttributeAssignment.MODEL)
@@ -1132,6 +1132,14 @@ def _entity_arrays(model, frequency, size):
         if isinstance(value, wp.array) and value.ndim >= 1 and value.shape[0] == size and size > 0:
             arrays.append((name, value))
     return arrays
+
+
+def _model_array(model, name):
+    """Return the model array registered as ``name``, resolving ``namespace:attribute`` names."""
+    if ":" not in name:
+        return vars(model).get(name)
+    namespace, attribute = name.split(":", 1)
+    return getattr(getattr(model, namespace, None), attribute, None)
 
 
 def _isnan(values):

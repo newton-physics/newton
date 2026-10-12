@@ -63,7 +63,7 @@ def _scene(device, worlds=1, offset=0.028):
         xform=wp.transform(wp.vec3(2.0, 0.0, 2.0), wp.quat_identity()),
         mass=1.0,
         inertia=wp.mat33(np.eye(3) * 1.0e-2),
-        custom_attributes={"rigid_body_max_linear_velocity": 0.001, "rigid_body_max_angular_velocity": 0.001},
+        custom_attributes={"physx:max_linear_velocity": 0.001, "physx:max_angular_velocity": 0.001},
     )
     builder = newton.ModelBuilder()
     builder.replicate(template, worlds)

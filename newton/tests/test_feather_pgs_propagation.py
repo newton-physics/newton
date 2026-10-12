@@ -350,7 +350,7 @@ def test_phased_sweeps_touch_only_their_row_family(test, device):
         xform=wp.transform(wp.vec3(2.0, 0.0, 2.0), wp.quat_identity()),
         mass=1.0,
         inertia=wp.mat33(np.eye(3) * 1.0e-2),
-        custom_attributes={"rigid_body_max_linear_velocity": 0.001, "rigid_body_max_angular_velocity": 0.001},
+        custom_attributes={"physx:max_linear_velocity": 0.001, "physx:max_angular_velocity": 0.001},
     )
     model = builder.finalize(device=device)
     joint_qd = model.joint_qd.numpy()

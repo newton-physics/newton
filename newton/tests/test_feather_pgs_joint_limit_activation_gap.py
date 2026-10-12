@@ -90,8 +90,8 @@ def _make_layout_scene(
     free_body = builder.add_body(
         xform=wp.transform(wp.vec3(1.0, 0.0, 0.05), wp.quat_identity()),
         custom_attributes={
-            "rigid_body_max_linear_velocity": 1.0,
-            "rigid_body_max_angular_velocity": 1.0,
+            "physx:max_linear_velocity": 1.0,
+            "physx:max_angular_velocity": 1.0,
         },
     )
     builder.add_shape_box(free_body, hx=0.1, hy=0.1, hz=0.1)

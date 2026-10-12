@@ -209,7 +209,7 @@ def test_torsion_keeps_free_body_velocity_limits(test, device):
                 xform=wp.transform(wp.vec3(0, 0, 0.025), wp.quat_identity()),
                 mass=0.3,
                 inertia=inertia,
-                custom_attributes={"rigid_body_max_angular_velocity": limit},
+                custom_attributes={"physx:max_angular_velocity": limit},
             )
             builder.add_shape_box(free, hx=0.02, hy=0.015, hz=0.025, cfg=shape)
             model = builder.finalize(device=device)

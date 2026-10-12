@@ -56,8 +56,8 @@ def _build_mixed_response_model(
         custom_attributes = None
         if free_body_velocity_limit is not None:
             custom_attributes = {
-                "rigid_body_max_linear_velocity": free_body_velocity_limit,
-                "rigid_body_max_angular_velocity": free_body_velocity_limit,
+                "physx:max_linear_velocity": free_body_velocity_limit,
+                "physx:max_angular_velocity": free_body_velocity_limit,
             }
         box = builder.add_link(
             xform=wp.transform(wp.vec3(0.7, 0.0, 0.5695), wp.quat_identity()), custom_attributes=custom_attributes
