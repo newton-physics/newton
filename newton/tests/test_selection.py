@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
+import gc
 import re
 import unittest
 from unittest import mock
@@ -2271,11 +2272,11 @@ def _no_host_transfers():
 
 
 def test_actuator_parameters_capture_cold(test, device):
-    """A first actuator access captures and replays: the mapping build runs on the device only.
+    """Capture and replay a first actuator access, building the mapping on the device only.
 
     Kernels are compiled with a separate view first, so the captured views start with an empty
-    mapping cache. Replays use the values present at launch time, and a second capture reuses
-    the cached mapping.
+    mapping cache. The cold capture leaves the cache empty, an eager access then fills it, and a
+    second capture reuses the cached mapping. Replays use the values present at launch time.
     """
     if not wp.is_mempool_enabled(device):
         test.skipTest("CUDA graph capture of allocations requires the mempool")
@@ -2300,12 +2301,14 @@ def test_actuator_parameters_capture_cold(test, device):
             gathered = wp.zeros((3, 7), dtype=float, device=device)
             values = wp.zeros((3, 7), dtype=float, device=device)
             mask = wp.array([False, True, False], dtype=bool, device=device)
-            for _ in range(2):  # cold capture, then a capture that reuses the cached mapping
+            for cold in (True, False):
+                if not cold:
+                    view.get_actuator_parameter(actuator, actuator.drive, "kd")
                 with _no_host_transfers():
                     with wp.ScopedCapture(device) as capture:
                         view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=mask)
                         wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
-                test.assertEqual(len(view._actuator_dof_mapping_cache), 1)
+                test.assertEqual(len(view._actuator_dof_mapping_cache), 0 if cold else 1)
                 for replay in range(2):
                     actuator.drive.kp.assign(kp)
                     new_values = -(np.arange(21, dtype=np.float32).reshape(3, 7) + 1.0 + 100.0 * replay)
@@ -2314,6 +2317,55 @@ def test_actuator_parameters_capture_cold(test, device):
                     expected_kp = kp.copy()
                     expected_kp[row_of_dof[selected_dofs[1]]] = new_values[1]
                     assert_np_equal(actuator.drive.kp.numpy(), expected_kp)
+                    assert_np_equal(gathered.numpy(), expected_kp[row_of_dof[selected_dofs]])
+
+
+def test_actuator_access_after_capture_before_replay(test, device):
+    """Read and write actuator parameters eagerly after a cold capture, before replay or after discard.
+
+    The mapping built during capture is initialized only when the graph runs, so it is not cached:
+    eager accesses build their own mapping, and a retained graph still replays correctly.
+    """
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("CUDA graph capture of allocations requires the mempool")
+    for layout in ("dense", "irregular"):
+        for discard in (False, True):
+            with test.subTest(layout=layout, discard=discard):
+                model = _make_sparse_robot_model(layout, device)
+                warm_view = ArticulationView(model, "robot_a", verbose=False)
+                warm_actuator = _reversed_row_actuator(model, device)[0]
+                warm_view.get_actuator_parameter(warm_actuator, warm_actuator.drive, "kp")
+
+                view = ArticulationView(model, "robot_a", verbose=False)
+                actuator, kp, row_of_dof = _reversed_row_actuator(model, device)
+                selected_dofs = _articulation_rows(model, view.articulation_ids.numpy().reshape(-1))["dof"]
+                gathered = wp.zeros((3, 7), dtype=float, device=device)
+                with wp.ScopedCapture(device) as capture:
+                    wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
+                # checked before any eager access, which would otherwise read the unreplayed mapping
+                test.assertEqual(len(view._actuator_dof_mapping_cache), 0)
+                if discard:
+                    capture = None
+                    gc.collect()
+
+                eager = view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy()
+                assert_np_equal(eager, kp[row_of_dof[selected_dofs]])
+                replacement = -(np.arange(21, dtype=np.float32).reshape(3, 7) + 1.0)
+                view.set_actuator_parameter(
+                    actuator,
+                    actuator.drive,
+                    "kp",
+                    replacement,
+                    mask=wp.array([True, False, True], dtype=bool, device=device),
+                )
+                expected_kp = kp.copy()
+                expected_kp[row_of_dof[selected_dofs[0]]] = replacement[0]
+                expected_kp[row_of_dof[selected_dofs[2]]] = replacement[2]
+                assert_np_equal(actuator.drive.kp.numpy(), expected_kp)
+                test.assertEqual(len(view._actuator_dof_mapping_cache), 1)
+
+                if not discard:
+                    wp.capture_launch(capture.graph)
                     assert_np_equal(gathered.numpy(), expected_kp[row_of_dof[selected_dofs]])
 
 
@@ -2435,6 +2487,7 @@ for _test, _devices in (
     (test_actuator_mapping_built_once_and_cached, devices),
     (test_borrowed_view_with_device_alias, devices),
     (test_actuator_parameters_capture_cold, get_cuda_test_devices()),
+    (test_actuator_access_after_capture_before_replay, get_cuda_test_devices()),
     (test_actuator_capture_without_mempool_raises, get_cuda_test_devices()),
 ):
     add_function_test(TestSelectionActuatorMapping, _test.__name__, _test, devices=_devices)

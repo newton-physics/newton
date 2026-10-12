@@ -2352,9 +2352,10 @@ class ArticulationView:
     # Actuator parameter access
 
     def _get_actuator_dof_mapping(self, actuator: Actuator):
-        """Return the cached DOF mapping for ``actuator``, built on first use.
+        """Return the DOF mapping for ``actuator``, cached when it is built outside graph capture.
 
-        The cache belongs to the view and holds actuators weakly.
+        The cache belongs to the view and holds actuators weakly. A mapping built during graph
+        capture is initialized only when that graph runs, so it is used by that graph alone.
         """
         # views that borrow the actuator methods may not define the cache
         cache = getattr(self, "_actuator_dof_mapping_cache", None)
@@ -2368,7 +2369,7 @@ class ArticulationView:
             mapping = None
         if mapping is None:
             mapping = self._create_actuator_dof_mapping(actuator)
-            if cache is not None:
+            if cache is not None and not wp.get_device(self.device).is_capturing:
                 cache[actuator] = mapping
         return mapping
 
@@ -2456,10 +2457,11 @@ class ArticulationView:
         *actuator* are left at zero; driven DOFs contain the
         corresponding value gathered from ``component.<name>``.
 
-        The first :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for an
-        actuator builds and caches the view's DOF mapping for it with device kernels. That first
-        call allocates the mapping, so capturing it in a CUDA graph requires the device's memory
-        pool, as for other allocating view accessors.
+        The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
+        an actuator builds the view's DOF mapping for it with device kernels and caches it. A call
+        captured in a CUDA graph before then builds a mapping that only that graph uses: it
+        requires the device's memory pool, and every replay rebuilds it. Call either method once
+        before capturing to keep the build out of the graph.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which
@@ -2507,10 +2509,11 @@ class ArticulationView:
         per world).  Only entries whose DOFs are actually driven by *actuator*
         are written back to ``component.<name>``; the rest are ignored.
 
-        The first :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for an
-        actuator builds and caches the view's DOF mapping for it with device kernels. That first
-        call allocates the mapping, so capturing it in a CUDA graph requires the device's memory
-        pool, as for other allocating view accessors.
+        The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
+        an actuator builds the view's DOF mapping for it with device kernels and caches it. A call
+        captured in a CUDA graph before then builds a mapping that only that graph uses: it
+        requires the device's memory pool, and every replay rebuilds it. Call either method once
+        before capturing to keep the build out of the graph.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which
