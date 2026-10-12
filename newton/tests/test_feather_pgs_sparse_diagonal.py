@@ -494,7 +494,7 @@ def test_sparse_diagonal_contact_friction_matches_general_owner(test, device):
         return history
 
     # Normal rows only: the frictionless reference.
-    slick = run(make_solver(use_parallel_streams=True, contact_friction_gap_threshold=-float("inf")))
+    slick = run(make_solver(use_parallel_streams=True, contact_friction_gap_max=-float("inf")))
     for label, friction_kwargs, triples in (("patch", {}, False), ("point", {"friction_anchor_beta": 0.0}, True)):
         with test.subTest(friction=label):
             optimized = make_solver(use_parallel_streams=True, **friction_kwargs)

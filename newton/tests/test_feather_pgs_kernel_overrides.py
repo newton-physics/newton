@@ -90,7 +90,7 @@ def test_contact_kernels_reject_non_contact_rows(test, device):
     """Reject the contact-only kernels with joint-limit rows and normal-only contact rows."""
     model = _legged_base(device)
     for kernel in ("tiled_contact", "streaming"):
-        for options in ({"enable_joint_limits": True}, {"contact_friction_gap_threshold": 0.01}):
+        for options in ({"enable_joint_limits": True}, {"contact_friction_gap_max": 0.01}):
             with test.subTest(pgs_kernel=kernel, **options), _overrides(pgs_kernel=kernel):
                 with test.assertRaisesRegex(ValueError, "contact rows only"):
                     SolverFeatherPGS(model, solve_mode="split", **options)

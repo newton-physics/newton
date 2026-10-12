@@ -64,11 +64,8 @@ def test_allocator_rejects_incomplete_contact_frame(test, device):
             8,
             8,
             wp.zeros((1,), dtype=wp.int32, device=device),
-            0.0,
-            0.0,
-            0.0,
             float("inf"),
-            0,
+            float("inf"),
             _point_friction(device),
         ],
         outputs=[

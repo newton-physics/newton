@@ -1350,12 +1350,9 @@ class SolverFeatherPGS(SolverBase):
     restitution_velocity_threshold = _StepOption()
     contact_speculative_scale = _StepOption()
     contact_gap_gate = _StepOption()
-    same_articulation_contact_gap_gate = _StepOption()
-    articulation_pair_contact_gap_gate = _StepOption()
     contact_friction_scale = _ConstructionOption()
     contact_friction_position_iterations = _ConstructionOption()
-    contact_friction_gap_threshold = _StepOption()
-    contact_friction_articulation_pairs_only = _StepOption()
+    contact_friction_gap_max = _StepOption()
     contact_shared_anchor = _ConstructionOption()
     contact_friction_shared_anchor = _ConstructionOption()
     contact_torsion_device = _ConstructionOption()
@@ -1483,13 +1480,10 @@ class SolverFeatherPGS(SolverBase):
         enable_restitution: bool = True,
         restitution_velocity_threshold: float = 0.5,
         contact_speculative_scale: float = 1.0,
-        contact_gap_gate: float = 0.0,
-        same_articulation_contact_gap_gate: float = 0.0,
-        articulation_pair_contact_gap_gate: float = 0.0,
+        contact_gap_gate: float | None = None,
         contact_friction_scale: float = 1.0,
         contact_friction_position_iterations: int = -1,
-        contact_friction_gap_threshold: float = float("inf"),
-        contact_friction_articulation_pairs_only: bool = False,
+        contact_friction_gap_max: float | None = None,
         contact_shared_anchor: bool = False,
         contact_friction_shared_anchor: bool = False,
         contact_torsion_radius: float = 0.0,
@@ -1739,12 +1733,11 @@ class SolverFeatherPGS(SolverBase):
             contact_speculative_scale: Fraction of a positive contact gap that the contact
                 may close during the step (``rhs = scale * phi / dt``). ``0`` removes the
                 speculative allowance; penetration correction is unchanged.
-            contact_gap_gate: When positive, contacts whose gap [m] exceeds this distance
-                get no rows. ``0`` keeps every contact of the collision pipeline.
-            same_articulation_contact_gap_gate: When positive, the gap gate [m] of contacts
-                between two links of the same articulation (free bodies excluded).
-            articulation_pair_contact_gap_gate: When positive, the gap gate [m] of contacts
-                between two articulated (non-free) bodies.
+            contact_gap_gate: Contacts of the collision pipeline whose gap [m] exceeds this
+                distance get no rows; ``0`` keeps touching contacts only. ``None`` (the default)
+                keeps every contact. :attr:`~newton.ModelBuilder.ShapeConfig.gap` decides which
+                contacts the pipeline reports (also to sensors and other solvers); this gate only
+                decides which of them this solver solves. Finite and non-negative.
             contact_friction_scale: Non-negative factor applied to every shape's friction
                 coefficient (:attr:`~newton.Model.shape_material_mu`) in the solver's copy of
                 the materials, refreshed at construction and by :meth:`notify_model_changed`
@@ -1756,11 +1749,10 @@ class SolverFeatherPGS(SolverBase):
                 and holds their impulses at zero before that. Velocity-only iterations always
                 solve friction. Values other than ``-1`` reject ``contact_warmstart`` and
                 ``contact_compliance``.
-            contact_friction_gap_threshold: Contacts with a gap [m] above this threshold get
-                a normal row only. ``inf`` gives every contact friction.
-            contact_friction_articulation_pairs_only: Apply
-                ``contact_friction_gap_threshold`` only to contacts between two articulated
-                (non-free) bodies.
+            contact_friction_gap_max: Contacts with a gap [m] above this distance get a normal
+                row only. ``None`` (the default) gives every contact friction rows; a negative
+                value gives none of them friction rows, which saves the rows that zero
+                friction coefficients would keep.
             contact_shared_anchor: Apply every contact row at the midpoint of the two witness
                 points instead of at each body's own witness point, as PhysX applies a contact at
                 one point. ``phi`` still comes from the witness points. Friction patch rows keep
@@ -2064,17 +2056,12 @@ class SolverFeatherPGS(SolverBase):
             "restitution_velocity_threshold", restitution_velocity_threshold
         )
         self._contact_speculative_scale = _finite_non_negative("contact_speculative_scale", contact_speculative_scale)
-        self._contact_gap_gate = _finite_non_negative("contact_gap_gate", contact_gap_gate)
-        self._same_articulation_contact_gap_gate = _finite_non_negative(
-            "same_articulation_contact_gap_gate", same_articulation_contact_gap_gate
+        self._contact_gap_gate = (
+            None if contact_gap_gate is None else _finite_non_negative("contact_gap_gate", contact_gap_gate)
         )
-        self._articulation_pair_contact_gap_gate = _finite_non_negative(
-            "articulation_pair_contact_gap_gate", articulation_pair_contact_gap_gate
-        )
-        self._contact_friction_gap_threshold = float(contact_friction_gap_threshold)
-        if np.isnan(self._contact_friction_gap_threshold):
-            raise ValueError("contact_friction_gap_threshold must not be NaN")
-        self._contact_friction_articulation_pairs_only = bool(contact_friction_articulation_pairs_only)
+        self._contact_friction_gap_max = None if contact_friction_gap_max is None else float(contact_friction_gap_max)
+        if self._contact_friction_gap_max is not None and np.isnan(self._contact_friction_gap_max):
+            raise ValueError("contact_friction_gap_max must not be NaN")
         self._contact_friction_scale = _finite_non_negative("contact_friction_scale", contact_friction_scale)
         self._contact_friction_position_iterations = int(contact_friction_position_iterations)
         if self._contact_friction_position_iterations < -1:
@@ -2466,18 +2453,18 @@ class SolverFeatherPGS(SolverBase):
 
     @property
     def _friction_gap(self) -> float:
-        """Friction gap threshold the kernels read."""
-        return self._contact_friction_gap_threshold
+        """Largest gap [m] of a contact with friction rows, as the kernels read it."""
+        return float("inf") if self._contact_friction_gap_max is None else self._contact_friction_gap_max
 
     @property
-    def _friction_pairs_only(self) -> int:
-        """Whether the friction gap threshold applies only to articulation pairs, as the kernels read it."""
-        return int(self._contact_friction_articulation_pairs_only)
+    def _contact_gap_limit(self) -> float:
+        """Largest gap [m] of a contact with rows, as the kernels read it."""
+        return float("inf") if self._contact_gap_gate is None else self._contact_gap_gate
 
     @property
     def _friction_every_contact(self) -> bool:
         """Whether every contact gets friction rows (uniform normal/tangent/tangent triples)."""
-        return bool(np.isposinf(self._contact_friction_gap_threshold))
+        return self._contact_friction_gap_max is None or bool(np.isposinf(self._contact_friction_gap_max))
 
     def _physx_attribute(self, name: str) -> wp.array | None:
         """Return the model's ``physx:<name>`` custom attribute, or ``None`` when it is not registered."""
@@ -8304,13 +8291,8 @@ class SolverFeatherPGS(SolverBase):
                     contacts,
                     # The solver's buffer: notified edits reach eager and captured steps alike.
                     shape_material_mu=self._shape_mu,
-                    body_to_articulation=self._body_to_articulation,
-                    is_free_rigid=is_free_rigid,
-                    contact_gap_gate=self._contact_gap_gate,
-                    same_articulation_gap_gate=self._same_articulation_contact_gap_gate,
-                    articulation_pair_gap_gate=self._articulation_pair_contact_gap_gate,
-                    friction_gap=self._friction_gap,
-                    friction_articulation_pairs_only=bool(self._friction_pairs_only),
+                    contact_gap_limit=self._contact_gap_limit,
+                    friction_gap_limit=self._friction_gap,
                     frozen_bodies=frozen_bodies,
                 )
             wp.launch(
@@ -8345,11 +8327,8 @@ class SolverFeatherPGS(SolverBase):
                     self._free_body_constraint_max,
                     self._propagation_max_constraints,
                     self._articulation_model_world,
-                    self._contact_gap_gate,
-                    self._same_articulation_contact_gap_gate,
-                    self._articulation_pair_contact_gap_gate,
+                    self._contact_gap_limit,
                     self._friction_gap,
-                    self._friction_pairs_only,
                     self._friction_patches.view,
                 ],
                 outputs=[

@@ -13,7 +13,6 @@ from ...sim.articulation import (
     eval_single_articulation_fk,
 )
 from ...sim.contacts import GENERATION_SENTINEL
-from .contact_filters import contact_friction_eligible, contact_normal_gap_limit
 from .friction import contact_tangent_basis, friction_pair_candidate
 from .friction_patches import FrictionPatches, warmstart_dt_scale
 
@@ -3421,11 +3420,8 @@ def _allocate_world_contact_slot(
     mf_max_constraints: int,
     propagation_max_constraints: int,
     art_model_world: wp.array[int],
-    contact_gap_gate: float,
-    same_articulation_contact_gap_gate: float,
-    articulation_pair_contact_gap_gate: float,
-    contact_friction_gap_threshold: float,
-    contact_friction_articulation_pairs_only: int,
+    contact_gap_limit: float,
+    contact_friction_gap_limit: float,
     friction_patches: FrictionPatches,
     # outputs
     contact_world: wp.array[int],
@@ -3514,15 +3510,7 @@ def _allocate_world_contact_slot(
     phi = wp.dot(normal, point_a_world - point_b_world)
     a_non_free = art_a >= 0 and is_free_rigid[art_a] == 0
     b_non_free = art_b >= 0 and is_free_rigid[art_b] == 0
-    normal_gap_limit = contact_normal_gap_limit(
-        a_non_free,
-        b_non_free,
-        art_a == art_b,
-        contact_gap_gate,
-        articulation_pair_contact_gap_gate,
-        same_articulation_contact_gap_gate,
-    )
-    if phi > normal_gap_limit:
+    if phi > contact_gap_limit:
         contact_slot[c] = -1
         contact_path[c] = -1
         return
@@ -3580,9 +3568,7 @@ def _allocate_world_contact_slot(
 
     # Every normal row survives; only the selected patch anchors receive friction rows.
     slots_needed = 1
-    add_friction = contact_friction_eligible(
-        phi, a_non_free, b_non_free, contact_friction_articulation_pairs_only, contact_friction_gap_threshold
-    )
+    add_friction = phi <= contact_friction_gap_limit
     if friction_patches.enabled != 0:
         add_friction = add_friction and friction_patches.weight[c] > 0.0
     if add_friction:
@@ -3652,11 +3638,8 @@ def allocate_world_contact_slots(
     mf_max_constraints: int,
     propagation_max_constraints: int,
     art_model_world: wp.array[int],
-    contact_gap_gate: float,
-    same_articulation_contact_gap_gate: float,
-    articulation_pair_contact_gap_gate: float,
-    contact_friction_gap_threshold: float,
-    contact_friction_articulation_pairs_only: int,
+    contact_gap_limit: float,
+    contact_friction_gap_limit: float,
     friction_patches: FrictionPatches,
     # outputs
     contact_world: wp.array[int],
@@ -3720,11 +3703,8 @@ def allocate_world_contact_slots(
             mf_max_constraints,
             propagation_max_constraints,
             art_model_world,
-            contact_gap_gate,
-            same_articulation_contact_gap_gate,
-            articulation_pair_contact_gap_gate,
-            contact_friction_gap_threshold,
-            contact_friction_articulation_pairs_only,
+            contact_gap_limit,
+            contact_friction_gap_limit,
             friction_patches,
             contact_world,
             contact_slot,

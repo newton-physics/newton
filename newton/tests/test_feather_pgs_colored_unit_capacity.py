@@ -47,7 +47,7 @@ def _solver(model, response):
         friction_anchor_beta=0.0,
         articulation_constraint_max=3,
         free_body_constraint_max=3,
-        contact_friction_gap_threshold=0.0,
+        contact_friction_gap_max=0.0,
         contact_speculative_scale=0.0,
     )
 

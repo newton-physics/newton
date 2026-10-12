@@ -30,7 +30,7 @@ def test_previous_friction_rows_are_not_current_rows(test, device):
     """Reject stale tangent metadata when a later step admits only a normal."""
     _, solver, model, initial, contacts = fixture(0.01, device=device, center_only=True)
     test.assertEqual(solver._torsion_stats["rows"], 1)
-    solver.contact_friction_gap_threshold = -1.0
+    solver.contact_friction_gap_max = -1.0
     solver.step(initial, model.state(), model.control(), contacts, 0.0025)
     test.assertEqual(solver._torsion_stats["rows"], 0)
 

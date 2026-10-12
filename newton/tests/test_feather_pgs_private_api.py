@@ -141,10 +141,7 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
                 "restitution_velocity_threshold",
                 "contact_speculative_scale",
                 "contact_gap_gate",
-                "same_articulation_contact_gap_gate",
-                "articulation_pair_contact_gap_gate",
-                "contact_friction_gap_threshold",
-                "contact_friction_articulation_pairs_only",
+                "contact_friction_gap_max",
             },
         )
         for name in parameters:

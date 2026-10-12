@@ -18,7 +18,7 @@ PROFILE = {
     "iterations": 32,
     "contact_regularization": 0.01,
     "friction_anchor_beta": 0.2,
-    "contact_friction_gap_threshold": 0.001,
+    "contact_friction_gap_max": 0.001,
     "articulation_constraint_max": 512,
     "free_body_constraint_max": 512,
     "enable_sleeping": True,

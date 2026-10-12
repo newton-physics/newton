@@ -18,7 +18,7 @@ _FIELDS = ("body_q", "body_qd", "joint_q", "joint_qd")
 _SPARSE_PROFILE = {
     "friction_anchor_beta": 0.0,
     "contact_regularization": 0.0,
-    "contact_friction_gap_threshold": float("inf"),
+    "contact_friction_gap_max": float("inf"),
 }
 
 

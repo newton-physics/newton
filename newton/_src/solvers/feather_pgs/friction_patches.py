@@ -36,7 +36,6 @@ import warp as wp
 
 from ...core.reset import reset_world_selected
 from ...math.spatial import velocity_at_point
-from .contact_filters import contact_friction_eligible, contact_normal_gap_limit
 from .friction import contact_tangent_basis
 
 
@@ -118,13 +117,8 @@ def _prepare(
     shape_gap: wp.array[float],
     body_radius: wp.array[float],
     q: wp.array[wp.transform],
-    body_to_articulation: wp.array[int],
-    is_free_rigid: wp.array[int],
-    contact_gap_gate: float,
-    same_articulation_gap_gate: float,
-    articulation_pair_gap_gate: float,
-    friction_gap: float,
-    friction_articulation_pairs_only: int,
+    contact_gap_limit: float,
+    friction_gap_limit: float,
     frame: _PatchFrame,
     patches: FrictionPatches,
 ):
@@ -160,31 +154,13 @@ def _prepare(
     pa = _world_point(q, a, point0[c]) - margin0[c] * n
     pb = _world_point(q, b, point1[c]) + margin1[c] * n
     gap = wp.dot(n, pa - pb)
-    art_a = int(-1)
-    art_b = int(-1)
-    if a >= 0 and a < body_to_articulation.shape[0]:
-        art_a = body_to_articulation[a]
-    if b >= 0 and b < body_to_articulation.shape[0]:
-        art_b = body_to_articulation[b]
-    a_non_free = art_a >= 0 and is_free_rigid[art_a] == 0
-    b_non_free = art_b >= 0 and is_free_rigid[art_b] == 0
     support_gap_limit = float(0.0)
     if sa >= 0:
         support_gap_limit += shape_gap[sa]
     if sb >= 0:
         support_gap_limit += shape_gap[sb]
-    normal_gap_limit = contact_normal_gap_limit(
-        a_non_free,
-        b_non_free,
-        art_a == art_b,
-        contact_gap_gate,
-        articulation_pair_gap_gate,
-        same_articulation_gap_gate,
-    )
-    support_gap_limit = wp.min(support_gap_limit, normal_gap_limit)
-    eligible = gap <= normal_gap_limit and contact_friction_eligible(
-        gap, a_non_free, b_non_free, friction_articulation_pairs_only, friction_gap
-    )
+    support_gap_limit = wp.min(support_gap_limit, contact_gap_limit)
+    eligible = gap <= contact_gap_limit and gap <= friction_gap_limit
     # Friction-only filters suppress rows without ending contact support;
     # filtered regions must still be able to carry their anchor history.
     frame.support_gap_limit[c] = wp.max(support_gap_limit, 0.0)
@@ -1232,13 +1208,8 @@ class _FrictionPatchState:
         contacts,
         *,
         shape_material_mu,
-        body_to_articulation=None,
-        is_free_rigid=None,
-        contact_gap_gate=0.0,
-        same_articulation_gap_gate=0.0,
-        articulation_pair_gap_gate=0.0,
-        friction_gap=float("inf"),
-        friction_articulation_pairs_only=False,
+        contact_gap_limit=float("inf"),
+        friction_gap_limit=float("inf"),
         frozen_bodies=None,
     ):
         wp.launch(
@@ -1258,13 +1229,8 @@ class _FrictionPatchState:
                 model.shape_gap,
                 self.body_radius,
                 state.body_q,
-                body_to_articulation,
-                is_free_rigid,
-                contact_gap_gate,
-                same_articulation_gap_gate,
-                articulation_pair_gap_gate,
-                friction_gap,
-                int(friction_articulation_pairs_only),
+                contact_gap_limit,
+                friction_gap_limit,
                 self.current,
                 self.view,
             ],

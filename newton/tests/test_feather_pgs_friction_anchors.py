@@ -100,7 +100,7 @@ _SQUEEZE_SOLVER = {
     "velocity_iterations": 0,
     "baumgarte": 0.05,
     "contact_regularization": 0.1,
-    "contact_friction_gap_threshold": 0.001,
+    "contact_friction_gap_max": 0.001,
     "articulation_constraint_max": 64,
 }
 

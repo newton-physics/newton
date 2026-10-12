@@ -73,11 +73,8 @@ def _allocate_overflowing_contacts(device, contact_count, row_capacity, propagat
             row_capacity,
             row_capacity,
             wp.zeros((1,), dtype=wp.int32, device=device),
-            0.0,
-            0.0,
-            0.0,
             float("inf"),
-            0,
+            float("inf"),
             _point_friction(device),
         ],
         outputs=[

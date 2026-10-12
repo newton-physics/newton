@@ -299,7 +299,7 @@ def test_zero_friction_matches_normal_rows_only(test, device):
     for label, options in _solves(device):
         with test.subTest(solve=label):
             run = {"init": _set_box_velocities, "steps": 8, **options}
-            normal_only = _run(_build_contact_scene(device), contact_friction_gap_threshold=-float("inf"), **run)
+            normal_only = _run(_build_contact_scene(device), contact_friction_gap_max=-float("inf"), **run)
             test.assertTrue(all(f.size == 0 for f in normal_only[3]), f"{label}: friction rows were created")
             frictionless = _run(_build_contact_scene(device), contact_friction_scale=0.0, **run)
             test.assertTrue(any(f.size for f in frictionless[3]), f"{label}: zero friction dropped the rows")

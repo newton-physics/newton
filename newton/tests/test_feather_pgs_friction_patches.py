@@ -345,7 +345,11 @@ class TestFrictionPatchHistory(unittest.TestCase):
 
     def test_support_witnesses_use_existing_contact_gap_limits(self):
         """Keep supported history within the contact envelope and respect tighter solver gates."""
-        for limits, carried in (({}, True), ({"contact_gap_gate": 0.0001}, False), ({"friction_gap": 0.0001}, True)):
+        for limits, carried in (
+            ({}, True),
+            ({"contact_gap_limit": 0.0001}, False),
+            ({"friction_gap_limit": 0.0001}, True),
+        ):
             with self.subTest(limits=limits):
                 model, state, contacts, patches = _patch_fixture([[-0.1, 0, 0], [0.1, 0, 0]])
                 model.shape_gap.fill_(0.0005)
@@ -712,12 +716,12 @@ class TestFrictionPatchHistory(unittest.TestCase):
         """Carry existing anchors through a friction-filtered step with zero weight, and never create new ones."""
         model, state, contacts, patches = _patch_fixture([[-0.05, 0, 0], [0.05, 0, 0]])
         patches.store(state)
-        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, friction_gap=-1.0)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, friction_gap_limit=-1.0)
         self.assertEqual(int(patches.current.valid.numpy().sum()), 2)
         self.assertTrue((patches.current.source.numpy()[:2] >= 0).all())
         self.assertEqual(float(patches.view.weight.numpy().max()), 0.0)
         patches.previous.valid.zero_()
-        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, friction_gap=-1.0)
+        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, friction_gap_limit=-1.0)
         self.assertEqual(int(patches.current.valid.numpy().sum()), 0)
         self.assertEqual(float(patches.view.weight.numpy().max()), 0.0)
 
@@ -1077,7 +1081,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
 
     def test_anchor_selection_respects_contact_gap_filters(self):
         """Keep filtered extreme points from removing friction from a loaded middle contact."""
-        for gate in ("contact_friction_gap_threshold", "contact_gap_gate"):
+        for gate in ("contact_friction_gap_max", "contact_gap_gate"):
             with self.subTest(gate=gate), wp.ScopedDevice(_DEVICE):
                 builder = newton.ModelBuilder()
                 ground = builder.add_ground_plane()
@@ -1192,16 +1196,16 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
         """Carry a region's anchors through a step in which the gap filter removes every friction row."""
         device = _DEVICE
         with wp.ScopedDevice(device):
-            _model, solver, _contacts, step = _ground_box(device, contact_friction_gap_threshold=0.001)
+            _model, solver, _contacts, step = _ground_box(device, contact_friction_gap_max=0.001)
             patches = solver._friction_patches
             for _ in range(40):
                 step()
             self.assertGreater(int((patches.current.source.numpy() >= 0).sum()), 0)
-            solver.contact_friction_gap_threshold = -1.0
+            solver.contact_friction_gap_max = -1.0
             step()
             self.assertEqual(float(patches.view.weight.numpy().max()), 0.0)
             self.assertGreater(int(patches.previous.valid.numpy().sum()), 0)
-            solver.contact_friction_gap_threshold = 0.001
+            solver.contact_friction_gap_max = 0.001
             step()
             weights = patches.view.weight.numpy()
             sources = patches.current.source.numpy()

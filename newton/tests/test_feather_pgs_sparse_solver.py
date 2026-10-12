@@ -537,7 +537,7 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
             {"contact_warmstart": True},
             {"contact_regularization": 0.01},
             {"velocity_iterations": 1},
-            {"contact_friction_gap_threshold": 0.01},
+            {"contact_friction_gap_max": 0.01},
         ):
             with self.subTest(options=options):
                 solver = _make_solver(model, True, **options)

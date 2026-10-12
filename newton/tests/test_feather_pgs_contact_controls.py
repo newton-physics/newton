@@ -51,13 +51,10 @@ def _launch_contact_allocator(
     *,
     route: int,
     gap: float,
-    gate: float,
+    gate: float | None = None,
     responsive: bool = True,
-    scoped_gate: float = 0.0,
-    pair_gate: float = 0.0,
     enable_friction: bool = False,
     friction_gap: float = float("inf"),
-    friction_pairs_only: bool = False,
 ):
     """Allocate one contact of a one-DOF body against the ground and return its routing and counters."""
     outputs = {
@@ -104,11 +101,8 @@ def _launch_contact_allocator(
             8,
             8,
             wp.array([0], dtype=wp.int32, device=device),
-            gate,
-            scoped_gate,
-            pair_gate,
+            float("inf") if gate is None else gate,
             _friction_threshold(enable_friction, friction_gap),
-            int(friction_pairs_only),
             _disabled_patches(device),
         ],
         outputs=[
@@ -139,12 +133,10 @@ def _launch_articulation_pair_contact_allocator(
     device,
     *,
     gap: float,
-    scoped_gate: float = 0.0,
-    pair_gate: float = 0.0,
+    gate: float | None = None,
     cross_articulation: bool = False,
     enable_friction: bool = False,
     friction_gap: float = float("inf"),
-    friction_pairs_only: bool = False,
 ):
     """Allocate one contact between two non-free articulated links; return ``(slot, path, slots_needed)``."""
     body_to_articulation = [0, 1] if cross_articulation else [0, 0]
@@ -181,11 +173,8 @@ def _launch_articulation_pair_contact_allocator(
             8,
             8,
             wp.zeros((articulation_count,), dtype=wp.int32, device=device),
-            0.0,
-            scoped_gate,
-            pair_gate,
+            float("inf") if gate is None else gate,
             _friction_threshold(enable_friction, friction_gap),
-            int(friction_pairs_only),
             _disabled_patches(device),
         ],
         outputs=[
@@ -596,11 +585,8 @@ def test_solver_exposes_documented_defaults(test, device):
     test.assertEqual(solver.friction_anchor_beta, 0.2)
     test.assertTrue(solver._friction_anchors_enabled)
     test.assertEqual(solver.contact_speculative_scale, 1.0)
-    test.assertEqual(solver.contact_gap_gate, 0.0)
-    test.assertEqual(solver.same_articulation_contact_gap_gate, 0.0)
-    test.assertEqual(solver.articulation_pair_contact_gap_gate, 0.0)
-    test.assertEqual(solver.contact_friction_gap_threshold, float("inf"))
-    test.assertFalse(solver.contact_friction_articulation_pairs_only)
+    test.assertIsNone(solver.contact_gap_gate)
+    test.assertIsNone(solver.contact_friction_gap_max)
     test.assertEqual(solver.contact_regularization, 0.0)
     test.assertEqual(solver.velocity_iterations, 0)
     test.assertFalse(solver.contact_warmstart)
@@ -622,21 +608,15 @@ def test_solver_validates_and_stores_contact_controls(test, device):
         solve_mode="matrix_free",
         contact_speculative_scale=0.0,
         contact_gap_gate=0.001,
-        same_articulation_contact_gap_gate=0.002,
-        articulation_pair_contact_gap_gate=0.003,
-        contact_friction_articulation_pairs_only=True,
+        contact_friction_gap_max=-0.5,
     )
     test.assertEqual(solver.contact_speculative_scale, 0.0)
     test.assertEqual(solver.contact_gap_gate, 0.001)
-    test.assertEqual(solver.same_articulation_contact_gap_gate, 0.002)
-    test.assertEqual(solver.articulation_pair_contact_gap_gate, 0.003)
-    test.assertTrue(solver.contact_friction_articulation_pairs_only)
+    test.assertEqual(solver.contact_friction_gap_max, -0.5)
 
     for name in (
         "contact_speculative_scale",
         "contact_gap_gate",
-        "same_articulation_contact_gap_gate",
-        "articulation_pair_contact_gap_gate",
         "friction_anchor_beta",
         "restitution_velocity_threshold",
     ):
@@ -644,102 +624,41 @@ def test_solver_validates_and_stores_contact_controls(test, device):
             with test.subTest(name=name, value=value):
                 with test.assertRaisesRegex(ValueError, name):
                     SolverFeatherPGS(model, solve_mode="matrix_free", **{name: value})
-    with test.assertRaisesRegex(ValueError, "contact_friction_gap_threshold"):
-        SolverFeatherPGS(model, solve_mode="matrix_free", contact_friction_gap_threshold=float("nan"))
+    with test.assertRaisesRegex(ValueError, "contact_friction_gap_max"):
+        SolverFeatherPGS(model, solve_mode="matrix_free", contact_friction_gap_max=float("nan"))
 
 
-def test_scoped_gap_gate_only_drops_distant_same_articulation_contact(test, device):
-    """Retain near self-contact under the scoped gate while bounding its speculative tail."""
-    test.assertEqual(
-        _launch_articulation_pair_contact_allocator(device, gap=0.002, scoped_gate=0.003),
-        (0, PATH_DENSE, 1),
-    )
-    test.assertEqual(
-        _launch_articulation_pair_contact_allocator(device, gap=0.004, scoped_gate=0.003),
-        (-1, -1, 0),
-    )
-    test.assertEqual(
-        _launch_articulation_pair_contact_allocator(device, gap=0.004, scoped_gate=0.0),
-        (0, PATH_DENSE, 1),
-    )
-
-
-def test_scoped_gap_gate_preserves_other_contact_routes(test, device):
-    """Do not shorten predictive contacts for ground, free-body, or cross-articulation rows."""
+def test_zero_gap_gate_keeps_touching_contacts_only(test, device):
+    """Keep touching and penetrating contacts with a zero gate, and drop any positive gap on every route."""
     for route, counter in ((PATH_DENSE, "dense_count"), (PATH_MATRIX_FREE, "mf_count")):
         with test.subTest(route=route):
-            result = _launch_contact_allocator(device, route=route, gap=0.04, gate=0.0, scoped_gate=0.003)
-            test.assertEqual(result["path"], route)
-            test.assertEqual(result[counter], 1)
-
-
-def test_articulation_pair_gap_gate_drops_distant_pair_contact(test, device):
-    """Gate same- and cross-articulation contacts with the pair gate, leaving free bodies untouched."""
+            for gap, kept in ((-0.001, True), (0.0, True), (1.0e-4, False)):
+                result = _launch_contact_allocator(device, route=route, gap=gap, gate=0.0)
+                test.assertEqual(result[counter], int(kept), f"gap={gap}")
+            test.assertEqual(_launch_contact_allocator(device, route=route, gap=0.04)[counter], 1)
     for cross_articulation in (False, True):
         with test.subTest(cross_articulation=cross_articulation):
             test.assertEqual(
                 _launch_articulation_pair_contact_allocator(
-                    device, gap=0.004, scoped_gate=0.0, pair_gate=0.003, cross_articulation=cross_articulation
+                    device, gap=0.004, gate=0.003, cross_articulation=cross_articulation
                 ),
                 (-1, -1, 0),
             )
-    result = _launch_contact_allocator(device, route=PATH_MATRIX_FREE, gap=0.04, gate=0.0, pair_gate=0.003)
-    test.assertEqual(result["path"], PATH_MATRIX_FREE)
-    test.assertEqual(result["mf_count"], 1)
 
 
-def test_articulation_pair_friction_filter_preserves_free_and_ground_rows(test, device):
-    """Scope tight friction controls to articulated pairs, not free-body or ground routes."""
+def test_friction_gap_max_applies_to_every_route(test, device):
+    """Give contacts beyond the friction gap a normal row only, on every route, and none with a negative max."""
     for route in (PATH_DENSE, PATH_MATRIX_FREE):
         with test.subTest(route=route):
-            result = _launch_contact_allocator(
-                device,
-                route=route,
-                gap=0.004,
-                gate=0.0,
-                enable_friction=True,
-                friction_gap=0.002,
-                friction_pairs_only=True,
-            )
-            test.assertEqual(result["path"], route)
-            test.assertEqual(result["slots_needed"], 3)
-
-
-def test_articulation_pair_friction_filter_reduces_pair_rows(test, device):
-    """Apply the configured friction gap to same- and cross-articulation contacts."""
-    for cross_articulation in (False, True):
-        with test.subTest(cross_articulation=cross_articulation):
-            result = _launch_articulation_pair_contact_allocator(
-                device,
-                gap=0.004,
-                cross_articulation=cross_articulation,
-                enable_friction=True,
-                friction_gap=0.002,
-                friction_pairs_only=True,
-            )
-            test.assertEqual(result, (0, PATH_DENSE, 1))
-
-
-def test_negative_scoped_friction_gap_delays_only_articulation_pair_tangents(test, device):
-    """Keep pair normals while delaying friction, without changing free-body friction."""
-    shallow_pair = _launch_articulation_pair_contact_allocator(
-        device, gap=-0.0005, enable_friction=True, friction_gap=-0.001, friction_pairs_only=True
+            near = _launch_contact_allocator(device, route=route, gap=0.001, enable_friction=True, friction_gap=0.002)
+            far = _launch_contact_allocator(device, route=route, gap=0.004, enable_friction=True, friction_gap=0.002)
+            test.assertEqual((near["slots_needed"], far["slots_needed"]), (3, 1))
+    shallow = _launch_articulation_pair_contact_allocator(
+        device, gap=-0.0005, enable_friction=True, friction_gap=-0.001
     )
-    deep_pair = _launch_articulation_pair_contact_allocator(
-        device, gap=-0.002, enable_friction=True, friction_gap=-0.001, friction_pairs_only=True
-    )
-    free_body = _launch_contact_allocator(
-        device,
-        route=PATH_MATRIX_FREE,
-        gap=0.004,
-        gate=0.0,
-        enable_friction=True,
-        friction_gap=-1.0,
-        friction_pairs_only=True,
-    )
-    test.assertEqual(shallow_pair, (0, PATH_DENSE, 1))
-    test.assertEqual(deep_pair, (0, PATH_DENSE, 3))
-    test.assertEqual(free_body["slots_needed"], 3)
+    deep = _launch_articulation_pair_contact_allocator(device, gap=-0.002, enable_friction=True, friction_gap=-0.001)
+    test.assertEqual(shallow, (0, PATH_DENSE, 1))
+    test.assertEqual(deep, (0, PATH_DENSE, 3))
 
 
 def test_speculative_scale_controls_every_position_rhs_family(test, device):
@@ -760,7 +679,7 @@ def test_gap_gate_prevents_all_route_allocations(test, device):
     """Drop positive gaps above the gate before any route reserves a slot."""
     for route in (PATH_DENSE, PATH_MATRIX_FREE):
         with test.subTest(route=route):
-            allocated = _launch_contact_allocator(device, route=route, gap=0.002, gate=0.0)
+            allocated = _launch_contact_allocator(device, route=route, gap=0.002)
             test.assertEqual(allocated["path"], route)
             test.assertEqual(allocated["slot"], 0)
             test.assertEqual(allocated["world"], 0)
@@ -791,7 +710,7 @@ def test_gap_gate_keeps_contacts_at_threshold(test, device):
 
 def test_allocator_skips_contacts_without_response_dofs(test, device):
     """Do not allocate a row when neither contact body can change velocity."""
-    result = _launch_contact_allocator(device, route=PATH_DENSE, gap=-0.001, gate=0.0, responsive=False)
+    result = _launch_contact_allocator(device, route=PATH_DENSE, gap=-0.001, responsive=False)
     test.assertEqual(result["slot"], -1)
     test.assertEqual(result["path"], -1)
     test.assertEqual(result["dense_count"], 0)
@@ -809,12 +728,8 @@ for _fn in (
     test_shared_anchors_step_on_every_route,
     test_solver_exposes_documented_defaults,
     test_solver_validates_and_stores_contact_controls,
-    test_scoped_gap_gate_only_drops_distant_same_articulation_contact,
-    test_scoped_gap_gate_preserves_other_contact_routes,
-    test_articulation_pair_gap_gate_drops_distant_pair_contact,
-    test_articulation_pair_friction_filter_preserves_free_and_ground_rows,
-    test_articulation_pair_friction_filter_reduces_pair_rows,
-    test_negative_scoped_friction_gap_delays_only_articulation_pair_tangents,
+    test_zero_gap_gate_keeps_touching_contacts_only,
+    test_friction_gap_max_applies_to_every_route,
     test_speculative_scale_controls_every_position_rhs_family,
     test_dense_restitution_removes_the_scaled_position_bias,
     test_gap_gate_prevents_all_route_allocations,
