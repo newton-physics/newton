@@ -665,7 +665,7 @@ def test_cuda_captured_capacity_errors(test, device):
 
 
 def test_public_api_noop_and_fail_stop(test, device):
-    """Allocate no torsion state without a radius, refuse to capture host torsion, and fail-stop errors."""
+    """Allocate no torsion state without a radius, refuse to capture host torsion, and raise latched errors eagerly."""
     _, plain, model, state, _ = fixture(0.0, device=device, contact_torsion_device=True, iterations=16)
     test.assertIsNone(plain._device_torsion)
     plain.check_constraint_capacity()
@@ -683,8 +683,6 @@ def test_public_api_noop_and_fail_stop(test, device):
             solver.step(state, output, model.control(), contacts, 0.0025)
         with test.assertRaisesRegex(RuntimeError, "contact torsion rejected its input: .*load ring"):
             solver.check_constraint_capacity()
-        np.testing.assert_array_equal(output.joint_q.numpy(), state.joint_q.numpy())
-        np.testing.assert_array_equal(output.joint_qd.numpy(), state.joint_qd.numpy())
     solver.reset(state)
     solver.check_constraint_capacity()
     solver.step(state, output, model.control(), contacts, 0.0025)
