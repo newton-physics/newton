@@ -61,13 +61,13 @@ def test_ant_joint_limits_skip_and_restore(test, device):
                     states.reverse()
             for _ in range(1200):
                 wp.capture_launch(capture.graph)
-            np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [0])
+            np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [0])
             if skip:
-                np.testing.assert_array_equal(solver.constraint_count.numpy(), [0])
-                np.testing.assert_array_equal(solver.mf_constraint_count.numpy(), [0])
-                test.assertTrue(np.all(solver.sleeping.limit_q_index.numpy() < 0))
+                np.testing.assert_array_equal(solver._constraint_count.numpy(), [0])
+                np.testing.assert_array_equal(solver._mf_constraint_count.numpy(), [0])
+                test.assertTrue(np.all(solver._sleeping.limit_q_index.numpy() < 0))
             else:
-                test.assertGreaterEqual(int(solver.constraint_count.numpy().sum()), 16)
+                test.assertGreaterEqual(int(solver._constraint_count.numpy().sum()), 16)
             force = np.zeros((model.body_count, 6), dtype=np.float32)
             force[0, 0] = 100.0
             for state in states:
@@ -75,9 +75,9 @@ def test_ant_joint_limits_skip_and_restore(test, device):
 
             wp.capture_launch(capture.graph)
 
-            np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [1])
-            test.assertGreaterEqual(int(solver.constraint_count.numpy().sum()), 16)
-            np.testing.assert_array_equal(solver.sleeping.limit_q_index.numpy(), original_indices)
+            np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1])
+            test.assertGreaterEqual(int(solver._constraint_count.numpy().sum()), 16)
+            np.testing.assert_array_equal(solver._sleeping.limit_q_index.numpy(), original_indices)
             test.assertTrue(np.isfinite(states[0].body_q.numpy()).all())
             test.assertTrue(np.isfinite(states[0].body_qd.numpy()).all())
             test.assertFalse(solver.constraint_overflow.numpy().any())
@@ -95,7 +95,7 @@ def test_settled_rows_drop_without_changing_contacts(test, device):
     scene.step(collide=False)
 
     np.testing.assert_array_equal(scene.row_counts(), [0, 0])
-    np.testing.assert_array_equal(scene.solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(scene.solver._sleeping.body_awake.numpy(), [0, 0])
     np.testing.assert_array_equal(scene.states[0].body_q.numpy(), pose)
     for name, values in before.items():
         np.testing.assert_array_equal(_contact_inputs(scene.contacts)[name], values, err_msg=name)
@@ -107,7 +107,7 @@ def test_explicit_full_solve_retains_rows(test, device):
     for scene in (full, skipped):
         scene.settle()
         scene.step()
-        np.testing.assert_array_equal(scene.solver.sleeping.body_awake.numpy(), [0, 0])
+        np.testing.assert_array_equal(scene.solver._sleeping.body_awake.numpy(), [0, 0])
         test.assertGreater(int(scene.contacts.rigid_contact_count.numpy()[0]), 0)
     test.assertGreater(int(full.row_counts().sum()), 0)
     np.testing.assert_array_equal(skipped.row_counts(), [0, 0])
@@ -121,7 +121,7 @@ def test_force_restores_only_independent_ground_island_rows(test, device):
     active_rows = int(scene.row_counts().sum())
     test.assertGreater(active_rows, 0)
     scene.settle()
-    test.assertNotEqual(*scene.solver.sleeping.body_island.numpy())
+    test.assertNotEqual(*scene.solver._sleeping.body_island.numpy())
     np.testing.assert_array_equal(scene.row_counts(), [0, 0])
     resting_pose = scene.states[0].body_q.numpy()[1].copy()
     force = np.zeros((2, 6), dtype=np.float32)
@@ -133,7 +133,7 @@ def test_force_restores_only_independent_ground_island_rows(test, device):
     rows = int(scene.row_counts().sum())
     test.assertGreater(rows, 0)
     test.assertLess(rows, active_rows)
-    np.testing.assert_array_equal(scene.solver.sleeping.body_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(scene.solver._sleeping.body_awake.numpy(), [1, 0])
     test.assertGreater(float(scene.states[0].body_qd.numpy()[0, 0]), 0.0)
     np.testing.assert_array_equal(scene.states[0].body_q.numpy()[1], resting_pose)
 
@@ -160,12 +160,12 @@ def test_support_loss_wakes_before_skipped_step(test, device):
 
     scene.step(collide=False, dt=0.001)
 
-    np.testing.assert_array_equal(scene.solver.sleeping.body_awake.numpy(), [0, 1])
+    np.testing.assert_array_equal(scene.solver._sleeping.body_awake.numpy(), [0, 1])
     np.testing.assert_array_equal(scene.row_counts(), [0, 0])
     test.assertLess(float(scene.states[0].body_q.numpy()[1, 2]), before)
     velocity = float(scene.states[0].body_qd.numpy()[1, 2])
     test.assertLess(velocity, 0.0)
-    test.assertLess(abs(velocity), scene.solver.sleeping.linear_threshold)
+    test.assertLess(abs(velocity), scene.solver._sleeping.linear_threshold)
 
 
 def test_fixed_table_supports_sleep_and_independent_force_wake(test, device):
@@ -175,9 +175,9 @@ def test_fixed_table_supports_sleep_and_independent_force_wake(test, device):
     active_rows = int(scene.row_counts().sum())
     test.assertGreater(active_rows, 0)
     scene.settle()
-    islands = scene.solver.sleeping.body_island.numpy()[scene.bodies]
+    islands = scene.solver._sleeping.body_island.numpy()[scene.bodies]
     test.assertNotEqual(*islands)
-    np.testing.assert_array_equal(scene.solver.sleeping.root_supported.numpy()[islands], [1, 1])
+    np.testing.assert_array_equal(scene.solver._sleeping.root_supported.numpy()[islands], [1, 1])
     np.testing.assert_array_equal(scene.row_counts(), [0, 0])
     resting_pose = scene.states[0].body_q.numpy()[scene.bodies[1]].copy()
     force = np.zeros((scene.model.body_count, 6), dtype=np.float32)
@@ -186,7 +186,7 @@ def test_fixed_table_supports_sleep_and_independent_force_wake(test, device):
 
     scene.step(clear=False)
 
-    np.testing.assert_array_equal(scene.solver.sleeping.body_awake.numpy()[scene.bodies], [1, 0])
+    np.testing.assert_array_equal(scene.solver._sleeping.body_awake.numpy()[scene.bodies], [1, 0])
     rows = int(scene.row_counts().sum())
     test.assertGreater(rows, 0)
     test.assertLess(rows, active_rows)
@@ -198,14 +198,14 @@ def test_graph_replay_restores_rows_on_force(test, device):
     """Restore matrix-free contact rows on a captured sleeping-to-awake transition."""
     scene = _Scene(device)
     scene.step()
-    test.assertGreater(int(scene.solver.mf_constraint_count.numpy().sum()), 0)
+    test.assertGreater(int(scene.solver._mf_constraint_count.numpy().sum()), 0)
     scene.step()
     with wp.ScopedCapture(device=scene.model.device) as capture:
         for _ in range(2):
             scene.step(clear=False)
     for _ in range(100):
         wp.capture_launch(capture.graph)
-    np.testing.assert_array_equal(scene.solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(scene.solver._sleeping.body_awake.numpy(), [0, 0])
     np.testing.assert_array_equal(scene.row_counts(), [0, 0])
     test.assertGreater(int(scene.contacts.rigid_contact_count.numpy()[0]), 0)
     force = np.zeros((2, 6), dtype=np.float32)
@@ -215,8 +215,8 @@ def test_graph_replay_restores_rows_on_force(test, device):
 
     wp.capture_launch(capture.graph)
 
-    np.testing.assert_array_equal(scene.solver.sleeping.body_awake.numpy(), [1, 0])
-    test.assertGreater(int(scene.solver.mf_constraint_count.numpy().sum()), 0)
+    np.testing.assert_array_equal(scene.solver._sleeping.body_awake.numpy(), [1, 0])
+    test.assertGreater(int(scene.solver._mf_constraint_count.numpy().sum()), 0)
     test.assertGreater(float(scene.states[0].body_qd.numpy()[0, 0]), 0.0)
     test.assertTrue(np.isfinite(scene.states[0].body_q.numpy()).all())
     test.assertTrue(np.isfinite(scene.states[0].body_qd.numpy()).all())
@@ -234,9 +234,9 @@ def test_nonfinite_prescribed_velocity_wakes_before_allocation(test, device):
     velocity[0, 0] = np.nan
     scene.states[0].body_qd.assign(velocity)
 
-    scene.solver.sleeping.begin(scene.states[0], scene.control, scene.contacts)
+    scene.solver._sleeping.begin(scene.states[0], scene.control, scene.contacts)
 
-    np.testing.assert_array_equal(scene.solver.sleeping.art_awake.numpy()[scene.bodies], [1, 1])
+    np.testing.assert_array_equal(scene.solver._sleeping.art_awake.numpy()[scene.bodies], [1, 1])
     np.testing.assert_array_equal(scene.states[0].body_q.numpy(), pose)
     test.assertTrue(np.isnan(scene.states[0].body_qd.numpy()[0, 0]))
 
@@ -285,12 +285,12 @@ class _Scene:
     def settle(self):
         for _ in range(120):
             self.step()
-        np.testing.assert_array_equal(self.solver.sleeping.body_awake.numpy()[self.bodies], [0, 0])
+        np.testing.assert_array_equal(self.solver._sleeping.body_awake.numpy()[self.bodies], [0, 0])
         if self.solver.constraint_overflow.numpy().any():
             raise AssertionError("Contact capacity exceeded")
 
     def row_counts(self):
-        return np.array([self.solver.constraint_count.numpy().sum(), self.solver.mf_constraint_count.numpy().sum()])
+        return np.array([self.solver._constraint_count.numpy().sum(), self.solver._mf_constraint_count.numpy().sum()])
 
 
 _CONTACT_FIELDS = ("shape0", "shape1", "point0", "point1", "offset0", "offset1", "normal", "margin0", "margin1", "tids")

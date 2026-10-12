@@ -64,8 +64,8 @@ def test_mixed_world_stack_rests(test, device):
     test.assertTrue(solver._has_mixed_contacts)
     state = _run(model, solver, 240)
     solver.check_constraint_capacity()
-    test.assertGreater(int(solver.constraint_count.numpy()[0]), 0)
-    test.assertGreater(int(solver.mf_constraint_count.numpy()[0]), 0)
+    test.assertGreater(int(solver._constraint_count.numpy()[0]), 0)
+    test.assertGreater(int(solver._mf_constraint_count.numpy()[0]), 0)
     # The drive spring sags under the load; the boxes rest on the platform and on each other.
     body_q = state.body_q.numpy().reshape(model.world_count, 3, 7)
     platform_top = body_q[:, 0, 2] + 0.05

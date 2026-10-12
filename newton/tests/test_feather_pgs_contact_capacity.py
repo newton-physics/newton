@@ -127,7 +127,7 @@ def test_overflowed_contact_count_invalidates_every_world(test, device, solve_mo
     contacts.rigid_contact_count.fill_(contacts.rigid_contact_max + 1)
     solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
     np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [True, True, True])
-    np.testing.assert_array_equal(solver.contact_path.numpy()[: contacts.rigid_contact_max], -1)
+    np.testing.assert_array_equal(solver._contact_path.numpy()[: contacts.rigid_contact_max], -1)
 
 
 class TestFeatherPGSContactCapacity(unittest.TestCase):

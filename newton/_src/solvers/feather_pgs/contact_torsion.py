@@ -100,10 +100,10 @@ def configure_contact_torsion(solver, radius, indices, patterns):
 
 def _validate_torsion_mode(solver):
     """Reject unsupported construction and runtime mode combinations."""
-    if not solver.model.device.is_cuda or solver.model.requires_grad or solver.contact_warmstart:
+    if not solver.model.device.is_cuda or solver.model.requires_grad or solver._contact_warmstart:
         raise ValueError("Contact torsion requires a non-differentiable CUDA model and contact_warmstart=False")
-    if solver.friction_mode != "fixed_normal":
-        raise ValueError(f"Contact torsion requires friction_mode='fixed_normal', got {solver.friction_mode!r}")
+    if solver._friction_mode != "fixed_normal":
+        raise ValueError(f"Contact torsion requires friction_mode='fixed_normal', got {solver._friction_mode!r}")
 
 
 @dataclass
@@ -158,10 +158,10 @@ def _contact_groups(solver, state, contacts):
     stiffness = contacts.rigid_contact_stiffness
     if stiffness is not None and np.any(stiffness.numpy()[:count] > 0):
         raise ValueError("Contact torsion does not support hydroelastic contacts")
-    paths = solver.contact_path.numpy()[:count]
-    slots = solver.contact_slot.numpy()[:count]
-    worlds = solver.contact_world.numpy()[:count]
-    slots_needed = solver.contact_slots_needed.numpy()[:count]
+    paths = solver._contact_path.numpy()[:count]
+    slots = solver._contact_slot.numpy()[:count]
+    worlds = solver._contact_world.numpy()[:count]
+    slots_needed = solver._contact_slots_needed.numpy()[:count]
     shape_a = contacts.rigid_contact_shape0.numpy()[:count]
     shape_b = contacts.rigid_contact_shape1.numpy()[:count]
     normals = -contacts.rigid_contact_normal.numpy()[:count]
@@ -172,9 +172,9 @@ def _contact_groups(solver, state, contacts):
     shape_body = solver.model.shape_body.numpy()
     shape_types = solver.model.shape_type.numpy()
     poses = state.body_q.numpy()
-    row_types = solver.row_type.numpy()
-    parents = solver.row_parent.numpy()
-    row_counts = solver.constraint_count.numpy()
+    row_types = solver._row_type.numpy()
+    parents = solver._row_parent.numpy()
+    row_counts = solver._constraint_count.numpy()
     patches = bool(solver._friction_anchors_enabled)
     owners = solver._friction_patches.current.owner.numpy()[:count] if patches else None
     groups = {}
@@ -344,21 +344,21 @@ def prepare_torsion_velocity_pass(solver, dt):
     """
     wp.launch(
         _prepare_velocity_torsion_rows,
-        dim=solver.world_count * solver.articulation_constraint_max,
+        dim=solver._world_count * solver._articulation_constraint_max,
         inputs=[
-            solver.constraint_count,
-            solver.articulation_constraint_max,
-            solver.row_type,
+            solver._constraint_count,
+            solver._articulation_constraint_max,
+            solver._row_type,
             solver._contact_torsion_group,
-            solver.phi,
-            solver.target_velocity,
-            solver.v_out_snap,
-            solver.world_dof_count,
-            solver.world_dof_indices,
-            solver.J_world,
+            solver._phi,
+            solver._target_velocity,
+            solver._v_out_snap,
+            solver._world_dof_count,
+            solver._world_dof_indices,
+            solver._J_world,
             dt,
         ],
-        outputs=[solver.rhs_unbiased],
+        outputs=[solver._rhs_unbiased],
         device=solver.model.device,
     )
 
@@ -379,23 +379,23 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     groups = _contact_groups(solver, state, contacts)
     if not groups:
         return
-    count = solver.constraint_count.numpy()
+    count = solver._constraint_count.numpy()
     membership = np.full(solver._contact_torsion_group.shape, -1, dtype=np.int32)
     fields = {
-        key: getattr(solver, key).numpy()
+        key: getattr(solver, f"_{key}").numpy()
         for key in ("row_type", "row_parent", "row_mu", "phi", "target_velocity", "row_restitution")
     }
-    jacobians = {size: array.numpy() for size, array in solver.J_by_size.items()}
-    body_joint = solver.body_to_joint.numpy()
-    body_art = solver.body_to_articulation.numpy()
+    jacobians = {size: array.numpy() for size, array in solver._J_by_size.items()}
+    body_joint = solver._body_to_joint.numpy()
+    body_art = solver._body_to_articulation.numpy()
     ancestor = solver.model.joint_ancestor.numpy()
     qd_start = solver.model.joint_qd_start.numpy()
-    art_start = solver.articulation_dof_start.numpy()
-    art_size = solver.articulation_response_dof_count.numpy()
-    art_group = solver.art_group_idx.numpy()
-    motions = augmented_state.joint_S_s.numpy()
+    art_start = solver._articulation_dof_start.numpy()
+    art_size = solver._articulation_response_dof_count.numpy()
+    art_group = solver._art_group_idx.numpy()
+    motions = augmented_state._joint_S_s.numpy()
     prescribed = solver._prescribed_articulation.numpy()
-    body_velocities = augmented_state.body_v_s.numpy()
+    body_velocities = augmented_state._body_v_s.numpy()
     for group in groups:
         world = group[0].world
         budget = _group_budget(solver, group, fields["row_mu"])
@@ -404,7 +404,7 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
         coefficient, anchors, touching = budget
         lead = touching[0]
         row = int(count[world])
-        if row >= solver.articulation_constraint_max:
+        if row >= solver._articulation_constraint_max:
             raise RuntimeError("Experimental torsion row capacity exceeded; refusing dropped work")
         count[world] += 1
         for field in fields.values():
@@ -450,11 +450,11 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     if not solver._torsion_stats["rows"]:
         return
     for name, values in fields.items():
-        getattr(solver, name).assign(values)
+        getattr(solver, f"_{name}").assign(values)
     for size, values in jacobians.items():
-        solver.J_by_size[size].assign(values)
-    solver.constraint_count.assign(count)
-    solver.slot_counter.assign(count)
+        solver._J_by_size[size].assign(values)
+    solver._constraint_count.assign(count)
+    solver._slot_counter.assign(count)
     solver._contact_torsion_group.assign(membership)
 
 

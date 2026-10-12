@@ -82,7 +82,7 @@ def test_contact_kernels_match_the_scalar_split_solve(test, device):
             with _overrides(**overrides):
                 solver, joint_q = _trajectory(model, steps=30, **options)
             test.assertIsNotNone(solver._pgs_solve_contact_kernel)
-            test.assertGreater(int(solver.constraint_count.numpy().max()), 0)
+            test.assertGreater(int(solver._constraint_count.numpy().max()), 0)
             np.testing.assert_allclose(joint_q, reference, rtol=0.0, atol=1.0e-5)
 
 
@@ -105,7 +105,7 @@ def test_matrix_free_ignores_the_dense_pgs_kernel(test, device):
         with test.subTest(pgs_kernel=kernel), _overrides(pgs_kernel=kernel), warnings.catch_warnings():
             warnings.simplefilter("error")
             solver = SolverFeatherPGS(model, enable_joint_limits=True)
-            test.assertEqual(solver.pgs_kernel, "loop")
+            test.assertEqual(solver._pgs_kernel, "loop")
             test.assertTrue(solver._friction_anchors_enabled)
             test.assertAlmostEqual(solver.friction_anchor_beta, 0.2)
 
@@ -126,7 +126,7 @@ def test_launch_widths_step_identically(test, device, solve_mode="matrix_free"):
         solver, joint_q = _trajectory(model, **options)
     test.assertEqual((default._tile_threads, default._serial_kernel_block_dim), (64, 256))
     test.assertEqual((solver._tile_threads, solver._serial_kernel_block_dim), (128, 64))
-    size = solver.size_groups[0]
+    size = solver._size_groups[0]
     test.assertIsNot(solver._cholesky_kernels_by_size[size], default._cholesky_kernels_by_size[size])
     np.testing.assert_allclose(joint_q, reference, rtol=0.0, atol=1.0e-4)
 

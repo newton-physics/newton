@@ -174,13 +174,13 @@ def _dynamics_fields(solver, state):
     """Arrays written by the forward pass of stage 1."""
     return {
         "body_q": state.body_q,
-        "body_q_com": solver.body_q_com,
-        "origin": solver.articulation_origin,
-        "S": solver.joint_S_s,
-        "v": solver.body_v_s,
-        "a": solver.body_a_s,
-        "I": solver.body_I_s,
-        "f": solver.body_f_s,
+        "body_q_com": solver._body_q_com,
+        "origin": solver._articulation_origin,
+        "S": solver._joint_S_s,
+        "v": solver._body_v_s,
+        "a": solver._body_a_s,
+        "I": solver._body_I_s,
+        "f": solver._body_f_s,
     }
 
 
@@ -287,7 +287,7 @@ def test_current_frames_and_inertial_notifications(test, device):
         state, following = model.state(), model.state()
         _run_stage1(solver, state, following)
         after.append({name: array.numpy().copy() for name, array in _dynamics_fields(solver, state).items()})
-        after[-1]["tau"] = solver.joint_tau.numpy().copy()
+        after[-1]["tau"] = solver._joint_tau.numpy().copy()
     test.assertFalse(np.array_equal(before[1], after[1]["body_q"]))
     for name in after[0]:
         np.testing.assert_allclose(after[1][name], after[0][name], rtol=3e-6, atol=3e-6, err_msg=name)
@@ -320,7 +320,7 @@ def _check_full_steps_and_reset(test, model, *, loaded, velocity_limits=False):
             controls[index].joint_f.assign(np.linspace(-0.1, 0.2, model.joint_dof_count, dtype=np.float32))
             solver.step(current, following, controls[index], contacts[index], 1.0 / 240.0)
             if velocity_limits and step == 0:
-                test.assertGreater(float(np.max(np.abs(solver.qd_work.numpy() - current.joint_qd.numpy()))), 0.01)
+                test.assertGreater(float(np.max(np.abs(solver._qd_work.numpy() - current.joint_qd.numpy()))), 0.01)
             states[index] = [following, current]
         for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
             np.testing.assert_allclose(
@@ -330,7 +330,7 @@ def _check_full_steps_and_reset(test, model, *, loaded, velocity_limits=False):
                 atol=2e-6,
                 err_msg=f"step {step} {name}",
             )
-        np.testing.assert_allclose(solvers[1].v_hat.numpy(), solvers[0].v_hat.numpy(), rtol=1e-5, atol=2e-6)
+        np.testing.assert_allclose(solvers[1]._v_hat.numpy(), solvers[0]._v_hat.numpy(), rtol=1e-5, atol=2e-6)
     if loaded:
         test.assertTrue(saw_contacts, "the loaded fixture must create contact rows")
         graphs = []

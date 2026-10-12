@@ -215,8 +215,8 @@ def test_mixed_arm_and_spinning_bodies(test, device):
                 return np.asarray(values)
 
             initial_energy = energies(states[0])
-            test.assertIn(6, solver.L_by_size)
-            test.assertIn(19, solver.L_by_size)
+            test.assertIn(6, solver._L_by_size)
+            test.assertIn(19, solver._L_by_size)
 
             def step(scenes=scenes):
                 """Advance the mixed scene and its independent controls together."""

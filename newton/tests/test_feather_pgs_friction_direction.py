@@ -50,7 +50,7 @@ def _slide(device, beta, mesh, angle, articulated=False, *, locked_tangent=False
         free_body_constraint_max=128,
         articulation_constraint_max=32,
     )
-    solver.rigid_body_angular_damping.zero_()
+    solver._rigid_body_angular_damping.zero_()
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=128, deterministic=True)
     contacts = pipeline.contacts()
     state, next_state = model.state(), model.state()

@@ -95,7 +95,7 @@ def test_mass_refresh_cadence_follows_interval(test, device, solve_mode="matrix_
         pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, DT)
         state_0, state_1 = state_1, state_0
-        test.assertEqual(solver.mass_update_mask.numpy().tolist(), expected, f"step {step_index}")
+        test.assertEqual(solver._mass_update_mask.numpy().tolist(), expected, f"step {step_index}")
 
 
 def test_stale_factorization_stays_close_to_interval_one(test, device, solve_mode="matrix_free"):
@@ -123,7 +123,7 @@ def test_model_change_request_refreshes_a_reuse_step(test, device, solve_mode="m
     state_0, state_1 = state_1, state_0
     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
     solver.step(state_0, state_1, control, None, DT)
-    test.assertEqual(solver.mass_update_mask.numpy().tolist(), [1, 1])
+    test.assertEqual(solver._mass_update_mask.numpy().tolist(), [1, 1])
     test.assertEqual(solver._mass_update_requested.numpy().tolist(), [0] * model.articulation_count)
 
 
@@ -136,9 +136,9 @@ def test_timestep_change_forces_a_refresh(test, device, solve_mode="matrix_free"
     control = model.control()
     solver.step(state_0, state_1, control, None, DT)
     solver.step(state_1, state_0, control, None, DT)
-    test.assertEqual(solver.mass_update_mask.numpy().tolist(), [0, 0])
+    test.assertEqual(solver._mass_update_mask.numpy().tolist(), [0, 0])
     solver.step(state_0, state_1, control, None, 0.5 * DT)
-    test.assertEqual(solver.mass_update_mask.numpy().tolist(), [1, 1])
+    test.assertEqual(solver._mass_update_mask.numpy().tolist(), [1, 1])
 
 
 def test_captured_two_substep_replay_matches_eager(test, device, solve_mode="matrix_free"):

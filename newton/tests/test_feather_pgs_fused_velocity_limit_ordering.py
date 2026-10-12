@@ -93,7 +93,7 @@ def _max_arm_speed_over_impact(device, *, enable_joint_velocity_limits: bool, fu
         solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
         state_0, state_1 = state_1, state_0
         max_arm_speed = max(max_arm_speed, float(abs(state_0.joint_qd.numpy()[0])))
-    return max_arm_speed, int(solver.fuse_joint_velocity_limits)
+    return max_arm_speed, int(solver.velocity_limits_fused)
 
 
 def test_dedicated_rows_hold_limit_through_impact(test, device):

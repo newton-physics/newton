@@ -39,16 +39,16 @@ def test_fixed_table_does_not_merge_dynamic_islands(test, device):
             body1 = shape_body[contacts.rigid_contact_shape1.numpy()[:count]]
             for body in boxes:
                 test.assertTrue(np.any(((body0 == body) & (body1 == table)) | ((body1 == body) & (body0 == table))))
-            body_art = solver.body_to_articulation.numpy()
+            body_art = solver._body_to_articulation.numpy()
             if fixed_articulation:
                 test.assertEqual(int(solver._model_plan.response_dof_count[body_art[table]]), 0)
 
-            solver.sleeping.begin(state_in, control, contacts)
+            solver._sleeping.begin(state_in, control, contacts)
 
-            roots = solver.sleeping.parent.numpy()[body_art[boxes]]
+            roots = solver._sleeping.parent.numpy()[body_art[boxes]]
             test.assertNotEqual(int(roots[0]), int(roots[1]), f"Table joined box islands: {roots}")
-            np.testing.assert_array_equal(solver.sleeping.root_supported.numpy()[roots], [1, 1])
-            np.testing.assert_array_equal(solver.sleeping.root_veto.numpy()[roots], [0, 0])
+            np.testing.assert_array_equal(solver._sleeping.root_supported.numpy()[roots], [1, 1])
+            np.testing.assert_array_equal(solver._sleeping.root_veto.numpy()[roots], [0, 0])
 
 
 def test_lost_support_wakes_below_velocity_threshold(test, device):
@@ -87,15 +87,15 @@ def test_lost_support_wakes_below_velocity_threshold(test, device):
     dt = 0.001
     kick = abs(float(model.gravity.numpy()[0, 2])) * dt
     test.assertGreater(kick, 0.0)
-    test.assertLess(kick, solver.sleeping.linear_threshold)
+    test.assertLess(kick, solver._sleeping.linear_threshold)
     before = state_in.body_q.numpy()[1, 2]
 
     solver.step(state_in, state_out, control, contacts, dt)
 
-    test.assertEqual(int(solver.sleeping.body_awake.numpy()[1]), 1)
+    test.assertEqual(int(solver._sleeping.body_awake.numpy()[1]), 1)
     test.assertLess(state_out.body_q.numpy()[1, 2], before)
     test.assertLess(state_out.body_qd.numpy()[1, 2], 0.0)
-    test.assertLess(abs(state_out.body_qd.numpy()[1, 2]), solver.sleeping.linear_threshold)
+    test.assertLess(abs(state_out.body_qd.numpy()[1, 2]), solver._sleeping.linear_threshold)
 
 
 def test_wake_crosses_alternating_old_and_current_islands(test, device):
@@ -126,18 +126,18 @@ def test_wake_crosses_alternating_old_and_current_islands(test, device):
     contacts.rigid_contact_count.assign(np.array([count + 2], dtype=np.int32))
     _seed_sleep(solver, state_in, [0, 0, 2, 2, 4, 4, 6])
 
-    solver.sleeping.begin(state_in, control, contacts)
+    solver._sleeping.begin(state_in, control, contacts)
 
-    np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), np.zeros(7))
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), np.zeros(7))
     _seed_sleep(solver, state_in, [0, 0, 2, 2, 4, 4, 6])
     force = np.zeros((model.body_count, 6), dtype=np.float32)
     force[0, 0] = 1.0
     state_in.body_f.assign(force)
 
-    solver.sleeping.begin(state_in, control, contacts)
+    solver._sleeping.begin(state_in, control, contacts)
 
-    np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [1, 1, 1, 1, 1, 1, 0])
-    np.testing.assert_array_equal(solver.sleeping.quiet_age.numpy()[:6], np.zeros(6))
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 1, 1, 1, 1, 1, 0])
+    np.testing.assert_array_equal(solver._sleeping.quiet_age.numpy()[:6], np.zeros(6))
 
 
 def test_nonfinite_trial_output_is_not_hidden(test, device):
@@ -150,7 +150,7 @@ def test_nonfinite_trial_output_is_not_hidden(test, device):
             pipeline.collide(state_in, contacts)
             _seed_sleep(solver, state_in, [0])
             # Only computed dynamics produce trial outputs; skipped ones publish the frozen state.
-            solver.sleeping.skip_dynamics = False
+            solver._sleeping.skip_dynamics = False
             # Joint state is written by the integrator, body state by the kinematics publication.
             stage = "_integrate" if field.startswith("joint") else "_stage7_update_kinematics"
             original = getattr(solver, stage)
@@ -166,7 +166,7 @@ def test_nonfinite_trial_output_is_not_hidden(test, device):
                 solver.step(state_in, state_out, control, contacts, 0.001)
 
             test.assertFalse(np.isfinite(getattr(state_out, field).numpy()).all())
-            np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [1])
+            np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1])
 
 
 def test_aliased_states_are_rejected(test, device):
@@ -203,7 +203,7 @@ def test_extended_state_outputs_are_accepted(test, device):
         pipeline.collide(states[0], contacts)
         solver.step(states[0], states[1], control, contacts, 0.005)
         states.reverse()
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0])
 
 
 def test_invalid_timestep_is_rejected(test, device):
@@ -231,8 +231,8 @@ def test_reduction_overflow_cannot_authorize_sleep(test, device):
 
     solver.step(state_in, state_out, control, contacts, 0.001)
 
-    np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [1])
-    np.testing.assert_array_equal(solver.sleeping.quiet_age.numpy(), [0.0])
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1])
+    np.testing.assert_array_equal(solver._sleeping.quiet_age.numpy(), [0.0])
     # The loss wakes the island before the step, so its dynamics and rows run.
     np.testing.assert_array_equal(solver._dynamics_art_active.numpy(), [1])
 
@@ -249,8 +249,8 @@ def test_notifications_reset_quiet_age_and_preserve_state(test, device):
                 solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
             else:
                 solver.reset(state_in)
-            np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 1])
-            np.testing.assert_array_equal(solver.sleeping.quiet_age.numpy(), [0.0, 0.0])
+            np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1])
+            np.testing.assert_array_equal(solver._sleeping.quiet_age.numpy(), [0.0, 0.0])
             np.testing.assert_array_equal(state_in.joint_q.numpy(), before)
 
 
@@ -280,7 +280,7 @@ def _runtime(model):
 
 
 def _seed_sleep(solver, state, previous_roots):
-    sleeping = solver.sleeping
+    sleeping = solver._sleeping
     sleeping.art_awake.zero_()
     sleeping.body_awake.zero_()
     sleeping.previous_root.assign(np.asarray(previous_roots, dtype=np.int32))

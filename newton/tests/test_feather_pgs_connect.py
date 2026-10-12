@@ -333,8 +333,8 @@ def test_closure_row_overflow_is_reported(test, device):
     )
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, 1.0 / 240.0)
-    test.assertEqual(int(solver.connect_slot.numpy()[0]), -1)
-    test.assertEqual(int(solver.constraint_count.numpy()[0]), 0)
+    test.assertEqual(int(solver._connect_slot.numpy()[0]), -1)
+    test.assertEqual(int(solver._constraint_count.numpy()[0]), 0)
     test.assertTrue(bool(solver.constraint_overflow.numpy()[0]))
 
 
@@ -431,7 +431,7 @@ def test_kinematic_parent_closure_carries_load(test, device):
     b, carrier, load, joints = _build_carried_load()
     model = b.finalize(device=device)
     solver = SolverFeatherPGS(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
-    articulation = wp.array([int(solver.body_to_articulation.numpy()[carrier])], dtype=wp.int32, device=device)
+    articulation = wp.array([int(solver._body_to_articulation.numpy()[carrier])], dtype=wp.int32, device=device)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     dt = 1.0 / 240.0
@@ -530,11 +530,11 @@ def test_disabled_loop_joint_starts_released(test, device):
         solver.step(state_0, state_1, model.control(), None, 1.0 / 240.0)
         state_0, state_1 = state_1, state_0
     test.assertGreater(z0 - float(state_0.body_q.numpy()[load, 2]), 0.15)
-    test.assertEqual(solver.connect_slot.numpy().tolist(), [-1, -1, -1])
+    test.assertEqual(solver._connect_slot.numpy().tolist(), [-1, -1, -1])
 
     _set_joint_enabled(model, joints, True)
     solver.step(state_0, state_1, model.control(), None, 1.0 / 240.0)
-    test.assertTrue(np.all(solver.connect_slot.numpy() >= 0))
+    test.assertTrue(np.all(solver._connect_slot.numpy() >= 0))
 
 
 def test_kinematic_parent_turning_dynamic_is_rejected(test, device):
@@ -662,7 +662,7 @@ def check_in_place_release(test, device, **solver_kwargs):
     test.assertLess(_four_bar_gaps(model, state_0, 1)[0], 2.0e-3)
     _set_joint_enabled(model, [_LOOP_JOINT], False)
     state_0, state_1 = _step_four_bar(solver, state_0, state_1, control, 120)
-    test.assertEqual(int(solver.connect_slot.numpy()[0]), -1)
+    test.assertEqual(int(solver._connect_slot.numpy()[0]), -1)
     test.assertGreater(_four_bar_gaps(model, state_0, 1)[0], 1.0e-2, "released closure still enforced")
     _set_joint_enabled(model, [_LOOP_JOINT], True)
     state_0, state_1 = _step_four_bar(solver, state_0, state_1, control, 480)
@@ -739,7 +739,7 @@ def test_captured_device_release(test, device):
     gaps = _four_bar_gaps(model, state_0, world_count)
     test.assertGreater(float(gaps[0::2].min()), 1.0e-2, "released worlds stayed closed")
     test.assertLess(float(gaps[1::2].max()), 2.0e-3, "enforced worlds opened")
-    slots = solver.connect_slot.numpy()
+    slots = solver._connect_slot.numpy()
     test.assertTrue(np.all(slots[0::2] == -1))
     test.assertTrue(np.all(slots[1::2] >= 0))
 
@@ -826,7 +826,7 @@ def test_closure_owner_stays_awake_and_releases(test, device):
 
     advance(480)
     # The box sleeps; the four-bar owns closure rows and stays awake.
-    test.assertEqual(solver.sleeping.art_awake.numpy().tolist(), [1, 0])
+    test.assertEqual(solver._sleeping.art_awake.numpy().tolist(), [1, 0])
     test.assertLess(_four_bar_gaps(model, states[0], 1)[0], 2.0e-3)
     _set_joint_enabled(model, [_LOOP_JOINT], False)
     advance(120)

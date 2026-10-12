@@ -68,7 +68,7 @@ def test_dense_capacity_failure_is_world_local(test, device, solve_mode="matrix_
     test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 1)
     solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
     np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [True, False, False])
-    test.assertLessEqual(int(solver.constraint_count.numpy()[0]), 3)
+    test.assertLessEqual(int(solver._constraint_count.numpy()[0]), 3)
 
 
 def test_overflow_warning_is_printed_once(test, device, solve_mode="matrix_free", response="immediate"):

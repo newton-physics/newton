@@ -167,8 +167,8 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
         """Admit a robot-only world and a separate free-only world without oversized row support."""
         dense, sparse = _case(False, heterogeneous=True), _case(True, heterogeneous=True)
         self.assertEqual(sparse[1]._sparse_mass_matrix_size, 9)
-        np.testing.assert_array_equal(sparse[1].world_dof_count.numpy(), [9, 6])
-        self.assertLessEqual(sparse[1]._sparse_row_dof.shape[2], sparse[1].max_world_dofs)
+        np.testing.assert_array_equal(sparse[1]._world_dof_count.numpy(), [9, 6])
+        self.assertLessEqual(sparse[1]._sparse_row_dof.shape[2], sparse[1]._max_world_dofs)
         for _ in range(4):
             for case in (dense, sparse):
                 _step(case)
@@ -195,8 +195,8 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
             self.assert_states_close(dense[2], sparse[2])
             for family, (counter, target) in enumerate(
                 (
-                    ("constraint_count", "target_velocity"),
-                    ("mf_constraint_count", "mf_target_velocity"),
+                    ("_constraint_count", "_target_velocity"),
+                    ("_mf_constraint_count", "_mf_target_velocity"),
                 )
             ):
                 counts = getattr(sparse[1], counter).numpy()
@@ -229,15 +229,15 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
         size = solver._sparse_mass_matrix_size
         self.assertEqual(size, 9)
         for array in (
-            solver.J_world,
-            solver.Y_world,
-            solver.J_by_size[size],
-            solver.Y_by_size[size],
-            solver.H_by_size[size],
-            solver.L_by_size[size],
+            solver._J_world,
+            solver._Y_world,
+            solver._J_by_size[size],
+            solver._Y_by_size[size],
+            solver._H_by_size[size],
+            solver._L_by_size[size],
         ):
             self.assertEqual(array.shape, (1, 1, 1))  # Only argument stand-ins remain.
-        for name in ("tau_by_size", "qdd_by_size"):
+        for name in ("_tau_by_size", "_qdd_by_size"):
             self.assertNotIn(size, getattr(solver, name))
         for name in ("_cholesky_kernels_by_size", "_triangular_solve_kernels_by_size", "_hinv_jt_kernels_by_size"):
             self.assertIsNone(getattr(solver, name)[size])
@@ -245,18 +245,18 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
         self.assertFalse(solver.constraint_overflow.numpy().any())
         for name in STATE_FIELDS:
             self.assertTrue(np.isfinite(getattr(state, name).numpy()).all(), name)
-        counts, impulses = solver.constraint_count.numpy(), solver.impulses.numpy()
-        incidence, rhs = solver._sparse_row_incident.numpy(), solver.rhs.numpy()
-        v_hat, v_out = solver.v_hat.numpy(), solver.v_out.numpy()
-        for world in range(solver.world_count):
+        counts, impulses = solver._constraint_count.numpy(), solver._impulses.numpy()
+        incidence, rhs = solver._sparse_row_incident.numpy(), solver._rhs.numpy()
+        v_hat, v_out = solver._v_hat.numpy(), solver._v_out.numpy()
+        for world in range(solver._world_count):
             count = int(counts[world])
             self.assertLessEqual(count, solver.articulation_constraint_max)
             self.assertTrue(np.isfinite(impulses[world, :count]).all())
-            kinds = solver.row_type.numpy()[world, :count]
+            kinds = solver._row_type.numpy()[world, :count]
             unilateral = (kinds == PGS_CONSTRAINT_TYPE_CONTACT) | (kinds == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
             self.assertTrue(np.all(impulses[world, :count][unilateral] >= -1.0e-7))
             z, physical_j = self._sparse_rows_physical(solver, world, count)
-            velocity = solver.world_dof_indices.numpy()[world]
+            velocity = solver._world_dof_indices.numpy()[world]
             np.testing.assert_allclose(physical_j @ v_hat[velocity], incidence[world, :count], atol=2.0e-5, rtol=2.0e-5)
             factor_residual = (
                 z @ solver._sparse_factor_velocity_delta.numpy()[world] + incidence[world, :count] + rhs[world, :count]
@@ -270,25 +270,25 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
         plan = solver._sparse_mass_matrix_plan
         size = plan.dof_count
         row_dof, values = solver._sparse_row_dof.numpy(), solver._sparse_row_factor.numpy()
-        z = np.zeros((count, solver.max_world_dofs))
+        z = np.zeros((count, solver._max_world_dofs))
         for row in range(count):
             support = row_dof[world, row]
             valid = support >= 0
-            self.assertTrue(np.all(support[valid] < solver.max_world_dofs))
+            self.assertTrue(np.all(support[valid] < solver._max_world_dofs))
             self.assertEqual(len(set(support[valid])), int(valid.sum()))
             z[row, support[valid]] = values[world, row, valid]
         physical_j = np.zeros_like(z)
-        for group, art in enumerate(solver.group_to_art[size].numpy()):
-            if solver.art_to_world.numpy()[art] != world:
+        for group, art in enumerate(solver._group_to_art[size].numpy()):
+            if solver._art_to_world.numpy()[art] != world:
                 continue
             inverse = np.zeros((size, size))
             inverse[plan.entry_rows, plan.columns] = solver._sparse_Linv.numpy()[group]
-            offset = int(solver.articulation_world_dof_offset.numpy()[art])
+            offset = int(solver._articulation_world_dof_offset.numpy()[art])
             physical_j[:, offset + plan.permutation] = np.linalg.solve(inverse, z[:, offset : offset + size].T).T
         if solver._has_free_rigid_bodies:
-            for art in solver.group_to_art[6].numpy():
-                if solver.art_to_world.numpy()[art] == world:
-                    offset = int(solver.articulation_world_dof_offset.numpy()[art])
+            for art in solver._group_to_art[6].numpy():
+                if solver._art_to_world.numpy()[art] == world:
+                    offset = int(solver._articulation_world_dof_offset.numpy()[art])
                     physical_j[:, offset : offset + 6] = z[:, offset : offset + 6]
         return z, physical_j
 
@@ -307,11 +307,11 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
             "target_velocity",
         ]
         names += ["_sparse_row_dof", "_sparse_row_factor", "_sparse_row_incident"] if sparse else ["J_world", "Y_world"]
-        arrays = {name: getattr(solver, name).numpy() for name in names}
-        worlds, slots = (getattr(solver, name).numpy() for name in ("contact_world", "contact_slot"))
+        arrays = {name: getattr(solver, f"_{name}" if not name.startswith("_") else name).numpy() for name in names}
+        worlds, slots = (getattr(solver, name).numpy() for name in ("_contact_world", "_contact_slot"))
         shape_a, shape_b = contacts.rigid_contact_shape0.numpy(), contacts.rigid_contact_shape1.numpy()
         identities = []
-        for world, count in enumerate(solver.constraint_count.numpy()):
+        for world, count in enumerate(solver._constraint_count.numpy()):
             jacobian = (
                 self._sparse_rows_physical(solver, world, count)[1] if sparse else arrays["J_world"][world, :count]
             )
@@ -337,8 +337,8 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
             slots[active] = inverse[slots[active]]
             identities.append([(key, len(rows)) for key, rows in bundles])
         for name, values in arrays.items():
-            getattr(solver, name).assign(values)
-        solver.contact_slot.assign(slots)
+            getattr(solver, f"_{name}" if not name.startswith("_") else name).assign(values)
+        solver._contact_slot.assign(slots)
         return identities
 
     def test_two_articulations_share_contact_solve(self):
@@ -346,7 +346,7 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
         dense, sparse = _case(False, robot_count=2), _case(True, robot_count=2)
         self.assertEqual(sparse[1]._sparse_mass_matrix_size, 9)
         self.assertEqual(sparse[1]._sparse_Linv.shape[0], 4)
-        self.assertEqual(sparse[1].world_count, 2)
+        self.assertEqual(sparse[1]._world_count, 2)
         contact_seen = False
         for _ in range(16):
             row_orders = []
@@ -366,7 +366,7 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
             self.assert_states_close(dense[2], sparse[2])
             model, solver, _, _, _, _, contacts = sparse
             active = int(contacts.rigid_contact_count.numpy()[0])
-            shape_body, body_art = model.shape_body.numpy(), solver.body_to_articulation.numpy()
+            shape_body, body_art = model.shape_body.numpy(), solver._body_to_articulation.numpy()
             for shape_a, shape_b in zip(
                 contacts.rigid_contact_shape0.numpy()[:active],
                 contacts.rigid_contact_shape1.numpy()[:active],
@@ -388,11 +388,11 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
                 for case in (dense, sparse):
                     _step(case)
                 self.assert_states_close(dense[2], sparse[2])
-                for name in ("constraint_count", "mf_constraint_count"):
+                for name in ("_constraint_count", "_mf_constraint_count"):
                     np.testing.assert_array_equal(getattr(dense[1], name).numpy(), getattr(sparse[1], name).numpy())
                 for count_name, impulse_name in (
-                    ("constraint_count", "impulses"),
-                    ("mf_constraint_count", "mf_impulses"),
+                    ("_constraint_count", "_impulses"),
+                    ("_mf_constraint_count", "_mf_impulses"),
                 ):
                     counts = getattr(sparse[1], count_name).numpy()
                     self.assertTrue(np.all(counts > 0), count_name)
@@ -406,8 +406,8 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
                 contacts = sparse[-1]
                 active = int(contacts.rigid_contact_count.numpy()[0])
                 shape_body = sparse[0].shape_body.numpy()
-                body_art = sparse[1].body_to_articulation.numpy()
-                free = sparse[1].is_free_rigid.numpy()
+                body_art = sparse[1]._body_to_articulation.numpy()
+                free = sparse[1]._is_free_rigid.numpy()
                 seen = set()
                 for shape_a, shape_b in zip(
                     contacts.rigid_contact_shape0.numpy()[:active],
@@ -433,7 +433,7 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
         for case in (eager, graph):
             _step(case)
             model, solver, state, *_ = case
-            robot_art = int(solver.group_to_art[9].numpy()[0])
+            robot_art = int(solver._group_to_art[9].numpy()[0])
             root_joint = int(model.articulation_start.numpy()[robot_art])
             q_start = int(model.joint_q_start.numpy()[root_joint])
             q = state.joint_q.numpy()
@@ -465,7 +465,7 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
             for case in (dense, sparse):
                 _step(case)
             contact_seen |= bool(sparse[-1].rigid_contact_count.numpy()[0])
-            limit_seen |= bool(np.any(sparse[1].row_type.numpy() == PGS_CONSTRAINT_TYPE_JOINT_LIMIT))
+            limit_seen |= bool(np.any(sparse[1]._row_type.numpy() == PGS_CONSTRAINT_TYPE_JOINT_LIMIT))
             self.assert_states_close(dense[2], sparse[2])
         self.assertTrue(contact_seen and limit_seen, "Fixture must exercise contacts and joint limits")
         self.assert_sparse_state(sparse)
@@ -480,7 +480,7 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
             solver.reset(state, wp.array([True, False, False], dtype=bool, device=model.device))
         for case in (dense, sparse):
             _step(case)
-        np.testing.assert_array_equal(sparse[1].mass_update_mask.numpy(), [1, 0])
+        np.testing.assert_array_equal(sparse[1]._mass_update_mask.numpy(), [1, 0])
         np.testing.assert_array_equal(sparse[1]._sparse_Linv.numpy()[1], held[1])
         self.assert_states_close(dense[2], sparse[2])
         for model, solver, *_ in (dense, sparse):
@@ -490,7 +490,7 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
             solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
         for case in (dense, sparse):
             _step(case)
-        np.testing.assert_array_equal(sparse[1].mass_update_mask.numpy(), [1, 1])
+        np.testing.assert_array_equal(sparse[1]._mass_update_mask.numpy(), [1, 1])
         self.assertFalse(np.array_equal(sparse[1]._sparse_Linv.numpy()[0], held[0]))
         self.assert_states_close(dense[2], sparse[2])
         self.assert_sparse_state(sparse)
@@ -542,7 +542,7 @@ class TestFeatherPGSSparseSolver(unittest.TestCase):
             with self.subTest(options=options):
                 solver = _make_solver(model, True, **options)
                 self.assertIsNone(solver._sparse_mass_matrix_size)
-                self.assertGreater(solver.J_by_size[9].size, 1)
+                self.assertGreater(solver._J_by_size[9].size, 1)
 
 
 def _build_y_tree(device, *, mimic=False, legacy_mimic=False, closure=False, closure_enabled=True):
@@ -637,7 +637,7 @@ class TestFeatherPGSSparseSelectionGuard(unittest.TestCase):
             with self.subTest(label):
                 solver = SolverFeatherPGS(_build_y_tree("cuda:0", **kwargs), solve_mode="matrix_free")
                 self.assertIsNone(solver._sparse_mass_matrix_size)
-                self.assertGreater(solver.J_by_size[3].size, 1)
+                self.assertGreater(solver._J_by_size[3].size, 1)
 
 
 if __name__ == "__main__":

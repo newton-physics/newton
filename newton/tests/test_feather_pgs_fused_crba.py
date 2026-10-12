@@ -69,7 +69,7 @@ def test_fused_assembly_matches_the_separate_pipeline(test, device, solve_mode="
             model = _tree(device, links, branched=branched)
             fused, q, qd = _trajectory(model, solve_mode=solve_mode, use_parallel_streams=True)
             reference, q_ref, qd_ref = _trajectory(model, solve_mode=solve_mode)
-            size = fused.size_groups[0]
+            size = fused._size_groups[0]
             selected = {
                 "warp": fused._crba_cholesky_warp_kernels_by_size[size],
                 "tiled": fused._crba_cholesky_kernels_by_size[size],
@@ -77,7 +77,7 @@ def test_fused_assembly_matches_the_separate_pipeline(test, device, solve_mode="
             test.assertIsNotNone(selected[kernel])
             test.assertIsNone(reference._crba_cholesky_warp_kernels_by_size[size])
             test.assertIsNone(reference._crba_cholesky_kernels_by_size[size])
-            np.testing.assert_allclose(fused.L_by_size[size].numpy(), reference.L_by_size[size].numpy(), atol=2.0e-5)
+            np.testing.assert_allclose(fused._L_by_size[size].numpy(), reference._L_by_size[size].numpy(), atol=2.0e-5)
             np.testing.assert_allclose(q, q_ref, rtol=0.0, atol=2.0e-5)
             np.testing.assert_allclose(qd, qd_ref, rtol=0.0, atol=2.0e-4)
 
@@ -88,7 +88,7 @@ def test_fused_assembly_covers_articulations_wider_than_the_block(test, device):
         model = _tree(device, links, worlds=1)
         with kernel_overrides({"sparse_mass_matrix": False}):
             reference, q_ref, qd_ref = _trajectory(model, steps=2)
-        size = reference.size_groups[0]
+        size = reference._size_groups[0]
         test.assertIsNone(reference._crba_cholesky_kernels_by_size[size])
         for tile_threads in (32, 64):
             with test.subTest(links=links, tile_threads=tile_threads):
@@ -97,7 +97,7 @@ def test_fused_assembly_covers_articulations_wider_than_the_block(test, device):
                     fused, q, qd = _trajectory(model, steps=2, use_parallel_streams=True)
                 test.assertIsNotNone(fused._crba_cholesky_kernels_by_size[size])
                 np.testing.assert_allclose(
-                    fused.L_by_size[size].numpy(), reference.L_by_size[size].numpy(), atol=2.0e-5
+                    fused._L_by_size[size].numpy(), reference._L_by_size[size].numpy(), atol=2.0e-5
                 )
                 np.testing.assert_allclose(q, q_ref, rtol=1.0e-5, atol=2.0e-5)
                 np.testing.assert_allclose(qd, qd_ref, rtol=1.0e-5, atol=2.0e-4)
@@ -118,7 +118,7 @@ def test_fused_assembly_follows_the_mass_update_interval(test, device):
         solver.step(state_0, state_1, model.control(), None, 1.0 / 240.0)
         model.body_mass.assign(body_mass)
         model.body_inv_mass.assign(1.0 / body_mass)
-        results.append((q, solver.L_by_size[solver.size_groups[0]].numpy()))
+        results.append((q, solver._L_by_size[solver._size_groups[0]].numpy()))
     np.testing.assert_allclose(results[0][0], results[1][0], rtol=0.0, atol=2.0e-5)
     np.testing.assert_allclose(results[0][1], results[1][1], rtol=0.0, atol=2.0e-5)
 
@@ -139,7 +139,7 @@ def test_fused_assembly_is_selected_only_where_supported(test, device):
         with test.subTest(**options):
             solver = SolverFeatherPGS(model, **options)
             test.assertFalse(solver._crba_source_dof_by_size)
-            test.assertIsNone(solver._crba_cholesky_warp_kernels_by_size[solver.size_groups[0]])
+            test.assertIsNone(solver._crba_cholesky_warp_kernels_by_size[solver._size_groups[0]])
 
 
 class TestFeatherPGSFusedCrba(unittest.TestCase):

@@ -72,7 +72,7 @@ def test_global_kinematic_floor_supports_every_world(test, device, solve_mode="m
     v, contacts = _step_once(model, solver)
     count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertGreater(count, 0)
-    np.testing.assert_array_equal(solver.contact_path.numpy()[:count] >= 0, True)
+    np.testing.assert_array_equal(solver._contact_path.numpy()[:count] >= 0, True)
     np.testing.assert_allclose(v[:2], static_v, atol=1.0e-5)
     np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [False, False, False])
 
@@ -206,7 +206,7 @@ def test_jointed_global_kinematic_flags_other_world_contacts(
     body_world = model.body_world.numpy()
     pairs = contacts.rigid_contact_shape0.numpy()[:count], contacts.rigid_contact_shape1.numpy()[:count]
     box_world = np.maximum(body_world[shape_body[pairs[0]]], body_world[shape_body[pairs[1]]])
-    path = solver.contact_path.numpy()[:count]
+    path = solver._contact_path.numpy()[:count]
     test.assertTrue(np.any(box_world == 0) and np.any(box_world == 1))
     np.testing.assert_array_equal(path[box_world == 0] >= 0, True)
     np.testing.assert_array_equal(path[box_world == 1], -1)
@@ -266,7 +266,7 @@ def test_dynamic_global_body_flags_other_world_contacts(test, device, solve_mode
     v, contacts = _step_once(model, solver)
     count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertGreater(count, 0)
-    np.testing.assert_array_equal(solver.contact_path.numpy()[:count], -1)
+    np.testing.assert_array_equal(solver._contact_path.numpy()[:count], -1)
     np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [False, True, True])
     with test.assertRaisesRegex(RuntimeError, r"worlds \[1\].*global"):
         solver.check_constraint_capacity()
@@ -280,7 +280,7 @@ def test_dynamic_global_body_flags_other_world_contacts(test, device, solve_mode
     v, contacts = _step_once(model, solver)
     count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertGreater(count, 0)
-    np.testing.assert_array_equal(solver.contact_path.numpy()[:count] >= 0, True)
+    np.testing.assert_array_equal(solver._contact_path.numpy()[:count] >= 0, True)
     np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [False, False, False])
     # The world-0 box is stopped and pushes the (heavier) global body down.
     test.assertGreater(float(v[0]), -0.1)

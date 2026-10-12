@@ -72,28 +72,28 @@ def _final_joint_q(model, steps=60, solve_mode="matrix_free", response="immediat
 def test_hetero_matrix_free_constructs(test, device):
     """Construct on worlds whose DOF counts differ."""
     solver = SolverFeatherPGS(_build_model([1, 3, 1, 3], device), solve_mode="matrix_free")
-    np.testing.assert_array_equal(solver.world_dof_count.numpy(), [1, 3, 1, 3])
+    np.testing.assert_array_equal(solver._world_dof_count.numpy(), [1, 3, 1, 3])
 
 
 def test_homogeneous_matrix_free_constructs(test, device):
     """Construct on worlds with identical DOF counts."""
     solver = SolverFeatherPGS(_build_model([3, 3, 3, 3], device), solve_mode="matrix_free")
-    np.testing.assert_array_equal(solver.world_dof_count.numpy(), [3, 3, 3, 3])
+    np.testing.assert_array_equal(solver._world_dof_count.numpy(), [3, 3, 3, 3])
 
 
 def test_hetero_split_constructs(test, device):
     """Construct the split solve on worlds whose DOF counts differ."""
     solver = SolverFeatherPGS(_build_model([1, 3, 1, 3], device), solve_mode="split")
     test.assertEqual(solver.solve_mode, "split")
-    test.assertEqual(solver.size_groups, [3, 1])
-    test.assertEqual(solver.C.shape, (4, solver.articulation_constraint_max, solver.articulation_constraint_max))
+    test.assertEqual(solver._size_groups, [3, 1])
+    test.assertEqual(solver._C.shape, (4, solver.articulation_constraint_max, solver.articulation_constraint_max))
 
 
 def test_homogeneous_split_constructs(test, device):
     """Construct the split solve on worlds with identical DOF counts."""
     solver = SolverFeatherPGS(_build_model([3, 3, 3, 3], device), solve_mode="split")
     test.assertEqual(solver.solve_mode, "split")
-    test.assertEqual(solver.size_groups, [3])
+    test.assertEqual(solver._size_groups, [3])
 
 
 def test_hetero_worlds_match_isolated_worlds(test, device, solve_mode="matrix_free"):
@@ -111,7 +111,7 @@ def test_homogeneous_propagation_constructs(test, device):
         with test.subTest(response=response):
             solver = SolverFeatherPGS(model, articulated_contact_response=response)
             test.assertEqual(solver.articulated_contact_response, response)
-            np.testing.assert_array_equal(solver.world_dof_count.numpy(), [3, 3, 3, 3])
+            np.testing.assert_array_equal(solver._world_dof_count.numpy(), [3, 3, 3, 3])
 
 
 def test_hetero_propagation_matches_isolated_worlds(test, device):

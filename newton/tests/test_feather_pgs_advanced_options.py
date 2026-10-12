@@ -34,7 +34,7 @@ _POINT = {"init": _set_box_velocities, "steps": 8, "friction_anchor_beta": 0.0, 
 def test_default_launch_settings(test, device):
     """Select the kernels and launch widths automatically, matching explicitly pinned defaults bitwise."""
     solver = SolverFeatherPGS(_build_contact_scene(device), solve_mode="split")
-    test.assertEqual(solver.pgs_kernel, "auto" if device.is_cuda else "loop")
+    test.assertEqual(solver._pgs_kernel, "auto" if device.is_cuda else "loop")
     test.assertEqual((solver._pgs_chunk_size, solver._tile_threads, solver._serial_kernel_block_dim), (1, 64, 256))
     modes = ({"solve_mode": "split"}, {}) if device.is_cuda else ({"solve_mode": "split"},)
     for mode in modes:
@@ -97,10 +97,10 @@ def test_tile_threads_keep_fused_assembly_correct_above_the_block_width(test, de
         reference, q_ref, qd_ref = _trajectory(model, steps=2)
     with kernel_overrides({"sparse_mass_matrix": False, "tile_threads": 32}):
         fused, q, qd = _trajectory(model, steps=2, use_parallel_streams=True)
-    size = fused.size_groups[0]
+    size = fused._size_groups[0]
     test.assertIsNotNone(fused._crba_cholesky_kernels_by_size[size])
     test.assertEqual(fused._tile_threads, 32)
-    np.testing.assert_allclose(fused.L_by_size[size].numpy(), reference.L_by_size[size].numpy(), atol=2.0e-5)
+    np.testing.assert_allclose(fused._L_by_size[size].numpy(), reference._L_by_size[size].numpy(), atol=2.0e-5)
     np.testing.assert_allclose(q, q_ref, rtol=1.0e-5, atol=2.0e-5)
     np.testing.assert_allclose(qd, qd_ref, rtol=1.0e-5, atol=2.0e-4)
 
@@ -139,7 +139,7 @@ def test_cpu_ignores_contact_only_kernels(test, device):
             with test.subTest(kernel=kernel, options=options):
                 with kernel_overrides({"pgs_kernel": kernel}):
                     solver = SolverFeatherPGS(model, solve_mode="split", **options)
-                test.assertEqual(solver.pgs_kernel, "loop")
+                test.assertEqual(solver._pgs_kernel, "loop")
 
 
 # ---------------------------------------------------------------------------------------------------------------

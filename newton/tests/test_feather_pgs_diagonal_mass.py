@@ -199,7 +199,7 @@ def test_diagonal_mass_rows_match_dense_and_sparse_factors(test, device):
                 test.assertEqual(sparse._sparse_mass_matrix_size, 6)
                 solvers.append(sparse)
             runs = [_run_star(model, solver, 60, contacts=True) for solver in solvers]
-            test.assertGreater(int(diagonal.constraint_count.numpy().max()), 6, "no contact and limit rows")
+            test.assertGreater(int(diagonal._constraint_count.numpy().max()), 6, "no contact and limit rows")
             # The branches fall onto the ground; a frictionless fall would not stop them.
             test.assertLess(float(np.abs(runs[0][-1][1]).max()), 0.5)
             for step, (d, r) in enumerate(zip(runs[0], runs[1], strict=True)):
@@ -229,7 +229,7 @@ def test_sleeping_diagonal_dynamics_skip_is_exact(test, device):
             model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, articulation_constraint_max=64
         )
         test.assertTrue(solver._execution_plan.use_diagonal_mass(3))
-        solver.sleeping.skip_dynamics = skip
+        solver._sleeping.skip_dynamics = skip
         pipeline = newton.CollisionPipeline(model)
         runs.append([solver, pipeline, pipeline.contacts(), model.state(), model.state(), model.control()])
     slept = woke = False
@@ -248,7 +248,7 @@ def test_sleeping_diagonal_dynamics_skip_is_exact(test, device):
             np.testing.assert_array_equal(
                 getattr(runs[0][3], field).numpy(), getattr(runs[1][3], field).numpy(), err_msg=f"{step}: {field}"
             )
-        awake = runs[1][0].sleeping.art_awake.numpy()
+        awake = runs[1][0]._sleeping.art_awake.numpy()
         slept |= step < 300 and not awake.any()
         woke |= 300 <= step < 306 and bool(awake[0])
     test.assertTrue(slept, "the diagonal-mass articulations never slept")

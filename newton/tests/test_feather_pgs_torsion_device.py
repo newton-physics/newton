@@ -124,7 +124,7 @@ def synthetic_fixture(*, worlds=3, witnesses=5, patches=True, seed=4, device="cp
         body_q=arr(np.tile([0, 0, 0, 0, 0, 0, 1], (worlds * 2, 1)).astype(np.float32), wp.transform)
     )
     augmented = SimpleNamespace(
-        joint_S_s=arr(motion, wp.spatial_vector), body_v_s=arr(body_velocity, wp.spatial_vector)
+        _joint_S_s=arr(motion, wp.spatial_vector), _body_v_s=arr(body_velocity, wp.spatial_vector)
     )
     contacts = SimpleNamespace(
         rigid_contact_count=arr([n], int),
@@ -140,35 +140,35 @@ def synthetic_fixture(*, worlds=3, witnesses=5, patches=True, seed=4, device="cp
     )
     solver = SimpleNamespace(
         model=model,
-        world_count=worlds,
-        articulation_constraint_max=dense,
+        _world_count=worlds,
+        _articulation_constraint_max=dense,
         _max_contacts_alloc=capacity,
         _contact_torsion_shape_set=None,
         _friction_anchors_enabled=patches,
         _friction_patches=SimpleNamespace(current=SimpleNamespace(owner=arr(owner, int))),
-        contact_path=zero(capacity, int),
-        contact_slot=arr(slots, int),
-        contact_world=arr(world_ids, int),
-        contact_slots_needed=arr(anchors, int),
-        constraint_count=arr(count, int),
-        slot_counter=arr(count, int),
-        row_type=arr(row_types, int),
-        row_parent=arr(parents, int),
-        row_mu=arr(mu, float),
+        _contact_path=zero(capacity, int),
+        _contact_slot=arr(slots, int),
+        _contact_world=arr(world_ids, int),
+        _contact_slots_needed=arr(anchors, int),
+        _constraint_count=arr(count, int),
+        _slot_counter=arr(count, int),
+        _row_type=arr(row_types, int),
+        _row_parent=arr(parents, int),
+        _row_mu=arr(mu, float),
         _row_dropped_dense=zero(worlds, int),
         _contact_torsion_group=full((worlds, dense), -1),
         contact_torsion_radius=0.01,
-        body_to_joint=arr(np.arange(worlds * 2, dtype=np.int32), int),
-        body_to_articulation=arr(np.arange(worlds * 2, dtype=np.int32), int),
-        articulation_dof_start=arr(starts[:-1], int),
-        articulation_response_dof_count=arr(response_sizes, int),
-        art_group_idx=arr(np.repeat(np.arange(worlds, dtype=np.int32), 2), int),
-        art_to_world=arr(np.repeat(np.arange(worlds, dtype=np.int32), 2), int),
+        _body_to_joint=arr(np.arange(worlds * 2, dtype=np.int32), int),
+        _body_to_articulation=arr(np.arange(worlds * 2, dtype=np.int32), int),
+        _articulation_dof_start=arr(starts[:-1], int),
+        _articulation_response_dof_count=arr(response_sizes, int),
+        _art_group_idx=arr(np.repeat(np.arange(worlds, dtype=np.int32), 2), int),
+        _art_to_world=arr(np.repeat(np.arange(worlds, dtype=np.int32), 2), int),
         _prescribed_articulation=arr(prescribed, int),
-        group_to_art={size: arr(np.flatnonzero(response_sizes == size).astype(np.int32), int) for size in (3, 6)},
-        J_by_size={size: zero((worlds, dense, size)) for size in (3, 6)},
+        _group_to_art={size: arr(np.flatnonzero(response_sizes == size).astype(np.int32), int) for size in (3, 6)},
+        _J_by_size={size: zero((worlds, dense, size)) for size in (3, 6)},
     )
-    for name in ("phi", "target_velocity", "row_restitution"):
+    for name in ("_phi", "_target_velocity", "_row_restitution"):
         setattr(solver, name, zero((worlds, dense)))
     return solver, state, augmented, contacts
 
@@ -199,23 +199,23 @@ def compare(test, *, device, modify=None, **options):
     preparer = DeviceTorsionPreparation(actual)
     preparer.prepare(state2, augmented2, contacts2)
     for name in (
-        "constraint_count",
-        "slot_counter",
-        "row_type",
-        "row_parent",
-        "row_mu",
-        "phi",
-        "target_velocity",
-        "row_restitution",
+        "_constraint_count",
+        "_slot_counter",
+        "_row_type",
+        "_row_parent",
+        "_row_mu",
+        "_phi",
+        "_target_velocity",
+        "_row_restitution",
         "_contact_torsion_group",
     ):
         np.testing.assert_allclose(
             getattr(actual, name).numpy(), getattr(expected, name).numpy(), rtol=2e-6, atol=2e-6, err_msg=name
         )
-    for size in expected.J_by_size:
+    for size in expected._J_by_size:
         np.testing.assert_allclose(
-            actual.J_by_size[size].numpy(),
-            expected.J_by_size[size].numpy(),
+            actual._J_by_size[size].numpy(),
+            expected._J_by_size[size].numpy(),
             rtol=2e-6,
             atol=2e-6,
             err_msg=f"J{size}",
@@ -297,21 +297,21 @@ def test_ring_and_capacity_errors_are_latched(test, device):
     """Reject incomplete rings and capacity failures before row writes."""
     for failure in ("ring", "dense", "input", "spin"):
         solver, state, augmented, contacts = synthetic_fixture(device=device)
-        before = solver.row_type.numpy().copy()
+        before = solver._row_type.numpy().copy()
         if failure == "ring":
-            parents = solver.row_parent.numpy()
-            parents[0, 0] = solver.articulation_constraint_max - 1
-            solver.row_parent.assign(parents)
+            parents = solver._row_parent.numpy()
+            parents[0, 0] = solver._articulation_constraint_max - 1
+            solver._row_parent.assign(parents)
         elif failure == "dense":
             solver._row_dropped_dense.fill_(1)
         elif failure == "input":
             contacts.rigid_contact_count.fill_(contacts.rigid_contact_max + 1)
         else:
-            solver.constraint_count.fill_(solver.articulation_constraint_max)
+            solver._constraint_count.fill_(solver._articulation_constraint_max)
         preparer = DeviceTorsionPreparation(solver)
         with test.subTest(failure=failure), test.assertRaises(RuntimeError):
             preparer.prepare(state, augmented, contacts)
-        np.testing.assert_array_equal(before, solver.row_type.numpy())
+        np.testing.assert_array_equal(before, solver._row_type.numpy())
         test.assertNotEqual(int(preparer.work.status.numpy()[0]), 0)
         with test.assertRaises(RuntimeError):
             preparer.prepare(state, augmented, None)
@@ -325,9 +325,9 @@ def test_patch_segments_match_world_scan(test, device):
             solver, state, augmented, contacts = synthetic_fixture(worlds=4, witnesses=12, seed=seed, device=device)
             rng = np.random.default_rng(seed)
             solver._contact_torsion_shape_set = set(np.flatnonzero(rng.random(solver.model.shape_count) < 0.6))
-            anchors = solver.contact_slots_needed.numpy()
+            anchors = solver._contact_slots_needed.numpy()
             anchors[rng.random(anchors.size) < 0.3] = 1
-            solver.contact_slots_needed.assign(anchors)
+            solver._contact_slots_needed.assign(anchors)
             points = contacts.rigid_contact_point0.numpy()
             points[rng.random(len(points)) < 0.3, 2] = 0.002
             contacts.rigid_contact_point0.assign(points)
@@ -341,7 +341,7 @@ def test_patch_segments_match_world_scan(test, device):
                 error = None
             except RuntimeError as exc:
                 error = str(exc)
-            names = ("constraint_count", "row_type", "row_parent", "row_mu", "target_velocity")
+            names = ("_constraint_count", "_row_type", "_row_parent", "_row_mu", "_target_velocity")
             arrays = [getattr(solver, name).numpy() for name in (*names, "_contact_torsion_group")]
             arrays += [preparer.work.status.numpy(), preparer.work.spin_row.numpy()]
             results.append((error, arrays))
@@ -357,9 +357,9 @@ def test_patch_eligibility_and_point_cluster_edges(test, device):
 
         def modify(solver, contacts, scenario=scenario):
             if scenario == "nonanchor":
-                anchors = solver.contact_slots_needed.numpy()
+                anchors = solver._contact_slots_needed.numpy()
                 anchors[::2] = 1
-                solver.contact_slots_needed.assign(anchors)
+                solver._contact_slots_needed.assign(anchors)
             elif scenario == "positive_gap":
                 points = contacts.rigid_contact_point0.numpy()
                 points[:, 2] = 0.002
@@ -420,7 +420,7 @@ def test_rejected_region_and_normal_clusters(test, device):
         preparer = DeviceTorsionPreparation(actual)
         preparer.prepare(state2, augmented2, contacts2)
         np.testing.assert_array_equal(actual._contact_torsion_group.numpy(), expected._contact_torsion_group.numpy())
-        np.testing.assert_array_equal(actual.row_parent.numpy(), expected.row_parent.numpy())
+        np.testing.assert_array_equal(actual._row_parent.numpy(), expected._row_parent.numpy())
 
 
 def test_more_than_host_global_capacity(test, device):
@@ -428,18 +428,18 @@ def test_more_than_host_global_capacity(test, device):
     solver, state, augmented, contacts = synthetic_fixture(worlds=822, device=device, witnesses=5)
     with test.assertRaisesRegex(RuntimeError, "host grouping capacity"):
         host._contact_groups(solver, state, contacts)
-    worlds = solver.contact_world.numpy()
+    worlds = solver._contact_world.numpy()
     expected = set()
     for first, last in ((0, 411), (411, 822)):
-        solver.contact_path.assign(np.where((worlds >= first) & (worlds < last), 0, -1).astype(np.int32))
+        solver._contact_path.assign(np.where((worlds >= first) & (worlds < last), 0, -1).astype(np.int32))
         for group in host._contact_groups(solver, state, contacts):
             expected.add((group[0].world, tuple(sorted(w.slot for w in group))))
-    solver.contact_path.zero_()
+    solver._contact_path.zero_()
     preparer = DeviceTorsionPreparation(solver)
     preparer.prepare(state, augmented, contacts)
     membership = solver._contact_torsion_group.numpy()
     actual = set()
-    for world in range(solver.world_count):
+    for world in range(solver._world_count):
         for spin in np.unique(membership[world]):
             if spin >= 0:
                 actual.add((world, tuple(np.flatnonzero(membership[world] == spin))))
@@ -458,7 +458,7 @@ def test_deferred_failure_is_not_partial_success(test, device):
     preparer.prepare(state, augmented, contacts)
     preparer.end_step(out)
     np.testing.assert_array_equal(out.body_q.numpy(), state.body_q.numpy())
-    test.assertTrue(np.all(solver.constraint_count.numpy() == 0))
+    test.assertTrue(np.all(solver._constraint_count.numpy() == 0))
     test.assertTrue(np.all(solver._contact_torsion_group.numpy() == -1))
     with test.assertRaisesRegex(RuntimeError, "Dense contact row overflow"):
         preparer.validate()
@@ -495,14 +495,14 @@ def test_cuda_cancelling_angular_projection_matches_host_rounding(test, device):
     )
     for _solver, _state, augmented, contacts in pairs:
         contacts.rigid_contact_normal.assign(np.tile(-normal, (contacts.rigid_contact_max, 1)))
-        motion = augmented.joint_S_s.numpy()
+        motion = augmented._joint_S_s.numpy()
         motion[:4, 3:] = angular
-        augmented.joint_S_s.assign(motion)
+        augmented._joint_S_s.assign(motion)
     expected, state, augmented, contacts = pairs[0]
     actual, state2, augmented2, contacts2 = pairs[1]
     run_oracle(expected, state, augmented, contacts)
     DeviceTorsionPreparation(actual).prepare(state2, augmented2, contacts2)
-    np.testing.assert_array_equal(actual.J_by_size[6].numpy()[0, :, :4], expected.J_by_size[6].numpy()[0, :, :4])
+    np.testing.assert_array_equal(actual._J_by_size[6].numpy()[0, :, :4], expected._J_by_size[6].numpy()[0, :, :4])
 
 
 def test_cuda_loaded_closed_linkage(test, device):
@@ -547,9 +547,9 @@ def test_cuda_loaded_closed_linkage(test, device):
                 a.clear_forces()
                 pipeline.collide(a, contacts)
                 solver.step(a, z, control, contacts, 0.0025)
-                types = solver.row_type.numpy()
+                types = solver._row_type.numpy()
                 spins = max(spins, int(np.count_nonzero(types == PGS_CONSTRAINT_TYPE_TORSION)))
-                load = max(load, float(solver.impulses.numpy()[types == PGS_CONSTRAINT_TYPE_CONTACT].max(initial=0)))
+                load = max(load, float(solver._impulses.numpy()[types == PGS_CONSTRAINT_TYPE_CONTACT].max(initial=0)))
                 a, z = z, a
             test.assertGreater(spins, 0)
             test.assertGreater(load, 1e-8)
@@ -589,16 +589,16 @@ def test_cuda_preparation_graph_changes_and_failure(test, device):
     """Replay changing groups and fail-stop invalid rings without host reads."""
     solver, state, augmented, contacts = synthetic_fixture(device=device)
     preparer = DeviceTorsionPreparation(solver, deferred_errors=True)
-    initial_count = wp.clone(solver.constraint_count)
-    initial_type = wp.clone(solver.row_type)
-    initial_parent = wp.clone(solver.row_parent)
+    initial_count = wp.clone(solver._constraint_count)
+    initial_type = wp.clone(solver._row_type)
+    initial_parent = wp.clone(solver._row_parent)
     output = SimpleNamespace(body_q=wp.clone(state.body_q))
     preparer.begin_step(state, output)
 
     def operation():
-        wp.copy(solver.constraint_count, initial_count)
-        wp.copy(solver.row_type, initial_type)
-        wp.copy(solver.row_parent, initial_parent)
+        wp.copy(solver._constraint_count, initial_count)
+        wp.copy(solver._row_type, initial_type)
+        wp.copy(solver._row_parent, initial_parent)
         preparer.begin_step(state, output)
         output.body_q.zero_()
         preparer.prepare(state, augmented, contacts)
@@ -613,13 +613,13 @@ def test_cuda_preparation_graph_changes_and_failure(test, device):
         preparer.validate()
         test.assertEqual(np.count_nonzero(preparer.work.spin_row.numpy() >= 0), 0 if count == 0 else 6)
     bad = initial_parent.numpy()
-    bad[0, 0] = solver.articulation_constraint_max - 1
+    bad[0, 0] = solver._articulation_constraint_max - 1
     initial_parent.assign(bad)
     wp.capture_launch(capture.graph)
     with test.assertRaisesRegex(RuntimeError, "load ring"):
         preparer.validate()
     np.testing.assert_array_equal(output.body_q.numpy(), state.body_q.numpy())
-    test.assertTrue(np.all(solver.constraint_count.numpy() == 0))
+    test.assertTrue(np.all(solver._constraint_count.numpy() == 0))
 
 
 def test_cuda_captured_capacity_errors(test, device):
@@ -628,7 +628,7 @@ def test_cuda_captured_capacity_errors(test, device):
         solver, state, augmented, contacts = synthetic_fixture(device=device)
         preparer = DeviceTorsionPreparation(solver, deferred_errors=True)
         output = SimpleNamespace(body_q=wp.clone(state.body_q))
-        initial_count = wp.clone(solver.constraint_count)
+        initial_count = wp.clone(solver._constraint_count)
         preparer.begin_step(state, output)
 
         def operation(
@@ -640,7 +640,7 @@ def test_cuda_captured_capacity_errors(test, device):
             output=output,
             initial_count=initial_count,
         ):
-            wp.copy(solver.constraint_count, initial_count)
+            wp.copy(solver._constraint_count, initial_count)
             preparer.begin_step(state, output)
             output.body_q.zero_()
             preparer.prepare(state, augmented, contacts)
@@ -654,13 +654,13 @@ def test_cuda_captured_capacity_errors(test, device):
         elif failure == "dense":
             solver._row_dropped_dense.fill_(1)
         else:
-            initial_count.fill_(solver.articulation_constraint_max)
+            initial_count.fill_(solver._articulation_constraint_max)
         for _ in range(2):
             wp.capture_launch(capture.graph)
             with test.subTest(failure=failure), test.assertRaises(RuntimeError):
                 preparer.validate()
             np.testing.assert_array_equal(output.body_q.numpy(), state.body_q.numpy())
-            test.assertTrue(np.all(solver.constraint_count.numpy() == 0))
+            test.assertTrue(np.all(solver._constraint_count.numpy() == 0))
             test.assertTrue(np.all(solver._contact_torsion_group.numpy() == -1))
 
 
@@ -699,8 +699,8 @@ def test_cuda_cold_capture_reports_errors_until_reset(test, device):
         solver.step(state, output, model.control(), contacts, 0.0025)
     wp.capture_launch(capture.graph)
     solver.check_constraint_capacity()
-    count = int(solver.constraint_count.numpy()[0])
-    test.assertGreater(np.count_nonzero(solver.row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_TORSION), 0)
+    count = int(solver._constraint_count.numpy()[0])
+    test.assertGreater(np.count_nonzero(solver._row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_TORSION), 0)
     test.assertFalse(np.array_equal(output.joint_q.numpy(), state.joint_q.numpy()))
 
     solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))

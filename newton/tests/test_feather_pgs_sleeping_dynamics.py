@@ -36,13 +36,13 @@ def _compare(test, device, *, interval, velocity_limits, graph, arm=True, expect
                 np.testing.assert_array_equal(
                     runs[1].field(field), runs[0].field(field), err_msg=f"{phase} step {step} {field}"
                 )
-            awake = runs[1].solver.sleeping.art_awake.numpy()
+            awake = runs[1].solver._sleeping.art_awake.numpy()
             slept |= phase == "settle" and not awake[:2].any()
             woke |= phase == "push" and bool(awake[0])
     test.assertTrue(slept and woke)
     # The driven arm never sleeps, and everything else settles again.
     expected = [0, 0, 0, 1] if arm else [0, 0, 0]
-    np.testing.assert_array_equal(runs[1].solver.sleeping.art_awake.numpy(), expected)
+    np.testing.assert_array_equal(runs[1].solver._sleeping.art_awake.numpy(), expected)
     test.assertFalse(runs[1].solver._dynamics_art_active.numpy()[:3].any())
 
 
@@ -90,7 +90,7 @@ class _Run:
                     **options,
                 },
             )
-        self.solver.sleeping.skip_dynamics = skip
+        self.solver._sleeping.skip_dynamics = skip
         self.states = [self.model.state(), self.model.state()]
         self.control = self.model.control()
         self.contacts = self.pipeline.contacts()

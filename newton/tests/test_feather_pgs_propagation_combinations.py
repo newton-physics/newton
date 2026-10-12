@@ -120,7 +120,7 @@ def test_options_match_the_immediate_response_at_convergence(test, device):
                     model, state, iterations=300, articulated_contact_response=response, **options
                 )
                 count = int(contacts.rigid_contact_count.numpy()[0])
-                test.assertTrue((solver.contact_path.numpy()[:count] == PROPAGATION_PATH).any())
+                test.assertTrue((solver._contact_path.numpy()[:count] == PROPAGATION_PATH).any())
                 np.testing.assert_allclose(body_qd, reference, rtol=0.0, atol=2.0e-3)
 
 
@@ -145,8 +145,8 @@ def test_restitution_rebounds_on_propagation_rows(test, device):
                 model, state, iterations=64, articulated_contact_response=response, enable_joint_limits=True
             )
             count = int(contacts.rigid_contact_count.numpy()[0])
-            test.assertTrue((solver.contact_path.numpy()[:count] == PROPAGATION_PATH).any())
-            test.assertGreater(float(np.abs(solver.propagation_restitution_bias.numpy()).max()), 1.0)
+            test.assertTrue((solver._contact_path.numpy()[:count] == PROPAGATION_PATH).any())
+            test.assertGreater(float(np.abs(solver._propagation_restitution_bias.numpy()).max()), 1.0)
             test.assertGreater(float(after[3, 2]), 0.5)
             _, _, reference = _one_step(model, state, iterations=64, enable_joint_limits=True)
             np.testing.assert_allclose(after[3], reference[3], rtol=0.0, atol=1.0e-2)
@@ -164,20 +164,20 @@ def test_regularization_weights_reach_the_propagation_rows(test, device):
             solver, _, _ = _one_step(
                 model, state, iterations=8, articulated_contact_response=response, contact_regularization=1.0
             )
-            count = int(solver.propagation_constraint_count.numpy()[0])
-            rows = solver.propagation_row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_CONTACT
-            penetrating = solver.propagation_phi.numpy()[0, :count] <= 0.0
-            weights = solver.propagation_row_w.numpy()[0, :count]
+            count = int(solver._propagation_constraint_count.numpy()[0])
+            rows = solver._propagation_row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_CONTACT
+            penetrating = solver._propagation_phi.numpy()[0, :count] <= 0.0
+            weights = solver._propagation_row_w.numpy()[0, :count]
             # The unsplit diagonal from the bodies' own responses.
-            body_response = solver.propagation_body_response.numpy()
+            body_response = solver._propagation_body_response.numpy()
             d = np.full(count, solver.cfm)
             for body, J in (
-                (solver.propagation_body_a.numpy()[0, :count], solver.propagation_J_a.numpy()[0, :count]),
-                (solver.propagation_body_b.numpy()[0, :count], solver.propagation_J_b.numpy()[0, :count]),
+                (solver._propagation_body_a.numpy()[0, :count], solver._propagation_J_a.numpy()[0, :count]),
+                (solver._propagation_body_b.numpy()[0, :count], solver._propagation_J_b.numpy()[0, :count]),
             ):
                 has_body = body >= 0
                 d[has_body] += np.einsum("ri,rij,rj->r", J[has_body], body_response[body[has_body]], J[has_body])
-            d_split = 1.0 / solver.propagation_eff_mass_inv.numpy()[0, :count]
+            d_split = 1.0 / solver._propagation_eff_mass_inv.numpy()[0, :count]
             checked = rows & penetrating
             test.assertTrue((checked & (d_split > 1.01 * d)).any(), "no mass-split row was checked")
             np.testing.assert_allclose(weights[checked], (1.0 / (1.0 + d / d_split))[checked], rtol=1.0e-4)
@@ -199,12 +199,12 @@ def test_warm_start_seeds_the_propagation_rows(test, device):
                 pipeline.collide(state_0, contacts)
                 solver.step(state_0, state_1, model.control(), contacts, 1.0 / 240.0)
                 state_0, state_1 = state_1, state_0
-            solved = solver.propagation_impulses.numpy().copy()
+            solved = solver._propagation_impulses.numpy().copy()
             # Without iterations the step publishes the seeded impulses unchanged.
-            solver.iterations = 0
+            solver._iterations = 0
             pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, model.control(), contacts, 1.0 / 240.0)
-            seeded = solver.propagation_impulses.numpy()
+            seeded = solver._propagation_impulses.numpy()
             test.assertGreater(float(np.abs(solved).max()), 0.0)
             np.testing.assert_allclose(seeded.sum(axis=1), solved.sum(axis=1), rtol=0.1)
 

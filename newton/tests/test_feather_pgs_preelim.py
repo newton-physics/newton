@@ -234,7 +234,7 @@ def test_default_preserves_all_bilateral_trajectory(test, device):
         test.assertTrue(solver._preelim_active)
         count = int(solver._preelim_nB.numpy()[0])
         slots = solver._preelim_slots.numpy()[:count]
-        selected_types = solver.row_type.numpy()[0, slots]
+        selected_types = solver._row_type.numpy()[0, slots]
         test.assertEqual(int(np.count_nonzero(selected_types == PGS_CONSTRAINT_TYPE_MIMIC)), 1)
         test.assertGreater(int(np.count_nonzero(selected_types == PGS_CONSTRAINT_TYPE_CONNECT)), 0)
 
@@ -269,10 +269,10 @@ def test_mimics_can_remain_iterative_when_total_rows_exceed_capacity(test, devic
     count = int(solver._preelim_nB.numpy()[0])
     test.assertGreater(count, 0)
     test.assertLessEqual(count, 3)
-    selected_types = solver.row_type.numpy()[0, solver._preelim_slots.numpy()[:count]]
+    selected_types = solver._row_type.numpy()[0, solver._preelim_slots.numpy()[:count]]
     np.testing.assert_array_equal(selected_types, np.full(count, PGS_CONSTRAINT_TYPE_CONNECT))
-    counts = solver.constraint_count.numpy()
-    rows = solver.row_type.numpy()
+    counts = solver._constraint_count.numpy()
+    rows = solver._row_type.numpy()
     seen = {int(row) for world in range(rows.shape[0]) for row in rows[world, : counts[world]]}
     test.assertIn(int(PGS_CONSTRAINT_TYPE_CONNECT), seen)
     test.assertIn(int(PGS_CONSTRAINT_TYPE_MIMIC), seen)
@@ -386,8 +386,8 @@ def test_mechanism_behavior_preserved(test, device):
 def test_rows_remain_allocated(test, device):
     """Keep eliminated rows in their dense slots and in the sweep."""
     solver, _, _, _ = _run_four_bar(device, steps=60, enable_bilateral_preelimination=True)
-    counts = solver.constraint_count.numpy()
-    rows = solver.row_type.numpy()
+    counts = solver._constraint_count.numpy()
+    rows = solver._row_type.numpy()
     seen = set()
     for w in range(rows.shape[0]):
         seen.update(rows[w, : counts[w]].tolist())

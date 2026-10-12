@@ -38,8 +38,8 @@ def test_reset_validates_mask_length(test, device, solve_mode="matrix_free"):
     model = _build_two_worlds_with_global_body(device)
     solver = SolverFeatherPGS(model, solve_mode=solve_mode)
     state = model.state()
-    solver.impulses.fill_(17.0)
-    before = solver.impulses.numpy().copy()
+    solver._impulses.fill_(17.0)
+    before = solver._impulses.numpy().copy()
 
     # Two worlds: the valid mask has three entries, the last one selecting global entities.
     solver.reset(state, _mask([True, False, True], device))
@@ -50,7 +50,7 @@ def test_reset_validates_mask_length(test, device, solve_mode="matrix_free"):
     with test.assertRaisesRegex(TypeError, "dtype bool"):
         solver.reset(state, wp.ones(3, dtype=wp.int32, device=device))
     # The solver keeps no impulse history, so a reset never touches the impulse scratch.
-    np.testing.assert_array_equal(solver.impulses.numpy(), before)
+    np.testing.assert_array_equal(solver._impulses.numpy(), before)
 
 
 def test_reset_isolates_global_slot(test, device, solve_mode="matrix_free"):
@@ -74,10 +74,10 @@ def test_reset_isolates_global_slot(test, device, solve_mode="matrix_free"):
             solver.reset(state, None if mask is None else _mask(mask, device))
             np.testing.assert_array_equal(solver.constraint_overflow.numpy(), expected_overflow)
             solver.step(state, output, control, None, 0.01)
-            np.testing.assert_array_equal(solver.mass_update_mask.numpy(), expected_refresh)
+            np.testing.assert_array_equal(solver._mass_update_mask.numpy(), expected_refresh)
             # The request is consumed by the first step after the reset.
             solver.step(state, output, control, None, 0.01)
-            np.testing.assert_array_equal(solver.mass_update_mask.numpy(), [0, 0, 0])
+            np.testing.assert_array_equal(solver._mass_update_mask.numpy(), [0, 0, 0])
 
 
 class TestFeatherPGSReset(unittest.TestCase):

@@ -137,10 +137,10 @@ def _build_clutter_model(device: str, *, n_boxes: int) -> newton.Model:
 
 def _tree_inputs(model, solver, art):
     return {
-        "S": solver.propagation_joint_S_flat.numpy().astype(np.float64),
-        "U": solver.propagation_tree_U.numpy().astype(np.float64),
-        "Dinv": solver.propagation_tree_D_inv.numpy().astype(np.float64),
-        "com": solver.propagation_body_com_rel.numpy().astype(np.float64),
+        "S": solver._propagation_joint_S_flat.numpy().astype(np.float64),
+        "U": solver._propagation_tree_U.numpy().astype(np.float64),
+        "Dinv": solver._propagation_tree_D_inv.numpy().astype(np.float64),
+        "com": solver._propagation_body_com_rel.numpy().astype(np.float64),
         "jp": model.joint_parent.numpy(),
         "jc": model.joint_child.numpy(),
         "qd_start": model.joint_qd_start.numpy(),
@@ -231,9 +231,9 @@ def _seed_joint_qd(model: newton.Model) -> np.ndarray:
 
 def _active_body_qd(solver, body_map_solver) -> dict[int, np.ndarray]:
     """COM twists of the contact-active bodies in ``body_map_solver``'s body list."""
-    qd = solver.propagation_body_qd.numpy()
-    counts = body_map_solver.propagation_body_count.numpy()
-    body_list = body_map_solver.propagation_body_list.numpy()
+    qd = solver._propagation_body_qd.numpy()
+    counts = body_map_solver._propagation_body_count.numpy()
+    body_list = body_map_solver._propagation_body_list.numpy()
     out: dict[int, np.ndarray] = {}
     for world in range(body_list.shape[0]):
         n = min(int(counts[world]), body_list.shape[1])
@@ -293,7 +293,7 @@ def _run_lockstep(model, response, n_steps, *, cache_max_bodies: int = 8, **solv
             diff = float(np.max(np.abs(getattr(test_out, key).numpy() - getattr(ref_out, key).numpy())))
             stats.max_diffs[key] = max(stats.max_diffs[key], diff)
         stats.max_diffs["v_out"] = max(
-            stats.max_diffs["v_out"], float(np.max(np.abs(test.v_out.numpy() - ref.v_out.numpy())))
+            stats.max_diffs["v_out"], float(np.max(np.abs(test._v_out.numpy() - ref._v_out.numpy())))
         )
         # The tree walk builds no body list, so both read the cached solver's.
         ref_body_qd = _active_body_qd(ref, test)
@@ -302,9 +302,9 @@ def _run_lockstep(model, response, n_steps, *, cache_max_bodies: int = 8, **solv
             diff = float(np.max(np.abs(test_body_qd[body] - ref_qd)))
             stats.max_diffs["active_body_qd"] = max(stats.max_diffs["active_body_qd"], diff)
 
-        counts = test.propagation_body_count.numpy()
+        counts = test._propagation_body_count.numpy()
         stats.max_active_bodies = max(stats.max_active_bodies, int(counts.max()))
-        stats.total_rows += int(ref.propagation_constraint_count.numpy().sum())
+        stats.total_rows += int(ref._propagation_constraint_count.numpy().sum())
 
         state_in, ref_out = ref_out, state_in
     return stats, ref, test
@@ -343,12 +343,12 @@ def test_cached_path_detected(test, device):
     solver = _make_solver(model, "propagation", cached=True)
     test.assertIsNotNone(solver._propagation_cached_gemv_kernel)
     test.assertEqual(
-        solver.propagation_cache_max_bodies,
-        min(solver.max_propagation_bodies, solver.propagation_cached_response_body_max),
+        solver._propagation_cache_max_bodies,
+        min(solver._max_propagation_bodies, solver.propagation_cached_response_body_max),
     )
     for size in solver._propagation_tree_sizes:
         test.assertIn(size, solver._propagation_cached_kernels)
-    test.assertTrue(np.all(solver.propagation_cache_art_eligible.numpy() == 1))
+    test.assertTrue(np.all(solver._propagation_cache_art_eligible.numpy() == 1))
 
     off = _make_solver(model, "propagation", cached=False)
     test.assertFalse(off._propagation_cached_kernels)
@@ -359,7 +359,7 @@ def test_lockstep_multi_contact_bodies(test, device):
     """Match the tree walk with three contact spheres per articulation, so cross blocks are live."""
     model = _build_model(device, chains=(6,), spheres=("base", "mid", "deep"))
     stats, _, cached = _run_lockstep(model, "propagation", 40)
-    test.assertTrue(np.all(cached.propagation_cache_world_flag.numpy() == 1))
+    test.assertTrue(np.all(cached._propagation_cache_world_flag.numpy() == 1))
     _assert_stats(test, stats, expect_min_bodies=2)
 
 
@@ -386,7 +386,7 @@ def test_lockstep_colored(test, device):
     model = _build_model(device, chains=(6,), spheres=("base", "mid", "deep"))
     stats, _, cached = _run_lockstep(model, "propagation_colored", 40)
     test.assertTrue(cached._propagation_cached_kernels)
-    test.assertTrue(np.all(cached.propagation_cache_world_flag.numpy() == 1))
+    test.assertTrue(np.all(cached._propagation_cache_world_flag.numpy() == 1))
     _assert_stats(test, stats, expect_min_bodies=2)
 
 
@@ -397,7 +397,7 @@ def test_lockstep_fixed_base_single_dof(test, device):
     for size in cached._propagation_tree_sizes:
         test.assertFalse(cached._propagation_free_root_tree[size])
         test.assertIn(size, cached._propagation_cached_kernels)
-    test.assertTrue(np.all(cached.propagation_cache_world_flag.numpy() == 1))
+    test.assertTrue(np.all(cached._propagation_cache_world_flag.numpy() == 1))
     _assert_stats(test, stats, expect_min_bodies=2)
 
 
@@ -405,9 +405,9 @@ def test_overflow_falls_back_to_tree_walk(test, device):
     """Take the per-world tree walk when the active bodies exceed the cache capacity."""
     model = _build_model(device, chains=(6,), spheres=("base", "mid", "deep"))
     stats, _, cached = _run_lockstep(model, "propagation", 40, cache_max_bodies=2)
-    test.assertEqual(cached.propagation_cache_max_bodies, 2)
-    counts = cached.propagation_body_count.numpy()
-    flags = cached.propagation_cache_world_flag.numpy()
+    test.assertEqual(cached._propagation_cache_max_bodies, 2)
+    counts = cached._propagation_body_count.numpy()
+    flags = cached._propagation_cache_world_flag.numpy()
     test.assertTrue(np.all(counts > 2), f"scene must overflow the cap, got counts {counts}")
     test.assertTrue(np.all(flags == 0), f"overflowing worlds must clear the cache flag, got {flags}")
     _assert_stats(test, stats, expect_min_bodies=3)
@@ -417,15 +417,15 @@ def test_clutter_does_not_evict_cache(test, device):
     """Count only the articulation's bodies against the cache capacity, not free clutter."""
     model = _build_clutter_model(device, n_boxes=2)
     stats, _, cached = _run_lockstep(model, "propagation", 40, cache_max_bodies=4, articulation_constraint_max=128)
-    counts = cached.propagation_body_count.numpy()
+    counts = cached._propagation_body_count.numpy()
     test.assertTrue(np.all(counts > 4), f"scene must overflow the total active-body count, got {counts}")
-    eligible_counts = cached.propagation_cache_body_count.numpy()
+    eligible_counts = cached._propagation_cache_body_count.numpy()
     test.assertTrue(np.all((eligible_counts >= 2) & (eligible_counts <= 4)), f"eligible counts {eligible_counts}")
-    test.assertTrue(np.all(cached.propagation_cache_world_flag.numpy() == 1))
+    test.assertTrue(np.all(cached._propagation_cache_world_flag.numpy() == 1))
     # Eligible bodies occupy the prefix of each world's body list.
-    art_eligible = cached.propagation_cache_art_eligible.numpy()
-    body_to_art = cached.body_to_articulation.numpy()
-    body_list = cached.propagation_body_list.numpy()
+    art_eligible = cached._propagation_cache_art_eligible.numpy()
+    body_to_art = cached._body_to_articulation.numpy()
+    body_list = cached._propagation_body_list.numpy()
     for world in range(body_list.shape[0]):
         for slot in range(min(int(counts[world]), body_list.shape[1])):
             body = int(body_list[world, slot])
@@ -442,13 +442,13 @@ def test_cached_matrices_match_numpy_reference(test, device, fixed_base=False):
     """
     model = _build_model(device, chains=(6,), spheres=("base", "mid", "deep"), fixed_base=fixed_base)
     solver = _step_cached(model, 20)
-    counts = solver.propagation_body_count.numpy()
-    body_list = solver.propagation_body_list.numpy()
-    body_to_art = solver.body_to_articulation.numpy()
-    flags = solver.propagation_cache_world_flag.numpy()
+    counts = solver._propagation_body_count.numpy()
+    body_list = solver._propagation_body_list.numpy()
+    body_to_art = solver._body_to_articulation.numpy()
+    flags = solver._propagation_cache_world_flag.numpy()
     art_dof_start = model.joint_qd_start.numpy()[model.articulation_start.numpy()[:-1]]
-    R = solver.propagation_cache_R.numpy()
-    B = solver.propagation_cache_B.numpy()
+    R = solver._propagation_cache_R.numpy()
+    B = solver._propagation_cache_B.numpy()
 
     checked_pairs = 0
     for world in range(min(2, body_list.shape[0])):
@@ -465,7 +465,7 @@ def test_cached_matrices_match_numpy_reference(test, device, fixed_base=False):
                 imp = np.zeros(6)
                 imp[basis] = 1.0
                 v_ref, body_qd_ref = _ref_propagate(
-                    ti, {body_b: imp}, np.zeros(solver.v_out.shape[0], dtype=np.float64)
+                    ti, {body_b: imp}, np.zeros(solver._v_out.shape[0], dtype=np.float64)
                 )
                 got_R = R[world, slot_b, :n_dofs, basis]
                 ref_R = v_ref[dof0 : dof0 + n_dofs]
@@ -487,7 +487,7 @@ def test_impulses_consumed(test, device):
     """Clear the deferred body impulses in the GEMV of every iteration."""
     model = _build_model(device, chains=(6,), spheres=("base", "mid", "deep"))
     solver = _step_cached(model, 10)
-    test.assertEqual(float(np.max(np.abs(solver.propagation_body_impulses.numpy()))), 0.0)
+    test.assertEqual(float(np.max(np.abs(solver._propagation_body_impulses.numpy()))), 0.0)
 
 
 def test_captured_cached_response_matches_eager(test, device):

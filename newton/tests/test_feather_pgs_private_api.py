@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 import newton
+from newton._src.solvers.feather_pgs.solver_feather_pgs import _ConstructionOption, _StepOption
 from newton.solvers import SolverFeatherPGS
 
 _PACKAGE_DIR = Path(__file__).parents[1] / "_src" / "solvers" / "feather_pgs"
@@ -125,6 +126,33 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
         self.assertNotIn("nvtx", parameters)
         self.assertNotIn("pgs_debug", parameters)
 
+    def test_construction_options_are_read_only(self):
+        """Expose constructor options read-only, except the ones read at every step."""
+        parameters = inspect.signature(SolverFeatherPGS.__init__).parameters
+        step_options = {name for name in parameters if isinstance(vars(SolverFeatherPGS).get(name), _StepOption)}
+        self.assertEqual(
+            step_options,
+            {
+                "baumgarte",
+                "relaxation",
+                "velocity_drive_mode",
+                "contact_warmstart_decay",
+                "warn_constraint_overflow",
+                "restitution_velocity_threshold",
+                "contact_speculative_scale",
+                "contact_gap_gate",
+                "same_articulation_contact_gap_gate",
+                "articulation_pair_contact_gap_gate",
+                "contact_friction_gap_threshold",
+                "contact_friction_articulation_pairs_only",
+            },
+        )
+        for name in parameters:
+            if name in ("self", "model"):
+                continue
+            with self.subTest(option=name):
+                self.assertIsInstance(getattr(SolverFeatherPGS, name), (property, _ConstructionOption))
+
     def test_solver_reads_no_environment_variables(self):
         """Configure the solver only through its constructor; the environment only enables profiling ranges."""
         pattern = re.compile(r"\bos\.(environ|getenv)\b|FEATHER_PGS_|IL_NEWTON")
@@ -181,7 +209,7 @@ class TestFeatherPGSPrivateApi(unittest.TestCase):
         size_group_loop = next(
             node
             for node in ast.walk(init_method)
-            if isinstance(node, ast.For) and isinstance(node.iter, ast.Attribute) and node.iter.attr == "size_groups"
+            if isinstance(node, ast.For) and isinstance(node.iter, ast.Attribute) and node.iter.attr == "_size_groups"
         )
         calls = {
             child.func.id: child.lineno

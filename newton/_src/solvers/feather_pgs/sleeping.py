@@ -19,7 +19,7 @@ class _SleepState:
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Sleeping thresholds and quiet time must be finite and positive")
         model = solver.model
-        if model.requires_grad or model.particle_count or solver.contact_warmstart or solver.velocity_iterations:
+        if model.requires_grad or model.particle_count or solver._contact_warmstart or solver._velocity_iterations:
             raise ValueError(
                 "Experimental sleeping requires a rigid, non-differentiable model without warm start or "
                 "velocity-only iterations"
@@ -35,14 +35,14 @@ class _SleepState:
         self.carry_frozen_patches = True
         # Skip the articulated dynamics of islands that sleep through a step; their outputs are frozen anyway.
         self.skip_dynamics = skip_constraints
-        body_nodes = solver.body_to_articulation.numpy().copy()
-        response_counts = solver.articulation_response_dof_count.numpy()
+        body_nodes = solver._body_to_articulation.numpy().copy()
+        response_counts = solver._articulation_response_dof_count.numpy()
         prescribed = (body_nodes >= 0) & (response_counts[np.maximum(body_nodes, 0)] == 0)
         body_nodes[prescribed] = -1
         device = model.device
         self.body_nodes = wp.array(body_nodes, dtype=int, device=device)
         self.body_prescribed = wp.array(prescribed.astype(np.int32), dtype=int, device=device)
-        self.contact_response_mask = wp.clone(solver.body_has_response_dofs)
+        self.contact_response_mask = wp.clone(solver._body_has_response_dofs)
         limit_q_index = solver._joint_limit_q_index
         self.limit_q_index = wp.clone(limit_q_index) if limit_q_index is not None else None
         count = model.articulation_count
@@ -105,7 +105,7 @@ class _SleepState:
         fixed = (root_types == int(JointType.FIXED)) & (root_parents < 0)
         self.anchored = wp.array(fixed.astype(np.int32), dtype=int, device=device)
         self.pinned = wp.array(
-            _pinned_articulations(model, solver.body_to_articulation.numpy()), dtype=int, device=device
+            _pinned_articulations(model, solver._body_to_articulation.numpy()), dtype=int, device=device
         )
         self.changed = wp.zeros(count, dtype=int, device=device)
         self.asleep_steps = wp.zeros(count, dtype=int, device=device)
@@ -217,7 +217,7 @@ class _SleepState:
                     model.shape_body,
                     self.body_nodes,
                     model.body_flags,
-                    self.solver.art_to_world,
+                    self.solver._art_to_world,
                     self.parent,
                     self.incomplete,
                 ],
@@ -395,7 +395,7 @@ class _SleepState:
             wp.launch(
                 _contact_response_mask,
                 model.body_count,
-                [self.body_nodes, self.art_awake, self.solver.body_has_response_dofs, self.contact_response_mask],
+                [self.body_nodes, self.art_awake, self.solver._body_has_response_dofs, self.contact_response_mask],
                 device=device,
             )
             if self.limit_q_index is not None:
@@ -501,8 +501,8 @@ class _SleepState:
                 self.step_asleep,
                 self.root_veto,
                 state_out.joint_qd,
-                state_aug.joint_qdd,
-                self.solver.v_out,
+                state_aug._joint_qdd,
+                self.solver._v_out,
             ],
             device=device,
         )

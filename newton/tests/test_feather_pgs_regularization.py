@@ -20,9 +20,9 @@ PATH_DENSE = 0  # contact routing id of the dense rows
 
 def _contact_rows(solver, path_id: int, contact_count: int) -> dict[int, int]:
     """Map each contact of world 0 routed to ``path_id`` to its first row."""
-    contact_path = solver.contact_path.numpy()
-    contact_slot = solver.contact_slot.numpy()
-    contact_world = solver.contact_world.numpy()
+    contact_path = solver._contact_path.numpy()
+    contact_slot = solver._contact_slot.numpy()
+    contact_world = solver._contact_world.numpy()
     return {
         c: int(contact_slot[c])
         for c in range(contact_count)
@@ -174,8 +174,8 @@ def test_dense_contact_rows_carry_the_regularization_weight(test: unittest.TestC
     solver, count, _ = _scissor_step(device, 0.5, 0)
     rows = _contact_rows(solver, PATH_DENSE, count)
     test.assertGreater(len(rows), 0, "scene produced no dense self-contact row")
-    phi = solver.phi.numpy()[0]
-    weights = solver.row_w.numpy()[0]
+    phi = solver._phi.numpy()[0]
+    weights = solver._row_w.numpy()[0]
     for slot in rows.values():
         test.assertLess(float(phi[slot]), 0.0)
         test.assertAlmostEqual(float(weights[slot]), 2.0 / 3.0, places=6)
@@ -278,12 +278,12 @@ def test_zero_regularization_shares_one_weight_slot(test: unittest.TestCase, dev
     model = builder.finalize(device=device)
     solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free")
     test.assertFalse(solver._regularization_enabled)
-    test.assertEqual(solver.row_w.shape, (1, 1))
-    test.assertEqual(solver.mf_row_w.shape, (1, 1))
+    test.assertEqual(solver._row_w.shape, (1, 1))
+    test.assertEqual(solver._mf_row_w.shape, (1, 1))
     regularized = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", contact_regularization=0.1)
     test.assertTrue(regularized._regularization_enabled)
-    test.assertEqual(regularized.row_w.shape, regularized.impulses.shape)
-    test.assertEqual(regularized.mf_row_w.shape, regularized.mf_impulses.shape)
+    test.assertEqual(regularized._row_w.shape, regularized._impulses.shape)
+    test.assertEqual(regularized._mf_row_w.shape, regularized._mf_impulses.shape)
 
 
 def test_exact_surface_contact_is_regularized(test: unittest.TestCase, device):

@@ -182,7 +182,7 @@ def _spin_free_articulation(model, omega=OMEGA, solve_mode="matrix_free"):
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
     solver = SolverFeatherPGS(model, solve_mode=solve_mode)
-    solver.rigid_body_angular_damping.zero_()
+    solver._rigid_body_angular_damping.zero_()
     control = model.control()
     reference = _com_velocity(model, state_0)
     worst = 0.0
@@ -278,7 +278,7 @@ def test_matches_featherstone_reference(test, device, solve_mode="matrix_free"):
             solver = solver_cls(model, angular_damping=0.0)
         else:
             solver = solver_cls(model, solve_mode=solve_mode)
-            solver.rigid_body_angular_damping.zero_()
+            solver._rigid_body_angular_damping.zero_()
         control = model.control()
         for _ in range(20):
             solver.step(state_0, state_1, control, None, DT)

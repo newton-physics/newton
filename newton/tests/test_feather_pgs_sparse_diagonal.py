@@ -431,8 +431,8 @@ def test_sparse_diagonal_response_matches_dense_joint_limits(test, device):
     test.assertTrue(optimized._sparse_diagonal_speculative_contact_batches)
     test.assertEqual(optimized._sparse_diagonal_response_size, 16)
     test.assertEqual(optimized._sparse_diagonal_dense_size, 3)
-    test.assertEqual(optimized.H_by_size[16].shape, (1, 1, 1))
-    test.assertEqual(optimized.J_by_size[16].shape, (1, 1, 1))
+    test.assertEqual(optimized._H_by_size[16].shape, (1, 1, 1))
+    test.assertEqual(optimized._J_by_size[16].shape, (1, 1, 1))
     test.assertIsNone(optimized._pgs_solve_mf_gs_kernel)
     test.assertFalse(reference._sparse_diagonal_contact_solve)
 
@@ -506,7 +506,7 @@ def test_sparse_diagonal_contact_friction_matches_general_owner(test, device):
             test.assertFalse(reference._sparse_diagonal_contact_solve)
             sparse = run(optimized)
             general = run(reference)
-            test.assertGreater(int(optimized.constraint_count.numpy().max()), 0, "no contact rows were generated")
+            test.assertGreater(int(optimized._constraint_count.numpy().max()), 0, "no contact rows were generated")
             test.assertGreater(
                 float(np.abs(sparse[-1][1] - slick[-1][1]).max()), 1.0e-3, "friction did not change the sparse response"
             )

@@ -148,7 +148,7 @@ def test_graph_replay_matches_eager_steps(test, device):
             for _ in range(3):
                 wp.capture_launch(capture.graph)
             np.testing.assert_allclose(output.joint_qd.numpy(), expected, atol=1.0e-6)
-            test.assertEqual(int(solver.propagation_coupling_group_body_count.numpy().max()), 3)
+            test.assertEqual(int(solver._propagation_coupling_group_body_count.numpy().max()), 3)
 
 
 def test_floating_quadruped_with_joint_velocities_stays_bounded(test, device):

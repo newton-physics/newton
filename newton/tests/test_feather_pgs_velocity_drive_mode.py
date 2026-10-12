@@ -62,10 +62,10 @@ def _one_step(device, **solver_kwargs):
     contacts = pipeline.contacts()
     pipeline.collide(state_0, contacts)
     solver.step(state_0, state_1, model.control(), contacts, _DT)
-    drive_slot = int(solver.drive_slot.numpy()[0])
-    count = int(solver.constraint_count.numpy()[0])
-    row_type = solver.row_type.numpy()[0, :count]
-    impulses = solver.impulses.numpy()[0, :count]
+    drive_slot = int(solver._drive_slot.numpy()[0])
+    count = int(solver._constraint_count.numpy()[0])
+    row_type = solver._row_type.numpy()[0, :count]
+    impulses = solver._impulses.numpy()[0, :count]
     contact_impulse = float(impulses[row_type == PGS_CONSTRAINT_TYPE_CONTACT].sum())
     return float(impulses[drive_slot]), contact_impulse
 

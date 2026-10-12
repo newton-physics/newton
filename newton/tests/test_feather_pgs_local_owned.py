@@ -176,25 +176,25 @@ def _run_mixed_response(
         state_in.clear_forces()
         pipeline.collide(state_in, contacts)
         solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
-        constraint_count = int(solver.constraint_count.numpy()[0])
-        mf_count = int(solver.mf_constraint_count.numpy()[0])
+        constraint_count = int(solver._constraint_count.numpy()[0])
+        mf_count = int(solver._mf_constraint_count.numpy()[0])
         samples.append(
             (
                 constraint_count,
-                solver.diag.numpy()[0, :constraint_count].copy(),
-                solver.impulses.numpy()[0, :constraint_count].copy(),
+                solver._diag.numpy()[0, :constraint_count].copy(),
+                solver._impulses.numpy()[0, :constraint_count].copy(),
                 state_out.joint_q.numpy().copy(),
                 state_out.joint_qd.numpy().copy(),
                 int(solver._local_solve_owner.numpy()[0]),
-                solver.row_type.numpy()[0, :constraint_count].copy(),
+                solver._row_type.numpy()[0, :constraint_count].copy(),
                 mf_count,
-                solver.mf_impulses.numpy()[0, :mf_count].copy(),
-                solver.mf_row_type.numpy()[0, :mf_count].copy(),
-                solver.mf_row_parent.numpy()[0, :mf_count].copy(),
-                solver.mf_J_a.numpy()[0, :mf_count].copy(),
-                solver.mf_J_b.numpy()[0, :mf_count].copy(),
-                solver.mf_MiJt_a.numpy()[0, :mf_count].copy(),
-                solver.mf_MiJt_b.numpy()[0, :mf_count].copy(),
+                solver._mf_impulses.numpy()[0, :mf_count].copy(),
+                solver._mf_row_type.numpy()[0, :mf_count].copy(),
+                solver._mf_row_parent.numpy()[0, :mf_count].copy(),
+                solver._mf_J_a.numpy()[0, :mf_count].copy(),
+                solver._mf_J_b.numpy()[0, :mf_count].copy(),
+                solver._mf_MiJt_a.numpy()[0, :mf_count].copy(),
+                solver._mf_MiJt_b.numpy()[0, :mf_count].copy(),
             )
         )
         state_in, state_out = state_out, state_in
@@ -333,8 +333,8 @@ class TestFeatherPGSLocalOwners(unittest.TestCase):
         )
         # Penetrating contact rows carry a weight below one in both the dense and matrix-free rows.
         constraint_count, mf_count = local[-1][0], local[-1][7]
-        self.assertTrue((local_solver.row_w.numpy()[0, :constraint_count] < 1.0).any())
-        self.assertTrue((local_solver.mf_row_w.numpy()[0, :mf_count] < 1.0).any())
+        self.assertTrue((local_solver._row_w.numpy()[0, :constraint_count] < 1.0).any())
+        self.assertTrue((local_solver._mf_row_w.numpy()[0, :mf_count] < 1.0).any())
         _assert_owner_parity(self, general, local)
 
     @unittest.skipUnless(wp.is_cuda_available(), "articulation-local mixed-world parity requires CUDA")

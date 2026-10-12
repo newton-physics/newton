@@ -131,8 +131,8 @@ def test_notify_refreshes_baked_com_and_inertia_buffers(test, device, solve_mode
     """Re-derive the solver's COM and inertia buffers on BODY_INERTIAL_PROPERTIES."""
     model = _build_model(device)
     solver = SolverFeatherPGS(model, solve_mode=solve_mode)
-    stale_X_com = solver.body_X_com.numpy().copy()
-    stale_I_m = solver.body_I_m.numpy().copy()
+    stale_X_com = solver._body_X_com.numpy().copy()
+    stale_I_m = solver._body_I_m.numpy().copy()
 
     body_com = model.body_com.numpy()
     body_com[0] = NEW_COM
@@ -141,12 +141,12 @@ def test_notify_refreshes_baked_com_and_inertia_buffers(test, device, solve_mode
     body_mass[0] *= 2.0
     model.body_mass.assign(body_mass)
 
-    np.testing.assert_array_equal(solver.body_X_com.numpy(), stale_X_com)
+    np.testing.assert_array_equal(solver._body_X_com.numpy(), stale_X_com)
     solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
     np.testing.assert_allclose(
-        solver.body_X_com.numpy()[0][:3], np.asarray(NEW_COM, dtype=np.float32), rtol=0.0, atol=0.0
+        solver._body_X_com.numpy()[0][:3], np.asarray(NEW_COM, dtype=np.float32), rtol=0.0, atol=0.0
     )
-    test.assertFalse(np.allclose(solver.body_I_m.numpy(), stale_I_m))
+    test.assertFalse(np.allclose(solver._body_I_m.numpy(), stale_I_m))
     test.assertEqual(solver._mass_update_requested.numpy()[0], 1)
 
 
@@ -272,8 +272,8 @@ def _check_damping_edit_matches_fresh_solver(test, device, replace: bool, solve_
             fresh = SolverFeatherPGS(model, solve_mode=solve_mode, update_mass_matrix_interval=100)
             fresh_out = model.state()
             fresh.step(state_0, fresh_out, control, None, 0.01)
-            np.testing.assert_allclose(fresh.joint_tau.numpy(), [-3.0], atol=1.0e-6)
-            np.testing.assert_allclose(solver.joint_tau.numpy(), fresh.joint_tau.numpy(), atol=1.0e-6)
+            np.testing.assert_allclose(fresh._joint_tau.numpy(), [-3.0], atol=1.0e-6)
+            np.testing.assert_allclose(solver._joint_tau.numpy(), fresh._joint_tau.numpy(), atol=1.0e-6)
             np.testing.assert_allclose(state_1.joint_qd.numpy(), fresh_out.joint_qd.numpy(), atol=1.0e-6)
 
 

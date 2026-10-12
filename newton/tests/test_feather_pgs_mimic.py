@@ -262,8 +262,8 @@ def test_runtime_coefficient_change(test, device):
 def test_mimic_row_is_assembled(test, device):
     """Assemble a mimic row that carries the coupling."""
     solver, _ = _run_chain(device, coef0=0.0, coef1=1.0, leader_target=0.5, steps=10)
-    row_types = solver.row_type.numpy()
-    counts = solver.constraint_count.numpy()
+    row_types = solver._row_type.numpy()
+    counts = solver._constraint_count.numpy()
     rows = [int(t) for w in range(row_types.shape[0]) for t in row_types[w, : counts[w]]]
     test.assertIn(PGS_CONSTRAINT_TYPE_MIMIC, rows)
 
@@ -297,7 +297,7 @@ def test_mimic_row_overflow_is_reported(test, device):
     solver = SolverFeatherPGS(model, solve_mode="matrix_free", **options)
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, DT)
-    test.assertEqual(int(solver.mimic_slot.numpy()[0]), 0)
+    test.assertEqual(int(solver._mimic_slot.numpy()[0]), 0)
     test.assertFalse(bool(solver.constraint_overflow.numpy()[0]))
 
     with warnings.catch_warnings():
@@ -308,7 +308,7 @@ def test_mimic_row_overflow_is_reported(test, device):
     solver = SolverFeatherPGS(model, solve_mode="matrix_free", **options)
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, DT)
-    test.assertEqual(int(solver.constraint_count.numpy()[0]), 1)
+    test.assertEqual(int(solver._constraint_count.numpy()[0]), 1)
     test.assertTrue(bool(solver.constraint_overflow.numpy()[0]))
     with test.assertRaises(RuntimeError):
         solver.check_constraint_capacity()

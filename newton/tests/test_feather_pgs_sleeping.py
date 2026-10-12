@@ -50,15 +50,15 @@ def _advance(pipeline, solver, states, control, steps, *, clear=True, observable
 def test_disabled_allocates_no_state(test, device):
     """Keep sleep state absent on the default solver path."""
     _model, _pipeline, solver, _states, _control = _scene(device, enabled=False)
-    test.assertIsNone(solver.sleeping)
+    test.assertIsNone(solver._sleeping)
 
 
 def test_separated_boxes_sleep_and_force_wakes_one(test, device):
     """Sleep independent boxes and wake only the forced island."""
     _model, pipeline, solver, states, control = _scene(device)
     _advance(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
-    test.assertNotEqual(*solver.sleeping.body_island.numpy())
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    test.assertNotEqual(*solver._sleeping.body_island.numpy())
     before = states[0].body_q.numpy().copy()
     _advance(pipeline, solver, states, control, 10)
     np.testing.assert_array_equal(states[0].body_q.numpy(), before)
@@ -66,7 +66,7 @@ def test_separated_boxes_sleep_and_force_wakes_one(test, device):
     force[0, 0] = 100.0
     states[0].body_f.assign(force)
     _advance(pipeline, solver, states, control, 1, clear=False)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 0])
     test.assertGreater(states[0].body_qd.numpy()[0, 0], 0.0)
 
 
@@ -74,12 +74,12 @@ def test_nonfinite_force_wakes_and_propagates(test, device):
     """Wake the island of a sleeping body hit by a NaN external force instead of publishing a frozen state."""
     _model, pipeline, solver, states, control = _scene(device)
     _advance(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     force = np.zeros((2, 6), dtype=np.float32)
     force[0, 0] = np.nan
     states[0].body_f.assign(force)
     _advance(pipeline, solver, states, control, 1, clear=False)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 0])
     test.assertFalse(np.all(np.isfinite(states[0].body_qd.numpy()[0])))
 
 
@@ -88,12 +88,12 @@ def test_reset_and_gravity_change_wake(test, device):
     model, pipeline, solver, states, control = _scene(device)
     _advance(pipeline, solver, states, control, 120)
     solver.reset(states[0])
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 1])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1])
     _advance(pipeline, solver, states, control, 120)
     model.set_gravity((0.0, 0.0, 9.81))
     solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
     _advance(pipeline, solver, states, control, 1)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 1])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1])
     test.assertGreater(states[0].body_qd.numpy()[0, 2], 0.0)
 
 
@@ -102,7 +102,7 @@ def test_free_flight_cannot_sleep(test, device):
     model, pipeline, solver, states, control = _scene(device, ground=False)
     model.set_gravity((0.0, 0.0, 0.0))
     _advance(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 1])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1])
 
 
 def test_invalid_options(test, device):
@@ -137,14 +137,14 @@ def test_stack_wakes_together(test, device):
     """Wake the whole contacting stack when its top box is forced."""
     _model, pipeline, solver, states, control = _scene(device, stack=True)
     _advance(pipeline, solver, states, control, 200)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
-    islands = solver.sleeping.body_island.numpy()
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    islands = solver._sleeping.body_island.numpy()
     test.assertEqual(islands[0], islands[1])
     force = np.zeros((2, 6), dtype=np.float32)
     force[1, 0] = 100.0
     states[0].body_f.assign(force)
     _advance(pipeline, solver, states, control, 1, clear=False)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 1])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1])
 
 
 def test_cuda_graph_sleep_and_wake(test, device):
@@ -162,13 +162,13 @@ def test_cuda_graph_sleep_and_wake(test, device):
             states.reverse()
     for _ in range(100):
         wp.capture_launch(capture.graph)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     forces = np.zeros((2, 6), dtype=np.float32)
     forces[0, 0] = 100.0
     states[0].body_f.assign(forces)
     states[1].body_f.assign(forces)
     wp.capture_launch(capture.graph)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 0])
 
 
 def _parent_wrench_scene(device):
@@ -194,7 +194,7 @@ def test_sleeping_body_keeps_its_parent_wrench(test, device):
     states, reference_states = [model.state(), model.state()], [model.state(), model.state()]
     control = model.control()
     _advance(pipeline, solver, states, control, 120, observables=observables)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     asleep = observables.body_parent_f.numpy().copy()
     _advance(pipeline, solver, states, control, 10, observables=observables)
     np.testing.assert_array_equal(observables.body_parent_f.numpy(), asleep)
@@ -215,7 +215,7 @@ def test_sleeping_body_keeps_its_legacy_parent_wrench(test, device):
     test.assertIsNotNone(states[0].body_parent_f)
     control = model.control()
     _advance(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     asleep = states[0].body_parent_f.numpy().copy()
     _advance(pipeline, solver, states, control, 10)
     np.testing.assert_array_equal(states[0].body_parent_f.numpy(), asleep)
@@ -245,7 +245,7 @@ def test_sleeping_parent_wrench_is_independent_of_the_output(test, device):
     first = solver.observables(flags)
     states, control = [model.state(), model.state()], model.control()
     _advance(pipeline, solver, states, control, 120, observables=first)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     asleep = first.body_parent_f.numpy().copy()
     np.testing.assert_allclose(asleep, _resting_wrench(model, pipeline, reference, control), rtol=0.0, atol=1.0e-3)
     test.assertGreater(np.abs(asleep[:, 2]).min(), 1.0)
@@ -272,7 +272,7 @@ def test_sleeping_parent_wrench_is_independent_of_the_output(test, device):
         step(third)
     for _ in range(3):
         wp.capture_launch(capture.graph)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     np.testing.assert_array_equal(third.body_parent_f.numpy(), asleep)
 
 
@@ -282,10 +282,10 @@ def test_parent_wrench_first_requested_after_sleep(test, device):
     solver, reference = _sleeping_wrench_solvers(model)
     states, control = [model.state(), model.state()], model.control()
     _advance(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
     _advance(pipeline, solver, states, control, 1, observables=observables)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     resting = _resting_wrench(model, pipeline, reference, control)
     np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
     # A reset wakes the bodies, which then publish freshly computed wrenches.
@@ -302,7 +302,7 @@ def test_sleeping_parent_wrench_from_legacy_to_observable(test, device):
     solver, _reference = _sleeping_wrench_solvers(model)
     states, control = [model.state(), model.state()], model.control()
     _advance(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     legacy = states[0].body_parent_f.numpy().copy()
     observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
     _advance(pipeline, solver, states, control, 1, observables=observables)

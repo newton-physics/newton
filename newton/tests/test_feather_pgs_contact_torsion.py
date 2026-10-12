@@ -113,20 +113,20 @@ def fixture(
         # Use the constructor default (persistent friction patches).
         del kwargs["friction_anchor_beta"]
     solver = SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs)
-    solver.rigid_body_angular_damping.zero_()
+    solver._rigid_body_angular_damping.zero_()
     if row_limit is not None:
-        solver.articulation_constraint_max = row_limit
+        solver._articulation_constraint_max = row_limit
     observables = solver.observables({SolverObservableFlags.CONTACT_F})
     solver.step(a, z, model.control(), contacts, dt, observables=observables)
     result = {name: getattr(z, name).numpy() for name in ("body_q", "body_qd", "joint_q", "joint_qd")}
     result["contact_f"] = observables.contact_f.numpy()
     result.update(
         {
-            name: getattr(solver, name).numpy()
+            name: getattr(solver, f"_{name}").numpy()
             for name in ("impulses", "row_type", "row_parent", "row_mu", "J_world", "Y_world", "v_hat", "v_out")
         }
     )
-    result["count"] = solver.constraint_count.numpy()
+    result["count"] = solver._constraint_count.numpy()
     return result, solver, model, a, contacts
 
 
@@ -161,7 +161,7 @@ def held_box(radius, torque, *, device="cuda:0", steps=20, dt=0.0025, mu=0.5, ma
         free_body_constraint_max=16,
         **PATCH_OPTIONS,
     )
-    solver.rigid_body_angular_damping.zero_()
+    solver._rigid_body_angular_damping.zero_()
     pipeline = newton.CollisionPipeline(
         model, contact_matching="latest", reduce_contacts=False, broad_phase="nxn", rigid_contact_max=64
     )
@@ -195,14 +195,14 @@ def patch_rows(
     n = len(points)
     solver = SimpleNamespace(
         model=model,
-        contact_path=wp.zeros(n, dtype=int, device=device),
-        contact_slot=wp.array(slots, dtype=int, device=device),
-        contact_world=wp.zeros(n, dtype=int, device=device),
-        contact_slots_needed=wp.array(slots_needed, dtype=int, device=device),
-        row_type=wp.array([row_type], dtype=int, device=device),
-        row_parent=wp.array([parents], dtype=int, device=device),
-        row_mu=wp.array([mu], dtype=float, device=device),
-        constraint_count=wp.array([len(row_type)], dtype=int, device=device),
+        _contact_path=wp.zeros(n, dtype=int, device=device),
+        _contact_slot=wp.array(slots, dtype=int, device=device),
+        _contact_world=wp.zeros(n, dtype=int, device=device),
+        _contact_slots_needed=wp.array(slots_needed, dtype=int, device=device),
+        _row_type=wp.array([row_type], dtype=int, device=device),
+        _row_parent=wp.array([parents], dtype=int, device=device),
+        _row_mu=wp.array([mu], dtype=float, device=device),
+        _constraint_count=wp.array([len(row_type)], dtype=int, device=device),
         _friction_anchors_enabled=patches_enabled,
         _friction_patches=patches,
         _contact_torsion_shape_set=None,
@@ -214,13 +214,13 @@ def patch_rows(
             inputs=[
                 contacts.rigid_contact_count,
                 patches.view,
-                solver.contact_world,
-                solver.contact_slot,
-                solver.contact_path,
-                solver.contact_slots_needed,
+                solver._contact_world,
+                solver._contact_slot,
+                solver._contact_path,
+                solver._contact_slots_needed,
                 0,
-                solver.row_parent,
-                solver.row_mu,
+                solver._row_parent,
+                solver._row_mu,
             ],
             device=device,
         )
@@ -243,12 +243,12 @@ def test_two_anchor_region_pools_the_undivided_coefficient(test, device):
         parents=[-1, 0, 0, -1, -1, 4, 4],
         mu=[0.5] * 7,
     )
-    np.testing.assert_array_equal(solver.row_parent.numpy()[0], [3, 0, 0, 4, 0, 4, 4])
-    np.testing.assert_allclose(solver.row_mu.numpy()[0], [0.5, 0.25, 0.25, 0.5, 0.5, 0.25, 0.25])
+    np.testing.assert_array_equal(solver._row_parent.numpy()[0], [3, 0, 0, 4, 0, 4, 4])
+    np.testing.assert_allclose(solver._row_mu.numpy()[0], [0.5, 0.25, 0.25, 0.5, 0.5, 0.25, 0.25])
     groups = _contact_groups(solver, state, contacts)
     test.assertEqual(len(groups), 1)
     test.assertEqual(sorted(w.slot for w in groups[0]), [0, 3, 4])
-    coefficient, anchors, touching = _group_budget(solver, groups[0], solver.row_mu.numpy())
+    coefficient, anchors, touching = _group_budget(solver, groups[0], solver._row_mu.numpy())
     test.assertAlmostEqual(coefficient, 0.5)
     test.assertEqual(sorted(w.slot for w in anchors), [0, 4])
     test.assertEqual(len(touching), 3)
@@ -265,11 +265,11 @@ def test_single_anchor_region_keeps_the_coefficient(test, device):
         parents=[-1, 0, 0, -1],
         mu=[0.5] * 4,
     )
-    np.testing.assert_array_equal(solver.row_parent.numpy()[0], [3, 0, 0, 0])
+    np.testing.assert_array_equal(solver._row_parent.numpy()[0], [3, 0, 0, 0])
     groups = _contact_groups(solver, state, contacts)
     test.assertEqual(len(groups), 1)
     test.assertEqual(sorted(w.slot for w in groups[0]), [0, 3])
-    coefficient, anchors, _touching = _group_budget(solver, groups[0], solver.row_mu.numpy())
+    coefficient, anchors, _touching = _group_budget(solver, groups[0], solver._row_mu.numpy())
     test.assertAlmostEqual(coefficient, 0.5)
     test.assertEqual([w.slot for w in anchors], [0])
 
@@ -288,7 +288,7 @@ def test_point_friction_grouping_is_unchanged(test, device):
     )
     groups = _contact_groups(solver, state, contacts)
     test.assertEqual(len(groups), 1)
-    coefficient, anchors, _touching = _group_budget(solver, groups[0], solver.row_mu.numpy())
+    coefficient, anchors, _touching = _group_budget(solver, groups[0], solver._row_mu.numpy())
     test.assertAlmostEqual(coefficient, 0.5)
     test.assertEqual(sorted(w.slot for w in anchors), [0, 3])
 
@@ -306,7 +306,7 @@ def test_region_without_anchor_rows_carries_no_spin(test, device):
     )
     groups = _contact_groups(solver, state, contacts)
     test.assertEqual(len(groups), 1)
-    test.assertIsNone(_group_budget(solver, groups[0], solver.row_mu.numpy()))
+    test.assertIsNone(_group_budget(solver, groups[0], solver._row_mu.numpy()))
 
 
 def test_region_with_inadmissible_member_is_skipped(test, device):
@@ -335,9 +335,9 @@ def test_broken_load_ring_is_rejected(test, device):
         parents=[-1, 0, 0, -1, 3, 3],
         mu=[0.5] * 6,
     )
-    parents = solver.row_parent.numpy()
+    parents = solver._row_parent.numpy()
     parents[0, 3] = -1
-    solver.row_parent.assign(parents)
+    solver._row_parent.assign(parents)
     with test.assertRaisesRegex(RuntimeError, "load ring"):
         _contact_groups(solver, state, contacts)
 
@@ -448,7 +448,7 @@ def test_timestep_and_capacity(test, device):
         result, solver, *_ = fixture(0.01, device=device, spin=100.0, center_only=True, dt=dt)
         velocities.append(result["v_out"])
         test.assertFalse(np.any(solver.constraint_overflow.numpy()))
-        test.assertLessEqual(int(solver.constraint_count.numpy().max()), solver.articulation_constraint_max)
+        test.assertLessEqual(int(solver._constraint_count.numpy().max()), solver.articulation_constraint_max)
     for velocity in velocities[1:]:
         np.testing.assert_allclose(velocity, velocities[0], atol=2e-5)
     baseline, *_ = fixture(0.0, device=device, center_only=True)

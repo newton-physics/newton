@@ -72,7 +72,7 @@ def _settle(model, solver, steps=12):
 
 def _color_counts(solver):
     """Units per color of world 0, and the units of the serial tail."""
-    offsets = solver.color_world_offsets.numpy()[: PROPAGATION_COLOR_TAIL + 2].astype(np.int64)
+    offsets = solver._color_world_offsets.numpy()[: PROPAGATION_COLOR_TAIL + 2].astype(np.int64)
     counts = np.diff(offsets)
     return counts[:PROPAGATION_COLOR_TAIL], int(counts[PROPAGATION_COLOR_TAIL])
 
@@ -80,13 +80,13 @@ def _color_counts(solver):
 def _first_fit_reference(solver, world=0):
     """Color world 0's units on the host: sort by contact, first fit, stable counting sort."""
     entries = PROPAGATION_COLOR_TAIL + 2
-    stride = solver.propagation_max_constraints
-    n = min(int(solver.color_world_unit_cursor.numpy()[world]), stride)
+    stride = solver._propagation_max_constraints
+    n = min(int(solver._color_world_unit_cursor.numpy()[world]), stride)
     base = world * stride
-    contact = solver.color_unit_contact.numpy()[base : base + n]
-    body_a = solver.color_unit_body_a.numpy()[base : base + n]
-    body_b = solver.color_unit_body_b.numpy()[base : base + n]
-    length = solver.color_unit_len.numpy()[base : base + n]
+    contact = solver._color_unit_contact.numpy()[base : base + n]
+    body_a = solver._color_unit_body_a.numpy()[base : base + n]
+    body_b = solver._color_unit_body_b.numpy()[base : base + n]
+    length = solver._color_unit_len.numpy()[base : base + n]
     order = np.argsort(contact, kind="stable")
     used = {}
     color = np.zeros(n, dtype=np.int64)
@@ -149,8 +149,8 @@ def test_kinematic_free_body_is_recorded_as_static(test, device):
     model.rigid_contact_max = CONTACT_MAX
     solver = _colored_solver(model, free_body_constraint_max=256)
     _settle(model, solver, steps=1)
-    n = int(solver.color_world_unit_cursor.numpy()[0])
-    bodies = np.concatenate([solver.color_unit_body_a.numpy()[:n], solver.color_unit_body_b.numpy()[:n]])
+    n = int(solver._color_world_unit_cursor.numpy()[0])
+    bodies = np.concatenate([solver._color_unit_body_a.numpy()[:n], solver._color_unit_body_b.numpy()[:n]])
     test.assertGreater(n, 0)
     test.assertNotIn(kinematic, bodies)
     test.assertIn(dynamic, bodies)
@@ -188,8 +188,8 @@ def test_coloring_is_deterministic_for_a_fixed_contact_set(test, device):
             wp.copy(getattr(state_in, name), getattr(state, name))
         solver = _colored_solver(model)
         solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
-        offsets = solver.color_world_offsets.numpy()[: PROPAGATION_COLOR_TAIL + 2].copy()
-        order = solver.color_unit_sorted.numpy()[: offsets[-1]].copy()
+        offsets = solver._color_world_offsets.numpy()[: PROPAGATION_COLOR_TAIL + 2].copy()
+        order = solver._color_unit_sorted.numpy()[: offsets[-1]].copy()
         results.append((offsets, order, state_out.body_qd.numpy().copy()))
     offsets, order, body_qd = results[0]
     test.assertGreater(int(offsets[-1]), 400)
@@ -210,10 +210,10 @@ def test_prebuild_matches_the_first_fit_reference(test, device):
             test.assertTrue(np.isfinite(state.body_q.numpy()).all())
             n, color, offsets, row_start, sorted_contact = _first_fit_reference(solver)
             test.assertGreater(n, 400)
-            np.testing.assert_array_equal(solver.color_unit_color.numpy()[:n], color)
-            np.testing.assert_array_equal(solver.color_world_offsets.numpy()[: PROPAGATION_COLOR_TAIL + 2], offsets)
-            np.testing.assert_array_equal(solver.color_world_row_order.numpy()[:n], row_start)
-            np.testing.assert_array_equal(solver.color_unit_sorted.numpy()[:n], sorted_contact)
+            np.testing.assert_array_equal(solver._color_unit_color.numpy()[:n], color)
+            np.testing.assert_array_equal(solver._color_world_offsets.numpy()[: PROPAGATION_COLOR_TAIL + 2], offsets)
+            np.testing.assert_array_equal(solver._color_world_row_order.numpy()[:n], row_start)
+            np.testing.assert_array_equal(solver._color_unit_sorted.numpy()[:n], sorted_contact)
 
 
 def test_colored_accepts_a_large_row_budget(test, device):
@@ -221,7 +221,7 @@ def test_colored_accepts_a_large_row_budget(test, device):
     model = _heap(device, nx=2, ny=2, nz=1)
     model.rigid_contact_max = 65536
     solver = _colored_solver(model, free_body_constraint_max=32768, articulation_constraint_max=2048)
-    test.assertEqual(solver.propagation_max_constraints, 32768 + 2048)
+    test.assertEqual(solver._propagation_max_constraints, 32768 + 2048)
 
 
 class TestFeatherPGSColoredScheduling(unittest.TestCase):

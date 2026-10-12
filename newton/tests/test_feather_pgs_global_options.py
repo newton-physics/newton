@@ -77,11 +77,13 @@ def _friction_impulses(solver):
     """Return every friction row impulse of the dense, free-body and propagation row families."""
     values = []
     families = [
-        (solver.constraint_count, solver.row_type, solver.impulses),
-        (solver.mf_constraint_count, solver.mf_row_type, solver.mf_impulses),
+        (solver._constraint_count, solver._row_type, solver._impulses),
+        (solver._mf_constraint_count, solver._mf_row_type, solver._mf_impulses),
     ]
     if solver._propagation_active:
-        families.append((solver.propagation_constraint_count, solver.propagation_row_type, solver.propagation_impulses))
+        families.append(
+            (solver._propagation_constraint_count, solver._propagation_row_type, solver._propagation_impulses)
+        )
     for count_array, type_array, impulse_array in families:
         row_type = type_array.numpy()
         impulses = impulse_array.numpy()
@@ -212,7 +214,7 @@ def test_angular_damping_decays_free_root_spin_analytically(test, device):
     )
     test.assertAlmostEqual(float(joint_qd[5]), 4.0 * (1.0 - damping * DT) ** steps, delta=1.0e-5)
     test.assertEqual(solver.angular_damping, damping)
-    np.testing.assert_allclose(solver.rigid_body_angular_damping.numpy(), damping)
+    np.testing.assert_allclose(solver._rigid_body_angular_damping.numpy(), damping)
 
 
 def test_angular_damping_validates_its_value(test, device):
@@ -283,10 +285,10 @@ def test_contact_friction_scale_applies_to_notified_materials(test, device):
     """Rescale the solver's friction copy whenever SHAPE_PROPERTIES publishes new coefficients."""
     model = _build_contact_scene(device)
     solver = SolverFeatherPGS(model, contact_friction_scale=0.25, **_split_or_default(device))
-    np.testing.assert_allclose(solver.shape_material_mu.numpy()[: model.shape_count], 0.25 * 0.6, rtol=1.0e-7)
+    np.testing.assert_allclose(solver._shape_mu.numpy()[: model.shape_count], 0.25 * 0.6, rtol=1.0e-7)
     model.shape_material_mu = wp.full(model.shape_count, 0.8, dtype=float, device=device)
     solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
-    np.testing.assert_allclose(solver.shape_material_mu.numpy()[: model.shape_count], 0.2, rtol=1.0e-7)
+    np.testing.assert_allclose(solver._shape_mu.numpy()[: model.shape_count], 0.2, rtol=1.0e-7)
     np.testing.assert_allclose(model.shape_material_mu.numpy(), 0.8)
 
 
@@ -444,7 +446,7 @@ def _bounce(device, scene, **options):
     """Return the post-impact vertical velocity of a sphere with restitution 0.8 hitting a plane."""
     model, body = _build_plane_model(device, separation=0.0008, restitution=0.8, scene=scene)
     solver = SolverFeatherPGS(model, iterations=16, cfm=0.0, **options)
-    solver.rigid_body_angular_damping.zero_()
+    solver._rigid_body_angular_damping.zero_()
     state_in, state_out = model.state(), model.state()
     _reset_state(model, state_in, -2.0)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")

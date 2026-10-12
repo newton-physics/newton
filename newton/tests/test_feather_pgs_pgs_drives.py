@@ -239,8 +239,8 @@ def test_drive_rows_precede_limit_rows_and_count_against_capacity(test, device):
     )
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, DT)
-    counts = solver.constraint_count.numpy()
-    row_type = solver.row_type.numpy()
+    counts = solver._constraint_count.numpy()
+    row_type = solver._row_type.numpy()
     np.testing.assert_array_equal(counts, [9, 9])  # 3 drive rows + 2 position-limit rows per DOF
     for world in range(2):
         test.assertTrue(np.all(row_type[world, :3] == PGS_CONSTRAINT_TYPE_JOINT_TARGET))
@@ -257,8 +257,8 @@ def test_drive_rows_precede_limit_rows_and_count_against_capacity(test, device):
             warn_constraint_overflow=False,
         )
     small.step(model.state(), model.state(), model.control(), None, DT)
-    np.testing.assert_array_equal(small.constraint_count.numpy(), [2, 2])
-    test.assertTrue(np.all(small.row_type.numpy()[:, :2] == PGS_CONSTRAINT_TYPE_JOINT_TARGET))
+    np.testing.assert_array_equal(small._constraint_count.numpy(), [2, 2])
+    test.assertTrue(np.all(small._row_type.numpy()[:, :2] == PGS_CONSTRAINT_TYPE_JOINT_TARGET))
     np.testing.assert_array_equal(small.constraint_overflow.numpy(), [True, True, False])
     with test.assertRaisesRegex(RuntimeError, "overflow|capacity"):
         small.check_constraint_capacity()
@@ -275,8 +275,8 @@ def test_undriven_dofs_get_no_drive_rows(test, device):
     model.joint_target_kd.assign(kd)
     solver = SolverFeatherPGS(model, solve_mode="matrix_free", drive_mode="rows", joint_limit_activation_gap=0.0)
     solver.step(model.state(), model.state(), model.control(), None, DT)
-    test.assertEqual(int(solver.constraint_count.numpy()[0]), 2)
-    np.testing.assert_array_equal(solver.drive_slot.numpy(), [0, -1, 1])
+    test.assertEqual(int(solver._constraint_count.numpy()[0]), 2)
+    np.testing.assert_array_equal(solver._drive_slot.numpy(), [0, -1, 1])
 
 
 def test_prescale_skips_fused_driven_dofs(test, device):
@@ -317,7 +317,7 @@ def test_drive_rows_use_the_exact_unit_response(test, device):
     for cfm in (0.0, 0.5):
         solver = SolverFeatherPGS(model, solve_mode="matrix_free", drive_mode="rows", enable_joint_limits=True, cfm=cfm)
         solver.step(model.state(), model.state(), model.control(), None, DT)
-        diags[cfm] = solver.diag.numpy()[0, : int(solver.constraint_count.numpy()[0])]
+        diags[cfm] = solver._diag.numpy()[0, : int(solver._constraint_count.numpy()[0])]
     test.assertEqual(diags[0.0].size, 9)  # 3 drive rows + 2 position-limit rows per DOF
     np.testing.assert_array_equal(diags[0.5][:3], diags[0.0][:3])  # drive rows
     np.testing.assert_allclose(diags[0.5][3:] - diags[0.0][3:], 0.5, rtol=1.0e-5)  # limit rows

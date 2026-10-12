@@ -750,16 +750,16 @@ def test_kinematic_prescribed_response_lifetime(
     """Drop a newly kinematic free body from the response and reject a kinematic body turning dynamic."""
     model, kinematic_body, probe_body, _kinematic_joint = _build_free_root_scene(device)
     solver = solver_fn(model)
-    body_to_articulation = solver.body_to_articulation.numpy()
+    body_to_articulation = solver._body_to_articulation.numpy()
     kinematic_articulation = int(body_to_articulation[kinematic_body])
     probe_articulation = int(body_to_articulation[probe_body])
-    test.assertEqual(int(solver.articulation_response_dof_count.numpy()[kinematic_articulation]), 0)
+    test.assertEqual(int(solver._articulation_response_dof_count.numpy()[kinematic_articulation]), 0)
 
     flags = model.body_flags.numpy()
     flags[probe_body] = int(BodyFlags.KINEMATIC)
     model.body_flags.assign(flags)
     solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
-    test.assertEqual(int(solver.articulation_response_dof_count.numpy()[probe_articulation]), 6)
+    test.assertEqual(int(solver._articulation_response_dof_count.numpy()[probe_articulation]), 6)
 
     flags = model.body_flags.numpy()
     flags[kinematic_body] = int(BodyFlags.DYNAMIC)

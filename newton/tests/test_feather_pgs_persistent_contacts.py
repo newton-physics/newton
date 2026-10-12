@@ -113,9 +113,9 @@ class TestFeatherPGSPersistentContacts(unittest.TestCase):
         solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         solver._ws_prev_mf_row_type.assign(row_type)
         solver._ws_prev_mf_row_parent.assign(row_parent)
-        slot = int(solver.contact_slot.numpy()[0])
+        slot = int(solver._contact_slot.numpy()[0])
         self.assertGreaterEqual(slot, 0)
-        jacobian = solver.mf_J_a if int(solver.mf_body_a.numpy()[0, slot]) >= 0 else solver.mf_J_b
+        jacobian = solver._mf_J_a if int(solver._mf_body_a.numpy()[0, slot]) >= 0 else solver._mf_J_b
         old_direction = jacobian.numpy()[0, slot + 1, :3].copy()
         previous = solver._ws_prev_mf_impulses.numpy()
         previous[0, slot : slot + 3] = (1.0, 0.5, 0.0)
@@ -142,8 +142,8 @@ class TestFeatherPGSPersistentContacts(unittest.TestCase):
         indices[0] = 0
         contacts.rigid_contact_match_index.assign(indices)
         solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
-        slot = int(solver.contact_slot.numpy()[0])
-        impulses = solver.mf_impulses.numpy()[0, slot : slot + 3]
+        slot = int(solver._contact_slot.numpy()[0])
+        impulses = solver._mf_impulses.numpy()[0, slot : slot + 3]
         tangent_rows = jacobian.numpy()[0, slot + 1 : slot + 3, :3]
         world_tangent = impulses[1:] @ tangent_rows
         # Independent world-space projection; solver rows use B-to-A normals.

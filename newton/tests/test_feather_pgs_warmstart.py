@@ -70,9 +70,9 @@ def _run_press(device, steps: int, warm_kwargs: dict, contact_matching: str | No
         state_0.clear_forces()
         solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
         state_0, state_1 = state_1, state_0
-        counts = solver.constraint_count.numpy()
-        rows = solver.row_type.numpy()[0, : counts[0]]
-        lam = solver.impulses.numpy()[0, : counts[0]]
+        counts = solver._constraint_count.numpy()
+        rows = solver._row_type.numpy()[0, : counts[0]]
+        lam = solver._impulses.numpy()[0, : counts[0]]
         impulse_sums[i] = np.abs(lam[rows == PGS_CONSTRAINT_TYPE_CONTACT]).sum()
         speeds[i] = np.abs(state_0.joint_qd.numpy()[0])
     return impulse_sums, speeds, state_0
@@ -312,13 +312,13 @@ def test_real_contact_insertion_moves_slots_without_cross_seeding(test, device):
     test.assertEqual(int(match[b_contact]), 0)
     test.assertLess(int(match[a_contact]), 0)
 
-    solver.iterations = 0
+    solver._iterations = 0
     solver.step(state_1, state_0, control, contacts, 1.0 / 240.0)
-    slots = solver.contact_slot.numpy()[:count]
+    slots = solver._contact_slot.numpy()[:count]
     b_slot = int(slots[b_contact])
     a_slot = int(slots[a_contact])
     test.assertNotEqual(b_slot, old_slot, "test did not produce actual solver-slot churn")
-    impulses = solver.mf_impulses.numpy()[0]
+    impulses = solver._mf_impulses.numpy()[0]
     test.assertAlmostEqual(float(impulses[b_slot]), old_impulse, delta=1.0e-6)
     test.assertEqual(float(impulses[a_slot]), 0.0)
 
@@ -378,13 +378,13 @@ def _seeded_sphere_impulses(solver, contacts, shapes, state_in, state_out, model
     the caller has already stepped (for example by a graph replay).
     """
     if step:
-        solver.iterations = 0
+        solver._iterations = 0
         solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
     count = int(contacts.rigid_contact_count.numpy()[0])
     shape0 = contacts.rigid_contact_shape0.numpy()[:count]
     shape1 = contacts.rigid_contact_shape1.numpy()[:count]
-    slots = solver.contact_slot.numpy()[:count]
-    impulses = (solver.impulses if articulated else solver.mf_impulses).numpy()[0]
+    slots = solver._contact_slot.numpy()[:count]
+    impulses = (solver._impulses if articulated else solver._mf_impulses).numpy()[0]
     seeds = []
     for shape in shapes:
         index = np.flatnonzero((shape0 == shape) | (shape1 == shape))
@@ -466,7 +466,7 @@ def test_interleaved_contact_buffers_start_cold_under_graph_replay(test, device)
                 _insertion_after_solved_single_contact(device, articulated)
             )
             other = pipeline.contacts()
-            solver.iterations = 0
+            solver._iterations = 0
             graphs = {}
             with wp.ScopedCapture(device) as capture:
                 pipeline.collide(state_in, contacts)
@@ -520,7 +520,7 @@ def test_substeps_reuse_contacts_with_their_own_history(test, device):
     dt = 1.0 / 240.0
 
     def step(iterations):
-        solver.iterations = iterations
+        solver._iterations = iterations
         solver.step(states[0], states[1], control, contacts, dt)
         states.reverse()
 
@@ -528,8 +528,8 @@ def test_substeps_reuse_contacts_with_their_own_history(test, device):
         count = int(contacts.rigid_contact_count.numpy()[0])
         shape0 = contacts.rigid_contact_shape0.numpy()[:count]
         shape1 = contacts.rigid_contact_shape1.numpy()[:count]
-        slots = solver.contact_slot.numpy()[:count]
-        impulses = solver.mf_impulses.numpy()[0]
+        slots = solver._contact_slot.numpy()[:count]
+        impulses = solver._mf_impulses.numpy()[0]
         result = {}
         for name, shape in (("a", shape_a), ("b", shape_b)):
             index = np.flatnonzero((shape0 == shape) | (shape1 == shape))
@@ -588,7 +588,7 @@ def test_graph_replay_rescales_history_once_after_a_timestep_change(test, device
         for captured in (False, True):
             _model, pipeline, contacts, solver, state_0, state_1, control = _resting_box_rows(device, articulated)
             impulses, row_type = (
-                (solver.impulses, solver.row_type) if articulated else (solver.mf_impulses, solver.mf_row_type)
+                (solver._impulses, solver._row_type) if articulated else (solver._mf_impulses, solver._mf_row_type)
             )
 
             def normal_load(impulses=impulses, row_type=row_type):
@@ -597,7 +597,7 @@ def test_graph_replay_rescales_history_once_after_a_timestep_change(test, device
             settled = normal_load()
             test.assertGreater(settled, 0.0)
             # Without a sweep the solved impulses are the seeds.
-            solver.iterations = 0
+            solver._iterations = 0
             pipeline.collide(state_0, contacts)
             if captured:
                 with wp.ScopedCapture(device) as capture:
@@ -660,8 +660,8 @@ def test_single_flag_enables_dense_and_mf_carry(test, device):
     solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", contact_warmstart=True, iterations=4)
     test.assertTrue(solver.contact_warmstart)
     # Both row families keep a carry.
-    test.assertEqual(solver._ws_prev_impulses.shape, solver.impulses.shape)
-    test.assertEqual(solver._ws_prev_mf_impulses.shape, solver.mf_impulses.shape)
+    test.assertEqual(solver._ws_prev_impulses.shape, solver._impulses.shape)
+    test.assertEqual(solver._ws_prev_mf_impulses.shape, solver._mf_impulses.shape)
 
 
 def _resting_box_rows(device, articulated: bool):
@@ -704,15 +704,15 @@ def test_both_row_families_seed_impulses_scaled_by_the_step_ratio(test, device):
         with test.subTest(articulated=articulated):
             _model, pipeline, contacts, solver, state_0, state_1, control = _resting_box_rows(device, articulated)
             if articulated:
-                impulses, row_type, count = solver.impulses, solver.row_type, solver.constraint_count
+                impulses, row_type, count = solver._impulses, solver._row_type, solver._constraint_count
             else:
-                impulses, row_type, count = solver.mf_impulses, solver.mf_row_type, solver.mf_constraint_count
+                impulses, row_type, count = solver._mf_impulses, solver._mf_row_type, solver._mf_constraint_count
             n = int(count.numpy()[0])
             normal = row_type.numpy()[0, :n] == PGS_CONSTRAINT_TYPE_CONTACT
             previous = impulses.numpy()[0, :n][normal]
             test.assertGreater(float(previous.sum()), 0.0)
 
-            solver.iterations = 0
+            solver._iterations = 0
             pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, 0.5 / 120.0)
             test.assertEqual(int(count.numpy()[0]), n)

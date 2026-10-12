@@ -87,7 +87,7 @@ def test_streams_and_double_buffer_step_identically(test, device, solve_mode="ma
     reference_solver, reference = _run(model, solve_mode=solve_mode)
     test.assertEqual(reference_solver._size_streams, {})
     test.assertFalse(reference_solver._double_buffered)
-    test.assertGreater(len(reference_solver.size_groups), 1)
+    test.assertGreater(len(reference_solver._size_groups), 1)
     for options in (
         {"use_parallel_streams": True},
         {"double_buffer": True},
@@ -102,9 +102,9 @@ def test_streams_and_double_buffer_step_identically(test, device, solve_mode="ma
                 # Both buffer sets were cleared on the memset stream after their last use.
                 wp.synchronize_device(device)
                 used = 1 - solver._buffer_index
-                test.assertIs(solver._J_bufs[used], solver.J_by_size)
+                test.assertIs(solver._J_bufs[used], solver._J_by_size)
                 for index in (0, 1):
-                    for size in solver.size_groups:
+                    for size in solver._size_groups:
                         test.assertFalse(solver._J_bufs[index][size].numpy().any())
                         if "update_mass_matrix_interval" not in options:
                             test.assertFalse(solver._H_bufs[index][size].numpy().any())

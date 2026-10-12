@@ -258,11 +258,11 @@ def test_backward_torques_with_live_forces_and_passive_terms(test, device):
                     wrench = (wrench % 11 - 5) * (0.03 + force_phase * 0.04)
                     state.body_f.assign(wrench)
                     controls[index].joint_f.assign(seed * (1.0 + force_phase))
-                    solver.joint_tau.fill_(-123.25)
+                    solver._joint_tau.fill_(-123.25)
                     for scratch in solver._tree_net_wrenches:
                         scratch.fill_(-123.25)
                     solver._stage1_joint_tau(state, solver, following[index], controls[index], 1.0 / 240.0)
-                for name in ("body_ft_s", "joint_tau", "aug_row_counts", "aug_row_dof_index", "aug_row_K"):
+                for name in ("_body_ft_s", "_joint_tau", "_aug_row_counts", "_aug_row_dof_index", "_aug_row_K"):
                     np.testing.assert_allclose(
                         getattr(solvers[1], name).numpy(),
                         getattr(solvers[0], name).numpy(),
@@ -270,7 +270,7 @@ def test_backward_torques_with_live_forces_and_passive_terms(test, device):
                         atol=3e-6,
                         err_msg=f"forces {force_phase}: {name}",
                     )
-                tau = solvers[1].joint_tau.numpy().copy()
+                tau = solvers[1]._joint_tau.numpy().copy()
                 if previous_tau is not None:
                     test.assertGreater(float(np.max(np.abs(tau - previous_tau))), 0.01)
                 previous_tau = tau
@@ -309,7 +309,7 @@ def test_stage1_matches_serial_with_velocity_prescale(test, device):
                         actual.numpy(), fields[0][name].numpy(), rtol=3e-6, atol=3e-6, err_msg=f"{phase}: {name}"
                     )
                 if velocity_limits:
-                    np.testing.assert_array_equal(solvers[1].qd_work.numpy(), solvers[0].qd_work.numpy())
+                    np.testing.assert_array_equal(solvers[1]._qd_work.numpy(), solvers[0]._qd_work.numpy())
 
 
 def test_publication_matches_public_fk(test, device):

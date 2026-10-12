@@ -29,7 +29,7 @@ def _check_pair(test, device, regularization, velocity, **options):
         atol=2e-5,
         rtol=8 * np.finfo(np.float32).eps,
     )
-    weights = solver.row_w.numpy()[0, :count]
+    weights = solver._row_w.numpy()[0, :count]
     types = result["row_type"][0, :count]
     np.testing.assert_allclose(weights[types == 0], 1 / (1 + regularization), atol=1e-7)
     velocity_tests._assert_budget(test, result, solver)
@@ -67,7 +67,7 @@ def test_distributed_budget_and_export(test, device):
                 count = int(contacts.rigid_contact_count.numpy()[0])
                 forces = result["contact_f"][:count, :3]
                 normals = contacts.rigid_contact_normal.numpy()[:count]
-                for index, slot in enumerate(solver.contact_slot.numpy()[:count]):
+                for index, slot in enumerate(solver._contact_slot.numpy()[:count]):
                     if slot >= 0:
                         test.assertAlmostEqual(
                             abs(float(forces[index] @ normals[index])) * dt,
@@ -81,27 +81,27 @@ def test_no_load_near_positive_gap_and_release(test, device):
     for gap in (0.5e-6, 0.01):
         _, _, solver, *_ = _check_pair(test, device, 0.01, 16, center_only=True, spin=100.0, **PATCH_OPTIONS)
         group = solver._torsion_stats["groups"][0]
-        n = int(solver.constraint_count.numpy()[0])
-        before = solver.impulses.numpy()[0, :n].copy()
-        phi = solver.phi.numpy()
+        n = int(solver._constraint_count.numpy()[0])
+        before = solver._impulses.numpy()[0, :n].copy()
+        phi = solver._phi.numpy()
         phi[0, group["normal_rows"]] = gap
-        solver.phi.assign(phi)
+        solver._phi.assign(phi)
         # Force a separating end-gap through the normal row's response vector.
         row = group["normal_rows"][0]
-        separating = solver.Y_world.numpy()[0, row].copy()
-        solver.v_out_snap.assign(separating)
-        solver.v_hat.assign(separating)
-        solver.v_out.assign(separating + solver.Y_world.numpy()[0, :n].T @ before)
-        velocity_before = solver.v_out.numpy().copy()
+        separating = solver._Y_world.numpy()[0, row].copy()
+        solver._v_out_snap.assign(separating)
+        solver._v_hat.assign(separating)
+        solver._v_out.assign(separating + solver._Y_world.numpy()[0, :n].T @ before)
+        velocity_before = solver._v_out.numpy().copy()
         velocity_tests._conclude_position_problem(solver, 0.0025)
         velocity_tests._run_velocity_post_solve(solver)
-        after = solver.impulses.numpy()[0, :n]
+        after = solver._impulses.numpy()[0, :n]
         test.assertLess(np.abs(after[group["normal_rows"]]).max(initial=0), 2e-7)
         test.assertLess(abs(float(after[group["row"]])), 2e-7)
         for anchor in group["anchor_rows"]:
             test.assertLess(np.linalg.norm(after[anchor + 1 : anchor + 3]), 2e-7)
         np.testing.assert_allclose(
-            solver.v_out.numpy(), velocity_before + solver.Y_world.numpy()[0, :n].T @ (after - before), atol=2e-5
+            solver._v_out.numpy(), velocity_before + solver._Y_world.numpy()[0, :n].T @ (after - before), atol=2e-5
         )
 
 

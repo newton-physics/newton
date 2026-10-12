@@ -45,7 +45,7 @@ EXPECTED_PATHS = {
 def _make_solver(model, **kwargs):
     """Create the solver without angular damping, which would mask the contact response."""
     solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs)
-    solver.rigid_body_angular_damping.zero_()
+    solver._rigid_body_angular_damping.zero_()
     return solver
 
 
@@ -103,7 +103,7 @@ def _drop(device, velocity_iterations, steps=620, scene="free", *, contact_warms
         n = int(contacts.rigid_contact_count.numpy()[0])
         counts.append(n)
         if n:
-            routes.update(int(v) for v in solver.contact_path.numpy()[:n] if v >= 0)
+            routes.update(int(v) for v in solver._contact_path.numpy()[:n] if v >= 0)
     return np.asarray(heights), np.asarray(velocities), np.asarray(counts), routes
 
 
@@ -162,19 +162,19 @@ def _single_step(device, gap, approach_speed, velocity_iterations=4, mass=1.0):
     position_solver.step(state_0, position_state, model.control(), contacts, SIM_DT)
     solver.step(state_0, state_1, model.control(), contacts, SIM_DT)
     n = int(contacts.rigid_contact_count.numpy()[0])
-    rows = int(position_solver.mf_constraint_count.numpy()[0])
-    phi = position_solver.mf_phi.numpy()[0][:rows]
-    lam = position_solver.mf_impulses.numpy()[0][:rows]
-    row_type = position_solver.mf_row_type.numpy()[0][:rows]
+    rows = int(position_solver._mf_constraint_count.numpy()[0])
+    phi = position_solver._mf_phi.numpy()[0][:rows]
+    lam = position_solver._mf_impulses.numpy()[0][:rows]
+    row_type = position_solver._mf_row_type.numpy()[0][:rows]
     contact_rows = np.flatnonzero((row_type == 0) & (phi > 0.0))
     position_impulse = float(lam[contact_rows].max()) if contact_rows.size else 0.0
     max_phi = float(phi[contact_rows].max()) if contact_rows.size else 0.0
-    v_position = position_solver.v_out.numpy()
-    J_a = position_solver.mf_J_a.numpy()[0]
-    J_b = position_solver.mf_J_b.numpy()[0]
-    dof_a = position_solver.mf_dof_a.numpy()[0]
-    dof_b = position_solver.mf_dof_b.numpy()[0]
-    world_dofs = position_solver.world_dof_indices.numpy()[0]
+    v_position = position_solver._v_out.numpy()
+    J_a = position_solver._mf_J_a.numpy()[0]
+    J_b = position_solver._mf_J_b.numpy()[0]
+    dof_a = position_solver._mf_dof_a.numpy()[0]
+    dof_b = position_solver._mf_dof_b.numpy()[0]
+    world_dofs = position_solver._world_dof_indices.numpy()[0]
     end_gaps = []
     for row in contact_rows:
         jv = 0.0
@@ -435,7 +435,7 @@ def test_velocity_iterations_keep_angular_damping(test, device):
                 builder.add_ground_plane(cfg=cfg)
             model = builder.finalize(device=device)
             solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", velocity_iterations=iterations)
-            solver.rigid_body_angular_damping.fill_(damping)
+            solver._rigid_body_angular_damping.fill_(damping)
             state_in, state_out = model.state(), model.state()
             state_in.joint_qd.assign(np.array([0.0, 0.0, 0.0, 0.0, 0.0, spin], dtype=np.float32))
             newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)

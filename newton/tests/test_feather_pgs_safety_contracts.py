@@ -40,15 +40,15 @@ def test_partial_reset_refreshes_only_selected_mass_factors(test, device, solve_
     mask = wp.array([True, False, False], dtype=wp.bool, device=device)
     solver.reset(state, mask)
     solver.step(state, output, control, None, 0.01)
-    np.testing.assert_array_equal(solver.mass_update_mask.numpy(), [1, 0, 0])
+    np.testing.assert_array_equal(solver._mass_update_mask.numpy(), [1, 0, 0])
     if not wp.get_device(device).is_cuda:
         return
 
-    first_mask = wp.empty_like(solver.mass_update_mask)
+    first_mask = wp.empty_like(solver._mass_update_mask)
     with wp.ScopedCapture(device=device) as capture:
         solver.reset(state, mask)
         solver.step(state, output, control, None, 0.01)
-        wp.copy(first_mask, solver.mass_update_mask)
+        wp.copy(first_mask, solver._mass_update_mask)
         solver.step(state, output, control, None, 0.01)
 
     for selected, expected in (([False, True, False], [0, 1, 0]), ([False, False, True], [0, 0, 1])):
@@ -57,7 +57,7 @@ def test_partial_reset_refreshes_only_selected_mass_factors(test, device, solve_
             wp.capture_launch(capture.graph)
             np.testing.assert_array_equal(first_mask.numpy(), expected)
             # The request is consumed by the first step; the second reuses every factor.
-            np.testing.assert_array_equal(solver.mass_update_mask.numpy(), [0, 0, 0])
+            np.testing.assert_array_equal(solver._mass_update_mask.numpy(), [0, 0, 0])
 
 
 def test_partial_warp_capacity_preserves_world_boundaries(test, device, pgs_kernel="tiled"):
@@ -77,19 +77,19 @@ def test_partial_warp_capacity_preserves_world_boundaries(test, device, pgs_kern
             )
             initial = np.zeros((3, capacity), dtype=np.float32)
             initial[2] = 1234.0
-            solver.constraint_count.assign(np.array([capacity, 1, 0], dtype=np.int32))
-            solver.impulses.assign(initial)
-            solver.diag.fill_(2.0)
-            solver.C.assign(np.tile(2.0 * np.eye(capacity, dtype=np.float32), (3, 1, 1)))
-            solver.rhs.fill_(-1.0)
-            solver.row_type.zero_()
-            solver.row_parent.zero_()
-            solver.row_mu.zero_()
+            solver._constraint_count.assign(np.array([capacity, 1, 0], dtype=np.int32))
+            solver._impulses.assign(initial)
+            solver._diag.fill_(2.0)
+            solver._C.assign(np.tile(2.0 * np.eye(capacity, dtype=np.float32), (3, 1, 1)))
+            solver._rhs.fill_(-1.0)
+            solver._row_type.zero_()
+            solver._row_parent.zero_()
+            solver._row_mu.zero_()
             solver._dense_pgs_solve(1)
             expected = initial.copy()
             expected[0] = 0.5
             expected[1, 0] = 0.5
-            np.testing.assert_array_equal(solver.impulses.numpy(), expected)
+            np.testing.assert_array_equal(solver._impulses.numpy(), expected)
 
 
 def _cylinder_foot(builder, pos, num_cyl=7, radius=0.02, half_height=0.015):

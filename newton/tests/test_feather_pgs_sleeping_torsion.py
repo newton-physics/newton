@@ -26,7 +26,7 @@ def _torsion_available():
 def _torsion_rows(solver):
     from newton._src.solvers.feather_pgs.kernels import PGS_CONSTRAINT_TYPE_TORSION  # noqa: PLC0415
 
-    row_types = solver.row_type.numpy()[0, : int(solver.constraint_count.numpy()[0])]
+    row_types = solver._row_type.numpy()[0, : int(solver._constraint_count.numpy()[0])]
     return int(np.count_nonzero(row_types == PGS_CONSTRAINT_TYPE_TORSION))
 
 
@@ -36,13 +36,13 @@ def test_anchored_torsion_articulations_sleep_and_wake(test, device):
         test.skipTest("this solver has no contact torsion")
     model, pipeline, solver, states, control = _articulations(device, profile=TORSION_PROFILE)
     _advance(pipeline, solver, states, control, 5)
-    awake_rows = int(solver.constraint_count.numpy()[0])
+    awake_rows = int(solver._constraint_count.numpy()[0])
     awake_torsion = _torsion_rows(solver)
     test.assertGreater(awake_torsion, 0)
     _advance(pipeline, solver, states, control, 400)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0, 0, 0])
-    np.testing.assert_array_equal(solver.constraint_count.numpy(), [0])
-    np.testing.assert_array_equal(solver.mf_constraint_count.numpy(), [0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    np.testing.assert_array_equal(solver._constraint_count.numpy(), [0])
+    np.testing.assert_array_equal(solver._mf_constraint_count.numpy(), [0])
     frozen = states[0].body_q.numpy().copy()
     _advance(pipeline, solver, states, control, 20)
     np.testing.assert_array_equal(states[0].body_q.numpy(), frozen)
@@ -53,14 +53,14 @@ def test_anchored_torsion_articulations_sleep_and_wake(test, device):
     for _ in range(5):
         states[0].body_f.assign(force)
         _advance(pipeline, solver, states, control, 1, clear=False)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 1, 0, 0])
-    test.assertEqual(int(solver.constraint_count.numpy()[0]), awake_rows // 2)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1, 0, 0])
+    test.assertEqual(int(solver._constraint_count.numpy()[0]), awake_rows // 2)
     test.assertEqual(_torsion_rows(solver), awake_torsion // 2)
     test.assertGreater(states[0].body_q.numpy()[0, 0], frozen[0, 0])
     np.testing.assert_array_equal(states[0].body_q.numpy()[2:], frozen[2:])
 
     _advance(pipeline, solver, states, control, 600)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     test.assertFalse(np.any(solver.constraint_overflow.numpy()))
 
 
@@ -80,8 +80,8 @@ def test_graph_replay_validates_torsion(test, device):
     for _ in range(200):
         wp.capture_launch(capture.graph)
     solver.check_constraint_capacity()
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0, 0, 0])
-    solver.sleeping.wake()
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    solver._sleeping.wake()
     wp.capture_launch(capture.graph)
     solver.check_constraint_capacity()
     test.assertGreater(_torsion_rows(solver), 0)

@@ -42,11 +42,11 @@ def test_both_tangent_rows_must_belong_to_current_normal(test, device):
             _, solver, _model, initial, contacts = fixture(0.01, device=device, center_only=True)
             row = solver._torsion_stats["groups"][0]["normal_rows"][0]
             if invalid == "count":
-                counts = solver.constraint_count.numpy()
+                counts = solver._constraint_count.numpy()
                 counts[0] = row + 2
-                solver.constraint_count.assign(counts)
+                solver._constraint_count.assign(counts)
             else:
-                array = solver.row_type if invalid == "type" else solver.row_parent
+                array = solver._row_type if invalid == "type" else solver._row_parent
                 values = array.numpy()
                 values[0, row + 2] = -1
                 array.assign(values)
@@ -78,7 +78,7 @@ def test_torsion_uses_cfm_floor(test, device):
     types = result["row_type"][0, :count]
     test.assertEqual(np.count_nonzero(types == PGS_CONSTRAINT_TYPE_TORSION), 1)
     unregularized = np.einsum("rd,rd->r", result["J_world"][0, :count], result["Y_world"][0, :count])
-    floor = solver.diag.numpy()[0, :count] - unregularized
+    floor = solver._diag.numpy()[0, :count] - unregularized
     np.testing.assert_allclose(floor[types == PGS_CONSTRAINT_TYPE_TORSION], cfm, atol=1e-2)
     np.testing.assert_allclose(floor[types == 0], cfm, atol=1e-2)
 
@@ -125,8 +125,8 @@ def test_torsion_keeps_joint_velocity_limits(test, device):
                 solver.check_constraint_capacity()
             else:
                 solver.step(initial, output, model.control(), contacts, 0.0025)
-            count = int(solver.constraint_count.numpy()[0])
-            spin_rows = np.count_nonzero(solver.row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_TORSION)
+            count = int(solver._constraint_count.numpy()[0])
+            spin_rows = np.count_nonzero(solver._row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_TORSION)
             test.assertEqual(spin_rows, int(radius > 0.0))
             qd = output.joint_qd.numpy()
             test.assertLessEqual(abs(float(qd[5])), limit * (1.0 + 1e-5))
@@ -160,7 +160,7 @@ def test_torsion_keeps_fused_drive_velocity_limits(test, device):
                 velocity_iterations=velocity_iterations,
                 contact_torsion_device=preparation != "host",
             )
-            test.assertTrue(solver.fuse_joint_velocity_limits)
+            test.assertTrue(solver.velocity_limits_fused)
             # Only the second pad spins, so any DOF 5 motion is transferred through the contact.
             velocity = initial.joint_qd.numpy()
             velocity[5], velocity[11] = 0.0, 10.0
@@ -174,8 +174,8 @@ def test_torsion_keeps_fused_drive_velocity_limits(test, device):
                 solver.check_constraint_capacity()
             else:
                 solver.step(initial, output, model.control(), contacts, 0.0025)
-            count = int(solver.constraint_count.numpy()[0])
-            row_type = solver.row_type.numpy()[0, :count]
+            count = int(solver._constraint_count.numpy()[0])
+            row_type = solver._row_type.numpy()[0, :count]
             test.assertEqual(np.count_nonzero(row_type == PGS_CONSTRAINT_TYPE_JOINT_TARGET), 1)
             test.assertEqual(np.count_nonzero(row_type == PGS_CONSTRAINT_TYPE_TORSION), int(radius > 0.0))
             qd = output.joint_qd.numpy()
@@ -245,7 +245,7 @@ def test_torsion_keeps_free_body_velocity_limits(test, device):
                 contact_torsion_radius=radius,
                 contact_torsion_device=preparation != "host",
             )
-            solver.rigid_body_angular_damping.zero_()
+            solver._rigid_body_angular_damping.zero_()
             output = model.state()
             if preparation == "graph":
                 with wp.ScopedCapture(device=model.device) as capture:
@@ -254,10 +254,10 @@ def test_torsion_keeps_free_body_velocity_limits(test, device):
                 solver.check_constraint_capacity()
             else:
                 solver.step(initial, output, model.control(), contacts, 0.0025)
-            count = int(solver.constraint_count.numpy()[0])
-            spin_rows = np.count_nonzero(solver.row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_TORSION)
+            count = int(solver._constraint_count.numpy()[0])
+            spin_rows = np.count_nonzero(solver._row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_TORSION)
             test.assertEqual(spin_rows, int(radius > 0.0))
-            test.assertGreater(int(solver.mf_constraint_count.numpy()[0]), 0)
+            test.assertGreater(int(solver._mf_constraint_count.numpy()[0]), 0)
             qd = output.joint_qd.numpy()
             test.assertLessEqual(abs(float(qd[11])), limit * (1.0 + 1e-5))
             if radius > 0.0:

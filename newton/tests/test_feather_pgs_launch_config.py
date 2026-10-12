@@ -128,7 +128,7 @@ def test_defaults(test, device):
     test.assertEqual(solver.articulation_constraint_max, 32)
     test.assertEqual(solver.free_body_constraint_max, 512)
     test.assertTrue(solver.warn_constraint_overflow)
-    np.testing.assert_allclose(solver.rigid_body_angular_damping.numpy(), 0.05)
+    np.testing.assert_allclose(solver._rigid_body_angular_damping.numpy(), 0.05)
 
 
 def test_constructor_validates_options(test, device):
@@ -202,9 +202,9 @@ def test_default_kernel_selection_is_cached(test, device):
 def test_compact_world_dof_mapping_pads_heterogeneous_worlds(test, device):
     """Pad the per-world response DOF map of worlds with fewer DOFs."""
     solver = SolverFeatherPGS(_build_heterogeneous_world_model(device), solve_mode="matrix_free")
-    test.assertEqual(solver.max_world_dofs, 6)
-    np.testing.assert_array_equal(solver.world_dof_count.numpy(), np.array((6, 1), dtype=np.int32))
-    indices = solver.world_dof_indices.numpy()
+    test.assertEqual(solver._max_world_dofs, 6)
+    np.testing.assert_array_equal(solver._world_dof_count.numpy(), np.array((6, 1), dtype=np.int32))
+    indices = solver._world_dof_indices.numpy()
     np.testing.assert_array_equal(indices[0], np.arange(6, dtype=np.int32))
     test.assertGreaterEqual(int(indices[1, 0]), 0)
     np.testing.assert_array_equal(indices[1, 1:], np.full(5, -1, dtype=np.int32))
@@ -478,7 +478,7 @@ def test_split_defaults(test, device):
     test.assertEqual(solver.solve_mode, "split")
     test.assertEqual(solver.iterations, 12)
     test.assertEqual(solver.articulation_constraint_max, 32)
-    test.assertEqual(solver.C.shape, (2, 32, 32))
+    test.assertEqual(solver._C.shape, (2, 32, 32))
     test.assertFalse(solver._jy_world_aliased)
     test.assertFalse(solver._hinv_jt_writes_world)
 
@@ -503,7 +503,7 @@ def test_split_kernel_selection(test, device):
     test.assertEqual(mixed._pgs_solve_mf_kernel is not None, is_cuda)
     if not is_cuda:
         test.assertEqual(
-            (mixed.cholesky_kernel, mixed.trisolve_kernel, mixed.hinv_jt_kernel, mixed.pgs_kernel),
+            (mixed._cholesky_kernel, mixed._trisolve_kernel, mixed._hinv_jt_kernel, mixed._pgs_kernel),
             ("loop", "loop", "par_row", "loop"),
         )
 
@@ -548,7 +548,7 @@ def test_split_native_and_scalar_kernels_step_identically(test, device):
                 solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
                 state_0, state_1 = state_1, state_0
             solver.check_constraint_capacity()
-            test.assertGreater(int(solver.constraint_count.numpy().max()), 0)
+            test.assertGreater(int(solver._constraint_count.numpy().max()), 0)
             trajectories.append(state_0.joint_q.numpy().copy())
         with test.subTest(with_free_body=with_free_body):
             np.testing.assert_allclose(trajectories[0], trajectories[1], rtol=0.0, atol=1.0e-4)
@@ -560,8 +560,8 @@ def test_non_default_tile_threads_compiles_and_steps(test, device):
     forced = {"cholesky_kernel": "tiled", "trisolve_kernel": "tiled", "hinv_jt_kernel": "tiled", "pgs_kernel": "loop"}
     with kernel_overrides(forced):
         solver = SolverFeatherPGS(model, solve_mode="split", articulation_constraint_max=384)
-    test.assertTrue(all(solver._execution_plan.use_tiled_hinv_jt(size) for size in solver.size_groups))
-    test.assertFalse(any(solver._execution_plan.use_fused_hinv_jt(size) for size in solver.size_groups))
+    test.assertTrue(all(solver._execution_plan.use_tiled_hinv_jt(size) for size in solver._size_groups))
+    test.assertFalse(any(solver._execution_plan.use_fused_hinv_jt(size) for size in solver._size_groups))
     test.assertFalse(solver._split_fused_response)
     test.assertIsNone(solver._pgs_solve_tiled_row_kernel)
     state_0, state_1 = model.state(), model.state()
@@ -582,10 +582,10 @@ def test_articulated_contact_response_validation(test, device):
     solver = SolverFeatherPGS(model, articulated_contact_response="propagation", articulation_constraint_max=16)
     test.assertEqual(solver.articulated_contact_response, "propagation")
     # Every contact row, free-body rows included, uses the propagation family.
-    test.assertEqual(solver.propagation_max_constraints, 512 + 16)
+    test.assertEqual(solver._propagation_max_constraints, 512 + 16)
     solver = SolverFeatherPGS(model, articulated_contact_response="propagation_fused", articulation_constraint_max=16)
     test.assertEqual(solver.articulated_contact_response, "propagation_fused")
-    test.assertEqual(solver.propagation_max_constraints, 16)
+    test.assertEqual(solver._propagation_max_constraints, 16)
 
     with test.assertRaisesRegex(ValueError, "articulated_contact_response"):
         SolverFeatherPGS(model, articulated_contact_response="bad")
@@ -668,7 +668,7 @@ def test_propagation_matrix_free_compiles_and_steps_with_velocity_limit_rows(tes
             state_0.joint_qd.assign(np.full(model.joint_dof_count, 1.0, dtype=np.float32))
             newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
             solver.step(state_0, state_1, model.control(), None, 1.0 / 600.0)
-            test.assertGreater(int(solver.constraint_count.numpy()[0]), 0)
+            test.assertGreater(int(solver._constraint_count.numpy()[0]), 0)
             test.assertTrue(np.isfinite(state_1.joint_q.numpy()).all())
             test.assertTrue(np.isfinite(state_1.joint_qd.numpy()).all())
 
@@ -812,7 +812,7 @@ def test_drive_mode_validation(test, device):
     model = _build_chain_model(device, num_links=2, num_worlds=1)
     solver = SolverFeatherPGS(model)
     test.assertEqual(solver.drive_mode, "augmented")
-    test.assertFalse(solver.fuse_joint_velocity_limits)
+    test.assertFalse(solver.velocity_limits_fused)
     test.assertEqual(SolverFeatherPGS(model, solve_mode="matrix_free", drive_mode="rows").drive_mode, "rows")
     with test.assertRaisesRegex(NotImplementedError, "requires solve_mode='matrix_free'"):
         SolverFeatherPGS(model, solve_mode="split", drive_mode="rows")
@@ -836,10 +836,10 @@ def test_fuse_joint_velocity_limits_validation(test, device):
     )
     for kwargs in inert:
         with test.subTest(**kwargs):
-            test.assertFalse(SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs).fuse_joint_velocity_limits)
+            test.assertFalse(SolverFeatherPGS(model, solve_mode="matrix_free", **kwargs).velocity_limits_fused)
     # The applicable combination engages by default.
     solver = SolverFeatherPGS(model, solve_mode="matrix_free", drive_mode="rows", enable_joint_velocity_limits=True)
-    test.assertTrue(solver.fuse_joint_velocity_limits)
+    test.assertTrue(solver.velocity_limits_fused)
 
 
 def test_fuse_joint_velocity_limits_clamps_driven_dofs_without_rows(test, device):
@@ -872,7 +872,7 @@ def test_fuse_joint_velocity_limits_clamps_driven_dofs_without_rows(test, device
             solver.step(state_0, state_1, control, None, 1.0 / 60.0)
             state_0, state_1 = state_1, state_0
             max_speed = max(max_speed, float(np.max(np.abs(state_0.joint_qd.numpy()))))
-        return max_speed, int(solver.constraint_count.numpy()[0])
+        return max_speed, int(solver._constraint_count.numpy()[0])
 
     fused_speed, fused_rows = run(True)
     dedicated_speed, dedicated_rows = run(False)

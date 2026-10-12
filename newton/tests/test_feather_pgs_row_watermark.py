@@ -51,14 +51,14 @@ def _run(model, solver, steps):
         pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
         state_0, state_1 = state_1, state_0
-        observed["dense"] = max(observed["dense"], int(solver.constraint_count.numpy().max()))
-        observed["dense_raw"] = max(observed["dense_raw"], int(solver.slot_counter.numpy().max()))
-        observed["mf"] = max(observed["mf"], int(solver.mf_constraint_count.numpy().max()))
-        observed["mf_raw"] = max(observed["mf_raw"], int(solver.mf_slot_counter.numpy().max()))
+        observed["dense"] = max(observed["dense"], int(solver._constraint_count.numpy().max()))
+        observed["dense_raw"] = max(observed["dense_raw"], int(solver._slot_counter.numpy().max()))
+        observed["mf"] = max(observed["mf"], int(solver._mf_constraint_count.numpy().max()))
+        observed["mf_raw"] = max(observed["mf_raw"], int(solver._mf_slot_counter.numpy().max()))
         observed["contact"] = max(observed["contact"], int(contacts.rigid_contact_count.numpy()[0]))
         if solver._propagation_active:
             observed["propagation"] = max(
-                observed.get("propagation", 0), int(solver.propagation_constraint_count.numpy().max())
+                observed.get("propagation", 0), int(solver._propagation_constraint_count.numpy().max())
             )
     return observed, state_0
 

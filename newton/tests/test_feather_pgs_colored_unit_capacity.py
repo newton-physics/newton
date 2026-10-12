@@ -68,11 +68,11 @@ def _unit_impulses(model, solver, contacts):
     count = int(contacts.rigid_contact_count.numpy()[0])
     shape_body = model.shape_body.numpy()
     shapes = (contacts.rigid_contact_shape0.numpy()[:count], contacts.rigid_contact_shape1.numpy()[:count])
-    slots = solver.contact_slot.numpy()[:count]
-    lengths = solver.contact_slots_needed.numpy()[:count]
-    rows = solver.propagation_impulses.numpy()[0]
+    slots = solver._contact_slot.numpy()[:count]
+    lengths = solver._contact_slots_needed.numpy()[:count]
+    rows = solver._propagation_impulses.numpy()[0]
     result = {}
-    for contact in np.flatnonzero(solver.contact_path.numpy()[:count] == 2):
+    for contact in np.flatnonzero(solver._contact_path.numpy()[:count] == 2):
         body = max(int(shape_body[shape[contact]]) if shape[contact] >= 0 else -1 for shape in shapes)
         result[body] = rows[slots[contact] : slots[contact] + lengths[contact]].copy()
     return result
@@ -82,15 +82,15 @@ def _assert_mixed_topology(test, solver, contacts):
     """Put all four disjoint units of one or three rows into the first color."""
     count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertEqual(count, CONTACT_COUNT)
-    np.testing.assert_array_equal(solver.contact_path.numpy()[:count], 2)
-    test.assertEqual(sorted(solver.contact_slots_needed.numpy()[:count].tolist()), [1, 1, 1, 3])
-    test.assertEqual(int(solver.propagation_constraint_count.numpy()[0]), ROW_CAPACITY)
-    offsets = solver.color_world_offsets.numpy().reshape(solver.world_count, -1)[0]
+    np.testing.assert_array_equal(solver._contact_path.numpy()[:count], 2)
+    test.assertEqual(sorted(solver._contact_slots_needed.numpy()[:count].tolist()), [1, 1, 1, 3])
+    test.assertEqual(int(solver._propagation_constraint_count.numpy()[0]), ROW_CAPACITY)
+    offsets = solver._color_world_offsets.numpy().reshape(solver._world_count, -1)[0]
     counts = np.diff(offsets)
     test.assertEqual(int(offsets[-1]), CONTACT_COUNT)
     test.assertEqual(int(counts[0]), CONTACT_COUNT)
     test.assertFalse(counts[1:].any())
-    test.assertEqual(sorted(solver.color_unit_sorted.numpy()[:CONTACT_COUNT].tolist()), list(range(CONTACT_COUNT)))
+    test.assertEqual(sorted(solver._color_unit_sorted.numpy()[:CONTACT_COUNT].tolist()), list(range(CONTACT_COUNT)))
 
 
 def test_mixed_units_match_serial_propagation(test, device):
@@ -150,7 +150,7 @@ def test_mixed_units_graph_matches_eager(test, device):
             _assert_mixed_topology(test, solver, contacts)
         else:
             substep()
-        finals.append((state.joint_qd.numpy(), solver.propagation_body_qd.numpy()))
+        finals.append((state.joint_qd.numpy(), solver._propagation_body_qd.numpy()))
     for got, want in zip(finals[1], finals[0], strict=True):
         np.testing.assert_allclose(got, want, rtol=0.0, atol=1.0e-6)
 

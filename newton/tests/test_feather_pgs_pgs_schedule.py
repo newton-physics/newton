@@ -136,8 +136,8 @@ def test_row_phases_touch_only_their_row_families(test, device):
     model = _scene(device)
     solver = _solver(model, iterations=0, row_schedule="phased")
     _step(model, solver)
-    dense_count = int(solver.constraint_count.numpy()[0])
-    row_type = solver.row_type.numpy()[0, :dense_count]
+    dense_count = int(solver._constraint_count.numpy()[0])
+    row_type = solver._row_type.numpy()[0, :dense_count]
     families = {
         "drive": row_type == PGS_CONSTRAINT_TYPE_JOINT_TARGET,
         "limit": row_type == PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
@@ -145,18 +145,18 @@ def test_row_phases_touch_only_their_row_families(test, device):
     }
     for name, mask in families.items():
         test.assertTrue(mask.any(), name)
-    mf_count = int(solver.mf_constraint_count.numpy()[0])
-    mf_contact_end = int(solver.mf_contact_rows_end.numpy()[0])
+    mf_count = int(solver._mf_constraint_count.numpy()[0])
+    mf_contact_end = int(solver._mf_contact_rows_end.numpy()[0])
     test.assertGreater(mf_count, mf_contact_end)
 
     touched = {}
     for row_phase in (1, 2, 3, 4, 5):
-        solver.impulses.zero_()
-        solver.mf_impulses.zero_()
-        wp.copy(solver.v_out, solver.v_hat)
+        solver._impulses.zero_()
+        solver._mf_impulses.zero_()
+        wp.copy(solver._v_out, solver._v_hat)
         solver._launch_mf_gs_phase(row_phase)
-        dense = np.abs(solver.impulses.numpy()[0, :dense_count]) > 0.0
-        velocity_limits = np.abs(solver.mf_impulses.numpy()[0, mf_contact_end:mf_count]) > 0.0
+        dense = np.abs(solver._impulses.numpy()[0, :dense_count]) > 0.0
+        velocity_limits = np.abs(solver._mf_impulses.numpy()[0, mf_contact_end:mf_count]) > 0.0
         touched[row_phase] = (*(bool(dense[mask].any()) for mask in families.values()), bool(velocity_limits.any()))
     # (drive, limit, contact, velocity limit)
     test.assertEqual(touched[1], (False, False, True, False))
@@ -183,12 +183,12 @@ def test_contact_then_internal_gives_internal_rows_the_last_word(test, device):
         model = _scene(device, offset=_SPECULATIVE_OFFSET)
         solver = _solver(model, iterations=iterations, row_schedule=schedule)
         _step(model, solver)
-        dense_count = int(solver.constraint_count.numpy()[0])
-        row_type = solver.row_type.numpy()[0, :dense_count]
+        dense_count = int(solver._constraint_count.numpy()[0])
+        row_type = solver._row_type.numpy()[0, :dense_count]
         internal = (row_type == PGS_CONSTRAINT_TYPE_JOINT_TARGET) | (row_type == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
-        before = solver.impulses.numpy()[0, :dense_count][internal].copy()
+        before = solver._impulses.numpy()[0, :dense_count][internal].copy()
         solver._launch_mf_gs_phase(3)
-        after = solver.impulses.numpy()[0, :dense_count][internal]
+        after = solver._impulses.numpy()[0, :dense_count][internal]
         changes[schedule] = float(np.abs(after - before).max())
     test.assertLess(changes["contact_then_internal"], 1.0e-4)
     test.assertGreater(changes["interleaved"], 1.0e-3)

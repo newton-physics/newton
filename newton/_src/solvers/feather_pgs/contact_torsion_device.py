@@ -567,10 +567,10 @@ class DeviceTorsionPreparation:
             setattr(w, name, wp.empty(self.capacity, dtype=float, device=device))
         for name in ("normal", "point"):
             setattr(w, name, wp.empty(self.capacity, dtype=wp.vec3, device=device))
-        shape = (solver.world_count, solver.articulation_constraint_max)
+        shape = (solver._world_count, solver._articulation_constraint_max)
         w.row_contact = wp.full(shape, -1, dtype=int, device=device)
         w.spin_source = wp.full(shape, -1, dtype=int, device=device)
-        w.planned_count = wp.zeros(solver.world_count, dtype=int, device=device)
+        w.planned_count = wp.zeros(solver._world_count, dtype=int, device=device)
         w.status = wp.zeros(1, dtype=int, device=device)
         w.patch_keys = wp.empty(2 * self.capacity, dtype=wp.int64, device=device)
         w.patch_indices = wp.empty(2 * self.capacity, dtype=int, device=device)
@@ -587,7 +587,7 @@ class DeviceTorsionPreparation:
         )
         self._dummy_stiffness = wp.zeros(1, dtype=float, device=device)
         self._dummy_owner = wp.full(1, -1, dtype=int, device=device)
-        self._dummy_mf_count = wp.zeros(solver.world_count, dtype=int, device=device)
+        self._dummy_mf_count = wp.zeros(solver._world_count, dtype=int, device=device)
         self._saved_state = None
         self._saved_names = ()
 
@@ -711,11 +711,11 @@ class DeviceTorsionPreparation:
                 contacts.rigid_contact_count,
                 self.capacity,
                 contacts.rigid_contact_max,
-                s.world_count,
-                s.contact_path,
-                s.contact_slot,
-                s.contact_world,
-                s.contact_slots_needed,
+                s._world_count,
+                s._contact_path,
+                s._contact_slot,
+                s._contact_world,
+                s._contact_slots_needed,
                 contacts.rigid_contact_shape0,
                 contacts.rigid_contact_shape1,
                 contacts.rigid_contact_normal,
@@ -729,9 +729,9 @@ class DeviceTorsionPreparation:
                 self.supported,
                 self.selected,
                 state.body_q,
-                s.row_type,
-                s.row_parent,
-                s.constraint_count,
+                s._row_type,
+                s._row_parent,
+                s._constraint_count,
                 int(patches),
                 s._friction_patches.current.owner if patches else self._dummy_owner,
                 w,
@@ -743,32 +743,32 @@ class DeviceTorsionPreparation:
             wp.utils.radix_sort_pairs(w.keys, w.indices, self.capacity)
             # Stable sort keeps contact order inside each patch segment.
             wp.utils.radix_sort_pairs(w.patch_keys, w.patch_indices, self.capacity)
-            wp.launch(_group_patches, dim=self.capacity, inputs=[self.capacity, s.row_mu, w], device=device)
+            wp.launch(_group_patches, dim=self.capacity, inputs=[self.capacity, s._row_mu, w], device=device)
             wp.launch(
                 _check_patch_membership,
                 dim=self.capacity,
-                inputs=[s.articulation_constraint_max, s.row_parent, w],
+                inputs=[s._articulation_constraint_max, s._row_parent, w],
                 device=device,
             )
             wp.launch(
                 _emit_patches,
-                dim=s.world_count,
-                inputs=[self.capacity, s.articulation_constraint_max, s.constraint_count, s._row_dropped_dense, w],
+                dim=s._world_count,
+                inputs=[self.capacity, s._articulation_constraint_max, s._constraint_count, s._row_dropped_dense, w],
                 device=device,
             )
         else:
             wp.utils.radix_sort_pairs(w.keys, w.indices, self.capacity)
             wp.launch(
                 _group_world,
-                dim=s.world_count,
+                dim=s._world_count,
                 inputs=[
                     self.capacity,
-                    s.articulation_constraint_max,
+                    s._articulation_constraint_max,
                     int(patches),
-                    s.constraint_count,
+                    s._constraint_count,
                     s._row_dropped_dense,
-                    s.row_parent,
-                    s.row_mu,
+                    s._row_parent,
+                    s._row_mu,
                     w,
                 ],
                 device=device,
@@ -780,42 +780,42 @@ class DeviceTorsionPreparation:
             dim=self.capacity,
             inputs=[
                 w,
-                s.body_to_articulation,
+                s._body_to_articulation,
                 s._prescribed_articulation,
-                augmented_state.body_v_s,
-                s.row_type,
-                s.row_parent,
-                s.row_mu,
-                s.phi,
-                s.target_velocity,
-                s.row_restitution,
+                augmented_state._body_v_s,
+                s._row_type,
+                s._row_parent,
+                s._row_mu,
+                s._phi,
+                s._target_velocity,
+                s._row_restitution,
                 s._contact_torsion_group,
             ],
             device=device,
         )
-        for size, jacobian in s.J_by_size.items():
+        for size, jacobian in s._J_by_size.items():
             wp.launch(
                 _jacobians,
                 dim=jacobian.shape,
                 inputs=[
                     w,
-                    s.group_to_art[size],
-                    s.art_to_world,
-                    s.articulation_dof_start,
-                    s.body_to_articulation,
-                    s.body_to_joint,
+                    s._group_to_art[size],
+                    s._art_to_world,
+                    s._articulation_dof_start,
+                    s._body_to_articulation,
+                    s._body_to_joint,
                     s._prescribed_articulation,
                     s.model.joint_ancestor,
                     s.model.joint_qd_start,
-                    augmented_state.joint_S_s,
+                    augmented_state._joint_S_s,
                     jacobian,
                 ],
                 device=device,
             )
         wp.launch(
             _apply_counts,
-            dim=s.world_count,
-            inputs=[w, s.constraint_count, s.slot_counter, getattr(s, "mf_constraint_count", self._dummy_mf_count)],
+            dim=s._world_count,
+            inputs=[w, s._constraint_count, s._slot_counter, getattr(s, "_mf_constraint_count", self._dummy_mf_count)],
             device=device,
         )
 

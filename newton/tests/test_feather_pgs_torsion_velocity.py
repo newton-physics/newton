@@ -21,9 +21,9 @@ def _conclude_position_problem(solver, dt):
 
 def _run_velocity_post_solve(solver):
     """Run the velocity-only iterations of a step on the current row state."""
-    solver._pack_mf_meta(solver.mf_rhs_unbiased)
+    solver._pack_mf_meta(solver._mf_rhs_unbiased)
     solver._launch_pgs_solve(
-        solver.rhs_unbiased,
+        solver._rhs_unbiased,
         solver.velocity_iterations,
         regularize=False,
         freeze_drive_rows=solver.velocity_drive_mode == "freeze",
@@ -170,25 +170,25 @@ def test_carried_spin_is_refunded_when_postpass_retires_group(test, device):
         0.01, device=device, spin=100.0, center_only=True, velocity_iterations=4, **PATCH_OPTIONS
     )
     group = solver._torsion_stats["groups"][0]
-    count = int(solver.constraint_count.numpy()[0])
-    before_lambda = solver.impulses.numpy()[0, :count].copy()
+    count = int(solver._constraint_count.numpy()[0])
+    before_lambda = solver._impulses.numpy()[0, :count].copy()
     test.assertGreater(abs(float(before_lambda[group["row"]])), 1e-8)
-    before_velocity = solver.v_out.numpy().copy()
-    phi = solver.phi.numpy()
+    before_velocity = solver._v_out.numpy().copy()
+    phi = solver._phi.numpy()
     phi[0, group["normal_rows"]] = 0.01
-    solver.phi.assign(phi)
-    solver.v_out_snap.zero_()
+    solver._phi.assign(phi)
+    solver._v_out_snap.zero_()
     _conclude_position_problem(solver, 0.0025)
-    test.assertEqual(float(solver.row_mu.numpy()[0, group["row"]]), group["mu"])
+    test.assertEqual(float(solver._row_mu.numpy()[0, group["row"]]), group["mu"])
     test.assertEqual(int(solver._contact_torsion_group.numpy()[0, group["row"]]), contact_torsion._TORSION_SPIN_RETIRED)
     # Eligibility changes the admissible set, not the already-applied load.
-    np.testing.assert_array_equal(solver.impulses.numpy()[0, :count], before_lambda)
+    np.testing.assert_array_equal(solver._impulses.numpy()[0, :count], before_lambda)
     _run_velocity_post_solve(solver)
-    after_lambda = solver.impulses.numpy()[0, :count]
+    after_lambda = solver._impulses.numpy()[0, :count]
     test.assertLess(abs(float(after_lambda[group["row"]])), 1e-9)
     np.testing.assert_allclose(
-        solver.v_out.numpy() - before_velocity,
-        solver.Y_world.numpy()[0, :count].T @ (after_lambda - before_lambda),
+        solver._v_out.numpy() - before_velocity,
+        solver._Y_world.numpy()[0, :count].T @ (after_lambda - before_lambda),
         atol=2e-5,
     )
     # A new position solve must restore admission rather than inherit the
@@ -197,7 +197,7 @@ def test_carried_spin_is_refunded_when_postpass_retires_group(test, device):
     solver.step(state, output, model.control(), contacts, 0.0025)
     group = solver._torsion_stats["groups"][0]
     test.assertEqual(int(solver._contact_torsion_group.numpy()[0, group["row"]]), -1)
-    test.assertGreater(abs(float(solver.impulses.numpy()[0, group["row"]])), 1e-8)
+    test.assertGreater(abs(float(solver._impulses.numpy()[0, group["row"]])), 1e-8)
     np.testing.assert_allclose(output.body_qd.numpy(), original["body_qd"], atol=2e-5)
 
 
@@ -212,10 +212,10 @@ def test_internal_timestep_export_uses_final_linear_impulse(test, device):
             for _ in range(4):
                 output = model.state()
                 solver.step(initial, output, model.control(), contacts, dt, observables=observables)
-                row = int(solver.contact_slot.numpy()[0])
+                row = int(solver._contact_slot.numpy()[0])
                 normal = contacts.rigid_contact_normal.numpy()[0]
                 force = observables.contact_f.numpy()[0]
-                expected = max(float(solver.impulses.numpy()[0, row]), 0.0) / dt
+                expected = max(float(solver._impulses.numpy()[0, row]), 0.0) / dt
                 test.assertAlmostEqual(abs(float(np.dot(force[:3], normal))), expected, delta=1e-4)
                 # Torque slots are deliberately placeholders, not solved spin wrench.
                 np.testing.assert_array_equal(force[3:], 0.0)
@@ -231,14 +231,6 @@ def test_selected_out_torsion_matches_zero_radius(test, device):
         )
         for key in expected:
             np.testing.assert_array_equal(actual[key], expected[key], err_msg=key)
-
-
-def test_runtime_incompatible_mutation_rejected(test, device):
-    """Reject unsupported mutation before stepping an allocated torsion solver."""
-    _, solver, model, state, contacts = fixture(0.01, device=device, velocity_iterations=4)
-    solver.contact_warmstart = True
-    with test.assertRaisesRegex(ValueError, "warmstart"):
-        solver.step(state, model.state(), model.control(), contacts, 0.0025)
 
 
 class TestTorsionVelocityAdmission(unittest.TestCase):
@@ -265,7 +257,6 @@ for _fn in (
     test_carried_spin_is_refunded_when_postpass_retires_group,
     test_internal_timestep_export_uses_final_linear_impulse,
     test_selected_out_torsion_matches_zero_radius,
-    test_runtime_incompatible_mutation_rejected,
 ):
     add_function_test(TestTorsionVelocitySolve, _fn.__name__, _fn, devices=get_cuda_test_devices())
 

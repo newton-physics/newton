@@ -30,12 +30,12 @@ def test_anchored_articulations_sleep_and_wake(test, device):
     """Drop every row of a settled scene and restore the anchored rows of a force-woken articulation."""
     model, pipeline, solver, states, control = _articulations(device)
     _advance(pipeline, solver, states, control, 5)
-    awake_rows = int(solver.constraint_count.numpy()[0])
+    awake_rows = int(solver._constraint_count.numpy()[0])
     test.assertGreater(awake_rows, 0)
     _advance(pipeline, solver, states, control, 400)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0, 0, 0])
-    np.testing.assert_array_equal(solver.constraint_count.numpy(), [0])
-    np.testing.assert_array_equal(solver.mf_constraint_count.numpy(), [0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    np.testing.assert_array_equal(solver._constraint_count.numpy(), [0])
+    np.testing.assert_array_equal(solver._mf_constraint_count.numpy(), [0])
     frozen = states[0].body_q.numpy().copy()
     _advance(pipeline, solver, states, control, 20)
     np.testing.assert_array_equal(states[0].body_q.numpy(), frozen)
@@ -46,13 +46,13 @@ def test_anchored_articulations_sleep_and_wake(test, device):
     for _ in range(5):
         states[0].body_f.assign(force)
         _advance(pipeline, solver, states, control, 1, clear=False)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 1, 0, 0])
-    test.assertEqual(int(solver.constraint_count.numpy()[0]), awake_rows // 2)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1, 0, 0])
+    test.assertEqual(int(solver._constraint_count.numpy()[0]), awake_rows // 2)
     test.assertGreater(states[0].body_q.numpy()[0, 0], frozen[0, 0])
     np.testing.assert_array_equal(states[0].body_q.numpy()[2:], frozen[2:])
 
     _advance(pipeline, solver, states, control, 600)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     test.assertFalse(np.any(solver.constraint_overflow.numpy()))
 
 
@@ -69,18 +69,18 @@ def test_graph_replay_sleeps_and_wakes(test, device):
             states.reverse()
     for _ in range(200):
         wp.capture_launch(capture.graph)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0, 0, 0])
-    np.testing.assert_array_equal(solver.constraint_count.numpy(), [0])
-    solver.sleeping.wake()
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    np.testing.assert_array_equal(solver._constraint_count.numpy(), [0])
+    solver._sleeping.wake()
     wp.capture_launch(capture.graph)
-    test.assertGreater(int(solver.constraint_count.numpy()[0]), 0)
+    test.assertGreater(int(solver._constraint_count.numpy()[0]), 0)
 
 
 def test_masked_reset_wakes_only_selected_worlds(test, device):
     """Wake only the worlds a masked reset selects, including none for an empty mask."""
     model, pipeline, solver, states = _two_world_boxes(device)
     _advance(pipeline, solver, states, model.control(), 400)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     # The final mask entry selects global articulations; these boxes belong to worlds 0 and 1.
     for mask, expected in (
         ([False, False, False], [0, 0]),
@@ -88,25 +88,25 @@ def test_masked_reset_wakes_only_selected_worlds(test, device):
         ([True, False, False], [1, 0]),
     ):
         solver.reset(states[0], world_mask=wp.array(mask, dtype=wp.bool, device=device))
-        np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), expected)
+        np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), expected)
     _advance(pipeline, solver, states, model.control(), 1)
-    np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 0])
 
 
 def test_property_notification_wakes_only_changed_islands(test, device):
     """Wake the island whose mass changed, and nothing for a notification without a change."""
     model, pipeline, solver, states = _two_world_boxes(device)
     _advance(pipeline, solver, states, model.control(), 400)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
     _advance(pipeline, solver, states, model.control(), 1)
-    np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [0, 0])
     mass = model.body_mass.numpy()
     mass[0] *= 2.0
     model.body_mass.assign(mass)
     solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
     _advance(pipeline, solver, states, model.control(), 1)
-    np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 0])
 
 
 def test_frozen_patch_carry_matches_rebuild(test, device):
@@ -123,7 +123,7 @@ def _check_carry(test, device, tiles):
     trajectories, flood_pairs, histories = [], [], []
     for carry in (False, True):
         model, pipeline, solver, states, control = _articulations(device, tiles=tiles)
-        solver.sleeping.carry_frozen_patches = carry
+        solver._sleeping.carry_frozen_patches = carry
         contacts = pipeline.contacts()
         frozen = 0
         trajectory = []
@@ -136,7 +136,7 @@ def _check_carry(test, device, tiles):
             pipeline.collide(states[0], contacts)
             solver.step(states[0], states[1], control, contacts, 0.005)
             states.reverse()
-            frozen += int(solver.sleeping.frozen_bodies.numpy().sum())
+            frozen += int(solver._sleeping.frozen_bodies.numpy().sum())
             if step == 399:
                 flood_pairs.append(int(solver._friction_patches._flood_pair_count.numpy()[0]))
                 # The anchor history a sleeping pair hands to its next awake step.
@@ -152,7 +152,7 @@ def _check_carry(test, device, tiles):
                 )
             trajectory.append(np.concatenate((states[0].body_q.numpy().ravel(), states[0].body_qd.numpy().ravel())))
         test.assertGreater(frozen, 0)
-        np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [0, 0])
+        np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [0, 0])
         trajectories.append(np.array(trajectory))
     if not tiles:
         np.testing.assert_array_equal(histories[1][0], histories[0][0])
@@ -176,8 +176,8 @@ def test_frozen_patch_carry_copies_the_previous_history(test, device):
     _model, pipeline, solver, states, control = _articulations(device)
     contacts = pipeline.contacts()
     _advance(pipeline, solver, states, control, 400, contacts=contacts)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0, 0, 0])
-    test.assertTrue(np.all(solver.sleeping.frozen_bodies.numpy() == 1))
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    test.assertTrue(np.all(solver._sleeping.frozen_bodies.numpy() == 1))
     current = solver._friction_patches.current
     count = int(contacts.rigid_contact_count.numpy()[0])
     names = ("valid", "displacement", "tangent_impulse", "anchor_a", "anchor_b", "owner")
@@ -195,7 +195,7 @@ def test_successive_notifications_keep_every_wake(test, device):
     """Keep the first notification's wake through a second notification before the next step."""
     model, pipeline, solver, states = _two_world_boxes(device)
     _advance(pipeline, solver, states, model.control(), 400)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     mass = model.body_mass.numpy()
     mass[0] *= 2.0
     model.body_mass.assign(mass)
@@ -205,20 +205,20 @@ def test_successive_notifications_keep_every_wake(test, device):
     model.shape_material_mu.assign(mu)
     solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
     _advance(pipeline, solver, states, model.control(), 1)
-    np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [1, 1])
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 1])
 
 
 def test_replaced_property_array_wakes_its_island(test, device):
     """Wake the island changed by a model array that is replaced rather than assigned in place."""
     model, pipeline, solver, states = _two_world_boxes(device)
     _advance(pipeline, solver, states, model.control(), 400)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     com = model.body_com.numpy()
     com[0, 0] = 0.3
     model.body_com = wp.array(com, dtype=wp.vec3, device=model.device)
     solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
     _advance(pipeline, solver, states, model.control(), 1)
-    np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 0])
 
 
 def test_resized_property_array_is_rejected(test, device):
@@ -247,20 +247,20 @@ def test_coincident_entity_counts_keep_property_owners(test, device):
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
     solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **PROFILE)
     states = [model.state(), model.state()]
-    np.testing.assert_array_equal(solver.body_to_articulation.numpy(), [1, 0])
+    np.testing.assert_array_equal(solver._body_to_articulation.numpy(), [1, 0])
     _advance(pipeline, solver, states, model.control(), 400)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     mass = model.body_mass.numpy()
     mass[0] *= 2.0
     model.body_mass.assign(mass)
     solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
     _advance(pipeline, solver, states, model.control(), 1)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 0])
     _advance(pipeline, solver, states, model.control(), 400)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
     _advance(pipeline, solver, states, model.control(), 1)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
 
 
 def test_solver_body_attribute_notification_wakes_its_island(test, device):
@@ -277,13 +277,13 @@ def test_solver_body_attribute_notification_wakes_its_island(test, device):
     solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **PROFILE)
     states = [model.state(), model.state()]
     _advance(pipeline, solver, states, model.control(), 400)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     depenetration = model.rigid_body_max_depenetration_velocity.numpy()
     depenetration[0] = 1.0
     model.rigid_body_max_depenetration_velocity.assign(depenetration)
     solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
     _advance(pipeline, solver, states, model.control(), 1)
-    np.testing.assert_array_equal(solver.sleeping.art_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 0])
 
 
 def test_mimic_articulation_stays_awake(test, device):
@@ -321,9 +321,9 @@ def test_mimic_articulation_stays_awake(test, device):
             solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free", **PROFILE)
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
             _advance(pipeline, solver, [model.state(), model.state()], model.control(), 400)
-            awake = solver.sleeping.art_awake.numpy()
-            test.assertEqual(int(awake[solver.body_to_articulation.numpy()[base]]), 1)
-            test.assertEqual(int(awake[solver.body_to_articulation.numpy()[box]]), 0)
+            awake = solver._sleeping.art_awake.numpy()
+            test.assertEqual(int(awake[solver._body_to_articulation.numpy()[base]]), 1)
+            test.assertEqual(int(awake[solver._body_to_articulation.numpy()[box]]), 0)
 
 
 def _articulations(device, tiles=False, profile=None):

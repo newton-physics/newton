@@ -169,25 +169,25 @@ def _run_mixed_response(
         state_in.clear_forces()
         pipeline.collide(state_in, contacts)
         solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
-        constraint_count = int(solver.constraint_count.numpy()[0])
-        mf_count = int(solver.mf_constraint_count.numpy()[0])
+        constraint_count = int(solver._constraint_count.numpy()[0])
+        mf_count = int(solver._mf_constraint_count.numpy()[0])
         samples.append(
             (
                 constraint_count,
-                solver.diag.numpy()[0, :constraint_count].copy(),
-                solver.impulses.numpy()[0, :constraint_count].copy(),
+                solver._diag.numpy()[0, :constraint_count].copy(),
+                solver._impulses.numpy()[0, :constraint_count].copy(),
                 state_out.joint_q.numpy().copy(),
                 state_out.joint_qd.numpy().copy(),
                 0,
-                solver.row_type.numpy()[0, :constraint_count].copy(),
+                solver._row_type.numpy()[0, :constraint_count].copy(),
                 mf_count,
-                solver.mf_impulses.numpy()[0, :mf_count].copy(),
-                solver.mf_row_type.numpy()[0, :mf_count].copy(),
-                solver.mf_row_parent.numpy()[0, :mf_count].copy(),
-                solver.mf_J_a.numpy()[0, :mf_count].copy(),
-                solver.mf_J_b.numpy()[0, :mf_count].copy(),
-                solver.mf_MiJt_a.numpy()[0, :mf_count].copy(),
-                solver.mf_MiJt_b.numpy()[0, :mf_count].copy(),
+                solver._mf_impulses.numpy()[0, :mf_count].copy(),
+                solver._mf_row_type.numpy()[0, :mf_count].copy(),
+                solver._mf_row_parent.numpy()[0, :mf_count].copy(),
+                solver._mf_J_a.numpy()[0, :mf_count].copy(),
+                solver._mf_J_b.numpy()[0, :mf_count].copy(),
+                solver._mf_MiJt_a.numpy()[0, :mf_count].copy(),
+                solver._mf_MiJt_b.numpy()[0, :mf_count].copy(),
             )
         )
         state_in, state_out = state_out, state_in

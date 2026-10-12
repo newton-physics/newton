@@ -67,14 +67,14 @@ def test_persistent_patch_guard(test, device):
     """Reject positive persistent-anchor bias but permit a disabled dummy patch buffer."""
     solver = SimpleNamespace(
         model=SimpleNamespace(device=device),
-        friction_anchor_beta=0.0,
+        _friction_anchor_beta=0.0,
         _friction_patches=object(),
     )
     start_step(solver, _contacts(device), 0.005)
-    solver.friction_anchor_beta = 0.2
+    solver._friction_anchor_beta = 0.2
     with test.assertRaisesRegex(ValueError, "friction_anchor_beta"):
         start_step(solver, _contacts(device), 0.005)
-    solver.contact_compliance = True
+    solver._contact_compliance = True
     with test.assertRaisesRegex(ValueError, "friction_anchor_beta"):
         SolverFeatherPGS.step(solver, None, None, None, None, 0.005)
 
@@ -123,11 +123,11 @@ def test_rolled_back_capacity_fails_without_warnings(test, device):
 def test_solver_overflow_and_dropped_contact_rejected(test, device):
     """Reject overflowing rows and missing mappings for positive stiffness."""
     _, _, solver, _ = run_fixture(device=device, articulated=True, enabled=True, steps=1)
-    solver.constraint_count.fill_(solver.articulation_constraint_max + 1)
+    solver._constraint_count.fill_(solver.articulation_constraint_max + 1)
     with test.assertRaisesRegex(RuntimeError, "overflowing solver rows"):
         _prepare_compliant_rows(solver)
-    solver.constraint_count.fill_(1)
-    solver.contact_slot.fill_(-1)
+    solver._constraint_count.fill_(1)
+    solver._contact_slot.fill_(-1)
     with test.assertRaisesRegex(RuntimeError, "dropped"):
         _prepare_compliant_rows(solver)
 

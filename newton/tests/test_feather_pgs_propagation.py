@@ -139,16 +139,18 @@ def test_contact_effective_mass_matches_dense_response(test, device):
             test.assertEqual(solver._propagation_native_tree[solver._propagation_tree_sizes[0]], tree_kernel == "auto")
             _step(model, solver)
 
-            ref_path = reference.contact_path.numpy()[:count]
-            ref_slot = reference.contact_slot.numpy()[:count]
-            path = solver.contact_path.numpy()[:count]
-            slot = solver.contact_slot.numpy()[:count]
-            world = solver.contact_world.numpy()[:count]
-            dense_diag = reference.diag.numpy()
-            eff_mass_inv = solver.propagation_eff_mass_inv.numpy()
+            ref_path = reference._contact_path.numpy()[:count]
+            ref_slot = reference._contact_slot.numpy()[:count]
+            path = solver._contact_path.numpy()[:count]
+            slot = solver._contact_slot.numpy()[:count]
+            world = solver._contact_world.numpy()[:count]
+            dense_diag = reference._diag.numpy()
+            eff_mass_inv = solver._propagation_eff_mass_inv.numpy()
             # Each compared row has the ground on one side.
-            row_body = np.maximum(solver.propagation_body_a.numpy(), solver.propagation_body_b.numpy())
-            split = solver.propagation_coupling_group_body_count.numpy()[solver.propagation_body_coupling_group.numpy()]
+            row_body = np.maximum(solver._propagation_body_a.numpy(), solver._propagation_body_b.numpy())
+            split = solver._propagation_coupling_group_body_count.numpy()[
+                solver._propagation_body_coupling_group.numpy()
+            ]
             checked = 0
             # Contacts between links of one articulation stay dense in both responses.
             for c in np.flatnonzero((ref_path == DENSE_PATH) & (ref_slot >= 0) & (path == PROPAGATION_PATH)):
@@ -199,7 +201,7 @@ def test_propagation_row_overflow_is_flagged_and_reset(test, device):
             state, contacts = _step(model, solver)
             test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 1)
             np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [True, False, False])
-            test.assertEqual(int(solver.propagation_constraint_count.numpy()[0]), 3)
+            test.assertEqual(int(solver._propagation_constraint_count.numpy()[0]), 3)
             with test.assertRaisesRegex(RuntimeError, r"worlds \[0\]"):
                 solver.check_constraint_capacity()
             solver.reset(state, wp.array([True, False, False], dtype=wp.bool, device=device))
@@ -293,7 +295,7 @@ def test_global_kinematic_floor_moves_articulated_bodies(test, device):
                 solver.step(state_0, state_1, model.control(), contacts, 0.01)
                 count = int(contacts.rigid_contact_count.numpy()[0])
                 test.assertGreater(count, 0)
-                np.testing.assert_array_equal(solver.contact_path.numpy()[:count], PROPAGATION_PATH)
+                np.testing.assert_array_equal(solver._contact_path.numpy()[:count], PROPAGATION_PATH)
                 np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [False, False, False])
                 results[(floor, floor_velocity)] = state_1.body_qd.numpy()[:4]
             # Both worlds respond to the global kinematic floor like to world geometry. The kinematic
@@ -358,23 +360,23 @@ def test_phased_sweeps_touch_only_their_row_family(test, device):
     solver = SolverFeatherPGS(model, iterations=0, enable_joint_limits=True, articulated_contact_response="propagation")
     _step(model, solver)
 
-    dense_count = int(solver.constraint_count.numpy()[0])
-    row_type = solver.row_type.numpy()[0, :dense_count]
+    dense_count = int(solver._constraint_count.numpy()[0])
+    row_type = solver._row_type.numpy()[0, :dense_count]
     limit_rows = row_type == PGS_CONSTRAINT_TYPE_JOINT_LIMIT
     contact_rows = (row_type == PGS_CONSTRAINT_TYPE_CONTACT) | (row_type == PGS_CONSTRAINT_TYPE_FRICTION)
     test.assertTrue(limit_rows.any() and contact_rows.any())
-    mf_count = int(solver.mf_constraint_count.numpy()[0])
-    mf_contact_end = int(solver.mf_contact_rows_end.numpy()[0])
+    mf_count = int(solver._mf_constraint_count.numpy()[0])
+    mf_contact_end = int(solver._mf_contact_rows_end.numpy()[0])
     test.assertGreater(mf_count, mf_contact_end)
 
     touched = {}
     for row_phase in (3, 4, 5):
-        solver.impulses.zero_()
-        solver.mf_impulses.zero_()
-        wp.copy(solver.v_out, solver.v_hat)
+        solver._impulses.zero_()
+        solver._mf_impulses.zero_()
+        wp.copy(solver._v_out, solver._v_hat)
         solver._launch_mf_gs_phase(row_phase)
-        dense = np.abs(solver.impulses.numpy()[0, :dense_count]) > 0.0
-        velocity_limits = np.abs(solver.mf_impulses.numpy()[0, mf_contact_end:mf_count]) > 0.0
+        dense = np.abs(solver._impulses.numpy()[0, :dense_count]) > 0.0
+        velocity_limits = np.abs(solver._mf_impulses.numpy()[0, mf_contact_end:mf_count]) > 0.0
         touched[row_phase] = (
             bool(dense[limit_rows].any()),
             bool(dense[contact_rows].any()),
@@ -464,7 +466,7 @@ def test_propagation_matches_immediate_when_converged(test, device):
             solver.step(initial, state_out, model.control(), contacts, 1.0 / 240.0)
             solver.check_constraint_capacity()
             if response != "immediate":
-                test.assertGreater(int(solver.propagation_constraint_count.numpy().sum()), 0)
+                test.assertGreater(int(solver._propagation_constraint_count.numpy().sum()), 0)
             results[response] = {
                 name: getattr(state_out, name).numpy().astype(np.float64)
                 for name in ("joint_q", "joint_qd", "body_q", "body_qd")

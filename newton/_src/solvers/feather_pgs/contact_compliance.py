@@ -81,7 +81,7 @@ def validate_step(solver):
     """Reject unsupported combinations before any contact preprocessing."""
     if wp.get_stream(solver.model.device).is_capturing:
         raise RuntimeError("contact_compliance does not support CUDA graph capture")
-    if getattr(solver, "friction_anchor_beta", 0.0) > 0 or getattr(solver, "_friction_anchors_enabled", False):
+    if getattr(solver, "_friction_anchor_beta", 0.0) > 0 or getattr(solver, "_friction_anchors_enabled", False):
         raise ValueError("contact_compliance is not validated with friction_anchor_beta > 0")
 
 
@@ -98,8 +98,8 @@ def start_step(solver, contacts, dt):
     count = int(contacts.rigid_contact_count.numpy()[0])
     if count < 0 or count > contacts.rigid_contact_max:
         raise RuntimeError("contact_compliance rejects overflowing contact input")
-    restitution = getattr(solver, "shape_material_restitution", None)
-    if getattr(solver, "enable_restitution", True) and restitution is not None and np.any(restitution.numpy() > 0.0):
+    restitution = getattr(solver, "_shape_restitution", None)
+    if getattr(solver, "_enable_restitution", True) and restitution is not None and np.any(restitution.numpy() > 0.0):
         # The compliant law replaces the position bias; a rebound target has no
         # defined composition with it.
         raise ValueError("contact_compliance requires zero shape restitution")
@@ -124,31 +124,31 @@ def _prepare_compliant_rows(self):
     count = int(contacts.rigid_contact_count.numpy()[0])
     if count > contacts.rigid_contact_max:
         raise RuntimeError("contact_compliance rejects overflowing contact input")
-    dense_counts, mf_counts = self.constraint_count.numpy(), self.mf_constraint_count.numpy()
+    dense_counts, mf_counts = self._constraint_count.numpy(), self._mf_constraint_count.numpy()
     # Failed contact reservations roll back the live row count; check the loss
     # counters even when overflow warnings are disabled.
     dropped = int(self._row_dropped_dense.numpy().sum()) + int(self._row_dropped_mf.numpy().sum())
     if (
         dropped
-        or np.any(dense_counts > self.articulation_constraint_max)
-        or np.any(mf_counts > self.free_body_constraint_max)
+        or np.any(dense_counts > self._articulation_constraint_max)
+        or np.any(mf_counts > self._free_body_constraint_max)
     ):
         raise RuntimeError("contact_compliance rejects overflowing solver rows")
     stiffness = contacts.rigid_contact_stiffness.numpy()[:count]
     damping = contacts.rigid_contact_damping.numpy()[:count]
     scale = contacts.rigid_contact_friction.numpy()[:count]
-    paths, slots, worlds = (x.numpy()[:count] for x in (self.contact_path, self.contact_slot, self.contact_world))
-    slots_needed = self.contact_slots_needed.numpy()[:count]
-    dense_diag, mf_inv = self.diag.numpy(), self.mf_eff_mass_inv.numpy()
-    self._compliant_dense_base, self._compliant_mf_base = self.rhs.numpy(), self.mf_rhs.numpy()
+    paths, slots, worlds = (x.numpy()[:count] for x in (self._contact_path, self._contact_slot, self._contact_world))
+    slots_needed = self._contact_slots_needed.numpy()[:count]
+    dense_diag, mf_inv = self._diag.numpy(), self._mf_eff_mass_inv.numpy()
+    self._compliant_dense_base, self._compliant_mf_base = self._rhs.numpy(), self._mf_rhs.numpy()
     self._compliant_dense_gamma, self._compliant_mf_gamma = np.zeros_like(dense_diag), np.zeros_like(mf_inv)
-    dense_phi, mf_phi = self.phi.numpy(), self.mf_phi.numpy()
-    dense_mu, mf_mu = self.row_mu.numpy(), self.mf_row_mu.numpy()
-    dense_parent, mf_parent = self.row_parent.numpy(), self.mf_row_parent.numpy()
-    dense_type, mf_type = self.row_type.numpy(), self.mf_row_type.numpy()
-    dense_target = self.target_velocity.numpy()
+    dense_phi, mf_phi = self._phi.numpy(), self._mf_phi.numpy()
+    dense_mu, mf_mu = self._row_mu.numpy(), self._mf_row_mu.numpy()
+    dense_parent, mf_parent = self._row_parent.numpy(), self._mf_row_parent.numpy()
+    dense_type, mf_type = self._row_type.numpy(), self._mf_row_type.numpy()
+    dense_target = self._target_velocity.numpy()
     # Without prescribed bodies the free-body target is a (1, 1) placeholder.
-    mf_target = self.mf_target_velocity.numpy() if self._has_prescribed_response else None
+    mf_target = self._mf_target_velocity.numpy() if self._has_prescribed_response else None
     active = 0
     skipped = 0
     seen_rows = set()
@@ -185,7 +185,7 @@ def _prepare_compliant_rows(self):
             self._compliant_dense_gamma[world, slot] = gamma
             self._compliant_dense_base[world, slot] = bias - dense_target[world, slot]
             # The compliance replaces the row's constraint force mixing.
-            dense_diag[world, slot] += gamma - self.cfm
+            dense_diag[world, slot] += gamma - self._cfm
             children = (dense_parent[world] == slot) & (dense_type[world] == PGS_CONSTRAINT_TYPE_FRICTION)
             dense_mu[world, children] *= friction_weight
         else:
@@ -193,15 +193,15 @@ def _prepare_compliant_rows(self):
                 raise RuntimeError("Contact map no longer points to an effective free-body normal row")
             self._compliant_mf_gamma[world, slot] = gamma
             self._compliant_mf_base[world, slot] = bias - (mf_target[world, slot] if mf_target is not None else 0.0)
-            mf_inv[world, slot] = 1.0 / (1.0 / mf_inv[world, slot] - self.cfm + gamma)
+            mf_inv[world, slot] = 1.0 / (1.0 / mf_inv[world, slot] - self._cfm + gamma)
             children = (mf_parent[world] == slot) & (mf_type[world] == PGS_CONSTRAINT_TYPE_FRICTION)
             mf_mu[world, children] *= friction_weight
         active += 1
     device = self.model.device
-    self.diag.assign(dense_diag)
-    self.mf_eff_mass_inv.assign(mf_inv)
-    self.row_mu.assign(dense_mu)
-    self.mf_row_mu.assign(mf_mu)
+    self._diag.assign(dense_diag)
+    self._mf_eff_mass_inv.assign(mf_inv)
+    self._row_mu.assign(dense_mu)
+    self._mf_row_mu.assign(mf_mu)
     self._compliant_dense_base_gpu = wp.array(self._compliant_dense_base, device=device)
     self._compliant_mf_base_gpu = wp.array(self._compliant_mf_base, device=device)
     self._compliant_dense_gamma_gpu = wp.array(self._compliant_dense_gamma, device=device)
@@ -219,15 +219,15 @@ def solve(solver, *, iterations):
     for _ in range(iterations):
         wp.launch(
             update_compliant_rhs,
-            dim=solver.rhs.shape,
-            inputs=[solver._compliant_dense_base_gpu, solver._compliant_dense_gamma_gpu, solver.impulses, solver.rhs],
+            dim=solver._rhs.shape,
+            inputs=[solver._compliant_dense_base_gpu, solver._compliant_dense_gamma_gpu, solver._impulses, solver._rhs],
             device=device,
         )
         wp.launch(
             update_compliant_rhs,
-            dim=solver.mf_rhs.shape,
-            inputs=[solver._compliant_mf_base_gpu, solver._compliant_mf_gamma_gpu, solver.mf_impulses, solver.mf_rhs],
+            dim=solver._mf_rhs.shape,
+            inputs=[solver._compliant_mf_base_gpu, solver._compliant_mf_gamma_gpu, solver._mf_impulses, solver._mf_rhs],
             device=device,
         )
-        solver._pack_mf_meta(solver.mf_rhs)
-        solver._launch_pgs_solve(solver.rhs, 1, regularize=False)
+        solver._pack_mf_meta(solver._mf_rhs)
+        solver._launch_pgs_solve(solver._rhs, 1, regularize=False)

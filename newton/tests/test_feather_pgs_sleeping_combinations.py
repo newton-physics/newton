@@ -101,7 +101,7 @@ def test_drive_rows_stay_awake_while_a_box_sleeps(test, device):
     reference_states = [reference_model.state(), reference_model.state()]
     _run(model, pipeline, solver, control, states, 300)
     _run(reference_model, reference_pipeline, reference, reference_control, reference_states, 300)
-    awake = solver.sleeping.body_awake.numpy()
+    awake = solver._sleeping.body_awake.numpy()
     test.assertEqual(int(awake[link]), 1)
     test.assertEqual(int(awake[box]), 0)
     # The driven hinge reaches its target, exactly as without sleeping.
@@ -114,7 +114,7 @@ def test_drive_rows_stay_awake_while_a_box_sleeps(test, device):
     force = np.zeros((model.body_count, 6), dtype=np.float32)
     force[box, 0] = 300.0
     _run(model, pipeline, solver, control, states, 5, force=force)
-    test.assertEqual(int(solver.sleeping.body_awake.numpy()[box]), 1)
+    test.assertEqual(int(solver._sleeping.body_awake.numpy()[box]), 1)
     test.assertGreater(float(states[0].body_q.numpy()[box, 0]), float(frozen[0]))
     test.assertAlmostEqual(float(states[0].joint_q.numpy()[0]), 0.5, delta=0.01)
 
@@ -138,7 +138,7 @@ def test_compliant_contacts_sleep_and_wake(test, device):
         contacts=reference_contacts,
         stiffness=stiffness,
     )
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     # Frozen at the same compliant rest height as the solver without sleeping.
     np.testing.assert_allclose(states[0].body_q.numpy()[:, 2], reference_states[0].body_q.numpy()[:, 2], atol=1.0e-4)
     depth = 0.05 - float(states[0].body_q.numpy()[0, 2])
@@ -150,7 +150,7 @@ def test_compliant_contacts_sleep_and_wake(test, device):
     force = np.zeros((model.body_count, 6), dtype=np.float32)
     force[0, 0] = 5.0
     _run(model, pipeline, solver, control, states, 5, contacts=contacts, force=force, stiffness=stiffness)
-    np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 0])
     test.assertGreater(float(states[0].body_q.numpy()[0, 0]), float(frozen[0, 0]))
     np.testing.assert_array_equal(states[0].body_q.numpy()[1], frozen[1])
 

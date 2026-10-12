@@ -160,11 +160,11 @@ def test_scissor_scene_produces_same_articulation_contact(test, device, solve_mo
     solver = SolverFeatherPGS(model, solve_mode=solve_mode, iterations=0, cfm=PGS_CFM)
     _, contact_count = _step_once(model, solver)
     test.assertGreater(contact_count, 0, "scissor scene produced no link-link contact")
-    paths = solver.contact_path.numpy()[:contact_count]
-    slots = solver.contact_slot.numpy()[:contact_count]
+    paths = solver._contact_path.numpy()[:contact_count]
+    slots = solver._contact_slot.numpy()[:contact_count]
     routed = (paths == DENSE_PATH) & (slots >= 0)
     test.assertTrue(routed.any(), "no same-articulation contact reached the dense rows")
-    test.assertEqual(int(solver.mf_constraint_count.numpy()[0]), 0)
+    test.assertEqual(int(solver._mf_constraint_count.numpy()[0]), 0)
 
 
 def test_scissor_dense_diagonal_matches_reference(test, device, solve_mode="matrix_free"):
@@ -173,21 +173,21 @@ def test_scissor_dense_diagonal_matches_reference(test, device, solve_mode="matr
     solver = SolverFeatherPGS(model, solve_mode=solve_mode, iterations=0, cfm=PGS_CFM)
     state, _ = _step_once(model, solver)
     H, _ = _analytic_H_and_X(model, state)
-    count = int(solver.constraint_count.numpy()[0])
+    count = int(solver._constraint_count.numpy()[0])
     test.assertGreater(count, 0)
     D = H.shape[0]
     # One articulation: the world rows are that articulation's grouped rows.
-    J = solver.J_by_size[D].numpy()[0, :count, :D].astype(np.float64)
+    J = solver._J_by_size[D].numpy()[0, :count, :D].astype(np.float64)
     reference = np.einsum("rd,rd->r", J, np.linalg.solve(H, J.T).T) + PGS_CFM
-    got = solver.diag.numpy()[0, :count].astype(np.float64)
+    got = solver._diag.numpy()[0, :count].astype(np.float64)
     np.testing.assert_allclose(got, reference, rtol=1.0e-3, atol=1.0e-6)
 
 
 def _routed_slots(solver, contact_count, path):
     """Map each contact routed to ``path`` in world 0 to its normal-row slot."""
-    paths = solver.contact_path.numpy()[:contact_count]
-    slots = solver.contact_slot.numpy()[:contact_count]
-    worlds = solver.contact_world.numpy()[:contact_count]
+    paths = solver._contact_path.numpy()[:contact_count]
+    slots = solver._contact_slot.numpy()[:contact_count]
+    worlds = solver._contact_world.numpy()[:contact_count]
     return {c: int(slots[c]) for c in range(contact_count) if paths[c] == path and slots[c] >= 0 and worlds[c] == 0}
 
 
@@ -197,7 +197,7 @@ def test_default_routing_keeps_same_articulation_rows_dense(test, device):
     solver = SolverFeatherPGS(model, iterations=0, cfm=PGS_CFM, articulated_contact_response="propagation")
     _, contact_count = _step_once(model, solver)
     test.assertGreater(len(_routed_slots(solver, contact_count, DENSE_PATH)), 0)
-    test.assertEqual(int(solver.propagation_constraint_count.numpy()[0]), 0)
+    test.assertEqual(int(solver._propagation_constraint_count.numpy()[0]), 0)
 
 
 def test_flag_requires_propagation_mode(test, device):
@@ -234,17 +234,17 @@ def test_cross_response_effective_mass_matches_reference_operator(test, device):
     rows = _routed_slots(solver, contact_count, PROPAGATION_PATH)
     test.assertEqual(set(rows), set(dense_slots), "same-articulation contacts were not routed to propagation rows")
 
-    count = int(solver.propagation_constraint_count.numpy()[0])
-    J_a = solver.propagation_J_a.numpy()[0, :count].astype(np.float64)
-    J_b = solver.propagation_J_b.numpy()[0, :count].astype(np.float64)
-    MiJt_a = solver.propagation_MiJt_a.numpy()[0, :count].astype(np.float64)
-    MiJt_b = solver.propagation_MiJt_b.numpy()[0, :count].astype(np.float64)
-    body_a = solver.propagation_body_a.numpy()[0, :count]
-    body_b = solver.propagation_body_b.numpy()[0, :count]
-    eff_mass_inv = solver.propagation_eff_mass_inv.numpy()[0, :count].astype(np.float64)
+    count = int(solver._propagation_constraint_count.numpy()[0])
+    J_a = solver._propagation_J_a.numpy()[0, :count].astype(np.float64)
+    J_b = solver._propagation_J_b.numpy()[0, :count].astype(np.float64)
+    MiJt_a = solver._propagation_MiJt_a.numpy()[0, :count].astype(np.float64)
+    MiJt_b = solver._propagation_MiJt_b.numpy()[0, :count].astype(np.float64)
+    body_a = solver._propagation_body_a.numpy()[0, :count]
+    body_b = solver._propagation_body_b.numpy()[0, :count]
+    eff_mass_inv = solver._propagation_eff_mass_inv.numpy()[0, :count].astype(np.float64)
     H, X = _analytic_H_and_X(model, state)
-    width = int(reference.world_dof_count.numpy()[0])
-    Y = reference.Y_world.numpy()[0].astype(np.float64)
+    width = int(reference._world_dof_count.numpy()[0])
+    Y = reference._Y_world.numpy()[0].astype(np.float64)
 
     checked = 0
     for contact, row in sorted(rows.items()):
