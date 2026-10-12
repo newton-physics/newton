@@ -1,0 +1,1 @@
+Add experimental `SolverMuJoCo(use_speculative_contacts=True)` to constrain closing velocity for separated Newton contact candidates without adding friction or inflating collision margins. This mode requires Newton contacts and Euler or implicitfast integration on the MuJoCo Warp backend.

@@ -12,8 +12,8 @@ import warp as wp
 from ...core.math import FLOAT32_EPS
 from ...core.types import vec6f
 from ...geometry.keying import build_pair_key2, uint64_sentinel_value
+from ...linalg.factorize._array_ptr import get_float32_array_offset_ptr
 from ...linalg.factorize.llt_blocked import make_llt_blocked_solve_func
-from ...linalg.factorize.llt_blocked_rcm import get_float32_array_offset_ptr
 from .kernels import (
     _FUSED_BILATERAL_BLOCK,
     _FUSED_INEQUALITY_BLOCK,

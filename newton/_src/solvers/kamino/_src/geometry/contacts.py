@@ -1400,8 +1400,8 @@ def convert_contacts_newton_to_kamino(
     contacts_in: Contacts,
     contacts_out: ContactsKamino,
     convert_forces: bool = False,
-    friction_mix_mode: Literal["average", "multiply", "max", "min"] = "average",
-    restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "min",
+    friction_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "average",
+    restitution_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "min",
     cull_speculative_contacts: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
 ):
     """
