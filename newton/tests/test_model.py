@@ -1009,6 +1009,8 @@ class TestModelMesh(unittest.TestCase):
         self.assertEqual(captured["threshold"], 0.2)
 
     def test_mesh_approximation_coacd_limits_hull_vertices(self):
+        """Limit each CoACD part to the source mesh's maxhullvert."""
+
         sphere = newton.Mesh.create_sphere(compute_normals=False, compute_uvs=False, compute_inertia=False)
         faces = sphere.indices.reshape(-1, 3)
         parts = [(sphere.vertices, faces), (sphere.vertices + 3.0, faces)]
