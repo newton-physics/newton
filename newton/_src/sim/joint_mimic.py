@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import warnings
 
 import warp as wp
@@ -19,8 +21,44 @@ _SUPPORTED_JOINT_TYPES = {int(JointType.PRISMATIC), int(JointType.REVOLUTE), int
 _MAX_REPORTED_UNSUPPORTED_JOINTS = 10
 
 
+@wp.func
+def _eval_joint_mimic(
+    joint: int,
+    joint_mimic_joint: wp.array[int],
+    joint_mimic_coeffs: wp.array[wp.vec2],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_q_in: wp.array[float],
+    joint_qd_in: wp.array[float],
+    copy_independent: bool,
+    # outputs
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+):
+    """Evaluate a follower or copy an independent joint's coordinates."""
+    reference_joint = joint_mimic_joint[joint]
+    if reference_joint < 0:
+        if copy_independent:
+            for coordinate in range(joint_q_start[joint], joint_q_start[joint + 1]):
+                joint_q[coordinate] = joint_q_in[coordinate]
+            for dof in range(joint_qd_start[joint], joint_qd_start[joint + 1]):
+                joint_qd[dof] = joint_qd_in[dof]
+        return
+
+    coeffs = joint_mimic_coeffs[joint]
+    q_start = joint_q_start[joint]
+    reference_q_start = joint_q_start[reference_joint]
+    for coordinate in range(joint_q_start[joint + 1] - q_start):
+        joint_q[q_start + coordinate] = coeffs[0] + coeffs[1] * joint_q_in[reference_q_start + coordinate]
+
+    qd_start = joint_qd_start[joint]
+    reference_qd_start = joint_qd_start[reference_joint]
+    for dof in range(joint_qd_start[joint + 1] - qd_start):
+        joint_qd[qd_start + dof] = coeffs[1] * joint_qd_in[reference_qd_start + dof]
+
+
 @wp.kernel
-def eval_mimic_joints(
+def eval_joint_mimic(
     joint_mimic_joint: wp.array[int],
     joint_mimic_coeffs: wp.array[wp.vec2],
     joint_q_start: wp.array[int],
@@ -29,25 +67,74 @@ def eval_mimic_joints(
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
 ):
-    """Apply joint-owned mimic relationships to generalized coordinates."""
-    joint = wp.tid()
-    reference_joint = joint_mimic_joint[joint]
-    if reference_joint < 0:
-        return
-
-    coeffs = joint_mimic_coeffs[joint]
-    q_start = joint_q_start[joint]
-    reference_q_start = joint_q_start[reference_joint]
-    for coordinate in range(joint_q_start[joint + 1] - q_start):
-        joint_q[q_start + coordinate] = coeffs[0] + coeffs[1] * joint_q[reference_q_start + coordinate]
-
-    qd_start = joint_qd_start[joint]
-    reference_qd_start = joint_qd_start[reference_joint]
-    for dof in range(joint_qd_start[joint + 1] - qd_start):
-        joint_qd[qd_start + dof] = coeffs[1] * joint_qd[reference_qd_start + dof]
+    """Apply joint-owned mimic relationships to generalized coordinates in place."""
+    _eval_joint_mimic(
+        wp.tid(),
+        joint_mimic_joint,
+        joint_mimic_coeffs,
+        joint_q_start,
+        joint_qd_start,
+        joint_q,
+        joint_qd,
+        False,
+        joint_q,
+        joint_qd,
+    )
 
 
-def eval_mimic(model: Model, state_in: State, state_out: State | None = None) -> None:
+@wp.kernel
+def _eval_joint_mimic_state(
+    articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
+    articulation_count: int,
+    articulation_mask: wp.array[bool],
+    articulation_indices: wp.array[int],
+    joint_mimic_joint: wp.array[int],
+    joint_mimic_coeffs: wp.array[wp.vec2],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_q_in: wp.array[float],
+    joint_qd_in: wp.array[float],
+    copy_independent: bool,
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+):
+    """Copy and evaluate joint coordinates for selected articulations."""
+    articulation, joint = wp.tid()
+    if articulation_mask or articulation_indices:
+        if articulation_indices:
+            articulation = articulation_indices[articulation]
+        if articulation < 0 or articulation >= articulation_count:
+            return
+        if articulation_mask:
+            if not articulation_mask[articulation]:
+                return
+        joint += articulation_start[articulation]
+        if joint >= articulation_end[articulation]:
+            return
+
+    _eval_joint_mimic(
+        joint,
+        joint_mimic_joint,
+        joint_mimic_coeffs,
+        joint_q_start,
+        joint_qd_start,
+        joint_q_in,
+        joint_qd_in,
+        copy_independent,
+        joint_q,
+        joint_qd,
+    )
+
+
+def eval_mimic(
+    model: Model,
+    state_in: State,
+    state_out: State | None = None,
+    *,
+    mask: wp.array[bool] | None = None,
+    indices: wp.array[int] | None = None,
+) -> None:
     """Update follower joint coordinates from their reference joints.
 
     For each follower, this function reads every position and velocity
@@ -57,18 +144,41 @@ def eval_mimic(model: Model, state_in: State, state_out: State | None = None) ->
     :attr:`State.joint_qd` are written.
 
     If ``state_out`` is omitted, ``state_in`` is updated in place. Otherwise,
-    all joint coordinates are first copied from ``state_in`` to ``state_out``
-    and the followers are updated in ``state_out``.
+    independent joint coordinates are copied from ``state_in`` to ``state_out``
+    and follower coordinates are evaluated from ``state_in``.
+
+    Like :func:`eval_fk` and :func:`eval_ik`, ``mask`` or ``indices`` selects
+    articulations, not worlds or joints. Only the selected articulations are
+    copied and updated; unselected coordinates in ``state_out`` retain their
+    existing values. With neither selector, all joints are processed.
 
     Args:
         model: Model containing the joint mimic metadata.
         state_in: State providing the input joint coordinates.
         state_out: State receiving the updated joint coordinates. If ``None``,
             update ``state_in`` in place.
+        mask: Boolean mask of shape ``(model.articulation_count,)`` on the
+            model device. ``True`` selects an articulation. Mutually exclusive
+            with ``indices``.
+        indices: One-dimensional array of unique integer articulation indices
+            on the model device. Out-of-range indices are skipped, matching
+            :func:`eval_fk` and :func:`eval_ik`. An empty array updates nothing.
+            Mutually exclusive with ``mask``.
 
     Raises:
-        ValueError: If either state does not contain joint coordinate arrays.
+        ValueError: If either state does not contain joint coordinate arrays,
+            both selectors are provided, or a selector has an incompatible
+            shape, dtype, or device.
     """
+    if mask is not None and indices is not None:
+        raise ValueError("Cannot specify both mask and indices parameters")
+    for name, selector, dtype in (("mask", mask, wp.bool), ("indices", indices, wp.int32)):
+        if selector is not None:
+            if selector.ndim != 1 or selector.dtype != dtype or selector.device != model.device:
+                raise ValueError(f"{name} must be a one-dimensional {dtype.__name__} array on {model.device}")
+    if mask is not None and mask.shape != (model.articulation_count,):
+        raise ValueError(f"mask must have shape ({model.articulation_count},), got {mask.shape}")
+
     if state_in.joint_q is None or state_in.joint_qd is None:
         raise ValueError("state_in must contain joint_q and joint_qd arrays")
 
@@ -76,21 +186,56 @@ def eval_mimic(model: Model, state_in: State, state_out: State | None = None) ->
         state_out = state_in
     elif state_out.joint_q is None or state_out.joint_qd is None:
         raise ValueError("state_out must contain joint_q and joint_qd arrays")
-    elif state_out is not state_in:
-        state_out.joint_q.assign(state_in.joint_q)
-        state_out.joint_qd.assign(state_in.joint_qd)
 
     if model.joint_count == 0:
         return
 
+    # Use the compact kernel for in-place updates and bulk CPU copies.
+    # Fuse CUDA output copying into the evaluation kernel below.
+    if mask is None and indices is None and (state_out is state_in or model.device.is_cpu):
+        if state_out is not state_in:
+            state_out.joint_q.assign(state_in.joint_q)
+            state_out.joint_qd.assign(state_in.joint_qd)
+        wp.launch(
+            kernel=eval_joint_mimic,
+            dim=model.joint_count,
+            inputs=[
+                model.joint_mimic_joint,
+                model.joint_mimic_coeffs,
+                model.joint_q_start,
+                model.joint_qd_start,
+            ],
+            outputs=[state_out.joint_q, state_out.joint_qd],
+            device=model.device,
+        )
+        return
+
+    # Keep the full-model path parallel over joints; selected launches visit
+    # only articulation ranges and read selectors on device during graph replay.
+    if mask is not None or indices is not None:
+        articulation_count = len(indices) if indices is not None else model.articulation_count
+        if articulation_count == 0:
+            return
+        dim = (articulation_count, model.max_joints_per_articulation)
+    else:
+        dim = (1, model.joint_count)
+
     wp.launch(
-        kernel=eval_mimic_joints,
-        dim=model.joint_count,
+        kernel=_eval_joint_mimic_state,
+        dim=dim,
         inputs=[
+            model.articulation_start,
+            model.articulation_end,
+            model.articulation_count,
+            mask,
+            indices,
             model.joint_mimic_joint,
             model.joint_mimic_coeffs,
             model.joint_q_start,
             model.joint_qd_start,
+            state_in.joint_q,
+            state_in.joint_qd,
+            state_out is not state_in,
         ],
         outputs=[state_out.joint_q, state_out.joint_qd],
         device=model.device,

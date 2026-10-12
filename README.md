@@ -877,6 +877,9 @@ python -m newton.examples --describe robot_omniwheel --format json
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/contacts/example_adaptive_collision.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_adaptive_collision.jpg" alt="Adaptive Collision Scheduling">
+      </a>
     </td>
   </tr>
   <tr>
@@ -887,6 +890,7 @@ python -m newton.examples --describe robot_omniwheel --format json
       <code>python -m newton.examples domino_spiral</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples adaptive_collision</code>
     </td>
   </tr>
   <tr>

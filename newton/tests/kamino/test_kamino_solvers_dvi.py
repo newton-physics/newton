@@ -42,7 +42,6 @@ from newton._src.solvers.kamino._src.solvers.dvi.projections import (
 from newton._src.solvers.kamino._src.solvers.dvi.sparse import (
     _SPARSE_DELASSUS_ROWS_JOINTS,
     _SPARSE_DELASSUS_ROWS_UNILATERAL,
-    _can_reuse_sparse_assembly,
     _can_use_cooperative_articulation,
     _sparse_delassus_matvec_rows,
 )
@@ -430,16 +429,6 @@ class TestDVISolver(unittest.TestCase):
         self.assertEqual(_can_use_cooperative_articulation(path), self.device.is_cuda)
         path.use_schur_complement = False
         self.assertFalse(_can_use_cooperative_articulation(path))
-
-    def test_00_sparse_assembly_reuse_requires_large_constrained_batch(self):
-        """Avoid cached sparse assembly where it regresses ordinary DVI solves."""
-        size = SimpleNamespace(num_worlds=2047, sum_of_num_friction_joint_cts=2047)
-        self.assertFalse(_can_reuse_sparse_assembly(size, has_unilateral_constraints=True))
-        size.num_worlds = 2048
-        self.assertTrue(_can_reuse_sparse_assembly(size, has_unilateral_constraints=False))
-        size.sum_of_num_friction_joint_cts = 0
-        self.assertFalse(_can_reuse_sparse_assembly(size, has_unilateral_constraints=False))
-        self.assertTrue(_can_reuse_sparse_assembly(size, has_unilateral_constraints=True))
 
     def test_00_config_selection(self):
         """Verify default, dense, PADMM, and explicit DVI configuration selection."""
@@ -878,11 +867,13 @@ class TestDVISolver(unittest.TestCase):
         negative index.
         """
 
-        def solve_single_inequality(limit_index: int, bounded: bool = False) -> tuple[float, np.ndarray]:
+        def solve_single_inequality(
+            limit_index: int, bounded: bool = False, initial_lambda: float = 0.0, column_major: bool = False
+        ) -> tuple[float, np.ndarray]:
             int32_array = lambda values: wp.array(values, dtype=wp.int32, device=self.device)  # noqa: E731
             float_array = lambda values: wp.array(values, dtype=wp.float32, device=self.device)  # noqa: E731
             jacobian_block = wp.array([vec6f(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=vec6f, device=self.device)
-            lambdas = float_array([0.0])
+            lambdas = float_array([initial_lambda, *([0.0] * 5 if column_major else [])])
             config = wp.array(
                 [
                     convert_config_to_struct(
@@ -899,7 +890,7 @@ class TestDVISolver(unittest.TestCase):
                 device=self.device,
             )
             threads_per_world = 64 if self.device.is_cuda else 1
-            body_space = wp.zeros(6, dtype=wp.float32, device=self.device)
+            body_space = wp.full(6, float("nan"), dtype=wp.float32, device=self.device)
             wp.launch(
                 kernel=_solve_dvi_sparse_inequalities_pgs,
                 dim=threads_per_world,
@@ -957,6 +948,14 @@ class TestDVISolver(unittest.TestCase):
                     config,
                     body_space,
                     lambdas,
+                    int32_array([1]),  # transpose_num_nzb
+                    int32_array([0]),  # transpose_nzb_start
+                    wp.array([[0, 0]], dtype=wp.int32, device=self.device),
+                    jacobian_block,
+                    int32_array([0]),  # transpose_row_start
+                    int32_array([0]),  # transpose_col_start
+                    int32_array([6]),  # transpose_max_cols
+                    column_major,  # transpose_column_major
                 ],
                 device=self.device,
                 block_dim=threads_per_world,
@@ -971,6 +970,12 @@ class TestDVISolver(unittest.TestCase):
         lambda_bounded, body_space = solve_single_inequality(-1, bounded=True)
         self.assertAlmostEqual(lambda_bounded, 0.25, places=4)
         self.assertAlmostEqual(body_space[0], 0.25, places=4)
+        # Both layouts reconstruct the initial product, then propagate the
+        # projected impulse delta. Stale NaNs must not enter either product.
+        for column_major in (False, True):
+            impulse, body = solve_single_inequality(0, initial_lambda=0.2, column_major=column_major)
+            self.assertAlmostEqual(impulse, 1.0, places=4)
+            np.testing.assert_allclose(body, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0], atol=1.0e-5)
 
     def _make_box_on_plane_setup(self, max_world_contacts: int = 4, sparse: bool = False):
         """Build an inequality-only box-on-plane problem and its containers."""
@@ -1410,7 +1415,19 @@ class TestDVISolver(unittest.TestCase):
 
         solver._sparse_path.set_bilateral_active_dim = record_bilateral_active_dim
         solver.coldstart()
-        solver.solve(problem)
+        with (
+            mock.patch.object(
+                problem.delassus, "apply_jacobian_transpose", wraps=problem.delassus.apply_jacobian_transpose
+            ) as body_products,
+            mock.patch.object(
+                solver._bilateral_solver, "solve", wraps=solver._bilateral_solver.solve
+            ) as separate_bilateral_solves,
+        ):
+            solver.solve(problem)
+        # Sweep reconstruction stays fused regardless of solve intervals.
+        self.assertEqual(body_products.call_count, 0)
+        # CUDA prepares the RHS and scatters the result in the same solve CTA.
+        self.assertEqual(separate_bilateral_solves.call_count, 0 if self.device.is_cuda else 4)
 
         joint_dims = problem.data.njc.numpy()
         self.assertEqual([block_iteration for block_iteration, _ in active_dim_updates], [0, 1, -1])
@@ -1420,6 +1437,30 @@ class TestDVISolver(unittest.TestCase):
         )
         np.testing.assert_array_equal(active_dim_updates[1][1], active_dim_updates[0][1])
         np.testing.assert_array_equal(active_dim_updates[2][1], joint_dims)
+
+        # Force the budget fallback on the same problem and heterogeneous
+        # intervals, without allocating a contact-capacity-sized buffer.
+        expected = solver.data.solution.lambdas.numpy().copy()
+        with mock.patch("newton._src.solvers.kamino._src.solvers.dvi.solver._MAX_CACHED_BILATERAL_COUPLING_ENTRIES", 0):
+            fallback = DVISolver(
+                model=model,
+                data=data,
+                limits=limits,
+                contacts=detector.contacts,
+                jacobians=jacobians,
+                problem=problem,
+                config=configs,
+                warmstart=WarmStartMode.NONE,
+            )
+            fallback.coldstart()
+            with mock.patch.object(
+                problem.delassus, "apply_jacobian_transpose", wraps=problem.delassus.apply_jacobian_transpose
+            ) as body_products:
+                fallback.solve(problem)
+        self.assertEqual(fallback.data.state.bilateral_coupling.size, 1)
+        self.assertEqual(body_products.call_count, 4)
+        np.testing.assert_array_equal(fallback.data.state.bilateral_active_dim.numpy(), joint_dims)
+        np.testing.assert_allclose(fallback.data.solution.lambdas.numpy(), expected, atol=2e-5, rtol=2e-5)
 
     def test_03d2_dvi_direct_block_finishes_with_bilateral_solve(self):
         """Recover a consistent bilateral solution after fused inequality iterations."""
@@ -3635,6 +3676,7 @@ class TestDVISolver(unittest.TestCase):
                 i32([4]),
                 i32([2]),
                 i32([0]),
+                i32([2]),
                 i32([0]),
                 wp.array(scaling, dtype=wp.float32, device=self.device),
                 wp.array(factor.ravel(), dtype=wp.float32, device=self.device),
@@ -4398,7 +4440,7 @@ class TestDVISolver(unittest.TestCase):
         wp.launch(
             _find_bilateral_factor_row_start,
             dim=(5, max(joint_counts)),
-            inputs=[joints, i32(matrix_offsets), i32(vector_offsets), f32(factors), row_start],
+            inputs=[joints, i32(matrix_offsets), joints, i32(vector_offsets), f32(factors), row_start],
             device=self.device,
         )
         expected_starts = []
@@ -4413,6 +4455,7 @@ class TestDVISolver(unittest.TestCase):
                 dims,
                 joints,
                 i32(matrix_offsets),
+                joints,
                 i32(vector_offsets),
                 f32(scaling),
                 f32(factors),

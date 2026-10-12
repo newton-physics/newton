@@ -876,13 +876,11 @@ class ModelBuilder:
         sdf_narrow_band_range: tuple[float, float] | list[float] = (-0.1, 0.1)
         """The narrow band distance range (inner, outer) for primitive SDF computation."""
         sdf_target_voxel_size: float | None = None
-        """Target voxel size for sparse SDF grid.
-        If provided, enables primitive SDF generation and takes precedence over
-        sdf_max_resolution. Requires GPU since wp.Volume only supports CUDA."""
+        """Target voxel size [m] for primitive texture SDF generation.
+        See :meth:`configure_sdf` for supported shapes and CUDA requirements."""
         sdf_max_resolution: int | None = None
         """Maximum dimension for sparse SDF grid (must be divisible by 8).
-        If provided (and sdf_target_voxel_size is None), enables primitive SDF
-        generation. Requires GPU since wp.Volume only supports CUDA."""
+        See :meth:`configure_sdf` for supported shapes and CUDA requirements."""
         force_sdf: bool = False
         """If True, :meth:`ModelBuilder.finalize` builds a volume SDF for this mesh/convex shape even
         when neither ``sdf_max_resolution`` nor ``sdf_target_voxel_size`` is set (built at the default
@@ -932,17 +930,22 @@ class ModelBuilder:
             texture_format: str | None = None,
             force_sdf: bool = False,
         ) -> None:
-            """Enable SDF-based collision for this shape.
+            """Configure texture SDF generation and hydroelastic contact.
 
-            Sets SDF and hydroelastic options in one place. Call this when the shape
-            should use SDF mesh-mesh collision and optionally hydroelastic contacts.
+            Primitive texture SDFs require CUDA and are generated for hydroelastic
+            shape contacts on spheres, boxes, capsules, cylinders, cones, and ellipsoids.
+            Outside hydroelastic mode, only boxes honor explicit resolution requests,
+            with either shape or particle collisions enabled.
+
+            Particle and full-surface contacts with these primitives use analytic
+            distances and do not need textures. Leave :attr:`sdf_max_resolution` and
+            :attr:`sdf_target_voxel_size` unset for CPU particle-only models.
 
             Args:
                 max_resolution: Maximum dimension for sparse SDF grid (must be divisible by 8).
-                    If provided, enables SDF-based mesh-mesh collision and clears any
-                    previous target_voxel_size setting.
-                target_voxel_size: Target voxel size for sparse SDF grid. If provided, enables
-                    SDF generation and clears any previous max_resolution setting.
+                    If provided, clears any previous target_voxel_size setting.
+                target_voxel_size: Target voxel size [m] for sparse SDF grid.
+                    If provided, clears any previous max_resolution setting.
                 is_hydroelastic: Whether to use SDF-based hydroelastic contacts. Both shapes
                     in a pair must have this enabled.
                 kh: Hydroelastic contact stiffness coefficient.
@@ -1730,21 +1733,21 @@ class ModelBuilder:
         self._requested_state_attributes: set[str] = set()
         """Optional state attributes requested via :meth:`request_state_attributes`."""
 
-        # body-particle attachments
-        self.attachment_body_particle_body: list[int] = []
-        """Rigid body indices accumulated for :attr:`Model.attachment_body_particle_body`."""
-        self.attachment_body_particle_particle: list[int] = []
-        """Particle indices accumulated for :attr:`Model.attachment_body_particle_particle`."""
-        self.attachment_body_particle_body_point: list[Vec3] = []
-        """Body-local attachment points [m] accumulated for :attr:`Model.attachment_body_particle_body_point`."""
-        self.attachment_body_particle_stiffness: list[float] = []
-        """Attachment stiffness values [N/m] accumulated for :attr:`Model.attachment_body_particle_stiffness`."""
-        self.attachment_body_particle_damping: list[float] = []
-        """Attachment damping values [N·s/m] accumulated for :attr:`Model.attachment_body_particle_damping`."""
-        self.attachment_body_particle_enabled: list[bool] = []
-        """Attachment enabled states accumulated for :attr:`Model.attachment_body_particle_enabled`."""
-        self.attachment_body_particle_world: list[int] = []
-        """World indices accumulated for :attr:`Model.attachment_body_particle_world`."""
+        # particle-body attachments
+        self.attachment_particle_body_body: list[int] = []
+        """Rigid body indices accumulated for :attr:`Model.attachment_particle_body_body`."""
+        self.attachment_particle_body_particle: list[int] = []
+        """Particle indices accumulated for :attr:`Model.attachment_particle_body_particle`."""
+        self.attachment_particle_body_body_point: list[Vec3] = []
+        """Body-local attachment points [m] accumulated for :attr:`Model.attachment_particle_body_body_point`."""
+        self.attachment_particle_body_stiffness: list[float] = []
+        """Attachment stiffness values [N/m] accumulated for :attr:`Model.attachment_particle_body_stiffness`."""
+        self.attachment_particle_body_damping: list[float] = []
+        """Attachment damping values [N·s/m] accumulated for :attr:`Model.attachment_particle_body_damping`."""
+        self.attachment_particle_body_enabled: list[bool] = []
+        """Attachment enabled states accumulated for :attr:`Model.attachment_particle_body_enabled`."""
+        self.attachment_particle_body_world: list[int] = []
+        """World indices accumulated for :attr:`Model.attachment_particle_body_world`."""
 
         # springs
         self.spring_indices: list[int] = []
@@ -3196,9 +3199,9 @@ class ModelBuilder:
         return len(self.spring_rest_length)
 
     @property
-    def attachment_body_particle_count(self) -> int:
-        """The number of body-particle attachments in the model."""
-        return len(self.attachment_body_particle_body)
+    def attachment_particle_body_count(self) -> int:
+        """The number of particle-body attachments in the model."""
+        return len(self.attachment_particle_body_body)
 
     @property
     def muscle_count(self):
@@ -6921,9 +6924,9 @@ class ModelBuilder:
             if body2 >= 0:
                 bodies_in_constraints.add(body2)
 
-        # A body-particle attachment needs a surviving body to anchor to and to receive the
+        # A particle-body attachment needs a surviving body to anchor to and to receive the
         # reaction force, so its body must not be merged into the world.
-        for body in self.attachment_body_particle_body:
+        for body in self.attachment_particle_body_body:
             if body >= 0:
                 bodies_in_constraints.add(body)
 
@@ -7576,19 +7579,19 @@ class ModelBuilder:
                     target_attr.values[eq_idx] = -1
                     target_kind_attr.values[eq_idx] = 0
 
-        # Remap body-particle attachments onto the reindexed bodies. When the anchored body was
+        # Remap particle-body attachments onto the reindexed bodies. When the anchored body was
         # merged into its parent, the local anchor must be re-expressed in the surviving parent's
         # frame so the attachment keeps its world-space position.
-        for i in range(len(self.attachment_body_particle_body)):
-            old_body = self.attachment_body_particle_body[i]
+        for i in range(len(self.attachment_particle_body_body)):
+            old_body = self.attachment_particle_body_body[i]
             if old_body in body_merged_parent:
                 merge_xform = body_merged_transform[old_body]
-                self.attachment_body_particle_body_point[i] = wp.transform_point(
-                    merge_xform, self.attachment_body_particle_body_point[i]
+                self.attachment_particle_body_body_point[i] = wp.transform_point(
+                    merge_xform, self.attachment_particle_body_body_point[i]
                 )
-                self.attachment_body_particle_body[i] = body_remap[body_merged_parent[old_body]]
+                self.attachment_particle_body_body[i] = body_remap[body_merged_parent[old_body]]
             else:
-                self.attachment_body_particle_body[i] = body_remap[old_body]
+                self.attachment_particle_body_body[i] = body_remap[old_body]
 
         # Generic entity-reference remap for any custom attribute that points at bodies or joints
         # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
@@ -10191,10 +10194,10 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.PARTICLE,
             )
 
-    def add_attachment_body_particle(
+    def add_attachment_particle_body(
         self,
-        body: int,
         particle: int,
+        body: int,
         *,
         body_point: Vec3 | None = None,
         stiffness: float = 1.0e4,
@@ -10211,11 +10214,11 @@ class ModelBuilder:
         owned by different solvers of a coupled simulation, the attachment is
         coupled by
         :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
-        See :ref:`Body-particle attachments`.
+        See :ref:`Particle-body attachments`.
 
         Args:
-            body: Index of the rigid body.
             particle: Index of the attached particle.
+            body: Index of the rigid body.
             body_point: Attachment point in the body's local frame [m]. If
                 ``None``, the body origin is used.
             stiffness: Attachment stiffness [N/m].
@@ -10227,7 +10230,7 @@ class ModelBuilder:
             Index of the attachment.
 
         Raises:
-            IndexError: If ``body`` or ``particle`` is out of range.
+            IndexError: If ``particle`` or ``body`` is out of range.
             ValueError: If the endpoints belong to different worlds, a
                 coefficient is negative, or a coefficient or ``body_point``
                 is not finite.
@@ -10253,20 +10256,20 @@ class ModelBuilder:
         # An endpoint outside any world context (-1) adopts the world of the other endpoint.
         world = body_world if body_world >= 0 else particle_world
 
-        attachment = self.attachment_body_particle_count
-        self.attachment_body_particle_body.append(int(body))
-        self.attachment_body_particle_particle.append(int(particle))
-        self.attachment_body_particle_body_point.append(resolved_body_point)
-        self.attachment_body_particle_stiffness.append(float(stiffness))
-        self.attachment_body_particle_damping.append(float(damping))
-        self.attachment_body_particle_enabled.append(bool(enabled))
-        self.attachment_body_particle_world.append(world)
+        attachment = self.attachment_particle_body_count
+        self.attachment_particle_body_body.append(int(body))
+        self.attachment_particle_body_particle.append(int(particle))
+        self.attachment_particle_body_body_point.append(resolved_body_point)
+        self.attachment_particle_body_stiffness.append(float(stiffness))
+        self.attachment_particle_body_damping.append(float(damping))
+        self.attachment_particle_body_enabled.append(bool(enabled))
+        self.attachment_particle_body_world.append(world)
 
         if custom_attributes:
             self._process_custom_attributes(
                 entity_index=attachment,
                 custom_attrs=custom_attributes,
-                expected_frequency=Model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+                expected_frequency=Model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             )
         return attachment
 
@@ -13700,7 +13703,7 @@ class ModelBuilder:
             has_mesh_sdf = any(
                 stype in (GeoType.MESH, GeoType.CONVEX_MESH)
                 and ssrc is not None
-                and sflags & ShapeFlags.COLLIDE_SHAPES
+                and sflags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
                 and getattr(ssrc, "sdf", None) is not None
                 for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, shape_flags_list, strict=True)
             )
@@ -13708,8 +13711,8 @@ class ModelBuilder:
             # the CPU-runs-into-build_sdf path also raises here, not deeper down.
             has_deferred_mesh_sdf = any(
                 stype in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.BOX)
-                and ssrc is not None
-                and sflags & ShapeFlags.COLLIDE_SHAPES
+                and (stype == GeoType.BOX or ssrc is not None)
+                and sflags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
                 and (stype == GeoType.BOX or getattr(ssrc, "sdf", None) is None)
                 and (smax is not None or svox is not None)
                 for stype, ssrc, sflags, smax, svox in zip(
@@ -13777,12 +13780,12 @@ class ModelBuilder:
                 )
                 required_sdf_padding = shape_gap + shape_margin_list[i] if is_hydroelastic else shape_gap
                 sdf_gen_margin = sdf_padding if sdf_padding is not None else required_sdf_padding
-                has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
+                has_sdf_collision = bool(shape_flags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
 
                 cache_key = None
                 mesh_sdf = None
 
-                if shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and has_shape_collision and shape_src is not None:
+                if shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and has_sdf_collision and shape_src is not None:
                     mesh_sdf = getattr(shape_src, "sdf", None)
                     # Build on a Mesh clone so shapes sharing one Mesh at different
                     # scale/margin/resolution end up with distinct SDFs.
@@ -13819,6 +13822,13 @@ class ModelBuilder:
                         if deferred_key in deferred_collision_edges_cache:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
+                        if (
+                            self.shape_force_sdf[i]
+                            and shape_flags & ShapeFlags.COLLIDE_PARTICLES
+                            and mesh_sdf.to_texture_kernel_data() is None
+                        ):
+                            # Let force_sdf build a texture below when only legacy volume data exists.
+                            continue
                         coarse_texture = getattr(mesh_sdf, "_coarse_texture", None)
                         if coarse_texture is not None and (
                             (coarse_texture.num_channels == 2) != sdf_texture_paired_samples
@@ -13830,7 +13840,7 @@ class ModelBuilder:
                                 f"{sdf_texture_paired_samples})."
                             )
                         cache_key = ("mesh_sdf", id(mesh_sdf))
-                elif has_shape_collision and (
+                elif has_sdf_collision and (
                     is_hydroelastic
                     or (
                         shape_type == GeoType.BOX
@@ -13907,18 +13917,11 @@ class ModelBuilder:
                                 tex_data.subgrid_start_slots if c_tex is not None else None
                             )
 
-            # Build volume SDFs for participating MESH/CONVEX_MESH shapes that still lack one, when a
-            # per-shape SDF is requested -- ShapeConfig.configure_sdf(force_sdf=True), or an sdf
-            # resolution/voxel-size set on the shape. Built in unscaled mesh space (scale_baked=False)
-            # and cached per source mesh; eval_shape_sdf applies the shape scale at query time. Texture
-            # SDFs are CUDA-only, so on CPU (or on any build failure) the SDF is left unprovisioned; a
-            # full-surface CollisionPipeline then raises for that shape rather than silently degrading.
-            if any(
-                self.shape_force_sdf[i]
-                or self.shape_sdf_max_resolution[i] is not None
-                or self.shape_sdf_target_voxel_size[i] is not None
-                for i in range(len(self.shape_type))
-            ):
+            # Handle force_sdf mesh/convex requests not provisioned by the explicit-SDF pass above.
+            # Build in unscaled mesh space (scale_baked=False); eval_shape_sdf applies shape scale
+            # at query time. Construction failures leave the SDF unprovisioned, which a full-surface
+            # CollisionPipeline rejects rather than silently degrading.
+            if any(self.shape_force_sdf):
                 wt_sdf_cache = {}
                 for i in range(len(self.shape_type)):
                     if (
@@ -13926,11 +13929,7 @@ class ModelBuilder:
                         or self.shape_type[i] not in (GeoType.MESH, GeoType.CONVEX_MESH)
                         or not (shape_flags_list[i] & ShapeFlags.COLLIDE_PARTICLES)
                         or self.shape_source[i] is None
-                        or not (
-                            self.shape_force_sdf[i]
-                            or self.shape_sdf_max_resolution[i] is not None
-                            or self.shape_sdf_target_voxel_size[i] is not None
-                        )
+                        or not self.shape_force_sdf[i]
                     ):
                         continue
                     src = self.shape_source[i]
@@ -14160,28 +14159,28 @@ class ModelBuilder:
             m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
-            # body-particle attachments
+            # particle-body attachments
 
-            m.attachment_body_particle_body = _to_wp_array(
-                self.attachment_body_particle_body, wp.int32, requires_grad=False
+            m.attachment_particle_body_body = _to_wp_array(
+                self.attachment_particle_body_body, wp.int32, requires_grad=False
             )
-            m.attachment_body_particle_particle = _to_wp_array(
-                self.attachment_body_particle_particle, wp.int32, requires_grad=False
+            m.attachment_particle_body_particle = _to_wp_array(
+                self.attachment_particle_body_particle, wp.int32, requires_grad=False
             )
-            m.attachment_body_particle_body_point = _to_wp_array(
-                self.attachment_body_particle_body_point, wp.vec3, requires_grad=requires_grad
+            m.attachment_particle_body_body_point = _to_wp_array(
+                self.attachment_particle_body_body_point, wp.vec3, requires_grad=requires_grad
             )
-            m.attachment_body_particle_stiffness = _to_wp_array(
-                self.attachment_body_particle_stiffness, wp.float32, requires_grad=requires_grad
+            m.attachment_particle_body_stiffness = _to_wp_array(
+                self.attachment_particle_body_stiffness, wp.float32, requires_grad=requires_grad
             )
-            m.attachment_body_particle_damping = _to_wp_array(
-                self.attachment_body_particle_damping, wp.float32, requires_grad=requires_grad
+            m.attachment_particle_body_damping = _to_wp_array(
+                self.attachment_particle_body_damping, wp.float32, requires_grad=requires_grad
             )
-            m.attachment_body_particle_enabled = _to_wp_array(
-                self.attachment_body_particle_enabled, wp.bool, requires_grad=False
+            m.attachment_particle_body_enabled = _to_wp_array(
+                self.attachment_particle_body_enabled, wp.bool, requires_grad=False
             )
-            m.attachment_body_particle_world = _to_wp_array(
-                self.attachment_body_particle_world, wp.int32, requires_grad=False
+            m.attachment_particle_body_world = _to_wp_array(
+                self.attachment_particle_body_world, wp.int32, requires_grad=False
             )
 
             # ---------------------
@@ -14483,7 +14482,7 @@ class ModelBuilder:
             m.tet_count = len(self.tet_poses)
             m.edge_count = len(self.edge_rest_angle)
             m.spring_count = len(self.spring_rest_length)
-            m.attachment_body_particle_count = self.attachment_body_particle_count
+            m.attachment_particle_body_count = self.attachment_particle_body_count
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
             m.mujoco.equality_constraint_count = self._equality_constraint_count
