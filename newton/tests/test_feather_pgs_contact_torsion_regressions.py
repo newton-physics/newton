@@ -34,7 +34,7 @@ def test_radius_edits_apply_while_enablement_is_fixed(test, device):
 
 def test_previous_friction_rows_are_not_current_rows(test, device):
     """Reject stale tangent metadata when a later step admits only a normal."""
-    _, solver, model, initial, contacts = fixture(0.01, device=device, center_only=True)
+    _, solver, model, initial, contacts = fixture(0.01, device=device, center_only=True, contact_friction_gap_max=1.0)
     test.assertEqual(solver._torsion_stats["rows"], 1)
     solver.contact_friction_gap_max = -1.0
     solver.step(initial, model.state(), model.control(), contacts, 0.0025)
