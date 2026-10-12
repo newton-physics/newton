@@ -693,9 +693,10 @@ Constructing :class:`~newton.solvers.SolverMuJoCo` with
 worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
 and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh
-assets, scales, and convex-hull counts may differ across worlds. Native
-MuJoCo contacts require matching collision groups and exclusions for
-corresponding geom slots; differing convex-hull counts additionally require a
+assets, scales, and convex-hull counts may differ across worlds. Collision
+flags may also differ when Newton supplies contacts. Native MuJoCo contacts
+require matching collision flags, groups, and exclusions for corresponding geom
+slots; differing convex-hull counts additionally require a
 ``mujoco_warp`` build containing `google-deepmind/mujoco_warp#1689
 <https://github.com/google-deepmind/mujoco_warp/pull/1689>`__, so use
 ``use_mujoco_contacts=False`` with the 3.14.0 release. With native contacts,

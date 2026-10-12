@@ -6725,8 +6725,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 skip_visual_only_geoms=skip_visual_only_geoms,
                 include_sites=include_sites,
                 required_shapes=required_shapes,
+                match_collision_flags=self._use_mujoco_contacts and not disable_contacts,
             )
             selected_shapes = shape_layout.representative_shapes
+            # Newton contacts in any world reach MuJoCo through the slot's geom.
+            shape_flags = shape_flags.copy()
+            shape_flags[selected_shapes[shape_layout.colliders]] |= int(ShapeFlags.COLLIDE_SHAPES)
             padded_shapes = shape_layout.has_missing_shapes
             heterogeneous_geoms = padded_shapes
             if not padded_shapes:

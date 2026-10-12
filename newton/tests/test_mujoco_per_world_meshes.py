@@ -59,7 +59,9 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
         builder.add_world(build_world(2))
         builder.add_world(build_world(257))
         model = builder.finalize()
-        layout = build_shape_layout(model, skip_visual_only_geoms=True, include_sites=False, required_shapes=set())
+        layout = build_shape_layout(
+            model, skip_visual_only_geoms=True, include_sites=False, required_shapes=set(), match_collision_flags=True
+        )
         masks = compile_layout_collision_masks(model, layout)
         self.assertTrue(masks.exact)
         self.assertTrue(np.all((masks.collision_type[0] & masks.collision_affinity[1:]) != 0))
@@ -85,7 +87,9 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
                 world.add_shape_convex_hull(-1, mesh=mesh)
             builder.add_world(world)
         model = builder.finalize()
-        layout = build_shape_layout(model, skip_visual_only_geoms=True, include_sites=False, required_shapes=set())
+        layout = build_shape_layout(
+            model, skip_visual_only_geoms=True, include_sites=False, required_shapes=set(), match_collision_flags=True
+        )
         with np.errstate(divide="raise", invalid="raise"):
             self.assertTrue(compile_layout_collision_masks(model, layout).exact)
 
@@ -107,6 +111,35 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "collision groups must match"):
             SolverMuJoCo(model)
         SolverMuJoCo(model, use_mujoco_contacts=False)
+
+    def test_collision_flags_differ_across_worlds(self):
+        """Share slots whose collision flags differ across worlds when Newton supplies contacts."""
+        for colliding_world in (0, 1):
+            with self.subTest(colliding_world=colliding_world):
+                builder = newton.ModelBuilder()
+                builder.add_ground_plane()
+                for world in range(2):
+                    builder.begin_world()
+                    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3), wp.quat_identity()))
+                    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=world == colliding_world)
+                    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+                    builder.end_world()
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, separate_worlds=True, use_mujoco_contacts=False)
+                self.assertEqual(solver.mj_model.ngeom, 2)
+                state, state_next = model.state(), model.state()
+                control = model.control()
+                pipeline = newton.CollisionPipeline(model)
+                contacts = pipeline.contacts()
+                for _ in range(100):
+                    pipeline.collide(state, contacts)
+                    solver.step(state, state_next, control, contacts, 0.005)
+                    state, state_next = state_next, state
+                heights = state.body_q.numpy()[:, 2]
+                self.assertAlmostEqual(float(heights[colliding_world]), 0.1, delta=0.01)
+                self.assertLess(float(heights[1 - colliding_world]), 0.0)
+                with self.assertRaisesRegex(ValueError, "collision flags with native MuJoCo contacts"):
+                    SolverMuJoCo(model, separate_worlds=True)
 
     def test_different_hull_counts(self):
         """Simulate unequal decompositions with both contact pipelines."""
@@ -366,7 +399,11 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
                         builder.add_ground_plane()
                     model = builder.finalize()
                     layout = build_shape_layout(
-                        model, skip_visual_only_geoms=True, include_sites=False, required_shapes=set()
+                        model,
+                        skip_visual_only_geoms=True,
+                        include_sites=False,
+                        required_shapes=set(),
+                        match_collision_flags=True,
                     )
                     masks = compile_layout_collision_masks(model, layout)
                     allowed = (masks.collision_type[:, None] & masks.collision_affinity[None, :]) != 0

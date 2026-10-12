@@ -29,12 +29,20 @@ class ShapeLayout:
     body_indices: np.ndarray
     """Template Newton body index per slot, with -1 for static shapes."""
 
+    colliders: np.ndarray
+    """Whether the shape in any world collides, per slot."""
+
     @property
     def has_missing_shapes(self) -> bool:
         return bool(np.any(self.world_shapes < 0))
 
     def select(self, slots: np.ndarray) -> ShapeLayout:
-        return ShapeLayout(self.representative_shapes[slots], self.world_shapes[:, slots], self.body_indices[slots])
+        return ShapeLayout(
+            self.representative_shapes[slots],
+            self.world_shapes[:, slots],
+            self.body_indices[slots],
+            self.colliders[slots],
+        )
 
 
 def supports_missing_meshes() -> bool:
@@ -50,8 +58,13 @@ def build_shape_layout(
     skip_visual_only_geoms: bool,
     include_sites: bool,
     required_shapes: set[int],
+    match_collision_flags: bool,
 ) -> ShapeLayout:
-    """Match shapes by body and shared geom properties, padding only mesh slots."""
+    """Match shapes by body and shared geom properties, padding only mesh slots.
+
+    Collision flags only need to match when native MuJoCo contacts use them, since
+    all worlds share each slot's contype and conaffinity.
+    """
     worlds = model.shape_world.numpy()
     bodies = model.shape_body.numpy()
     types = model.shape_type.numpy()
@@ -68,7 +81,10 @@ def build_shape_layout(
     sites = (flags & int(ShapeFlags.SITE)) != 0
     colliders = (flags & int(ShapeFlags.COLLIDE_SHAPES)) != 0
     slot_types = np.where(np.isin(types, mesh_types) & ~sites, int(GeoType.MESH), types)
-    properties = np.column_stack((local_bodies, slot_types, sites, condim, priority, colliders))
+    columns = [local_bodies, slot_types, sites, condim, priority]
+    if match_collision_flags:
+        columns.append(colliders)
+    properties = np.column_stack(columns)
     starts = model.shape_world_start.numpy()
     counts = np.diff(starts[:-1])
     matching_layout = np.all(counts == counts[0])
@@ -99,10 +115,11 @@ def build_shape_layout(
             for world, shape in shapes:
                 mapping[slice(None) if world < 0 else world, column] = shape
 
-    keep = np.where(sites[representatives], include_sites, (not skip_visual_only_geoms) | colliders[representatives])
+    slot_colliders = np.any(colliders[mapping] & (mapping >= 0), axis=0)
+    keep = np.where(sites[representatives], include_sites, (not skip_visual_only_geoms) | slot_colliders)
     if required_shapes:
         keep |= np.isin(representatives, list(required_shapes))
-    representatives, mapping = representatives[keep], mapping[:, keep]
+    representatives, mapping, slot_colliders = representatives[keep], mapping[:, keep], slot_colliders[keep]
     for column in np.flatnonzero(np.any(mapping < 0, axis=0)):
         shape = representatives[column]
         if types[shape] not in mesh_types or sites[shape]:
@@ -110,9 +127,10 @@ def build_shape_layout(
             raise ValueError(
                 f"SolverMuJoCo shape types mismatch at position {column}: "
                 f"world {missing_world} has no matching shape for {model.shape_label[shape]!r}. "
-                "Only mesh geoms support differing counts; body, type, condim and priority must match for other shapes."
+                "Only mesh geoms support differing counts; body, type, condim and priority must match for other shapes"
+                + (", as must collision flags with native MuJoCo contacts." if match_collision_flags else ".")
             )
-    return ShapeLayout(representatives, mapping, local_bodies[representatives])
+    return ShapeLayout(representatives, mapping, local_bodies[representatives], slot_colliders)
 
 
 def compile_layout_collision_masks(model: Model, layout: ShapeLayout) -> CollisionGraphCompileResult:
