@@ -1637,6 +1637,8 @@ class SolverFeatherPGS(SolverBase):
                 on the other set. Results are unchanged; CPU devices and the sparse mass
                 factors ignore it. Within a captured graph the clearing overlaps the next
                 step; after an eager step, the stream's later work waits for its clearing.
+                Steps and graph launches of one solver must be ordered on one stream (or
+                through explicit stream dependencies).
             friction_anchor_beta: Position-correction gain of persistent friction patches;
                 ``0`` selects point friction. ``None`` selects ``0.2`` with
                 ``solve_mode="matrix_free"``, and point friction with ``solve_mode="split"``,
@@ -1796,9 +1798,13 @@ class SolverFeatherPGS(SolverBase):
                 device preparation builds the same groups and rows with preallocated
                 buffers and supports CUDA graph capture of :meth:`step`. Invalid torsion
                 input (for example rows beyond the capacity or hydroelastic contacts) makes
-                the failing step publish its input state unchanged. An eager step raises
-                when it returns; after graph replays, :meth:`check_constraint_capacity`
-                raises, and :meth:`reset` clears the error. Grouping runs serially per world with
+                the failing step restore its output motion arrays (``joint_q``, ``joint_qd``,
+                ``body_q``, ``body_qd``, ``body_qdd``) to the input values; other outputs,
+                observables and solver history still advance. An eager step raises when it
+                returns; after graph replays, :meth:`check_constraint_capacity` raises.
+                Check before using replay results, discard failed output, fix the cause and
+                :meth:`reset`. The error is solver-wide: any reset clears it, and a cause
+                that persists latches it again on the next step. Grouping runs serially per world with
                 worst-case quadratic cost in the contacts of a world. No effect without a
                 positive ``contact_torsion_radius``.
             contact_compliance: Experimental: solve contacts that carry a positive
@@ -2669,8 +2675,8 @@ class SolverFeatherPGS(SolverBase):
         two entries (for example a global body and a world body) is discarded when either
         is selected. Global articulations share world 0's rows, so selecting the global
         entry also discards world 0's warm-start impulses while a dynamic global
-        articulation exists. Any reset also clears the solver-wide contact torsion error
-        and the disabled-tree-joint status of the selected worlds. The reset is launched on
+        articulation exists. Any reset, whatever its mask, also clears the solver-wide contact
+        torsion error; it clears the disabled-tree-joint status of the selected worlds. The reset is launched on
         the device without host synchronization and can be captured in a CUDA graph.
 
         Args:
@@ -6979,7 +6985,7 @@ class SolverFeatherPGS(SolverBase):
         their output, re-enable the joint and :meth:`reset` the affected worlds. A check that
         passes after the reset does not validate the earlier output. With
         ``contact_torsion_device``, also raises if contact torsion rejected its input since
-        the last :meth:`reset`; that step published its input state unchanged.
+        the last :meth:`reset`; the failing step restored its output motion arrays to the input.
 
         Reads the status on the host, so call it outside CUDA graph capture, for example at
         an observation boundary. Kernels can read :attr:`constraint_overflow` directly without
