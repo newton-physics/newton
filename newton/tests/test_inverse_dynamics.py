@@ -48,6 +48,7 @@ def _eval_inverse_dynamics_passive(
     eval_type: _PassiveOutput,
     arrays: _InverseDynamicsArrays,
     mask: wp.array[bool] | None = None,
+    include_armature: bool = False,
 ) -> None:
     """Invoke the public passive evaluator for the selected test outputs."""
     newton.eval_inverse_dynamics_passive(
@@ -57,6 +58,7 @@ def _eval_inverse_dynamics_passive(
         gravity_force=(arrays.gravity_force if eval_type & _PassiveOutput.GRAVITY_FORCE else None),
         coriolis_force=(arrays.coriolis_force if eval_type & _PassiveOutput.CORIOLIS_FORCE else None),
         mask=mask,
+        include_armature=include_armature,
     )
 
 
@@ -1817,6 +1819,146 @@ class TestMassMatrix(TestInverseDynamicsBase):
         _eval_inverse_dynamics_passive(model, state, _PassiveOutput.MASS_MATRIX, inverse_dynamics)
 
         np.testing.assert_allclose(inverse_dynamics.mass_matrix.numpy(), H_reference, rtol=1e-6, atol=1e-6)
+
+    def _add_armature_chain(self, builder, label=None):
+        """Add a planar three-link chain (3 coupled DOFs) to *builder*."""
+        identity = wp.transform_identity()
+        joints = []
+        parent = -1
+        for link in range(3):
+            body = builder.add_link(xform=identity, mass=1.0, inertia=self.I_UNIT, com=wp.vec3(0.5, 0.0, 0.0))
+            joints.append(
+                builder.add_joint_revolute(
+                    parent=parent,
+                    child=body,
+                    axis=wp.vec3(0.0, 1.0, 0.0),
+                    parent_xform=identity if link == 0 else wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+                    child_xform=identity,
+                )
+            )
+            parent = body
+        builder.add_articulation(joints, label=label)
+
+    def _finalize_armature_model(self, scene, articulation_count):
+        """Finalize *scene*, give every DOF a distinct armature, and return the model and a posed state."""
+        model = scene.finalize(device=self.device)
+        model.joint_armature.assign(0.25 * np.arange(1, model.joint_dof_count + 1, dtype=np.float32))
+        state = model.state()
+        state.joint_q.assign(np.tile([0.3, -0.5, 0.8], articulation_count).astype(np.float32))
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        return model, state
+
+    def _build_armature_model(self, articulation_count=1):
+        """Planar three-link chains with a distinct armature on every DOF."""
+        scene = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
+        for _ in range(articulation_count):
+            self._add_armature_chain(scene)
+        return self._finalize_armature_model(scene, articulation_count)
+
+    def test_mass_matrix_include_armature(self):
+        """include_armature=True adds joint_armature to the diagonal only; gravity and Coriolis are unchanged."""
+        model, state = self._build_armature_model()
+        n = model.joint_dof_count
+        self.assertGreater(n, 1)
+        armature = model.joint_armature.numpy()
+        state.joint_qd.assign(np.array([0.4, -0.7, 0.9], dtype=np.float32))
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        H = newton.eval_mass_matrix(model, state).numpy()
+        H_arm = newton.eval_mass_matrix(model, state, include_armature=True).numpy()
+
+        off_diagonal = ~np.eye(n, dtype=bool)
+        # The test is only meaningful if the rigid-body matrix is actually coupled.
+        self.assertGreater(np.abs(H[0, :n, :n][off_diagonal]).max(), 1e-3)
+        np.testing.assert_array_equal(H_arm[0, :n, :n][off_diagonal], H[0, :n, :n][off_diagonal])
+        np.testing.assert_allclose(np.diag(H_arm[0, :n, :n]) - np.diag(H[0, :n, :n]), armature, atol=1e-6)
+
+        # The passive evaluator returns the same matrix and leaves the bias forces alone.
+        reference = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(model, state, _PassiveOutput.ALL, reference)
+        # Non-zero references, so the equalities below are not trivially satisfied.
+        self.assertGreater(np.abs(reference.gravity_force.numpy()).max(), 1e-3)
+        self.assertGreater(np.abs(reference.coriolis_force.numpy()).max(), 1e-3)
+
+        outputs_cases = {
+            "all outputs": _PassiveOutput.ALL,
+            "mass_matrix omitted": _PassiveOutput.GRAVITY_FORCE | _PassiveOutput.CORIOLIS_FORCE,
+        }
+        for name, outputs in outputs_cases.items():
+            with self.subTest(name):
+                arrays = _InverseDynamicsArrays(model)
+                _eval_inverse_dynamics_passive(model, state, outputs, arrays, include_armature=True)
+                np.testing.assert_array_equal(arrays.gravity_force.numpy(), reference.gravity_force.numpy())
+                np.testing.assert_array_equal(arrays.coriolis_force.numpy(), reference.coriolis_force.numpy())
+                if outputs & _PassiveOutput.MASS_MATRIX:
+                    np.testing.assert_allclose(arrays.mass_matrix.numpy(), H_arm, rtol=1e-6, atol=1e-6)
+                else:
+                    # An omitted mass matrix is never written.
+                    np.testing.assert_array_equal(arrays.mass_matrix.numpy(), 0.0)
+
+    def test_mass_matrix_include_armature_without_armature_array(self):
+        """include_armature=True is a no-op when the model has no joint_armature array."""
+        model, state = self._build_armature_model()
+        model.joint_armature = None
+
+        H = newton.eval_mass_matrix(model, state).numpy()
+        H_arm = newton.eval_mass_matrix(model, state, include_armature=True).numpy()
+
+        np.testing.assert_array_equal(H_arm, H)
+
+    def test_mass_matrix_include_armature_respects_mask(self):
+        """Armature is added to the selected articulations only, at each articulation's own DOF offset."""
+        model, state = self._build_armature_model(articulation_count=2)
+        self.assertEqual(model.articulation_count, 2)
+        n = model.joint_dof_count // 2
+        armature = model.joint_armature.numpy().reshape(2, n)
+
+        H_rigid = newton.eval_mass_matrix(model, state).numpy()
+
+        for selected in (0, 1):
+            with self.subTest(selected=selected):
+                mask = wp.array([a == selected for a in range(2)], dtype=bool, device=self.device)
+                H = newton.eval_mass_matrix(model, state, mask=mask, include_armature=True).numpy()
+
+                expected = H_rigid[selected, :n, :n] + np.diag(armature[selected])
+                np.testing.assert_allclose(H[selected, :n, :n], expected, atol=1e-6)
+                # The unselected articulation is left at zero: no rigid-body H and no armature.
+                np.testing.assert_array_equal(H[1 - selected], np.zeros_like(H[1 - selected]))
+
+    def test_articulation_view_include_armature(self):
+        """ArticulationView forwards include_armature (and its mask) to the mass-matrix evaluators."""
+        world = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
+        self._add_armature_chain(world, label="chain")
+        scene = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
+        scene.replicate(world, world_count=2)
+        model, state = self._finalize_armature_model(scene, articulation_count=2)
+        self.assertEqual(model.articulation_count, 2)
+
+        H_rigid = newton.eval_mass_matrix(model, state).numpy()
+        H_ref = newton.eval_mass_matrix(model, state, include_armature=True).numpy()
+        # The reference must differ from the rigid-body matrix, or the checks below are vacuous.
+        self.assertGreater(np.abs(H_ref - H_rigid).max(), 0.1)
+
+        view = newton.selection.ArticulationView(model, "chain", verbose=False)
+
+        # No mask: both articulations.
+        np.testing.assert_allclose(view.eval_mass_matrix(state, include_armature=True).numpy(), H_ref, atol=1e-6)
+        np.testing.assert_allclose(view.eval_mass_matrix(state).numpy(), H_rigid, atol=1e-6)
+
+        mass_matrix = wp.zeros(H_ref.shape, dtype=float, device=self.device)
+        view.eval_inverse_dynamics_passive(state, mass_matrix=mass_matrix, include_armature=True)
+        np.testing.assert_allclose(mass_matrix.numpy(), H_ref, atol=1e-6)
+
+        # Per-world mask selecting world 0 only: world 1 stays zero.
+        world_mask = wp.array([True, False], dtype=bool, device=self.device)
+        expected = H_ref.copy()
+        expected[1] = 0.0
+        np.testing.assert_allclose(
+            view.eval_mass_matrix(state, include_armature=True, mask=world_mask).numpy(), expected, atol=1e-6
+        )
+        mass_matrix = wp.zeros(H_ref.shape, dtype=float, device=self.device)
+        view.eval_inverse_dynamics_passive(state, mass_matrix=mass_matrix, include_armature=True, mask=world_mask)
+        np.testing.assert_allclose(mass_matrix.numpy(), expected, atol=1e-6)
 
     def test_mass_matrix_planar_double_pendulum_matches_analytical(self):
         """M(q) for a planar double pendulum matches the closed-form expression for zero and non-zero CoM.

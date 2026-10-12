@@ -1904,7 +1904,9 @@ class ArticulationView:
         articulation_mask = self.get_model_articulation_mask(mask=mask)
         return eval_jacobian(self.model, state, J, joint_S_s=joint_S_s, mask=articulation_mask)
 
-    def eval_mass_matrix(self, state: State, H=None, J=None, body_I_s=None, joint_S_s=None, mask=None):
+    def eval_mass_matrix(
+        self, state: State, H=None, J=None, body_I_s=None, joint_S_s=None, mask=None, include_armature=False
+    ):
         """Evaluate generalized mass matrix for articulations in this view.
 
         Computes the generalized mass matrix H = J^T * M * J, where J is the spatial
@@ -1920,13 +1922,22 @@ class ArticulationView:
             body_I_s: Optional pre-allocated temp array for spatial inertias.
             joint_S_s: Optional pre-allocated temp array for motion subspaces.
             mask: Optional mask of articulations in this ArticulationView (all by default).
+            include_armature: If True, add :attr:`~newton.Model.joint_armature` to
+               the diagonal. See :func:`~newton.eval_mass_matrix`.
 
         Returns:
             The mass matrix array H, or None if the model has no articulations.
         """
         articulation_mask = self.get_model_articulation_mask(mask=mask)
         return eval_mass_matrix(
-            self.model, state, H, J=J, body_I_s=body_I_s, joint_S_s=joint_S_s, mask=articulation_mask
+            self.model,
+            state,
+            H,
+            J=J,
+            body_I_s=body_I_s,
+            joint_S_s=joint_S_s,
+            mask=articulation_mask,
+            include_armature=include_armature,
         )
 
     def eval_inverse_dynamics_passive(
@@ -1937,6 +1948,7 @@ class ArticulationView:
         gravity_force: wp.array[wp.float32] | None = None,
         coriolis_force: wp.array[wp.float32] | None = None,
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
+        include_armature: bool = False,
     ) -> None:
         """Compute passive inverse-dynamics quantities for this view.
 
@@ -1968,6 +1980,9 @@ class ArticulationView:
                 ``[world_count]`` selecting whole worlds or 2-D
                 ``[world_count, count_per_world]`` selecting individual
                 articulations per world.
+            include_armature: If True, add :attr:`~newton.Model.joint_armature`
+                to the diagonal of ``mass_matrix``. See
+                :func:`~newton.eval_mass_matrix`.
         """
         articulation_mask = self.get_model_articulation_mask(mask=mask)
         eval_inverse_dynamics_passive(
@@ -1977,6 +1992,7 @@ class ArticulationView:
             gravity_force=gravity_force,
             coriolis_force=coriolis_force,
             mask=articulation_mask,
+            include_armature=include_armature,
         )
 
     def eval_inverse_dynamics_force(

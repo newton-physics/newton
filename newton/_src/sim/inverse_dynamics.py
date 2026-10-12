@@ -369,6 +369,7 @@ def eval_inverse_dynamics_passive(
     gravity_force: wp.array[wp.float32] | None = None,
     coriolis_force: wp.array[wp.float32] | None = None,
     mask: wp.array[bool] | None = None,
+    include_armature: bool = False,
 ) -> None:
     """Compute passive inverse-dynamics quantities for articulated systems.
 
@@ -423,6 +424,10 @@ def eval_inverse_dynamics_passive(
             zero in the output buffers (mirroring
             :func:`~newton.eval_mass_matrix`'s mask convention). If
             ``None``, all articulations are computed.
+        include_armature: If True, add :attr:`~newton.Model.joint_armature` to
+            the diagonal of ``mass_matrix``, giving the joint-space inertia
+            that solvers supporting armature integrate. Only affects
+            ``mass_matrix``. See :func:`~newton.eval_mass_matrix`.
 
     Raises:
         ValueError: If the model contains a :attr:`~newton.JointType.ROD`
@@ -475,6 +480,7 @@ def eval_inverse_dynamics_passive(
             body_I_s=scratch.body_I_s,
             joint_S_s=scratch.joint_S_s,
             mask=mask,
+            include_armature=include_armature,
         )
 
     if gravity_force is not None:

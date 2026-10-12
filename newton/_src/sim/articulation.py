@@ -1419,12 +1419,14 @@ def eval_articulation_mass_matrix(
     joint_qd_start: wp.array[int],
     body_I_s: wp.array[wp.spatial_matrix],
     J: wp.array3d[float],
+    joint_armature: wp.array[float],
     # outputs
     H: wp.array3d[float],
 ):
     """Compute generalized mass matrix H = J^T * M * J.
 
     The mass matrix H relates joint accelerations to joint forces/torques.
+    If ``joint_armature`` is provided, it is added to the diagonal.
     Output shape: (articulation_count, max_dofs, max_dofs)
     """
     art_idx = wp.tid()
@@ -1468,6 +1470,10 @@ def eval_articulation_mass_matrix(
                         sum_val += J_ik * I_s[k, l] * J_jl
 
                 H[art_idx, dof_i, dof_j] = H[art_idx, dof_i, dof_j] + sum_val
+
+    if joint_armature:
+        for dof in range(articulation_dof_count):
+            H[art_idx, dof, dof] = H[art_idx, dof, dof] + joint_armature[articulation_dof_start + dof]
 
 
 @wp.kernel
@@ -1692,6 +1698,7 @@ def eval_mass_matrix(
     body_I_s: wp.array | None = None,
     joint_S_s: wp.array | None = None,
     mask: wp.array[bool] | None = None,
+    include_armature: bool = False,
 ) -> wp.array | None:
     """Evaluate generalized mass matrix for articulations.
 
@@ -1714,6 +1721,14 @@ def eval_mass_matrix(
         mask: Optional one-dimensional mask of shape (articulation_count,) selecting
               which articulations to compute. If None, computes for all articulations.
               Two-dimensional per-world masks are not supported.
+        include_armature: If True, add :attr:`~newton.Model.joint_armature` to
+              the diagonal, giving the joint-space inertia that solvers
+              supporting armature (:class:`~newton.solvers.SolverMuJoCo`,
+              :class:`~newton.solvers.SolverFeatherstone`,
+              :class:`~newton.solvers.SolverKamino`) integrate. Solver-specific
+              overrides, such as the large armature some solvers assign to
+              kinematic bodies, are not included. Leave False for solvers that
+              do not support armature.
 
     Returns:
         The mass matrix array H, or None if the model has no articulations.
@@ -1777,6 +1792,7 @@ def eval_mass_matrix(
             model.joint_qd_start,
             body_I_s,
             J,
+            model.joint_armature if include_armature else None,
         ],
         outputs=[H],
         device=model.device,
