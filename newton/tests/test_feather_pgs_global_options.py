@@ -235,7 +235,7 @@ def test_angular_damping_survives_graph_capture(test, device):
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# enable_contact_friction and contact_friction_scale
+# Friction rows and contact_friction_scale
 
 _SOLVES = {
     "matrix_free": {},
@@ -251,26 +251,20 @@ def _solves(device):
     return _SOLVES.items() if device.is_cuda else [("split", _SOLVES["split"])]
 
 
-def test_disabled_contact_friction_builds_normal_rows_only(test, device):
-    """Give every contact a normal row only, exactly as an unreachable friction gap threshold does."""
+def test_zero_friction_matches_normal_rows_only(test, device):
+    """Move contacts with zero friction coefficients as with normal rows only, whose friction rows carry no impulse."""
     for label, options in _solves(device):
         with test.subTest(solve=label):
             run = {"init": _set_box_velocities, "steps": 8, **options}
-            disabled = _run(_build_contact_scene(device), enable_contact_friction=False, **run)
-            gated = _run(_build_contact_scene(device), contact_friction_gap_threshold=-float("inf"), **run)
-            _assert_bitwise(test, disabled, gated, f"{label}: disabled vs -inf gap threshold")
-            for pairs_only in (False, True):
-                pairs = _run(
-                    _build_contact_scene(device),
-                    enable_contact_friction=False,
-                    contact_friction_articulation_pairs_only=pairs_only,
-                    **run,
-                )
-                _assert_bitwise(test, disabled, pairs, f"{label}: pairs_only={pairs_only}")
-            test.assertTrue(all(f.size == 0 for f in disabled[3]), f"{label}: friction rows were created")
+            normal_only = _run(_build_contact_scene(device), contact_friction_gap_threshold=-float("inf"), **run)
+            test.assertTrue(all(f.size == 0 for f in normal_only[3]), f"{label}: friction rows were created")
+            frictionless = _run(_build_contact_scene(device), contact_friction_scale=0.0, **run)
+            test.assertTrue(any(f.size for f in frictionless[3]), f"{label}: zero friction dropped the rows")
+            test.assertTrue(all(np.all(f == 0.0) for f in frictionless[3]), f"{label}: zero friction carried impulse")
+            np.testing.assert_allclose(frictionless[1], normal_only[1], rtol=0.0, atol=1.0e-5, err_msg=label)
+            np.testing.assert_allclose(frictionless[2], normal_only[2], rtol=0.0, atol=1.0e-4, err_msg=label)
             default = _run(_build_contact_scene(device), **run)
-            test.assertTrue(any(f.size for f in default[3]), f"{label}: the scene creates no friction rows")
-            test.assertGreater(float(np.abs(default[2] - disabled[2]).max()), 1.0e-3)
+            test.assertGreater(float(np.abs(default[2] - normal_only[2]).max()), 1.0e-3)
 
 
 def test_contact_friction_scale_matches_scaled_materials(test, device):
@@ -297,15 +291,12 @@ def test_contact_friction_scale_applies_to_notified_materials(test, device):
 
 
 def test_friction_switches_validate_their_values(test, device):
-    """Reject invalid friction scales and torsion without friction rows."""
+    """Reject invalid friction scales."""
     model = _build_contact_scene(device)
     mode = _split_or_default(device)
     for value in (-0.5, float("nan"), float("inf")):
         with test.subTest(scale=value), test.assertRaisesRegex(ValueError, "contact_friction_scale"):
             SolverFeatherPGS(model, contact_friction_scale=value, **mode)
-    if device.is_cuda:
-        with test.assertRaisesRegex(ValueError, "enable_contact_friction"):
-            SolverFeatherPGS(model, enable_contact_friction=False, contact_torsion_radius=0.01)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -509,7 +500,7 @@ for _fn in (
     test_angular_damping_matches_the_per_body_attribute,
     test_angular_damping_decays_free_root_spin_analytically,
     test_angular_damping_validates_its_value,
-    test_disabled_contact_friction_builds_normal_rows_only,
+    test_zero_friction_matches_normal_rows_only,
     test_contact_friction_scale_matches_scaled_materials,
     test_contact_friction_scale_applies_to_notified_materials,
     test_friction_switches_validate_their_values,

@@ -230,7 +230,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``bilateral_preelimination_include_mimics``, ``friction_anchor_beta``,
        ``pgs_contact_regularization``, ``pgs_velocity_iterations``,
        ``pgs_warmstart``, ``restitution_velocity_threshold``,
-       ``angular_damping``, ``enable_contact_friction``,
+       ``angular_damping``,
        ``contact_friction_scale``, ``contact_friction_position_iterations``,
        ``enable_restitution``,
        ``contact_speculative_scale``, ``contact_gap_gate``,

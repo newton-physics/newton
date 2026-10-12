@@ -123,7 +123,6 @@ def test_kernel_overrides_validate_their_values(test, device):
     for kernel in ("tiled_contact", "streaming"):
         for options in (
             {"enable_joint_limits": True},
-            {"enable_contact_friction": False},
             {"contact_friction_gap_threshold": 0.01},
             {"contact_friction_position_iterations": 2},
         ):
@@ -136,7 +135,7 @@ def test_cpu_ignores_contact_only_kernels(test, device):
     """Run the scalar loop on CPU for every split kernel override, including rows the contact-only kernels reject."""
     model = _build_contact_scene(device)
     for kernel in ("tiled_contact", "streaming"):
-        for options in ({}, {"enable_contact_friction": False}, {"enable_joint_limits": True}):
+        for options in ({}, {"contact_friction_gap_threshold": -float("inf")}, {"enable_joint_limits": True}):
             with test.subTest(kernel=kernel, options=options):
                 with kernel_overrides({"pgs_kernel": kernel}):
                     solver = SolverFeatherPGS(model, pgs_mode="split", **options)

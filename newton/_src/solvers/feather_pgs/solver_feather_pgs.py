@@ -1396,7 +1396,6 @@ class SolverFeatherPGS(SolverBase):
         contact_gap_gate: float = 0.0,
         same_articulation_contact_gap_gate: float = 0.0,
         articulation_pair_contact_gap_gate: float = 0.0,
-        enable_contact_friction: bool = True,
         contact_friction_scale: float = 1.0,
         contact_friction_position_iterations: int = -1,
         contact_friction_gap_threshold: float = float("inf"),
@@ -1659,9 +1658,6 @@ class SolverFeatherPGS(SolverBase):
                 between two links of the same articulation (free bodies excluded).
             articulation_pair_contact_gap_gate: When positive, the gap gate [m] of contacts
                 between two articulated (non-free) bodies.
-            enable_contact_friction: Create friction rows for contacts. ``False`` gives every
-                contact a normal row only, which also disables friction patches and contact
-                torsion; this differs from zero friction coefficients, which keep the rows.
             contact_friction_scale: Non-negative factor applied to every shape's friction
                 coefficient (:attr:`~newton.Model.shape_material_mu`) in the solver's copy of
                 the materials, refreshed at construction and by :meth:`notify_model_changed`
@@ -1984,7 +1980,6 @@ class SolverFeatherPGS(SolverBase):
         if np.isnan(self.contact_friction_gap_threshold):
             raise ValueError("contact_friction_gap_threshold must not be NaN")
         self.contact_friction_articulation_pairs_only = bool(contact_friction_articulation_pairs_only)
-        self.enable_contact_friction = bool(enable_contact_friction)
         self.contact_friction_scale = _finite_non_negative("contact_friction_scale", contact_friction_scale)
         self.contact_friction_position_iterations = int(contact_friction_position_iterations)
         if self.contact_friction_position_iterations < -1:
@@ -2381,18 +2376,18 @@ class SolverFeatherPGS(SolverBase):
 
     @property
     def _friction_gap(self) -> float:
-        """Friction gap threshold the kernels read; a gap no contact can have selects normal rows only."""
-        return self.contact_friction_gap_threshold if self.enable_contact_friction else -float("inf")
+        """Friction gap threshold the kernels read."""
+        return self.contact_friction_gap_threshold
 
     @property
     def _friction_pairs_only(self) -> int:
         """Whether the friction gap threshold applies only to articulation pairs, as the kernels read it."""
-        return int(self.contact_friction_articulation_pairs_only and self.enable_contact_friction)
+        return int(self.contact_friction_articulation_pairs_only)
 
     @property
     def _friction_every_contact(self) -> bool:
         """Whether every contact gets friction rows (uniform normal/tangent/tangent triples)."""
-        return self.enable_contact_friction and bool(np.isposinf(self.contact_friction_gap_threshold))
+        return bool(np.isposinf(self.contact_friction_gap_threshold))
 
     @property
     def contact_torsion_radius(self) -> float:
