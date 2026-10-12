@@ -252,6 +252,48 @@ def test_capture_after_eager_orders_the_pending_clear(test, device):
     np.testing.assert_array_equal(results[1], results[0])
 
 
+def test_reset_after_an_eager_error_steps_like_a_fresh_solver(test, device):
+    """Recover from an eager step that raised mid-step: after reset, step bitwise like a fresh solver.
+
+    The step raises after the closure rows were written into the active buffer set, and the
+    four-bar starts with a closure error so those rows are nonzero.
+    """
+    results = []
+    for fail_first in (False, True):
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.replicate(_build_four_bar(), 2)
+        model = builder.finalize(device=device)
+        solver = SolverFeatherPGS(
+            model,
+            solve_mode="matrix_free",
+            iterations=16,
+            baumgarte=0.1,
+            double_buffer=True,
+            contact_torsion_radius=0.01,
+            contact_torsion_device=True,
+        )
+        test.assertTrue(solver._double_buffered)
+        state, output = model.state(), model.state()
+        joint_q = state.joint_q.numpy()
+        joint_q[0] = 0.2
+        state.joint_q.assign(joint_q)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        if fail_first:
+            # A latched torsion error makes the eager step raise during torsion preparation.
+            solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+            with test.assertRaisesRegex(RuntimeError, "load ring"):
+                solver.step(state, output, model.control(), None, 1.0 / 240.0)
+            solver.reset(state)
+            solver.check_constraint_capacity()
+        for _ in range(3):
+            solver.step(state, output, model.control(), None, 1.0 / 240.0)
+            for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
+                wp.copy(getattr(state, name), getattr(output, name))
+        results.append((state.joint_q.numpy(), state.joint_qd.numpy()))
+    for got, want in zip(results[1], results[0], strict=True):
+        np.testing.assert_array_equal(got, want)
+
+
 def test_flags_are_ignored_where_they_do_not_apply(test, device):
     """Keep one stream and one buffer set on CPU, with sparse factors and with one size group."""
     if wp.get_device(device).is_cpu:
@@ -288,6 +330,7 @@ cuda_devices = get_cuda_test_devices()
 for _fn in (
     test_double_buffer_capture_sequences_match_single_buffer,
     test_capture_after_eager_orders_the_pending_clear,
+    test_reset_after_an_eager_error_steps_like_a_fresh_solver,
 ):
     add_function_test(TestFeatherPGSStreams, _fn.__name__, _fn, devices=cuda_devices)
 for _fn in (test_streams_and_double_buffer_step_identically, test_captured_double_buffer_matches_eager):

@@ -5731,13 +5731,18 @@ class SolverFeatherPGS(SolverBase):
         body_parent_f = state_out.body_parent_f
         if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F):
             body_parent_f = observables.body_parent_f
-        if not PROFILE_ENABLED:
+        try:
             self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
-        else:
-            try:
-                self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
-            finally:
-                self._profile_stage(None)
+        except BaseException:
+            if self._double_buffer_selected:
+                self._double_buffer_selected = False
+                # An eager step that stops early left rows in its buffer set; clear it as a finished step
+                # would. Work recorded into a failed capture never ran.
+                if not wp.get_stream(self.model.device).is_capturing:
+                    self._clear_double_buffer()
+            raise
+        finally:
+            self._profile_stage(None)
         if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
             # Rows are built only for articulated models; without joints every contact reports zero.
             inv_dt = 1.0 / dt if self.model.joint_count else 0.0
@@ -6048,6 +6053,7 @@ class SolverFeatherPGS(SolverBase):
             else None
         )
         self._buffer_index = 0
+        self._double_buffer_selected = False
         # Per buffer set: the event that ends its clearing and the capture it was recorded in.
         self._memset_done_event = [None, None]
         self._memset_done_capture = [None, None]
@@ -6089,6 +6095,7 @@ class SolverFeatherPGS(SolverBase):
 
     def _select_double_buffer(self) -> None:
         """Make the current buffer set active and wait until it was cleared."""
+        self._double_buffer_selected = True
         index = self._buffer_index
         self._H_by_size = self._H_bufs[index]
         self._J_by_size = self._J_bufs[index]
@@ -6103,6 +6110,7 @@ class SolverFeatherPGS(SolverBase):
 
     def _clear_double_buffer(self) -> None:
         """Clear the buffer set of this step on the memset stream and switch to the other set."""
+        self._double_buffer_selected = False
         index = self._buffer_index
         with wp.ScopedStream(self._memset_stream):
             for size in self._size_groups:
@@ -6987,7 +6995,8 @@ class SolverFeatherPGS(SolverBase):
         their output, re-enable the joint and :meth:`reset` the affected worlds. A check that
         passes after the reset does not validate the earlier output. With
         ``contact_torsion_device``, also raises if contact torsion rejected its input since
-        the last :meth:`reset`; the failing step restored its output motion arrays to the input.
+        the last :meth:`reset`; a failing captured step restored its output motion arrays to the
+        input, while a failing eager step raised from :meth:`step`.
 
         Reads the status on the host, so call it outside CUDA graph capture, for example at
         an observation boundary. Kernels can read :attr:`constraint_overflow` directly without
