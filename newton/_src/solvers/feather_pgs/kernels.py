@@ -515,20 +515,13 @@ def jcalc_tau(
     tau: wp.array[float],
 ):
     if type == JointType.BALL:
-        # target_ke = joint_target_ke[dof_start]
-        # target_kd = joint_target_kd[dof_start]
-
         for i in range(3):
-            S_s = joint_S_s[dof_start + i]
-
-            # w = joint_qd[dof_start + i]
-            # r = joint_q[coord_start + i]
-
-            value = -wp.dot(S_s, body_f_s) + joint_f[dof_start + i]
+            j = dof_start + i
+            # Passive damping per angular DOF, as in SolverFeatherstone; a ball joint has no passive spring.
+            value = -wp.dot(joint_S_s[j], body_f_s) + joint_f[j] - joint_damping[j] * joint_qd[j]
             if add_existing_tau != 0:
-                value += tau[dof_start + i]
-            tau[dof_start + i] = value
-            # tau -= w * target_kd - r * target_ke
+                value += tau[j]
+            tau[j] = value
 
         return
 
