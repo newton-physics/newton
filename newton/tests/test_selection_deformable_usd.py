@@ -10,6 +10,9 @@ after replication, heterogeneous construction, and fixed-joint collapse.
 import os
 import unittest
 
+import numpy as np
+import warp as wp
+
 import newton
 from newton.selection import DeformableCurveView, DeformableSurfaceView, DeformableVolumeView
 from newton.solvers import SolverSemiImplicit
@@ -205,6 +208,53 @@ class TestUSDDeformableObjects(unittest.TestCase):
         ((b0, b1),) = view.ranges("body")
         self.assertEqual(b1 - b0, 3)
         self.assertTrue(all("/World/Cable" in model.body_label[b] for b in range(b0, b1)))
+
+    def test_native_and_usd_ball_anchors_survive_collapse(self):
+        """Keep native and USD rod membership aligned for the supported ball-anchor import."""
+        stage = _deformable_stage()
+        _add_cable_curve(stage, "/World/Cable", _CABLE_PTS[:3])
+        _add_physics_attachment(
+            stage,
+            "/World/Anchor",
+            src0="/World/Cable",
+            type0="point",
+            indices0=[0],
+            coords1=[_CABLE_PTS[0]],
+        )
+        imported = newton.ModelBuilder()
+        imported.add_usd(stage, collapse_fixed_joints=True)
+
+        native = newton.ModelBuilder()
+        bodies, joints = native.add_rod(
+            rod=newton.Rod(_CABLE_PTS[:3], radius=0.02),
+            label="/World/Cable",
+            wrap_in_articulation=False,
+            body_frame_origin="com",
+        )
+        anchor = native.add_joint_ball(
+            -1,
+            bodies[0],
+            parent_xform=wp.transform(wp.vec3(*_CABLE_PTS[0]), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.05), wp.quat_identity()),
+        )
+        native.add_articulation([*joints, anchor])
+        native.collapse_fixed_joints()
+
+        imported_model = imported.finalize(device="cpu")
+        native_model = native.finalize(device="cpu")
+        imported_view = DeformableCurveView(imported_model, "/World/Cable")
+        native_view = DeformableCurveView(native_model, "/World/Cable")
+        self.assertEqual(imported_view.ranges("body"), [(0, 2)])
+        self.assertEqual(native_view.ranges("body"), [(0, 2)])
+        self.assertEqual(imported_view.get_body_transforms(imported_model).shape, (1, 2))
+        np.testing.assert_allclose(
+            imported_view.get_body_transforms(imported_model).numpy(),
+            native_view.get_body_transforms(native_model).numpy(),
+            atol=1.0e-7,
+        )
+        # The imported root is recorded at construction. The separately added native anchor is not.
+        self.assertEqual(imported_view.ranges("joint"), [(0, 2)])
+        self.assertEqual(native_view.ranges("joint"), [(0, 1)])
 
     def test_welded_graph_ranges_survive_collapse_and_replication(self):
         """Select a complete welded graph after finalization, collapse, and world cloning."""

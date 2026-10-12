@@ -11,6 +11,7 @@ import warp as wp
 import newton
 from newton.solvers import SolverSemiImplicit
 from newton.solvers.experimental.coupled import SolverCoupled
+from newton.tests._selection_deformable_test_utils import _add_test_anchored_cable
 from newton.tests.test_deformable_objects import _add_curve, _add_surface, _add_volume
 from newton.tests.unittest_utils import get_test_devices
 
@@ -258,6 +259,27 @@ class TestModelDeformableObjects(unittest.TestCase):
         np.testing.assert_array_equal(view.curve_joint_start.numpy(), [0])
         np.testing.assert_array_equal(view.curve_joint_end.numpy(), [0])
         np.testing.assert_array_equal(model.curve_joint_start.numpy(), [1, 1])
+
+    def test_coupled_model_keeps_reduced_rod(self):
+        """Keep and rebase all current rod parts after builder collapse reduces the record."""
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        _add_test_anchored_cable(builder)
+        builder.collapse_fixed_joints()
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                coupled = SolverCoupled(
+                    model,
+                    entries=[SolverCoupled.Entry(name="rod", solver=SolverSemiImplicit, bodies=[1], joints=[1])],
+                )
+                compact = coupled.view("rod")
+                self.assertEqual(compact.curve_label, ["anchored_curve"])
+                for kind in ("body", "joint"):
+                    np.testing.assert_array_equal(getattr(model, f"curve_{kind}_start").numpy(), [1])
+                    np.testing.assert_array_equal(getattr(model, f"curve_{kind}_end").numpy(), [2])
+                    np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_start").numpy(), [0])
+                    np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_end").numpy(), [1])
 
     def test_coupled_model_rebases_complete_deformable_objects(self):
         """Expose only complete curves and remap their ranges in a compact solver model."""

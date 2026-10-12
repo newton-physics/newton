@@ -182,6 +182,11 @@ Newton warns and omits a curve only when none of its segment bodies survive.
 Use ``joints_to_keep`` to preserve the original segment layout. Particle,
 triangle, and tetrahedron ranges are not affected by fixed-joint collapse.
 
+Like :class:`~newton.selection.ArticulationView`, curve views describe the
+remaining simulation elements after collapse. An articulation with no remaining
+joints is removed. A curve can still represent a single body without joints,
+so its record is removed only when no segment bodies remain.
+
 Compact coupled-solver models retain only deformable objects whose recorded
 elements are all present. Their ranges refer to the compact model's arrays,
 not the parent model's arrays. If a solver partition excludes part of a curve's

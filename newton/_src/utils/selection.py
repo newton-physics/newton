@@ -2455,6 +2455,7 @@ class _DeformableViewBase:
         :meth:`elements_per_deformable_object` for the valid ``kind`` values.
 
         Native and USD curves include their construction-time root joints.
+        After fixed-joint collapse, only surviving bodies and joints are exposed.
         A welded USD graph is one deformable object with the whole graph's
         body and joint ranges. Its per-curve import maps are separate and keep
         empty joint lists. See :ref:`deformable-objects-welded-usd-graphs`.
