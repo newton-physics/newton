@@ -264,6 +264,9 @@ def parse_mjcf(
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
     MuJoCo-specific custom attributes are registered on the builder automatically.
+    Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
+    (included in ``newton[sim]``) to resolve native defaults, and raises
+    :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
