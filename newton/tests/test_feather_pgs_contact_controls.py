@@ -22,7 +22,8 @@ from newton._src.solvers.feather_pgs.kernels import (
     prepare_world_contact_rows,
 )
 from newton.solvers import SolverFeatherPGS
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.feather_pgs._fixtures import _build_plane_model, _build_sparse_contact_friction_model
+from newton.tests.unittest_utils import StdOutCapture, add_function_test, get_cuda_test_devices
 
 PATH_DENSE = 0
 PATH_MATRIX_FREE = 1
@@ -595,7 +596,7 @@ def test_solver_exposes_documented_defaults(test, device):
     test.assertIsNotNone(solver._row_overflow_warning_emitted)
     quiet_solver = SolverFeatherPGS(model, solve_mode="matrix_free", warn_constraint_overflow=False)
     test.assertFalse(quiet_solver.warn_constraint_overflow)
-    test.assertIsNone(quiet_solver._row_overflow_warning_emitted)
+    test.assertIsNotNone(quiet_solver._row_overflow_warning_emitted)
     point = SolverFeatherPGS(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
     test.assertFalse(point._friction_anchors_enabled)
 
@@ -716,6 +717,95 @@ def test_allocator_skips_contacts_without_response_dofs(test, device):
     test.assertEqual(result["dense_count"], 0)
 
 
+def test_friction_gap_max_keeps_the_constructed_row_layout(test, device):
+    """Reject a switch to or from ``None`` after construction, and match a fresh solver after an allowed edit."""
+    model = _build_sparse_contact_friction_model(device=device)
+    # Tilted boxes make the triple and normal-only schedules give different motion.
+    transforms = model.shape_transform.numpy()
+    transforms[model.shape_body.numpy() >= 0, 3:] = np.asarray(wp.quat_rpy(0.2, 0.3, 0.1))
+    model.shape_transform.assign(transforms)
+    options = {
+        "solve_mode": "matrix_free",
+        "iterations": 8,
+        "enable_joint_limits": True,
+        "articulation_constraint_max": 96,
+        "free_body_constraint_max": 32,
+        "use_parallel_streams": True,
+        "friction_anchor_beta": 0.0,
+    }
+    every_contact = SolverFeatherPGS(model, **options)
+    for value in (-float("inf"), -1.0, 0.01):
+        with test.subTest(value=value), test.assertRaisesRegex(ValueError, "contact_friction_gap_max"):
+            every_contact.contact_friction_gap_max = value
+    every_contact.contact_friction_gap_max = float("inf")
+    gated = SolverFeatherPGS(model, **options, contact_friction_gap_max=0.01)
+    with test.assertRaisesRegex(ValueError, "contact_friction_gap_max"):
+        gated.contact_friction_gap_max = None
+    gated.contact_friction_gap_max = -float("inf")
+    fresh = SolverFeatherPGS(model, **options, contact_friction_gap_max=-float("inf"))
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=False)
+    contacts = pipeline.contacts()
+    trajectories = []
+    for solver in (gated, fresh):
+        state, output = model.state(), model.state()
+        qd = state.joint_qd.numpy()
+        qd[:] = -0.3
+        state.joint_qd.assign(qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        trajectory = []
+        for _ in range(4):
+            pipeline.collide(state, contacts)
+            solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
+            solver.check_constraint_capacity()
+            state, output = output, state
+            trajectory.append(np.concatenate([state.joint_q.numpy(), state.joint_qd.numpy()]))
+        trajectories.append(np.stack(trajectory))
+    np.testing.assert_array_equal(trajectories[0], trajectories[1])
+
+
+def test_overflow_warning_enabled_after_construction_latches(test, device):
+    """Latch the dense-row overflow warning when warnings are enabled after a quiet overflowing step."""
+    scene = newton.ModelBuilder()
+    scene.add_ground_plane()
+    xform = wp.transform(wp.vec3(0.0, 0.0, 0.049), wp.quat_identity())
+    body = scene.add_link(xform=xform)
+    scene.add_shape_box(body, hx=0.15, hy=0.1, hz=0.05)
+    scene.add_articulation([scene.add_joint_prismatic(-1, body, axis=newton.Axis.Z, parent_xform=xform)])
+    model = scene.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=False)
+    state, output = model.state(), model.state()
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    solver = SolverFeatherPGS(model, solve_mode="split", articulation_constraint_max=1, warn_constraint_overflow=False)
+    solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
+    test.assertTrue(solver.constraint_overflow.numpy().any())
+    test.assertEqual(solver._row_overflow_warning_emitted.numpy().tolist(), [0, 0, 0, 0])
+    solver.warn_constraint_overflow = True
+    capture = StdOutCapture()
+    capture.begin()
+    try:
+        solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
+    finally:
+        try:
+            wp.synchronize()
+        finally:
+            printed = capture.end()
+    test.assertRegex(printed, "constraint-row overflow")
+    test.assertEqual(int(solver._row_overflow_warning_emitted.numpy()[0]), 1)
+    test.assertTrue(np.isfinite(output.joint_q.numpy()).all())
+
+
+def test_restitution_threshold_cannot_enable_split_restitution(test, device):
+    """Reject positive restitution in the split solve at any threshold, so later threshold edits stay supported."""
+    model, _ = _build_plane_model(device, separation=1.0e-3, restitution=0.5, scene="articulated")
+    with test.assertRaisesRegex(NotImplementedError, "restitution"):
+        SolverFeatherPGS(model, solve_mode="split", restitution_velocity_threshold=float(np.finfo(np.float32).max))
+    solver = SolverFeatherPGS(model, solve_mode="split", enable_restitution=False)
+    solver.restitution_velocity_threshold = 0.5
+    test.assertEqual(solver._rebound_velocity_threshold, float(np.finfo(np.float32).max))
+
+
 class TestFeatherPGSContactControls(unittest.TestCase):
     pass
 
@@ -735,8 +825,18 @@ for _fn in (
     test_gap_gate_prevents_all_route_allocations,
     test_gap_gate_keeps_contacts_at_threshold,
     test_allocator_skips_contacts_without_response_dofs,
+    test_friction_gap_max_keeps_the_constructed_row_layout,
+    test_restitution_threshold_cannot_enable_split_restitution,
 ):
     add_function_test(TestFeatherPGSContactControls, _fn.__name__, _fn, devices=devices)
+# The test captures the device warning it expects.
+add_function_test(
+    TestFeatherPGSContactControls,
+    "test_overflow_warning_enabled_after_construction_latches",
+    test_overflow_warning_enabled_after_construction_latches,
+    devices=devices,
+    check_output=False,
+)
 
 
 if __name__ == "__main__":
