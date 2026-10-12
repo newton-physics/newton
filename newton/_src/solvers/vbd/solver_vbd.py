@@ -3294,6 +3294,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.body_inertia,
                     self.body_inv_mass_effective,
                     self.body_inv_inertia_effective,
+                    self.rigid_articulation_solve == "local",
                     state_in.body_q,  # input/output
                     state_in.body_qd,  # input/output
                 ],
@@ -3758,6 +3759,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     color_group,
                     state_in.body_q,
                     self.body_q_prev,
+                    state_in.body_qd,
+                    self.rigid_articulation_solve == "local",
                     model.body_q,
                     model.body_mass,
                     self.body_inv_mass_effective,

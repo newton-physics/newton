@@ -46,6 +46,9 @@ wp.set_module_options({"enable_backward": False})
 _SMALL_ANGLE_EPS = wp.constant(1.0e-7)
 """Small-angle threshold [rad] for guards and series expansions"""
 
+_ROTATION_CHART_EPS = wp.constant((2.0**-23) ** 0.5)
+"""Quaternion-scalar margin from pi, using the square root of float32 epsilon."""
+
 _DRIVE_LIMIT_MODE_NONE = wp.constant(0)
 _DRIVE_LIMIT_MODE_LIMIT_LOWER = wp.constant(1)
 _DRIVE_LIMIT_MODE_LIMIT_UPPER = wp.constant(2)
@@ -4126,6 +4129,7 @@ def forward_step_rigid_bodies(
     body_inertia: wp.array[wp.mat33],
     body_inv_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
+    use_angular_velocity_target: bool,
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_q_prev: wp.array[wp.transform],
@@ -4144,12 +4148,13 @@ def forward_step_rigid_bodies(
         body_inertia: Inertia tensors (local body frame).
         body_inv_mass: Inverse masses (0 for kinematic bodies).
         body_inv_inertia: Inverse inertia tensors (local body frame).
-        body_q: Body transforms (input: start-of-step pose, output: integrated pose).
-        body_qd: Body velocities (input: start-of-step velocity, output: integrated velocity).
+        use_angular_velocity_target: Preserve the local solve's angular target independently of its predicted pose.
+        body_q: Body transforms (input: start-of-step pose, output: initial solve pose).
+        body_qd: Body velocities (input: start-of-step velocity, output: unconstrained target).
         body_q_prev: Previous body transforms (output). Rebaselined to the current
             pre-step pose for worlds selected by ``pose_rebaseline_mask`` (first step
             after construction or reset); left unchanged otherwise.
-        body_inertia_q: Inertial target body transforms for the AVBD solve (output).
+        body_inertia_q: Predicted transforms (output). The local angular solve uses ``body_qd`` instead.
     """
     tid = wp.tid()
 
@@ -4186,6 +4191,22 @@ def forward_step_rigid_bodies(
         0.0,  # angular_damping = 0 (consistent with particle VBD)
         dt,
     )
+
+    if use_angular_velocity_target and dt * wp.length(wp.spatial_bottom(qd_new)) >= wp.pi:
+        # Keep resolved predictions for collision discovery. Beyond the local
+        # angle chart, initialize from torque-free motion without changing the target.
+        q_new, _ = integrate_rigid_body(
+            q_current,
+            qd_current,
+            wp.spatial_vector(wp.spatial_top(f_current), wp.vec3(0.0)),
+            com_local,
+            I_local,
+            inv_m,
+            inv_I,
+            world_g,
+            0.0,
+            dt,
+        )
 
     # Update current transform, velocity, and set inertial target
     body_q[tid] = q_new
@@ -5980,6 +6001,8 @@ def solve_rigid_body(
     body_ids_in_color: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
+    body_qd_target: wp.array[wp.spatial_vector],
+    use_angular_velocity_target: bool,
     body_q_rest: wp.array[wp.transform],
     body_mass: wp.array[float],
     body_inv_mass: wp.array[float],
@@ -6057,6 +6080,9 @@ def solve_rigid_body(
         dt: Time step.
         body_ids_in_color: Body indices in current color group (for parallel coloring).
         body_q_prev: Previous body transforms (for damping and friction).
+        body_qd_target: Unconstrained velocities from forward integration, fixed during the solve.
+        use_angular_velocity_target: Use the unwrapped angular target for the local solve,
+            keeping iterative rotations in the start-of-step chart below pi.
         body_q_rest: Rest transforms (for joint targets).
         body_mass: Body masses.
         body_inv_mass: Inverse masses (0 for kinematic bodies).
@@ -6114,9 +6140,10 @@ def solve_rigid_body(
     inertial_coeff = m * dt_sqr_reciprocal
     f_lin = (com_star - com_current) * inertial_coeff
 
-    # Compute relative rotation via quaternion difference
-    # dq = q_current^-1 * q_star
     q_delta = wp.mul(wp.quat_inverse(rot_current), rot_star)
+    rot_previous = wp.transform_get_rotation(body_q_prev[body_index])
+    if use_angular_velocity_target:
+        q_delta = wp.mul(wp.quat_inverse(rot_previous), rot_current)
 
     # Enforce shortest path (w > 0) to avoid double-cover ambiguity
     if q_delta[3] < 0.0:
@@ -6126,14 +6153,18 @@ def solve_rigid_body(
     axis_body, angle_body = wp.quat_to_axis_angle(q_delta)
     theta_body = axis_body * angle_body
 
-    # Angular inertial torque
-    tau_body = I_body * (theta_body * dt_sqr_reciprocal)
-    tau_world = wp.quat_rotate(rot_current, tau_body)
-
     # Angular Hessian in world frame: use full inertia (supports off-diagonal products of inertia)
     R_cur = wp.quat_to_matrix(rot_current)
     I_world = R_cur * I_body * wp.transpose(R_cur)
     angular_hessian = dt_sqr_reciprocal * I_world
+    tau_world = wp.vec3(0.0)
+    if use_angular_velocity_target:
+        # Compare the solved increment and the full velocity target in one frame.
+        angular_error = dt * wp.spatial_bottom(body_qd_target[body_index]) - wp.quat_rotate(rot_previous, theta_body)
+        tau_world = angular_hessian * angular_error
+    else:
+        tau_body = I_body * (theta_body * dt_sqr_reciprocal)
+        tau_world = wp.quat_rotate(rot_current, tau_body)
 
     # Accumulate external forces (rigid contacts)
     # Read external contributions
@@ -6255,6 +6286,16 @@ def solve_rigid_body(
     # Update pose from increments
     # Convert angular increment to quaternion
     if _USE_SMALL_ANGLE_APPROX:
+        if use_angular_velocity_target:
+            # Keep the normalized Cayley update away from the pi branch boundary.
+            # Bound its normalization by 1 + |w|/2 and take half the safe step.
+            delta_vector_world = wp.quat_rotate(rot_previous, wp.vec3(q_delta[0], q_delta[1], q_delta[2]))
+            toward_boundary = wp.dot(w_world, delta_vector_world) + _ROTATION_CHART_EPS * wp.length(w_world)
+            chart_distance = wp.max(q_delta[3] - _ROTATION_CHART_EPS, 0.0)
+            if toward_boundary > 0.0 and toward_boundary >= 2.0 * chart_distance:
+                step_scale = chart_distance / toward_boundary
+                x_inc *= step_scale
+                w_world *= step_scale
         half_w = w_world * 0.5
         dq_world = wp.quat(half_w[0], half_w[1], half_w[2], 1.0)
         dq_world = wp.normalize(dq_world)
