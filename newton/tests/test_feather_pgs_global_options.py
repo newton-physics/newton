@@ -19,7 +19,6 @@ from newton.tests.test_feather_pgs_sparse_diagonal import _build_sparse_contact_
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DT = 1.0 / 240.0
-FLOAT32_MAX = float(np.finfo(np.float32).max)
 
 
 def _build_contact_scene(device, *, mu=0.6, restitution=0.0, worlds=2):
@@ -484,9 +483,9 @@ def test_friction_position_iterations_validate_their_value(test, device):
 # enable_restitution
 
 
-def _bounce(device, scene, **options):
-    """Return the post-impact vertical velocity of a sphere with restitution 0.8 hitting a plane."""
-    model, body = _build_plane_model(device, separation=0.0008, restitution=0.8, scene=scene)
+def _bounce(device, scene, restitution=0.8, **options):
+    """Return the post-impact velocity and pose of a sphere with ``restitution`` hitting a plane."""
+    model, body = _build_plane_model(device, separation=0.0008, restitution=restitution, scene=scene)
     solver = SolverFeatherPGS(model, iterations=16, cfm=0.0, **options)
     solver._rigid_body_angular_damping.zero_()
     state_in, state_out = model.state(), model.state()
@@ -498,15 +497,15 @@ def _bounce(device, scene, **options):
     return state_out.body_qd.numpy()[body].copy(), state_out.body_q.numpy()[body].copy()
 
 
-def test_disabled_restitution_matches_the_largest_threshold(test, device):
-    """Turn rebounds off exactly as the float32-maximum threshold does, on free and articulated contacts."""
+def test_disabled_restitution_matches_inelastic_materials(test, device):
+    """Turn rebounds off exactly as zero restitution coefficients do, on free and articulated contacts."""
     for scene in ("free", "articulated"):
         with test.subTest(scene=scene):
             bouncing = _bounce(device, scene, restitution_velocity_threshold=0.0)
             disabled = _bounce(device, scene, enable_restitution=False, restitution_velocity_threshold=0.0)
-            threshold = _bounce(device, scene, restitution_velocity_threshold=FLOAT32_MAX)
+            inelastic = _bounce(device, scene, restitution=0.0, restitution_velocity_threshold=0.0)
             test.assertGreater(float(bouncing[0][2]), 1.0)
-            for got, expected in zip(disabled, threshold, strict=True):
+            for got, expected in zip(disabled, inelastic, strict=True):
                 np.testing.assert_array_equal(got, expected)
     _assert_bitwise(
         test,
@@ -521,6 +520,9 @@ def test_disabled_restitution_lets_split_accept_restitution(test, device):
     model = _build_contact_scene(device, restitution=0.5)
     with test.assertRaisesRegex(NotImplementedError, "restitution"):
         SolverFeatherPGS(model, solve_mode="split")
+    # A huge threshold is a physical parameter, not a second off switch.
+    with test.assertRaisesRegex(NotImplementedError, "restitution"):
+        SolverFeatherPGS(model, solve_mode="split", restitution_velocity_threshold=float(np.finfo(np.float32).max))
     disabled = _run(model, init=_set_box_velocities, solve_mode="split", enable_restitution=False)
     inelastic = _run(_build_contact_scene(device), init=_set_box_velocities, solve_mode="split")
     _assert_bitwise(test, disabled, inelastic, "split")
@@ -559,7 +561,7 @@ for _fn in (
     test_angular_damping_survives_graph_capture,
     test_velocity_iterations_always_solve_friction,
     test_friction_position_iterations_survive_graph_capture,
-    test_disabled_restitution_matches_the_largest_threshold,
+    test_disabled_restitution_matches_inelastic_materials,
     test_disabled_restitution_lets_compliance_accept_restitution,
 ):
     add_function_test(TestFeatherPGSGlobalOptions, _fn.__name__, _fn, devices=get_cuda_test_devices())

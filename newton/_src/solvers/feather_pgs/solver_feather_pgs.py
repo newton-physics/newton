@@ -1719,10 +1719,12 @@ class SolverFeatherPGS(SolverBase):
                 impulses are rotated into the current tangent frame and clamped to the
                 current friction cone; other rows start cold.
             contact_warmstart_decay: Non-negative scale applied to the carried impulses.
-            enable_restitution: Apply contact restitution. ``False`` turns restitution off for
-                every contact regardless of the shapes' coefficients, as the largest finite
-                ``restitution_velocity_threshold`` does, and lets the split solve and
-                ``contact_compliance`` accept shapes with positive restitution.
+            enable_restitution: Apply contact restitution, the only restitution switch. The
+                default ``True`` leaves the shapes' coefficients in charge; they default to
+                zero, so a model that authors no restitution does not bounce.
+                ``False`` turns restitution off for every contact regardless of the
+                coefficients, and lets the split solve and ``contact_compliance`` accept shapes
+                with positive restitution.
             restitution_velocity_threshold: Minimum incident normal speed [m/s] for a
                 rebound. Contacts bounce with the arithmetic mean of the two shapes'
                 restitution coefficients (:attr:`~newton.ModelBuilder.ShapeConfig.restitution`,
@@ -1731,10 +1733,9 @@ class SolverFeatherPGS(SolverBase):
                 incident normal velocity in the unconstrained prediction. The contact must
                 also touch, or be predicted to reach the surface during the step. Slower
                 contacts keep the ordinary contact law, so resting contacts do not bounce
-                under small accelerations. The largest finite float32 value turns
-                restitution off for every contact without editing materials. Restitution
-                needs ``solve_mode="matrix_free"``; the split solve rejects shapes with a
-                positive restitution unless this value turns restitution off.
+                under small accelerations. Finite and non-negative. Restitution needs
+                ``solve_mode="matrix_free"``; the split solve rejects shapes with a positive
+                restitution unless ``enable_restitution=False``.
             contact_speculative_scale: Fraction of a positive contact gap that the contact
                 may close during the step (``rhs = scale * phi / dt``). ``0`` removes the
                 speculative allowance; penetration correction is unchanged.
@@ -3653,7 +3654,7 @@ class SolverFeatherPGS(SolverBase):
             or self._contact_friction_position_iterations >= 0
         ):
             return False
-        if self._rebound_velocity_threshold >= np.finfo(np.float32).max:
+        if not self._enable_restitution:
             return True
         restitution = model.shape_material_restitution
         return restitution is None or model.shape_count == 0 or not np.any(restitution.numpy() > 0.0)
@@ -3661,7 +3662,7 @@ class SolverFeatherPGS(SolverBase):
     def _check_restitution_support(self) -> None:
         """Reject positive restitution in the split solve, which has no rebound targets."""
         supports_rebound = self._solve_mode == "matrix_free"
-        if supports_rebound or self._rebound_velocity_threshold >= np.finfo(np.float32).max:
+        if supports_rebound or not self._enable_restitution:
             return
         restitution = self.model.shape_material_restitution
         if restitution is not None and self.model.shape_count and np.any(restitution.numpy() > 0.0):
