@@ -589,31 +589,48 @@ class DeviceTorsionPreparation:
         self._dummy_owner = wp.full(1, -1, dtype=int, device=device)
         self._dummy_mf_count = wp.zeros(solver.world_count, dtype=int, device=device)
         self._saved_state = None
+        self._saved_names = ()
+
+    def allocate_snapshots(self, model):
+        """Allocate the rollback snapshots from the model's counts, so capture needs no eager warm-up."""
+        device = model.device
+        self._saved_state = {
+            "body_q": wp.empty(model.body_count, dtype=wp.transform, device=device),
+            "body_qd": wp.empty(model.body_count, dtype=wp.spatial_vector, device=device),
+            "body_qdd": wp.empty(model.body_count, dtype=wp.spatial_vector, device=device),
+            "joint_q": wp.empty(model.joint_coord_count, dtype=float, device=device),
+            "joint_qd": wp.empty(model.joint_dof_count, dtype=float, device=device),
+        }
 
     def begin_step(self, state_in, state_out):
         """Snapshot dynamic state on-device for fail-stop deferred validation."""
         if not self.deferred_errors:
             return
-        names = ("body_q", "body_qd", "body_qdd", "joint_q", "joint_qd", "particle_q", "particle_qd")
         if self._saved_state is None:
-            if self.solver.model.device.is_cuda and wp.get_stream(self.solver.model.device).is_capturing:
-                raise RuntimeError("Warm up device torsion state buffers before graph capture")
+            if self.solver.model.device.is_capturing:
+                raise RuntimeError("Allocate the device torsion snapshots before graph capture")
             self._saved_state = {
                 name: wp.empty_like(getattr(state_in, name))
-                for name in names
-                if getattr(state_in, name, None) is not None and getattr(state_out, name, None) is not None
+                for name in ("body_q", "body_qd", "body_qdd", "joint_q", "joint_qd")
+                if getattr(state_in, name, None) is not None
             }
+        names = []
         for name, saved in self._saved_state.items():
             source = getattr(state_in, name, None)
             target = getattr(state_out, name, None)
-            if source is None or target is None or source.shape != saved.shape or target.shape != saved.shape:
-                raise ValueError("Device torsion state layout changed; recreate preparation and recapture")
+            if source is None or target is None:
+                continue
+            if source.shape != saved.shape or target.shape != saved.shape:
+                raise ValueError(f"State array {name!r} does not match the model's {name} layout")
             wp.copy(saved, source)
+            names.append(name)
+        self._saved_names = tuple(names)
 
     def end_step(self, state_out):
-        """Prevent invalid captured work from advancing published dynamic state."""
-        if self.deferred_errors and self._saved_state is not None:
-            for name, saved in self._saved_state.items():
+        """Prevent invalid work from advancing published dynamic state."""
+        if self.deferred_errors:
+            for name in self._saved_names:
+                saved = self._saved_state[name]
                 wp.launch(
                     _rollback_state,
                     dim=saved.shape,
@@ -622,11 +639,7 @@ class DeviceTorsionPreparation:
                 )
 
     def validate(self):
-        """Synchronously raise latched errors; mandatory after every deferred replay batch.
-
-        Errors remain latched: recreate the preparation after fixing invalid
-        input rather than clearing evidence and continuing an invalid graph.
-        """
+        """Synchronously raise latched errors; they stay latched until :meth:`clear_status`."""
         status = int(self.work.status.numpy()[0])
         if status & 1:
             raise RuntimeError("Contact input overflow before contact torsion")
@@ -638,6 +651,10 @@ class DeviceTorsionPreparation:
             raise RuntimeError("Experimental torsion row capacity exceeded; refusing dropped work")
         if status & 16:
             raise RuntimeError("Persistent friction patch load ring does not match its contact torsion group")
+
+    def clear_status(self):
+        """Clear the latched errors on the device; a recurring cause latches again on the next step."""
+        self.work.status.zero_()
 
     def read_stats(self):
         """Explicit diagnostic readback, never part of normal stepping or capture.
@@ -804,18 +821,17 @@ class DeviceTorsionPreparation:
 
 
 def enable_device_torsion(solver, *, deferred_errors=False):
-    """Opt into the local experimental port without changing the host default.
+    """Prepare the solver's torsion rows on the device.
 
-    The caller must invoke ``solver._device_torsion.validate()`` after every
-    deferred replay batch before consuming results. Invalid input latches a
-    permanent error and rolls back the published dynamic state; recreate the
-    solver after fixing the input instead of reusing an invalid captured graph.
-    Warm up one eager step before capturing, to allocate rollback buffers.
+    With ``deferred_errors``, invalid input latches an error and rolls back the published dynamic
+    state of the failing step instead of raising during preparation.
     """
     if not solver._contact_torsion_enabled:
         raise ValueError("Enable a positive contact_torsion_radius before device preparation")
     if wp.get_stream(solver.model.device).is_capturing:
         raise RuntimeError("Configure device torsion before CUDA graph capture")
     solver._device_torsion = DeviceTorsionPreparation(solver, deferred_errors=deferred_errors)
+    if deferred_errors:
+        solver._device_torsion.allocate_snapshots(solver.model)
     solver._torsion_stats = {"device_resident": True, "rows": None, "groups": None}
     return solver._device_torsion

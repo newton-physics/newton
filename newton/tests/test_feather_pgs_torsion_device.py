@@ -184,10 +184,8 @@ def run_oracle(solver, state, augmented, contacts):
 
 
 def test_public_device_option_is_default_off(test, device):
-    """Keep public device preparation opt-in and expose explicit graph validation."""
+    """Keep public device preparation opt-in."""
     test.assertIs(signature(solver_feather_pgs.SolverFeatherPGS).parameters["contact_torsion_device"].default, False)
-    test.assertTrue(callable(getattr(solver_feather_pgs.SolverFeatherPGS, "prepare_contact_torsion_capture", None)))
-    test.assertTrue(callable(getattr(solver_feather_pgs.SolverFeatherPGS, "validate_contact_torsion", None)))
 
 
 def compare(test, *, device, modify=None, **options):
@@ -667,27 +665,55 @@ def test_cuda_captured_capacity_errors(test, device):
 
 
 def test_public_api_noop_and_fail_stop(test, device):
-    """Allocate no new state without a radius, and refuse to capture active host torsion."""
+    """Allocate no torsion state without a radius, refuse to capture host torsion, and fail-stop errors."""
     _, plain, model, state, _ = fixture(0.0, device=device, contact_torsion_device=True, pgs_iterations=16)
-    plain.prepare_contact_torsion_capture(state, model.state())
-    plain.validate_contact_torsion()
-    test.assertIsNone(getattr(plain, "_device_torsion", None))
+    test.assertIsNone(plain._device_torsion)
+    plain.check_constraint_capacity()
 
-    _, reference, model, state, _ = fixture(0.01, device=device, pgs_iterations=16)
+    _, reference, model, state, contacts = fixture(0.01, device=device, pgs_iterations=16)
     with test.assertRaisesRegex(RuntimeError, "requires contact_torsion_device"):
-        reference.prepare_contact_torsion_capture(state, model.state())
+        with wp.ScopedCapture(device=model.device):
+            reference.step(state, model.state(), model.control(), contacts, 0.0025)
 
     _, solver, model, state, contacts = fixture(0.01, device=device, contact_torsion_device=True, pgs_iterations=16)
     output = model.state()
-    solver.prepare_contact_torsion_capture(state, output)
     solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
     for _ in range(2):
         with test.assertRaisesRegex(RuntimeError, "load ring"):
             solver.step(state, output, model.control(), contacts, 0.0025)
-        with test.assertRaisesRegex(RuntimeError, "load ring"):
-            solver.validate_contact_torsion()
+        with test.assertRaisesRegex(RuntimeError, "contact torsion rejected its input: .*load ring"):
+            solver.check_constraint_capacity()
         np.testing.assert_array_equal(output.joint_q.numpy(), state.joint_q.numpy())
         np.testing.assert_array_equal(output.joint_qd.numpy(), state.joint_qd.numpy())
+    solver.reset(state)
+    solver.check_constraint_capacity()
+    solver.step(state, output, model.control(), contacts, 0.0025)
+    test.assertFalse(np.array_equal(output.joint_q.numpy(), state.joint_q.numpy()))
+
+
+def test_cuda_cold_capture_reports_errors_until_reset(test, device):
+    """Capture a fresh solver's step without preparation and report a replay's error until reset."""
+    _, solver, model, state, contacts = fixture(0.01, device=device, contact_torsion_device=True, pgs_iterations=16)
+    output = model.state()
+    with wp.ScopedCapture(device=model.device) as capture:
+        solver.step(state, output, model.control(), contacts, 0.0025)
+    wp.capture_launch(capture.graph)
+    solver.check_constraint_capacity()
+    count = int(solver.constraint_count.numpy()[0])
+    test.assertGreater(np.count_nonzero(solver.row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_TORSION), 0)
+    test.assertFalse(np.array_equal(output.joint_q.numpy(), state.joint_q.numpy()))
+
+    solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+    for _ in range(2):
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(output.joint_q.numpy(), state.joint_q.numpy())
+        np.testing.assert_array_equal(output.joint_qd.numpy(), state.joint_qd.numpy())
+        with test.assertRaisesRegex(RuntimeError, "contact torsion rejected its input"):
+            solver.check_constraint_capacity()
+    solver.reset(state)
+    wp.capture_launch(capture.graph)
+    solver.check_constraint_capacity()
+    test.assertFalse(np.array_equal(output.joint_q.numpy(), state.joint_q.numpy()))
 
 
 def test_cuda_full_solver_graph(test, device):
@@ -708,7 +734,6 @@ def test_cuda_full_solver_graph(test, device):
                 **PATCH_OPTIONS,
             )
             z = model.state()
-            solver.prepare_contact_torsion_capture(a, z)
             control = model.control()
             pipeline = newton.CollisionPipeline(
                 model, contact_matching="latest", reduce_contacts=False, broad_phase="nxn", rigid_contact_max=64
@@ -728,11 +753,11 @@ def test_cuda_full_solver_graph(test, device):
                     pair()
                 for _ in range(5):
                     wp.capture_launch(capture.graph)
-                    solver.validate_contact_torsion()
+                    solver.check_constraint_capacity()
             else:
                 for _ in range(5):
                     pair()
-                    solver.validate_contact_torsion()
+                    solver.check_constraint_capacity()
             results.append((a.joint_q.numpy(), a.joint_qd.numpy(), a.body_q.numpy()))
         for eager, graph in zip(*results, strict=True):
             np.testing.assert_allclose(graph, eager, rtol=3e-5, atol=3e-6)
@@ -767,6 +792,7 @@ for _fn in (
     test_cuda_preparation_graph_changes_and_failure,
     test_cuda_captured_capacity_errors,
     test_public_api_noop_and_fail_stop,
+    test_cuda_cold_capture_reports_errors_until_reset,
     test_cuda_full_solver_graph,
 ):
     add_function_test(TestDeviceTorsionPreparation, _fn.__name__, _fn, devices=get_cuda_test_devices())

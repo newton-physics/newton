@@ -65,13 +65,12 @@ def test_anchored_torsion_articulations_sleep_and_wake(test, device):
 
 
 def test_graph_replay_validates_torsion(test, device):
-    """Sleep and wake inside a captured graph with mandatory torsion validation."""
+    """Sleep and wake inside a captured graph with device torsion, checking its status after replays."""
     if not _torsion_available():
         test.skipTest("this solver has no contact torsion")
     model, pipeline, solver, states, control = _articulations(device, profile=TORSION_PROFILE)
     contacts = pipeline.contacts()
     _advance(pipeline, solver, states, control, 2, contacts=contacts)
-    solver.prepare_contact_torsion_capture(states[0], states[1])
     with wp.ScopedCapture(device=model.device) as capture:
         for _ in range(2):
             states[0].clear_forces()
@@ -80,11 +79,11 @@ def test_graph_replay_validates_torsion(test, device):
             states.reverse()
     for _ in range(200):
         wp.capture_launch(capture.graph)
-    solver.validate_contact_torsion()
+    solver.check_constraint_capacity()
     np.testing.assert_array_equal(solver.sleeping.body_awake.numpy(), [0, 0, 0, 0])
     solver.sleeping.wake()
     wp.capture_launch(capture.graph)
-    solver.validate_contact_torsion()
+    solver.check_constraint_capacity()
     test.assertGreater(_torsion_rows(solver), 0)
 
 

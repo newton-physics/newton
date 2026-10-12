@@ -1734,10 +1734,11 @@ class SolverFeatherPGS(SolverBase):
                 the host. The host preparation is the reference implementation; it reads
                 the contacts back every step and cannot be captured in a CUDA graph. The
                 device preparation builds the same groups and rows with preallocated
-                buffers. Eager steps check its errors synchronously. To capture
-                :meth:`step` in a CUDA graph, call :meth:`prepare_contact_torsion_capture`
-                outside capture, then :meth:`validate_contact_torsion` after every replay
-                batch before using the results. Grouping runs serially per world with
+                buffers and supports CUDA graph capture of :meth:`step`. Invalid torsion
+                input (for example rows beyond the capacity or hydroelastic contacts) makes
+                the failing step publish its input state unchanged. An eager step raises
+                when it returns; after graph replays, :meth:`check_constraint_capacity`
+                raises, and :meth:`reset` clears the error. Grouping runs serially per world with
                 worst-case quadratic cost in the contacts of a world. No effect without a
                 positive ``contact_torsion_radius``.
             contact_compliance: Experimental: solve contacts that carry a positive
@@ -2407,7 +2408,7 @@ class SolverFeatherPGS(SolverBase):
         if self._contact_torsion_enabled and self.contact_torsion_device:
             from .contact_torsion_device import enable_device_torsion  # noqa: PLC0415
 
-            enable_device_torsion(self)
+            enable_device_torsion(self, deferred_errors=True)
         # Per-entity activity of the articulated dynamics and of the constraint rows; sleeping
         # clears the entries of islands that sleep through a step, otherwise they stay one.
         self._dynamics_art_active = wp.ones(model.articulation_count, dtype=wp.int32, device=model.device)
@@ -2507,46 +2508,6 @@ class SolverFeatherPGS(SolverBase):
         every step; clear it to release the memory.
         """
         return self._pgs_ncp_residual_log
-
-    def prepare_contact_torsion_capture(self, state_in: State, state_out: State) -> None:
-        """Prepare device contact torsion for CUDA graph capture of :meth:`step`.
-
-        Call outside capture, with the states the graph will use, before capturing a
-        step with contact torsion. It requires ``contact_torsion_device=True`` and does not
-        advance the simulation. Afterwards torsion errors latch on the device: the failing
-        step publishes its input state unchanged and solves no rows. An eager :meth:`step`
-        still validates and raises them when it returns; a graph replay cannot, so call
-        :meth:`validate_contact_torsion` after replays. Does nothing when contact torsion
-        is disabled.
-
-        Args:
-            state_in: Input state of the captured step.
-            state_out: Output state of the captured step.
-        """
-        if not self._contact_torsion_enabled:
-            return
-        preparation = self._device_torsion
-        if preparation is None:
-            raise RuntimeError("Contact torsion graph capture requires contact_torsion_device=True")
-        if wp.get_stream(self.model.device).is_capturing:
-            raise RuntimeError("Prepare contact torsion buffers outside CUDA graph capture")
-        preparation.validate()
-        preparation.deferred_errors = True
-        preparation.begin_step(state_in, state_out)
-
-    def validate_contact_torsion(self) -> None:
-        """Raise latched device contact torsion errors.
-
-        After :meth:`prepare_contact_torsion_capture`, call this outside capture after
-        every batch of graph replays, before using their results. Errors stay latched:
-        reconstruct the solver after correcting the input. Does nothing without device
-        torsion preparation.
-        """
-        preparation = self._device_torsion
-        if preparation is not None:
-            if wp.get_stream(self.model.device).is_capturing:
-                raise RuntimeError("Validate contact torsion outside CUDA graph capture")
-            preparation.validate()
 
     def _update_kinematic_state(self) -> None:
         """Refresh cached kinematic flags and effective joint armature."""
@@ -2716,8 +2677,9 @@ class SolverFeatherPGS(SolverBase):
         two entries (for example a global body and a world body) is discarded when either
         is selected. Global articulations share world 0's rows, so selecting the global
         entry also discards world 0's warm-start impulses while a dynamic global
-        articulation exists. The reset is launched on the device without host
-        synchronization and can be captured in a CUDA graph.
+        articulation exists. Any reset also clears the solver-wide contact torsion error
+        and the disabled-tree-joint status of the selected worlds. The reset is launched on
+        the device without host synchronization and can be captured in a CUDA graph.
 
         Args:
             state: Simulation state; left unchanged.
@@ -2730,6 +2692,9 @@ class SolverFeatherPGS(SolverBase):
         del flags
         if self.contact_compliance:
             _contact_compliance.clear(self)
+        if self._device_torsion is not None:
+            # The torsion status is solver-wide; a cause that persists latches again on the next step.
+            self._device_torsion.clear_status()
         world_mask = self._normalize_reset_world_mask(world_mask)
         if self.sleeping is not None:
             self.sleeping.wake(world_mask)
@@ -6041,8 +6006,8 @@ class SolverFeatherPGS(SolverBase):
             self._accumulate_row_watermarks(contacts)
         if self._device_torsion is not None:
             self._device_torsion.end_step(state_out)
-            if self._device_torsion.deferred_errors and not wp.get_stream(model.device).is_capturing:
-                self.validate_contact_torsion()
+            if not wp.get_stream(model.device).is_capturing:
+                self._device_torsion.validate()
         self._step += 1
         return state_out
 
@@ -7176,7 +7141,9 @@ class SolverFeatherPGS(SolverBase):
 
         Also raises if a step saw a joint of an articulation tree disabled in
         :attr:`~newton.Model.joint_enabled`; only loop-closing joints can be disabled. Re-enable
-        the joint and :meth:`reset` the affected worlds.
+        the joint and :meth:`reset` the affected worlds. With ``contact_torsion_device``, also
+        raises if contact torsion rejected its input since the last :meth:`reset`; that step
+        published its input state unchanged.
 
         Reads :attr:`constraint_overflow` on the host, so call it outside CUDA graph capture,
         for example at an observation boundary. Kernels can read :attr:`constraint_overflow`
@@ -7190,6 +7157,11 @@ class SolverFeatherPGS(SolverBase):
         """
         if self.model.device.is_capturing:
             raise RuntimeError("check_constraint_capacity() must run outside CUDA graph capture")
+        if self._device_torsion is not None:
+            try:
+                self._device_torsion.validate()
+            except (RuntimeError, ValueError) as error:
+                raise RuntimeError(f"FeatherPGS contact torsion rejected its input: {error}") from error
         disabled = np.flatnonzero(self._disabled_tree_joint.numpy())
         if disabled.size:
             worlds = np.where(disabled == self.model.world_count, -1, disabled)

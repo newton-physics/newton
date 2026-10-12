@@ -119,11 +119,10 @@ def test_torsion_keeps_joint_velocity_limits(test, device):
             newton.eval_fk(model, initial.joint_q, initial.joint_qd, initial)
             output = model.state()
             if preparation == "graph":
-                solver.prepare_contact_torsion_capture(initial, output)
                 with wp.ScopedCapture(device=model.device) as capture:
                     solver.step(initial, output, model.control(), contacts, 0.0025)
                 wp.capture_launch(capture.graph)
-                solver.validate_contact_torsion()
+                solver.check_constraint_capacity()
             else:
                 solver.step(initial, output, model.control(), contacts, 0.0025)
             count = int(solver.constraint_count.numpy()[0])
@@ -169,11 +168,10 @@ def test_torsion_keeps_fused_drive_velocity_limits(test, device):
             newton.eval_fk(model, initial.joint_q, initial.joint_qd, initial)
             output = model.state()
             if preparation == "graph":
-                solver.prepare_contact_torsion_capture(initial, output)
                 with wp.ScopedCapture(device=model.device) as capture:
                     solver.step(initial, output, model.control(), contacts, 0.0025)
                 wp.capture_launch(capture.graph)
-                solver.validate_contact_torsion()
+                solver.check_constraint_capacity()
             else:
                 solver.step(initial, output, model.control(), contacts, 0.0025)
             count = int(solver.constraint_count.numpy()[0])
@@ -250,11 +248,10 @@ def test_torsion_keeps_free_body_velocity_limits(test, device):
             solver.rigid_body_angular_damping.zero_()
             output = model.state()
             if preparation == "graph":
-                solver.prepare_contact_torsion_capture(initial, output)
                 with wp.ScopedCapture(device=model.device) as capture:
                     solver.step(initial, output, model.control(), contacts, 0.0025)
                 wp.capture_launch(capture.graph)
-                solver.validate_contact_torsion()
+                solver.check_constraint_capacity()
             else:
                 solver.step(initial, output, model.control(), contacts, 0.0025)
             count = int(solver.constraint_count.numpy()[0])

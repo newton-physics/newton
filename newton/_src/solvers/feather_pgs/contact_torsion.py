@@ -285,8 +285,8 @@ def validate_torsion_step(solver):
     _validate_torsion_mode(solver)
     if wp.get_stream(solver.model.device).is_capturing:
         device = getattr(solver, "_device_torsion", None)
-        if device is None or not device.deferred_errors:
-            raise RuntimeError("Contact torsion graph capture requires device preparation with deferred validation")
+        if device is None:
+            raise RuntimeError("Contact torsion graph capture requires contact_torsion_device=True")
 
 
 @wp.kernel
