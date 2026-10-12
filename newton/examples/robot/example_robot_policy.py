@@ -134,8 +134,8 @@ def load_policy_and_setup_arrays(example: Any, policy_path: str, num_dofs: int, 
     """Load ONNX policy and setup device buffers for the policy step."""
     print("[INFO] Loading policy from:", policy_path)
     example.policy = OnnxRuntime(policy_path, device=example.device)
-    example.policy_input_name = example.policy.input_names[0]
-    example.policy_output_name = example.policy.output_names[0]
+    example.policy_input_name = example.policy.inputs[0].name
+    example.policy_output_name = example.policy.outputs[0].name
 
     if example.state_0.joint_q is not None:
         example._joint_pos_initial_wp = wp.clone(example.state_0.joint_q[joint_pos_slice])
@@ -159,6 +159,7 @@ def load_policy_and_setup_arrays(example: Any, policy_path: str, num_dofs: int, 
     )
     example._obs_wp = wp.zeros((1, obs_dim), dtype=wp.float32, device=example.device)
     example._prev_act_wp = wp.zeros((1, num_dofs), dtype=wp.float32, device=example.device)
+    example.policy.prepare({example.policy_input_name: example._obs_wp})
 
     example._physx_to_mjc_wp = wp.array(
         np.asarray(example.physx_to_mjc_indices, dtype=np.int32), dtype=wp.int32, device=example.device
@@ -292,7 +293,11 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+        )
+        self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
 
         self.viewer.set_model(self.model)
         self.viewer.vsync = True
@@ -342,14 +347,19 @@ class Example:
 
             self.viewer.apply_forces(self.state_0)
 
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables if i == self.sim_substeps - 1 else None,
+            )
 
             if need_state_copy and i == self.sim_substeps - 1:
                 self.state_0.assign(self.state_1)
             else:
                 self.state_0, self.state_1 = self.state_1, self.state_0
-
-        self.solver.update_contacts(self.contacts, self.state_0)
 
     def reset(self):
         print("[INFO] Resetting example")
@@ -418,7 +428,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_final(self):

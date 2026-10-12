@@ -34,30 +34,7 @@ the class's family. A pattern with no matches in that family raises ``KeyError``
 Currently, curves expose rod body transforms and velocities. Surfaces and volumes
 expose particle positions and velocities. A family does not prescribe a solver or
 storage layout. Particle-based curves and solver-owned MPM data are not supported
-yet. There is no simulation-representation filter in this version.
-
-Inspect all deformable objects
-------------------------------
-
-Views read the public model data described in :ref:`deformable-objects`.
-Use those arrays directly when all labels, worlds, or ranges are needed,
-without applying a selection pattern:
-
-.. code-block:: python
-
-    # Read metadata once during setup, outside simulation steps or graph capture.
-    worlds = model.surface_world.numpy()
-    starts = model.surface_particle_start.numpy()
-    ends = model.surface_particle_end.numpy()
-    for label, world, start, end in zip(
-        model.surface_label, worlds, starts, ends, strict=True
-    ):
-        print(label, "world:", world, "particles:", end - start)
-
-Like ``model.articulation_label`` and ``model.articulation_world``, these arrays
-describe recorded objects before selection. They include global objects and
-objects in uneven worlds. A view contains only its matches, ordered by world.
-Its rows refer to that selection, not the model inventory.
+yet.
 
 Read and reset state
 --------------------
@@ -89,38 +66,6 @@ Save independent reset buffers during setup, then use them to reset the state:
     surfaces.set_particle_positions(state, positions_default)
     surfaces.set_particle_velocities(state, velocities_default)
 
-Regular layouts return a view into the source arrays, which may have gaps between
-rows. Irregular layouts fill a reusable buffer. A later state change or another
-read can change the returned values. Use ``wp.clone()`` when a result must stay
-unchanged, as in the reset buffers above.
-
-A view caches getter results and keeps their source arrays alive for its lifetime.
-Dropping a state does not release those arrays while the view still holds them.
-Reuse a fixed set of state buffers, such as two alternating states. Reading newly
-created states on every step can grow the cache and its memory use.
-
-Use setters to change state; do not rely on editing a getter result. Setters
-reject input that shares storage with the target array. Copy such input with
-``wp.clone()`` first. This prevents a write from overwriting values it still
-needs to read, without adding hidden copies to every setter call.
-
-Setters change only the supplied model or state. Applications with two alternating
-states must reset both when both should retain the reset. Model writes change
-initial arrays, not states that were already created.
-
-For differently sized objects, use separate views for batched state access:
-
-.. code-block:: python
-
-    cables_short = DeformableCurveView(model, "cable_10_segments*")
-    cables_long = DeformableCurveView(model, "cable_30_segments*")
-    transforms_short = cables_short.get_body_transforms(state)
-    transforms_long = cables_long.get_body_transforms(state)
-
-These labels are an application naming choice, not a size filter. The view
-checks the actual element counts. A broader view can still expose raw ranges,
-but masking out a differently sized object does not make batched access valid.
-
 Update selected deformable objects
 ----------------------------------
 
@@ -138,7 +83,7 @@ The middle cloth is untouched. ``mask=None`` updates the whole selection;
 an all-false mask changes nothing. Values must still have their full shape.
 A mask entry refers to a selected object, not a model-global ID or a particle.
 It corresponds to a world only when exactly one object is selected in every
-real model world. The next section explains how to look up objects by world.
+real model world. See :ref:`deformable-selection-worlds` for the mapping.
 
 Host Boolean sequences are accepted outside capture. Numeric lists are not masks.
 Device masks must have shape ``(count,)``, Boolean dtype, and the view's device.
@@ -167,7 +112,7 @@ states from the same full buffers:
 
     # Setup: surfaces selects exactly one named cloth in every world.
     assert surfaces.worlds == list(range(model.world_count))
-    indices_world = wp.array([2, 0], dtype=wp.int32, device=model.device)
+    indices_world = wp.array([0, 2], dtype=wp.int32, device=model.device)
     mask_cloths = wp.zeros(surfaces.count, dtype=bool, device=model.device)
 
     # Runtime: indices_world may be filled on the device before each reset.
@@ -180,44 +125,14 @@ Missing matches, multiple objects in one world, and global objects invalidate
 this shortcut. Use selected-object indices or fill the object mask directly
 in those cases. A global-only view has world IDs of ``-1``.
 
-Construct views and warm up operations before CUDA graph capture. Preallocate
-independent values and masks. Setters allocate no temporary arrays with device
-inputs, including when those inputs require gradients. Host values and masks
-raise ``RuntimeError`` during capture. Getters that reuse staging buffers can
-also be captured after their first call. Mask and value contents can change
-between inference replays without rebuilding the graph.
-
-``set_mask_from_indices()`` also supports capture with preallocated device
-indices and a mask. Host indices raise ``RuntimeError`` during capture.
-It reuses integer scratch owned by the view, but backward reads only the
-caller's Boolean masks. Use distinct output masks for distinct taped writes.
-
-Masked setters preserve gradients to the input values when recorded with
-``wp.Tape``. Keep values and masks unchanged until backward completes.
-Use separate masks for different selections on the same tape, and separate
-state buffers for successive steps. No per-call mask snapshot is created.
-For a captured forward/backward graph, change inputs only between complete replays.
+.. _deformable-selection-worlds:
 
 Deformable objects and worlds
 -----------------------------
 
-A deformable object is represented by a collection of simulation elements.
-Examples include a complete cable, cloth, or soft volume. A cable can contain
-rigid segments and joints. Cloth contains
-particles, triangles, and bending edges. A soft volume contains particles and
-tetrahedra: particles store motion, while tetrahedra describe their connections.
-The view selects the whole deformable object and provides access to its elements.
-
-This is not an arbitrary collection of scene objects. It does not add a public
-Python object wrapper. The `USD deformables proposal
-<https://github.com/aousd/OpenUSD-proposals/blob/5d89c0ed46a26de92f4d3fefef3bfad6500c07ce/proposals/physics_deformables/wp_deformable_physics.md#deformable-bodies>`_
-uses the term *deformable body*. Here, *deformable object* avoids confusing a
-complete cable with the rigid bodies used for its segments. A USD deformable body
-can also own visual and collision geometry; these views expose its recorded
-simulation elements, not that entire USD hierarchy.
-
-See :ref:`deformable-objects` for how native builder calls and USD imports record
-deformable objects, assign labels and worlds, and preserve their simulation ranges.
+Each row represents a complete deformable object, such as a cable or cloth.
+The view provides access to its recorded simulation elements.
+See :ref:`deformable-objects` for how native calls and USD imports record these elements.
 
 Each view orders selected deformable objects by world, then by their order in the model.
 For example, suppose deformable objects are added in this order within each world:
@@ -307,15 +222,46 @@ cables' body ranges even though their selected deformable object indices are con
 ``elements_per_deformable_object(kind)`` returns a common element count or raises when the
 sizes differ. Raw ranges remain available for deformable objects with different sizes.
 
-Joint ranges include the joints created with the cable, including generated
-roots. They are not the rod-joint lists returned by
-:meth:`~newton.ModelBuilder.add_rod` or USD's ``path_cable_map``. See
-:ref:`deformable-objects` for shared graphs and later attachments.
+For cable root joints and later attachments, see :ref:`deformable-objects-curve-joints`.
+For changes to the ranges after collapse, see :ref:`deformable-objects-collapse`.
 
-Recording labels does not prevent fixed-joint collapse. A deformable curve is omitted
-with a warning if collapse removes one of its bodies or joints. Preserve required
-joints using :meth:`~newton.ModelBuilder.collapse_fixed_joints` with
-``joints_to_keep`` when complete curve access is needed.
+Different deformable object sizes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For differently sized deformable objects, use separate views for batched state access:
+
+.. code-block:: python
+
+    cables_short = DeformableCurveView(model, "cable_10_segments*")
+    cables_long = DeformableCurveView(model, "cable_30_segments*")
+    transforms_short = cables_short.get_body_transforms(state)
+    transforms_long = cables_long.get_body_transforms(state)
+
+These labels are an application naming choice, not a size filter. The view
+checks the actual element counts, including any changes from fixed-joint collapse.
+A broader view can still expose raw ranges. Masking out a differently sized
+deformable object does not make batched access valid.
+
+Inspect all deformable objects
+------------------------------
+
+Use the :ref:`public model arrays <deformable-objects>` to inspect all deformable
+objects without a selection pattern:
+
+.. code-block:: python
+
+    # Read metadata once during setup, outside simulation steps or graph capture.
+    worlds = model.surface_world.numpy()
+    starts = model.surface_particle_start.numpy()
+    ends = model.surface_particle_end.numpy()
+    for label, world, start, end in zip(
+        model.surface_label, worlds, starts, ends, strict=True
+    ):
+        print(label, "world:", world, "particles:", end - start)
+
+These arrays include global deformable objects and worlds with different object
+counts. A view contains only its matches. Its row indices refer to that selection,
+not to all deformable objects in the model.
 
 Comparison with ArticulationView
 --------------------------------
@@ -343,19 +289,18 @@ identical worlds, each with one robot, two cables, and one cloth:
 
 The method style is similar, but the layouts serve different needs:
 
-* ArticulationView keeps a world/articulation layout. By default, it requires
-  compatible layouts for all selected data. ``allow_partial_layouts=True`` keeps
-  access to the data that can still be batched; it does not pad unsupported
-  layouts. Deformable views use one flat row per selected object, allowing
-  uneven world counts and irregular spacing without padding. Batched reads and
-  writes still require equal counts of the requested element kind.
+* ArticulationView arranges data by world and articulation. Its
+  ``allow_partial_layouts=True`` option allows access to the data that can still
+  be batched when other selected data has an incompatible layout. Deformable
+  views use one row per selected deformable object. Worlds may have different
+  object counts, but batched reads and writes require equal counts of the
+  requested element kind. Neither view pads incompatible data.
 * Both views use Boolean masks with full-sized input arrays. Deformable masks
   have one entry per selected object, including when worlds have different
   object counts. A small reset still requires a full-view value buffer.
 * :meth:`~newton.selection.ArticulationView.get_attribute` is a generic entry
   point. The deformable views start with state getters, setters, and element
-  ranges. Generic attribute access remains a follow-up, not a limitation of
-  deformable simulation.
+  ranges. Generic attribute access remains a follow-up.
 
 For example, these calls reset velocities in world 1 of a three-world model.
 ``robot_velocities`` has the full shape returned by ``get_dof_velocities()``.
@@ -386,8 +331,6 @@ For example, these calls reset velocities in world 1 of a three-world model.
 The robot call writes joint velocities; forward kinematics updates its links.
 The cable call writes segment velocities directly. These are different state
 fields, not interchangeable operations. Prepare buffers outside graph capture.
-Both examples target one state; applications with alternating states must manage
-resetting both.
 
 The deformable conversion helper maps a list of selected-object indices to
 mask membership. It is not the same as ArticulationView's
@@ -396,3 +339,84 @@ IDs. Neither call changes the view's fixed membership.
 
 See the runnable examples ``python -m newton.examples selection_articulations``
 and ``python -m newton.examples selection_deformables`` for complete scenes.
+
+Getter buffers
+---------------
+
+Here, *layout* means where each selected deformable object's elements sit in the
+model arrays. Consider three cloths with four particles each:
+
+* Particle starts ``[0, 8, 16]`` are evenly spaced. The getter can return a view
+  into the source array without copying values. The gaps between cloths are allowed.
+* Particle starts ``[0, 8, 20]`` are unevenly spaced. The getter copies the
+  selected values into a reusable buffer. All three cloths still have four particles.
+
+A later state change or another read can change the returned values. Use
+``wp.clone()`` when a result must stay unchanged, as in the reset buffers above.
+If a solver replaces a source array, call the getter again. Previously returned
+results still refer to the old storage.
+
+Each state has its own cached results. The cache does not keep discarded states
+alive. Getter results still held by your code remain valid. The view keeps its
+model alive, as :class:`~newton.selection.ArticulationView` does.
+
+State write requirements
+------------------------
+
+Outside CUDA capture, setters also accept numeric host sequences and NumPy
+arrays. Like :class:`~newton.selection.ArticulationView`, they reshape host inputs
+in row-major order when the total number of components matches. The final NumPy
+axis has length 3 for particle positions and velocities, 7 for body transforms,
+and 6 for body velocities. Warp inputs must already have the required shape,
+dtype, and device. Values are validated even with an all-false mask.
+
+Use setters to change state; do not rely on editing a getter result. Setters
+reject input that shares storage with the target array. Copy such input with
+``wp.clone()`` first to avoid overwriting values the setter still needs to read.
+
+Setters change only the supplied model or state. Applications with two alternating
+states must reset both when both should retain the reset. Model writes change
+initial arrays, not states that were already created.
+
+State arrays must have the expected rank, dtype, and device, and cover every
+selected range. Strided arrays and extra elements are allowed. These checks do
+not verify model ownership: the caller must ensure that the array uses the
+view's element numbering. See the getter and setter API references for full
+validation rules, for example
+:meth:`~newton.selection.DeformableSurfaceView.set_particle_positions`.
+
+CUDA graph capture
+------------------
+
+Construct views and warm up operations before CUDA graph capture. Preallocate
+independent values and masks. Setters allocate no temporary arrays with device
+inputs, including when those inputs require gradients. Host values and masks
+raise ``RuntimeError`` during capture. Getters that reuse buffers can also be
+captured after their first call. Mask and value contents can change between
+inference replays without rebuilding the graph.
+
+``set_mask_from_indices()`` also supports capture with preallocated device
+indices and a mask. Host indices raise ``RuntimeError`` during capture.
+
+A captured graph keeps using the data and gradient arrays from capture. Keep
+the source states and getter results alive while replaying it. If those arrays
+are replaced, warm up the getters and capture a new graph.
+
+Gradients
+---------
+
+Getters and setters support ``wp.Tape``. Create the state with
+``model.state(requires_grad=True)`` when gradients are needed. Reads propagate
+gradients to the source state. Masked writes propagate gradients to the input values.
+
+Keep values, masks, and source arrays unchanged until ``tape.backward()`` finishes.
+Use separate state buffers for successive steps and separate masks for different
+selections on the same tape. Setters do not save a copy of the mask for each call.
+
+For evenly spaced elements, getter results share the source's gradient storage.
+For uneven spacing, the copy operation passes gradients back to the source.
+If the source's gradient buffer or ``requires_grad`` setting changes, call the
+getter again to use the current gradient storage. Zeroing gradients does not
+replace the cached result.
+
+For a captured forward/backward graph, change inputs only between complete replays.

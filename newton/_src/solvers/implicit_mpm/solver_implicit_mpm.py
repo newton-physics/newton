@@ -24,6 +24,7 @@ from ...core.types import override
 from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
 from ..coupled.interface import CouplingInterface
+from ..observables import SolverObservables
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
@@ -94,6 +95,9 @@ from .implicit_mpm_solver_kernels import (
     update_particle_strains,
     voxel_coordinates,
 )
+
+# Disabled until Warp includes the fix for NVIDIA/warp#2036 (see #4506).
+_ROW_COMPRESSED_CONTACT_CONSTRUCTION = False
 
 
 def _as_2d_array(array, shape, dtype):
@@ -646,7 +650,11 @@ class ImplicitMPMScratchpad:
             self.collider_total_volumes = fem.borrow_temporary(temporary_store, shape=collider_count, dtype=float)
 
         if max_colors > 0:
-            self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, strain_node_count), dtype=int)
+            # Cell-based coloring sorts one entry per partition cell, and cells without
+            # particles make that count exceed the particle-based strain node count.
+            partition_cell_count = self._strain_space_restriction.space_partition.geo_partition.cell_count()
+            color_block_capacity = max(strain_node_count, partition_cell_count)
+            self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, color_block_capacity), dtype=int)
             self.color_offsets = fem.borrow_temporary(temporary_store, shape=max_colors + 1, dtype=int)
 
     def release_temporaries(self):
@@ -778,10 +786,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     colliders backed by dynamic bodies are rejected.
 
     A sparse grid is rebuildable when :attr:`Config.max_active_cell_count` is
-    positive, :attr:`Config.grid_padding` is zero, the velocity basis is
-    ``"Q1"``, and the strain and collider bases support rebuilding. Cell and
-    node capacities are totals across all FEM environments, and resolved
-    capacities must satisfy ``upper <= lower <= leaf <= active``.
+    positive, :attr:`Config.grid_padding` is zero, and the strain and collider
+    bases support rebuilding. Every velocity basis supports rebuilding; the
+    ``"B2"`` and ``"B3"`` bases reserve 64 velocity nodes per active cell,
+    compared with 8 for ``"Q1"``. Cell and node capacities are totals across
+    all FEM environments, and resolved capacities must satisfy
+    ``upper <= lower <= leaf <= active``.
 
     Outer graph capture requires CUDA, an enabled memory pool, conditional
     graph support, ``enable_timers=False``, positive active-cell capacity, and
@@ -1470,7 +1480,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self.grid_type == "sparse"
             and self.max_active_cell_count > 0
             and self.grid_padding == 0
-            and self.velocity_basis == "Q1"
             and strain_rebuild_safe
             and collider_rebuild_safe
         )
@@ -1900,6 +1909,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         control: newton.Control,
         contacts: newton.Contacts,
         dt: float,
+        *,
+        observables: SolverObservables | None = None,
     ) -> None:
         """Advance the simulation by one time step.
 
@@ -1914,7 +1925,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             control: Control input (unused; material parameters come from the model).
             contacts: Contact information (unused; collisions are handled internally).
             dt: Time step duration [s].
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
+                This solver declares no supported observables, so only an empty
+                container is accepted.
         """
+        self.validate_observables(observables, contacts)
         model = self.model
 
         with wp.ScopedDevice(model.device):
@@ -3083,7 +3098,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         # Compact maps with many inactive partition rows can still favor triplets,
         # even when Warp packs active-row candidate capacity.
         return (
-            self.model.device.is_cuda
+            _ROW_COMPRESSED_CONTACT_CONSTRUCTION
+            and self.model.device.is_cuda
             and self.velocity_basis == "Q1"
             and self.collider_basis in ("S2", "S3")
             and scratch.collider_node_count <= scratch.collider_fraction_test.space_restriction.node_count()

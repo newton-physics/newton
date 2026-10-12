@@ -3,16 +3,16 @@
 
 from __future__ import annotations
 
-import functools
 import operator
 import re
+import weakref
 from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
-from warp.types import is_array, type_size_in_bytes
+from warp.types import is_array, type_size, type_size_in_bytes
 
 from ..sim import (
     Control,
@@ -25,6 +25,7 @@ from ..sim import (
     eval_jacobian,
     eval_mass_matrix,
 )
+from ..solvers.observables import SolverObservables
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -791,6 +792,9 @@ class ArticulationView:
     ):
         self.model = model
         self.device = model.device
+        # Per-view caches. Sources and actuators are held weakly, so the view does not keep them alive.
+        self._attribute_array_cache = weakref.WeakKeyDictionary()
+        self._actuator_dof_mapping_cache = weakref.WeakKeyDictionary()
 
         if verbose is None:
             verbose = wp.config.log_level <= wp.LOG_DEBUG
@@ -1258,11 +1262,14 @@ class ArticulationView:
     # ========================================================================================
     # Generic attribute API
 
-    @functools.lru_cache(maxsize=None)  # noqa
-    def _get_attribute_array(
-        self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
-    ):
-        # get the attribute (handle namespaced attributes like "mujoco.tendon_stiffness")
+    def _resolve_attribute(
+        self, name: str, source: Model | State | Control | SolverObservables
+    ) -> tuple[wp.array, str]:
+        """Return the array currently stored on ``source`` under ``name`` and its frequency name."""
+        is_observable = isinstance(source, SolverObservables)
+        if is_observable and source.model is not self.model:
+            raise ValueError("Solver observables and ArticulationView must use the same model.")
+        # handle namespaced attributes like "mujoco.tendon_stiffness"
         # Note: the user-facing API uses dots (e.g., "mujoco.tendon_stiffness")
         # but internally attributes are stored with colons (e.g., "mujoco:tendon_stiffness")
         if "." in name:
@@ -1275,10 +1282,60 @@ class ArticulationView:
         else:
             attrib = getattr(source, name)
             frequency_name = name
+        if is_observable and attrib is None:
+            raise ValueError(f"Observable '{name}' was not requested from the solver.")
         assert isinstance(attrib, wp.array)
+        return attrib, frequency_name
+
+    def _get_attribute_array(
+        self,
+        name: str,
+        source: Model | State | Control | SolverObservables,
+        _slice: Slice | int | None = None,
+        layout=None,
+    ):
+        """Return the cached reshaped array of ``source.<name>``, rebuilding it if the source array was replaced.
+
+        Entries are keyed weakly on ``source``, so they are dropped with the source and with the view.
+        An entry is reused only while ``source.<name>`` and its gradient are the arrays it was built from.
+        """
+        source_array, _ = self._resolve_attribute(name, source)
+        source_grad = source_array.grad if source_array.requires_grad else None
+        # native slices are unhashable before Python 3.12
+        slice_key = (_slice.start, _slice.stop, _slice.step) if isinstance(_slice, slice) else _slice
+        key = (name, slice_key, layout)
+        try:
+            entries = self._attribute_array_cache.get(source)
+            if entries is None:
+                entries = self._attribute_array_cache[source] = {}
+        except TypeError:
+            # the source cannot be weakly referenced; build an uncached array
+            return self._create_attribute_array(name, source, _slice, layout)
+        entry = entries.get(key)
+        if entry is not None and entry[1] is source_array and entry[2] is source_grad:
+            return entry[0]
+        attrib = self._create_attribute_array(name, source, _slice, layout)
+        entries[key] = (attrib, source_array, source_grad)
+        return attrib
+
+    def _create_attribute_array(
+        self,
+        name: str,
+        source: Model | State | Control | SolverObservables,
+        _slice: Slice | int | None = None,
+        layout=None,
+    ):
+        attrib, frequency_name = self._resolve_attribute(name, source)
 
         # get frequency info
-        frequency = self.model.get_attribute_frequency(frequency_name)
+        frequency_source = source if isinstance(source, SolverObservables) else self.model
+        frequency = frequency_source.get_attribute_frequency(frequency_name)
+        if frequency in (AttributeFrequency.CONTACT, AttributeFrequency.CONTACT_RIGID, AttributeFrequency.CONTACT_SOFT):
+            raise AttributeError(
+                f"Attribute '{name}' has dynamic contact frequency '{frequency.name}'; "
+                "ArticulationView requires stable articulation ownership. "
+                "Filter using Contacts endpoints or reduce to a BODY-frequency observable first."
+            )
 
         if layout is None and frequency in self._unavailable_reasons:
             raise AttributeError(f"Attribute '{name}' is unavailable: {self._unavailable_reasons[frequency]}")
@@ -1338,6 +1395,7 @@ class ArticulationView:
             return result
 
         # construct reshaped attribute array, preserving grad connectivity
+        source_array = attrib
         source_grad = attrib.grad if attrib.requires_grad else None
         grad_view = None
         if source_grad is not None:
@@ -1355,6 +1413,7 @@ class ArticulationView:
                 device=source_grad.device,
                 copy=False,
             )
+            grad_view._ref = source_grad
 
         attrib = wp.array(
             ptr=int(attrib.ptr) + layout.offset * value_stride,
@@ -1365,6 +1424,7 @@ class ArticulationView:
             copy=False,
             grad=grad_view,
         )
+        attrib._ref = source_array
 
         # apply selection (slices or indices)
         pre_indexed = attrib
@@ -1384,7 +1444,7 @@ class ArticulationView:
         return attrib
 
     def _get_attribute_values(
-        self, name: str, source: Model | State | Control, _slice: slice | None = None, layout=None
+        self, name: str, source: Model | State | Control | SolverObservables, _slice: slice | None = None, layout=None
     ):
         attrib = self._get_attribute_array(name, source, _slice=_slice, layout=layout)
         if hasattr(attrib, "_staging_array"):
@@ -1395,6 +1455,7 @@ class ArticulationView:
                     dim=attrib._staging_array.shape,
                     inputs=[attrib._gather_src, attrib._gather_indices],
                     outputs=[attrib._staging_array],
+                    device=self.device,
                 )
                 src_grad = attrib._gather_src.grad
                 dst_grad = attrib._staging_array.grad
@@ -1407,7 +1468,13 @@ class ArticulationView:
         return attrib
 
     def _set_attribute_values(
-        self, name: str, target: Model | State | Control, values, mask=None, _slice: slice | None = None, layout=None
+        self,
+        name: str,
+        target: Model | State | Control | SolverObservables,
+        values,
+        mask=None,
+        _slice: slice | None = None,
+        layout=None,
     ):
         attrib = self._get_attribute_array(name, target, _slice=_slice, layout=layout)
 
@@ -1467,9 +1534,9 @@ class ArticulationView:
             else:
                 raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
 
-    def get_attribute(self, name: str, source: Model | State | Control):
+    def get_attribute(self, name: str, source: Model | State | Control | SolverObservables):
         """
-        Get an attribute from the source (Model, State, or Control).
+        Get an attribute from a model, state, control, or solver observable container.
 
         Args:
             name: The name of the attribute to get.
@@ -1477,13 +1544,19 @@ class ArticulationView:
 
         Returns:
             array: The attribute values (dtype matches the attribute).
+
+        .. experimental::
+
+            ``SolverObservables`` sources use their declared row frequencies
+            and must belong to this view's model. Dynamic contact frequencies
+            are not supported; they need endpoint-based filtering or reduction.
         """
         return self._get_attribute_values(name, source)
 
     def set_attribute(
         self,
         name: str,
-        target: Model | State | Control,
+        target: Model | State | Control | SolverObservables,
         values: wp.array[Any],
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:
@@ -1964,13 +2037,30 @@ class ArticulationView:
     # ========================================================================================
     # Actuator parameter access
 
-    @functools.cache  # noqa: B019 - cache is tied to view lifetime
     def _get_actuator_dof_mapping(self, actuator: Actuator):
+        """Return the cached DOF mapping for ``actuator``, built on first use.
+
+        The cache belongs to the view and holds actuators weakly.
+        """
+        # views that borrow the actuator methods may not define the cache
+        cache = getattr(self, "_actuator_dof_mapping_cache", None)
+        if cache is None:
+            cache = self._actuator_dof_mapping_cache = weakref.WeakKeyDictionary()
+        try:
+            mapping = cache.get(actuator)
+        except TypeError:
+            # the actuator cannot be weakly referenced; build an uncached mapping
+            return self._create_actuator_dof_mapping(actuator)
+        if mapping is None:
+            mapping = cache[actuator] = self._create_actuator_dof_mapping(actuator)
+        return mapping
+
+    def _create_actuator_dof_mapping(self, actuator: Actuator):
         """
         Build mapping from view DOF positions to actuator parameter indices.
 
         Note:
-            Assumes SISO actuators (one DOF per actuator).
+            Assumes one DOF per actuator.
 
         Returns array of shape (world_count * dofs_per_world,) where each element is:
         - actuator parameter index if that DOF is actuated
@@ -2283,7 +2373,9 @@ class _DeformableViewBase:
         self._ranges: dict[str, list[tuple[int, int]]] = {}
         self._starts: dict[str, wp.array[wp.int32]] = {}
         self._counts: dict[str, int | None] = {}
-        self._attribute_arrays: dict[tuple[str, int], tuple[wp.array[Any], Any]] = {}
+        self._required_lengths: dict[str, int] = {}
+        # Key by the container, not the array: cached array views retain their backing arrays.
+        self._attribute_arrays = weakref.WeakKeyDictionary()
         range_attributes = {
             "curve": {"body": "body", "joint": "joint"},
             "surface": {"particle": "particle", "triangle": "tri", "edge": "edge"},
@@ -2297,6 +2389,7 @@ class _DeformableViewBase:
             sizes = {end - start for start, end in kind_ranges}
             self._counts[kind] = sizes.pop() if len(sizes) == 1 else None
             self._ranges[kind] = kind_ranges
+            self._required_lengths[kind] = max((end for _start, end in kind_ranges), default=0)
             self._starts[kind] = wp.array([start for start, _end in kind_ranges], dtype=wp.int32, device=self.device)
 
         if verbose:
@@ -2362,6 +2455,7 @@ class _DeformableViewBase:
         :meth:`elements_per_deformable_object` for the valid ``kind`` values.
 
         Native and USD curves include their construction-time root joints.
+        After fixed-joint collapse, only surviving bodies and joints are exposed.
         A welded USD graph is one deformable object with the whole graph's
         body and joint ranges. Its per-curve import maps are separate and keep
         empty joint lists. See :ref:`deformable-objects-welded-usd-graphs`.
@@ -2417,18 +2511,41 @@ class _DeformableViewBase:
             )
         return count
 
-    def _get_attribute_array(self, kind: str, src: wp.array[Any]):
-        cache_key = (kind, id(src))
-        cached = self._attribute_arrays.get(cache_key)
-        if cached is not None and cached[0] is src:
-            return cached[1]
+    def _validate_state_array(self, kind: str, array: wp.array[Any], dtype: Any) -> None:
+        if not isinstance(array, wp.array) or array.ndim != 1:
+            raise ValueError("Expected a one-dimensional Warp state array")
+        if array.dtype is not dtype:
+            raise ValueError(f"Expected state array dtype {dtype.__name__}, got {array.dtype.__name__}")
+        if array.device != self.device:
+            raise ValueError(f"Expected state array on device {self.device}, got {array.device}")
+        required = self._required_lengths[kind]
+        if array.shape[0] < required:
+            raise ValueError(f"Expected state array with at least {required} {kind} elements, got {array.shape[0]}")
 
+    def _get_attribute_array(self, kind: str, name: str, source: Model | State):
+        """Cache per source container and follow its current data and gradient arrays."""
+        src = getattr(source, name)
+        src_grad = src.grad if src.requires_grad else None
+        key = (kind, name)
+        try:
+            entries = self._attribute_arrays.get(source)
+            if entries is None:
+                entries = self._attribute_arrays[source] = {}
+        except TypeError:
+            # Match ArticulationView for containers that cannot be weakly referenced.
+            return self._create_attribute_array(kind, src)
+        entry = entries.get(key)
+        if entry is not None and entry[1] is src and entry[2] is src_grad:
+            return entry[0]
+        result = self._create_attribute_array(kind, src)
+        entries[key] = (result, src, src_grad)
+        return result
+
+    def _create_attribute_array(self, kind: str, src: wp.array[Any]):
         count = self._element_count(kind)
         shape = (self.count, count)
         if count == 0:
-            result = wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad)
-            self._attribute_arrays[cache_key] = (src, result)
-            return result
+            return wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad)
 
         starts = [start for start, _end in self._ranges[kind]]
 
@@ -2450,7 +2567,6 @@ class _DeformableViewBase:
             grad = None if src.grad is None else make_view(src.grad, starts[0], self.count, row_stride)
             result = make_view(src, starts[0], self.count, row_stride)
             result.grad = grad
-            self._attribute_arrays[cache_key] = (src, result)
             return result
 
         # A sliding-window view turns arbitrary equal-sized ranges into row indices
@@ -2460,17 +2576,20 @@ class _DeformableViewBase:
         windows.grad = grad
         result = windows[self._starts[kind], :]
         result._staging_array = wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad)
-        self._attribute_arrays[cache_key] = (src, result)
         return result
 
     def _gather(
         self,
         kind: str,
-        src: wp.array[Any],
+        name: str,
+        source: Model | State,
         kernel: Any,
+        dtype: Any,
     ) -> wp.array2d[Any]:
         count = self._element_count(kind)
-        attribute = self._get_attribute_array(kind, src)
+        src = getattr(source, name)
+        self._validate_state_array(kind, src, dtype)
+        attribute = self._get_attribute_array(kind, name, source)
         if not isinstance(attribute, wp.indexedarray):
             return attribute
         out = attribute._staging_array
@@ -2576,11 +2695,18 @@ class _DeformableViewBase:
         mask: Any = None,
     ) -> None:
         count = self._element_count(kind)
+        self._validate_state_array(kind, dst, dtype)
         if self.device.is_capturing and not isinstance(values, wp.array):
             raise RuntimeError("Create values as a Warp array on the view's device before CUDA capture")
-        mask = self._resolve_mask(mask)
+        if values is None:
+            raise ValueError("Expected values, got None")
         expected_shape = (self.count, count)
         if not isinstance(values, wp.array):
+            expected_host_shape = (*expected_shape, type_size(dtype))
+            try:
+                values = np.asarray(values, dtype=np.float32).reshape(expected_host_shape)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"Expected numeric values that can be reshaped to {expected_host_shape}") from error
             values = wp.array(values, dtype=dtype, shape=expected_shape, device=self.device)
         if values.shape != expected_shape:
             raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
@@ -2588,6 +2714,7 @@ class _DeformableViewBase:
             raise ValueError(f"Expected values dtype {dtype.__name__}, got {values.dtype.__name__}")
         if values.device != self.device:
             raise ValueError(f"Expected values on device {self.device}, got {values.device}")
+        mask = self._resolve_mask(mask)
         if self.count and count and values.size and dst.size:
             # Strided getters may alias the target even when their pointers differ.
             # Reject overlap without a device readback or a hidden copy.
@@ -2633,9 +2760,10 @@ class _DeformableParticleView(_DeformableViewBase):
 
         Raises:
             AttributeError: If the selected deformable objects do not all record particles.
-            ValueError: If the selected deformable objects have different particle counts.
+            ValueError: If particle counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
         """
-        return self._gather("particle", source.particle_q, _gather_object_vec3_kernel)
+        return self._gather("particle", "particle_q", source, _gather_object_vec3_kernel, wp.vec3)
 
     def set_particle_positions(
         self,
@@ -2655,14 +2783,15 @@ class _DeformableParticleView(_DeformableViewBase):
             values: Particle positions [m], shape
                 ``(count, particles_per_deformable_object)``. Must not share storage
                 with the target array; clone live getter results before writing.
+                Host inputs are reshaped with a final axis of length 3. None is invalid.
             mask: Boolean array of shape ``(count,)`` on the view's device, or
                 a host Boolean sequence outside capture. True updates that
                 selected deformable object. None updates the whole selection.
 
         Raises:
             AttributeError: If the selected objects do not record particles.
-            ValueError: If element counts, value shape/dtype/device, mask, or
-                non-overlap requirements are not satisfied.
+            ValueError: If element counts, array shapes/dtypes/devices, mask,
+                target capacity, or non-overlap requirements are not satisfied.
             RuntimeError: If host values or a host mask are passed during CUDA capture.
         """
         self._scatter("particle", values, _scatter_object_vec3_kernel, target.particle_q, wp.vec3, mask)
@@ -2681,9 +2810,10 @@ class _DeformableParticleView(_DeformableViewBase):
 
         Raises:
             AttributeError: If the selected deformable objects do not all record particles.
-            ValueError: If the selected deformable objects have different particle counts.
+            ValueError: If particle counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
         """
-        return self._gather("particle", source.particle_qd, _gather_object_vec3_kernel)
+        return self._gather("particle", "particle_qd", source, _gather_object_vec3_kernel, wp.vec3)
 
     def set_particle_velocities(
         self,
@@ -2703,21 +2833,22 @@ class _DeformableParticleView(_DeformableViewBase):
             values: Particle velocities [m/s], shape
                 ``(count, particles_per_deformable_object)``. Must not share storage
                 with the target array; clone live getter results before writing.
+                Host inputs are reshaped with a final axis of length 3. None is invalid.
             mask: Boolean array of shape ``(count,)`` on the view's device, or
                 a host Boolean sequence outside capture. True updates that
                 selected deformable object. None updates the whole selection.
 
         Raises:
             AttributeError: If the selected objects do not record particles.
-            ValueError: If element counts, value shape/dtype/device, mask, or
-                non-overlap requirements are not satisfied.
+            ValueError: If element counts, array shapes/dtypes/devices, mask,
+                target capacity, or non-overlap requirements are not satisfied.
             RuntimeError: If host values or a host mask are passed during CUDA capture.
         """
         self._scatter("particle", values, _scatter_object_vec3_kernel, target.particle_qd, wp.vec3, mask)
 
 
-class _DeformableRigidBodyView(_DeformableViewBase):
-    """Share body state access without prescribing a geometric family."""
+class _DeformableRodView(_DeformableViewBase):
+    """Read and write the body state of rod segments."""
 
     @property
     def bodies_per_deformable_object(self) -> int:
@@ -2741,9 +2872,10 @@ class _DeformableRigidBodyView(_DeformableViewBase):
 
         Raises:
             AttributeError: If the selected deformable objects do not all record bodies.
-            ValueError: If the selected deformable objects have different body counts.
+            ValueError: If body counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
         """
-        return self._gather("body", source.body_q, _gather_object_transform_kernel)
+        return self._gather("body", "body_q", source, _gather_object_transform_kernel, wp.transform)
 
     def set_body_transforms(
         self,
@@ -2763,14 +2895,15 @@ class _DeformableRigidBodyView(_DeformableViewBase):
             values: Segment transforms with world-space translation [m] and a unitless quaternion, shape
                 ``(count, bodies_per_deformable_object)``. Must not share storage
                 with the target array; clone live getter results before writing.
+                Host inputs are reshaped with a final axis of length 7. None is invalid.
             mask: Boolean array of shape ``(count,)`` on the view's device, or
                 a host Boolean sequence outside capture. True updates that
                 selected deformable object. None updates the whole selection.
 
         Raises:
             AttributeError: If the selected objects do not record bodies.
-            ValueError: If element counts, value shape/dtype/device, mask, or
-                non-overlap requirements are not satisfied.
+            ValueError: If element counts, array shapes/dtypes/devices, mask,
+                target capacity, or non-overlap requirements are not satisfied.
             RuntimeError: If host values or a host mask are passed during CUDA capture.
         """
         self._scatter("body", values, _scatter_object_transform_kernel, target.body_q, wp.transform, mask)
@@ -2792,9 +2925,10 @@ class _DeformableRigidBodyView(_DeformableViewBase):
 
         Raises:
             AttributeError: If the selected deformable objects do not all record bodies.
-            ValueError: If the selected deformable objects have different body counts.
+            ValueError: If body counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
         """
-        return self._gather("body", source.body_qd, _gather_object_spatial_kernel)
+        return self._gather("body", "body_qd", source, _gather_object_spatial_kernel, wp.spatial_vector)
 
     def set_body_velocities(
         self,
@@ -2814,20 +2948,21 @@ class _DeformableRigidBodyView(_DeformableViewBase):
             values: Segment velocities in (v_com_world, omega_world) order [m/s, rad/s], shape
                 ``(count, bodies_per_deformable_object)``. Must not share storage
                 with the target array; clone live getter results before writing.
+                Host inputs are reshaped with a final axis of length 6. None is invalid.
             mask: Boolean array of shape ``(count,)`` on the view's device, or
                 a host Boolean sequence outside capture. True updates that
                 selected deformable object. None updates the whole selection.
 
         Raises:
             AttributeError: If the selected objects do not record bodies.
-            ValueError: If element counts, value shape/dtype/device, mask, or
-                non-overlap requirements are not satisfied.
+            ValueError: If element counts, array shapes/dtypes/devices, mask,
+                target capacity, or non-overlap requirements are not satisfied.
             RuntimeError: If host values or a host mask are passed during CUDA capture.
         """
         self._scatter("body", values, _scatter_object_spatial_kernel, target.body_qd, wp.spatial_vector, mask)
 
 
-class DeformableCurveView(_DeformableRigidBodyView):
+class DeformableCurveView(_DeformableRodView):
     """Select curves by label and read or update their segment body state.
 
     .. experimental::
@@ -2838,9 +2973,10 @@ class DeformableCurveView(_DeformableRigidBodyView):
     describes geometry, not a solver: particle-based curves are not supported yet.
     Matching surfaces and volumes are excluded from the selection.
 
-    Fixed-joint collapse can remove an incomplete deformable curve. Preserve required
-    joints with :meth:`~newton.ModelBuilder.collapse_fixed_joints` using
-    ``joints_to_keep`` when complete curve access is needed.
+    After fixed-joint collapse, the view describes the curve's surviving segment
+    bodies and joints. Curves with no remaining bodies are omitted. Use
+    :meth:`~newton.ModelBuilder.collapse_fixed_joints` with ``joints_to_keep``
+    to preserve the original segment layout.
 
     See :ref:`deformable-selection` for world layout, getter-result lifetime,
     masked writes, and CUDA graph capture.

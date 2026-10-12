@@ -13,7 +13,18 @@ import warp as wp
 import newton
 import newton.usd
 from newton.sensors import SensorTiledCamera
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
+from newton.tests.unittest_utils import (
+    USD_AVAILABLE,
+    assert_np_equal,
+    ignore_sensor_tiled_camera_deprecation,
+)
+
+
+def setUpModule():
+    # test_sensor_renders_resolved_shading exercises the deprecated
+    # SensorTiledCamera intentionally; keep its construction warning from
+    # escalating to an error under --strict-warnings.
+    ignore_sensor_tiled_camera_deprecation()
 
 
 def _create_referenced_mesh_stage(tmpdir: str) -> Path:

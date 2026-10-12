@@ -11,32 +11,12 @@ import warp as wp
 import newton
 from newton.solvers import SolverSemiImplicit
 from newton.solvers.experimental.coupled import SolverCoupled
+from newton.tests._selection_deformable_test_utils import _add_test_anchored_cable
 from newton.tests.test_deformable_objects import _add_curve, _add_surface, _add_volume
 from newton.tests.unittest_utils import get_test_devices
 
 
 class TestModelDeformableObjects(unittest.TestCase):
-    def test_existing_custom_curve_frequency_keeps_its_references(self):
-        """Preserve an existing custom frequency named curve when adding built-in curve metadata."""
-        prototype = newton.ModelBuilder()
-        _add_curve(prototype, label="cable")
-        prototype.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name="curve"))
-        prototype.add_custom_attribute(
-            newton.ModelBuilder.CustomAttribute(
-                name="source_row", dtype=wp.int32, frequency="curve", references="curve"
-            )
-        )
-        prototype.add_custom_values(**{"source_row": 0})
-        prototype.add_custom_values(**{"source_row": 1})
-        prototype.collapse_fixed_joints()
-        builder = newton.ModelBuilder()
-        builder.replicate(prototype, 2)
-        model = builder.finalize(device="cpu")
-        self.assertEqual(model.curve_count, 2)
-        self.assertEqual(model.custom_frequency_counts["curve"], 4)
-        np.testing.assert_array_equal(model.source_row.numpy(), [0, 1, 2, 3])
-        self.assertEqual(model.attribute_specs["source_row"].references, "curve")
-
     def test_family_attribute_frequencies_survive_replication(self):
         """Size model and state attributes by deformable objects rather than their elements."""
         prototype = newton.ModelBuilder()
@@ -66,7 +46,7 @@ class TestModelDeformableObjects(unittest.TestCase):
             np.testing.assert_array_equal(getattr(state, f"{family}_enabled").numpy(), [1, 1])
 
     def test_curve_attributes_follow_fixed_joint_collapse(self):
-        """Keep per-curve values and references aligned when an incomplete curve is dropped."""
+        """Keep per-curve values and references when a rod loses its anchored segment."""
         builder = newton.ModelBuilder()
         bodies, joints = builder.add_rod(
             rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
@@ -91,14 +71,59 @@ class TestModelDeformableObjects(unittest.TestCase):
                 values={0: 1},
             )
         )
-        with self.assertWarnsRegex(UserWarning, "joints_to_keep"):
+        builder.collapse_fixed_joints()
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.curve_label, ["anchored", "retained"])
+        np.testing.assert_array_equal(model.curve_body_start.numpy(), [0, 1])
+        np.testing.assert_array_equal(model.curve_body_end.numpy(), [1, 4])
+        np.testing.assert_array_equal(model.asset_tag.numpy(), [10, 20])
+        np.testing.assert_array_equal(model.selected_curve.numpy(), [1])
+
+    def test_curve_and_articulation_vector_references_follow_collapse(self):
+        """Remap vector references to removed and surviving objects, preserving sentinels."""
+        builder = newton.ModelBuilder()
+        points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)]
+        for label in ("removed", "reduced", "unaffected"):
+            bodies, joints = builder.add_rod(
+                rod=newton.Rod(points[:2] if label == "removed" else points, radius=0.02),
+                label=label,
+                wrap_in_articulation=False,
+                body_frame_origin="com",
+            )
+            root = (
+                builder.add_joint_free(bodies[0]) if label == "unaffected" else builder.add_joint_fixed(-1, bodies[0])
+            )
+            builder.add_articulation([*joints, root], label=label)
+
+        for family in ("curve", "articulation"):
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=f"{family}_tag",
+                    dtype=wp.int32,
+                    frequency=getattr(newton.Model.AttributeFrequency, family.upper()),
+                    values={0: 10, 1: 20, 2: 30},
+                )
+            )
+            for name, value in (("pair", wp.vec2i(1, 2)), ("sentinels", wp.vec3i(0, -1, 1))):
+                builder.add_custom_attribute(
+                    newton.ModelBuilder.CustomAttribute(
+                        name=f"{family}_{name}",
+                        dtype=type(value),
+                        frequency=newton.Model.AttributeFrequency.ONCE,
+                        references=family,
+                        values={0: value},
+                    )
+                )
+
+        with self.assertWarnsRegex(UserWarning, "removed.*all.*segment bodies"):
             builder.collapse_fixed_joints()
         model = builder.finalize(device="cpu")
-        self.assertEqual(model.curve_label, ["retained"])
-        np.testing.assert_array_equal(model.curve_body_start.numpy(), [1])
-        np.testing.assert_array_equal(model.curve_body_end.numpy(), [4])
-        np.testing.assert_array_equal(model.asset_tag.numpy(), [20])
-        np.testing.assert_array_equal(model.selected_curve.numpy(), [0])
+        for family in ("curve", "articulation"):
+            with self.subTest(family=family):
+                self.assertEqual(getattr(model, f"{family}_label"), ["reduced", "unaffected"])
+                np.testing.assert_array_equal(getattr(model, f"{family}_tag").numpy(), [20, 30])
+                np.testing.assert_array_equal(getattr(model, f"{family}_pair").numpy(), [[0, 1]])
+                np.testing.assert_array_equal(getattr(model, f"{family}_sentinels").numpy(), [[-1, -1, 0]])
 
     def test_empty_model_has_empty_public_deformable_arrays(self):
         """Inspect an empty model without placeholder objects or missing arrays."""
@@ -213,6 +238,27 @@ class TestModelDeformableObjects(unittest.TestCase):
         np.testing.assert_array_equal(view.curve_joint_start.numpy(), [0])
         np.testing.assert_array_equal(view.curve_joint_end.numpy(), [0])
         np.testing.assert_array_equal(model.curve_joint_start.numpy(), [1, 1])
+
+    def test_coupled_model_keeps_reduced_rod(self):
+        """Keep and rebase all current rod parts after builder collapse reduces the record."""
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        _add_test_anchored_cable(builder)
+        builder.collapse_fixed_joints()
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                coupled = SolverCoupled(
+                    model,
+                    entries=[SolverCoupled.Entry(name="rod", solver=SolverSemiImplicit, bodies=[1], joints=[1])],
+                )
+                compact = coupled.view("rod")
+                self.assertEqual(compact.curve_label, ["anchored_curve"])
+                for kind in ("body", "joint"):
+                    np.testing.assert_array_equal(getattr(model, f"curve_{kind}_start").numpy(), [1])
+                    np.testing.assert_array_equal(getattr(model, f"curve_{kind}_end").numpy(), [2])
+                    np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_start").numpy(), [0])
+                    np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_end").numpy(), [1])
 
     def test_coupled_model_rebases_complete_deformable_objects(self):
         """Expose only complete curves and remap their ranges in a compact solver model."""

@@ -24,6 +24,7 @@ from newton.tests._selection_deformable_test_utils import (
     _add_test_soft_body,
     _add_test_soft_grid,
 )
+from newton.tests.unittest_utils import get_test_devices
 
 
 class TestDeformableBuilderObjects(unittest.TestCase):
@@ -310,31 +311,30 @@ class TestDeformableBuilderObjects(unittest.TestCase):
         self.assertEqual(view.labels, ["surface_0"])
         self.assertEqual(view.ranges("particle"), [(0, 4)])
 
-    def test_fixed_joint_collapse_drops_incomplete_curve_object(self):
-        """A label does not prevent collapse; an incomplete curve is not selectable."""
+    def test_fixed_joint_collapse_retains_remaining_curve_bodies(self):
+        """Select the surviving segment after a rod's fixed anchor collapses."""
         builder = newton.ModelBuilder()
         _add_test_anchored_cable(builder)
 
-        with self.assertWarnsRegex(UserWarning, "anchored_curve.*joints_to_keep"):
-            builder.collapse_fixed_joints()
+        builder.collapse_fixed_joints()
 
         self.assertEqual((builder.body_count, builder.joint_count), (1, 1))
         model = builder.finalize()
 
-        with self.assertRaisesRegex(KeyError, "anchored_curve"):
-            DeformableCurveView(model, "anchored_curve")
+        view = DeformableCurveView(model, "anchored_curve")
+        self.assertEqual(view.ranges("body"), [(0, 1)])
+        self.assertEqual(view.ranges("joint"), [(0, 1)])
+        self.assertEqual(view.get_body_transforms(model.state()).shape, (1, 1))
 
     def test_fixed_joint_collapse_is_label_neutral(self):
         """Otherwise identical labeled and unlabeled rods collapse identically."""
 
         unlabeled = newton.ModelBuilder()
         _add_test_anchored_cable(unlabeled, label=None)
-        with self.assertWarnsRegex(UserWarning, "curve_0.*joints_to_keep"):
-            unlabeled.collapse_fixed_joints()
+        unlabeled.collapse_fixed_joints()
         labeled = newton.ModelBuilder()
         _add_test_anchored_cable(labeled)
-        with self.assertWarnsRegex(UserWarning, "anchored_curve.*joints_to_keep"):
-            labeled.collapse_fixed_joints()
+        labeled.collapse_fixed_joints()
 
         self.assertEqual((labeled.body_count, labeled.joint_count), (unlabeled.body_count, unlabeled.joint_count))
         self.assertEqual(labeled.joint_type, unlabeled.joint_type)
@@ -354,6 +354,80 @@ class TestDeformableBuilderObjects(unittest.TestCase):
         self.assertEqual(view.ranges("body"), [(0, 2)])
         self.assertEqual(view.get_body_transforms(model.state()).shape, (1, 2))
 
+    def test_reduced_curve_ranges_survive_cloning(self):
+        """Clone reduced rods and their references before or after collapse."""
+        for cloning in ("replicate", "add_world"):
+            for collapse_first in (False, True):
+                with self.subTest(cloning=cloning, collapse_first=collapse_first):
+                    prototype = newton.ModelBuilder()
+                    _add_test_anchored_cable(prototype, label="cable")
+                    prototype.add_custom_attribute(
+                        newton.ModelBuilder.CustomAttribute(
+                            name="curve_source",
+                            dtype=wp.int32,
+                            frequency=newton.Model.AttributeFrequency.CURVE,
+                            references="curve",
+                            values={0: 0},
+                        )
+                    )
+                    if collapse_first:
+                        prototype.collapse_fixed_joints()
+                    scene = newton.ModelBuilder()
+                    if cloning == "replicate":
+                        scene.replicate(prototype, 2)
+                    else:
+                        for _ in range(2):
+                            scene.add_world(prototype)
+                    if not collapse_first:
+                        scene.collapse_fixed_joints()
+                    model = scene.finalize(device="cpu")
+                    view = DeformableCurveView(model, "cable")
+                    self.assertEqual(view.labels, ["cable", "cable"])
+                    self.assertEqual(view.worlds, [0, 1])
+                    self.assertEqual(view.ranges("body"), [(0, 1), (1, 2)])
+                    self.assertEqual(view.ranges("joint"), [(0, 1), (1, 2)])
+                    np.testing.assert_array_equal(model.curve_source.numpy(), [0, 1])
+
+    def test_reduced_curve_excludes_external_merge_parent(self):
+        """Keep only the rod's own surviving bodies, including after repeated collapse."""
+        builder = newton.ModelBuilder()
+        parent = builder.add_link(label="robot/root")
+        root = builder.add_joint_free(parent)
+        bodies, joints = builder.add_rod(
+            rod=newton.Rod(_CABLE_PTS[:3], radius=0.02),
+            label="anchored_curve",
+            wrap_in_articulation=False,
+            body_frame_origin="com",
+        )
+        anchor = builder.add_joint_fixed(parent, bodies[0])
+        builder.add_articulation([root, *joints, anchor], label="robot_with_cable")
+        for _ in range(2):
+            builder.collapse_fixed_joints()
+            model = builder.finalize(device="cpu")
+            view = DeformableCurveView(model, "anchored_curve")
+            self.assertEqual(model.body_count, 2)
+            self.assertEqual(model.body_label[0], "robot/root")
+            self.assertEqual(view.ranges("body"), [(1, 2)])
+            self.assertEqual(view.ranges("joint"), [(1, 2)])
+
+    def test_different_reductions_keep_world_ranges(self):
+        """Expose unequal surviving body counts without inventing a rectangular layout."""
+        scene = newton.ModelBuilder()
+        for keep_anchor in (False, True):
+            prototype = newton.ModelBuilder()
+            _add_test_anchored_cable(prototype, label="cable")
+            prototype.collapse_fixed_joints(joints_to_keep=["anchor"] if keep_anchor else [])
+            scene.add_world(prototype)
+        scene.begin_world()
+        scene.end_world()
+        model = scene.finalize(device="cpu")
+        view = DeformableCurveView(model, "cable")
+        self.assertEqual(view.worlds, [0, 1])
+        self.assertEqual(view.deformable_object_ranges(), [(0, 1), (1, 2), (2, 2)])
+        self.assertEqual(view.ranges("body"), [(0, 1), (1, 3)])
+        with self.assertRaises(ValueError):
+            view.get_body_transforms(model.state())
+
     def test_labeled_soft_grid_is_selectable(self):
         """A labeled soft grid records one selectable volume deformable object."""
         builder = newton.ModelBuilder()
@@ -368,6 +442,70 @@ class TestDeformableBuilderObjects(unittest.TestCase):
 
 class TestDeformableAndArticulationViews(unittest.TestCase):
     """Rigid and deformable selections sharing finalized mixed models."""
+
+    def test_reduced_rod_masked_writes_in_mixed_worlds(self):
+        """Reset one reduced rod without changing other worlds, rigid bodies, cloth, or volume."""
+
+        def reset(view, target, positions, velocities, mask):
+            view.set_body_transforms(target, positions, mask=mask)
+            view.set_body_velocities(target, velocities, mask=mask)
+
+        prototype = newton.ModelBuilder()
+        _add_test_articulation(prototype)
+        _add_test_anchored_cable(prototype, label="cable")
+        _add_test_cloth(prototype)
+        _add_test_soft_body(prototype)
+        prototype.collapse_fixed_joints()
+        builder = newton.ModelBuilder()
+        builder.replicate(prototype, 2)
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                state = model.state()
+                cable = DeformableCurveView(model, "cable")
+                articulation = ArticulationView(model, prototype.articulation_label[1])
+                cloth = DeformableSurfaceView(model, "cloth")
+                volume = DeformableVolumeView(model, "soft")
+                before = {
+                    name: getattr(state, name).numpy().copy()
+                    for name in ("body_q", "body_qd", "particle_q", "particle_qd")
+                }
+                positions = cable.get_body_transforms(state).numpy().copy()
+                positions[:, :, 2] += 1.0
+                velocities = np.full_like(cable.get_body_velocities(state).numpy(), 2.0)
+                positions_wp = wp.array(positions, dtype=wp.transform, device=device)
+                velocities_wp = wp.array(velocities, dtype=wp.spatial_vector, device=device)
+                mask = wp.array([False, True], dtype=wp.bool, device=device)
+
+                # Warm kernels without changing the state under test.
+                reset(cable, model.state(), positions_wp, velocities_wp, mask)
+                if device.is_cuda:
+                    with wp.ScopedMempool(device, enable=False):
+                        with wp.ScopedCapture(device) as capture:
+                            reset(cable, state, positions_wp, velocities_wp, mask)
+                    for _ in range(2):
+                        wp.capture_launch(capture.graph)
+                else:
+                    reset(cable, state, positions_wp, velocities_wp, mask)
+
+                expected_q = before["body_q"].copy()
+                expected_qd = before["body_qd"].copy()
+                expected_q[3:4] = positions[1]
+                expected_qd[3:4] = velocities[1]
+                np.testing.assert_array_equal(state.body_q.numpy(), expected_q)
+                np.testing.assert_array_equal(state.body_qd.numpy(), expected_qd)
+                for name in ("particle_q", "particle_qd"):
+                    np.testing.assert_array_equal(getattr(state, name).numpy(), before[name])
+                np.testing.assert_array_equal(
+                    articulation.get_link_transforms(state).numpy().reshape(2, 1, 7),
+                    cable.get_body_transforms(state).numpy(),
+                )
+                np.testing.assert_array_equal(
+                    articulation.get_link_velocities(state).numpy().reshape(2, 1, 6),
+                    cable.get_body_velocities(state).numpy(),
+                )
+                self.assertEqual(cloth.get_particle_positions(state).shape, (2, 4))
+                self.assertEqual(volume.get_particle_positions(state).shape, (2, 4))
 
     def test_rigid_cable_cloth_and_volume_survive_unrelated_collapse(self):
         """All selection families coexist after an unrelated fixed joint collapses."""
@@ -521,20 +659,19 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         np.testing.assert_array_equal(soft.deformable_object_boundaries.numpy(), [0, 0, 1, 1])
         np.testing.assert_array_equal(cable.deformable_object_boundaries.numpy(), [0, 0, 0, 1])
 
-    def test_rigid_view_survives_dropped_curve_object(self):
-        """Dropping an incomplete curve leaves an unrelated rigid view valid."""
+    def test_rigid_view_coexists_with_reduced_curve_object(self):
+        """Keep an unrelated rigid view valid alongside a partially collapsed rod."""
         builder = newton.ModelBuilder()
         _add_test_articulation(builder)
         _add_test_anchored_cable(builder)
 
-        with self.assertWarnsRegex(UserWarning, "anchored_curve.*joints_to_keep"):
-            builder.collapse_fixed_joints()
+        builder.collapse_fixed_joints()
         model = builder.finalize()
 
         rigid = ArticulationView(model, "robot")
         self.assertEqual(rigid.get_root_transforms(model).shape, (1, 1))
-        with self.assertRaisesRegex(KeyError, "anchored_curve"):
-            DeformableCurveView(model, "anchored_curve")
+        cable = DeformableCurveView(model, "anchored_curve")
+        self.assertEqual(cable.ranges("body"), [(1, 2)])
 
 
 if __name__ == "__main__":

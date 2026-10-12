@@ -82,6 +82,22 @@ The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
 changes. Keep the default ``"LLTB"`` solver for small systems.
 
+DVI unilateral subsolvers
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+DVI offers two subsolvers for bounded joint rows, limits, and contacts:
+
+* **PGS** (default) uses projected Gauss-Seidel updates with less work per
+  iteration, making it a simple choice for modest contact problems.
+* **APGD** offers a faster convergence rate for each frozen-correction
+  quadratic problem, at the cost of objective-gradient evaluations and an
+  inner backtracking loop.
+  CUDA execution requires conditional-graph support.
+
+Both support dense and sparse operators and bilateral Schur elimination.
+See the :class:`~newton.solvers.SolverKamino` configuration reference for
+subsolver selection and iteration controls.
+
 Inspecting terminal status
 --------------------------
 

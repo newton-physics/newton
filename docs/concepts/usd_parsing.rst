@@ -341,32 +341,14 @@ The corresponding ``path_*_attrs`` entry preserves valid authored ``masses`` and
 values with their resolved element type under ``simulation``; a legacy untyped mass entry is also
 marked ``legacy_implicit_type``.
 
-On the finalized
-:class:`~newton.Model`, select deformable objects by label pattern with
+After finalization, use the recorded labels to select deformable objects with
 :class:`~newton.selection.DeformableCurveView`,
 :class:`~newton.selection.DeformableSurfaceView`, or
-:class:`~newton.selection.DeformableVolumeView` (following
-:class:`~newton.selection.ArticulationView`). Each view batches its family's state on one flat
-deformable object axis as ``(count, elements_per_deformable_object)`` arrays. The class supplies the family
-filter, so a broad pattern still selects only that family.
-``deformable_object_ranges()`` returns selected deformable-object ranges by world, including empty worlds.
-``deformable_object_boundaries`` stores the same ranges as a device-side boundaries array, and
-``world_ids`` identifies the world of every deformable object. Setters take a Boolean mask
-with one entry per selected deformable object and a full buffer of values in view order.
-A mask entry corresponds to a world only when exactly one object is selected in every real model world.
-Getters follow :class:`~newton.selection.ArticulationView`: regular layouts return
-zero-copy views, while irregular layouts reuse an internally owned contiguous result after the
-first call and can be replayed in a CUDA graph. The view also exposes raw per-deformable-object ranges
-(``ranges(kind)``) for deformables with different element counts
-and for consumers that need slices of the flat model arrays. The ranges stay valid through
-:meth:`~newton.ModelBuilder.finalize`,
-:meth:`~newton.ModelBuilder.replicate` (each copy is tagged with its world index and selected as
-one deformable object per world), and ``collapse_fixed_joints`` when all of a cable's bodies and joints
-survive (its ranges follow their new indices). Deformable labels do not change which fixed
-joints collapse. If collapse removes one of a cable's simulation elements, the incomplete
-deformable object record is omitted with a warning; pass the relevant joint through
-``collapse_fixed_joints(joints_to_keep=...)`` when complete post-collapse selection is required.
-See :ref:`deformable-selection` for the shared contract, including when to copy getter results.
+:class:`~newton.selection.DeformableVolumeView`. Each view selects only its family
+and provides state access and simulation-element ranges. Native and USD-created
+deformable objects use the same view API. See :ref:`deformable-selection` for
+world layout, masked resets, and getter buffers. See :ref:`deformable-objects`
+for how replication and fixed-joint collapse affect the recorded ranges.
 
 Imported deformables also populate the experimental builder identity lists
 described in :ref:`deformable-objects`. These lists are separate from the
@@ -414,15 +396,15 @@ ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
 
 .. code-block:: python
 
+    from newton.selection import DeformableCurveView
+
     result = builder.add_usd("cables.usda", return_deformable_results=True)
-    # Build-time lookup by prim path (attach joints, pin particles):
+    # Find a cable's segments while building the scene.
     cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
     model = builder.finalize()  # cables are already wrapped and finalize-ready
-    # Post-finalize selection by label pattern:
-    cable = newton.selection.DeformableCurveView(model, "/World/Cable")
+    # Inspect the finalized body range by label.
+    cable = DeformableCurveView(model, "/World/Cable")
     ((body_start, body_end),) = cable.ranges("body")
-    # Reset every selected cable from a full-view value buffer.
-    cable.set_body_velocities(state, reset_velocities)
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
 ``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to validated import metadata,
@@ -786,6 +768,32 @@ The collected attributes are returned in the result dictionary and can be access
            if "physxJoint:armature" in attrs:
                armature_value = attrs["physxJoint:armature"]
                print(f"PhysX joint {prim_path} has armature: {armature_value}")
+
+MuJoCo Tendons
+--------------
+
+Register :class:`~newton.solvers.SolverMuJoCo` custom attributes before importing
+USD assets containing ``MjcTendon`` prims:
+
+.. code-block:: python
+
+   import newton
+   from newton.solvers import SolverMuJoCo
+
+   builder = newton.ModelBuilder()
+   SolverMuJoCo.register_custom_attributes(builder)
+   builder.add_usd("robot.usda")
+
+Both fixed and spatial tendons are supported. An unauthored ``mjc:type`` defaults
+to ``"spatial"``. Spatial paths use ``mjc:path`` and optional ``mjc:path:indices``
+to reference sites and wrapping spheres or cylinders, including repeated targets.
+``mjc:path:segments`` and ``mjc:path:divisors`` define pulley branches;
+``mjc:sideSites`` and ``mjc:sideSites:indices`` select side sites for wrapping
+geometry. Segment and side-site arrays follow the indexed path order.
+
+Referenced shapes must be included by the import options. Paths with invalid
+indices or unresolved targets emit a warning and contribute no wrap entries.
+MuJoCo export also warns when it skips a tendon with no usable path.
 
 Custom Attributes from USD
 --------------------------
