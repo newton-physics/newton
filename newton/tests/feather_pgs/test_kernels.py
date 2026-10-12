@@ -44,7 +44,16 @@ def _assert_bitwise(test, a, b, label):
     np.testing.assert_array_equal(a[2], b[2], err_msg=f"{label}: joint_qd")
 
 
-_POINT = {"init": _set_box_velocities, "steps": 8, "friction_anchor_beta": 0.0, "solve_mode": "split"}
+# Dense row capacity of the stepping tests, shared so that their kernel specializations compile once.
+_ROWS = 64
+
+_POINT = {
+    "init": _set_box_velocities,
+    "steps": 8,
+    "friction_anchor_beta": 0.0,
+    "solve_mode": "split",
+    "articulation_constraint_max": _ROWS,
+}
 
 
 def test_default_launch_settings(test, device):
@@ -106,21 +115,6 @@ def test_serial_block_dim_and_matrix_free_kernel_choice_are_bitwise(test, device
             _assert_bitwise(test, default, result, str(overrides))
 
 
-def test_tile_threads_keep_fused_assembly_correct_above_the_block_width(test, device):
-    """Assemble articulations wider than a 32-thread block correctly with 32 tile threads."""
-    model = _tree(device, 33, worlds=1)
-    with kernel_overrides({"sparse_mass_matrix": False}):
-        reference, q_ref, qd_ref = _trajectory(model, steps=2)
-    with kernel_overrides({"sparse_mass_matrix": False, "tile_threads": 32}):
-        fused, q, qd = _trajectory(model, steps=2, use_parallel_streams=True)
-    size = fused._size_groups[0]
-    test.assertIsNotNone(fused._crba_cholesky_kernels_by_size[size])
-    test.assertEqual(fused._tile_threads, 32)
-    np.testing.assert_allclose(fused._L_by_size[size].numpy(), reference._L_by_size[size].numpy(), atol=2.0e-5)
-    np.testing.assert_allclose(q, q_ref, rtol=1.0e-5, atol=2.0e-5)
-    np.testing.assert_allclose(qd, qd_ref, rtol=1.0e-5, atol=2.0e-4)
-
-
 def test_kernel_overrides_validate_their_values(test, device):
     """Reject unknown kernels, unsupported widths and contact-only kernels on rows they cannot solve."""
     model = _build_contact_scene(device)
@@ -145,6 +139,8 @@ def test_kernel_overrides_validate_their_values(test, device):
             with test.subTest(kernel=kernel, options=options), test.assertRaisesRegex(ValueError, "contact rows only"):
                 with kernel_overrides({"pgs_kernel": kernel}):
                     SolverFeatherPGS(model, solve_mode="split", **options)
+    with kernel_overrides({"pgs_kernel": "tiled_contact"}), test.assertRaisesRegex(ValueError, "shared memory"):
+        SolverFeatherPGS(model, solve_mode="split", articulation_constraint_max=768)
 
 
 def test_cpu_ignores_contact_only_kernels(test, device):
@@ -232,7 +228,6 @@ for _fn in (
 for _fn in (
     test_split_kernels_agree_with_the_loop_kernel,
     test_serial_block_dim_and_matrix_free_kernel_choice_are_bitwise,
-    test_tile_threads_keep_fused_assembly_correct_above_the_block_width,
 ):
     add_function_test(TestFeatherPGSAdvancedOptions, _fn.__name__, _fn, devices=get_cuda_test_devices())
 
@@ -1232,7 +1227,7 @@ def test_contact_kernels_match_the_scalar_split_solve(test, device):
     They sweep whole contacts as 3x3 blocks, so they agree with the row-by-row loop at convergence.
     """
     model = _legged_base(device)
-    options = {"solve_mode": "split", "articulation_constraint_max": 48, "iterations": 64}
+    options = {"solve_mode": "split", "articulation_constraint_max": _ROWS, "iterations": 64}
     with _overrides(pgs_kernel="loop"):
         _, reference = _legged_trajectory(model, steps=30, **options)
     for overrides in (
@@ -1246,18 +1241,6 @@ def test_contact_kernels_match_the_scalar_split_solve(test, device):
             test.assertIsNotNone(solver._pgs_solve_contact_kernel)
             test.assertGreater(int(solver._constraint_count.numpy().max()), 0)
             np.testing.assert_allclose(joint_q, reference, rtol=0.0, atol=1.0e-5)
-
-
-def test_contact_kernels_reject_non_contact_rows(test, device):
-    """Reject the contact-only kernels with joint-limit rows and normal-only contact rows."""
-    model = _legged_base(device)
-    for kernel in ("tiled_contact", "streaming"):
-        for options in ({"enable_joint_limits": True}, {"contact_friction_gap_max": 0.01}):
-            with test.subTest(pgs_kernel=kernel, **options), _overrides(pgs_kernel=kernel):
-                with test.assertRaisesRegex(ValueError, "contact rows only"):
-                    SolverFeatherPGS(model, solve_mode="split", **options)
-    with _overrides(pgs_kernel="tiled_contact"), test.assertRaisesRegex(ValueError, "shared memory"):
-        SolverFeatherPGS(model, solve_mode="split", articulation_constraint_max=768)
 
 
 def test_matrix_free_ignores_the_dense_pgs_kernel(test, device):
@@ -1275,7 +1258,7 @@ def test_matrix_free_ignores_the_dense_pgs_kernel(test, device):
 def test_launch_widths_step_identically(test, device, solve_mode="matrix_free"):
     """Step identically with non-default tile and serial-kernel launch widths."""
     model = _legged_base(device)
-    options = {"solve_mode": solve_mode, "articulation_constraint_max": 48, "friction_anchor_beta": 0.0}
+    options = {"solve_mode": solve_mode, "articulation_constraint_max": _ROWS, "friction_anchor_beta": 0.0}
     with _overrides(sparse_mass_matrix=False, cholesky_kernel="tiled", trisolve_kernel="tiled", hinv_jt_kernel="tiled"):
         default, reference = _legged_trajectory(model, **options)
     with _overrides(
@@ -1293,21 +1276,6 @@ def test_launch_widths_step_identically(test, device, solve_mode="matrix_free"):
     np.testing.assert_allclose(joint_q, reference, rtol=0.0, atol=1.0e-4)
 
 
-def test_launch_width_overrides_are_validated(test, device):
-    """Reject invalid launch widths and chunk sizes."""
-    model = _legged_base(device, worlds=1)
-    for key, value in (
-        ("tile_threads", 48),
-        ("serial_kernel_block_dim", 48),
-        ("serial_kernel_block_dim", 0),
-        ("pgs_chunk_size", 0),
-        ("pgs_kernel", "bad"),
-    ):
-        with test.subTest(**{key: value}), _overrides(**{key: value}):
-            with test.assertRaisesRegex(ValueError, key):
-                SolverFeatherPGS(model, solve_mode="split")
-
-
 class TestFeatherPGSKernelOverrides(unittest.TestCase):
     pass
 
@@ -1317,7 +1285,6 @@ cuda_devices = get_cuda_test_devices()
 
 for _fn in (
     test_contact_kernels_match_the_scalar_split_solve,
-    test_contact_kernels_reject_non_contact_rows,
     test_matrix_free_ignores_the_dense_pgs_kernel,
     test_launch_widths_step_identically,
 ):
@@ -1330,14 +1297,6 @@ add_function_test(
     test_launch_widths_step_identically,
     devices=cuda_devices,
     solve_mode="split",
-)
-
-
-add_function_test(
-    TestFeatherPGSKernelOverrides,
-    "test_launch_width_overrides_are_validated",
-    test_launch_width_overrides_are_validated,
-    devices=get_test_devices(),
 )
 
 
@@ -1681,8 +1640,9 @@ def test_fused_assembly_matches_the_separate_pipeline(test, device, solve_mode="
     for links, branched, kernel in ((3, False, "warp"), (6, True, "warp"), (14, False, "tiled"), (15, True, "tiled")):
         with test.subTest(links=links, branched=branched):
             model = _tree(device, links, branched=branched)
-            fused, q, qd = _trajectory(model, solve_mode=solve_mode, use_parallel_streams=True)
-            reference, q_ref, qd_ref = _trajectory(model, solve_mode=solve_mode)
+            options = {"solve_mode": solve_mode, "articulation_constraint_max": _ROWS}
+            fused, q, qd = _trajectory(model, use_parallel_streams=True, **options)
+            reference, q_ref, qd_ref = _trajectory(model, **options)
             size = fused._size_groups[0]
             selected = {
                 "warp": fused._crba_cholesky_warp_kernels_by_size[size],
@@ -1710,6 +1670,7 @@ def test_fused_assembly_covers_articulations_wider_than_the_block(test, device):
                 with kernel_overrides(overrides):
                     fused, q, qd = _trajectory(model, steps=2, use_parallel_streams=True)
                 test.assertIsNotNone(fused._crba_cholesky_kernels_by_size[size])
+                test.assertEqual(fused._tile_threads, tile_threads)
                 np.testing.assert_allclose(
                     fused._L_by_size[size].numpy(), reference._L_by_size[size].numpy(), atol=2.0e-5
                 )
