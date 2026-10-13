@@ -2323,6 +2323,43 @@ def test_strain_mode_mass_filter(test, device):
         np.testing.assert_allclose(modes.T @ np.diag(eigenvalues.numpy()[0]) @ modes, mass, atol=1.0e-6)
 
 
+def test_strain_mode_near_zero_mean_orientation(test, device):
+    """Preserve nonnegative averaged divergence for modes with nearly cancelled integrals."""
+    with wp.ScopedDevice(device):
+        mass = np.array(((2.0, 1.0), (1.0, 2.0)), dtype=np.float32)
+        for perturbation in (-1.0e-5, 1.0e-5):
+            with test.subTest(perturbation=perturbation):
+                volume = np.array((1.0, 1.0 + perturbation), dtype=np.float32)
+                eigenvalues = wp.empty((1, 2), dtype=float, device=device)
+                eigenvectors = wp.empty((1, 2, 2), dtype=float, device=device)
+                rotated_volume = wp.empty((1, 2), dtype=float, device=device)
+                wp.launch(
+                    compute_eigenvalues,
+                    dim=1,
+                    inputs=[
+                        wp.array((0, 1), dtype=int, device=device),
+                        wp.array((0,), dtype=int, device=device),
+                        wp.array(mass[None], dtype=wp.mat22, device=device),
+                        wp.array(volume[None], dtype=float, device=device),
+                        wp.array(np.repeat(volume[:, None], 6, axis=1), dtype=YieldParamVec, device=device),
+                        eigenvalues,
+                        eigenvectors,
+                        rotated_volume,
+                    ],
+                    device=device,
+                )
+                modes = eigenvectors.numpy()[0]
+                np.testing.assert_allclose(modes.T @ modes, np.eye(2), atol=1.0e-6)
+                np.testing.assert_allclose(modes.T @ np.diag(eigenvalues.numpy()[0]) @ modes, mass, atol=1.0e-6)
+
+                # Each nonnegative modal divergence must contribute a nonnegative integral,
+                # even when material normalization treats its small mean as zero.
+                averaged_divergence = modes @ volume
+                test.assertGreaterEqual(float(averaged_divergence.min()), 0.0)
+                near_zero_mode = int(np.argmin(np.abs(averaged_divergence)))
+                test.assertEqual(float(rotated_volume.numpy()[0, near_zero_mode]), 0.0)
+
+
 def test_strain_modes_symmetric_cell(test, device):
     """Retain full-rank strain modes and uniform material parameters on a symmetric cell."""
 
@@ -2820,6 +2857,12 @@ add_function_test(
     TestImplicitMPM, "test_collision_sdf_zero_average_normal", test_collision_sdf_zero_average_normal, devices=devices
 )
 add_function_test(TestImplicitMPM, "test_strain_mode_mass_filter", test_strain_mode_mass_filter, devices=devices)
+add_function_test(
+    TestImplicitMPM,
+    "test_strain_mode_near_zero_mean_orientation",
+    test_strain_mode_near_zero_mean_orientation,
+    devices=devices,
+)
 add_function_test(
     TestImplicitMPM, "test_strain_modes_symmetric_cell", test_strain_modes_symmetric_cell, devices=devices
 )

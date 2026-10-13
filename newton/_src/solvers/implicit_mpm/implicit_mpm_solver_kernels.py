@@ -690,7 +690,9 @@ def compute_eigenvalues(
 
     Positive-mass modes whose integral cancels within ``_ZERO_MEAN_TOLERANCE``
     are kept with a zero rotated volume. Their material parameters use element
-    averages, so cancellation does not select their sign or drop them.
+    averages. Modes still follow the sign of their actual integral, so unilateral
+    modal constraints preserve nonnegative volume-averaged divergence. Exactly
+    zero-mean modes have no preferred orientation and do not affect that average.
     """
     row = wp.tid()
 
@@ -728,11 +730,10 @@ def compute_eigenvalues(
                     abs_s += wp.abs(ev[k, j] * ones[row, j])
                     ys += ev[k, j] * yield_parameters[node_index][0]
 
+                ev_s = wp.where(s < 0.0, -1.0, 1.0)
                 if wp.abs(s) <= _ZERO_MEAN_TOLERANCE * abs_s:
-                    ev_s = 1.0
                     rv[k] = 0.0
                 else:
-                    ev_s = wp.sign(s)
                     rv[k] = ev_s * s
 
                     if ys * ev_s < 0.0:
