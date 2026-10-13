@@ -34,12 +34,12 @@ A1_DEMOS = ("hold", "joint_sine", "wave")
 
 @wp.kernel
 def update_a1_joint_targets(
-    base_targets: wp.array(dtype=wp.float32),
-    amplitudes: wp.array(dtype=wp.float32),
-    phases: wp.array(dtype=wp.float32),
-    motion_time: wp.array(dtype=wp.float32),
+    base_targets: wp.array[wp.float32],
+    amplitudes: wp.array[wp.float32],
+    phases: wp.array[wp.float32],
+    motion_time: wp.array[wp.float32],
     angular_frequency: wp.float32,
-    joint_targets: wp.array(dtype=wp.float32),
+    joint_targets: wp.array[wp.float32],
 ):
     """Update A1 position targets with smooth sinusoidal offsets."""
     dof = wp.tid()
@@ -49,7 +49,7 @@ def update_a1_joint_targets(
 
 
 @wp.kernel
-def advance_a1_motion_time(motion_time: wp.array(dtype=wp.float32), dt: wp.float32):
+def advance_a1_motion_time(motion_time: wp.array[wp.float32], dt: wp.float32):
     """Advance the device-side trajectory clock."""
     motion_time[0] = motion_time[0] + dt
 
