@@ -771,7 +771,7 @@ table; its runtime candidate buffer is controlled separately by
 the scene's overlapping candidates.
 
 Explicit broad-phase setup warns when the configured list contains more than
-one million pairs and the busiest world contributes at least 20,000 pairs,
+100 million pairs and the busiest world contributes at least 20,000 pairs,
 including shared global pairs. These pairs are tested on every collision update;
 consider SAP for large worlds.
 
