@@ -24,7 +24,6 @@ from ...core.types import override
 from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
 from ..coupled.interface import CouplingInterface
-from ..observables import SolverObservables
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
@@ -1910,7 +1909,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         contacts: newton.Contacts,
         dt: float,
         *,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         """Advance the simulation by one time step.
 
