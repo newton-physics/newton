@@ -338,6 +338,7 @@ class Example:
             floating=False,
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
+            joint_damping_mode="passive",
         )
 
         builder.joint_q[:9] = [

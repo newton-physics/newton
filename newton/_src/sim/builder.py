@@ -9,9 +9,7 @@ import copy
 import ctypes
 import functools
 import gc
-import inspect
 import math
-import os
 import warnings
 import weakref
 from bisect import bisect_left
@@ -24,6 +22,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -139,8 +138,6 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
         raise ValueError(f"Triangle opacity must contain finite values in [0, 1], got {invalid_value!r}.")
     return opacities
 
-
-_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
 _DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
 _ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
@@ -743,22 +740,6 @@ class ModelBuilder:
         if color is None:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
-
-    @staticmethod
-    def _external_warning_stacklevel() -> int:
-        frame = inspect.currentframe()
-        if frame is None:
-            return 2
-
-        frame = frame.f_back
-        stacklevel = 1
-        try:
-            while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
-                frame = frame.f_back
-                stacklevel += 1
-            return stacklevel
-        finally:
-            del frame
 
     @staticmethod
     def _resolve_rod_body_frame_origin(
@@ -4270,6 +4251,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
+        joint_damping_mode: Literal["passive", "drive"] | None = None,
     ):
         """
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -4368,6 +4350,19 @@ class ModelBuilder:
                 :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+            joint_damping_mode: How to interpret URDF ``<dynamics damping>``.
+                ``"passive"`` imports it into ``joint_damping`` and keeps drive
+                damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
+                into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
+                In drive mode, passive damping uses ``default_joint_cfg.damping``
+                for revolute, prismatic, and planar joints.
+                XPBD/VBD do not consume passive joint damping.
+
+                .. deprecated:: 1.7
+                    The implicit None default retains the drive mapping and warns
+                    when the URDF authors damping. The default will become
+                    ``"passive"`` in Newton 1.8. Pass either mode explicitly to
+                    silence the warning; both explicit modes remain supported.
         """
         from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
 
@@ -4392,6 +4387,7 @@ class ModelBuilder:
             mesh_maxhullvert=mesh_maxhullvert,
             force_position_velocity_actuation=force_position_velocity_actuation,
             override_root_xform=override_root_xform,
+            joint_damping_mode=joint_damping_mode,
         )
 
     def add_usd(
@@ -4426,6 +4422,8 @@ class ModelBuilder:
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
         legacy_margin_gap: bool = False,
+        legacy_angular_velocity_units: bool = False,
+        legacy_springref_units: bool = False,
         return_deformable_results: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
@@ -4562,6 +4560,31 @@ class ModelBuilder:
                 where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
                 False (identity translation matching MuJoCo 3.9 semantics).
+            legacy_angular_velocity_units: If True, restore Newton 1.6 joint-state angular velocity handling:
+                resolved ``state:angular:physics:velocity``
+                and D6 ``state:rot*:physics:velocity`` values are copied into
+                ``joint_qd`` without converting degrees/s to radians/s. Applies
+                to revolute, native D6, and merged joints. Rigid-body velocities,
+                linear joint velocities, positions, and drive targets retain their
+                usual unit conversion. Defaults to False.
+
+                .. deprecated:: 1.7
+                    This temporary flag will be removed in Newton 1.8. Enabling
+                    it emits a :class:`DeprecationWarning`. Migrate authored
+                    asset values to their documented units and leave it False.
+
+            legacy_springref_units: If True, restore Newton 1.6 handling of ``mjc:springref`` as an
+                already converted Newton value, ignoring
+                ``mjc:compiler:angle`` for spring references only. ``mjc:ref``
+                conversion is unchanged. Requires registered MuJoCo custom
+                attributes to load spring references. Defaults to False, which
+                interprets revolute spring references using the compiler's angle
+                units (degrees if unauthored) and converts them to radians.
+
+                .. deprecated:: 1.7
+                    This temporary flag will be removed in Newton 1.8. Enabling
+                    it emits a :class:`DeprecationWarning`. Migrate authored
+                    asset values to their documented units and leave it False.
 
             return_deformable_results: If True, include the experimental deformable entries in the
                 returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
@@ -4718,6 +4741,8 @@ class ModelBuilder:
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
             legacy_margin_gap=legacy_margin_gap,
+            legacy_angular_velocity_units=legacy_angular_velocity_units,
+            legacy_springref_units=legacy_springref_units,
             return_deformable_results=return_deformable_results,
         )
 
@@ -5722,7 +5747,7 @@ class ModelBuilder:
                     f"bodies. A FREE joint parallel to another joint is inconsistent. Use add_link() "
                     f"with the appropriate joint type instead of add_body().",
                     UserWarning,
-                    stacklevel=self._external_warning_stacklevel(),
+                    stacklevel=_external_warning_stacklevel(),
                 )
             else:
                 warnings.warn(
@@ -5731,7 +5756,7 @@ class ModelBuilder:
                     f"bodies. Parallel joints between the same pair of bodies have undefined semantics and may not "
                     f"behave as expected.",
                     UserWarning,
-                    stacklevel=self._external_warning_stacklevel(),
+                    stacklevel=_external_warning_stacklevel(),
                 )
 
         self.joint_type.append(joint_type)
@@ -6593,7 +6618,7 @@ class ModelBuilder:
         warnings.warn(
             "ModelBuilder.add_joint_cable() is deprecated in Newton 1.6; use add_joint_rod() instead.",
             DeprecationWarning,
-            stacklevel=self._external_warning_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
         return self.add_joint_rod(
             parent=parent,
@@ -6890,7 +6915,7 @@ class ModelBuilder:
             "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.7; "
             "use set_joint_mimic() for joints with matching dimensions instead.",
             DeprecationWarning,
-            stacklevel=self._external_warning_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
         joint_count = self.joint_count
         if joint0 < 0 or joint0 >= joint_count:
@@ -9598,7 +9623,7 @@ class ModelBuilder:
                     "before finalize; closed=True also adds a loop-closing joint that must remain outside any "
                     "articulation.",
                     UserWarning,
-                    stacklevel=self._external_warning_stacklevel(),
+                    stacklevel=_external_warning_stacklevel(),
                 )
 
             if link_bodies:
@@ -9892,7 +9917,7 @@ class ModelBuilder:
         warnings.warn(
             _ADD_ROD_POSITIONS_DEPRECATION_MSG,
             DeprecationWarning,
-            stacklevel=self._external_warning_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
         result = self._add_rod_chain(
             positions,
@@ -10020,7 +10045,7 @@ class ModelBuilder:
         warnings.warn(
             _ADD_ROD_GRAPH_DEPRECATION_MSG,
             DeprecationWarning,
-            stacklevel=self._external_warning_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
         result = self._add_rod_graph(
             node_positions,
@@ -10460,7 +10485,7 @@ class ModelBuilder:
                             "cycles are not closed. Use wrap_in_articulation=False to retain every "
                             "cycle adjacency joint.",
                             UserWarning,
-                            stacklevel=self._external_warning_stacklevel(),
+                            stacklevel=_external_warning_stacklevel(),
                         )
 
                 # Wrap the connected component into an articulation.
@@ -14511,13 +14536,11 @@ class ModelBuilder:
                     and (shape_flags_list[i] & ShapeFlags.COLLIDE_SHAPES)
                 ):
                     mesh = generated_shape_sources[i]
-                    shape_scale = np.asarray(shape_scale_list[i], dtype=np.float32)
-                    scale_key = tuple(float(value) for value in shape_scale)
                     deferred_edges = deferred_collision_edges.get(i)
                     if deferred_edges is not None:
-                        mesh_key = ("deferred", id(deferred_edges), scale_key)
+                        mesh_key = ("deferred", id(deferred_edges), id(mesh))
                     else:
-                        mesh_key = (id(mesh), scale_key)
+                        mesh_key = id(mesh)
                     if mesh_key in edge_cache:
                         shape_edge_ranges.append(edge_cache[mesh_key])
                     else:
@@ -14534,7 +14557,8 @@ class ModelBuilder:
                         count = len(edges)
                         edge_chunks.append(edges)
                         if count > 0:
-                            vertices = np.asarray(mesh.vertices, dtype=np.float32) * shape_scale
+                            # Unscaled: kernels apply the live shape_scale when reading these edges.
+                            vertices = np.asarray(mesh.vertices, dtype=np.float32)
                             edge_v0 = vertices[edges[:, 0]]
                             edge_v1 = vertices[edges[:, 1]]
                             edge_halves = np.ascontiguousarray((edge_v1 - edge_v0) * 0.5, dtype=np.float32)
