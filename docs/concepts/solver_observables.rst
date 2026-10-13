@@ -70,17 +70,20 @@ are supplied for such requests or an empty request, they are ignored and
 ``observables.contacts`` is ``None``.
 
 The live contact counts do not determine allocation sizes. ``contact_f`` has
-``model.rigid_contact_max + model.soft_contact_max`` entries, with rigid slots
-followed by soft slots. Kernels use the contact counts to process valid entries.
-Allocation freezes the model's contact capacities: later changes, including a
-replacement pipeline with different capacities, are rejected. Configure or
-rebuild pipelines before requesting contact-indexed observables.
+``contacts.rigid_contact_max + contacts.soft_contact_max`` entries for the
+supplied ``contacts``, with rigid slots followed by soft slots. Kernels use the
+contact counts to process valid entries. Allocation does not lock the model's
+contact capacities, so another pipeline on the same model, such as the private
+pipeline of :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM`, may
+publish different capacities without invalidating existing observables.
 
-The factory validates the contact device and both capacities once, then stores
-that instance as ``observables.contacts``. Steps and consumers check ownership and
-contact identity, so they must use the same storage. Custom consumers should check
-``observables.model is model`` and, when reading contact fields,
-``observables.contacts is contacts`` before reading the arrays. Newly allocated
+The factory validates the contact device, then stores that instance as
+``observables.contacts`` and sizes contact fields from its capacities. Steps and
+consumers check ownership and that the contacts they receive are compatible with
+the allocation (same device, rigid capacity, and soft capacity), so equivalent
+buffers may alternate between steps. Custom consumers should check
+``observables.model is model`` and, when reading contact fields, call
+:meth:`~newton.solvers.SolverBase.validate_observables` with their contacts. Newly allocated
 forces are zero and can be read by a sensor or viewer before the first step.
 Allocate observables and contacts before graph capture; neither ordinary nor
 conditional graph execution needs deferred observable allocation. Other solver
@@ -514,12 +517,12 @@ dataclass decorators are rejected before allocation.
 Contact dependencies follow the field's frequency. The base solver requires
 pipeline initialization and a compatible ``contacts=`` argument for any requested
 contact frequency, including custom fields requested without ``CONTACT_F``. It binds
-that storage and freezes capacities after successful allocation. Body- and
+that storage and sizes contact fields from its capacities. Body- and
 joint-indexed fields do not require a collision pipeline or contact storage.
 
 In ``step()``, call :meth:`~newton.solvers.SolverBase.validate_observables` before
 launching work or modifying outputs. This checks the container type, solver owner,
-and contact identity without repeating allocation-time layout validation. Compute
+and contact compatibility without repeating allocation-time layout validation. Compute
 diagnostics only when requested:
 
 .. code-block:: python

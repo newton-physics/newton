@@ -70,8 +70,9 @@ class TestSolverObservableConsumers(unittest.TestCase):
         viewer.show_contacts = True
         viewer.log_contacts(contacts, model.state(), observables=observables)
         self.assertIs(observables.contacts, contacts)
-        with self.assertRaisesRegex(ValueError, "Contacts instance"):
-            viewer.log_contacts(pipeline.contacts(), model.state(), observables=observables)
+        viewer.log_contacts(pipeline.contacts(), model.state(), observables=observables)
+        with self.assertRaisesRegex(ValueError, "not compatible"):
+            viewer.log_contacts(newton.Contacts(1, 0, device="cpu"), model.state(), observables=observables)
 
     def test_kamino_does_not_require_export_capacity_without_request(self):
         """Allow a native solver with a smaller unrelated pipeline until forces are requested."""

@@ -121,14 +121,15 @@ class TestSensorContact(unittest.TestCase):
         observables = solver.observables(contacts=contacts, kinds={flags.CONTACT_F, flags.BODY_PARENT_F})
         selected = observables.select({flags.CONTACT_F})
         sensor = SensorContact(model, sensing_bodies="*", request_contact_attributes=False)
-        with self.assertRaisesRegex(ValueError, "Contacts instance"):
+        with self.assertRaisesRegex(ValueError, "not compatible"):
             sensor.update(model.state(), newton.Contacts(1, 0, device="cpu"), observables=selected)
         self.assertIs(observables.contacts, contacts)
         sensor.update(model.state(), contacts, observables=selected)
         np.testing.assert_array_equal(sensor.total_force.numpy(), 0.0)
         self.assertIs(observables.contacts, contacts)
-        with self.assertRaisesRegex(ValueError, "Contacts instance"):
-            sensor.update(model.state(), pipeline.contacts(), observables=observables)
+        sensor.update(model.state(), pipeline.contacts(), observables=observables)
+        with self.assertRaisesRegex(ValueError, "not compatible"):
+            sensor.update(model.state(), newton.Contacts(2, 1, device="cpu"), observables=observables)
 
     def test_selected_contact_observables_share_sensor_binding(self):
         """Consume root and subset forces using the storage bound at allocation."""

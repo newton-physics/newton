@@ -1220,7 +1220,6 @@ class Model:
         self._rigid_contact_max: int | None = None
         self._soft_contact_max: int | None = None
         self._contact_capacity_initialized = False
-        self._solver_observable_contact_capacity: tuple[int, int] | None = None
 
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
@@ -1976,15 +1975,9 @@ class Model:
         self._soft_contact_max = value
 
     def _validate_contact_capacity(self, rigid_max: int | None, soft_max: int | None) -> None:
-        """Reject invalid capacities or changes that invalidate solver observables."""
+        """Reject invalid contact capacities."""
         if (rigid_max is not None and rigid_max < 0) or (soft_max is not None and soft_max < 0):
             raise ValueError("Contact capacities must be nonnegative or None.")
-        frozen = self._solver_observable_contact_capacity
-        if frozen is not None and (rigid_max, soft_max) != frozen:
-            raise ValueError(
-                f"Contact capacities are frozen at {frozen} by allocated solver observables; "
-                "create a new model and solver observables to change capacities."
-            )
 
     def _get_contact_capacity(self) -> tuple[int, int]:
         """Return capacities published by a successfully initialized pipeline."""

@@ -679,11 +679,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if (
                 observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
                 and self.mjw_model.opt.run_collision_detection
-                and self.mjw_data.naconmax > self.model.rigid_contact_max
+                and self.mjw_data.naconmax > observables.contacts.rigid_contact_max
             ):
                 raise ValueError(
                     f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds CollisionPipeline capacity "
-                    f"({self.model.rigid_contact_max}). Construct CollisionPipeline with "
+                    f"({observables.contacts.rigid_contact_max}). Construct CollisionPipeline with "
                     "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
                 )
             return observables

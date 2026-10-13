@@ -1057,10 +1057,10 @@ class SolverKamino(SolverBase, CouplingInterface):
                     native_max = (
                         self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
                     )
-                    if native_max > self.model.rigid_contact_max:
+                    if native_max > observables.contacts.rigid_contact_max:
                         raise ValueError(
                             f"Kamino contact capacity ({native_max}) exceeds CollisionPipeline capacity "
-                            f"({self.model.rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
+                            f"({observables.contacts.rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
                         )
                 if self._contact_observable_state is None:
                     # Preserve input poses for in-place steps; publish scratch only after allocation succeeds.
@@ -1196,7 +1196,8 @@ class SolverKamino(SolverBase, CouplingInterface):
         )
 
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
-            observable_contacts = observables.contacts
+            # Export into this step's buffer so forces pair with the geometry consumers read.
+            observable_contacts = contacts if contacts is not None else observables.contacts
             if observable_contacts is None:
                 raise ValueError("Contact storage is missing from solver observables.")
             self._populate_contact_observables(

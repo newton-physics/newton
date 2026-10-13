@@ -215,6 +215,18 @@ def _normalize_observable_kinds(kinds: Iterable[str]) -> frozenset[str]:
     return requested
 
 
+def _observable_count(model, frequency, contact_capacity):
+    if contact_capacity is not None:
+        rigid, soft = contact_capacity
+        if frequency == Model.AttributeFrequency.CONTACT_RIGID:
+            return int(rigid)
+        if frequency == Model.AttributeFrequency.CONTACT_SOFT:
+            return int(soft)
+        if frequency == Model.AttributeFrequency.CONTACT:
+            return int(rigid) + int(soft)
+    return model._attribute_frequency_count(frequency)
+
+
 class SolverBase:
     """Generic base class for solvers.
 
@@ -738,9 +750,10 @@ class SolverBase:
         solver-specific initialization is needed.
 
         All requested arrays are allocated before this method returns; unrequested
-        fields remain ``None``. Contact arrays use the model's resolved rigid
-        and soft capacities, not the live contact count. Allocate before graph
-        capture and pass the same :class:`~newton.Contacts` to :meth:`step` and consumers.
+        fields remain ``None``. Contact arrays use the rigid and soft capacities
+        of ``contacts``, not the live contact count. Allocate before graph
+        capture and pass compatible :class:`~newton.Contacts` (same device and
+        capacities) to :meth:`step` and consumers.
 
         Args:
             kinds: Required set or other iterable of observable names. Entries from
@@ -749,8 +762,8 @@ class SolverBase:
                 for this instance. An empty collection allocates no arrays.
             contacts: Contact storage to bind to contact-indexed observables.
                 Required when any requested field has contact frequency, including
-                zero-capacity fields. Its device and rigid/soft capacities must match
-                the model. Ignored when no contact-indexed fields are requested.
+                zero-capacity fields. Its device must match the model; its
+                rigid/soft capacities size the contact fields. Ignored when no contact-indexed fields are requested.
             requires_grad: Whether allocated arrays require gradients. If
                 ``None``, use the model's setting.
 
@@ -784,7 +797,7 @@ class SolverBase:
         contacts: Contacts | None = None,
         requires_grad: bool | None = None,
     ) -> Iterator[SolverBase.Observables]:
-        """Share built-in factory allocation, freezing capacities only after setup succeeds."""
+        """Share built-in factory allocation, sizing contact fields from the supplied ``Contacts``."""
         requested = _normalize_observable_kinds(kinds)
         unsupported = requested.difference(self.supported_observables)
         if unsupported:
@@ -805,15 +818,14 @@ class SolverBase:
             requires_grad = self.model.requires_grad
         contact_capacity = None
         if observables._has_contact_observables():
-            contact_capacity = self.model._get_contact_capacity()
+            self.model._get_contact_capacity()
             if contacts is None:
                 raise ValueError("Pass Contacts to solver.observables() when requesting contact-indexed observables.")
             if not isinstance(contacts, Contacts):
                 raise TypeError("Contact-indexed observables require a Contacts instance.")
             if contacts.device != self.model.device:
                 raise ValueError("Solver observables and Contacts must be on the solver device.")
-            if (contacts.rigid_contact_max, contacts.soft_contact_max) != contact_capacity:
-                raise ValueError(f"Contacts capacities must match the model: {contact_capacity}.")
+            contact_capacity = (contacts.rigid_contact_max, contacts.soft_contact_max)
             observables._contacts = contacts
         # Declaration order makes allocation deterministic even for unordered requests.
         for kind, (name, spec) in declarations.items():
@@ -823,15 +835,13 @@ class SolverBase:
                 observables,
                 name,
                 wp.zeros(
-                    self.model._attribute_frequency_count(spec.frequency),
+                    _observable_count(self.model, spec.frequency, contact_capacity),
                     dtype=spec.dtype,
                     device=self.model.device,
                     requires_grad=requires_grad,
                 ),
             )
         yield observables
-        if contact_capacity is not None:
-            self.model._solver_observable_contact_capacity = contact_capacity
 
     def validate_observables(
         self, observables: SolverBase.Observables | None, contacts: Contacts | None = None
@@ -839,14 +849,16 @@ class SolverBase:
         """Validate ownership and contact storage before a custom solver step.
 
         Call this at the start of :meth:`step`, before launching work or writing
-        observable arrays. Passing ``None`` is a no-op. This checks only ownership
-        and contact identity; layout validation happens during allocation.
+        observable arrays. Passing ``None`` is a no-op. This checks ownership and
+        that ``contacts`` is compatible with the allocation (same device and
+        capacities), so equivalent buffers may alternate between steps.
 
         See :ref:`solver_observables` for custom solver integration.
 
         Args:
             observables: Optional container allocated by this solver.
-            contacts: The instance supplied at allocation, required for contact-indexed observables.
+            contacts: Contacts compatible with the instance supplied at allocation,
+                required for contact-indexed observables.
 
         Raises:
             TypeError: If the container has an incompatible type.
@@ -860,8 +872,18 @@ class SolverBase:
             raise TypeError(f"'observables' must be an instance of {self.Observables.__name__}.")
         if observables._solver is not self:
             raise ValueError("Solver observables must be passed to the solver instance that allocated them.")
-        if observables.contacts is not None and contacts is not observables.contacts:
-            raise ValueError("Contact solver observables must use the Contacts instance supplied at allocation.")
+        bound = observables.contacts
+        if bound is None or contacts is bound:
+            return
+        if contacts is None:
+            raise ValueError("Contact solver observables require Contacts compatible with the allocation.")
+        expected = (bound.device, bound.rigid_contact_max, bound.soft_contact_max)
+        received = (contacts.device, contacts.rigid_contact_max, contacts.soft_contact_max)
+        if received != expected:
+            raise ValueError(
+                "Contacts are not compatible with the solver observables allocation: expected "
+                f"(device, rigid_contact_max, soft_contact_max) {expected}, got {received}."
+            )
 
     def _set_module_options(self, options: dict[str, Any], module: Any) -> None:
         self._module_options[module] = dict(options)

@@ -1342,8 +1342,8 @@ class ViewerBase(ABC):
         if observables is not None:
             if observables.model is not self.model:
                 raise ValueError("Solver observables must belong to the viewer's model.")
-            if contact_f is not None and observables.contacts is not contacts:
-                raise ValueError("Contact solver observables must use the Contacts instance supplied at allocation.")
+            if contact_f is not None:
+                observables._solver.validate_observables(observables, contacts)
 
         # Get contact count, clamped to buffer size (counter may exceed max on overflow)
         max_contacts = contacts.rigid_contact_max
