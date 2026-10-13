@@ -1296,6 +1296,18 @@ class LOXSolverConfig:
     system. It finishes with one global Jacobi smoothing sweep.
     """
 
+    weight_beta: float | None = 4.0
+    """Largest eigenvalue of each body weight ``W`` relative to the free patch Schur complement of the body.
+
+    The weight stays between the free complement and ``weight_beta`` times it, and at least
+    :attr:`weight_sigma` times the geometric mean of the patch bounds. The cap keeps the consensus term
+    from slowing the motions that stiff joints leave free, such as the translation of a whole
+    articulation. ``None`` keeps the geometric mean, and one gives the free complement.
+    """
+
+    weight_sigma: float = 1.0e-3
+    """Smallest fraction of the geometric mean of the patch bounds that the :attr:`weight_beta` cap keeps."""
+
     consensus_fraction: float = 0.5
     """Fraction ``alpha`` of the consensus penalty that the smooth solve takes implicitly, in [0, 1].
 
@@ -1308,7 +1320,7 @@ class LOXSolverConfig:
     ``W`` takes for each body the matrix geometric mean of two ``6 x 6`` Schur complements of the body
     in the matrix of the body and its joint neighbors, which bound ``[(A^-1)_ii]^-1``: from below when
     each neighbor keeps only its joint to the body, and from above when the neighbors keep their full
-    rows of ``A`` with the other bodies held fixed.
+    rows of ``A`` with the other bodies held fixed, capped by :attr:`weight_beta`.
     """
 
     @override
@@ -1377,6 +1389,10 @@ class LOXSolverConfig:
                 f"Invalid gauss_seidel_max_colors: {self.gauss_seidel_max_colors}. "
                 "Must be an integer greater than or equal to one."
             )
+        if self.weight_beta is not None and not (np.isfinite(self.weight_beta) and self.weight_beta >= 1.0):
+            raise ValueError(f"Invalid weight_beta: {self.weight_beta}. Must be None or at least one.")
+        if not np.isfinite(self.weight_sigma) or not (0.0 <= self.weight_sigma <= 1.0):
+            raise ValueError(f"Invalid weight_sigma: {self.weight_sigma}. Must be in range [0, 1].")
         if not np.isfinite(self.consensus_fraction) or not (0.0 <= self.consensus_fraction <= 1.0):
             raise ValueError(f"Invalid consensus_fraction: {self.consensus_fraction}. Must be in range [0, 1].")
         if not np.isfinite(self.joint_penalty_condition) or self.joint_penalty_condition <= 1.0:

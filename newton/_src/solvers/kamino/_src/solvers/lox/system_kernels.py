@@ -919,12 +919,16 @@ def _free_patch_schur_subtraction(
 
 
 @wp.func
-def _geometric_mean_mat66(lower_bound: mat66f, upper_bound: mat66f) -> tuple[mat66f, wp.bool]:
+def _geometric_mean_mat66(
+    lower_bound: mat66f, upper_bound: mat66f, beta: wp.float32, sigma: wp.float32
+) -> tuple[mat66f, wp.bool]:
     """Return the matrix geometric mean ``A # B = L (L^-1 B L^-T)^1/2 L^T`` of two symmetric positive-definite
     ``6 x 6`` matrices, with ``A = L L^T``, and whether it is defined.
 
     ``A`` is the lower bound, so the eigenvalues of ``L^-1 B L^-T`` are clamped at one, which keeps the
-    mean at least ``A`` against round-off in ``B``.
+    mean at least ``A`` against round-off in ``B``. A positive ``beta`` clamps each eigenvalue ``r`` of the
+    square root to ``max(sigma r, min(r, beta))``, which keeps the result at most ``beta A`` and at least
+    ``sigma`` times the mean.
     """
     lower, valid = _cholesky_mat66(lower_bound)
     if not valid:
@@ -953,7 +957,10 @@ def _geometric_mean_mat66(lower_bound: mat66f, upper_bound: mat66f) -> tuple[mat
     root = mat66f(0.0)
     for index in range(6):
         vector = eigenvectors[index]
-        root += wp.sqrt(wp.max(scale * eigenvalues[index], 1.0)) * wp.outer(vector, vector)
+        ratio = wp.sqrt(wp.max(scale * eigenvalues[index], 1.0))
+        if beta > 0.0:
+            ratio = wp.max(sigma * ratio, wp.min(ratio, beta))
+        root += ratio * wp.outer(vector, vector)
     return lower @ root @ wp.transpose(lower), True
 
 
@@ -965,7 +972,8 @@ def make_patch_weights_kernel(woodbury: bool):
     free complement :func:`_free_patch_schur` bounds ``[(A^-1)_ii]^-1`` from below. In the pinned patch, the
     joint neighbors ``j`` keep their full rows of ``A`` with the other bodies held fixed, so
     ``S_pinned = A_ii - sum_j A_ij A_jj^-1 A_ji`` bounds it from above. The weight
-    ``S_free # S_pinned`` lies between both bounds.
+    ``S_free # S_pinned`` lies between both bounds. A positive ``beta`` caps it at ``beta S_free``, and
+    ``sigma`` keeps at least that fraction of the mean, see :func:`_geometric_mean_mat66`.
 
     Args:
         woodbury: Whether the free complement takes the Woodbury form, for at most six joint rows between two
@@ -997,6 +1005,8 @@ def make_patch_weights_kernel(woodbury: bool):
         dynamic_jacobian_b: wp.array[vec6f],
         dynamic_effective_inertia: wp.array[wp.float32],
         model_time_dt: wp.array[wp.float32],
+        beta: wp.float32,
+        sigma: wp.float32,
         # Outputs:
         weight: wp.array[mat66f],
         inverse_weight: wp.array[mat66f],
@@ -1066,7 +1076,9 @@ def make_patch_weights_kernel(woodbury: bool):
                         value -= neighbor_lower[axis, inner] * solved[inner, col]
                     solved[axis, col] = value / neighbor_lower[axis, axis]
             pinned -= wp.transpose(solved) @ solved
-        mean, valid = _geometric_mean_mat66(0.5 * (free + wp.transpose(free)), 0.5 * (pinned + wp.transpose(pinned)))
+        mean, valid = _geometric_mean_mat66(
+            0.5 * (free + wp.transpose(free)), 0.5 * (pinned + wp.transpose(pinned)), beta, sigma
+        )
         if not valid:
             mean = free
         _finish_body_weight(bid, mean, weight, inverse_weight)
