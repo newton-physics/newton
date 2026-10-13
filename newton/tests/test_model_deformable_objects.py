@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverSemiImplicit
+from newton.solvers import SolverSemiImplicit, SolverVBD
 from newton.solvers.experimental.coupled import SolverCoupled
 from newton.tests._selection_deformable_test_utils import _add_test_anchored_cable
 from newton.tests.test_deformable_objects import _add_curve, _add_surface, _add_volume
@@ -541,12 +541,13 @@ class TestModelDeformableObjects(unittest.TestCase):
         builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         _add_test_anchored_cable(builder)
         builder.collapse_fixed_joints()
+        builder.color()
         for device in get_test_devices():
             with self.subTest(device=device):
                 model = builder.finalize(device=device)
                 coupled = SolverCoupled(
                     model,
-                    entries=[SolverCoupled.Entry(name="rod", solver=SolverSemiImplicit, bodies=[1], joints=[1])],
+                    entries=[SolverCoupled.Entry(name="rod", solver=SolverVBD, bodies=[1], joints=[1])],
                 )
                 compact = coupled.view("rod")
                 self.assertEqual(compact.curve_label, ["anchored_curve"])
@@ -578,13 +579,14 @@ class TestModelDeformableObjects(unittest.TestCase):
                 values={0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 1},
             )
         )
+        builder.color()
         model = builder.finalize(device="cpu")
         # Include the articulation root, not just the rod's returned connecting joints.
         joints = list(range(int(model.curve_joint_start.numpy()[1]), int(model.curve_joint_end.numpy()[1])))
         coupled = SolverCoupled(
             model,
             entries=[
-                SolverCoupled.Entry(name="cable", solver=SolverSemiImplicit, bodies=bodies, joints=joints),
+                SolverCoupled.Entry(name="cable", solver=SolverVBD, bodies=bodies, joints=joints),
                 SolverCoupled.Entry(
                     name="particles", solver=SolverSemiImplicit, particles=list(range(model.particle_count))
                 ),

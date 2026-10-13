@@ -25,7 +25,7 @@ from ..sim import (
     eval_jacobian,
     eval_mass_matrix,
 )
-from ..solvers.observables import SolverObservables
+from ..solvers.solver import SolverBase
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -1263,10 +1263,10 @@ class ArticulationView:
     # Generic attribute API
 
     def _resolve_attribute(
-        self, name: str, source: Model | State | Control | SolverObservables
+        self, name: str, source: Model | State | Control | SolverBase.Observables
     ) -> tuple[wp.array, str]:
         """Return the array currently stored on ``source`` under ``name`` and its frequency name."""
-        is_observable = isinstance(source, SolverObservables)
+        is_observable = isinstance(source, SolverBase.Observables)
         if is_observable and source.model is not self.model:
             raise ValueError("Solver observables and ArticulationView must use the same model.")
         # handle namespaced attributes like "mujoco.tendon_stiffness"
@@ -1290,7 +1290,7 @@ class ArticulationView:
     def _get_attribute_array(
         self,
         name: str,
-        source: Model | State | Control | SolverObservables,
+        source: Model | State | Control | SolverBase.Observables,
         _slice: Slice | int | None = None,
         layout=None,
     ):
@@ -1321,14 +1321,14 @@ class ArticulationView:
     def _create_attribute_array(
         self,
         name: str,
-        source: Model | State | Control | SolverObservables,
+        source: Model | State | Control | SolverBase.Observables,
         _slice: Slice | int | None = None,
         layout=None,
     ):
         attrib, frequency_name = self._resolve_attribute(name, source)
 
         # get frequency info
-        frequency_source = source if isinstance(source, SolverObservables) else self.model
+        frequency_source = source if isinstance(source, SolverBase.Observables) else self.model
         frequency = frequency_source.get_attribute_frequency(frequency_name)
         if frequency in (AttributeFrequency.CONTACT, AttributeFrequency.CONTACT_RIGID, AttributeFrequency.CONTACT_SOFT):
             raise AttributeError(
@@ -1444,7 +1444,11 @@ class ArticulationView:
         return attrib
 
     def _get_attribute_values(
-        self, name: str, source: Model | State | Control | SolverObservables, _slice: slice | None = None, layout=None
+        self,
+        name: str,
+        source: Model | State | Control | SolverBase.Observables,
+        _slice: slice | None = None,
+        layout=None,
     ):
         attrib = self._get_attribute_array(name, source, _slice=_slice, layout=layout)
         if hasattr(attrib, "_staging_array"):
@@ -1470,7 +1474,7 @@ class ArticulationView:
     def _set_attribute_values(
         self,
         name: str,
-        target: Model | State | Control | SolverObservables,
+        target: Model | State | Control | SolverBase.Observables,
         values,
         mask=None,
         _slice: slice | None = None,
@@ -1534,7 +1538,7 @@ class ArticulationView:
             else:
                 raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
 
-    def get_attribute(self, name: str, source: Model | State | Control | SolverObservables):
+    def get_attribute(self, name: str, source: Model | State | Control | SolverBase.Observables):
         """
         Get an attribute from a model, state, control, or solver observable container.
 
@@ -1547,7 +1551,7 @@ class ArticulationView:
 
         .. experimental::
 
-            ``SolverObservables`` sources use their declared row frequencies
+            ``SolverBase.Observables`` sources use their declared row frequencies
             and must belong to this view's model. Dynamic contact frequencies
             are not supported; they need endpoint-based filtering or reduction.
         """
@@ -1556,7 +1560,7 @@ class ArticulationView:
     def set_attribute(
         self,
         name: str,
-        target: Model | State | Control | SolverObservables,
+        target: Model | State | Control | SolverBase.Observables,
         values: wp.array[Any],
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:

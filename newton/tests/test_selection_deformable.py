@@ -15,7 +15,7 @@ import warp as wp
 
 import newton
 from newton.selection import ArticulationView, DeformableCurveView, DeformableSurfaceView, DeformableVolumeView
-from newton.solvers import SolverSemiImplicit
+from newton.solvers import SolverVBD
 from newton.solvers.experimental.coupled import SolverCoupled
 from newton.tests._selection_deformable_test_utils import _add_test_anchored_cable
 from newton.tests._usd_deformable_test_utils import (
@@ -634,6 +634,7 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         self.assertEqual(builder.body_count, body_count - 1)
         self.assertEqual(builder.joint_count, joint_count - 1)
 
+        builder.color()
         model = builder.finalize()
         state = model.state()
         rigid = ArticulationView(model, "robot")
@@ -681,7 +682,7 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         np.testing.assert_allclose(soft.get_particle_positions(state).numpy(), moved_soft, atol=1e-6)
 
         state_out = model.state()
-        newton.solvers.SolverXPBD(model, iterations=1).step(
+        SolverVBD(model, iterations=1).step(
             state,
             state_out,
             control=None,
@@ -1600,6 +1601,7 @@ class TestUSDDeformableObjects(unittest.TestCase):
         result = builder.add_usd(stage, return_deformable_results=True)
         bodies, rod_joints = result["path_cable_map"]["/World/Cable"]
         self.assertEqual(rod_joints, [4, 5])
+        builder.color()
         for device in get_test_devices():
             model = builder.finalize(device=device)
             cable = DeformableCurveView(model, "/World/Cable")
@@ -1609,9 +1611,7 @@ class TestUSDDeformableObjects(unittest.TestCase):
                     joints = list(range(3, 6)) if include_root else rod_joints
                     coupled = SolverCoupled(
                         model,
-                        entries=[
-                            SolverCoupled.Entry(name="cable", solver=SolverSemiImplicit, bodies=bodies, joints=joints)
-                        ],
+                        entries=[SolverCoupled.Entry(name="cable", solver=SolverVBD, bodies=bodies, joints=joints)],
                     )
                     compact = coupled.view("cable")
                     self.assertEqual(compact.body_count, 3)
