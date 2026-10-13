@@ -1,4 +1,8 @@
 name: Claude Auto Review
+
+# Review-only automation. Runs solely on the pull request events below; no
+# comment, mention, or manual triggers are defined, so @claude mentions do not
+# start a session.
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review]
@@ -10,9 +14,14 @@ concurrency:
 jobs:
   review:
     # Repository secrets are unavailable to pull requests from forks, so only
-    # review non-draft pull requests opened from branches of this repository.
-    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    # review non-draft, human-authored pull requests opened from branches of
+    # this repository.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: write
@@ -110,4 +119,5 @@ jobs:
 
           claude_args: |
             --model azure/anthropic/claude-opus-5-5
+            --max-turns 60
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments:*)"
