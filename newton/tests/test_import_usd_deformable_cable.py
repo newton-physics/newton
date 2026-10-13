@@ -17,6 +17,7 @@ from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_physics_attachment,
     _apply_deformable_body_api,
+    _author_cable_rest_shape,
     _author_deformable_element_array,
     _author_newton_curve_damping,
     _bind_deformable_material,
@@ -657,13 +658,9 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_cable_rest_shape_preserves_initial_pose_and_sets_mass(self):
         """Keep initial segment centers while using rest lengths for size and mass."""
-        from pxr import Sdf
-
         stage = _deformable_stage()
         curves = _add_cable_curve(stage, "/World/Cable", [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)], density=1000.0)
-        curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
-            [(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)]
-        )
+        _author_cable_rest_shape(curves, points=[(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)])
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, return_deformable_results=True)
         bodies, joints = result["path_cable_map"]["/World/Cable"]
@@ -677,50 +674,37 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_cable_rest_normals_and_usd_fallback(self):
         """Import rest twist and use USD normals against the rest tangents when omitted."""
-        from pxr import Sdf, Usd, UsdGeom
+        from pxr import Usd, UsdGeom
 
         self.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
         initial = [(0, 0, 0), (0, 0, 0.1), (0, 0, 0.2)]
         bent = [(0, 0, 0), (0, 0, 0.1), (0.1, 0, 0.1)]
         initial_frame = wp.quat_from_axis_angle(wp.vec3(0, 0, 1), -math.pi / 4)
         turn = wp.quat_from_axis_angle(wp.vec3(0, 1, 0), math.pi / 2)
+        bent_frame = wp.quat_from_axis_angle(wp.vec3(1, 0, 0), math.pi / 2) * turn
+        twisted_frame = wp.quat_from_axis_angle(wp.vec3(0, 0, 1), -math.pi / 2)
+        cases = (
+            ("explicit", bent, [(0, 1, 0), (0, 0, 1), (0, 0, 0)], [wp.quat_identity(), bent_frame]),
+            ("fallback", bent, None, [initial_frame, turn]),
+            ("normals_only", None, [(0, 1, 0), (1, 0, 0), (0, 0, 0)], [wp.quat_identity(), twisted_frame]),
+        )
         for coord_layout in (False, True):
             newton.use_coord_layout_targets = coord_layout
-            for mode in ("explicit", "fallback", "normals_only"):
+            for mode, rest, normals, rest_frames in cases:
                 with self.subTest(coord_layout=coord_layout, mode=mode):
                     stage = _deformable_stage()
                     curves = _add_cable_curve(stage, "/World/Cable", initial)
                     curves.CreateNormalsAttr([(1, 1, 0)] * 3)
                     curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
-                    rest = initial if mode == "normals_only" else bent
-                    if mode != "normals_only":
-                        curves.GetPrim().CreateAttribute(
-                            "physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray
-                        ).Set(rest)
-                    if mode != "fallback":
-                        normals = (
-                            [(0, 1, 0), (1, 0, 0), (0, 0, 0)]
-                            if mode == "normals_only"
-                            else [(0, 1, 0), (0, 0, 1), (0, 0, 0)]
-                        )
-                        attr = curves.GetPrim().CreateAttribute("physics:restNormals", Sdf.ValueTypeNames.Normal3fArray)
-                        attr.Set(normals)
-                        attr.Set([(0, 1, 0)] * 3, Usd.TimeCode(1))
-                    if mode == "fallback":
-                        rest_frames = [initial_frame, turn]
-                    elif mode == "normals_only":
-                        rest_frames = [wp.quat_identity(), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), -math.pi / 2)]
-                    else:
-                        rest_frames = [
-                            wp.quat_identity(),
-                            wp.quat_from_axis_angle(wp.vec3(1, 0, 0), math.pi / 2) * turn,
-                        ]
+                    _author_cable_rest_shape(curves, points=rest, normals=normals)
+                    if normals is not None:
+                        curves.GetPrim().GetAttribute("physics:restNormals").Set([(0, 1, 0)] * 3, Usd.TimeCode(1))
                     native = newton.ModelBuilder()
                     _, native_joints = native.add_rod(
                         rod=newton.Rod(
                             initial,
                             quaternions=[initial_frame] * 2,
-                            rest_points=rest,
+                            rest_points=initial if rest is None else rest,
                             rest_quaternions=rest_frames,
                             radius=0.01,
                         )
@@ -746,7 +730,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_welded_cables_keep_rest_vectors_and_frames(self):
         """Weld translated rest shapes without changing their lengths or material frames."""
-        from pxr import Sdf, UsdGeom
+        from pxr import UsdGeom
 
         self.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
         newton.use_coord_layout_targets = True
@@ -758,8 +742,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             curves = UsdGeom.BasisCurves(stage.GetPrimAtPath(f"/World/{name}"))
             curves.CreateNormalsAttr([normal] * 4)
             curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
-            curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(rest)
-            curves.GetPrim().CreateAttribute("physics:restNormals", Sdf.ValueTypeNames.Normal3fArray).Set([normal] * 4)
+            _author_cable_rest_shape(curves, points=rest, normals=[normal] * 4)
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, return_deformable_results=True)
         self.assertIn("graph_component", result["path_cable_attrs"]["/World/CableA"])
@@ -841,8 +824,6 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_cable_rest_volume_mass_precedence(self):
         """Use rest volumes for mass weights while preserving explicit segment masses."""
-        from pxr import Sdf
-
         for mode, values, expected in (
             ("constant", [6.0], [2.0, 4.0]),
             ("curve", [9.0], [3.0, 6.0]),
@@ -853,9 +834,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             with self.subTest(mode=mode):
                 stage = _deformable_stage()
                 curves = _add_cable_curve(stage, "/World/Cable", [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)])
-                curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
-                    [(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)]
-                )
+                _author_cable_rest_shape(curves, points=[(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)])
                 _apply_deformable_body_api(curves.GetPrim(), mass=12.0, density=500.0)
                 if mode != "body":
                     _author_deformable_element_array(curves.GetPrim(), "masses", values, mode)
@@ -868,7 +847,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_periodic_cable_rest_shape_matches_native_rod(self):
         """Keep the closing segment and its rest rotation on a stretched periodic cable."""
-        from pxr import Sdf, UsdGeom
+        from pxr import UsdGeom
 
         stage = _deformable_stage()
         initial = [(0, 0, 0), (0, 0, 0.2), (0.2, 0, 0)]
@@ -876,7 +855,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         curves = _add_cable_curve(stage, "/World/Cable", initial, periodic=True)
         curves.CreateNormalsAttr([(0, 1, 0)] * 3)
         curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
-        curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(rest)
+        _author_cable_rest_shape(curves, points=rest)
         frames = [wp.quat_from_axis_angle(wp.vec3(0, 1, 0), angle) for angle in (0.0, 3 * math.pi / 4, -math.pi / 2)]
         native = newton.ModelBuilder()
         _, native_joints = native.add_rod(
@@ -976,13 +955,9 @@ class TestUSDDeformableCable(unittest.TestCase):
                     )
                     primvar.Set([normal])
                     primvar.SetIndices([0, 0, 0])
-                    curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
-                        rest_points
+                    _author_cable_rest_shape(
+                        curves, points=rest_points, normals=[rest_normal] * 3 if explicit_rest_normals else None
                     )
-                    if explicit_rest_normals:
-                        curves.GetPrim().CreateAttribute("physics:restNormals", Sdf.ValueTypeNames.Normal3fArray).Set(
-                            [rest_normal] * 3
-                        )
                     builder = newton.ModelBuilder()
                     with self.assertWarnsRegex(UserWarning, "non-unit linear units"):
                         builder.add_usd(
@@ -997,7 +972,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_cable_rest_shape_recovers_in_vbd(self):
         """Relax imported stretch, bend, and twist while leaving a rest-state control still."""
-        from pxr import Sdf, UsdGeom, UsdPhysics
+        from pxr import UsdGeom, UsdPhysics
 
         bend, twist = 0.25, 0.2
         rest = [(0, 0, 0), (0, 0, 0.1), (0.1 * math.sin(bend), 0, 0.1 + 0.1 * math.cos(bend))]
@@ -1014,12 +989,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                     curves = _add_cable_curve(stage, "/World/Cable", initial, collision=False)
                     curves.CreateNormalsAttr(rest_normals if relaxed else [(0, 1, 0)] * 3)
                     curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
-                    curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
-                        rest
-                    )
-                    curves.GetPrim().CreateAttribute("physics:restNormals", Sdf.ValueTypeNames.Normal3fArray).Set(
-                        rest_normals
-                    )
+                    _author_cable_rest_shape(curves, points=rest, normals=rest_normals)
                     material = _bind_deformable_material(
                         stage,
                         curves.GetPrim(),

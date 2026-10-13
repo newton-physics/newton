@@ -15,6 +15,7 @@ from newton.tests._usd_deformable_test_utils import (
     _add_cloth_mesh,
     _add_element_collision_filter,
     _add_physics_attachment,
+    _author_cable_rest_shape,
     _author_deformable_element_array,
     _bind_deformable_material,
     _deformable_stage,
@@ -336,7 +337,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
     def test_strained_cable_attachments_use_rest_endpoints(self):
         """Use material endpoints in rooted and separate attachments without moving the cable."""
-        from pxr import Sdf, UsdGeom, UsdPhysics
+        from pxr import UsdGeom, UsdPhysics
 
         for endpoint, expected_body, expected_z in ((0, 0, -0.05), (2, 1, 0.1)):
             for rooted in (False, True):
@@ -348,9 +349,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                     UsdPhysics.CollisionAPI.Apply(plug.GetPrim())
                     points = [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)]
                     curves = _add_cable_curve(stage, "/World/Cable", points)
-                    curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
-                        [(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)]
-                    )
+                    _author_cable_rest_shape(curves, points=[(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)])
                     _add_physics_attachment(
                         stage,
                         "/World/Endpoint",
