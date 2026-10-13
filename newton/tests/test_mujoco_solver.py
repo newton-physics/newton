@@ -4157,7 +4157,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
             builder.add_shape_sphere(body=body, radius=0.5)
         return builder.finalize()
 
-    def setUp(self):
+    def _setup_sphere_on_plane(self):
         """Set up a simple model with a sphere and a plane."""
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
@@ -4172,16 +4172,14 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         )
 
         self.model = builder.finalize()
-        self.state_in = self.model.state()
-        self.state_out = self.model.state()
-        self.control = self.model.control()
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.collision_pipeline.contacts()
-        self.collision_pipeline.collide(self.state_in, self.contacts)
         self.sphere_body_idx = sphere_body_idx
 
     def test_sphere_on_plane_with_newton_contacts(self):
         """Test that a sphere correctly collides with a plane using Newton contacts."""
+        self._setup_sphere_on_plane()
+        self.state_in = self.model.state()
+        self.state_out = self.model.state()
+        self.control = self.model.control()
         try:
             solver = SolverMuJoCo(self.model, use_mujoco_contacts=False)
         except ImportError as e:
@@ -4214,6 +4212,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
 
     def test_initial_forward_skips_mujoco_contacts(self):
         """Verify Newton-contact initialization skips transient MuJoCo collision detection."""
+        self._setup_sphere_on_plane()
         try:
             mujoco, _ = SolverMuJoCo.import_mujoco()
             original_forward = mujoco.mj_forward
@@ -4703,7 +4702,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
 
     def test_recapture_after_discarded_capture(self):
         """Replay a replacement graph after discarding the first capture without replay."""
-        device = self.model.device
+        device = wp.get_device()
         if not device.is_cuda or not wp.is_mempool_enabled(device):
             self.skipTest("CUDA graph capture requires a CUDA device with the memory pool enabled.")
 
@@ -5540,7 +5539,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
             "contact_generation",
         )
         snapshots = {field: getattr(contacts, field).numpy().copy() for field in fields}
-        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
         for _ in range(3):
             observables.contact_f.fill_(float("nan"))
             solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
@@ -5585,7 +5584,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
             model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
         )
         contacts = collision_pipeline.contacts()
-        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
         dt = 0.002
@@ -7433,25 +7432,69 @@ class TestMuJoCoOptions(unittest.TestCase):
             msg=f"impratio=2.0 should produce valid impratio_invsqrt={expected_invsqrt}",
         )
 
-    def test_scalar_options_constructor_override(self):
-        """
-        Verify that passing scalar options (impratio, tolerance, ls_tolerance, ccd_tolerance, density, viscosity)
-        to the SolverMuJoCo constructor overrides any per-world values from custom attributes.
-        """
+    def test_options_use_custom_attributes(self):
+        """Resolve enum, iteration, and shared numeric options from custom attributes."""
+        model = self._create_multiworld_model(world_count=3)
+        model.mujoco.solver.assign(np.array([1], dtype=np.int32))  # CG
+        model.mujoco.integrator.assign(np.array([0], dtype=np.int32))  # Euler
+        model.mujoco.cone.assign(np.array([1], dtype=np.int32))  # elliptic
+        model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))  # sparse
+        model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
+        model.mujoco.ls_iterations.assign(np.array([75], dtype=np.int32))
+        ccd_iterations = model.mujoco.ccd_iterations.numpy()
+        sdf_iterations = model.mujoco.sdf_iterations.numpy()
+        sdf_initpoints = model.mujoco.sdf_initpoints.numpy()
+        self.assertEqual(len(ccd_iterations), 1, "ONCE frequency should have single value")
+        self.assertEqual(len(sdf_iterations), 1, "ONCE frequency should have single value")
+        self.assertEqual(len(sdf_initpoints), 1, "ONCE frequency should have single value")
+        model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
+        model.mujoco.sdf_iterations.assign(np.array([20], dtype=np.int32))
+        model.mujoco.sdf_initpoints.assign(np.array([50], dtype=np.int32))
+
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        mujoco = SolverMuJoCo._mujoco
+        self.assertEqual(
+            solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_CG, "Should use custom attribute CG, not Newton default"
+        )
+        self.assertEqual(
+            solver.mj_model.opt.integrator,
+            mujoco.mjtIntegrator.mjINT_EULER,
+            "Should use custom attribute Euler, not Newton default implicitfast",
+        )
+        self.assertEqual(
+            solver.mj_model.opt.cone,
+            mujoco.mjtCone.mjCONE_ELLIPTIC,
+            "Should use custom attribute elliptic, not Newton default pyramidal",
+        )
+        self.assertEqual(
+            solver.mj_model.opt.jacobian,
+            mujoco.mjtJacobian.mjJAC_SPARSE,
+            "Should use custom attribute sparse, not Newton default auto",
+        )
+        self.assertEqual(solver.mj_model.opt.iterations, 150, "Should use custom attribute 150, not default 100")
+        self.assertEqual(solver.mj_model.opt.ls_iterations, 75, "Should use custom attribute 75, not default 50")
+        self.assertEqual(solver.mj_model.opt.ccd_iterations, 25)
+        self.assertEqual(solver.mj_model.opt.sdf_iterations, 20)
+        self.assertEqual(solver.mj_model.opt.sdf_initpoints, 50)
+
+    def test_options_constructor_override(self):
+        """Give constructor options precedence over authored values in every world."""
         world_count = 2
         model = self._create_multiworld_model(world_count)
-
-        # Set custom attribute values per world
         model.mujoco.impratio.assign(np.array([1.5, 1.5], dtype=np.float32))
         model.mujoco.tolerance.assign(np.array([1e-6, 1e-7], dtype=np.float32))
         model.mujoco.ls_tolerance.assign(np.array([0.01, 0.02], dtype=np.float32))
         model.mujoco.ccd_tolerance.assign(np.array([1e-6, 1e-7], dtype=np.float32))
         model.mujoco.density.assign(np.array([0.0, 0.0], dtype=np.float32))
         model.mujoco.viscosity.assign(np.array([0.0, 0.0], dtype=np.float32))
+        model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
+        model.mujoco.sdf_iterations.assign(np.array([20], dtype=np.int32))
+        model.mujoco.sdf_initpoints.assign(np.array([50], dtype=np.int32))
+        model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
+        model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
+        model.mujoco.ls_iterations.assign(np.array([75], dtype=np.int32))
 
-        # Create solver WITH constructor overrides
-        # NOTE: density and viscosity must be 0 to avoid triggering MuJoCo Warp's
-        # "fluid model not implemented" error. Non-zero values enable fluid dynamics.
+        # Nonzero density/viscosity require fluid dynamics, which MuJoCo Warp does not support.
         solver = SolverMuJoCo(
             model,
             impratio=3.0,
@@ -7460,26 +7503,26 @@ class TestMuJoCoOptions(unittest.TestCase):
             ccd_tolerance=1e-4,
             density=0.0,
             viscosity=0.0,
-            iterations=1,
+            ccd_iterations=100,
+            sdf_iterations=30,
+            sdf_initpoints=80,
+            jacobian="dense",
+            iterations=5,
+            ls_iterations=3,
             disable_contacts=True,
         )
-
-        # Verify MuJoCo Warp uses constructor-provided values (tiled to all worlds)
         mjw_impratio_invsqrt = solver.mjw_model.opt.impratio_invsqrt.numpy()
         mjw_tolerance = solver.mjw_model.opt.tolerance.numpy()
         mjw_ls_tolerance = solver.mjw_model.opt.ls_tolerance.numpy()
         mjw_ccd_tolerance = solver.mjw_model.opt.ccd_tolerance.numpy()
         mjw_density = solver.mjw_model.opt.density.numpy()
         mjw_viscosity = solver.mjw_model.opt.viscosity.numpy()
-
         self.assertEqual(len(mjw_impratio_invsqrt), world_count)
         self.assertEqual(len(mjw_tolerance), world_count)
         self.assertEqual(len(mjw_ls_tolerance), world_count)
         self.assertEqual(len(mjw_ccd_tolerance), world_count)
         self.assertEqual(len(mjw_density), world_count)
         self.assertEqual(len(mjw_viscosity), world_count)
-
-        # All worlds should have the same constructor-provided values
         expected_impratio_invsqrt = 1.0 / np.sqrt(3.0)
         for world_idx in range(world_count):
             self.assertAlmostEqual(
@@ -7501,6 +7544,49 @@ class TestMuJoCoOptions(unittest.TestCase):
             self.assertAlmostEqual(
                 mjw_viscosity[world_idx], 0.0, places=10, msg=f"viscosity[{world_idx}] should be 0.0"
             )
+        self.assertEqual(solver.mj_model.opt.ccd_iterations, 100, "Constructor should override custom attribute")
+        self.assertEqual(solver.mj_model.opt.sdf_iterations, 30, "Constructor should override custom attribute")
+        self.assertEqual(solver.mj_model.opt.sdf_initpoints, 80, "Constructor should override custom attribute")
+        self.assertEqual(solver.mj_model.opt.jacobian, SolverMuJoCo._mujoco.mjtJacobian.mjJAC_DENSE)
+        self.assertEqual(solver.mj_model.opt.iterations, 5, "Constructor value should override custom attribute")
+        self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
+
+    def test_options_use_defaults(self):
+        """
+        Verify that solver, integrator, cone, and jacobian use Newton defaults
+        when no constructor parameter or custom attribute is provided.
+        """
+        # Create model WITHOUT registering custom attributes
+        builder = newton.ModelBuilder()
+        pendulum = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        builder.add_articulation([joint])
+        model = builder.finalize()
+
+        # Create solver without specifying enum options - should use Newton defaults
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        mujoco = SolverMuJoCo._mujoco
+
+        # Verify Newton defaults are used
+        # Newton defaults: solver=Newton(2), integrator=implicitfast(3), cone=pyramidal(0), jacobian=auto(2)
+        self.assertEqual(
+            solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_NEWTON, "Should use Newton default (Newton solver)"
+        )
+        self.assertEqual(
+            solver.mj_model.opt.integrator,
+            mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+            "Should use Newton default (implicitfast)",
+        )
+        self.assertEqual(
+            solver.mj_model.opt.cone, mujoco.mjtCone.mjCONE_PYRAMIDAL, "Should use Newton default (pyramidal)"
+        )
+        self.assertEqual(
+            solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_AUTO, "Should use Newton default (auto)"
+        )
+
+        self.assertEqual(solver.mj_model.opt.iterations, 100, "Should use MuJoCo default (100)")
+        self.assertEqual(solver.mj_model.opt.ls_iterations, 50, "Should use MuJoCo default (50)")
 
     def test_vector_options_multiworld_conversion(self):
         """
@@ -7558,230 +7644,6 @@ class TestMuJoCoOptions(unittest.TestCase):
                 msg=f"MuJoCo Warp magnetic[{world_idx}] should be {initial_magnetic[world_idx]}",
             )
 
-    def test_once_numeric_options_shared_across_worlds(self):
-        """
-        Verify that ONCE frequency numeric options (ccd_iterations, sdf_iterations, sdf_initpoints)
-        are shared across all worlds (not per-world arrays).
-        """
-        world_count = 3
-        model = self._create_multiworld_model(world_count)
-
-        # ONCE frequency: single value, not per-world array
-        ccd_iterations = model.mujoco.ccd_iterations.numpy()
-        sdf_iterations = model.mujoco.sdf_iterations.numpy()
-        sdf_initpoints = model.mujoco.sdf_initpoints.numpy()
-        self.assertEqual(len(ccd_iterations), 1, "ONCE frequency should have single value")
-        self.assertEqual(len(sdf_iterations), 1, "ONCE frequency should have single value")
-        self.assertEqual(len(sdf_initpoints), 1, "ONCE frequency should have single value")
-
-        # Set values
-        model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
-        model.mujoco.sdf_iterations.assign(np.array([20], dtype=np.int32))
-        model.mujoco.sdf_initpoints.assign(np.array([50], dtype=np.int32))
-
-        # Create solver without constructor override
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-
-        # Verify MuJoCo model uses the custom attribute values
-        self.assertEqual(solver.mj_model.opt.ccd_iterations, 25)
-        self.assertEqual(solver.mj_model.opt.sdf_iterations, 20)
-        self.assertEqual(solver.mj_model.opt.sdf_initpoints, 50)
-
-    def test_once_numeric_options_constructor_override(self):
-        """
-        Verify that constructor parameters override custom attribute values
-        for ONCE frequency numeric options.
-        """
-        model = self._create_multiworld_model(world_count=2)
-
-        # Set custom attribute values
-        model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
-        model.mujoco.sdf_iterations.assign(np.array([20], dtype=np.int32))
-        model.mujoco.sdf_initpoints.assign(np.array([50], dtype=np.int32))
-
-        # Create solver WITH constructor overrides
-        solver = SolverMuJoCo(
-            model,
-            ccd_iterations=100,
-            sdf_iterations=30,
-            sdf_initpoints=80,
-            iterations=1,
-            disable_contacts=True,
-        )
-
-        # Verify MuJoCo model uses constructor-provided values
-        self.assertEqual(solver.mj_model.opt.ccd_iterations, 100, "Constructor should override custom attribute")
-        self.assertEqual(solver.mj_model.opt.sdf_iterations, 30, "Constructor should override custom attribute")
-        self.assertEqual(solver.mj_model.opt.sdf_initpoints, 80, "Constructor should override custom attribute")
-
-    def test_jacobian_from_custom_attribute(self):
-        """
-        Verify that jacobian option is read from custom attribute when not provided to constructor.
-        """
-        model = self._create_multiworld_model(world_count=2)
-
-        # Set jacobian to sparse (1)
-        model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
-
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-
-        # Verify MuJoCo model uses custom attribute value
-        self.assertEqual(solver.mj_model.opt.jacobian, SolverMuJoCo._mujoco.mjtJacobian.mjJAC_SPARSE)
-
-    def test_jacobian_constructor_override(self):
-        """
-        Verify that jacobian constructor parameter overrides custom attribute value.
-        """
-        model = self._create_multiworld_model(world_count=2)
-
-        # Set jacobian custom attribute to sparse (1)
-        model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
-
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, jacobian="dense")
-
-        # Verify MuJoCo model uses constructor parameter, not custom attribute
-        self.assertEqual(solver.mj_model.opt.jacobian, SolverMuJoCo._mujoco.mjtJacobian.mjJAC_DENSE)
-
-    def test_enum_options_use_custom_attributes_when_not_provided(self):
-        """
-        Verify that solver, integrator, cone, and jacobian options use custom attribute
-        values when no constructor parameter is provided.
-
-        This tests the resolution priority:
-        1. Constructor parameter (if provided)
-        2. Custom attribute (if exists)
-        3. Default value
-        """
-        model = self._create_multiworld_model(world_count=2)
-
-        # Set custom attributes to non-default values
-        # Newton defaults: solver=2 (Newton), integrator=3 (implicitfast), cone=0 (pyramidal), jacobian=2 (auto)
-        # Set to: solver=1 (CG), integrator=0 (Euler), cone=1 (elliptic), jacobian=1 (sparse)
-        model.mujoco.solver.assign(np.array([1], dtype=np.int32))  # CG
-        model.mujoco.integrator.assign(np.array([0], dtype=np.int32))  # Euler
-        model.mujoco.cone.assign(np.array([1], dtype=np.int32))  # elliptic
-        model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))  # sparse
-
-        # Create solver WITHOUT specifying these options - should use custom attributes
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        mujoco = SolverMuJoCo._mujoco
-
-        # Verify MuJoCo model uses custom attribute values, not Newton defaults
-        self.assertEqual(
-            solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_CG, "Should use custom attribute CG, not Newton default"
-        )
-        self.assertEqual(
-            solver.mj_model.opt.integrator,
-            mujoco.mjtIntegrator.mjINT_EULER,
-            "Should use custom attribute Euler, not Newton default implicitfast",
-        )
-        self.assertEqual(
-            solver.mj_model.opt.cone,
-            mujoco.mjtCone.mjCONE_ELLIPTIC,
-            "Should use custom attribute elliptic, not Newton default pyramidal",
-        )
-        self.assertEqual(
-            solver.mj_model.opt.jacobian,
-            mujoco.mjtJacobian.mjJAC_SPARSE,
-            "Should use custom attribute sparse, not Newton default auto",
-        )
-
-    def test_enum_options_use_defaults_when_no_custom_attribute(self):
-        """
-        Verify that solver, integrator, cone, and jacobian use Newton defaults
-        when no constructor parameter or custom attribute is provided.
-        """
-        # Create model WITHOUT registering custom attributes
-        builder = newton.ModelBuilder()
-        pendulum = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
-        builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        builder.add_articulation([joint])
-        model = builder.finalize()
-
-        # Create solver without specifying enum options - should use Newton defaults
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        mujoco = SolverMuJoCo._mujoco
-
-        # Verify Newton defaults are used
-        # Newton defaults: solver=Newton(2), integrator=implicitfast(3), cone=pyramidal(0), jacobian=auto(2)
-        self.assertEqual(
-            solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_NEWTON, "Should use Newton default (Newton solver)"
-        )
-        self.assertEqual(
-            solver.mj_model.opt.integrator,
-            mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-            "Should use Newton default (implicitfast)",
-        )
-        self.assertEqual(
-            solver.mj_model.opt.cone, mujoco.mjtCone.mjCONE_PYRAMIDAL, "Should use Newton default (pyramidal)"
-        )
-        self.assertEqual(
-            solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_AUTO, "Should use Newton default (auto)"
-        )
-
-    def test_iterations_use_custom_attributes_when_not_provided(self):
-        """
-        Verify that iterations and ls_iterations use custom attribute values
-        when no constructor parameter is provided.
-
-        This tests the resolution priority:
-        1. Constructor parameter (if provided)
-        2. Custom attribute (if exists)
-        3. Default value
-        """
-        model = self._create_multiworld_model(world_count=2)
-
-        # Set custom attributes to non-default values
-        # MuJoCo defaults: iterations=100, ls_iterations=50
-        # Set to: iterations=150, ls_iterations=75
-        model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
-        model.mujoco.ls_iterations.assign(np.array([75], dtype=np.int32))
-
-        # Create solver WITHOUT specifying these options - should use custom attributes
-        solver = SolverMuJoCo(model, disable_contacts=True)
-
-        # Verify MuJoCo model uses custom attribute values, not defaults
-        self.assertEqual(solver.mj_model.opt.iterations, 150, "Should use custom attribute 150, not default 100")
-        self.assertEqual(solver.mj_model.opt.ls_iterations, 75, "Should use custom attribute 75, not default 50")
-
-    def test_iterations_use_defaults_when_no_custom_attribute(self):
-        """
-        Verify that iterations and ls_iterations use MuJoCo defaults when no
-        constructor parameter or custom attribute is provided.
-        """
-        # Create model WITHOUT registering custom attributes
-        builder = newton.ModelBuilder()
-        pendulum = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
-        builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        builder.add_articulation([joint])
-        model = builder.finalize()
-
-        # Create solver without specifying iterations - should use MuJoCo defaults
-        solver = SolverMuJoCo(model, disable_contacts=True)
-
-        # Verify MuJoCo defaults are used: iterations=100, ls_iterations=50
-        self.assertEqual(solver.mj_model.opt.iterations, 100, "Should use MuJoCo default (100)")
-        self.assertEqual(solver.mj_model.opt.ls_iterations, 50, "Should use MuJoCo default (50)")
-
-    def test_iterations_constructor_override(self):
-        """
-        Verify that constructor parameters override custom attributes for iterations.
-        """
-        model = self._create_multiworld_model(world_count=2)
-
-        # Set custom attributes
-        model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
-        model.mujoco.ls_iterations.assign(np.array([75], dtype=np.int32))
-
-        # Create solver with explicit constructor values - should override custom attributes
-        solver = SolverMuJoCo(model, iterations=5, ls_iterations=3, disable_contacts=True)
-
-        # Verify constructor values override custom attributes
-        self.assertEqual(solver.mj_model.opt.iterations, 5, "Constructor value should override custom attribute")
-        self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
-
     def test_disable_sensors_computes_rne_state_attributes(self):
         """Compute legacy body diagnostics even with sensors disabled."""
         self._check_disable_sensors_rne(legacy_state_attributes=True)
@@ -7789,8 +7651,8 @@ class TestMuJoCoOptions(unittest.TestCase):
     def test_disable_sensors_computes_rne_observables(self):
         """Compute each RNE observable without requesting legacy state arrays."""
         for flag in (
-            newton.solvers.SolverObservableFlags.BODY_QDD,
-            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
+            newton.solvers.SolverBase.ObservableKind.BODY_QDD,
+            newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F,
         ):
             with self.subTest(flag=flag):
                 self._check_disable_sensors_rne(observable_flag=flag)
@@ -7803,7 +7665,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         sensors-enabled reference.
         """
         results = {}
-        attributes = ("body_qdd", "body_parent_f") if legacy_state_attributes else (observable_flag.value,)
+        attributes = ("body_qdd", "body_parent_f") if legacy_state_attributes else (observable_flag,)
         for disable_sensors in (False, True):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
             if legacy_state_attributes:
@@ -7825,7 +7687,7 @@ class TestMuJoCoOptions(unittest.TestCase):
             newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
             observables = None
             if not legacy_state_attributes:
-                observables = solver.observables({observable_flag})
+                observables = solver.observables(kinds={observable_flag})
                 self.assertIsNone(state_out.body_qdd)
                 self.assertIsNone(state_out.body_parent_f)
             solver.step(state_in, state_out, None, None, 1.0e-3, observables=observables)
@@ -7848,9 +7710,9 @@ class TestMuJoCoOptions(unittest.TestCase):
         """Select a custom actuator field without requesting allocated body diagnostics."""
         model = self._create_multiworld_model(world_count=1)
         solver = SolverMuJoCo(model, disable_sensors=True)
-        flags = newton.solvers.SolverObservableFlags
-        actuator_flag = SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR
-        observables = solver.observables({flags.BODY_QDD, actuator_flag})
+        flags = solver.ObservableKind
+        actuator_flag = solver.ObservableKind.QFRC_ACTUATOR
+        observables = solver.observables(kinds={flags.BODY_QDD, actuator_flag})
         selected = observables.select({actuator_flag})
         self.assertIs(type(selected), SolverMuJoCo.Observables)
         self.assertIs(selected.qfrc_actuator, observables.qfrc_actuator)
@@ -7866,13 +7728,21 @@ class TestMuJoCoOptions(unittest.TestCase):
         """Reject unsupported body/contact exports while retaining native actuator forces."""
         model = self._create_multiworld_model(world_count=1)
         solver = SolverMuJoCo(model, use_mujoco_cpu=True)
-        for flag in newton.solvers.SolverObservableFlags:
+        for flag in (
+            solver.ObservableKind.BODY_QDD,
+            solver.ObservableKind.BODY_PARENT_F,
+            solver.ObservableKind.CONTACT_F,
+        ):
             with self.subTest(flag=flag):
-                self.assertNotIn(flag, solver.supported_observable_flags)
+                self.assertNotIn(flag, solver.supported_observables)
                 with self.assertRaisesRegex(ValueError, "does not support"):
-                    solver.observables({flag})
-        flag = SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR
-        observables = solver.observables({flag})
+                    solver.observables(kinds={flag})
+        flag = SolverMuJoCo.ObservableKind.QFRC_ACTUATOR
+        observables = solver.observables(solver.supported_observables)
+        self.assertEqual(observables.kinds, {flag})
+        self.assertIsNone(observables.body_qdd)
+        self.assertIsNone(observables.body_parent_f)
+        self.assertIsNone(observables.contact_f)
         observables.qfrc_actuator.fill_(float("nan"))
         solver.mjw_data.qfrc_actuator.fill_(1234.0)
         solver.step(model.state(), model.state(), model.control(), None, 0.01, observables=observables)
@@ -8726,7 +8596,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         builder.add_articulation([ball_j])
         model = builder.finalize()
         solver = SolverMuJoCo(model)
-        observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
+        observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
 
         q_start = int(model.joint_q_start.numpy()[ball_j])
         qd_start = int(model.joint_qd_start.numpy()[ball_j])
@@ -9720,103 +9590,120 @@ class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
 class TestMuJoCoSolverQpos0(unittest.TestCase):
     """Tests for qpos0, qpos_spring, ref/springref coordinate conversion, and FK correctness."""
 
-    # -- Group A: qpos0 initial values per joint type --
-
-    def test_free_joint_qpos0(self):
-        """Verify free joint qpos0 contains body position and identity quaternion.
-
-        A free joint body at pos="0 0 1.5" should produce qpos0 with
-        position [0, 0, 1.5] and identity quaternion [1, 0, 0, 0] (wxyz).
-        """
+    def test_reference_coordinates_and_roundtrip(self):
+        """Convert reference coordinates, spring coordinates, and state in both directions."""
         mjcf = """<mujoco><worldbody>
-            <body name="b" pos="0 0 1.5">
-                <joint type="free"/>
+            <body name="floating" pos="0 0 1.5">
+                <joint name="free_initial" type="free"/>
                 <geom type="sphere" size="0.1"/>
             </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos0 = solver.mjw_model.qpos0.numpy()
-        np.testing.assert_allclose(qpos0[0, :3], [0, 0, 1.5], atol=1e-6)
-        np.testing.assert_allclose(qpos0[0, 3:7], [1, 0, 0, 0], atol=1e-6)  # wxyz identity
-
-    def test_hinge_with_ref_qpos0(self):
-        """Verify hinge joint qpos0 equals ref in radians.
-
-        A hinge with ref=90 degrees should produce qpos0 approximately
-        equal to pi/2 radians.
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="hinge" axis="0 1 0" ref="90"/>
+            <body name="hinge_ref_base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="hinge_ref_body" pos="0 0 1">
+                    <joint name="hinge_ref" type="hinge" axis="0 1 0" ref="90"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+            <body name="slide_ref_base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="slide_ref_body" pos="0 0 1">
+                    <joint name="slide_ref" type="slide" axis="0 0 1" ref="0.1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+            <body name="hinge_zero_base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="hinge_zero_body" pos="0 0 1">
+                    <joint name="hinge_zero" type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+            <body name="hinge_spring_base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="hinge_spring_body" pos="0 0 1">
+                    <joint name="hinge_spring" type="hinge" axis="0 1 0" springref="30"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+            <body name="free_roundtrip_body" pos="1 2 3">
+                <joint name="free_roundtrip" type="free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+            <body name="slide_spring_base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="slide_spring_body" pos="0 0 1">
+                    <joint name="slide_spring" type="slide" axis="0 0 1" springref="0.25"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+            <body name="slide_roundtrip_base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="slide_roundtrip_body" pos="0 0 1">
+                    <joint name="slide_roundtrip" type="slide" axis="0 0 1" ref="0.5"/>
                     <geom type="box" size="0.1 0.1 0.1"/>
                 </body>
             </body>
         </worldbody></mujoco>"""
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos0 = solver.mjw_model.qpos0.numpy()
-        np.testing.assert_allclose(qpos0[0, 0], np.pi / 2, atol=1e-5)
-
-    def test_slide_with_ref_qpos0(self):
-        """Verify slide joint qpos0 equals ref value.
-
-        A slide joint with ref=0.1 should produce qpos0 equal to 0.1.
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="slide" axis="0 0 1" ref="0.1"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos0 = solver.mjw_model.qpos0.numpy()
-        np.testing.assert_allclose(qpos0[0, 0], 0.1, atol=1e-6)
-
-    def test_ball_joint_qpos0(self):
-        """Verify ball joint qpos0 is an identity quaternion.
-
-        A ball joint should produce qpos0 equal to [1, 0, 0, 0] (wxyz).
-        """
-        builder = newton.ModelBuilder()
+        builder.joint_label = [label.rsplit("/", 1)[-1] for label in builder.joint_label]
         parent = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         builder.add_shape_box(body=parent, hx=0.1, hy=0.1, hz=0.1)
-        j0 = builder.add_joint_fixed(-1, parent)
+        root = builder.add_joint_fixed(-1, parent)
         child = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         builder.add_shape_box(body=child, hx=0.1, hy=0.1, hz=0.1)
-        j1 = builder.add_joint_ball(parent, child)
-        builder.add_articulation([j0, j1])
+        ball = builder.add_joint_ball(parent, child, label="ball")
+        builder.add_articulation([root, ball])
         model = builder.finalize()
         solver = SolverMuJoCo(model)
-        qpos0 = solver.mjw_model.qpos0.numpy()
-        np.testing.assert_allclose(qpos0[0, :4], [1, 0, 0, 0], atol=1e-6)
 
-    def test_hinge_no_ref_qpos0(self):
-        """Verify hinge joint without ref has qpos0 of zero."""
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="hinge" axis="0 1 0"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos0 = solver.mjw_model.qpos0.numpy()
-        np.testing.assert_allclose(qpos0[0, 0], 0.0, atol=1e-6)
+        expected_qpos0 = {
+            "free_initial": ([0, 0, 1.5, 1, 0, 0, 0], 1e-6),
+            "hinge_ref": ([np.pi / 2], 1e-5),
+            "slide_ref": ([0.1], 1e-6),
+            "hinge_zero": ([0.0], 1e-6),
+            "ball": ([1, 0, 0, 0], 1e-6),
+        }
+        qpos0 = solver.mjw_model.qpos0.numpy()[0]
+        qpos_spring = solver.mjw_model.qpos_spring.numpy()[0]
+        for name, (expected, atol) in expected_qpos0.items():
+            with self.subTest(property="qpos0", joint=name):
+                start = int(solver.mj_model.joint(name).qposadr[0])
+                np.testing.assert_allclose(qpos0[start : start + len(expected)], expected, atol=atol)
+        for name, expected, atol in (("hinge_spring", np.pi / 6, 1e-5), ("slide_spring", 0.25, 1e-6)):
+            with self.subTest(property="qpos_spring", joint=name):
+                start = int(solver.mj_model.joint(name).qposadr[0])
+                np.testing.assert_allclose(qpos_spring[start], expected, atol=atol)
+        free_mj_start = int(solver.mj_model.joint("free_roundtrip").qposadr[0])
+        np.testing.assert_allclose(
+            qpos_spring[free_mj_start : free_mj_start + 7], qpos0[free_mj_start : free_mj_start + 7], atol=1e-6
+        )
+
+        q_start = model.joint_q_start.numpy()
+        hinge_start = int(q_start[model.joint_label.index("hinge_ref")])
+        slide_start = int(q_start[model.joint_label.index("slide_roundtrip")])
+        free_start = int(q_start[model.joint_label.index("free_roundtrip")])
+        hinge_mj_start = int(solver.mj_model.joint("hinge_ref").qposadr[0])
+        slide_mj_start = int(solver.mj_model.joint("slide_roundtrip").qposadr[0])
+        state = model.state()
+        original_q = state.joint_q.numpy().copy()
+        original_q[slide_start] = 0.3
+        state.joint_q.assign(original_q)
+        solver._update_mjc_data(solver.mjw_data, model, state)
+        qpos = solver.mjw_data.qpos.numpy()
+        with self.subTest(direction="Newton to MuJoCo"):
+            np.testing.assert_allclose(qpos[0, hinge_mj_start], np.pi / 2, atol=1e-5)
+            np.testing.assert_allclose(qpos[0, slide_mj_start], 0.8, atol=1e-5)
+
+        qpos[0, hinge_mj_start] = np.pi / 2 + 0.1
+        solver.mjw_data.qpos.assign(qpos)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        state_out = model.state()
+        solver._update_newton_state(model, state_out, solver.mjw_data, state_prev=state)
+        actual_q = state_out.joint_q.numpy()
+        with self.subTest(direction="MuJoCo to Newton"):
+            np.testing.assert_allclose(actual_q[hinge_start], 0.1, atol=1e-5)
+            np.testing.assert_allclose(actual_q[slide_start], 0.3, atol=1e-5)
+            np.testing.assert_allclose(
+                actual_q[free_start : free_start + 3], original_q[free_start : free_start + 3], atol=1e-5
+            )
+            q_orig = original_q[free_start + 3 : free_start + 7]
+            q_rt = actual_q[free_start + 3 : free_start + 7]
+            self.assertLess(min(np.linalg.norm(q_orig - q_rt), np.linalg.norm(q_orig + q_rt)), 1e-5)
 
     def test_mixed_model_qpos0(self):
         """Verify qpos0 for a model with free, hinge, and slide joints.
@@ -9850,183 +9737,6 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         np.testing.assert_allclose(qpos0[7], np.deg2rad(45), atol=1e-5)
         # Slide with ref=0.2
         np.testing.assert_allclose(qpos0[8], 0.2, atol=1e-6)
-
-    # -- Group B: qpos_spring values --
-
-    def test_hinge_springref_qpos_spring(self):
-        """Verify hinge qpos_spring equals springref in radians.
-
-        A hinge with springref=30 degrees should produce qpos_spring
-        approximately equal to pi/6 radians.
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="hinge" axis="0 1 0" springref="30"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos_spring = solver.mjw_model.qpos_spring.numpy()
-        np.testing.assert_allclose(qpos_spring[0, 0], np.deg2rad(30), atol=1e-5)
-
-    def test_free_joint_qpos_spring_matches_qpos0(self):
-        """Verify free joint qpos_spring equals qpos0."""
-        mjcf = """<mujoco><worldbody>
-            <body name="b" pos="1 2 3">
-                <joint type="free"/>
-                <geom type="sphere" size="0.1"/>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos0 = solver.mjw_model.qpos0.numpy()
-        qpos_spring = solver.mjw_model.qpos_spring.numpy()
-        np.testing.assert_allclose(qpos_spring, qpos0, atol=1e-6)
-
-    def test_slide_springref_qpos_spring(self):
-        """Verify slide qpos_spring equals springref value."""
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="slide" axis="0 0 1" springref="0.25"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        qpos_spring = solver.mjw_model.qpos_spring.numpy()
-        np.testing.assert_allclose(qpos_spring[0, 0], 0.25, atol=1e-6)
-
-    # -- Group C: Coordinate conversion with ref offset --
-
-    def test_hinge_ref_newton_to_mujoco(self):
-        """Verify Newton-to-MuJoCo conversion adds ref offset.
-
-        With ref=90 degrees, joint_q=0 should map to qpos=pi/2.
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="hinge" axis="0 1 0" ref="90"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        state = model.state()
-        # joint_q defaults to 0 for hinge
-        solver._update_mjc_data(solver.mjw_data, model, state)
-        qpos = solver.mjw_data.qpos.numpy()
-        np.testing.assert_allclose(qpos[0, 0], np.pi / 2, atol=1e-5)
-
-    def test_hinge_ref_mujoco_to_newton(self):
-        """Verify MuJoCo-to-Newton conversion subtracts ref offset.
-
-        With ref=90 degrees, qpos=pi/2+0.1 should map to joint_q=0.1.
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="hinge" axis="0 1 0" ref="90"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        # Set qpos = ref + 0.1
-        qpos = solver.mjw_data.qpos.numpy()
-        qpos[0, 0] = np.pi / 2 + 0.1
-        solver.mjw_data.qpos.assign(qpos)
-        state = model.state()
-        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver._update_newton_state(model, state, solver.mjw_data, state_prev=state)
-        joint_q = state.joint_q.numpy()
-        np.testing.assert_allclose(joint_q[0], 0.1, atol=1e-5)
-
-    def test_slide_ref_roundtrip(self):
-        """Verify slide joint_q survives Newton-MuJoCo-Newton roundtrip with ref.
-
-        Sets joint_q=0.3 with ref=0.5, converts to MuJoCo (expecting qpos=0.8),
-        then back to Newton (expecting joint_q=0.3).
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child" pos="0 0 1">
-                    <joint type="slide" axis="0 0 1" ref="0.5"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        state = model.state()
-
-        # Set a known joint_q value
-        test_q = 0.3
-        q = state.joint_q.numpy()
-        q[0] = test_q
-        state.joint_q.assign(q)
-
-        # Newton → MuJoCo
-        solver._update_mjc_data(solver.mjw_data, model, state)
-        qpos = solver.mjw_data.qpos.numpy()
-        np.testing.assert_allclose(qpos[0, 0], test_q + 0.5, atol=1e-5)
-
-        # MuJoCo → Newton
-        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        state2 = model.state()
-        solver._update_newton_state(model, state2, solver.mjw_data, state_prev=state)
-        np.testing.assert_allclose(state2.joint_q.numpy()[0], test_q, atol=1e-5)
-
-    def test_free_joint_position_roundtrip(self):
-        """Verify free joint position survives Newton-MuJoCo-Newton roundtrip.
-
-        Free joints have no ref offset, so joint_q should be preserved
-        exactly through the coordinate conversion cycle.
-        """
-        mjcf = """<mujoco><worldbody>
-            <body name="b" pos="1 2 3">
-                <joint type="free"/>
-                <geom type="sphere" size="0.1"/>
-            </body>
-        </worldbody></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        state = model.state()
-        original_q = state.joint_q.numpy().copy()
-
-        # Newton → MuJoCo → Newton
-        solver._update_mjc_data(solver.mjw_data, model, state)
-        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver._update_newton_state(model, state, solver.mjw_data, state_prev=state)
-        roundtrip_q = state.joint_q.numpy()
-
-        np.testing.assert_allclose(roundtrip_q[:3], original_q[:3], atol=1e-5)
-        # Quaternion comparison (sign-invariant)
-        q_orig = original_q[3:7]
-        q_rt = roundtrip_q[3:7]
-        quat_dist = min(np.linalg.norm(q_orig - q_rt), np.linalg.norm(q_orig + q_rt))
-        self.assertLess(quat_dist, 1e-5)
 
     def test_free_joint_anchor_transform_conversion(self):
         parent_xform = wp.transform(wp.vec3(1.0, -0.5, 0.25), wp.quat_rpy(0.2, -0.1, 0.3))
@@ -10933,7 +10643,7 @@ class TestMultiWorldQfrcActuatorCom(unittest.TestCase):
     def test_world1_uses_own_com(self):
         """World 1 angular qfrc must reflect its non-zero CoM, not world 0's."""
         state = self.model.state()
-        observables = self.solver.observables({self.solver.ObservableFlags.QFRC_ACTUATOR})
+        observables = self.solver.observables(kinds={self.solver.ObservableKind.QFRC_ACTUATOR})
         ctrl = self.model.control()
         ctrl.mujoco.ctrl = wp.array([10.0, 10.0], dtype=wp.float32)
         self.solver.step(state, state, ctrl, None, dt=0.01, observables=observables)
@@ -11689,7 +11399,11 @@ class TestContactObservablePointPositions(unittest.TestCase):
         control = model.control()
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
-        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        observables = solver.observables(solver.supported_observables, contacts=contacts)
+        self.assertEqual(observables.kinds, solver.supported_observables)
+        self.assertIsNotNone(observables.body_qdd)
+        self.assertIsNotNone(observables.body_parent_f)
+        self.assertIsNotNone(observables.qfrc_actuator)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
         dt = 1.0 / 200.0
@@ -12926,7 +12640,8 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
     body_invweight0[B]`` in ``convert_newton_contacts_to_mjwarp_kernel``.
 
     Tests use ``use_mujoco_contacts=False`` explicitly so the
-    Newton-contacts kernel (where the override lives) runs. They read
+    Newton-contacts kernel (where the override lives) runs. Physical sphere
+    tests check normal penetration and damping. Parameter tests read
     ``mjw_data.contact.solref`` back directly and compare to the
     ``convert_solref`` conversion of ``(ke·factor, kd·factor)`` —
     mirroring the joint-limit suite
@@ -13006,6 +12721,154 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         rel_tol = 1.0e-4
         self.assertAlmostEqual(float(actual_solref[0]), expected_ref, delta=abs(expected_ref) * rel_tol)
         self.assertAlmostEqual(float(actual_solref[1]), expected_damp, delta=abs(expected_damp) * rel_tol)
+
+    def test_per_contact_force_gains_use_body_mass_and_impedance(self):
+        """Convert per-contact force gains and retain critical damping when damping is zero."""
+        mass, stiffness = 5.0, 1.0e4
+        for damping in (100.0, 0.0):
+            with self.subTest(damping=damping):
+                model, _ = self._build_box_on_plane(mass=mass, ke=3.0e4, kd=300.0)
+                solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
+                pipeline = newton.CollisionPipeline(model)
+                contacts = newton.Contacts(20, 0, device=model.device, per_contact_shape_properties=True)
+                state_in, state_out = model.state(), model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+                pipeline.collide(state_in, contacts)
+                self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+                contacts.rigid_contact_stiffness.fill_(stiffness)
+                contacts.rigid_contact_damping.fill_(damping)
+                solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+
+                count = int(solver.mjw_data.nacon.numpy()[0])
+                self.assertGreater(count, 0)
+                solimp = solver.mjw_data.contact.solimp.numpy()[:count]
+                solref = solver.mjw_data.contact.solref.numpy()[:count]
+                # The free box's translational inverse weight is 1 / mass; the fixed plane contributes zero.
+                for impedance, (timeconst, dampratio) in zip(solimp[:, 1], solref, strict=True):
+                    if damping > 0.0:
+                        expected_timeconst = 2.0 * mass / (damping * (1.0 - impedance))
+                        expected_dampratio = damping / 2.0 * math.sqrt((1.0 - impedance) / (mass * stiffness))
+                    else:
+                        expected_timeconst = math.sqrt(mass / (stiffness * (1.0 - impedance)))
+                        expected_dampratio = 1.0
+                    self.assertAlmostEqual(float(timeconst) / expected_timeconst, 1.0, places=5)
+                    self.assertAlmostEqual(float(dampratio) / expected_dampratio, 1.0, places=5)
+                np.testing.assert_array_equal(solimp[:, 0], solimp[:, 1])
+
+    def _simulate_sphere_contact(
+        self,
+        *,
+        cone="pyramidal",
+        mu=0.5,
+        condim=3,
+        impratio=1.0,
+        friction_scale=1.0,
+        per_contact=True,
+        damping=0.0,
+        kf=100.0,
+        sample_motion=False,
+    ):
+        """Simulate one normal contact with known mass, radius, and force-space gains."""
+        if not wp.is_cuda_available():
+            self.skipTest("Requires CUDA")
+        mass, radius, stiffness, gravity = 5.0, 0.1, 1.0e4, 9.81
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity))
+        SolverMuJoCo.register_custom_attributes(builder)
+        cfg = newton.ModelBuilder.ShapeConfig(ke=stiffness, kd=damping, mu=mu, kf=kf, margin=0.0, gap=0.0, density=0.0)
+        builder.add_ground_plane(cfg=cfg)
+        height = radius - mass * gravity / stiffness + (0.001 if sample_motion else 0.0)
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, height), wp.quat_identity()),
+            mass=mass,
+            inertia=wp.mat33(np.eye(3) * (0.4 * mass * radius**2)),
+        )
+        builder.add_shape_sphere(body, radius=radius, cfg=cfg)
+        model = builder.finalize()
+        model.mujoco.condim.fill_(condim)
+        if not per_contact:
+            self._make_force_space(model)
+        solver = SolverMuJoCo(
+            model,
+            use_mujoco_contacts=False,
+            cone=cone,
+            impratio=impratio,
+            iterations=20,
+            nconmax=8,
+            njmax=32,
+        )
+        pipeline = newton.CollisionPipeline(model)
+        contacts = newton.Contacts(8, 0, device=model.device, per_contact_shape_properties=per_contact)
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        dt = 0.00025 if sample_motion else 0.001
+
+        def step_pair():
+            for source, destination in ((state_in, state_out), (state_out, state_in)):
+                source.clear_forces()
+                pipeline.collide(source, contacts)
+                if per_contact:
+                    contacts.rigid_contact_stiffness.fill_(stiffness)
+                    contacts.rigid_contact_damping.fill_(damping)
+                    contacts.rigid_contact_friction.fill_(friction_scale)
+                solver.step(source, destination, control, contacts, dt)
+
+        step_pair()
+        with wp.ScopedCapture(device=model.device) as capture:
+            step_pair()
+        samples = []
+        for step in range(2000 if sample_motion else 1000):
+            wp.capture_launch(capture.graph)
+            if sample_motion and step % 20 == 19:
+                samples.append((state_in.body_q.numpy()[body, 2], state_in.body_qd.numpy()[body, 2]))
+        self.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), 1)
+        depth = radius - float(state_in.body_q.numpy()[body, 2])
+        velocity = float(state_in.body_qd.numpy()[body, 2])
+        actual_dim = int(solver.mjw_data.contact.dim.numpy()[0])
+        return depth, velocity, actual_dim, np.asarray(samples)
+
+    def test_normal_force_gains_match_settled_depth(self):
+        """Match weight/stiffness penetration across cone, friction, and dimension changes."""
+        cases = (
+            {},
+            {"mu": 1.0},
+            {"mu": 1.2},
+            {"cone": "elliptic"},
+            {"condim": 1},
+            {"condim": 4},
+            {"condim": 6},
+            {"impratio": 4.0},
+            {"friction_scale": 2.0},
+            {"cone": "elliptic", "kf": 0.0},
+            {"per_contact": False, "damping": 5000.0},
+        )
+        expected_depth = 5.0 * 9.81 / 1.0e4
+        for parameters in cases:
+            with self.subTest(**parameters):
+                depth, velocity, dimension, _ = self._simulate_sphere_contact(**parameters)
+                self.assertAlmostEqual(depth / expected_depth, 1.0, delta=0.01)
+                self.assertLess(abs(velocity), 1.0e-5)
+                expected_dim = 1 if parameters.get("kf") == 0.0 else parameters.get("condim", 3)
+                self.assertEqual(dimension, expected_dim)
+
+    def test_normal_motion_retains_force_space_damping(self):
+        """Recover the requested damping/stiffness ratio from measured normal motion."""
+        stiffness, damping = 1.0e4, 100.0
+        equilibrium_height = 0.1 - 5.0 * 9.81 / stiffness
+        for cone in ("pyramidal", "elliptic"):
+            with self.subTest(cone=cone):
+                _, _, _, samples = self._simulate_sphere_contact(cone=cone, damping=damping, sample_motion=True)
+                self.assertTrue(np.isfinite(samples).all())
+                self.assertTrue((samples[:, 0] < 0.1).all(), "The sphere must remain in contact")
+                velocity = samples[:, 1]
+                acceleration = (velocity[2:] - velocity[:-2]) / 0.02
+                displacement = samples[1:-1, 0] - equilibrium_height
+                # Normal motion obeys a = -omega_squared * displacement - beta * velocity.
+                # beta/omega_squared = damping/stiffness cancels the solver's added contact inertia.
+                omega_squared, beta = np.linalg.lstsq(
+                    np.column_stack((-displacement, -velocity[1:-1])), acceleration, rcond=None
+                )[0]
+                self.assertGreater(omega_squared, 0.0)
+                self.assertAlmostEqual(beta / omega_squared, damping / stiffness, delta=0.0005)
 
     def test_force_space_contact_solref_uses_two_body_invweight_sum(self):
         """Dynamic-vs-dynamic contact: factor uses the sum of both bodies' invweight0."""

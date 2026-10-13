@@ -30,8 +30,8 @@ class TestKaminoBlockedResponse(unittest.TestCase):
             self.skipTest("Requires CUDA tile solves")
         device = wp.get_cuda_devices()[0]
         rng = np.random.default_rng(813)
-        for n, nu in ((17, 9), (65, 13), (129, 37)):
-            with self.subTest(n=n, nu=nu):
+        for n, nu, width in ((17, 9, 4), (17, 9, 16), (65, 13, 4), (65, 13, 16), (129, 37, 4), (129, 37, 16)):
+            with self.subTest(n=n, nu=nu, width=width):
                 lower = np.tril(rng.normal(0, 0.02, (n, n))).astype(np.float32)
                 np.fill_diagonal(lower, 2.0)
                 lower[32:, :32] = 0
@@ -55,12 +55,13 @@ class TestKaminoBlockedResponse(unittest.TestCase):
 
                 output = wp.full(n * stride + 7, -123.0, device=device)
                 wp.launch(
-                    make_response_kernel(),
-                    dim=((nu + 3) // 4, 128),
+                    make_response_kernel(width),
+                    dim=((nu + width - 1) // width, 128),
                     inputs=[
                         ints([n + nu]),
                         ints([n]),
                         ints([0]),
+                        ints([n]),
                         ints([0]),
                         floats(scale),
                         floats(lower),
@@ -91,6 +92,7 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                     make_llt_blocked_rcm_solve_kernel(32, True, False),
                     dim=(1, 128),
                     inputs=[
+                        ints([n]),
                         ints([n]),
                         ints([0]),
                         ints([0]),
@@ -145,6 +147,7 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                     dim=(1, 128),
                     inputs=[
                         ints([n]),
+                        ints([n]),
                         ints([0]),
                         ints([0]),
                         ints([0]),
@@ -196,6 +199,7 @@ class TestCooperativeResponse(unittest.TestCase):
                 i32([njc + nu]),
                 i32([njc]),
                 i32([0]),
+                i32([njc]),
                 i32([0]),
                 f32(scale),
                 f32(lower),
@@ -284,7 +288,7 @@ class TestSplitResponse(unittest.TestCase):
                     _solve_bilateral_unilateral_response_compact,
                     dim=(len(ns), 128),
                     block_dim=128,
-                    inputs=[dim, njc, bmio, bvio, scale, L, order, rio, stride, coupling, outputs[index], prefix],
+                    inputs=[dim, njc, bmio, njc, bvio, scale, L, order, rio, stride, coupling, outputs[index], prefix],
                     device=device,
                 )
             wp.launch(
@@ -295,6 +299,7 @@ class TestSplitResponse(unittest.TestCase):
                     dim,
                     njc,
                     bmio,
+                    njc,
                     bvio,
                     scale,
                     L,

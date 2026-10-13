@@ -8,10 +8,9 @@ import warnings
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, ModelFlags, State, StateFlags
+from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
-from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
 from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
 from ..tendon_state import TendonStateMixin
@@ -74,13 +73,13 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         its number of active contacts.  This improves convergence for stacking
         scenarios but means the solver does not conserve momentum at contacts.
         Reported per-contact forces (request
-        :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F`) are
+        :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F`) are
         approximate: for contacts between two dynamic bodies the force is
         computed using the harmonic mean of the two bodies' contact counts,
         which is symmetric but not exact.
 
         **Reported parent-joint forces** (request
-        :attr:`~newton.solvers.SolverObservableFlags.BODY_PARENT_F`) are
+        :attr:`~newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F`) are
         approximate.  XPBD applies relaxation factors
         (``joint_linear_relaxation``, ``joint_angular_relaxation``) to each
         joint constraint correction, and with a finite ``iterations`` count
@@ -97,7 +96,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     Joint limitations:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE, D6.
-          ROD joints are not supported.
+          ROD joints are not supported; constructing the solver on a model that
+          contains them raises ``ValueError``.
         - :attr:`~newton.Model.joint_enabled`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and
           :attr:`~newton.Control.joint_f` are supported.
@@ -124,10 +124,10 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     """
 
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset(
+    SUPPORTED_OBSERVABLES = frozenset(
         {
-            SolverObservableFlags.BODY_PARENT_F,
-            SolverObservableFlags.CONTACT_F,
+            SolverBase.ObservableKind.BODY_PARENT_F,
+            SolverBase.ObservableKind.CONTACT_F,
         }
     )
 
@@ -188,6 +188,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ``None`` (default) to inherit the current
                 ``wp.config.deterministic`` mode.
         """
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("SolverXPBD does not support JointType.ROD joints.")
+
         super().__init__(model=model)
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         module_options = {
@@ -446,7 +449,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         contacts: Contacts | None,
         dt: float,
         *,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         """Advance the simulation state by one time step using XPBD.
 
@@ -470,14 +473,14 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         model = self.model
         body_parent_f = (
             observables.body_parent_f
-            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F)
+            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
             else None
         )
         if body_parent_f is None:
             body_parent_f = state_out.body_parent_f
         contact_f = (
             observables.contact_f
-            if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F)
+            if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
             else None
         )
 
@@ -1461,7 +1464,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         """Populate ``contacts.force`` from XPBD contact impulses accumulated during the last :meth:`step`.
 
         .. deprecated:: 1.7
-            Request :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` and
+            Request :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` and
             pass the resulting container to :meth:`step` instead.
 
         Both force [N] and torque [N·m] components are written.  The torque
@@ -1490,8 +1493,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 or if the contacts capacity does not match the one used in the last :meth:`step`.
         """
         warnings.warn(
-            "SolverXPBD.update_contacts() is deprecated in Newton 1.7; request SolverObservableFlags.CONTACT_F and pass "
-            "SolverObservables to step().",
+            "SolverXPBD.update_contacts() is deprecated in Newton 1.7; request SolverBase.ObservableKind.CONTACT_F and pass "
+            "SolverBase.Observables to step().",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -1499,7 +1502,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         if contacts.force is None:
             raise ValueError(
                 "The deprecated contacts.force compatibility buffer is not allocated. "
-                "Prefer SolverObservableFlags.CONTACT_F; legacy callers must request 'force' before creating Contacts."
+                "Prefer SolverBase.ObservableKind.CONTACT_F; legacy callers must request 'force' before creating Contacts."
             )
         if not hasattr(self, "_contact_impulse") or self._contact_impulse is None:
             raise ValueError("No contact impulse data available. Call step() before update_contacts().")

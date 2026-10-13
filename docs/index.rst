@@ -74,3 +74,4 @@ Newton Physics
    :caption: Project Links
 
     GitHub <https://github.com/newton-physics/newton>
+    Publications <https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md>

@@ -208,7 +208,7 @@ class TestTendonBuilder(unittest.TestCase):
             joint = builder.add_joint_fixed(-1, body, parent_xform=builder.body_q[body])
             builder.add_articulation([joint])
         particle = builder.add_particle(pos=wp.vec3(1.0, 0.0, 0.0), vel=wp.vec3(), mass=1.0)
-        builder.add_attachment_body_particle(particle_anchor, particle)
+        builder.add_attachment_particle_body(particle=particle, body=particle_anchor)
         builder.add_tendon(
             [newton.TendonGuide(body=tendon_anchor), newton.TendonGuide(body=endpoint, compliance=1.0e-3)]
         )
@@ -216,7 +216,7 @@ class TestTendonBuilder(unittest.TestCase):
         builder.collapse_fixed_joints()
         self.assertEqual(builder.body_count, 3)
         self.assertEqual(builder.tendon_guide_body, [0, 2])
-        self.assertEqual(builder.attachment_body_particle_body, [1])
+        self.assertEqual(builder.attachment_particle_body_body, [1])
         builder.color()
         for device in wp.get_devices():
             with self.subTest(device=device):
@@ -227,7 +227,7 @@ class TestTendonBuilder(unittest.TestCase):
                 np.testing.assert_allclose(output.body_q.numpy(), state.body_q.numpy(), atol=1.0e-6)
                 np.testing.assert_allclose(output.particle_q.numpy(), state.particle_q.numpy(), atol=1.0e-6)
                 self.assertEqual(model.tendon_count, 1)
-                self.assertEqual(model.attachment_body_particle_count, 1)
+                self.assertEqual(model.attachment_particle_body_count, 1)
 
     def test_collapse_preserves_guides_across_fixed_joint_chain(self):
         """Compose local guide transforms across more than one collapsed joint."""

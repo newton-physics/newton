@@ -20,7 +20,6 @@ from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
-from ..solvers.mujoco import SolverMuJoCo
 from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
 from ..solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
@@ -30,6 +29,7 @@ from ..solvers.mujoco.constants import (
 )
 from ..solvers.mujoco.enums import EqType
 from ..solvers.mujoco.equality import _add_equality_constraint
+from ..solvers.mujoco.solver_mujoco import SolverMuJoCo
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
     mjc_add_equality_mimic,
@@ -695,6 +695,16 @@ def parse_mjcf(
         for texture in asset.findall("texture"):
             tex_name = texture.attrib.get("name")
             tex_file = texture.attrib.get("file")
+            builtin = texture.attrib.get("builtin", "none")
+            if tex_name and not tex_file and builtin != "none":
+                # Procedural MuJoCo textures (checker, gradient, flat) have no image; keep their
+                # mean color so textured geoms such as floors keep their authored tone.
+                rgb1 = np.array(texture.attrib.get("rgb1", "0.8 0.8 0.8").split(), dtype=np.float32)[:3]
+                rgb2 = np.array(texture.attrib.get("rgb2", "0.5 0.5 0.5").split(), dtype=np.float32)[:3]
+                # Flat textures fill everything but the bottom face of cube textures with rgb1.
+                mean = rgb1 if builtin == "flat" else 0.5 * (rgb1 + rgb2)
+                texture_assets[tex_name] = {"builtin_color": tuple(float(v) for v in mean)}
+                continue
             if not tex_name or not tex_file:
                 continue
             tex_path = os.path.join(texture_dir, tex_file)
@@ -1162,6 +1172,12 @@ def parse_mjcf(
             material_info = material_assets.get(material_name, {})
             rgba = geom_attrib.get("rgba", material_info.get("rgba"))
             material_color = None
+            builtin_color = texture_assets.get(material_info.get("texture"), {}).get("builtin_color")
+            if builtin_color is not None and "rgba" not in geom_attrib:
+                # MuJoCo multiplies the material rgba (default white) with the texture color.
+                tint = np.array((rgba or "1 1 1 1").split(), dtype=np.float32)
+                tint = np.pad(tint, (0, max(0, 4 - tint.size)), constant_values=1.0)
+                rgba = " ".join(str(v) for v in (*(np.array(builtin_color) * tint[:3]), tint[3]))
             if rgba is not None:
                 rgba_values = np.array(rgba.split(), dtype=np.float32)
                 if len(rgba_values) >= 3:
@@ -3458,6 +3474,27 @@ def parse_mjcf(
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
+            elif actuator_type == "muscle":
+                timeconst = parse_vec(merged_attrib, "timeconst", [0.01, 0.04])
+                muscle_range = parse_vec(merged_attrib, "range", [0.75, 1.05])
+                tausmooth = parse_float(merged_attrib, "tausmooth", 0.0)
+                if tausmooth < 0.0:
+                    raise ValueError("MJCF muscle actuator tausmooth must be nonnegative.")
+                muscle_params = [
+                    float(muscle_range[0]),
+                    float(muscle_range[1]),
+                    parse_float(merged_attrib, "force", -1.0),
+                    parse_float(merged_attrib, "scale", 200.0),
+                    parse_float(merged_attrib, "lmin", 0.5),
+                    parse_float(merged_attrib, "lmax", 1.6),
+                    parse_float(merged_attrib, "vmax", 1.5),
+                    parse_float(merged_attrib, "fpmax", 1.3),
+                    parse_float(merged_attrib, "fvmax", 1.2),
+                ]
+                gainprm = vec10(*muscle_params, 0.0)
+                biasprm = vec10(*muscle_params, 0.0)
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+
             elif actuator_type == "damper":
                 kv = parse_float(merged_attrib, "kv", 1.0)
                 gainprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -3488,6 +3525,10 @@ def parse_mjcf(
                 parsing_mode="mjcf",
                 context={"actuator_name": act_name},
             )
+            if actuator_type == "muscle":
+                parsed_attrs["mujoco:actuator_dynprm"] = vec10(
+                    float(timeconst[0]), float(timeconst[1]), tausmooth, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+                )
             if (
                 actuator_type in {"position", "velocity", "intvelocity"}
                 and target_joint_name in mjcf_slide_joint_names
@@ -3513,6 +3554,11 @@ def parse_mjcf(
             shortcut_type_defaults = {
                 "position": {"mujoco:actuator_biastype": 1},  # affine
                 "velocity": {"mujoco:actuator_biastype": 1},  # affine
+                "muscle": {
+                    "mujoco:actuator_dyntype": 4,  # muscle
+                    "mujoco:actuator_gaintype": 2,  # muscle
+                    "mujoco:actuator_biastype": 2,  # muscle
+                },
                 "intvelocity": {"mujoco:actuator_biastype": 1, "mujoco:actuator_dyntype": 1},
                 "damper": {
                     "mujoco:actuator_gaintype": 1,  # affine
