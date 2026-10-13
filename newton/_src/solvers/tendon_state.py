@@ -13,13 +13,16 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
-from ..sim import Model
+from ..sim import Model, State
 from ..sim.tendon import TendonGuideFlags, TendonGuideType
 from .tendon_kernels import (
+    load_tendon_history,
+    mark_tendon_initialized,
     mark_tendon_rebaseline_worlds,
     prepare_tendon_route,
     rebaseline_tendon_attachments,
     reset_tendon_state_array,
+    save_tendon_history,
     snapshot_tendon_guide_active,
     solve_tendon_material,
     update_tendon_attachments,
@@ -143,8 +146,106 @@ def _segment_attachment_points_np(
     return new_l, new_r
 
 
+_TENDON_HISTORY_FIELDS = (
+    "tendon_seg_rest_length",
+    "tendon_seg_attachment_l_local",
+    "tendon_seg_attachment_r_local",
+    "tendon_guide_active",
+)
+
+_TENDON_FIXED_MODEL_FIELDS = (
+    "tendon_start",
+    "tendon_guide_body",
+    "tendon_guide_type",
+    "tendon_guide_radius",
+    "tendon_guide_orientation",
+    "tendon_guide_flags",
+    "tendon_guide_offset",
+    "tendon_guide_axis",
+)
+
+
 class TendonStateMixin:
-    """Mixin that allocates routed-tendon mutable state on a solver instance."""
+    """Shared routing workspace; persistent material history belongs to State."""
+
+    def _load_tendon_history(self, state: State) -> None:
+        """Restore the input trajectory before updating its route or material."""
+        if not self.model.tendon_count:
+            return
+        wp.launch(
+            load_tendon_history,
+            dim=self.model.tendon_guide_count,
+            inputs=[
+                self.model.tendon_start,
+                self.tendon_guide_tendon,
+                state._tendon_initialized,
+                *[getattr(state, name) for name in _TENDON_HISTORY_FIELDS],
+                *[self._tendon_initial_state[name] for name in _TENDON_HISTORY_FIELDS],
+            ],
+            outputs=[getattr(self, name) for name in _TENDON_HISTORY_FIELDS],
+            device=self.model.device,
+        )
+        wp.copy(self._tendon_pose_rebaseline_mask, state._tendon_rebaseline)
+
+    def _save_tendon_history(self, state: State) -> None:
+        """Write persistent history to the output trajectory, including under graph capture."""
+        if not self.model.tendon_count:
+            return
+        wp.launch(
+            save_tendon_history,
+            dim=self.model.tendon_guide_count,
+            inputs=[
+                self.model.tendon_start,
+                self.tendon_guide_tendon,
+                *[getattr(self, name) for name in _TENDON_HISTORY_FIELDS],
+            ],
+            outputs=[*[getattr(state, name) for name in _TENDON_HISTORY_FIELDS], state._tendon_initialized],
+            device=self.model.device,
+        )
+        state._tendon_rebaseline.zero_()
+
+    def _refresh_tendon_properties(self) -> None:
+        """Refresh authored reset lengths; material-only edits preserve trajectory history.
+
+        This host-side notification must run outside CUDA graph capture. Route
+        topology and guide geometry are immutable for the lifetime of a solver.
+        Rest-length edits update the reset baseline only. Existing trajectories
+        retain their material history until explicitly reset.
+        """
+        model = self.model
+        if not model.tendon_count:
+            return
+        for name, original in self._tendon_fixed_model_values.items():
+            if not np.array_equal(getattr(model, name).numpy(), original):
+                raise ValueError(f"Changing {name} requires reconstructing the tendon model and solver")
+        for name in (
+            "tendon_seg_compliance",
+            "tendon_seg_damping",
+            "tendon_guide_mu",
+            "tendon_seg_rest_length",
+        ):
+            value = getattr(model, name).numpy()
+            count = model.tendon_guide_count if name == "tendon_guide_mu" else model.tendon_segment_count
+            if value.shape != (count,) or not np.isfinite(value).all():
+                raise ValueError(f"{name} must contain {count} finite values")
+            if name != "tendon_seg_rest_length" and (value < 0).any():
+                raise ValueError(f"{name} must be non-negative")
+        rest = model.tendon_seg_rest_length.numpy()
+        if np.array_equal(rest, self._tendon_authored_rest_length):
+            return
+
+        # Build the same baseline as a newly constructed solver, but copy into
+        # existing buffers so captured step graphs retain valid array addresses.
+        initial = TendonStateMixin()
+        initial.model = model
+        initial.tendon_max_sweeps = self.tendon_max_sweeps
+        initial.tendon_settle_tol = self.tendon_settle_tol
+        initial.tendon_activation_tol = self.tendon_activation_tol
+        initial._init_tendon_state(model)
+        for name, array in self._tendon_initial_state.items():
+            wp.copy(array, initial._tendon_initial_state[name])
+        wp.copy(self.tendon_guide_route_rest_length, initial.tendon_guide_route_rest_length)
+        self._tendon_authored_rest_length = rest.copy()
 
     def _init_tendon_state(self, model: Model) -> None:
         """Allocate mutable tendon state arrays and build segment/guide mappings."""
@@ -709,6 +810,10 @@ class TendonStateMixin:
 
     def _cache_tendon_initial_state(self, model: Model) -> None:
         """Preserve the initialized tendon state for solver resets."""
+        self._tendon_fixed_model_values = {
+            name: getattr(model, name).numpy().copy() for name in _TENDON_FIXED_MODEL_FIELDS
+        }
+        self._tendon_authored_rest_length = model.tendon_seg_rest_length.numpy().copy()
         guide_body = model.tendon_guide_body.numpy()
         body_world = model.body_world.numpy()
         guide_world = body_world[guide_body]
@@ -723,7 +828,7 @@ class TendonStateMixin:
         for field in (*_TENDON_SEGMENT_STATE_FIELDS, *_TENDON_GUIDE_STATE_FIELDS, *_TENDON_STATE_FIELDS):
             self._tendon_initial_state[field] = wp.clone(getattr(self, field))
 
-    def _reset_tendon_state(self, world_mask: wp.array[wp.bool] | None) -> None:
+    def _reset_tendon_state(self, state: State, world_mask: wp.array[wp.bool] | None) -> None:
         """Restore initialized tendon material and routing state for selected worlds."""
         if self.tendon_seg_rest_length is None:
             return
@@ -756,5 +861,37 @@ class TendonStateMixin:
                 dim=world_mask.shape[0],
                 inputs=[world_mask],
                 outputs=[self._tendon_pose_rebaseline_mask],
+                device=self.model.device,
+            )
+
+        for name in _TENDON_HISTORY_FIELDS:
+            initial, current = self._tendon_initial_state[name], getattr(state, name)
+            if world_mask is None:
+                wp.copy(current, initial)
+            else:
+                entity_world = self._tendon_guide_world if name == "tendon_guide_active" else self._tendon_segment_world
+                wp.launch(
+                    reset_tendon_state_array,
+                    dim=current.size,
+                    inputs=[entity_world, world_mask, self.model.world_count, initial],
+                    outputs=[current],
+                    device=self.model.device,
+                )
+        if world_mask is None:
+            state._tendon_rebaseline.fill_(True)
+            state._tendon_initialized.fill_(True)
+        else:
+            wp.launch(
+                mark_tendon_rebaseline_worlds,
+                dim=world_mask.size,
+                inputs=[world_mask],
+                outputs=[state._tendon_rebaseline],
+                device=self.model.device,
+            )
+            wp.launch(
+                mark_tendon_initialized,
+                dim=self.model.tendon_count,
+                inputs=[self._tendon_world, world_mask, self.model.world_count],
+                outputs=[state._tendon_initialized],
                 device=self.model.device,
             )

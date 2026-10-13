@@ -1437,7 +1437,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        """Refresh solver caches affected by the specified model-property flags."""
         self._apply_module_options()
+        if flags & ModelFlags.TENDON_PROPERTIES:
+            self._refresh_tendon_properties()
         refresh_structural_k = (
             bool(
                 flags
@@ -2651,6 +2654,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # decision has to see the accepted pose, but the inertial predictor inside
         # _initialize_rigid_bodies overwrites state_in.body_q in place.
         if self.tendon_seg_lambda is not None and state_in.body_q is not None:
+            self._load_tendon_history(state_in)
             self._snapshot_tendon_step_state()
             self._update_tendon_guide_active(self.model, state_in.body_q)
             self._prepare_tendon_route(self.model, state_in.body_q, 1.0e-8)
@@ -2703,6 +2707,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if update_tendon_diagnostics:
             self._update_tendon_segment_diagnostics(state_out, dt)
         self._finalize_particles(state_out, dt)
+        self._save_tendon_history(state_out)
 
     @override
     def reset(
@@ -2850,7 +2855,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
-        self._reset_tendon_state(world_mask)
+        self._reset_tendon_state(state, world_mask)
 
         if not self._integrates_rigid_bodies:
             return

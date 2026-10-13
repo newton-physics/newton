@@ -1808,6 +1808,14 @@ class Model:
             s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
 
+        if self.tendon_count:
+            s.tendon_seg_rest_length = wp.clone(self.tendon_seg_rest_length)
+            s.tendon_seg_attachment_l_local = wp.zeros(self.tendon_segment_count, dtype=wp.vec3, device=self.device)
+            s.tendon_seg_attachment_r_local = wp.zeros(self.tendon_segment_count, dtype=wp.vec3, device=self.device)
+            s.tendon_guide_active = wp.ones(self.tendon_guide_count, dtype=wp.bool, device=self.device)
+            s._tendon_initialized = wp.zeros(self.tendon_count, dtype=wp.bool, device=self.device)
+            s._tendon_rebaseline = wp.zeros(self.world_count + 1, dtype=wp.bool, device=self.device)
+
         self._add_requested_state_attributes(s, requested, requires_grad=requires_grad)
 
         # attach custom attributes with assignment==STATE

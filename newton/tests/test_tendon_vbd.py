@@ -470,9 +470,10 @@ def test_vbd_dynamic_tendon_route_switches_inside_solver(test, device):
         state_1 = model.state()
         control = model.control()
 
-        rest_length = solver.tendon_seg_rest_length.numpy()
+        rest_length = solver.tendon_seg_rest_length.numpy().copy()
         rest_length[0] -= 0.02
-        solver.tendon_seg_rest_length.assign(rest_length)
+        solver.reset(state_0)
+        state_0.tendon_seg_rest_length.assign(rest_length)
 
         body_colors = np.full(model.body_count, -1, dtype=np.int32)
         for color, group in enumerate(model.body_color_groups):
@@ -979,9 +980,9 @@ def test_vbd_same_body_rolling_span_applies_net_torque(test, device):
         rest_lengths = span_lengths.copy()
         rest_lengths[0] += 1.0
         rest_lengths[1] -= 0.01
-        solver.tendon_seg_rest_length.assign(rest_lengths)
-
         state_0, state_1 = model.state(), model.state()
+        solver.reset(state_0)
+        state_0.tendon_seg_rest_length.assign(rest_lengths)
         initial_pose = state_0.body_q.numpy()[body].copy()
         solver.step(state_0, state_1, model.control(), None, 1.0 / 120.0)
 

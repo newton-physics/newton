@@ -132,6 +132,76 @@ def reset_tendon_state_array(
 
 
 @wp.kernel
+def load_tendon_history(
+    tendon_start: wp.array[int],
+    guide_tendon: wp.array[int],
+    initialized: wp.array[wp.bool],
+    rest: wp.array[float],
+    left: wp.array[wp.vec3],
+    right: wp.array[wp.vec3],
+    active: wp.array[wp.bool],
+    initial_rest: wp.array[float],
+    initial_left: wp.array[wp.vec3],
+    initial_right: wp.array[wp.vec3],
+    initial_active: wp.array[wp.bool],
+    out_rest: wp.array[float],
+    out_left: wp.array[wp.vec3],
+    out_right: wp.array[wp.vec3],
+    out_active: wp.array[wp.bool],
+):
+    """Load a trajectory's history, seeding newly created states from the authored route."""
+    guide = wp.tid()
+    tendon = guide_tendon[guide]
+    ready = initialized[tendon]
+    out_active[guide] = active[guide] if ready else initial_active[guide]
+    if guide < tendon_start[tendon + 1] - 1:
+        seg = guide - tendon
+        out_rest[seg] = rest[seg] if ready else initial_rest[seg]
+        out_left[seg] = left[seg] if ready else initial_left[seg]
+        out_right[seg] = right[seg] if ready else initial_right[seg]
+
+
+@wp.kernel
+def save_tendon_history(
+    tendon_start: wp.array[int],
+    guide_tendon: wp.array[int],
+    rest: wp.array[float],
+    left: wp.array[wp.vec3],
+    right: wp.array[wp.vec3],
+    active: wp.array[wp.bool],
+    out_rest: wp.array[float],
+    out_left: wp.array[wp.vec3],
+    out_right: wp.array[wp.vec3],
+    out_active: wp.array[wp.bool],
+    initialized: wp.array[wp.bool],
+):
+    """Store accepted material and routing history without exporting solver scratch."""
+    guide = wp.tid()
+    tendon = guide_tendon[guide]
+    out_active[guide] = active[guide]
+    if guide == tendon_start[tendon]:
+        initialized[tendon] = True
+    if guide < tendon_start[tendon + 1] - 1:
+        seg = guide - tendon
+        out_rest[seg] = rest[seg]
+        out_left[seg] = left[seg]
+        out_right[seg] = right[seg]
+
+
+@wp.kernel
+def mark_tendon_initialized(
+    tendon_world: wp.array[int],
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    initialized: wp.array[wp.bool],
+):
+    """Mark only reset-selected tendon histories as initialized."""
+    tendon = wp.tid()
+    if reset_world_selected(tendon_world[tendon], world_mask, world_count):
+        initialized[tendon] = True
+
+
+@wp.kernel
 def mark_tendon_rebaseline_worlds(
     world_mask: wp.array[wp.bool],
     rebaseline_world_mask: wp.array[wp.bool],

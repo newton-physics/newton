@@ -2747,7 +2747,9 @@ def test_same_body_tendon_segment_reports_constitutive_tension(test, device):
         solver.step(state_0, state_1, model.control(), None, dt)
 
         span_length = float(
-            np.linalg.norm(solver.tendon_seg_attachment_r.numpy()[0] - solver.tendon_seg_attachment_l.numpy()[0])
+            np.linalg.norm(
+                solver.tendon_seg_attachment_r.numpy()[0] - solver.tendon_seg_attachment_l.numpy()[0]
+            )
         )
         expected_tension = (span_length - rest_length) / compliance
         lambda_tension = float(-solver.tendon_seg_lambda.numpy()[0] / dt)
@@ -2991,11 +2993,11 @@ def test_rolling_link_body_preserves_center_motion_jacobian(test, device):
         span_lengths = np.linalg.norm(
             solver.tendon_seg_attachment_r.numpy() - solver.tendon_seg_attachment_l.numpy(), axis=1
         )
-        solver.tendon_seg_rest_length.assign(span_lengths - 0.01)
-
         # The total routed length increases with positive joint rotation in this
         # geometry, so tension must drive the joint in the negative direction.
         state_0, state_1 = model.state(), model.state()
+        solver.reset(state_0)
+        state_0.tendon_seg_rest_length.assign(span_lengths - 0.01)
         for _ in range(4):
             state_0.clear_forces()
             solver.step(state_0, state_1, model.control(), None, 1.0 / 120.0)
@@ -3113,15 +3115,15 @@ def _moving_rolling_route_material_error(solver_factory, mu, short_segment=None)
     model.body_q.assign(body_q)
 
     solver = solver_factory(model)
+    state_0, state_1 = model.state(), model.state()
+    solver.reset(state_0)
     if short_segment is not None:
         rest = solver.tendon_seg_rest_length.numpy()
         total_rest = float(np.sum(rest))
         rest[short_segment] = 5.0e-3
         rest[1 - short_segment] = total_rest - rest[short_segment]
-        solver.tendon_seg_rest_length.assign(rest)
-        solver._snapshot_tendon_step_state()
+        state_0.tendon_seg_rest_length.assign(rest)
 
-    state_0, state_1 = model.state(), model.state()
     control = model.control()
     radius = float(model.tendon_guide_radius.numpy()[1])
     normal = model.tendon_guide_axis.numpy()[1]

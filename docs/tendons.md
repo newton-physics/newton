@@ -5,7 +5,7 @@
 
 ```{experimental}
 The massless-tendon API (`TendonGuide`, `TendonGuideType`, `TendonGuideFlags`,
-`ModelBuilder.add_tendon`, the `Model.tendon_*` arrays, and the XPBD/VBD
+`ModelBuilder.add_tendon`, the `Model.tendon_*` and `State.tendon_*` arrays, and the XPBD/VBD
 `tendon_*` parameters and diagnostics) may change without a deprecation period.
 Native routed-tendon USD authoring and MuJoCo lowering below are design sketches,
 not implemented APIs. Existing MuJoCo-provider tendon import is supported separately.
@@ -242,6 +242,33 @@ and reject unsupported semantics rather than silently discard them.
 - Tendon actuation is not part of {class}`~newton.Control`, and tendon
   diagnostics are solver-owned rather than part of {class}`~newton.State`.
 - The tendon path is not differentiable.
+
+## State and runtime updates
+
+Persistent tendon history belongs to {class}`~newton.State`: material rest-length
+distribution, active guides, and previous body-local attachment points. Copying
+a state with `State.assign()` copies this history too. The first solver step
+initializes a new state's tendon history from the authored route. Solver-owned
+tensions, multipliers, and temporary routing arrays are diagnostics/workspace,
+not the source of a trajectory's material state.
+
+`solver.reset(state, world_mask=...)` restores the selected worlds' initial
+material distribution and rebaselines attachment history at the supplied pose.
+It is an initialization operation, not a checkpoint restore: use `State.assign()`
+to restore saved tendon history. When reusing VBD after a trajectory discontinuity,
+clear its non-tendon solver history first with `solver.reset(state, flags=0)`, then
+call `state.assign(checkpoint)` to restore the checkpoint, including tendon history.
+
+After editing segment compliance/damping or guide friction in place, call
+`solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)`. These edits preserve
+existing material history. Changing `Model.tendon_seg_rest_length` instead updates
+the authored reset baseline: notify the solver, then reset a trajectory to apply
+the new lengths. Initialized states keep their existing material distribution
+until reset. This is not a tendon actuation interface. Negative
+authored rest lengths are remeasured from the model's initial pose. Notifications
+must run outside CUDA graph capture; in-place edits and resets preserve the buffer
+addresses used by captured steps. Replacing model arrays requires recapturing graphs.
+Changing route topology or guide geometry requires rebuilding the model and solver.
 
 ## References
 

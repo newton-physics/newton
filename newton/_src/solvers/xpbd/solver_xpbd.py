@@ -267,21 +267,22 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
     ) -> None:
         """Reset mutable tendon material and routing state for selected worlds.
 
-        XPBD does not otherwise mutate *state* or retain solver history between
+        XPBD resets tendon history in *state* but does not otherwise mutate it or retain solver history between
         steps. The *flags* argument is accepted for :class:`SolverBase`
         compatibility and does not affect tendon-state reset.
         """
         if state is None:
             raise ValueError("'state' argument is required.")
         del flags
-        self._reset_tendon_state(self._normalize_reset_world_mask(world_mask))
+        self._reset_tendon_state(state, self._normalize_reset_world_mask(world_mask))
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
-        """Refresh cached body data after model properties change.
+        """Refresh solver caches after model properties change.
 
         Effective inverse masses and inertia tensors are refreshed for body-property changes. The cached restitution
-        state is refreshed for shape-property changes. Other flags are ignored.
+        state is refreshed for shape-property changes. Tendon-property changes refresh
+        the authored tendon reset baseline.
 
         Args:
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which model properties
@@ -289,6 +290,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         """
         self._ensure_restitution_module_options()
         self._apply_module_options()
+        if flags & ModelFlags.TENDON_PROPERTIES:
+            self._refresh_tendon_properties()
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
         if self.enable_restitution and flags & ModelFlags.SHAPE_PROPERTIES:
@@ -632,6 +635,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 edge_constraint_lambdas = wp.empty_like(model.edge_rest_angle)
 
             if model.tendon_segment_count > 0 and body_q is not None:
+                self._load_tendon_history(state_in)
                 self._snapshot_tendon_step_state()
                 # Route activation is based on the accepted pose at the start
                 # of the step, before the inertial predictor is solved.
@@ -1216,6 +1220,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                     outputs=[self.tendon_seg_material_tension, self.tendon_seg_damping_tension],
                     device=model.device,
                 )
+
+            self._save_tendon_history(state_out)
 
             self._contact_impulse = contact_impulse
             self._contact_impulse_capacity = contacts.rigid_contact_max if contacts is not None else 0

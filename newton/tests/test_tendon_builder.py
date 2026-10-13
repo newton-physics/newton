@@ -132,13 +132,18 @@ class TestTendonBuilder(unittest.TestCase):
                         np.testing.assert_array_equal(
                             solver.tendon_seg_rest_length.numpy()[[0, 1, 4, 5]], initial_rest[[0, 1, 4, 5]]
                         )
-                    changed = solver.tendon_seg_rest_length.numpy() + np.float32(0.01)
-                    solver.tendon_seg_rest_length.assign(changed)
+                    changed = state_0.tendon_seg_rest_length.numpy().copy()
+                    # The second slot of each bypassed route is an inactive
+                    # placeholder, not another physical free span.
+                    changed[::2] += np.float32(0.01)
+                    state_0.tendon_seg_rest_length.assign(changed)
                     mask = wp.array([False, True, False, False], dtype=wp.bool, device=device)
                     solver.reset(state_0, world_mask=mask, flags=0)
                     expected = changed.copy()
                     expected[2:4] = initial_rest[2:4]
-                    np.testing.assert_array_equal(solver.tendon_seg_rest_length.numpy(), expected)
+                    np.testing.assert_array_equal(state_0.tendon_seg_rest_length.numpy(), expected)
+                    solver.step(state_0, state_1, control, None, 1.0 / 60.0)
+                    np.testing.assert_array_equal(state_1.tendon_seg_rest_length.numpy(), expected)
 
     def test_xpbd_reports_wraps_only_at_accepted_pose(self):
         """Suppress unsupported-wrap warnings during unconverged iterations."""
