@@ -172,6 +172,41 @@ def test_stopping(test, device):
     test.assertEqual(int(solver.converged.numpy()[0]), 0)
 
 
+def test_loaded_stopping(test, device):
+    """Stop under sustained contact forces and match a fixed-iteration reference."""
+    dt = 0.001
+    for gamma, substeps, interval in ((0.0, 1, 1), (0.1, 3, 3)):
+        with test.subTest(gamma=gamma, substeps=substeps, interval=interval):
+            config = SolverCoupledADMM.ConvergenceConfig(check_interval=interval)
+            results = []
+            for convergence, iterations in ((None, 1024), (config, 512)):
+                model, solver = _make_solver(
+                    device, convergence, iterations=iterations, gamma=gamma, substeps=substeps, baumgarte=0.0
+                )
+                state_in, state_out = model.state(), model.state()
+                # With penetration correction disabled, opposing 10 N loads have
+                # an equilibrium of zero velocity and a 10 N coupling force.
+                state_in.particle_f.assign([[10.0, 0.0, 0.0], [-10.0, 0.0, 0.0]])
+                solver.step(state_in, state_out, None, None, dt)
+                group = solver._admm_dynamic_pp_contact_groups[0]
+                test.assertEqual(int(group.active_count.numpy()[0]), 1)
+                # The mechanics buffer contains the external load plus the coupling force.
+                force = solver._admm_buffers["a"].particle_f.numpy()[0] - state_in.particle_f.numpy()[0]
+                test.assertGreater(np.linalg.norm(force), 9.0)
+                results.append((state_out.particle_q.numpy(), state_out.particle_qd.numpy(), force))
+                if convergence is not None:
+                    test.assertEqual(int(solver.converged.numpy()[0]), 1)
+                    test.assertGreater(int(solver.iteration_count.numpy()[0]), config.min_iterations)
+                    test.assertLess(int(solver.iteration_count.numpy()[0]), iterations)
+            reference, adaptive = results
+            np.testing.assert_allclose(adaptive[0], reference[0], atol=dt * config.linear_velocity_tolerance, rtol=0.0)
+            np.testing.assert_allclose(adaptive[1], reference[1], atol=config.linear_velocity_tolerance, rtol=0.0)
+            force_tolerance = config.force_tolerance + config.force_relative_tolerance * np.linalg.norm(reference[2])
+            test.assertLessEqual(np.linalg.norm(adaptive[2] - reference[2]), force_tolerance)
+            np.testing.assert_allclose(adaptive[1], 0.0, atol=config.linear_velocity_tolerance, rtol=0.0)
+            np.testing.assert_allclose(adaptive[2], [-10.0, 0.0, 0.0], atol=force_tolerance, rtol=0.0)
+
+
 def test_proximal_common_motion(test, device):
     """Resolve shared acceleration even when every interface residual is zero."""
     dt = 0.001
@@ -419,31 +454,43 @@ def test_rigid_groups(test, device):
             np.testing.assert_array_equal(fixed, adaptive)
 
 
+def _make_rigid_particle_solver(device, convergence, *, attachment):
+    """Build a rigid-particle attachment or contact between two participants.
+
+    Args:
+        device: Warp device for the model and solvers.
+        convergence: Optional ADMM convergence settings.
+        attachment: Whether to couple through an attachment or a contact.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    builder.add_shape_sphere(body, radius=0.05)
+    particle = builder.add_particle(pos=(0.08, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.05)
+    if attachment:
+        SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=500.0)
+    model = builder.finalize(device=device)
+    solver = SolverCoupledADMM(
+        model,
+        [
+            SolverCoupled.Entry("body", SolverSemiImplicit, bodies=[body]),
+            SolverCoupled.Entry("particle", SolverSemiImplicit, particles=[particle]),
+        ],
+        SolverCoupledADMM.Config(
+            iterations=5,
+            rho=20.0,
+            baumgarte=0.2,
+            convergence=convergence,
+            contact_pairs=() if attachment else [SolverCoupledADMM.ContactPair("body", "particle")],
+        ),
+    )
+    return model, solver
+
+
 def test_rigid_particle_groups(test, device):
     """Include rigid-particle attachments and collision rows in both criteria."""
     for attachment in (False, True):
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        builder.add_shape_sphere(body, radius=0.05)
-        particle = builder.add_particle(pos=(0.08, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.05)
-        if attachment:
-            SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=500.0)
-        model = builder.finalize(device=device)
         config = SolverCoupledADMM.ConvergenceConfig(min_iterations=1, check_interval=2)
-        solver = SolverCoupledADMM(
-            model,
-            [
-                SolverCoupled.Entry("body", SolverSemiImplicit, bodies=[body]),
-                SolverCoupled.Entry("particle", SolverSemiImplicit, particles=[particle]),
-            ],
-            SolverCoupledADMM.Config(
-                iterations=5,
-                rho=20.0,
-                baumgarte=0.2,
-                convergence=config,
-                contact_pairs=() if attachment else [SolverCoupledADMM.ContactPair("body", "particle")],
-            ),
-        )
+        model, solver = _make_rigid_particle_solver(device, config, attachment=attachment)
         a, b = model.state(), model.state()
         solver.step(a, b, None, None, 0.001)
         test.assertGreater(int(solver.iteration_count.numpy()[0]), 1)
@@ -455,6 +502,72 @@ def test_rigid_particle_groups(test, device):
         groups[0].lambda_.fill_(wp.vec3(1e4, 0.0, 0.0))
         solver._check_convergence(5)
         test.assertEqual(int(solver.converged.numpy()[0]), 0)
+
+
+def test_group_force_consistency(test, device):
+    """Check every group family's convergence forces against mechanics accumulation."""
+    config = SolverCoupledADMM.ConvergenceConfig(linear_velocity_tolerance=1.0, angular_velocity_tolerance=1.0)
+    scenes = [
+        _make_solver(device, config),
+        *(_make_rigid_solver(device, config, kind=kind) for kind in ("contact", "fixed", "revolute")),
+        *(_make_rigid_particle_solver(device, config, attachment=value) for value in (False, True)),
+    ]
+    declared = set()
+    exercised = set()
+    for model, solver in scenes:
+        solver.step(model.state(), model.state(), None, None, 0.001)
+        # Discover collections independently of the list in _setup_convergence.
+        collections = {
+            name: groups
+            for name, groups in vars(solver).items()
+            if name.startswith("_admm_") and name.endswith("_groups")
+        }
+        declared.update(collections)
+        for name, groups in collections.items():
+            for group in groups:
+                with test.subTest(group=name):
+                    for collection in collections:
+                        setattr(solver, collection, [])
+                    setattr(solver, name, [group])
+                    solver._setup_convergence()
+                    test.assertEqual(solver._convergence_force_used.shape[0], group.count)
+                    if hasattr(group, "active_count"):
+                        test.assertEqual(int(group.active_count.numpy()[0]), 1)
+                    group.W.fill_(2.5)
+                    group.lambda_.fill_(wp.vec3(1.0, -2.0, 3.0))
+                    group.u.fill_(wp.vec3(0.04, 0.05, -0.06))
+                    group.Jv.fill_(wp.vec3(-0.02, 0.01, 0.03))
+                    solver._snapshot_convergence_forces()
+                    for buf in solver._admm_buffers.values():
+                        solver._zero_array(buf.body_f)
+                        solver._zero_array(buf.particle_f)
+                    solver._accumulate_admm_forces(0, 0.001, refresh_jv=False, initialize_contact_u=False)
+                    recorded = solver._convergence_force_used.numpy()[0]
+                    if hasattr(group, "body_entry_name_a"):
+                        entry_name = group.body_entry_name_a
+                        body = int(group.body_ids_a.numpy()[0])
+                        spatial_force = solver._admm_buffers[entry_name].body_f.numpy()[body]
+                        applied = spatial_force[3:] if "angular" in name else spatial_force[:3]
+                        if hasattr(group, "frame_a"):
+                            pose = solver._entries[entry_name].state_0.body_q.list()[body]
+                            rotation = wp.transform_get_rotation(pose * group.frame_a.list()[0])
+                            recorded = np.array(wp.quat_rotate(rotation, wp.vec3(*recorded)))
+                    elif hasattr(group, "body_entry_name"):
+                        body = int(group.body_ids.numpy()[0])
+                        applied = solver._admm_buffers[group.body_entry_name].body_f.numpy()[body, :3]
+                        if hasattr(group, "body_sign"):
+                            recorded = recorded * int(group.body_sign.numpy()[0])
+                    else:
+                        particle = int(group.particle_ids_a.numpy()[0])
+                        applied = solver._admm_buffers[group.particle_entry_name_a].particle_f.numpy()[particle]
+                    np.testing.assert_allclose(recorded, applied, atol=1e-6, rtol=1e-6)
+                    solver._check_convergence(2)
+                    test.assertEqual(int(solver.converged.numpy()[0]), 1)
+                    group.lambda_.fill_(wp.vec3(1.0, -1.5, 3.0))
+                    solver._check_convergence(2)
+                    test.assertEqual(int(solver.converged.numpy()[0]), 0)
+                    exercised.add(name)
+    test.assertSetEqual(exercised, declared, "Add a populated test scene for each ADMM group collection")
 
 
 def test_empty_and_schedule(test, device):
@@ -548,6 +661,7 @@ for func in (
     test_criteria,
     test_capacity,
     test_stopping,
+    test_loaded_stopping,
     test_proximal_common_motion,
     test_proximal_criteria,
     test_proximal_angular_and_joint_units,
@@ -556,6 +670,7 @@ for func in (
     test_graph_replay,
     test_rigid_groups,
     test_rigid_particle_groups,
+    test_group_force_consistency,
     test_empty_and_schedule,
     test_mixed_group_offsets,
 ):
